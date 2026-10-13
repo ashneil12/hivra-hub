@@ -41,3 +41,18 @@ describe("UsageFooter terminal control", () => {
     expect(markup.match(/<button/g)).toHaveLength(1);
   });
 });
+
+describe("CC Studio usage footer", () => {
+  it.each([
+    ["claude:ccstudio:deepseek:deepseek-chat", "DeepSeek API"],
+    ["claude:ccstudio:opencode-go:deepseek-v4.1-flash", "OpenCode Go"],
+  ])("shows the actual upstream for %s instead of Anthropic subscription usage", (model, label) => {
+    const markup = renderToStaticMarkup(createElement(UsageFooter, {
+      providers: ["claude"],
+      session: { harness: "claude", model, authRequired: true },
+    }));
+    expect(markup).toContain(`>${label}</span>`);
+    expect(markup).not.toContain("Sign in");
+    expect(markup).not.toContain("Max");
+  });
+});

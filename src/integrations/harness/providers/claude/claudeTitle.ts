@@ -9,6 +9,7 @@ const TITLE_TIMEOUT_MS = 45_000;
 
 export async function generateClaudeSessionTitle(input: {
   sessionId: string;
+  model?: string;
   cwd: string;
   message: string;
   providerAccountId?: string;
@@ -16,6 +17,7 @@ export async function generateClaudeSessionTitle(input: {
   try {
     const output = await runClaudeTextPrompt({
       cwd: input.cwd,
+      model: input.model,
       providerAccountId: input.providerAccountId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,

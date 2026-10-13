@@ -23,9 +23,40 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("provider binary paths", () => {
+  it("uses the CC Studio wrapper only when no explicit Claude binary is configured", async () => {
+    vi.stubEnv("VITE_CC_STUDIO_CLAUDE_BINARY", "/studio/cc-studio-claude");
+    mocks.invoke.mockImplementation(async (_command, args) => args.paths);
+    vi.resetModules();
+    const paths = await import("./providerBinaryPaths");
+    await paths.initializeProviderBinaryPaths();
+    expect(paths.runtimeProviderBinaryPath("claude")).toBe("/studio/cc-studio-claude");
+    expect(paths.loadProviderBinaryPath("claude")).toBe("/studio/cc-studio-claude");
+    expect(paths.providerBinaryPathChangePending("claude")).toBe(false);
+    expect(paths.isCcStudioClaudeRuntime()).toBe(true);
+
+    vi.mocked(localStorage.getItem).mockReturnValue(JSON.stringify({ claude: "/custom/claude" }));
+    await paths.initializeProviderBinaryPaths();
+    expect(mocks.invoke).toHaveBeenLastCalledWith("harness_runtime_binary_paths", {
+      paths: { claude: "/custom/claude" },
+    });
+    expect(paths.runtimeProviderBinaryPath("claude")).toBe("/custom/claude");
+    expect(paths.isCcStudioClaudeRuntime()).toBe(false);
+  });
+
+  it("does not enable upstream models in a plain build without a launcher", async () => {
+    vi.stubEnv("VITE_CC_STUDIO_CLAUDE_BINARY", "");
+    mocks.invoke.mockImplementation(async (_command, args) => args.paths);
+    vi.resetModules();
+    const paths = await import("./providerBinaryPaths");
+    await paths.initializeProviderBinaryPaths();
+    expect(paths.runtimeProviderBinaryPath("claude")).toBeNull();
+    expect(paths.isCcStudioClaudeRuntime()).toBe(false);
+  });
+
   it("repairs malformed storage when saving a path", () => {
     let stored = "not json";
     vi.mocked(localStorage.getItem).mockImplementation(() => stored);

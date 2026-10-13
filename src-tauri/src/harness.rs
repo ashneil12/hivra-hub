@@ -2100,7 +2100,7 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
         return Err("Antigravity ACP server overrides are not supported on Windows.".into());
     }
     let names: &[&str] = match provider {
-        "claude" => &["claude"],
+        "claude" => &["claude", "cc-studio-claude"],
         "codex" => &["codex"],
         "cursor" => &["cursor-agent", "agent"],
         "grok" => &["grok"],

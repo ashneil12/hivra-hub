@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+const studioRuntime = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../../providers/model/providerBinaryPaths", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../providers/model/providerBinaryPaths")>(),
+  isCcStudioClaudeRuntime: () => studioRuntime.enabled,
+}));
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newSession, type HarnessId } from "./session";
 import {
   MODELS,
@@ -418,6 +423,25 @@ describe("live catalog overlays", () => {
     ]);
     expect(hasLiveCatalog("pi")).toBe(true);
     expect(hasLiveCatalog("omp")).toBe(false);
+  });
+
+  it("fails clearly for a saved proxy route when a native Claude binary is configured", () => {
+    studioRuntime.enabled = false;
+    try {
+      expect(() => nativeModelId("claude:ccstudio:opencode-go:deepseek-v4.1-flash")).toThrow("requires the CC Studio Claude launcher");
+    } finally { studioRuntime.enabled = true; }
+  });
+
+  it("preserves CC Studio upstream IDs through live and unknown saved model resolution", () => {
+    const nativeId = "ccstudio:opencode-go:deepseek-v4.1-flash";
+    const id = `claude:${nativeId}`;
+    const model: AgentModel = { id, harness: "claude", name: "CC · OpenCode Go · DeepSeek V4.1 Flash", nativeId };
+    setHarnessModels("claude", [model]);
+    expect(nativeModelId(model)).toBe(nativeId);
+    expect(nativeModelId(id)).toBe(nativeId);
+    resetHarnessModelOverlays();
+    expect(nativeModelId(id)).toBe(nativeId);
+    expect(nativeModelId(resolveModel("claude", id))).toBe(nativeId);
   });
 
   it("keeps saved Claude versions distinct from a live alias", () => {

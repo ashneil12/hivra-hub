@@ -57,6 +57,14 @@ import {
 
 const CLOCK_MS = 30_000;
 
+export function ccStudioUpstreamLabel(session?: UsageFooterSession): string | null {
+  if (session?.harness !== "claude") return null;
+  const model = session.model?.replace(/^claude:/, "") ?? "";
+  if (model.startsWith("ccstudio:deepseek:")) return "DeepSeek API";
+  if (model.startsWith("ccstudio:opencode-go:")) return "OpenCode Go";
+  return null;
+}
+
 export type UsageFooterSession = {
   id?: string;
   harness: HarnessId;
@@ -194,7 +202,8 @@ export function UsageChips({
   fallback?: ReactNode;
   variant?: UsageChipVariant;
 }) {
-  const wantClaude = providers.includes("claude");
+  const upstreamLabel = ccStudioUpstreamLabel(session);
+  const wantClaude = !upstreamLabel && providers.includes("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
   const wantDevin = providers.includes("devin");
@@ -438,6 +447,9 @@ export function UsageChips({
       }
     : {};
 
+  if (upstreamLabel) {
+    return <span title="Claude Code runs through this upstream. Native Anthropic subscription usage does not apply." className="px-1">{upstreamLabel}</span>;
+  }
   if (session?.harness === "pi") {
     return (
       <PiUsage

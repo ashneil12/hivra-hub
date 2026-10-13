@@ -1,3 +1,4 @@
+import { isCcStudioClaudeRuntime } from "../../../../features/providers/model/providerBinaryPaths";
 import { homeDir } from "../../../../platform/tauri/fs";
 import {
   setHarnessModels,
@@ -113,6 +114,28 @@ function contextWindow(defaultValue: "200k" | "1m"): ModelSetting {
       { value: "1m", label: "1M" },
     ],
   };
+}
+
+/** CC Studio routes these model IDs through the selected upstream while keeping
+ * Claude Code as the harness. No credentials are part of the catalog. */
+export const CC_STUDIO_MODEL_CATALOG: AgentModel[] = [
+  { provider: "opencode-go", model: "deepseek-v4.1-flash", name: "CC · OpenCode Go · DeepSeek V4.1 Flash" },
+  { provider: "opencode-go", model: "deepseek-flash", name: "CC · OpenCode Go · DeepSeek Flash" },
+  { provider: "deepseek", model: "deepseek-v4-flash", name: "CC · DeepSeek API · V4 Flash" },
+  { provider: "deepseek", model: "deepseek-v4-pro", name: "CC · DeepSeek API · V4 Pro" },
+  { provider: "deepseek", model: "deepseek-chat", name: "CC · DeepSeek API · Chat" },
+  { provider: "deepseek", model: "deepseek-reasoner", name: "CC · DeepSeek API · Reasoner" },
+].map(({ provider, model, name }) => ({
+  id: `claude:ccstudio:${provider}:${model}`,
+  harness: "claude",
+  name,
+  nativeId: `ccstudio:${provider}:${model}`,
+}));
+
+export function withCcStudioModels(models: AgentModel[]): AgentModel[] {
+  if (!isCcStudioClaudeRuntime()) return models.filter((model) => !model.nativeId?.startsWith("ccstudio:"));
+  const nativeIds = new Set(models.map((model) => model.nativeId));
+  return [...models, ...CC_STUDIO_MODEL_CATALOG.filter((model) => !nativeIds.has(model.nativeId))];
 }
 
 /** Fallback catalog when `list_models` is unavailable. */
@@ -242,8 +265,8 @@ export async function discoverClaudeModels(
       return [];
     },
   );
-  if (listed.length > 0) return listed;
-  return discoverViaVersion(workingDirectory);
+  if (listed.length > 0) return withCcStudioModels(listed);
+  return withCcStudioModels(await discoverViaVersion(workingDirectory));
 }
 
 async function discoverViaListModels(
@@ -544,7 +567,7 @@ function claudeLaunchId(valueId: string, resolvedId: string): string {
 export function modelsForClaudeVersion(
   version: string | null | undefined,
 ): AgentModel[] {
-  return CLAUDE_MODEL_CATALOG.filter((model) => {
+  return withCcStudioModels(CLAUDE_MODEL_CATALOG.filter((model) => {
     const slug = model.nativeId ?? "";
     if (slug === "claude-opus-5-5") {
       return version
@@ -577,5 +600,5 @@ export function modelsForClaudeVersion(
         : false;
     }
     return true;
-  });
+  }));
 }

@@ -1,4 +1,6 @@
-import { modelsFor } from "../../../../features/sessions/model/models";
+import { isCcStudioClaudeRuntime } from "../../../../features/providers/model/providerBinaryPaths";
+import { loadProjectProviderSettings } from "../../../../features/sessions/model/projectProviders";
+import { modelsFor, nativeModelId } from "../../../../features/sessions/model/models";
 import {
   killChild,
   resolveClaudeBinary,
@@ -98,9 +100,16 @@ function textSettings(
   };
 }
 
-function pickTextModel(requested?: string): string {
+export function pickTextModel(requested?: string, cwd?: string): string {
   const selected = requested?.trim();
-  if (selected) return selected;
+  if (selected) return nativeModelId(selected.startsWith("claude:") ? selected : { id: selected, nativeId: selected, harness: "claude", name: selected });
+  const project = loadProjectProviderSettings(cwd);
+  const projectModel = project.models?.claude ||
+    (project.defaultHarness === "claude" ? project.defaultModel : undefined);
+  if (projectModel) return nativeModelId(projectModel);
+  if (isCcStudioClaudeRuntime()) {
+    throw new Error("Auxiliary generation skipped: choose a Claude upstream model for this project or provide the originating session model.");
+  }
   const models = modelsFor("claude");
   const haiku = models.find((model) =>
     /haiku/i.test(`${model.nativeId ?? ""} ${model.name} ${model.id}`),
@@ -157,7 +166,7 @@ async function promptOnLive(input: {
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   input.signal?.throwIfAborted();
-  const model = pickTextModel(input.model);
+  const model = pickTextModel(input.model, input.cwd);
   const settings = textSettings(model, input.modelSettings, input.intent);
   const session = await ensureLive(
     input.cwd,
@@ -235,7 +244,7 @@ async function ensureLive(
   requestedModel?: string,
   requestedSettings?: TextSettings,
 ): Promise<LiveText> {
-  const model = pickTextModel(requestedModel);
+  const model = pickTextModel(requestedModel, cwd);
   const settings = requestedSettings ?? textSettings(model);
   if (
     live &&
@@ -254,7 +263,7 @@ async function ensureLive(
 async function startLive(
   cwd: string,
   providerAccountId?: string,
-  model = pickTextModel(),
+  model = pickTextModel(undefined, cwd),
   settings = textSettings(model),
 ): Promise<LiveText> {
   const { path } = await resolveClaudeBinary();

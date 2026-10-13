@@ -5,6 +5,15 @@ export type ConfigurableBinaryProvider = HarnessId;
 
 const STORAGE_KEY = "monocode.providerBinaryPaths.v1";
 
+// The CC Studio build supplies its wrapper. Other builds retain normal CLI lookup.
+const ccStudioBinary = import.meta.env.VITE_CC_STUDIO_CLAUDE_BINARY?.trim();
+
+function effectiveBinaryPaths(): StoredBinaryPaths {
+  const paths = readProviderBinaryPaths();
+  if (ccStudioBinary && !paths.claude?.trim()) paths.claude = ccStudioBinary;
+  return paths;
+}
+
 type StoredBinaryPaths = Partial<Record<ConfigurableBinaryProvider, string>>;
 
 function readProviderBinaryPaths(): StoredBinaryPaths {
@@ -21,11 +30,11 @@ function readProviderBinaryPaths(): StoredBinaryPaths {
   }
 }
 
-const runtimeBinaryPaths = readProviderBinaryPaths();
+const runtimeBinaryPaths = effectiveBinaryPaths();
 
 export async function initializeProviderBinaryPaths(): Promise<void> {
   const active = await invoke<StoredBinaryPaths>("harness_runtime_binary_paths", {
-    paths: readProviderBinaryPaths(),
+    paths: effectiveBinaryPaths(),
   });
   for (const provider of Object.keys(runtimeBinaryPaths)) {
     delete runtimeBinaryPaths[provider as ConfigurableBinaryProvider];
@@ -43,7 +52,7 @@ export function runtimeProviderBinaryPath(
 export function loadProviderBinaryPath(
   provider: ConfigurableBinaryProvider,
 ): string | null {
-  const path = readProviderBinaryPaths()[provider];
+  const path = effectiveBinaryPaths()[provider];
   return typeof path === "string" && path.trim() ? path.trim() : null;
 }
 
@@ -67,4 +76,13 @@ export function saveProviderBinaryPath(
   } catch {
     return false;
   }
+}
+
+/** Proxy model IDs are valid only for the CC Studio launcher, never stock CC. */
+export function isCcStudioClaudeRuntime(): boolean {
+  const path = runtimeProviderBinaryPath("claude");
+  return !!path && (
+    path === ccStudioBinary ||
+    /(?:^|[\\/])cc-studio-claude$/.test(path)
+  );
 }

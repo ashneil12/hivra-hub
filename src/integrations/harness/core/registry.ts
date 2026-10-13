@@ -21,6 +21,7 @@ import type {
 } from "./types";
 
 export type TitleInput = {
+  model?: string;
   sessionId: string;
   cwd: string;
   message: string;

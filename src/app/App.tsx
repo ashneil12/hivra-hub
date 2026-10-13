@@ -7510,6 +7510,7 @@ function Workspace({
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
         void generateHarnessTitle(current.harness, {
+          model: current.harness === "claude" ? current.model : undefined,
           sessionId,
           cwd: workCwd,
           message: titleMessage,

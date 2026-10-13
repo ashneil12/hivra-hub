@@ -1,3 +1,4 @@
+import { isCcStudioClaudeRuntime } from "../../providers/model/providerBinaryPaths";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
@@ -366,6 +367,10 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
       (model) => (model.nativeId ?? nativeIdFrom(model.id)) === slug,
     );
     if (byNative) return byNative;
+    // Preserve a saved upstream route before the CC Studio catalog refreshes.
+    if (harness === "claude" && slug.startsWith("ccstudio:")) {
+      return { id, harness, name: `CC Studio · ${slug.slice("ccstudio:".length)}`, nativeId: slug };
+    }
     // Keep moving Claude aliases as aliases until the CLI advertises them.
     if (harness === "claude" && /^(opus|sonnet|haiku)$/.test(slug)) {
       return {
@@ -484,6 +489,7 @@ export function nativeModelId(model: AgentModel | string): string {
 function nativeIdForUnknownKey(id: string): string {
   const trimmed = id.trim();
   const slug = nativeIdFrom(trimmed);
+  if (slug.startsWith("ccstudio:")) return checkedCcStudioNativeId(slug);
   const colon = trimmed.indexOf(":");
   const harness = colon >= 0 ? trimmed.slice(0, colon).toLowerCase() : "";
   // Picker keys can use dotted versions (`opus-4.8`), while Claude's CLI
@@ -498,8 +504,21 @@ function nativeIdForUnknownKey(id: string): string {
  * (`opus-5-5` is invalid; `claude-opus-5-5` and the alias `opus` both work).
  * Live `list_models` can still advertise the short form as `value`.
  */
+function checkedCcStudioNativeId(native: string): string {
+  if (!isCcStudioClaudeRuntime()) {
+    throw new Error("This saved upstream model requires the CC Studio Claude launcher. Select a native Claude model or restore the CC Studio binary in Provider settings.");
+  }
+  return native;
+}
+
 function claudeNativeId(harness: HarnessId, native: string): string {
-  if (harness !== "claude" || !native || native.startsWith("claude-")) {
+  if (harness === "claude" && native.startsWith("ccstudio:")) return checkedCcStudioNativeId(native);
+  if (
+    harness !== "claude" ||
+    !native ||
+    native.startsWith("claude-") ||
+    native.startsWith("ccstudio:")
+  ) {
     return native;
   }
   return /\d/.test(native) ? `claude-${native}` : native;
