@@ -12,12 +12,17 @@ export function ChangesPage() {
       {list.map((p) => (
         <div key={p.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
           <div className="min-w-0 flex-1">
-            <div className={`truncate text-[13px] ${p.status === "undone" ? "text-content/60" : "text-content"}`}>{p.title}</div>
+            <div className={`truncate text-[13px] ${p.status === "applied" ? "text-content" : "text-content/60"}`}>{p.title}</div>
+            {p.status === "rejected" && p.blocked ? (
+              <div className="text-[13px] leading-5 text-content/60" data-hub-change-rejected>
+                Turned down automatically: breaks “{p.blocked.rule}”. {p.blocked.reason}
+              </div>
+            ) : null}
             <div className="truncate text-[13px] text-content/60">
               {name(p.projectId)} · by {p.by} · {p.appliedAt}
             </div>
           </div>
-          {p.status === "undone" ? (
+          {p.status === "rejected" ? null : p.status === "undone" ? (
             <span className="text-xs text-content/60">Undone</span>
           ) : (
             <button type="button" data-hub-change-undo={p.id} onClick={() => undoProposal(p.id)}

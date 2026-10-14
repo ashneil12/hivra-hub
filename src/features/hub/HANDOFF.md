@@ -27,6 +27,14 @@ per-page stores in `model/` (mock data, labelled "Example:").
 - Apply/Undo only change the proposal's status in the mock; the real
   edit-dashboard skill must perform and revert the actual change.
 - Settings → Changes lists applied and undone changes with Undo.
+- **Rule-breaking proposals never reach Ash.** The app turns them down
+  automatically (`status: "rejected"`): not in the waiting list or counts, no
+  proposal page. They appear only in Settings → Changes as "Turned down
+  automatically: breaks "<rule>"" with the reason, and no Undo.
+- **A valid proposal is a Need.** It shares the 5-Needs cap per project; when a
+  project already has 5 Needs, the proposal goes under Later like any other
+  Need (`laterItems`). There is no separate "waiting" state. Mock: Operator OS
+  has 5 Needs, and its Hiring card proposal (p4) is under Later.
 
 ## Focus on 'Take a look'
 - `HubSelection.focus` carries a refId; GroupChatView opens the conversation

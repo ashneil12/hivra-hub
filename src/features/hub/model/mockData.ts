@@ -17,6 +17,11 @@ const SECTIONS: Record<string, ProjectItem[]> = {
 };
 
 const NEEDS: Need[] = [
+  { id: "o1", projectId: "operator-os", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionLabel: "Open" },
+  { id: "o2", projectId: "operator-os", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionLabel: "Open" },
+  { id: "o3", projectId: "operator-os", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionLabel: "Open" },
+  { id: "o4", projectId: "operator-os", title: "Example: pick the offsite dates", why: "Three options; everyone else has voted.", actionType: "open", actionLabel: "Open" },
+  { id: "o5", projectId: "operator-os", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionLabel: "Open" },
   { id: "n1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
   { id: "n2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
   { id: "n3", projectId: "hivra", title: "Example: pick the waitlist headline", why: "Two versions tested about the same. Your taste call.", actionType: "open", actionLabel: "Open" },
@@ -58,7 +63,7 @@ export const mockHubData: HubDataSource = {
   sinceSummary: (projectId) => ({
     plainText: projectId
       ? (SINCE[projectId] ?? "Example: quiet since you were last here.")
-      : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Nibbii and Operator OS were quiet.",
+      : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Operator OS has five decisions for you. Nibbii was quiet.",
     details: "Example details.",
   }),
   listNeeds: (projectId) => NEEDS.filter((n) => !projectId || n.projectId === projectId),

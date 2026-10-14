@@ -19,7 +19,8 @@ export type Proposal = {
   blocked?: { rule: string; reason: string };
   before: PreviewSketch;
   after: PreviewSketch;
-  status: "pending" | "applied" | "dismissed" | "undone";
+  /** "rejected" = turned down automatically for breaking a design rule; never shown to Ash. */
+  status: "pending" | "applied" | "dismissed" | "undone" | "rejected";
   appliedAt?: string;
 };
 
@@ -49,13 +50,22 @@ let proposals: Proposal[] = [
     after: { heading: "EXO game sidebar", rows: [{ text: "Coding team" }, { text: "Builds & playtests", moved: true }, { text: "Leadership team" }, { text: "Being built" }] },
   },
   {
-    id: "p3", projectId: "exo-game", by: "Design critic", status: "pending",
+    id: "p3", projectId: "exo-game", by: "Design critic", status: "rejected", appliedAt: "Today 7:48pm",
     title: "Example: give Stuck rows an orange glowing edge",
     why: "Example: so stuck work is harder to miss.",
     checked: [RULES.needs, RULES.example],
     blocked: { rule: RULES.edges, reason: "Stuck is shown by a 14px amber ring and the word 'Stuck'. Edges and glow are not allowed anywhere." },
     before: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck" }, { text: "Play Areas 1 and 2" }] },
     after: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck, with orange glowing edge", isNew: true }, { text: "Play Areas 1 and 2" }] },
+  },
+  {
+    // Operator OS already has 5 Needs, so this valid proposal waits under Later.
+    id: "p4", projectId: "operator-os", by: "Chief of Staff", status: "pending",
+    title: "Example: add a Hiring card to Operator OS's Today",
+    why: "Example: three open roles move every day.",
+    checked: [RULES.colour, RULES.edges, RULES.needs, RULES.example],
+    before: { heading: "Operator OS · Today", rows: [{ text: "Since 2pm" }, { text: "Approve the Q4 hiring plan" }] },
+    after: { heading: "Operator OS · Today", rows: [{ text: "Since 2pm" }, { text: "Hiring: 3 open roles", isNew: true }, { text: "Approve the Q4 hiring plan" }] },
   },
   {
     id: "p0", projectId: "hivra", by: "Monocode", status: "applied", appliedAt: "Yesterday 6:12pm",
@@ -88,15 +98,21 @@ export function useProposalsVersion(): number {
   );
 }
 
+/** Rule-breaking proposals never reach Ash: the app turns them down itself. */
+function autoReject(): void {
+  proposals = proposals.map((p) => (p.blocked && p.status === "pending" ? { ...p, status: "rejected", appliedAt: p.appliedAt ?? "Just now" } : p));
+}
+autoReject();
+
 export function pendingProposals(projectId: string): Proposal[] {
-  return proposals.filter((p) => p.projectId === projectId && p.status === "pending");
+  return proposals.filter((p) => p.projectId === projectId && p.status === "pending" && !p.blocked);
 }
 export function getProposal(id: string): Proposal | undefined {
   return proposals.find((p) => p.id === id);
 }
-/** Applied and undone changes, newest first. */
+/** Applied, undone and auto-rejected changes, newest first. */
 export function pastChanges(): Proposal[] {
-  return proposals.filter((p) => p.status === "applied" || p.status === "undone");
+  return proposals.filter((p) => p.status === "applied" || p.status === "undone" || p.status === "rejected");
 }
 
 function set(id: string, patch: Partial<Proposal>): void {

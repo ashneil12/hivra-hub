@@ -29,18 +29,34 @@ export const MAX_NEEDS = 5;
 
 type Provider = (projectId: string) => WaitingItem[];
 
+// Needs and valid proposals share the cap: a proposal is a Need. Beyond
+// MAX_NEEDS per project the rest go under Later, like any other Need.
+function needsAndProposals(pid: string): WaitingItem[] {
+  const needs = hubData().listNeeds(pid).filter((n) => !n.later).map((n): WaitingItem => ({
+    id: n.id, projectId: pid, source: "inbox", title: n.title, detail: n.why, need: n,
+  }));
+  const props = pendingProposals(pid).map((p): WaitingItem => ({
+    id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
+    detail: `Proposed by ${p.by}`, actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
+  }));
+  return [...needs, ...props];
+}
+
+/** Needs and proposals over the cap: waiting under Later, not counted. */
+export function laterItems(projectId: string): WaitingItem[] {
+  return needsAndProposals(projectId).slice(MAX_NEEDS);
+}
+
 const PROVIDERS: Provider[] = [
-  // Inbox: Needs and stuck items from the data source.
-  (pid) => [
-    ...hubData().listStuck(pid).map((s): WaitingItem => ({
+  // Inbox stuck items.
+  (pid) =>
+    hubData().listStuck(pid).map((s): WaitingItem => ({
       id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state,
       // Stuck items are talked through with the project's leadership team.
       target: { project: pid, item: "leadership-team", focus: s.id },
     })),
-    ...hubData().listNeeds(pid).filter((n) => !n.later).slice(0, MAX_NEEDS).map((n): WaitingItem => ({
-      id: n.id, projectId: pid, source: "inbox", title: n.title, detail: n.why, need: n,
-    })),
-  ],
+  // Needs plus valid proposals, at most MAX_NEEDS; the rest are Later.
+  (pid) => needsAndProposals(pid).slice(0, MAX_NEEDS),
   // Builds & playtests: failed builds that are stuck or gave up.
   (pid) =>
     listBuilds(pid).filter((b) => b.status === "failed" && b.stuck).map((b): WaitingItem => ({
@@ -52,13 +68,6 @@ const PROVIDERS: Provider[] = [
     activeWorkers(pid).filter((w) => w.stuck && !w.waitingId).map((w): WaitingItem => ({
       id: `worker:${w.id}`, projectId: pid, source: "being-built", state: w.stuck,
       title: `${w.who}: ${w.doing}`, detail: w.steps[0]?.text ?? "", target: { project: pid, item: "being-built" },
-    })),
-  // Self-change proposals: one item each.
-  (pid) =>
-    pendingProposals(pid).map((p): WaitingItem => ({
-      id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
-      detail: p.blocked ? `Blocked: ${p.blocked.rule}` : `Proposed by ${p.by}`,
-      actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
     })),
 ];
 

@@ -1,5 +1,5 @@
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { Check, Sparkles } from "../../../shared/ui/icons";
+import { ArrowLeft, Check } from "../../../shared/ui/icons";
 import {
   applyProposal,
   dismissProposal,
@@ -9,6 +9,7 @@ import {
   type PreviewSketch,
 } from "../model/proposals";
 import { hubData } from "../model/hubData";
+import { setHubSelection } from "../model/hubNav";
 
 const QUIET = "rounded-md px-2.5 py-1 text-xs text-content/60 hover:bg-content/8 hover:text-content";
 
@@ -20,7 +21,15 @@ export function ProposalView({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-hub-proposal={id}>
       <div className="flex h-10 shrink-0 select-none items-center gap-2 border-b border-stroke px-3" data-tauri-drag-region="deep">
-        <Sparkles className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+        <button
+          type="button"
+          title="Back"
+          aria-label="Back"
+          onClick={() => setHubSelection({ project: p?.projectId ?? "today", item: "inbox" })}
+          className="grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
+        >
+          <ArrowLeft className="size-3.5" strokeWidth={1.75} />
+        </button>
         <span className="min-w-0 truncate text-[13px] text-content">Proposed change{project ? ` · ${project}` : ""}</span>
         {IS_MAC ? null : <div className="ml-auto w-[120px]" />}
       </div>
@@ -46,27 +55,8 @@ export function ProposalView({ id }: { id: string }) {
                   <Check className="size-3.5 text-content/60" strokeWidth={2} /> {r}
                 </div>
               ))}
-              {p.blocked ? (
-                <div className="flex items-start gap-2 pt-1 text-[13px] text-content" data-hub-proposal-blocked>
-                  <span className="mt-[3px] size-3.5 shrink-0 rounded-full border-2 border-red-500" aria-hidden />
-                  <span>
-                    Breaks “{p.blocked.rule}”. {p.blocked.reason}
-                  </span>
-                </div>
-              ) : null}
             </section>
             {p.status === "pending" ? (
-              p.blocked ? (
-                <div className="flex items-center gap-3">
-                  <span className="text-[13px] text-content/60">Blocked, so it can't be applied.</span>
-                  <button type="button" disabled className="rounded-md bg-content/12 px-3 py-1.5 text-[13px] text-content opacity-40">
-                    Apply
-                  </button>
-                  <button type="button" data-hub-not-now onClick={() => dismissProposal(p.id)} className={QUIET}>
-                    Not now
-                  </button>
-                </div>
-              ) : (
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -80,7 +70,6 @@ export function ProposalView({ id }: { id: string }) {
                     Not now
                   </button>
                 </div>
-              )
             ) : p.status === "applied" ? (
               <div className="flex items-center gap-1 text-[13px] text-content/60" data-hub-applied>
                 Applied ·

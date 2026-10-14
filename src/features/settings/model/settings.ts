@@ -30,7 +30,8 @@ export type SettingsSectionId =
   | "inbox"
   | "worktrees"
   | "archive"
-  | "changes";
+  | "changes"
+  | "dashboards";
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -79,8 +80,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "changes",
     group: "app",
     label: "Changes",
-    description: "Changes the app and your Monos made to their own screens, each with Undo.",
+    description: "Changes the app and your Monos made to their own screens, with Undo, and any it turned down for breaking a design rule.",
     keywords: "undo proposal self change dashboard history design rules",
+  },
+  {
+    id: "dashboards",
+    group: "app",
+    label: "Dashboards",
+    description: "Each project's dashboard template, reset to default, and export or restore your whole setup.",
+    keywords: "template dashboard today cards sidebar reset export import restore backup setup",
   },
   {
     id: "keybindings",

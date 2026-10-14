@@ -1,7 +1,7 @@
 import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { hubData, sinceLabel } from "../model/hubData";
-import { waitingOnAsh, type WaitingItem } from "../model/waiting";
+import { laterItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import type { Need } from "../model/types";
@@ -98,6 +98,11 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
               {pOther.map((w) => (
                 <StuckRow key={w.id} item={w} />
               ))}
+              {laterItems(p.id).length ? (
+                <div className="px-2 pt-1 text-xs text-content/60" data-hub-later>
+                  {laterItems(p.id).length} more under Later
+                </div>
+              ) : null}
             </div>
           </section>
         );
