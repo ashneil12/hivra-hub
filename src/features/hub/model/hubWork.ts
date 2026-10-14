@@ -36,7 +36,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w4", projectId: "exo-game", who: "Design critic", kind: "mono", minutes: 35, finishedAt: "4:20pm",
+    id: "w4", projectId: "exo-game", who: "Critiquito", kind: "mono", minutes: 35, finishedAt: "4:20pm",
     doing: "Example: reviewed the Area 3 layout", steps: [{ id: "1", at: "4:20pm", text: "Example: left three notes on Area 3" }],
   },
   {

@@ -51,7 +51,7 @@ let proposals: Proposal[] = examples([
     after: { heading: "EXO game sidebar", rows: [{ text: "Coding team" }, { text: "Builds & playtests", moved: true }, { text: "Leadership team" }, { text: "Being built" }] },
   },
   {
-    id: "p3", projectId: "exo-game", by: "Design critic", status: "rejected", appliedAt: "Today 7:48pm",
+    id: "p3", projectId: "exo-game", by: "Critiquito", status: "rejected", appliedAt: "Today 7:48pm",
     title: "Example: give Stuck rows an orange glowing edge",
     why: "Example: so stuck work is harder to miss.",
     checked: [RULES.needs, RULES.example],

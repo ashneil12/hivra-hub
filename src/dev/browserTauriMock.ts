@@ -27,7 +27,7 @@ if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getIt
       { id: "playtester", name: "Playtester", mascot: "ghost", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
       { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/exo-game", "/Users/ash/harness/hivra"] },
       { id: "projects-manager", name: "Projects Manager", mascot: "crab", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "design-critic", name: "Design critic", mascot: "mushroom", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
+      { id: "design-critic", name: "Critiquito", mascot: "mushroom", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
       { id: "growth-lead", name: "Growth lead", mascot: "rocket", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/hivra"] },
       { id: "hivra-mailer", name: "Hivra mailer", mascot: "cat", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/hivra"] },
     ]),
