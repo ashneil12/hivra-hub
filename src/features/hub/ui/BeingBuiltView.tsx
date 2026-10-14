@@ -3,14 +3,19 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData } from "../model/hubData";
 import { setHubSelection } from "../model/hubNav";
-import { activeWorkers, durationLabel, finishedToday, getWorker } from "../model/hubWork";
+import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, lastActiveLabel, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
-import { StatusMark } from "./StatusMark";
 import { findWaiting } from "../model/waiting";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
-  const [openId, setOpenId] = useState<string | null>(null);
+  useWorkVersion();
+  const [openId, setOpenIdRaw] = useState<string | null>(null);
+  const setOpenId = (id: string | null) => {
+    if (openId) archiveIfSeen(openId);
+    if (id) markSeen(id);
+    setOpenIdRaw(id);
+  };
   const [showDone, setShowDone] = useState(false);
   const open = openId ? getWorker(openId) : undefined;
   const active = activeWorkers(projectId);
@@ -28,7 +33,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
         ) : (
           <Wrench className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
         )}
-        <span className="min-w-0 truncate text-[13px] text-content">{open ? open.who : "Being built"}</span>
+        <span className="min-w-0 truncate text-[13px] text-content">{open ? open.doing : "Being built"}</span>
         {IS_MAC ? null : <div className="ml-auto w-[120px]" />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -37,8 +42,13 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
         ) : active.length || done.length ? (
           <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-8 py-8">
             {active.length ? (
-              <div className="flex flex-col gap-0.5">
-                {active.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} />)}
+              <div className="flex flex-col gap-4">
+                {byMono(active).map(([mono, jobs]) => (
+                  <div key={mono} className="flex flex-col gap-0.5" data-hub-mono-jobs={mono}>
+                    <div className="px-3 text-xs text-content/60">{mono}</div>
+                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} />)}
+                  </div>
+                ))}
               </div>
             ) : (
               <p className="px-3 text-[13px] text-content/60">Nobody's working on {projectName} right now.</p>
@@ -58,7 +68,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
             <div className="flex max-w-[420px] flex-col items-center gap-2 text-center">
               <p className="text-[13px] text-content">Nobody's working on {projectName} right now.</p>
               <p className="text-[13px] leading-5 text-content/60">
-                When the coding team or a Mono starts on something, it shows up here as one line: who, what they're doing, and for how long.
+                When a Mono starts a job, it shows up here under that Mono: what the job is, and for how long.
               </p>
             </div>
           </div>
@@ -72,12 +82,14 @@ function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) 
   return (
     <div role="button" tabIndex={0} data-hub-worker={w.id} onClick={() => onOpen(w.id)}
       onKeyDown={(e) => e.key === "Enter" && onOpen(w.id)}
-      className="flex cursor-default items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
-      <span className="w-32 shrink-0 truncate text-[13px] text-content">{w.who}</span>
-      <span className={`min-w-0 flex-1 truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content/85"}`}>{w.doing}</span>
-      {w.stuck ? <StatusMark state={w.stuck} /> : null}
-      <span className="shrink-0 text-xs text-content/60">
-        {w.finishedAt ? `Done ${w.finishedAt}` : `for ${durationLabel(w.minutes)}`}
+      className="hub-fade-in flex cursor-default items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
+      <span className={`min-w-0 flex-1 truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
+        {w.doing}
+        {w.finishedAt ? <span className="text-content/60"> · {w.who}</span> : null}
+      </span>
+      <JobStateLabel w={w} />
+      <span className="w-14 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active title={w.finishedAt ? undefined : `At it for ${durationLabel(w.minutes)}`}>
+        {lastActiveLabel(w)}
       </span>
       {w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}
     </div>
@@ -93,10 +105,10 @@ function Activity({ worker }: { worker: Worker }) {
           <div className="text-[15px] text-content">{worker.doing}</div>
           <div className="flex items-center gap-1.5 text-[13px] text-content/60">
             {live ? <span className="size-1.5 animate-pulse rounded-full bg-content/60" /> : null}
-            {worker.finishedAt ? `Finished ${worker.finishedAt}` : `${live ? "Working" : "At it"} for ${durationLabel(worker.minutes)}`}
+            {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
           </div>
         </div>
-        {worker.stuck ? <StatusMark state={worker.stuck} /> : null}
+        <JobStateLabel w={worker} />
         {worker.stuck ? <WorkerTakeLook w={worker} /> : null}
         {worker.kind === "coding" ? (
           <button type="button" data-hub-open-coding onClick={() => setHubSelection({ project: worker.projectId, item: "coding-team" })}
@@ -135,4 +147,42 @@ function WorkerTakeLook({ w: worker }: { w: Worker }) {
       Take a look
     </button>
   );
+}
+
+/** Jobs grouped under the Mono running them, in first-seen order. */
+function byMono(jobs: Worker[]): [string, Worker[]][] {
+  const m = new Map<string, Worker[]>();
+  for (const j of jobs) m.set(j.who, [...(m.get(j.who) ?? []), j]);
+  return [...m.entries()];
+}
+
+/** Calm state text. Stuck = amber circle (still fixing itself). Needs you is the
+ * one soft badge. Lead gave up = red Stuck with the reason (Ash's default). Done (not seen) = small dot. */
+function JobStateLabel({ w }: { w: Worker }) {
+  const st = jobState(w);
+  const reason = w.stuckReason ? w.stuckReason.replace(/^Example: /, "") : "";
+  if (st === "needs_you")
+    return (
+      <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
+        <span className="shrink-0 rounded-full bg-content/10 px-2 py-0.5 text-content">Needs you</span>
+        {reason ? <span className="truncate text-content/60">{reason}</span> : null}
+      </span>
+    );
+  if (st === "stuck" || st === "gave_up")
+    return (
+      <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
+        <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden className="shrink-0">
+          <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={st === "gave_up" ? "rgb(239 68 68)" : "rgb(245 158 11)"} />
+        </svg>
+        <span className="truncate">Stuck{reason ? `: ${reason}` : ""}</span>
+      </span>
+    );
+  if (st === "done_unseen")
+    return (
+      <span data-hub-job-state={st} className="flex shrink-0 items-center gap-1.5 text-xs text-content/85">
+        <span className="size-1.5 rounded-full bg-content" aria-label="Not seen yet" />Done
+      </span>
+    );
+  const text = { working: "Working", checking: "Checking", parked: "Parked", done: "Done" }[st];
+  return <span data-hub-job-state={st} className="shrink-0 text-xs text-content/60">{text}</span>;
 }

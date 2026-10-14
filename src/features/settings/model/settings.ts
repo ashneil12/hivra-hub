@@ -31,7 +31,8 @@ export type SettingsSectionId =
   | "worktrees"
   | "archive"
   | "changes"
-  | "dashboards";
+  | "dashboards"
+  | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -89,6 +90,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Dashboards",
     description: "Each project's dashboard template, reset to default, and export or restore your whole setup.",
     keywords: "template dashboard today cards sidebar reset export import restore backup setup",
+  },
+  {
+    id: "connectors",
+    group: "app",
+    label: "Connectors",
+    description: "The apps your Monos use, and where each login lives.",
+    keywords: "connector login sign in composio apps oauth gmail slack github",
   },
   {
     id: "keybindings",

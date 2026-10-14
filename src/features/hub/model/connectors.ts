@@ -55,3 +55,19 @@ export function signIn(id: string): void {
 export function pendingSignIns(): Connector[] {
   return list.filter((c) => !c.signedIn);
 }
+
+// ---- Where logins live. Composio is off by default: every login stays on
+// this Mac. Turning it on moves new logins to Composio's servers.
+const COMPOSIO_KEY = "monocode:hub-composio";
+export function composioOn(): boolean {
+  try { return localStorage.getItem(COMPOSIO_KEY) === "1"; } catch { return false; }
+}
+export function setComposio(on: boolean): void {
+  try { localStorage.setItem(COMPOSIO_KEY, on ? "1" : "0"); } catch { /* best effort */ }
+  version++;
+  window.dispatchEvent(new CustomEvent(EVENT));
+}
+/** All connectors, app-wide. */
+export function allConnectors(): Connector[] {
+  return list;
+}

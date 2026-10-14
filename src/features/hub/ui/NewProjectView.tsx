@@ -1,137 +1,162 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowLeft, Bot, Check, Plus } from "../../../shared/ui/icons";
+import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { setHubSelection } from "../model/hubNav";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
+import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { SHAPES, StripButton } from "./ProjectStrip";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
+const COS = "Chief of Staff";
 
 const QUESTIONS = [
-  { q: "What is it, in a sentence?", example: "Example: a cosy farming game for phones." },
-  { q: "Who is it for?", example: "Example: people who play a little every evening." },
-  { q: "What matters most first?", example: "Example: a first playable build to try with friends." },
+  "What is it, in a sentence?",
+  "Who is it for?",
+  "What matters most first?",
 ];
 
+type Line = { from: "cos" | "ash"; text: string };
+
+/** Best guess at a template from the answers; Ash can change it on the card. */
+function guessTemplate(text: string): TemplateId {
+  const t = text.toLowerCase();
+  if (/game|play|level|player/.test(t)) return "game-studio";
+  if (/team|org|ops|hiring|office/.test(t)) return "org-ops";
+  return "product-saas";
+}
+
 /**
- * New project (onboarding skill): name and template, a few plain questions,
- * then a preview of the project as it will look. Nothing is created until Create.
+ * New project is chat-first: Ash types a name, then Chief of Staff asks a few
+ * questions in chat. It ends on a preview card; nothing exists until Create.
  */
 export function NewProjectView() {
-  const [step, setStep] = useState(0);
   const [name, setName] = useState("");
-  const [tpl, setTpl] = useState<TemplateId>("game-studio");
-  const [answers, setAnswers] = useState<string[]>(QUESTIONS.map(() => ""));
-  const t = TEMPLATES.find((x) => x.id === tpl)!;
+  const [started, setStarted] = useState(false);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [typing, setTyping] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [tpl, setTpl] = useState<TemplateId | null>(null);
+  const [addon, setAddon] = useState(false);
+  const end = useRef<HTMLDivElement>(null);
   const n = name.trim();
+  const done = answers.length >= QUESTIONS.length;
+
+  const cosSays = (text: string, after?: () => void) => {
+    setTyping(true);
+    window.setTimeout(() => {
+      setTyping(false);
+      setLines((l) => [...l, { from: "cos", text }]);
+      after?.();
+    }, 900);
+  };
+
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [lines.length, typing]);
+
+  const start = () => {
+    if (!n) return;
+    setStarted(true);
+    cosSays(`Let's set up ${n}. ${QUESTIONS[0]}`);
+  };
+  const answer = () => {
+    const a = draft.trim();
+    if (!a || typing || done) return;
+    const next = [...answers, a];
+    setAnswers(next);
+    setDraft("");
+    setLines((l) => [...l, { from: "ash", text: a }]);
+    if (next.length < QUESTIONS.length) cosSays(QUESTIONS[next.length]);
+    else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(next.join(" "))));
+  };
 
   const create = () => {
+    if (!tpl) return;
+    const t = TEMPLATES.find((x) => x.id === tpl)!;
     const id = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
     addMockProject({ id, name: n, shortName: n.split(" ")[0], iconShape: t.icon, folder: `/Users/ash/harness/${id}` });
     setTemplate(id, tpl);
     setHubSelection({ project: id, item: "inbox" });
   };
   const cancel = () => setHubSelection({ project: "today", item: "inbox" });
+  const t = tpl ? TEMPLATES.find((x) => x.id === tpl)! : null;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-hub-new-project data-step={step}>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-hub-new-project data-step={!started ? 0 : t ? 2 : 1}>
       <div className="flex h-10 shrink-0 select-none items-center gap-2 border-b border-stroke px-3" data-tauri-drag-region="deep">
-        {step > 0 ? (
-          <button type="button" aria-label="Back" title="Back" onClick={() => setStep(step - 1)}
-            className="grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content">
-            <ArrowLeft className="size-3.5" strokeWidth={1.75} />
-          </button>
-        ) : (
-          <Plus className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-        )}
-        <span className="text-[13px] text-content">{step === 2 ? `New project: ${n}` : "New project"}</span>
+        <Plus className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+        <span className="text-[13px] text-content">{started ? `New project: ${n}` : "New project"}</span>
         {IS_MAC ? null : <div className="ml-auto w-[120px]" />}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[640px] flex-col gap-6 px-8 py-10">
-          {step === 0 ? (
-            <>
-              <label className="flex flex-col gap-1.5">
-                <span className="text-xs text-content/60">Name</span>
-                <input data-hub-new-project-name value={name} onChange={(e) => setName(e.target.value)} placeholder="Example: Moonrise"
-                  className="rounded-md bg-content/5 px-2.5 py-2 text-[13px] text-content outline-none placeholder:text-content/45" />
-              </label>
-              <TemplatePicker value={tpl} onChange={setTpl} />
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={cancel} className={QUIET}>Cancel</button>
-                <button type="button" data-hub-np-next disabled={!n} onClick={() => setStep(1)} className={PRIMARY}>Continue</button>
-              </div>
-            </>
-          ) : null}
-
-          {step === 1 ? (
-            <>
-              <div className="flex flex-col gap-5" data-hub-np-questions>
-                {QUESTIONS.map((x, i) => (
-                  <div key={x.q} className="flex flex-col gap-2">
-                    <div className="flex items-center gap-1.5 text-xs text-content/60"><Bot className="size-3" strokeWidth={1.75} />Lead</div>
-                    <div className="text-[13px] leading-5 text-content">{x.q}</div>
-                    <div className="flex justify-end">
-                      <input
-                        data-hub-np-answer={i}
-                        value={answers[i]}
-                        onChange={(e) => setAnswers(answers.map((a, j) => (j === i ? e.target.value : a)))}
-                        placeholder={x.example}
-                        className="agent-chat-user-bubble w-[80%] rounded-2xl bg-content/10 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/50"
-                      />
+      {!started ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex max-w-[640px] flex-col gap-6 px-8 py-10">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-content/60">Name</span>
+              <input data-hub-new-project-name autoFocus value={name} onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") start(); }} placeholder="Example: Moonrise"
+                className="rounded-md bg-content/5 px-2.5 py-2 text-[13px] text-content outline-none placeholder:text-content/45" />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" className={PRIMARY} disabled={!n} onClick={start}>Continue</button>
+              <button type="button" className={QUIET} onClick={cancel}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto flex max-w-[640px] flex-col gap-4 px-8 py-8" data-hub-new-project-chat>
+              {lines.map((l, i) => (
+                <div key={i} className="hub-fade-in">
+                  <div className="pb-0.5 text-xs text-content/60">{l.from === "cos" ? COS : "You"}</div>
+                  <div className="text-[13px] text-content">{l.text}</div>
+                </div>
+              ))}
+              {t ? (
+                <div className="hub-fade-in flex flex-col gap-4 rounded-xl bg-content/5 p-5" data-hub-new-project-preview>
+                  <div className="flex items-center gap-3">
+                    <StripButton label={n.split(" ")[0]} title={n} selected onClick={() => {}} Icon={SHAPES[t.icon]} />
+                    <div>
+                      <div className="text-[13px] font-medium text-content">{n}</div>
+                      <div className="text-xs text-content/60">{answers[0]}</div>
                     </div>
                   </div>
-                ))}
-              </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setStep(0)} className={QUIET}>Back</button>
-                <button type="button" data-hub-np-next onClick={() => setStep(2)} className={PRIMARY}>See the project</button>
-              </div>
-            </>
-          ) : null}
-
-          {step === 2 ? (
-            <>
-              <p className="text-[13px] leading-5 text-content/75">
-                Here's {n} as it will look. Nothing is made until you press Create project.
-              </p>
-              <div className="grid grid-cols-[auto_1fr] gap-x-8 gap-y-6" data-hub-np-preview>
-                <Label>In the strip</Label>
-                <div className="pointer-events-none -ml-2">
-                  <StripButton label={n.split(" ")[0]} title={n} selected onClick={() => {}} Icon={SHAPES[t.icon]} />
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs text-content/60">Starts as</span>
+                    <TemplatePicker value={t.id} onChange={setTpl} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-content/60">Team</span>
+                    <div className="text-[13px] text-content">{[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].join(", ")}</div>
+                  </div>
+                  <label className="flex cursor-default items-center gap-2 text-[13px] text-content/85" data-hub-addon>
+                    <button type="button" role="checkbox" aria-checked={addon} onClick={() => setAddon(!addon)}
+                      className="grid size-4 place-items-center rounded bg-content/10 text-content">
+                      {addon ? <Check className="size-3" strokeWidth={2} /> : null}
+                    </button>
+                    Also add {ADDON_OFFER.name}: {ADDON_OFFER.what}
+                  </label>
+                  <div className="flex gap-2">
+                    <button type="button" className={PRIMARY} onClick={create} data-hub-create-project>Create project</button>
+                    <button type="button" className={QUIET} onClick={cancel}>Cancel</button>
+                  </div>
                 </div>
-                <Label>Sidebar</Label>
-                <List items={["Coding team", "Leadership team", ...t.sections.map((s) => s.title), "Being built"]} />
-                <Label>Leadership team</Label>
-                <List items={t.leadership} />
-                <Label>Coding team</Label>
-                <List items={t.coding} />
-                <Label>Today</Label>
-                <List items={t.todayCards.slice(1, 4)} />
-              </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" data-hub-np-back onClick={() => setStep(1)} className={QUIET}>Back</button>
-                <button type="button" data-hub-create-project onClick={create} className={PRIMARY}>Create project</button>
-              </div>
-            </>
+              ) : null}
+              <div className="h-5 text-xs text-content/60" aria-live="polite">{typing ? `${COS} is typing…` : null}</div>
+              <div ref={end} />
+            </div>
+          </div>
+          {!done ? (
+            <div className="mx-auto w-full max-w-[640px] shrink-0 px-8 pb-4">
+              <input data-hub-new-project-answer autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") answer(); }} placeholder={`Reply to ${COS}`}
+                className="w-full rounded-lg bg-content/5 px-3 py-2.5 text-[13px] text-content outline-none placeholder:text-content/45" />
+            </div>
           ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <div className="pt-1 text-xs text-content/60">{children}</div>;
-}
-function List({ items }: { items: string[] }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      {items.map((x) => (
-        <div key={x} className="rounded-md px-2 py-1 text-[13px] text-content/85">{x}</div>
-      ))}
+        </>
+      )}
     </div>
   );
 }

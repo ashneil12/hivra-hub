@@ -22,6 +22,8 @@ import {
   removeMember,
   renameChat,
   sendMessage,
+  simulateReplies,
+  typingIn,
   useHubChatsVersion,
 } from "../model/hubChats";
 import { setHubSelection, useHubSelection } from "../model/hubNav";
@@ -212,10 +214,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                     <div
                       key={msg.id}
                       data-hub-msg-ref={msg.refId}
-                      className={`-mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
+                      data-hub-msg-quiet={msg.quiet || undefined}
+                      className={`hub-fade-in -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
                       <div className="pb-0.5 text-xs text-content/60">{nameOf(msg.from)}</div>
-                      <AgentMarkdown text={msg.text} className="text-content" />
+                      <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;
                         if (!w?.state) return null;
@@ -244,6 +247,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             </div>
           </div>
         )}
+        <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
+          {typingIn(chat.id) ? `${nameOf(typingIn(chat.id)!)} is typing…` : null}
+        </div>
         <div className="mx-auto w-full max-w-[760px] shrink-0 px-8 pb-3">
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
@@ -251,6 +257,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             onSubmit={(text) => {
               if (!text.trim()) return false;
               sendMessage(chat.id, text.trim(), conv?.id);
+              simulateReplies(chat.id, conv?.id);
             }}
           />
         </div>

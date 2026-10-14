@@ -1,0 +1,9 @@
+
+## Unit 7 (2026-10-15)
+- **Being built = jobs under Monos.** Rows are jobs ("Fixing the save bug") grouped under the Mono running them; workers/helpers are never shown (and never in the Monos sidebar). States: Working, Checking, Stuck (amber circle + reason; still fixing itself), Lead gave up (red Stuck + reason, Ash-approved default; `monocode:hub-gaveup-style=needs_you` dev flag shows the alternative), Needs you (the only soft badge), Done (not seen: small dot; opening marks seen, leaving archives it), Parked. Each row has a quiet last-active label (Now/2m/1h), updated in place; rows never re-sort. Model: `hubWork.jobState`, `lastActiveLabel`, `markSeen`, `archiveIfSeen`.
+- **New project is chat-first** (`NewProjectView`): name → chat with Chief of Staff (3 questions, "is typing…") → preview card with Create project. Nothing is created before Create. Template guessed from answers, changeable on the card. Critiquito is only an add-on checkbox.
+- **Default team** (`builtInMonos.DEFAULT_TEAM`, template leadership): Chief of Staff, Projects Manager, frank, Alfred.
+- **Bot changes** (`model/botChanges.ts`, Settings → Changes → Bot changes): plain lines, Now/After behind a click, Undo. Small fixes bundled per bot per day. No badge/count; never create Needs or approval cards (approval cards are only for jobs that need Ash).
+- **Settings → Connectors** (`ui/ConnectorsPage.tsx`): each row says where its login lives (on this Mac / on Composio). Composio switch off by default (`monocode:hub-composio`); on shows "Your logins for these apps will be stored on Composio's servers." Mock: the switch relabels all rows; real impl should only move new logins.
+- **Group chats**: picked answerer (mock: first member) shows "<Mono> is typing…", then replies; one extra reply lands quietly underneath (`hubChats.simulateReplies`, `quiet` flag). Real answerer picking is the backend's job.
+- Calm updates: `.hub-fade-in` (opacity only, no movement).

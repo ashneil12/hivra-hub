@@ -34,6 +34,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   archive: Archive,
   changes: Undo2,
   dashboards: DashboardSquare,
+  connectors: Internet,
 };
 
 type Props = {

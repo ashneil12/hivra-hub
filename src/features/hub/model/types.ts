@@ -83,6 +83,8 @@ export type ChatMessage = {
   text: string;
   /** Only stuck or given-up items carry a status. */
   status?: StuckState;
+  /** An extra reply after the picked answerer: lands quietly, no notification. */
+  quiet?: boolean;
   /** The Need or stuck item this message is about (same data as Today). */
   refId?: string;
 };
@@ -148,4 +150,15 @@ export type Worker = {
   waitingId?: string;
   /** Set when finished today. */
   finishedAt?: string;
+  /** Job state when not stuck or finished. Default working. */
+  state?: "working" | "checking" | "needs_you" | "parked";
+  /** Plain reason, shown next to the Stuck mark. */
+  stuckReason?: string;
+  /** Done jobs: opened once (then they archive themselves). */
+  seen?: boolean;
+  /** Minutes since its last activity (0 = now). */
+  activeAgo?: number;
+  archived?: boolean;
 };
+
+export type JobState = "working" | "checking" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked";

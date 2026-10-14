@@ -166,3 +166,39 @@ export function newConversation(chatId: string): string {
   changed();
   return id;
 }
+
+// ---- Replies (room protocol): one picked answerer per message from Ash;
+// others add at most one useful reply, quietly underneath. Mock timing.
+let typing: Record<string, string | undefined> = {};
+export function typingIn(chatId: string): string | undefined {
+  return typing[chatId];
+}
+function setTyping(chatId: string, monoId: string | undefined): void {
+  typing = { ...typing, [chatId]: monoId };
+  changed();
+}
+
+function addReply(chatId: string, from: string, text: string, quiet: boolean, convId?: string): void {
+  chats = chats.map((c) => {
+    if (c.id !== chatId) return c;
+    const msg: ChatMessage = { id: `${Date.now().toString(36)}${from}`, from, text, ...(quiet ? { quiet: true } : {}) };
+    const target = (convId && c.conversations.find((x) => x.id === convId)) || c.conversations[0];
+    if (!target) return c;
+    return { ...c, conversations: c.conversations.map((x) => (x.id === target.id ? { ...x, messages: [...x.messages, msg] } : x)) };
+  });
+  changed();
+}
+
+/** Mock: the picked answerer types, replies; one other member may add a line. */
+export function simulateReplies(chatId: string, convId?: string): void {
+  const chat = getChat(chatId);
+  const [answerer, extra] = chat?.memberIds ?? [];
+  if (!answerer) return;
+  setTyping(chatId, answerer);
+  window.setTimeout(() => {
+    setTyping(chatId, undefined);
+    addReply(chatId, answerer, "Example: on it. I'll put the plan on the board within the hour.", false, convId);
+    if (!extra) return;
+    window.setTimeout(() => addReply(chatId, extra, "Example: I'll check it against the project's needs when it's done.", true, convId), 1600);
+  }, 1800);
+}

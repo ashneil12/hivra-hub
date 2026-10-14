@@ -1,5 +1,6 @@
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
+import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 
 import {
   loadStripBackdrop,
@@ -595,6 +596,7 @@ export function SettingsView({
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
+              {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}
