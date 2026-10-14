@@ -96,3 +96,6 @@ per-page stores in `model/` (mock data, labelled "Example:").
 
 ## Decisions from the technical talk (2026-10-14)
 See /workspace/hub-spec/SPEC.md, the section "Decisions 2026-10-14". Agents are separate, with per-agent update files and only the Lead writing the board; temporary workers show only in Being built; live updates must stay calm.
+
+## Locked 2026-10-14 23:58
+See the end of /workspace/hub-spec/SPEC.md for the locked decisions and the queued frontend rework.
