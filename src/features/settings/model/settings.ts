@@ -29,7 +29,8 @@ export type SettingsSectionId =
   | "monos"
   | "inbox"
   | "worktrees"
-  | "archive";
+  | "archive"
+  | "changes";
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -73,6 +74,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       "Theme, tint, translucency, workspace layout, and conversation backgrounds.",
     keywords:
       "theme dark light color accent glass blur zoom scale wallpaper rail sidebar",
+  },
+  {
+    id: "changes",
+    group: "app",
+    label: "Changes",
+    description: "Changes the app and your Monos made to their own screens, each with Undo.",
+    keywords: "undo proposal self change dashboard history design rules",
   },
   {
     id: "keybindings",

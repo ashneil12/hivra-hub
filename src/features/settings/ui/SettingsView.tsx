@@ -1,3 +1,4 @@
+import { ChangesPage } from "../../hub/ui/ChangesPage";
 import {
   loadStripBackdrop,
   setStripBackdrop,
@@ -594,6 +595,7 @@ export function SettingsView({
               {section === "appearance" ? (
                 <AppearancePage appearance={appearance} />
               ) : null}
+              {section === "changes" ? <ChangesPage /> : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}

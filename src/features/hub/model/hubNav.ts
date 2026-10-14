@@ -6,6 +6,8 @@ export type HubSelection = {
   project: string;
   /** Item id inside the project; "inbox" = the project's own Today. */
   item: string;
+  /** Optional thing to scroll to and highlight, e.g. a chat message's refId. */
+  focus?: string;
 };
 
 const KEY = "monocode:hub-nav";

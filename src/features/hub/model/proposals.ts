@@ -1,0 +1,119 @@
+// Self-change proposals: the app or a Mono proposes a change to its own look
+// or a dashboard. Checked against DESIGN-RULES.md; applied only on Ash's yes,
+// with one-step undo. Mock for now; the edit-dashboard skill feeds the real ones.
+import { useSyncExternalStore } from "react";
+
+/** A tiny description of a screen, drawn as a calm before/after sketch. */
+export type PreviewSketch = { heading: string; rows: { text: string; isNew?: boolean; moved?: boolean }[] };
+
+export type Proposal = {
+  id: string;
+  projectId: string;
+  /** Who proposed it: a Mono name or "Monocode". */
+  by: string;
+  title: string;
+  why: string;
+  /** Design rules it was checked against (passed). */
+  checked: string[];
+  /** Set when it breaks a rule: it can't be applied. */
+  blocked?: { rule: string; reason: string };
+  before: PreviewSketch;
+  after: PreviewSketch;
+  status: "pending" | "applied" | "dismissed" | "undone";
+  appliedAt?: string;
+};
+
+const RULES = {
+  colour: "Colour only for status",
+  edges: "No edges or glow",
+  needs: "At most 5 Needs",
+  example: "Placeholder data says 'Example:'",
+  nav: "No new navigation",
+};
+
+let proposals: Proposal[] = [
+  {
+    id: "p1", projectId: "hivra", by: "Growth lead", status: "pending",
+    title: "Example: add a Waitlist card to Hivra's Today",
+    why: "Example: you check sign-ups every morning; this puts the number where you already look.",
+    checked: [RULES.colour, RULES.edges, RULES.needs, RULES.example],
+    before: { heading: "Hivra · Today", rows: [{ text: "Since 2pm" }, { text: "Nightly backup failing" }, { text: "Email sender broken" }, { text: "Pick the waitlist headline" }] },
+    after: { heading: "Hivra · Today", rows: [{ text: "Since 2pm" }, { text: "Waitlist: 412 sign-ups, +38 today", isNew: true }, { text: "Nightly backup failing" }, { text: "Email sender broken" }, { text: "Pick the waitlist headline" }] },
+  },
+  {
+    id: "p2", projectId: "exo-game", by: "Projects manager", status: "pending",
+    title: "Example: move Builds & playtests above Leadership team",
+    why: "Example: you opened Builds 9 times this week and Leadership twice.",
+    checked: [RULES.nav, RULES.edges, RULES.colour],
+    before: { heading: "EXO game sidebar", rows: [{ text: "Coding team" }, { text: "Leadership team" }, { text: "Builds & playtests" }, { text: "Being built" }] },
+    after: { heading: "EXO game sidebar", rows: [{ text: "Coding team" }, { text: "Builds & playtests", moved: true }, { text: "Leadership team" }, { text: "Being built" }] },
+  },
+  {
+    id: "p3", projectId: "exo-game", by: "Design critic", status: "pending",
+    title: "Example: give Stuck rows an orange glowing edge",
+    why: "Example: so stuck work is harder to miss.",
+    checked: [RULES.needs, RULES.example],
+    blocked: { rule: RULES.edges, reason: "Stuck is shown by a 14px amber ring and the word 'Stuck'. Edges and glow are not allowed anywhere." },
+    before: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck" }, { text: "Play Areas 1 and 2" }] },
+    after: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck, with orange glowing edge", isNew: true }, { text: "Play Areas 1 and 2" }] },
+  },
+  {
+    id: "p0", projectId: "hivra", by: "Monocode", status: "applied", appliedAt: "Yesterday 6:12pm",
+    title: "Example: renamed 'Users' to 'Users & emails'",
+    why: "Example: the section also holds the email lists.",
+    checked: [RULES.nav], before: { heading: "", rows: [] }, after: { heading: "", rows: [] },
+  },
+  {
+    id: "pm1", projectId: "exo-game", by: "Monocode", status: "applied", appliedAt: "12 Oct",
+    title: "Example: added Being built to EXO game",
+    why: "Example: two Monos were working at once.",
+    checked: [RULES.nav], before: { heading: "", rows: [] }, after: { heading: "", rows: [] },
+  },
+];
+
+const EVENT = "monocode:hub-proposals-changed";
+let version = 0;
+function changed(): void {
+  version++;
+  window.dispatchEvent(new CustomEvent(EVENT));
+}
+export function useProposalsVersion(): number {
+  return useSyncExternalStore(
+    (cb) => {
+      window.addEventListener(EVENT, cb);
+      return () => window.removeEventListener(EVENT, cb);
+    },
+    () => version,
+    () => version,
+  );
+}
+
+export function pendingProposals(projectId: string): Proposal[] {
+  return proposals.filter((p) => p.projectId === projectId && p.status === "pending");
+}
+export function getProposal(id: string): Proposal | undefined {
+  return proposals.find((p) => p.id === id);
+}
+/** Applied and undone changes, newest first. */
+export function pastChanges(): Proposal[] {
+  return proposals.filter((p) => p.status === "applied" || p.status === "undone");
+}
+
+function set(id: string, patch: Partial<Proposal>): void {
+  proposals = proposals.map((p) => (p.id === id ? { ...p, ...patch } : p));
+  changed();
+}
+/** Refuses a blocked proposal: a change that breaks a design rule never goes live. */
+export function applyProposal(id: string): void {
+  const p = getProposal(id);
+  if (!p || p.blocked) throw new Error("Blocked by a design rule; it can't be applied.");
+  // Newest first in Changes.
+  proposals = [{ ...p, status: "applied", appliedAt: "Just now" }, ...proposals.filter((x) => x.id !== id)];
+  changed();
+}
+export function dismissProposal(id: string): void {
+  set(id, { status: "dismissed" });
+}
+export function undoProposal(id: string): void {
+  set(id, { status: "undone" });
+}

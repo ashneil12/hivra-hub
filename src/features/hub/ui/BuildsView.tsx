@@ -132,11 +132,20 @@ function BuildDetail({ build }: { build: Build }) {
         </div>
         {build.stuck ? <StatusMark state={build.stuck} /> : <span className="pt-1 text-xs text-content/60">{statusText(build)}</span>}
         {build.status === "ready" && !build.played ? (
-          <button type="button" data-hub-mark-played onClick={() => markPlayed(build.id, "ash")} className={ACTION}>
+          <button
+            type="button"
+            data-hub-mark-played
+            onClick={() => markPlayed(build.id, "ash")}
+            className="shrink-0 rounded-md px-2.5 py-1 text-xs text-content/60 hover:bg-content/8 hover:text-content"
+          >
             Mark played
           </button>
         ) : null}
-        <BuildAction build={build} />
+        {build.status === "ready" && build.action ? (
+          <button type="button" className="shrink-0 rounded-md bg-content px-3 py-1 text-xs font-medium text-background-base hover:opacity-90">
+            {build.action === "play" ? "Play" : "Open"}
+          </button>
+        ) : null}
       </div>
       {build.status === "failed" ? (
         <div className="flex items-center gap-3 rounded-lg bg-content/5 px-3 py-2.5">

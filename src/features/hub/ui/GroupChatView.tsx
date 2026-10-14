@@ -24,7 +24,7 @@ import {
   sendMessage,
   useHubChatsVersion,
 } from "../model/hubChats";
-import { setHubSelection } from "../model/hubNav";
+import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import type { GroupChat } from "../model/types";
 import { StatusMark } from "./StatusMark";
@@ -59,6 +59,24 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const addRef = useRef<HTMLButtonElement>(null);
   const openPicker = () => setPicker(addRef.current?.getBoundingClientRect() ?? null);
   const conv = chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0];
+  // 'Take a look' can land here with a focus: open that conversation, scroll
+  // to the exact message and highlight it briefly.
+  const sel = useHubSelection();
+  const [flash, setFlash] = useState<string | null>(null);
+  useEffect(() => {
+    const ref = sel.focus;
+    if (!ref) return;
+    const owner = chat.conversations.find((c) => c.messages.some((m) => m.refId === ref));
+    if (!owner) return;
+    setConvId(owner.id);
+    setFlash(ref);
+    setHubSelection({ project: sel.project, item: sel.item });
+    requestAnimationFrame(() =>
+      document.querySelector(`[data-hub-msg-ref="${ref}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }),
+    );
+    const t = window.setTimeout(() => setFlash(null), 2200);
+    return () => window.clearTimeout(t);
+  }, [sel.focus]); // eslint-disable-line react-hooks/exhaustive-deps
   const nameOf = (from: string) => {
     const mono = monos.find((m) => m.id === from);
     return mono ? monoLook(mono).name : from;
@@ -191,7 +209,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       <div className="agent-chat-user-bubble max-w-[70%] rounded-2xl bg-content/10 px-3 py-1.5 text-content">{msg.text}</div>
                     </div>
                   ) : (
-                    <div key={msg.id}>
+                    <div
+                      key={msg.id}
+                      data-hub-msg-ref={msg.refId}
+                      className={`-mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
+                    >
                       <div className="pb-0.5 text-xs text-content/60">{nameOf(msg.from)}</div>
                       <AgentMarkdown text={msg.text} className="text-content" />
                       {(() => {

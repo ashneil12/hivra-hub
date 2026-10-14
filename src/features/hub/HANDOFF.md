@@ -19,3 +19,15 @@ per-page stores in `model/` (mock data, labelled "Example:").
 - The data layer rejects any other actor (`{ bot: id }` throws). The real
   backend must enforce the same: a bot or Mono can never set played, and the
   actor must be recorded as Ash.
+
+## Self-change proposals (unit 5)
+- `model/proposals.ts`: each pending proposal is one item in the waiting list
+  (button "Preview" opens `proposal:<id>`). `applyProposal` refuses a proposal
+  with `blocked` set: a change that breaks a design rule never goes live.
+- Apply/Undo only change the proposal's status in the mock; the real
+  edit-dashboard skill must perform and revert the actual change.
+- Settings → Changes lists applied and undone changes with Undo.
+
+## Focus on 'Take a look'
+- `HubSelection.focus` carries a refId; GroupChatView opens the conversation
+  holding that message, scrolls to it and highlights it briefly.

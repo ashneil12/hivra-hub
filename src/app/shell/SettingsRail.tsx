@@ -12,8 +12,7 @@ import {
   Palette,
   SlidersHorizontal,
   Sparkles,
-  type IconComponent,
-} from "../../shared/ui/icons";
+  type IconComponent, Undo2 } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -33,6 +32,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,
+  changes: Undo2,
 };
 
 type Props = {

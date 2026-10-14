@@ -1,6 +1,8 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
 import { hubData } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
+import { useProposalsVersion } from "../model/proposals";
+import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
@@ -25,6 +27,8 @@ export function ProjectStrip({
   onPickProject: (project: HubProject) => void;
   onCreateProject: () => void;
 }) {
+  useProposalsVersion();
+  useHubBuildsVersion();
   const data = hubData();
   const projects = data.listProjects();
   return (

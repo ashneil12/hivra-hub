@@ -9,7 +9,10 @@ import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { StatusMark } from "./StatusMark";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
+import { ProposalView } from "./ProposalView";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
+import { useProposalsVersion } from "../model/proposals";
+import { useHubBuildsVersion } from "../model/hubBuilds";
 
 
 /**
@@ -18,6 +21,8 @@ import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
  */
 export function HubSurface({ selection }: { selection: HubSelection }) {
   useHubChatsVersion();
+  useProposalsVersion();
+  useHubBuildsVersion();
   const data = hubData();
   if (selection.project !== "today") {
     if (selection.item === "leadership-team")
@@ -25,6 +30,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
     if (selection.item.startsWith("chat:"))
       return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={selection.project} />;
     if (selection.item === "new-chat") return <NewGroupChat projectId={selection.project} />;
+    if (selection.item.startsWith("proposal:"))
+      return <ProposalView key={selection.item} id={selection.item.slice(9)} />;
     if (selection.item === "being-built") return <BeingBuiltView key={selection.project} projectId={selection.project} />;
     const section = data.listProjectItems(selection.project).find((i) => i.id === selection.item);
     if (section?.sectionType === "builds-playtests")
@@ -76,7 +83,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       {projects.map((p) => {
         const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
         const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
-        if (!pNeeds.length && !pStuck.length) return null;
+        const pOther = waiting.filter((w) => w.projectId === p.id && !w.state && !w.need);
+        if (!pNeeds.length && !pStuck.length && !pOther.length) return null;
         return (
           <section key={p.id}>
             {projectId ? null : <h2 className="mb-1 text-xs text-content/60">{p.name}</h2>}
@@ -86,6 +94,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
               ))}
               {pNeeds.map((n) => (
                 <NeedRow key={n.id} need={n} />
+              ))}
+              {pOther.map((w) => (
+                <StuckRow key={w.id} item={w} />
               ))}
             </div>
           </section>
@@ -125,7 +136,7 @@ function StuckRow({ item }: { item: WaitingItem }) {
           onClick={() => item.target && setHubSelection(item.target)}
           className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
         >
-          Take a look
+          {item.actionLabel ?? "Take a look"}
         </button>
       ) : null}
     </div>

@@ -77,8 +77,9 @@ function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) 
       <span className={`min-w-0 flex-1 truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content/85"}`}>{w.doing}</span>
       {w.stuck ? <StatusMark state={w.stuck} /> : null}
       <span className="shrink-0 text-xs text-content/60">
-        {w.finishedAt ? `Done ${w.finishedAt}` : durationLabel(w.minutes)}
+        {w.finishedAt ? `Done ${w.finishedAt}` : `for ${durationLabel(w.minutes)}`}
       </span>
+      {w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}
     </div>
   );
 }
@@ -96,15 +97,7 @@ function Activity({ worker }: { worker: Worker }) {
           </div>
         </div>
         {worker.stuck ? <StatusMark state={worker.stuck} /> : null}
-        {(() => {
-          const w = worker.stuck ? findWaiting(worker.waitingId ?? `worker:${worker.id}`) : undefined;
-          return w ? (
-            <button type="button" data-hub-take-look={w.id} onClick={() => setHubSelection({ project: w.projectId, item: "inbox" })}
-              className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
-              Take a look
-            </button>
-          ) : null;
-        })()}
+        {worker.stuck ? <WorkerTakeLook w={worker} /> : null}
         {worker.kind === "coding" ? (
           <button type="button" data-hub-open-coding onClick={() => setHubSelection({ project: worker.projectId, item: "coding-team" })}
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
@@ -122,5 +115,24 @@ function Activity({ worker }: { worker: Worker }) {
         ))}
       </section>
     </div>
+  );
+}
+
+/** Reads the shared waiting list; opens the item in the project's Inbox. */
+function WorkerTakeLook({ w: worker }: { w: Worker }) {
+  const w = findWaiting(worker.waitingId ?? `worker:${worker.id}`);
+  if (!w) return null;
+  return (
+    <button
+      type="button"
+      data-hub-take-look={w.id}
+      onClick={(e) => {
+        e.stopPropagation();
+        setHubSelection({ project: w.projectId, item: "inbox" });
+      }}
+      className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+    >
+      Take a look
+    </button>
   );
 }
