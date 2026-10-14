@@ -41,7 +41,7 @@ export const TEMPLATES: DashboardTemplate[] = [
 const DEFAULTS: Record<string, TemplateId> = {
   "exo-game": "game-studio",
   hivra: "product-saas",
-  nibbii: "game-studio",
+  nibbii: "product-saas",
   "operator-os": "org-ops",
 };
 

@@ -51,7 +51,7 @@ export function DashboardsPage() {
             <div key={p.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-dashboard={p.id}>
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] text-content">{p.name}</div>
-                <div className="truncate text-[13px] text-content/60">
+                <div className="text-[13px] leading-5 text-content/60">
                   {custom ? "Changed from the template" : wasReset(p.id) ? "Reset to the template just now" : "Uses the template as is"}
                   {" · Today: "}
                   {t.todayCards.join(", ")}
@@ -67,10 +67,11 @@ export function DashboardsPage() {
                   <option key={x.id} value={x.id}>{x.label}</option>
                 ))}
               </select>
-              <button type="button" data-hub-reset={p.id} disabled={!custom} onClick={() => resetToTemplate(p.id)}
-                className={`${BTN} disabled:opacity-40`}>
-                Reset to default
-              </button>
+              {custom ? (
+                <button type="button" data-hub-reset={p.id} onClick={() => resetToTemplate(p.id)} className={BTN}>
+                  Reset to default
+                </button>
+              ) : null}
             </div>
           );
         })}

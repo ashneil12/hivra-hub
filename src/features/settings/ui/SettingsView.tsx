@@ -1,7 +1,6 @@
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 
-const HUB_SETTINGS_SECTIONS: SettingsSectionId[] = ["changes", "dashboards"];
 import {
   loadStripBackdrop,
   setStripBackdrop,
@@ -542,15 +541,6 @@ export function SettingsView({
       >
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          {/* Hub pages show just their name (no breadcrumbs); Monocode's own pages keep theirs. */}
-          {HUB_SETTINGS_SECTIONS.includes(section) ? null : (
-            <>
-              <span className="shrink-0 text-content/45">Settings</span>
-              <span aria-hidden className="shrink-0 text-content/25">
-                /
-              </span>
-            </>
-          )}
           <span className="min-w-0 truncate text-content">
             {settingsSectionLabel(section)}
           </span>
