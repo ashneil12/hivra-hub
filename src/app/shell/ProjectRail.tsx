@@ -14,7 +14,7 @@ import {
   Settings,
   Zap,
 } from "../../shared/ui/icons";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
@@ -126,6 +126,11 @@ type Props = {
   onDismissUpdate?: () => void;
   /** The Monos section above the projects; absent while Monos are off. */
   monos?: MonoRailProps;
+  /**
+   * Hub mode: the project strip sits to the left (so the traffic lights sit
+   * over it) and these items replace the Pinned, Groups and Projects lists.
+   */
+  hubItems?: ReactNode;
 };
 
 export function ProjectRail({
@@ -164,6 +169,7 @@ export function ProjectRail({
   onOpenWhatsNew,
   onDismissUpdate,
   monos,
+  hubItems,
 }: Props) {
   const resize = useDragResize({
     min: PROJECT_RAIL_WIDTH_MIN,
@@ -354,7 +360,7 @@ export function ProjectRail({
         className="flex h-10 shrink-0 select-none items-center pr-1.5"
         data-tauri-drag-region="deep"
       >
-        {IS_MAC ? <div className="w-[78px] shrink-0" /> : null}
+        {IS_MAC && !hubItems ? <div className="w-[78px] shrink-0" /> : null}
         <DevModeSlot />
         <TabVisitNav
           canGoBack={canGoBack}
@@ -427,6 +433,8 @@ export function ProjectRail({
           >
             {monos ? <MonoRailSection {...monos} /> : null}
 
+            {hubItems ? hubItems : null}
+            {hubItems ? null : <>
             {sections.pinned.length > 0 ? (
               <ProjectSection
                 label="Pinned"
@@ -519,6 +527,7 @@ export function ProjectRail({
               groupLogos={groupLogos}
               groupMascots={groupMascots}
             />
+            </>}
           </div>
           <LiveAgentsPreview
             agents={liveAgents}

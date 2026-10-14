@@ -351,6 +351,10 @@ type Props = {
   onDismissUpdate?: () => void;
   /** The Monos on the rail; absent while Monos are off. */
   monos?: MonoRailProps;
+  /** Hub mode: project items shown in the rail instead of Projects. */
+  hubItems?: ReactNode;
+  /** Hub mode: a hub view fills the main area. */
+  hubSurfaceActive?: boolean;
   /** A Mono fills the main area, which has no project sidebar. */
   monoViewActive?: boolean;
 };
@@ -445,6 +449,8 @@ function SidebarComponent({
   onOpenWhatsNew,
   onDismissUpdate,
   monos,
+  hubItems,
+  hubSurfaceActive = false,
   monoViewActive = false,
 }: Props) {
   const remoteProject = isRemoteProjectPath(cwd);
@@ -838,6 +844,7 @@ function SidebarComponent({
     inboxActive ||
     notesActive ||
     automationsActive ||
+    hubSurfaceActive ||
     settingsOpen;
   // A remembered Mono sits underneath these views; select it only while visible.
   const railMonos = monos
@@ -2374,6 +2381,7 @@ function SidebarComponent({
           onOpenWhatsNew={onOpenWhatsNew}
           onDismissUpdate={onDismissUpdate}
           monos={railMonos}
+          hubItems={hubItems}
         />
       ) : null}
       {sidebarVisible ? sidebarContent : null}

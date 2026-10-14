@@ -84,6 +84,15 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
+import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
+import { HubSurface } from "../features/hub/ui/HubSurface";
+import { hubData } from "../features/hub/model/hubData";
+import {
+  hubSurfaceOpen,
+  setHubSelection,
+  useHubSelection,
+} from "../features/hub/model/hubNav";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { Sidebar } from "./shell/Sidebar";
 import { ApprovalToasts } from "../features/sessions/ui/ApprovalToasts";
@@ -12781,6 +12790,36 @@ function Workspace({
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
 
+  // Hub shell: the project strip, the project's items, and hub views.
+  const hubSel = useHubSelection();
+  const hubProject = hubData()
+    .listProjects()
+    .find((project) => project.id === hubSel.project);
+  const closeChromeViews = () => {
+    setSearchViewOpen(false);
+    setInboxViewOpen(false);
+    setNotesViewOpen(false);
+    setAutomationsViewOpen(false);
+    setMonoViewId(null);
+  };
+  const hubShown =
+    hubSurfaceOpen(hubSel) &&
+    !(
+      searchViewOpen ||
+      settingsOpen ||
+      inboxViewOpen ||
+      notesViewOpen ||
+      automationsViewOpen ||
+      monoCovers
+    );
+  const onHubOpenInbox = () => {
+    closeChromeViews();
+    setHubSelection({ project: hubSel.project, item: "inbox" });
+  };
+  const hubMonos = sidebarMonos
+    ? { ...sidebarMonos, projectFilter: hubProject?.folder }
+    : undefined;
+
   const chromeSurfaceOpen =
     searchViewOpen ||
     settingsOpen ||
@@ -12853,7 +12892,27 @@ function Workspace({
         >
           {compactTitleBar ? workspaceTitleBar : null}
           <div className="flex min-h-0 min-w-0 flex-1">
+            <ProjectStrip
+              selection={hubSel}
+              onPickProject={(project) => {
+                closeChromeViews();
+                setHubSelection({ project: project.id, item: "coding-team" });
+                onSelectProject(project.folder);
+              }}
+              onCreateProject={pickProject}
+            />
             <Sidebar
+              hubItems={
+                <HubProjectItems
+                  selection={hubSel}
+                  onPick={(item) => {
+                    closeChromeViews();
+                    if (item.kind === "coding-team" && hubProject)
+                      onSelectProject(hubProject.folder);
+                  }}
+                />
+              }
+              hubSurfaceActive={hubShown}
               cwd={sidebarCwd}
               gitCwd={gitCwd}
               worktreeTabStats={worktreeTabStats}
@@ -12933,19 +12992,19 @@ function Workspace({
               onSelectProject={onSelectProject}
               onOpenProject={pickProject}
               onRemoveProject={onRemoveProject}
-              monos={sidebarMonos}
+              monos={hubMonos}
               monoViewActive={monoCovers}
               onNew={onNew}
               openSessions={openProjectSessions}
               onNewTerminal={onNewTerminal}
               onSearch={onOpenSearch}
-              onOpenInbox={onOpenInbox}
+              onOpenInbox={onHubOpenInbox}
               onOpenInboxItem={onOpenLinkedWorkItem}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
-              inboxActive={inboxViewOpen}
+              inboxActive={hubShown && hubSel.item === "inbox"}
               notesActive={notesViewOpen}
               automationsActive={automationsViewOpen}
               notesEnabled={notesEnabled}
@@ -12974,7 +13033,8 @@ function Workspace({
                   settingsOpen ||
                   inboxViewOpen ||
                   notesViewOpen ||
-                  automationsViewOpen
+                  automationsViewOpen ||
+                  hubShown
                     ? "hidden"
                     : "flex min-h-0 min-w-0 flex-1 flex-col"
                 }
@@ -12983,7 +13043,8 @@ function Workspace({
                   settingsOpen ||
                   inboxViewOpen ||
                   notesViewOpen ||
-                  automationsViewOpen
+                  automationsViewOpen ||
+                  hubShown
                 }
                 inert={
                   searchViewOpen ||
@@ -12991,6 +13052,7 @@ function Workspace({
                   inboxViewOpen ||
                   notesViewOpen ||
                   automationsViewOpen ||
+                  hubShown ||
                   undefined
                 }
               >
@@ -13299,6 +13361,7 @@ function Workspace({
                   onOpenIntegrations={onOpenInboxIntegrations}
                 />
               ) : null}
+              {hubShown ? <HubSurface selection={hubSel} /> : null}
               {notesViewOpen ? (
                 <NotesView
                   besideRail={projectRailOpen || compactProjectRail}

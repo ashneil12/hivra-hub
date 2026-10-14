@@ -45,6 +45,8 @@ export type MonoRailProps = {
   onOpen: (monoId: string) => void;
   onCreate: () => void;
   onDelete: (monoId: string) => void;
+  /** Hub mode: list only the Monos that work on this project folder. */
+  projectFilter?: string;
 };
 
 const IDLE: MonoState = { status: "idle" };
@@ -70,9 +72,16 @@ export function MonoRailSection({
   onOpen,
   onCreate,
   onDelete,
+  projectFilter,
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
-  const monos = useMemo(() => listMonos(), [snapshot]);
+  const monos = useMemo(
+    () =>
+      listMonos().filter(
+        (mono) => !projectFilter || mono.projects.includes(projectFilter),
+      ),
+    [snapshot, projectFilter],
+  );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
