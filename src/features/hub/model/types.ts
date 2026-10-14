@@ -104,3 +104,25 @@ export type GroupChat = {
   memberIds: string[];
   conversations: ChatConversation[];
 };
+
+export type BuildStatus = "ready" | "building" | "failed";
+
+export type PlaytestNote = { id: string; when: string; text: string };
+
+/** One build to try (Builds & playtests section). */
+export type Build = {
+  id: string;
+  projectId: string;
+  version: string;
+  /** One line: what changed. */
+  title: string;
+  status: BuildStatus;
+  /** Plain reason when failed. */
+  failReason?: string;
+  /** Set only when a failed build is stuck or the lead gave up. */
+  stuck?: StuckState;
+  /** "play" runs the game; "open" opens a link or file. */
+  action?: "play" | "open";
+  builtAt: string;
+  notes: PlaytestNote[];
+};

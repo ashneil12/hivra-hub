@@ -5,6 +5,7 @@ import type { HubSelection } from "../model/hubNav";
 import type { Need, StuckItem } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { StatusMark } from "./StatusMark";
+import { BuildsView } from "./BuildsView";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 
 
@@ -21,6 +22,9 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
     if (selection.item.startsWith("chat:"))
       return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={selection.project} />;
     if (selection.item === "new-chat") return <NewGroupChat projectId={selection.project} />;
+    const section = data.listProjectItems(selection.project).find((i) => i.id === selection.item);
+    if (section?.sectionType === "builds-playtests")
+      return <BuildsView key={selection.project} projectId={selection.project} title={section.title} />;
   }
   const project = data.listProjects().find((p) => p.id === selection.project);
   const item = project ? data.listProjectItems(project.id).find((i) => i.id === selection.item) : undefined;

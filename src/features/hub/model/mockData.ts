@@ -13,6 +13,7 @@ const PROJECTS: HubProject[] = [
 const SECTIONS: Record<string, ProjectItem[]> = {
   "exo-game": [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
   hivra: [{ id: "users", kind: "section", title: "Users & emails", sectionType: "users-emails" }],
+  nibbii: [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
 };
 
 const NEEDS: Need[] = [
