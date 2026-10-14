@@ -38,3 +38,9 @@ html.hub-strip-backdrop :is(input, textarea)::placeholder,
 html.hub-strip-backdrop [data-placeholder]::before {
   color: var(--hub-strip-secondary) !important;
 }
+
+/* Strip preset only: dark circle behind the strip's count badges. */
+html.hub-strip-backdrop .hub-count-badge {
+  background: rgb(0 0 0 / 0.7) !important;
+  color: rgb(255 255 255 / 0.9) !important;
+}

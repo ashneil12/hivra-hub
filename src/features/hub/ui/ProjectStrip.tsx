@@ -93,7 +93,7 @@ function StripButton({
       >
         <Icon className="size-[18px]" strokeWidth={1.75} />
         {(count ?? 0) > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-black/70 px-1 text-center text-[10px] leading-4 text-white/90">
+          <span className="absolute -right-1 -top-1 min-w-4 hub-count-badge rounded-full bg-background-base px-1 text-center text-[10px] leading-4 text-content/75">
             {count}
           </span>
         ) : null}
