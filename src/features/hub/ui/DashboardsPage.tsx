@@ -52,7 +52,16 @@ export function DashboardsPage() {
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] text-content">{p.name}</div>
                 <div className="text-[13px] leading-5 text-content/60">
-                  {custom ? "Changed from the template" : wasReset(p.id) ? "Reset to the template just now" : "Uses the template as is"}
+                  {custom ? (
+                    <>
+                      Changed from the template (
+                      <button type="button" data-hub-reset={p.id} onClick={() => resetToTemplate(p.id)}
+                        className="text-content/85 underline-offset-2 hover:underline">
+                        reset to default
+                      </button>
+                      )
+                    </>
+                  ) : wasReset(p.id) ? "Reset to the template just now" : "Uses the template as is"}
                   {" · Today: "}
                   {t.todayCards.join(", ")}
                 </div>
@@ -67,11 +76,6 @@ export function DashboardsPage() {
                   <option key={x.id} value={x.id}>{x.label}</option>
                 ))}
               </select>
-              {custom ? (
-                <button type="button" data-hub-reset={p.id} onClick={() => resetToTemplate(p.id)} className={BTN}>
-                  Reset to default
-                </button>
-              ) : null}
             </div>
           );
         })}
