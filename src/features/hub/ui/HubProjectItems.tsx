@@ -1,5 +1,6 @@
-import { DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { Plus, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { hubData } from "../model/hubData";
+import { useHubChatsVersion } from "../model/hubChats";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { ProjectItem } from "../model/types";
 
@@ -25,14 +26,25 @@ export function HubProjectItems({
   selection: HubSelection;
   onPick: (item: ProjectItem) => void;
 }) {
+  useHubChatsVersion();
   if (selection.project === "today") return null;
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
   const items = hubData().listProjectItems(project.id);
   return (
     <div className="mb-2 shrink-0" data-hub-items>
-      <div className="px-3 pb-1.5 pt-1">
-        <span className="block truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+      <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+        <button
+          type="button"
+          title="New group chat"
+          aria-label="New group chat"
+          data-hub-new-chat-button
+          onClick={() => setHubSelection({ project: project.id, item: "new-chat" })}
+          className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
+        >
+          <Plus className="size-3.5" strokeWidth={1.75} />
+        </button>
       </div>
       <div className="flex flex-col gap-px px-2">
         {items.map((item) => {

@@ -1,5 +1,6 @@
 // Example data until Claude Code wires the backend. Everything here is
 // placeholder content and is labelled "Example" where Ash would see it.
+import { listChats } from "./hubChats";
 import type { HubDataSource, HubMono, HubProject, Need, ProjectItem, StuckItem } from "./types";
 
 const PROJECTS: HubProject[] = [
@@ -40,6 +41,9 @@ export const mockHubData: HubDataSource = {
   listProjectItems: (projectId) => [
     { id: "coding-team", kind: "coding-team", title: "Coding team" },
     { id: "leadership-team", kind: "leadership-team", title: "Leadership team" },
+    ...listChats(projectId)
+      .filter((c) => !c.isDefault)
+      .map((c): ProjectItem => ({ id: `chat:${c.id}`, kind: "group-chat", title: c.name })),
     ...(SECTIONS[projectId] ?? []),
     { id: "being-built", kind: "being-built", title: "Being built" },
   ],

@@ -3,6 +3,8 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { hubData, sinceLabel, todayRows } from "../model/hubData";
 import type { HubSelection } from "../model/hubNav";
 import type { Need, StuckItem } from "../model/types";
+import { GroupChatView, NewGroupChat } from "./GroupChatView";
+import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 
 
 /**
@@ -10,7 +12,15 @@ import type { Need, StuckItem } from "../model/types";
  * Monocode's own views (no breadcrumbs), the bodies are filled in later units.
  */
 export function HubSurface({ selection }: { selection: HubSelection }) {
+  useHubChatsVersion();
   const data = hubData();
+  if (selection.project !== "today") {
+    if (selection.item === "leadership-team")
+      return <GroupChatView key={selection.project} chatId={leadershipChatId(selection.project)} projectId={selection.project} />;
+    if (selection.item.startsWith("chat:"))
+      return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={selection.project} />;
+    if (selection.item === "new-chat") return <NewGroupChat projectId={selection.project} />;
+  }
   const project = data.listProjects().find((p) => p.id === selection.project);
   const item = project ? data.listProjectItems(project.id).find((i) => i.id === selection.item) : undefined;
 

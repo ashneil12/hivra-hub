@@ -75,3 +75,30 @@ export interface HubDataSource {
   listStuck(projectId?: string): StuckItem[];
   listMonos(projectId?: string): HubMono[];
 }
+
+/** One message in a group chat. `from` is "ash" or a Mono id. */
+export type ChatMessage = {
+  id: string;
+  from: "ash" | string;
+  text: string;
+  /** Only stuck or given-up items carry a status. */
+  status?: StuckState;
+};
+
+export type ChatConversation = {
+  id: string;
+  /** "Today", "Yesterday", "12 Oct". */
+  when: string;
+  title: string;
+  messages: ChatMessage[];
+};
+
+/** A project's group chat. The Leadership team is the default one. */
+export type GroupChat = {
+  id: string;
+  projectId: string;
+  name: string;
+  isDefault: boolean;
+  memberIds: string[];
+  conversations: ChatConversation[];
+};
