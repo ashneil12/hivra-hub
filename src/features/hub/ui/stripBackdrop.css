@@ -2,22 +2,31 @@
  * Strip preset backdrop. Stops sampled pixel by pixel from the unit1-v2
  * strip (top blue to bottom rose). Fixed, so it sits behind every panel.
  */
-html.hub-strip-backdrop,
-html.hub-strip-backdrop body {
+html.hub-strip-backdrop body::before {
+  /*
+   * A semi-transparent tint, not a background: the window stays transparent
+   * so macOS vibrancy (and the desktop behind it) still shows through. It
+   * sits above AppKit's native glass tint and below every panel.
+   */
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background: linear-gradient(
-      180deg,
-      rgb(69 72 96) 0%,
-      rgb(81 80 99) 28%,
-      rgb(107 91 94) 52%,
-      rgb(122 88 79) 78%,
-      rgb(116 81 69) 100%
-    )
-    fixed !important;
+    180deg,
+    rgb(69 72 96 / 0.45) 0%,
+    rgb(81 80 99 / 0.45) 28%,
+    rgb(107 91 94 / 0.45) 52%,
+    rgb(122 88 79 / 0.45) 78%,
+    rgb(116 81 69 / 0.45) 100%
+  );
 }
 
-/* Brighter secondary text so every small label clears 4.5:1 on the fade. */
+/* Brighter secondary text: at least 4.5:1 in the worst case (a white desktop
+   under the glass, the brightest fade stop, on a 12% selection chip). */
 html.hub-strip-backdrop {
-  --hub-strip-secondary: #cebfbb; /* #c8b8b4 measured 4.42:1 on the lightest fade; this is 4.76:1 */
+  --hub-strip-secondary: #d8cbc8;
 }
 html.hub-strip-backdrop :is(
     .text-content\/25,

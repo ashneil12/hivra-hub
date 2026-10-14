@@ -2119,12 +2119,12 @@ function useAppearanceSettings(
 /**
  * One-click colour presets. Each sets Monocode's own Hue, Saturation,
  * Dark-mode lightness and Sidebar opacity; the sliders stay free to tweak.
- * "Strip" also turns on a fixed blue-to-rose fade behind the window (sampled
- * from the hub strip) and lowers the sidebar opacity so it shows through.
+ * "Strip" also lays a semi-transparent blue-to-rose tint (sampled from the
+ * hub strip) over the native glass. Neither preset touches glass or blur.
  */
 const COLOR_PRESETS = [
   { id: "monocode", label: "Monocode", hue: 240, saturation: 0, lightness: 9, opacity: 85 },
-  { id: "strip", label: "Strip", hue: 11, saturation: 20, lightness: 12, opacity: 45 },
+  { id: "strip", label: "Strip", hue: 11, saturation: 20, lightness: 9, opacity: 85 },
 ] as const;
 
 function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {

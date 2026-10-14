@@ -31,13 +31,34 @@ window.addEventListener("DOMContentLoaded", () => {
 
 });
 
+// DEV STAND-IN ONLY: a dim dark-blue "desktop" behind the window, plus the
+// tint AppKit would paint over the vibrancy (base colour at the opacity the
+// app asks for). On a Mac the real wallpaper and NSVisualEffectView do this.
+type GlassArgs = { enabled?: boolean; background?: { r: number; g: number; b: number }; opacity?: number };
+const DESKTOP = "radial-gradient(120% 90% at 30% 20%, #1b2a44 0%, #0f1a2e 45%, #070c16 100%)";
+function emulateNativeGlass(a: GlassArgs | undefined) {
+  const root = document.documentElement;
+  if (!a?.enabled || !a.background) {
+    root.style.background = "";
+    return;
+  }
+  const { r, g, b } = a.background;
+  const o = a.opacity ?? 0.91;
+  root.style.background = `linear-gradient(rgb(${r} ${g} ${b} / ${o}), rgb(${r} ${g} ${b} / ${o})), ${DESKTOP}`;
+  document.body.style.background = "transparent";
+}
+
 mockWindows("main");
 const seen = new Set<string>();
 mockIPC(
-  (cmd) => {
+  (cmd, args) => {
     if (!seen.has(cmd)) {
       seen.add(cmd);
       (window as unknown as { __ipc: string[] }).__ipc = [...seen];
+    }
+    if (cmd === "set_window_glass_enabled") {
+      emulateNativeGlass(args as GlassArgs);
+      return true;
     }
     if (cmd === "plugin:path|resolve_directory" || cmd === "home_dir") return "/Users/ash";
     if (cmd.startsWith("plugin:event|")) return 1;
