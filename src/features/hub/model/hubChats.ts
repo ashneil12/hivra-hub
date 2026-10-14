@@ -1,3 +1,4 @@
+import { examples } from "./examples";
 // Group chats per project, behind the hub data layer. Mock store for now;
 // Claude Code swaps in the backend (create chat, add/remove member, send,
 // stream replies). Every made-up row is labelled "Example:".
@@ -12,7 +13,7 @@ const m = (id: string, from: string, text: string, status?: ChatMessage["status"
   ...(refId ? { refId } : {}),
 });
 
-let chats: GroupChat[] = [
+let chats: GroupChat[] = examples([
   {
     id: "exo-game:leadership",
     projectId: "exo-game",
@@ -64,7 +65,7 @@ let chats: GroupChat[] = [
     memberIds: [],
     conversations: [],
   },
-];
+]);
 
 const EVENT = "monocode:hub-chats-changed";
 let version = 0;

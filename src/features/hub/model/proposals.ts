@@ -1,3 +1,4 @@
+import { examples } from "./examples";
 // Self-change proposals: the app or a Mono proposes a change to its own look
 // or a dashboard. Checked against DESIGN-RULES.md; applied only on Ash's yes,
 // with one-step undo. Mock for now; the edit-dashboard skill feeds the real ones.
@@ -32,7 +33,7 @@ const RULES = {
   nav: "No new navigation",
 };
 
-let proposals: Proposal[] = [
+let proposals: Proposal[] = examples([
   {
     id: "p1", projectId: "hivra", by: "Growth lead", status: "pending",
     title: "Example: add a Waitlist card to Hivra's Today",
@@ -79,7 +80,7 @@ let proposals: Proposal[] = [
     why: "Example: two Monos were working at once.",
     checked: [RULES.nav], before: { heading: "", rows: [] }, after: { heading: "", rows: [] },
   },
-];
+]);
 
 const EVENT = "monocode:hub-proposals-changed";
 let version = 0;

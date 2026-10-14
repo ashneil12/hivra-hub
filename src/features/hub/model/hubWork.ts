@@ -1,8 +1,9 @@
+import { examples } from "./examples";
 // Being built data, behind the hub data layer. Mock for now; Claude Code wires
 // live workers and their activity.
 import type { Worker } from "./types";
 
-const WORKERS: Worker[] = [
+const WORKERS: Worker[] = examples([
   {
     id: "w1", projectId: "exo-game", who: "MonoInvader", kind: "coding", minutes: 42,
     doing: "Example: wiring the dodge roll to the new air rules",
@@ -46,7 +47,7 @@ const WORKERS: Worker[] = [
     doing: "Example: sending the waitlist welcome emails",
     steps: [{ id: "1", at: "7:55pm", text: "Example: the email sender refused the login; the lead gave up" }],
   },
-];
+]);
 
 export function activeWorkers(projectId: string): Worker[] {
   return WORKERS.filter((w) => w.projectId === projectId && !w.finishedAt);

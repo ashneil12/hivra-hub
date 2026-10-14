@@ -4,7 +4,8 @@ import { hubData } from "../model/hubData";
 /** Settings → Changes: every self-change that went live, each with Undo. */
 export function ChangesPage() {
   useProposalsVersion();
-  const list = pastChanges();
+  const ids = new Set(hubData().listProjects().map((p) => p.id));
+  const list = pastChanges().filter((p) => ids.has(p.projectId));
   const name = (id: string) => hubData().listProjects().find((p) => p.id === id)?.name ?? id;
   if (!list.length) return <p className="text-[13px] text-content/60">No changes yet. When you apply a proposed change, it shows up here with Undo.</p>;
   return (

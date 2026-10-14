@@ -7,7 +7,7 @@ import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
-const SHAPES: Record<ProjectIconShape, IconComponent> = {
+export const SHAPES: Record<ProjectIconShape, IconComponent> = {
   ghost: Ghost,
   sparkles: Sparkles,
   palette: Palette,
@@ -70,7 +70,7 @@ export function ProjectStrip({
   );
 }
 
-function StripButton({
+export function StripButton({
   label,
   title,
   selected,

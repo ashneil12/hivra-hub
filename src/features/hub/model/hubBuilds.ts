@@ -1,9 +1,10 @@
+import { examples } from "./examples";
 // Builds & playtests data, behind the hub data layer. Mock store for now;
 // Claude Code wires the real build list, play/open actions and notes.
 import { useSyncExternalStore } from "react";
 import type { Build } from "./types";
 
-let builds: Build[] = [
+let builds: Build[] = examples([
   { id: "b15", projectId: "exo-game", version: "0.15", title: "Example: air and dodge rules", status: "building", builtAt: "Started 8:05pm", notes: [] },
   {
     id: "b14", projectId: "exo-game", version: "0.14", title: "Example: new level and autosave", status: "ready", action: "play", builtAt: "Today 4:10am", played: { by: "ash", at: "Today 1:20pm" },
@@ -25,7 +26,7 @@ let builds: Build[] = [
     failReason: "Example: the export tool crashes on the new textures. The lead tried twice and gave up.", notes: [],
   },
   { id: "b12", projectId: "exo-game", version: "0.12", title: "Example: Area 3 Furnace Court", status: "ready", action: "play", builtAt: "9 Oct", notes: [] },
-];
+]);
 
 /** When a project's first build is expected, for the empty state. */
 const FIRST_BUILD: Record<string, string> = {

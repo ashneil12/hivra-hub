@@ -15,6 +15,9 @@ export type DashboardTemplate = {
   todayCards: string[];
   /** Project sections in the sidebar (between the teams and Being built). */
   sections: ProjectItem[];
+  /** Suggested Monos for a new project's teams. */
+  leadership: string[];
+  coding: string[];
 };
 
 export const TEMPLATES: DashboardTemplate[] = [
@@ -23,18 +26,24 @@ export const TEMPLATES: DashboardTemplate[] = [
     blurb: "Builds to play, playtest notes and what the team is building.",
     todayCards: ["Since you were last here", "Stuck and gave up", "Needs (up to 5)", "Latest build to try"],
     sections: [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
+    leadership: ["Chief of Staff", "Projects Manager", "Design critic"],
+    coding: ["MonoInvader", "Playtester"],
   },
   {
     id: "product-saas", label: "Product / SaaS", icon: "sparkles",
     blurb: "Users, sign-ups and emails next to the work on the product.",
     todayCards: ["Since you were last here", "Stuck and gave up", "Needs (up to 5)", "Sign-ups this week"],
     sections: [{ id: "users", kind: "section", title: "Users & emails", sectionType: "users-emails" }],
+    leadership: ["Chief of Staff", "Growth lead"],
+    coding: ["MonoInvader"],
   },
   {
     id: "org-ops", label: "Org / ops", icon: "gauge",
     blurb: "Decisions, people and the running of the company.",
     todayCards: ["Since you were last here", "Stuck and gave up", "Decisions (up to 5)"],
     sections: [],
+    leadership: ["Chief of Staff"],
+    coding: ["MonoInvader"],
   },
 ];
 
@@ -107,20 +116,3 @@ export function wasReset(projectId: string): boolean {
   return resetDone.has(projectId);
 }
 
-/** Whole setup as one file (Glance-style: one settings block per project). */
-export function exportSetup(projectIds: string[]): string {
-  const projects = Object.fromEntries(projectIds.map((id) => [id, { template: templateOf(id).id }]));
-  return JSON.stringify({ format: "monocode-hub-setup", version: 1, projects }, null, 2);
-}
-
-/** Restore from an exported file. Returns how many projects it set. */
-export function restoreSetup(text: string): number {
-  const data = JSON.parse(text) as { format?: string; projects?: Record<string, { template: TemplateId }> };
-  if (data.format !== "monocode-hub-setup" || !data.projects) throw new Error("That file isn't a Monocode setup export.");
-  const next: Saved = { ...saved };
-  for (const [id, p] of Object.entries(data.projects)) {
-    if (TEMPLATES.some((t) => t.id === p.template)) next[id] = { template: p.template };
-  }
-  store(next);
-  return Object.keys(data.projects).length;
-}

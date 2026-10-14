@@ -55,3 +55,22 @@ per-page stores in `model/` (mock data, labelled "Example:").
 - First-launch onboarding (`HubOnboarding`, flag `monocode:hub-onboarded`) has 4
   steps and can be skipped. The theme step uses the same presets as Settings →
   Appearance and keeps glass on. On the dev page it shows only with `?onboarding`.
+
+## Ships clean (Ash's call)
+- First launch has **no projects**: only the three built-in templates. All our
+  example data (projects, Needs, stuck items, chats, builds, workers,
+  proposals) sits behind the dev flag `monocode:hub-examples` (`model/examples.ts`),
+  which only the dev page sets.
+- **Ash's own setup arrives via a setup file** (`model/setupFile.ts`, Settings →
+  Dashboards → Restore setup, or step 2 of onboarding). The file carries the
+  projects and their templates; it should grow to teams, Monos and sections.
+- Onboarding step 2: "Start a new project" (goes to the New project flow after
+  the theme step) or "Restore a setup file". A clean Today shows "No projects
+  yet." with one New project button; the strip shows only Today and +.
+- New project (onboarding skill, spec H5): name + template, three plain
+  questions from the Chief of Staff, then a preview of the project as it will
+  look (strip icon, sidebar, Leadership and Coding Monos, Today sections).
+  Nothing is created until Create project. The answers are not yet sent to an agent.
+- **To explore with Claude Code:** how agents can edit the setup (agent-editability),
+  e.g. an agent proposing a change to a project's settings file, which then
+  goes through the design-rules check and preview (unit 5).

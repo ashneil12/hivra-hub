@@ -75,6 +75,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   const data = hubData();
+  if (!data.listProjects().length) return <FirstTodayEmpty />;
   const since = data.sinceSummary(projectId);
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
@@ -158,6 +159,28 @@ function Pending({ what, unit }: { what: string; unit: number }) {
       <p className="text-[13px] text-content/60">
         {what} is built in Unit {unit}. Unit 1 is the app shell.
       </p>
+    </div>
+  );
+}
+
+/** Clean first launch: no projects yet. One calm action. */
+function FirstTodayEmpty() {
+  return (
+    <div className="grid h-full place-items-center px-8" data-hub-today-empty>
+      <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
+        <p className="text-[13px] text-content">No projects yet.</p>
+        <p className="text-[13px] leading-5 text-content/60">
+          Make your first project and Today fills up with what changed and what's waiting on you. You can also restore a setup file in Settings, under Dashboards.
+        </p>
+        <button
+          type="button"
+          data-hub-today-new-project
+          onClick={() => setHubSelection({ project: "today", item: "new-project" })}
+          className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90"
+        >
+          New project
+        </button>
+      </div>
     </div>
   );
 }

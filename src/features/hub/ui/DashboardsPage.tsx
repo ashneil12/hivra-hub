@@ -1,10 +1,9 @@
 import { useRef, useState } from "react";
 import { hubData } from "../model/hubData";
+import { downloadSetup, restoreSetup } from "../model/setupFile";
 import {
-  exportSetup,
   isCustomised,
   resetToTemplate,
-  restoreSetup,
   setTemplate,
   templateOf,
   TEMPLATES,
@@ -23,12 +22,7 @@ export function DashboardsPage() {
   const [note, setNote] = useState<string | null>(null);
 
   const doExport = () => {
-    const blob = new Blob([exportSetup(projects.map((p) => p.id))], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "monocode-setup.json";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadSetup();
     setNote("Saved monocode-setup.json. Keep it somewhere safe; Restore setup brings it all back.");
   };
   const onFile = async (f: File | undefined) => {

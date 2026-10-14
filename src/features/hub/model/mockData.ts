@@ -1,10 +1,11 @@
+import { examples, examplesOn } from "./examples";
 import { templateOf } from "./templates";
 // Example data until Claude Code wires the backend. Everything here is
 // placeholder content and is labelled "Example" where Ash would see it.
 import { listChats } from "./hubChats";
 import type { HubDataSource, HubMono, HubProject, Need, ProjectItem, StuckItem } from "./types";
 
-const PROJECTS: HubProject[] = [
+const EXAMPLE_PROJECTS: HubProject[] = [
   { id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/harness/exo-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/harness/hivra" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/harness/nibbii" },
@@ -12,7 +13,7 @@ const PROJECTS: HubProject[] = [
 ];
 
 
-const NEEDS: Need[] = [
+const NEEDS: Need[] = examples([
   { id: "o1", projectId: "operator-os", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionLabel: "Open" },
   { id: "o2", projectId: "operator-os", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionLabel: "Open" },
   { id: "o3", projectId: "operator-os", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionLabel: "Open" },
@@ -21,12 +22,12 @@ const NEEDS: Need[] = [
   { id: "n1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
   { id: "n2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
   { id: "n3", projectId: "hivra", title: "Example: pick the waitlist headline", why: "Two versions tested about the same. Your taste call.", actionType: "open", actionLabel: "Open" },
-];
+]);
 
-const STUCK: StuckItem[] = [
+const STUCK: StuckItem[] = examples([
   { id: "s1", projectId: "hivra", title: "Example: nightly backup failing", detail: "Retried 3 times since 2am. No one picked it up.", state: "stuck" },
   { id: "s2", projectId: "hivra", title: "Example: email sender broken", detail: "The lead tried two fixes and gave up. It needs a person.", state: "lead_gave_up" },
-];
+]);
 
 const SINCE: Record<string, string> = {
   "exo-game": "Example: the new level is in and working. Two things need your hands.",
@@ -38,6 +39,21 @@ const MONOS: HubMono[] = [
   { id: "playtester", name: "Playtester", mascot: "ghost", color: "violet", status: "idle", projectIds: ["exo-game"] },
   { id: "hivra-mailer", name: "Hivra mailer", mascot: "cat", color: "amber", status: "idle", projectIds: ["hivra"] },
 ];
+
+/**
+ * The app ships clean: no projects. Our example projects show only behind the
+ * dev flag (`monocode:hub-examples`, set by the dev page). Projects Ash makes or
+ * restores from a setup file are kept locally.
+ */
+const USER_KEY = "monocode:hub-projects";
+function loadUserProjects(): HubProject[] {
+  try {
+    return (JSON.parse(localStorage.getItem(USER_KEY) ?? "null") as HubProject[] | null) ?? [];
+  } catch {
+    return [];
+  }
+}
+const PROJECTS: HubProject[] = [...(examplesOn() ? EXAMPLE_PROJECTS : []), ...loadUserProjects()];
 
 export const mockHubData: HubDataSource = {
   listProjects: () => PROJECTS,
@@ -57,7 +73,9 @@ export const mockHubData: HubDataSource = {
     return d.toISOString();
   },
   sinceSummary: (projectId) => ({
-    plainText: projectId
+    plainText: !examplesOn()
+      ? "Nothing new yet. As your teams start work, what changed shows up here."
+      : projectId
       ? (SINCE[projectId] ?? "Example: quiet since you were last here.")
       : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Operator OS has five decisions for you. Nibbii was quiet.",
     details: "Example details.",
@@ -69,5 +87,12 @@ export const mockHubData: HubDataSource = {
 
 /** Mock: create a project from the new-project flow. */
 export function addMockProject(p: HubProject): void {
+  if (PROJECTS.some((x) => x.id === p.id)) return;
   PROJECTS.push(p);
+  if (EXAMPLE_PROJECTS.some((x) => x.id === p.id)) return;
+  try {
+    localStorage.setItem(USER_KEY, JSON.stringify([...loadUserProjects().filter((x) => x.id !== p.id), p]));
+  } catch {
+    /* best effort */
+  }
 }
