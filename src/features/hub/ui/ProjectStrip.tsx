@@ -1,6 +1,5 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, todayCount } from "../model/hubData";
-import "./hubTheme.css";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 

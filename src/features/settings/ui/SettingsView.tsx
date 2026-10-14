@@ -1,8 +1,3 @@
-import {
-  saveHubTheme,
-  useHubTheme,
-  type HubTheme,
-} from "../../hub/model/hubTheme";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
@@ -2117,23 +2112,37 @@ function useAppearanceSettings(
   };
 }
 
-/** Hub window theme: Monocode's own look, or the project strip's look. */
-function HubThemeRow() {
-  const theme = useHubTheme();
+/**
+ * One-click colour presets. Each sets Monocode's own Hue, Saturation,
+ * Dark-mode lightness and Sidebar opacity; the sliders stay free to tweak.
+ * "Strip" is a flat warm tint sampled from the hub strip (hsl 11 20% 38%).
+ */
+const COLOR_PRESETS = [
+  { id: "monocode", label: "Monocode", hue: 240, saturation: 0, lightness: 9, opacity: 85 },
+  { id: "strip", label: "Strip", hue: 11, saturation: 20, lightness: 30, opacity: 100 },
+] as const;
+
+function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
+  const active = COLOR_PRESETS.find(
+    (p) =>
+      p.hue === appearance.themeHue &&
+      p.saturation === appearance.themeSaturation &&
+      p.lightness === appearance.themeDarkLightness &&
+      p.opacity === Math.round(appearance.opacity * 100),
+  );
   return (
-    <Row
-      id="hub-window-theme"
-      label="Window style"
-      description="Monocode matches Monocode's own colours. Strip uses the project strip's darker tone for the whole window."
-    >
+    <Row id="color-presets" label="Presets" description="Sets the hue, saturation, lightness and sidebar opacity below.">
       <Segmented
-        label="Window style"
-        value={theme}
-        options={[
-          { value: "monocode", label: "Monocode" },
-          { value: "strip", label: "Strip" },
-        ]}
-        onChange={(value) => saveHubTheme(value as HubTheme)}
+        label="Presets"
+        value={active?.id ?? ""}
+        options={COLOR_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+        onChange={(id) => {
+          const p = COLOR_PRESETS.find((preset) => preset.id === id);
+          if (!p) return;
+          appearance.onTint(p.hue, p.saturation);
+          appearance.onDarkLightness(p.lightness);
+          appearance.onOpacity(p.opacity);
+        }}
       />
     </Row>
   );
@@ -2165,7 +2174,6 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
             onChange={appearance.onThemePreference}
           />
         </Row>
-        <HubThemeRow />
         <Row
           id="accent-color"
           label="Accent color"
@@ -2198,6 +2206,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
         title="Color"
         description="Hue and saturation tint every surface. Lightness only moves the dark theme."
       >
+        <ColorPresetsRow appearance={appearance} />
         <Row
           id="hue"
           label="Hue"
