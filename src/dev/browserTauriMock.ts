@@ -6,6 +6,8 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 
 // Example Monos for the hub's mock projects (real ones come from the store).
+// Dev page: skip first-launch onboarding unless ?onboarding is in the URL.
+if (!new URLSearchParams(location.search).has("onboarding")) localStorage.setItem("monocode:hub-onboarded", "1");
 if (localStorage.getItem("monocode:mono-roster") == null) {
   localStorage.setItem(
     "monocode:mono-roster",

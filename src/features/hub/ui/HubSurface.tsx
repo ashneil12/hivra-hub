@@ -10,6 +10,8 @@ import { StatusMark } from "./StatusMark";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { ProposalView } from "./ProposalView";
+import { NewProjectView } from "./NewProjectView";
+import { useTemplatesVersion } from "../model/templates";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 import { useProposalsVersion } from "../model/proposals";
 import { useHubBuildsVersion } from "../model/hubBuilds";
@@ -22,7 +24,9 @@ import { useHubBuildsVersion } from "../model/hubBuilds";
 export function HubSurface({ selection }: { selection: HubSelection }) {
   useHubChatsVersion();
   useProposalsVersion();
+  useTemplatesVersion();
   useHubBuildsVersion();
+  if (selection.item === "new-project") return <NewProjectView />;
   const data = hubData();
   if (selection.project !== "today") {
     if (selection.item === "leadership-team")

@@ -39,3 +39,19 @@ per-page stores in `model/` (mock data, labelled "Example:").
 ## Focus on 'Take a look'
 - `HubSelection.focus` carries a refId; GroupChatView opens the conversation
   holding that message, scrolls to it and highlights it briefly.
+
+## Dashboards and onboarding (unit 6)
+- `model/templates.ts`: three templates (Game studio, Product / SaaS,
+  Org / ops). Each one defines a project's Today cards and its sidebar sections.
+  `listProjectItems` takes its sections from the project's template. A new
+  project picks a template on the strip's '+' page (`NewProjectView`; mock: it
+  adds an in-memory project and makes no folder).
+- Settings → Dashboards: each project's template, Reset to default, and Export
+  setup / Restore setup (a JSON file of `{projects: {id: {template}}}`). The real
+  export should write one settings file per project (Glance model), including
+  teams and Monos.
+- Today cards are recorded per template but are not yet rendered card by card.
+  Today still uses the fixed Since / waiting layout.
+- First-launch onboarding (`HubOnboarding`, flag `monocode:hub-onboarded`) has 4
+  steps and can be skipped. The theme step uses the same presets as Settings →
+  Appearance and keeps glass on. On the dev page it shows only with `?onboarding`.

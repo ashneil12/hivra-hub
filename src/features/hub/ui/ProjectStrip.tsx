@@ -2,6 +2,7 @@ import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponen
 import { hubData } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
 import { useProposalsVersion } from "../model/proposals";
+import { useTemplatesVersion } from "../model/templates";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
@@ -28,6 +29,8 @@ export function ProjectStrip({
   onCreateProject: () => void;
 }) {
   useProposalsVersion();
+  useTemplatesVersion();
+  void onCreateProject;
   useHubBuildsVersion();
   const data = hubData();
   const projects = data.listProjects();
@@ -62,7 +65,7 @@ export function ProjectStrip({
           />
         );
       })}
-      <StripButton label="" title="New project" selected={false} onClick={onCreateProject} Icon={Plus} />
+      <StripButton label="" title="New project" selected={false} onClick={() => setHubSelection({ project: "today", item: "new-project" })} Icon={Plus} />
     </nav>
   );
 }

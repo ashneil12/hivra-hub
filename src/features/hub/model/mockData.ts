@@ -1,3 +1,4 @@
+import { templateOf } from "./templates";
 // Example data until Claude Code wires the backend. Everything here is
 // placeholder content and is labelled "Example" where Ash would see it.
 import { listChats } from "./hubChats";
@@ -10,11 +11,6 @@ const PROJECTS: HubProject[] = [
   { id: "operator-os", name: "Operator OS", shortName: "Operator", iconShape: "gauge", folder: "/Users/ash/harness/org" },
 ];
 
-const SECTIONS: Record<string, ProjectItem[]> = {
-  "exo-game": [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
-  hivra: [{ id: "users", kind: "section", title: "Users & emails", sectionType: "users-emails" }],
-  nibbii: [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
-};
 
 const NEEDS: Need[] = [
   { id: "o1", projectId: "operator-os", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionLabel: "Open" },
@@ -51,7 +47,7 @@ export const mockHubData: HubDataSource = {
     ...listChats(projectId)
       .filter((c) => !c.isDefault)
       .map((c): ProjectItem => ({ id: `chat:${c.id}`, kind: "group-chat", title: c.name })),
-    ...(SECTIONS[projectId] ?? []),
+    ...templateOf(projectId).sections,
     { id: "being-built", kind: "being-built", title: "Being built" },
   ],
   // Example: Ash was last here at 2pm today.
@@ -70,3 +66,8 @@ export const mockHubData: HubDataSource = {
   listStuck: (projectId) => STUCK.filter((s) => !projectId || s.projectId === projectId),
   listMonos: (projectId) => MONOS.filter((m) => !projectId || m.projectIds.includes(projectId)),
 };
+
+/** Mock: create a project from the new-project flow. */
+export function addMockProject(p: HubProject): void {
+  PROJECTS.push(p);
+}

@@ -1,3 +1,4 @@
+import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
 import {
@@ -13370,6 +13371,7 @@ function Workspace({
                 />
               ) : null}
               {hubShown ? <HubSurface selection={hubSel} /> : null}
+              <HubOnboardingGate />
               {notesViewOpen ? (
                 <NotesView
                   besideRail={projectRailOpen || compactProjectRail}

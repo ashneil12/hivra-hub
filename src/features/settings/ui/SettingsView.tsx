@@ -1,4 +1,5 @@
 import { ChangesPage } from "../../hub/ui/ChangesPage";
+import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 
 const HUB_SETTINGS_SECTIONS: SettingsSectionId[] = ["changes", "dashboards"];
 import {
@@ -603,6 +604,7 @@ export function SettingsView({
                 <AppearancePage appearance={appearance} />
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
+              {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}
