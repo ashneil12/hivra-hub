@@ -1,0 +1,40 @@
+/*
+ * Strip preset backdrop. Stops sampled pixel by pixel from the unit1-v2
+ * strip (top blue to bottom rose). Fixed, so it sits behind every panel.
+ */
+html.hub-strip-backdrop,
+html.hub-strip-backdrop body {
+  background: linear-gradient(
+      180deg,
+      rgb(69 72 96) 0%,
+      rgb(81 80 99) 28%,
+      rgb(107 91 94) 52%,
+      rgb(122 88 79) 78%,
+      rgb(116 81 69) 100%
+    )
+    fixed !important;
+}
+
+/* Brighter secondary text so every small label clears 4.5:1 on the fade. */
+html.hub-strip-backdrop {
+  --hub-strip-secondary: #cebfbb; /* #c8b8b4 measured 4.42:1 on the lightest fade; this is 4.76:1 */
+}
+html.hub-strip-backdrop :is(
+    .text-content\/25,
+    .text-content\/30,
+    .text-content\/35,
+    .text-content\/40,
+    .text-content\/45,
+    .text-content\/50,
+    .text-content\/55,
+    .text-content\/60,
+    .text-content\/65,
+    .text-content\/70,
+    .text-content\/75
+  ) {
+  color: var(--hub-strip-secondary) !important;
+}
+html.hub-strip-backdrop :is(input, textarea)::placeholder,
+html.hub-strip-backdrop [data-placeholder]::before {
+  color: var(--hub-strip-secondary) !important;
+}

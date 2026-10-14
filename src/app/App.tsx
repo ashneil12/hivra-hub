@@ -88,6 +88,7 @@ import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
 import { hubData, nameHubProject } from "../features/hub/model/hubData";
+import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
   setHubSelection,

@@ -1,3 +1,7 @@
+import {
+  loadStripBackdrop,
+  setStripBackdrop,
+} from "../../hub/model/stripBackdrop";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
@@ -2115,11 +2119,12 @@ function useAppearanceSettings(
 /**
  * One-click colour presets. Each sets Monocode's own Hue, Saturation,
  * Dark-mode lightness and Sidebar opacity; the sliders stay free to tweak.
- * "Strip" is a flat warm tint sampled from the hub strip (hsl 11 20% 38%).
+ * "Strip" also turns on a fixed blue-to-rose fade behind the window (sampled
+ * from the hub strip) and lowers the sidebar opacity so it shows through.
  */
 const COLOR_PRESETS = [
   { id: "monocode", label: "Monocode", hue: 240, saturation: 0, lightness: 9, opacity: 85 },
-  { id: "strip", label: "Strip", hue: 11, saturation: 20, lightness: 30, opacity: 100 },
+  { id: "strip", label: "Strip", hue: 11, saturation: 20, lightness: 12, opacity: 45 },
 ] as const;
 
 function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
@@ -2128,7 +2133,8 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
       p.hue === appearance.themeHue &&
       p.saturation === appearance.themeSaturation &&
       p.lightness === appearance.themeDarkLightness &&
-      p.opacity === Math.round(appearance.opacity * 100),
+      p.opacity === Math.round(appearance.opacity * 100) &&
+      (p.id === "strip") === loadStripBackdrop(),
   );
   return (
     <Row id="color-presets" label="Presets" description="Sets the hue, saturation, lightness and sidebar opacity below.">
@@ -2142,6 +2148,7 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
           appearance.onTint(p.hue, p.saturation);
           appearance.onDarkLightness(p.lightness);
           appearance.onOpacity(p.opacity);
+          setStripBackdrop(p.id === "strip");
         }}
       />
     </Row>
