@@ -86,13 +86,10 @@ per-page stores in `model/` (mock data, labelled "Example:").
   Today and Settings → Dashboards, shows projects and templates, bots grouped by
   project and team (all ticked; expand a group to untick single bots), and
   connectors marked "Sign in after restore". Nothing is added until Restore.
-- Each connector becomes one Need ("Sign in to GitHub") in the shared waiting
-  list. It shares the 5-Needs cap (the rest go under Later) and goes away once
-  signed in. The sign-in is a mock.
 - **First items for the technical talk with Claude Code:** real bot import
   (souls, skills, memory, sessions into Monocode's Mono store and teams) and
   real connector auth (OAuth/keys per service, stored only in the keychain).
-- Update: connector sign-ins are **app-wide**. They sit in one "Setup" group at the
+- Connector sign-ins are **app-wide**. They sit in one "Setup" group at the
   top of Today (`setupItems()`), are never filed under a project, never add to a
   project's strip count, and go away once signed in. On Today, sidebar Monos are
   grouped by project under quiet headers (`hubMonoGroup`, `MonoRailSection.groupBy`).
