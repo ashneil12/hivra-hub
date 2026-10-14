@@ -1,3 +1,8 @@
+import {
+  saveHubTheme,
+  useHubTheme,
+  type HubTheme,
+} from "../../hub/model/hubTheme";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
@@ -2112,6 +2117,28 @@ function useAppearanceSettings(
   };
 }
 
+/** Hub window theme: Monocode's own look, or the project strip's look. */
+function HubThemeRow() {
+  const theme = useHubTheme();
+  return (
+    <Row
+      id="hub-window-theme"
+      label="Window style"
+      description="Monocode matches Monocode's own colours. Strip uses the project strip's darker tone for the whole window."
+    >
+      <Segmented
+        label="Window style"
+        value={theme}
+        options={[
+          { value: "monocode", label: "Monocode" },
+          { value: "strip", label: "Strip" },
+        ]}
+        onChange={(value) => saveHubTheme(value as HubTheme)}
+      />
+    </Row>
+  );
+}
+
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
@@ -2138,6 +2165,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
             onChange={appearance.onThemePreference}
           />
         </Row>
+        <HubThemeRow />
         <Row
           id="accent-color"
           label="Accent color"

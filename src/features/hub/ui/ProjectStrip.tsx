@@ -1,5 +1,6 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, todayCount } from "../model/hubData";
+import "./hubTheme.css";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
@@ -30,7 +31,7 @@ export function ProjectStrip({
     <nav
       aria-label="Projects"
       data-hub-strip
-      className="flex h-full w-[68px] shrink-0 select-none flex-col items-center gap-1 bg-black/20 pb-3"
+      className="sidebar-glass hub-strip flex h-full w-[68px] shrink-0 select-none flex-col items-center gap-1 pb-3"
       data-tauri-drag-region="deep"
     >
       {/* Room for the macOS traffic lights. */}

@@ -1,7 +1,6 @@
 // Dev only: boots the real app in a plain browser (hub-dev.html) so the hub
 // frontend can be run with vite and screenshotted. Never shipped.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import backdropUrl from "./hub-backdrop.jpg";
 
 // Look like the Mac app (traffic-light space, ⌘ shortcuts).
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -30,17 +29,6 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   document.body.appendChild(lights);
 
-  // DEV-ONLY APPROXIMATION of the macOS window glass. On a Mac the native
-  // NSVisualEffectView blurs the desktop behind the translucent window
-  // (--window-background-opacity). A browser can't see the desktop, so we
-  // put the same blurred wallpaper the round-6 mockups used behind the app.
-  // Never shipped: only hub-dev.html loads this file.
-  const desk = document.createElement("div");
-  desk.setAttribute("aria-hidden", "true");
-  desk.style.cssText = `position:fixed;inset:-60px;z-index:-1;pointer-events:none;background:#000 url(${backdropUrl}) center/cover;filter:blur(40px) saturate(1.5)`;
-  document.body.prepend(desk);
-  document.documentElement.style.background = "#000";
-  document.body.style.background = "transparent";
 });
 
 mockWindows("main");
