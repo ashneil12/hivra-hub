@@ -83,15 +83,20 @@ function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) 
     <div role="button" tabIndex={0} data-hub-worker={w.id} onClick={() => onOpen(w.id)}
       onKeyDown={(e) => e.key === "Enter" && onOpen(w.id)}
       className="hub-fade-in flex cursor-default items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
-      <span className={`min-w-0 flex-1 truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
-        {w.doing}
-        {w.finishedAt ? <span className="text-content/60"> · {w.who}</span> : null}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className={`truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
+          {w.doing}
+          {w.finishedAt ? <span className="text-content/60"> · {w.who}</span> : null}
+        </span>
+        {w.stuck && w.stuckReason ? (
+          <span className="truncate text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
+        ) : null}
       </span>
-      <JobStateLabel w={w} />
+      <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-14 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active title={w.finishedAt ? undefined : `At it for ${durationLabel(w.minutes)}`}>
         {lastActiveLabel(w)}
       </span>
-      {w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}
+      <span className="flex w-24 shrink-0 justify-end">{w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}</span>
     </div>
   );
 }
@@ -158,14 +163,14 @@ function byMono(jobs: Worker[]): [string, Worker[]][] {
 
 /** Calm state text. Stuck = amber circle (still fixing itself). Needs you is the
  * one soft badge. Lead gave up = red Stuck with the reason (Ash's default). Done (not seen) = small dot. */
-function JobStateLabel({ w }: { w: Worker }) {
+function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean }) {
   const st = jobState(w);
   const reason = w.stuckReason ? w.stuckReason.replace(/^Example: /, "") : "";
   if (st === "needs_you")
     return (
       <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
         <span className="shrink-0 rounded-full bg-content/10 px-2 py-0.5 text-content">Needs you</span>
-        {reason ? <span className="truncate text-content/60">{reason}</span> : null}
+        {reason && !compact ? <span className="truncate text-content/60">{reason}</span> : null}
       </span>
     );
   if (st === "stuck" || st === "gave_up")
@@ -174,7 +179,7 @@ function JobStateLabel({ w }: { w: Worker }) {
         <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden className="shrink-0">
           <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={st === "gave_up" ? "rgb(239 68 68)" : "rgb(245 158 11)"} />
         </svg>
-        <span className="truncate">Stuck{reason ? `: ${reason}` : ""}</span>
+        <span className="truncate">Stuck{reason && !compact ? `: ${reason}` : ""}</span>
       </span>
     );
   if (st === "done_unseen")

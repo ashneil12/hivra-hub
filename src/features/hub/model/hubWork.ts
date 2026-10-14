@@ -6,7 +6,7 @@ import type { JobState, Worker } from "./types";
 
 const WORKERS: Worker[] = examples([
   {
-    id: "w1", activeAgo: 0, projectId: "exo-game", who: "MonoInvader", kind: "coding", minutes: 42,
+    id: "w1", activeAgo: 0, projectId: "exo-game", who: "Lead", kind: "coding", minutes: 42,
     doing: "Example: adding the air dodge",
     steps: [
       { id: "1", at: "8:46pm", text: "Example: running the movement tests (14 of 22 pass so far)" },
@@ -26,7 +26,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w3", activeAgo: 6, projectId: "exo-game", who: "MonoInvader", kind: "coding", minutes: 80, stuck: "stuck", waitingId: "build:b13b", stuckReason: "Example: the shader step keeps failing",
+    id: "w3", activeAgo: 6, projectId: "exo-game", who: "Lead", kind: "coding", minutes: 80, stuck: "stuck", waitingId: "build:b13b", stuckReason: "Example: the shader step keeps failing",
     doing: "Example: building 0.13.1 (shader fix)",
     steps: [
       { id: "1", at: "8:40pm", text: "Example: shader step timed out again (third try)" },
@@ -40,7 +40,7 @@ const WORKERS: Worker[] = examples([
     doing: "Example: reviewed the Area 3 layout", steps: [{ id: "1", at: "4:20pm", text: "Example: left three notes on Area 3" }],
   },
   {
-    id: "w5", projectId: "exo-game", who: "MonoInvader", kind: "coding", minutes: 95, finishedAt: "4:10am",
+    id: "w5", projectId: "exo-game", who: "Lead", kind: "coding", minutes: 95, finishedAt: "4:10am",
     doing: "Example: built 0.14, new level and autosave", steps: [{ id: "1", at: "4:10am", text: "Example: build 0.14 is ready to play" }],
   },
   {
@@ -52,7 +52,7 @@ const WORKERS: Worker[] = examples([
 
 /** Example: one more job, so a Mono shows two rows. */
 WORKERS.length && WORKERS.push({
-  id: "w7", activeAgo: 0, projectId: "exo-game", who: "MonoInvader", kind: "coding", minutes: 9,
+  id: "w7", activeAgo: 0, projectId: "exo-game", who: "Lead", kind: "coding", minutes: 9,
   doing: "Example: fixing the save bug",
   steps: [
     { id: "1", at: "8:44pm", text: "Example: found where autosave writes the wrong slot" },

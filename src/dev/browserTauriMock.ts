@@ -23,7 +23,7 @@ if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getIt
   localStorage.setItem(
     "monocode:mono-roster",
     JSON.stringify([
-      { id: "mono-invader", name: "MonoInvader", mascot: "invader", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
+      { id: "mono-invader", name: "Lead", mascot: "robot", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
       { id: "playtester", name: "Playtester", mascot: "ghost", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
       { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/exo-game", "/Users/ash/harness/hivra"] },
       { id: "projects-manager", name: "Projects Manager", mascot: "crab", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },

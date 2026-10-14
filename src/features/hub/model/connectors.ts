@@ -71,3 +71,14 @@ export function setComposio(on: boolean): void {
 export function allConnectors(): Connector[] {
   return list;
 }
+
+/** Main apps have a direct connector, so their login always stays on this Mac.
+ * Only rare apps without one go through Composio (when the switch is on). */
+const DIRECT = ["github", "gmail", "google", "slack", "notion", "linear", "figma", "outlook", "x"];
+export function hasDirectConnector(c: Connector): boolean {
+  const n = c.name.toLowerCase().replace(/^example:\s*/, "");
+  return DIRECT.includes(n.split(/\s+/)[0]);
+}
+export function loginLivesOn(c: Connector): "On this Mac" | "On Composio" {
+  return composioOn() && !hasDirectConnector(c) ? "On Composio" : "On this Mac";
+}

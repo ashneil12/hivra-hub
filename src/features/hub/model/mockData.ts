@@ -35,7 +35,7 @@ const SINCE: Record<string, string> = {
 };
 
 const MONOS: HubMono[] = [
-  { id: "mono-invader", name: "MonoInvader", mascot: "invader", color: "teal", status: "working", projectIds: ["exo-game"] },
+  { id: "mono-invader", name: "Lead", mascot: "robot", color: "teal", status: "working", projectIds: ["exo-game"] },
   { id: "playtester", name: "Playtester", mascot: "ghost", color: "violet", status: "idle", projectIds: ["exo-game"] },
   { id: "hivra-mailer", name: "Hivra mailer", mascot: "cat", color: "amber", status: "idle", projectIds: ["hivra"] },
 ];
