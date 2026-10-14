@@ -43,6 +43,7 @@ export function ModelSettings({
       "agent",
       "lead",
       "effort",
+      "ultracode",
       "sidekick",
       "reasoning",
       "thinking",

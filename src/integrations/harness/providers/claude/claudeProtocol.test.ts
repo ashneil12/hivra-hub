@@ -4,6 +4,7 @@ import {
   modelsFromClaudeListModels,
 } from "./claudeCatalog";
 import {
+  claudeSettingsKey,
   applyClaudePromptEffortPrefix,
   applyClaudeTaskTool,
   askUserQuestionAllowInput,
@@ -58,6 +59,13 @@ describe("runtimeModeToPermission", () => {
     expect(args).toEqual(
       expect.arrayContaining(["--permission-mode", "default"]),
     );
+  });
+});
+
+describe("independent Ultracode settings", () => {
+  it("restarts a session when only the Ultracode toggle changes", () => {
+    const base = { model: "claude-opus-5", effort: "low", runtimeMode: "supervised" as const };
+    expect(claudeSettingsKey({ ...base, ultracode: "true" })).not.toBe(claudeSettingsKey({ ...base, ultracode: "false" }));
   });
 });
 
@@ -503,12 +511,13 @@ describe("list_models catalog", () => {
       "high",
       "xhigh",
       "max",
-      "ultracode",
       "ultrathink",
     ]);
     expect(sonnet?.settings?.some((setting) => setting.id === "fast")).toBe(
       false,
     );
+
+    expect(sonnet?.settings?.find((setting) => setting.id === "ultracode")).toMatchObject({ kind: "toggle", value: "false" });
 
     const fable = models[1];
     expect(

@@ -46,6 +46,9 @@ describe("CC Studio usage footer", () => {
   it.each([
     ["claude:ccstudio:deepseek:deepseek-chat", "DeepSeek API"],
     ["claude:ccstudio:opencode-go:deepseek-v4.1-flash", "OpenCode Go"],
+    ["claude:ccstudio:grok:grok-4.7", "Grok subscription"],
+    ["claude:ccstudio:experiential:deepseek-v4.1-flash", "Experiential Labs"],
+    ["claude:ccstudio:experiential:gemini-4-argon", "Experiential Labs"],
   ])("shows the actual upstream for %s instead of Anthropic subscription usage", (model, label) => {
     const markup = renderToStaticMarkup(createElement(UsageFooter, {
       providers: ["claude"],

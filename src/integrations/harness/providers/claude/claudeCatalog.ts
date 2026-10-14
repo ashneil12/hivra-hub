@@ -1,3 +1,4 @@
+import { withCurrentCcStudioChoices } from "../../../../features/sessions/model/ccStudioModelChoices";
 import { isCcStudioClaudeRuntime } from "../../../../features/providers/model/providerBinaryPaths";
 import { homeDir } from "../../../../platform/tauri/fs";
 import {
@@ -58,10 +59,6 @@ const EFFORT_WITH_XHIGH: ModelSetting = {
     { value: "high", label: "High" },
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
-    {
-      value: "ultracode",
-      label: "Ultracode",
-    },
     { value: "ultrathink", label: "Ultrathink" },
   ],
 };
@@ -79,6 +76,15 @@ const EFFORT_OPUS_47: ModelSetting = {
     { value: "max", label: "Max" },
     { value: "ultrathink", label: "Ultrathink" },
   ],
+};
+
+const ULTRACODE: ModelSetting = {
+  id: "ultracode",
+  label: "Ultracode",
+  description: "Claude Code dynamic workflows. Uses the selected reasoning effort; requires workflows enabled and an xhigh-capable model.",
+  kind: "toggle",
+  value: "false",
+  options: [{ value: "true", label: "On" }, { value: "false", label: "Off" }],
 };
 
 const FAST_MODE: ModelSetting = {
@@ -118,24 +124,11 @@ function contextWindow(defaultValue: "200k" | "1m"): ModelSetting {
 
 /** CC Studio routes these model IDs through the selected upstream while keeping
  * Claude Code as the harness. No credentials are part of the catalog. */
-export const CC_STUDIO_MODEL_CATALOG: AgentModel[] = [
-  { provider: "opencode-go", model: "deepseek-v4.1-flash", name: "CC · OpenCode Go · DeepSeek V4.1 Flash" },
-  { provider: "opencode-go", model: "deepseek-flash", name: "CC · OpenCode Go · DeepSeek Flash" },
-  { provider: "deepseek", model: "deepseek-v4-flash", name: "CC · DeepSeek API · V4 Flash" },
-  { provider: "deepseek", model: "deepseek-v4-pro", name: "CC · DeepSeek API · V4 Pro" },
-  { provider: "deepseek", model: "deepseek-chat", name: "CC · DeepSeek API · Chat" },
-  { provider: "deepseek", model: "deepseek-reasoner", name: "CC · DeepSeek API · Reasoner" },
-].map(({ provider, model, name }) => ({
-  id: `claude:ccstudio:${provider}:${model}`,
-  harness: "claude",
-  name,
-  nativeId: `ccstudio:${provider}:${model}`,
-}));
+export { CC_STUDIO_MODEL_CATALOG } from "../../../../features/sessions/model/ccStudioModelChoices";
 
 export function withCcStudioModels(models: AgentModel[]): AgentModel[] {
   if (!isCcStudioClaudeRuntime()) return models.filter((model) => !model.nativeId?.startsWith("ccstudio:"));
-  const nativeIds = new Set(models.map((model) => model.nativeId));
-  return [...models, ...CC_STUDIO_MODEL_CATALOG.filter((model) => !nativeIds.has(model.nativeId))];
+  return withCurrentCcStudioChoices(models);
 }
 
 /** Fallback catalog when `list_models` is unavailable. */
@@ -145,42 +138,42 @@ export const CLAUDE_MODEL_CATALOG: AgentModel[] = [
     harness: "claude",
     name: "Claude Fable 5",
     nativeId: "claude-fable-5",
-    settings: [EFFORT_WITH_XHIGH, contextWindow("1m")],
+    settings: [EFFORT_WITH_XHIGH, ULTRACODE, contextWindow("1m")],
   },
   {
     id: "claude:opus-5",
     harness: "claude",
     name: "Claude Opus 5",
     nativeId: "claude-opus-5",
-    settings: [EFFORT_WITH_XHIGH, FAST_MODE, contextWindow("1m")],
+    settings: [EFFORT_WITH_XHIGH, ULTRACODE, FAST_MODE, contextWindow("1m")],
   },
   {
     id: "claude:opus-5-5",
     harness: "claude",
     name: "Claude Opus 5.5",
     nativeId: "claude-opus-5-5",
-    settings: [EFFORT_WITH_XHIGH, FAST_MODE, contextWindow("1m")],
+    settings: [EFFORT_WITH_XHIGH, ULTRACODE, FAST_MODE, contextWindow("1m")],
   },
   {
     id: "claude:sonnet-5",
     harness: "claude",
     name: "Claude Sonnet 5",
     nativeId: "claude-sonnet-5",
-    settings: [EFFORT_WITH_XHIGH, contextWindow("200k")],
+    settings: [EFFORT_WITH_XHIGH, ULTRACODE, contextWindow("200k")],
   },
   {
     id: "claude:opus-4.8",
     harness: "claude",
     name: "Claude Opus 4.8",
     nativeId: "claude-opus-4-8",
-    settings: [EFFORT_WITH_XHIGH, FAST_MODE],
+    settings: [EFFORT_WITH_XHIGH, ULTRACODE, FAST_MODE],
   },
   {
     id: "claude:opus-4.7",
     harness: "claude",
     name: "Claude Opus 4.7",
     nativeId: "claude-opus-4-7",
-    settings: [EFFORT_OPUS_47, FAST_MODE],
+    settings: [EFFORT_OPUS_47, ULTRACODE, FAST_MODE],
   },
   {
     id: "claude:opus-4.6",
@@ -423,6 +416,7 @@ function settingsFromListRow(
   const levels = advertisedEffortLevels(rec);
   if (rec.supportsEffort === true || levels.length > 0) {
     settings.push(effortSetting(levels));
+    if (levels.includes("xhigh")) settings.push(ULTRACODE);
   } else if (rec.supportsAdaptiveThinking === true) {
     settings.push(THINKING);
   }
@@ -445,9 +439,6 @@ function effortSetting(levels: string[]): ModelSetting {
   const options = (
     known.length > 0 ? known : ["low", "medium", "high", "max"]
   ).map((value) => ({ value, label: EFFORT_LABELS[value] ?? value }));
-  if (options.some((option) => option.value === "xhigh")) {
-    options.push({ value: "ultracode", label: "Ultracode" });
-  }
   options.push({ value: "ultrathink", label: "Ultrathink" });
   const defaultValue = options.some((option) => option.value === "high")
     ? "high"

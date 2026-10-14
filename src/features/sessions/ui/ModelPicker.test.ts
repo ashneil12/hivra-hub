@@ -64,6 +64,7 @@ vi.mock("../../../shared/ui/Popover", () => ({
 }));
 
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { CC_STUDIO_MODEL_CATALOG } from "../model/ccStudioModelChoices";
 import {
   resetHarnessModelOverlays,
   saveRecentModelChoice,
@@ -1130,6 +1131,22 @@ describe("model picker", () => {
         .querySelector('[role="tab"][aria-label="Grok Build"]')
         ?.getAttribute("aria-selected"),
     ).toBe("true");
+  });
+
+  it("excludes a retired current CC route from the recent chooser while keeping its header", () => {
+    setHarnessModels("claude", CC_STUDIO_MODEL_CATALOG);
+    saveRecentModelChoice("claude", "claude:ccstudio:grok:grok-4.7-build-fast");
+    saveRecentModelChoice("claude", "claude:ccstudio:grok:grok-4.7");
+    act(() => root.render(createElement(ModelPicker, {
+      harness: "claude", model: "claude:ccstudio:grok:grok-4.7-build-fast", values: {},
+      onChange: vi.fn(), onSettingsChange: vi.fn(),
+    })));
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!;
+    contextMenu(trigger);
+    const items = [...container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("CC · Grok 4.7");
+    expect(items[0].textContent).not.toContain("build-fast");
   });
 
   it("quick-switches between recently used models on right-click", () => {

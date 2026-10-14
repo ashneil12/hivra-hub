@@ -1084,6 +1084,7 @@ export function claudeSettingsKey(input: {
   model: string;
   effort?: string;
   fast?: string;
+  ultracode?: string;
   thinking?: string;
   context?: string;
   runtimeMode: RuntimeMode;
@@ -1093,6 +1094,7 @@ export function claudeSettingsKey(input: {
     input.model,
     input.effort ?? "",
     input.fast ?? "",
+    input.ultracode ?? "",
     input.thinking ?? "",
     input.context ?? "",
     input.runtimeMode,

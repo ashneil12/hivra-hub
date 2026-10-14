@@ -18,9 +18,10 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Claude auxiliary upstream routing", () => {
   it("keeps concurrent originating session routes exact even in the same project", () => {
-    expect(pickTextModel("claude:ccstudio:deepseek:deepseek-chat", "/same-project")).toBe("ccstudio:deepseek:deepseek-chat");
+    expect(pickTextModel("claude:ccstudio:experiential:deepseek-v4.1-flash", "/same-project")).toBe("ccstudio:experiential:deepseek-v4.1-flash");
+    expect(pickTextModel("claude:ccstudio:experiential:gemini-4-argon", "/same-project")).toBe("ccstudio:experiential:gemini-4-argon");
     expect(pickTextModel("claude:sonnet-4.6", "/same-project")).toBe("claude-sonnet-4-6");
-    expect(pickTextModel("claude:ccstudio:opencode-go:deepseek-v4.1-flash", "/same-project")).toBe("ccstudio:opencode-go:deepseek-v4.1-flash");
+    expect(pickTextModel("claude:ccstudio:grok:grok-4.7", "/same-project")).toBe("ccstudio:grok:grok-4.7");
   });
 
   it("skips unknown studio helper routes instead of guessing Haiku", () => {
@@ -28,8 +29,8 @@ describe("Claude auxiliary upstream routing", () => {
   });
 
   it("uses the explicitly selected project model for project-wide git helpers", () => {
-    setProjectDefaultModel("/configured", "claude", "claude:ccstudio:deepseek:deepseek-chat");
-    expect(pickTextModel(undefined, "/configured")).toBe("ccstudio:deepseek:deepseek-chat");
+    setProjectDefaultModel("/configured", "claude", "claude:ccstudio:experiential:deepseek-v4.1-flash");
+    expect(pickTextModel(undefined, "/configured")).toBe("ccstudio:experiential:deepseek-v4.1-flash");
   });
 
   it("retains native helper behavior in a stock Claude build", () => {

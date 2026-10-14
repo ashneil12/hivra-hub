@@ -89,9 +89,10 @@ function textSettings(
   const settings: Record<string, boolean> = {};
   if (thinking) settings.alwaysThinkingEnabled = true;
   if (fast) settings.fastMode = true;
-  if (isClaudeUltracodeEffort(effort)) settings.ultracode = true;
+  if (modelSettings?.ultracode !== undefined) settings.ultracode = modelSettings.ultracode === "true";
+  else if (isClaudeUltracodeEffort(effort)) settings.ultracode = true;
   return {
-    key: JSON.stringify({ effort, context, thinking, fast, readOnly }),
+    key: JSON.stringify({ effort, context, thinking, fast, ultracode: modelSettings?.ultracode, readOnly }),
     launchModel: resolveClaudeApiModelId(model, context),
     effort: normalizeClaudeCliEffort(effort, model),
     promptEffort: effort,

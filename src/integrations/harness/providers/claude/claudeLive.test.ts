@@ -72,6 +72,7 @@ async function startTurn(
     runtimeMode?: RuntimeMode;
     intent?: TurnIntent;
     providerAccountId?: string;
+    modelSettings?: Record<string, string>;
   } = {},
 ) {
   const events: HarnessEvent[] = [];
@@ -79,7 +80,7 @@ async function startTurn(
     sessionId,
     cwd: "/repo",
     model: "claude:claude-sonnet-5",
-    modelSettings: {},
+    modelSettings: options.modelSettings ?? {},
     runtimeMode: options.runtimeMode ?? "supervised",
     intent: options.intent,
     providerAccountId: options.providerAccountId,
@@ -270,6 +271,15 @@ afterEach(async () => {
 });
 
 describe("claude streamed tool inputs", () => {
+  it.each(["true", "false"])("launches independent Ultracode=%s without changing selected effort", async (ultracode) => {
+    const { turn } = await startTurn("s1", { modelSettings: { effort: "low", ultracode } });
+    const args = spawned[0];
+    expect(args[args.indexOf("--effort") + 1]).toBe("low");
+    expect(JSON.parse(args[args.indexOf("--settings") + 1])).toMatchObject({ ultracode: ultracode === "true" });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
   it("replaces an empty Shell row with the complete assistant tool input", async () => {
     const { events, turn } = await startTurn("s1");
     emit({

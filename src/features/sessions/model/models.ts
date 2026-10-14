@@ -1,3 +1,4 @@
+import { withCurrentCcStudioChoices, isCurrentCcStudioNativeId } from "./ccStudioModelChoices";
 import { isCcStudioClaudeRuntime } from "../../providers/model/providerBinaryPaths";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
@@ -261,6 +262,7 @@ const listeners = new Set<() => void>();
 function emit() {
   catalogVersion += 1;
   baseByHarness = null;
+  studioClaudeModelsCache = null;
   indexById = null;
   allCache = null;
   for (const listener of listeners) listener();
@@ -300,6 +302,7 @@ export function resetHarnessModelOverlays() {
 }
 
 export function defaultModelId(harness: HarnessId): string {
+  if (harness === "claude" && isCcStudioClaudeRuntime()) return "claude:ccstudio:grok:grok-4.7";
   return overlayDefaults[harness] ?? DEFAULT_MODEL_ID[harness];
 }
 
@@ -307,6 +310,7 @@ export function defaultModelId(harness: HarnessId): string {
 // provider row, the picker itself), so they must not rebuild the catalog on
 // each call. These caches are dropped in `emit()` whenever an overlay lands.
 let baseByHarness: Partial<Record<HarnessId, AgentModel[]>> | null = null;
+let studioClaudeModelsCache: AgentModel[] | null = null;
 let allCache: AgentModel[] | null = null;
 let indexById: Map<string, AgentModel> | null = null;
 
@@ -322,6 +326,7 @@ function baseModelsFor(harness: HarnessId): AgentModel[] {
 }
 
 export function modelsFor(harness: HarnessId): AgentModel[] {
+  if (harness === "claude" && isCcStudioClaudeRuntime()) return (studioClaudeModelsCache ??= withCurrentCcStudioChoices(overlays.claude ?? baseModelsFor("claude")));
   return overlays[harness] ?? baseModelsFor(harness);
 }
 
@@ -488,6 +493,7 @@ export function nativeModelId(model: AgentModel | string): string {
  */
 function nativeIdForUnknownKey(id: string): string {
   const trimmed = id.trim();
+  if (trimmed.startsWith("ccstudio:")) return checkedCcStudioNativeId(trimmed);
   const slug = nativeIdFrom(trimmed);
   if (slug.startsWith("ccstudio:")) return checkedCcStudioNativeId(slug);
   const colon = trimmed.indexOf(":");
@@ -507,6 +513,9 @@ function nativeIdForUnknownKey(id: string): string {
 function checkedCcStudioNativeId(native: string): string {
   if (!isCcStudioClaudeRuntime()) {
     throw new Error("This saved upstream model requires the CC Studio Claude launcher. Select a native Claude model or restore the CC Studio binary in Provider settings.");
+  }
+  if (!isCurrentCcStudioNativeId(native)) {
+    throw new Error("This saved CC Studio model is no longer in the current CC Studio lineup. Choose a native Claude model, DeepSeek 4.1 Flash, Grok 4.7 or Gemini 4 Argon before sending. Your conversation history is preserved.");
   }
   return native;
 }
@@ -541,10 +550,30 @@ export function mergeModelSettings(
   if (modelsFor(model.harness).length === 0) return { ...current };
   const next = defaultModelSettings(model);
   if (!current) return next;
+  const saved = migrateLegacyUltracodeEffort(model, current);
   for (const setting of model.settings ?? []) {
-    const value = compatibleSettingValue(setting, current[setting.id]);
+    const value = compatibleSettingValue(setting, saved[setting.id]);
     if (value != null) next[setting.id] = value;
   }
+  return next;
+}
+
+/** Claude Code used to store Ultracode as an effort value. It is its own toggle now. */
+function migrateLegacyUltracodeEffort(
+  model: AgentModel,
+  current: Record<string, string>,
+): Record<string, string> {
+  if (current.effort !== "ultracode") return current;
+  const effort = model.settings?.find((setting) => setting.id === "effort");
+  const next = { ...current };
+  delete next.effort;
+  if (model.settings?.some((setting) => setting.id === "ultracode")) {
+    next.ultracode = "true";
+  }
+  const replacement = ["xhigh", "max", "high"].find((level) =>
+    effort?.options.some((option) => option.value === level),
+  );
+  if (replacement) next.effort = replacement;
   return next;
 }
 
@@ -805,12 +834,18 @@ export function saveDefaultModel(harness: HarnessId, model: string) {
   }
 }
 
+function allowedNewSessionModel(harness: HarnessId, model: string): boolean {
+  if (harness !== "claude" || !isCcStudioClaudeRuntime()) return true;
+  const native = model.replace(/^claude:/, "");
+  return native.startsWith("ccstudio:") ? isCurrentCcStudioNativeId(native) : /^(?:claude-)?(?:opus|sonnet|haiku|fable|best)(?:[-[.]|$)/.test(native);
+}
+
 /** User-picked model for a provider, else the catalog default. */
 export function preferredModelId(harness: HarnessId): string {
   const saved = loadDefaultModels()[harness];
-  if (saved) return saved;
+  if (saved && allowedNewSessionModel(harness, saved)) return saved;
   const last = loadLastModelChoice();
-  if (last?.harness === harness) return last.model;
+  if (last?.harness === harness && allowedNewSessionModel(harness, last.model)) return last.model;
   return defaultModelId(harness);
 }
 
@@ -843,10 +878,11 @@ export function defaultSessionChoice(cwd?: string): LastModelChoice {
     cwd,
     project.defaultHarness ?? last?.harness ?? "cursor",
   );
-  const model =
-    project.models?.[harness] ??
-    (project.defaultHarness === harness ? project.defaultModel : undefined) ??
-    preferredModelId(harness);
+  const model = [
+    project.models?.[harness],
+    project.defaultHarness === harness ? project.defaultModel : undefined,
+    preferredModelId(harness),
+  ].find((candidate): candidate is string => !!candidate && allowedNewSessionModel(harness, candidate)) ?? defaultModelId(harness);
   return { harness, model };
 }
 

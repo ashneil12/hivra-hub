@@ -62,6 +62,8 @@ export function ccStudioUpstreamLabel(session?: UsageFooterSession): string | nu
   const model = session.model?.replace(/^claude:/, "") ?? "";
   if (model.startsWith("ccstudio:deepseek:")) return "DeepSeek API";
   if (model.startsWith("ccstudio:opencode-go:")) return "OpenCode Go";
+  if (model.startsWith("ccstudio:grok:")) return "Grok subscription";
+  if (model.startsWith("ccstudio:experiential:")) return "Experiential Labs";
   return null;
 }
 

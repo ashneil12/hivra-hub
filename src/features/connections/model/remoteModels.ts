@@ -93,6 +93,7 @@ function knownSetting(
   if (provider !== "claude") return undefined;
   if (id === "effort")
     return effort(id, ["low", "medium", "high", "max", "ultrathink"]);
+  if (id === "ultracode") return toggle(id, "Ultracode");
   if (id === "fast") return toggle(id, "Fast");
   if (id === "thinking") return toggle(id, "Thinking");
   if (id === "context")
@@ -177,6 +178,9 @@ export function remoteModelControls(
   if (model && modelId !== savedModelId)
     return { model, settings: model.settings ?? [] };
   if (!model && !savedModelId) return { settings: [] };
+  if (saved.effort === "ultracode") {
+    saved = { ...saved, ultracode: "true", effort: "high" };
+  }
   const settings = [...(model?.settings ?? [])];
   let fallback: RemoteModelControls["fallback"];
   if (!model) {

@@ -1,4 +1,4 @@
-const studioRuntime = vi.hoisted(() => ({ enabled: true }));
+const studioRuntime = vi.hoisted(() => ({ enabled: false }));
 vi.mock("../../providers/model/providerBinaryPaths", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../providers/model/providerBinaryPaths")>(),
   isCcStudioClaudeRuntime: () => studioRuntime.enabled,
@@ -23,6 +23,7 @@ import {
   modelEffortSetting,
   modelPickerTabs,
   nativeModelId,
+  modelsFor,
   preferredModelId,
   preferredModelSettings,
   resetHarnessModelOverlays,
@@ -136,6 +137,34 @@ describe("model settings memory", () => {
 
   it("maps extra-high onto Claude's xhigh", () => {
     expect(mergeModelSettings(opus, { effort: "extra-high" })).toEqual({
+      effort: "xhigh",
+      fast: "false",
+    });
+  });
+
+  it("moves a legacy ultracode effort onto the toggle and extra-high", () => {
+    const withUltracode: AgentModel = {
+      ...opus,
+      settings: [
+        ...opus.settings!,
+        {
+          id: "ultracode",
+          label: "Ultracode",
+          kind: "toggle",
+          value: "false",
+          options: [
+            { value: "true", label: "On" },
+            { value: "false", label: "Off" },
+          ],
+        },
+      ],
+    };
+    expect(mergeModelSettings(withUltracode, { effort: "ultracode" })).toEqual({
+      effort: "xhigh",
+      fast: "false",
+      ultracode: "true",
+    });
+    expect(mergeModelSettings(opus, { effort: "ultracode" })).toEqual({
       effort: "xhigh",
       fast: "false",
     });
@@ -386,6 +415,7 @@ describe("picker provider visibility", () => {
 
 describe("live catalog overlays", () => {
   afterEach(() => {
+    studioRuntime.enabled = false;
     resetHarnessModelOverlays();
   });
 
@@ -429,13 +459,61 @@ describe("live catalog overlays", () => {
     studioRuntime.enabled = false;
     try {
       expect(() => nativeModelId("claude:ccstudio:opencode-go:deepseek-v4.1-flash")).toThrow("requires the CC Studio Claude launcher");
-    } finally { studioRuntime.enabled = true; }
+    } finally { studioRuntime.enabled = false; }
+  });
+
+  it("offers native Claude plus exactly three proxy choices before and after discovery", () => {
+    studioRuntime.enabled = true;
+    resetHarnessModelOverlays();
+    expect(modelsFor("claude").filter((model) => model.nativeId?.startsWith("ccstudio:")).map((model) => model.nativeId)).toEqual([
+      "ccstudio:experiential:deepseek-v4.1-flash", "ccstudio:grok:grok-4.7", "ccstudio:experiential:gemini-4-argon",
+    ]);
+    setHarnessModels("claude", [{ id: "claude:sonnet", harness: "claude", name: "Sonnet", nativeId: "sonnet" }]);
+    expect(modelsFor("claude")).toHaveLength(4);
+    expect(modelsFor("claude")[0].nativeId).toBe("sonnet");
+    expect(defaultModelId("claude")).toBe("claude:ccstudio:grok:grok-4.7");
+  });
+
+  it("starts new CC sessions on Grok when saved defaults are retired without rewriting preferences or history", () => {
+    studioRuntime.enabled = true;
+    mockLocalStorage();
+    saveDefaultModel("claude", "claude:ccstudio:grok:grok-4.7-build-fast");
+    saveLastModelChoice("claude", "claude:ccstudio:deepseek:deepseek-chat");
+    setProjectDefaultProvider("/retired-default", "claude", "claude:ccstudio:grok:grok-4.7-build-fast");
+    expect(preferredModelId("claude")).toBe("claude:ccstudio:grok:grok-4.7");
+    expect(defaultSessionChoice("/retired-default")).toEqual({ harness: "claude", model: "claude:ccstudio:grok:grok-4.7" });
+    expect(loadDefaultModels().claude).toBe("claude:ccstudio:deepseek:deepseek-chat");
+    expect(loadLastModelChoice()?.model).toBe("claude:ccstudio:deepseek:deepseek-chat");
+    expect(resolveModel("claude", "claude:ccstudio:grok:grok-4.7-build-fast").id).toBe("claude:ccstudio:grok:grok-4.7-build-fast");
+    setProjectDefaultProvider("/valid-default", "claude", "claude:ccstudio:experiential:gemini-4-argon");
+    expect(defaultSessionChoice("/valid-default").model).toBe("claude:ccstudio:experiential:gemini-4-argon");
+  });
+
+  it("honors native subscription models for saved sessions and new-session preferences", () => {
+    studioRuntime.enabled = true;
+    mockLocalStorage();
+    saveDefaultModel("claude", "claude:opus-5");
+    expect(preferredModelId("claude")).toBe("claude:opus-5");
+    setProjectDefaultProvider("/native-default", "claude", "claude:sonnet-4.6");
+    expect(defaultSessionChoice("/native-default").model).toBe("claude:sonnet-4.6");
+    expect(nativeModelId("claude:sonnet-4.6")).toBe("claude-sonnet-4-6");
+    expect(nativeModelId("claude:opus-5")).toBe("claude-opus-5");
+  });
+
+  it("keeps retired proxy history but blocks launch without a billing fallback", () => {
+    studioRuntime.enabled = true;
+    for (const id of ["claude:ccstudio:deepseek:deepseek-chat", "claude:ccstudio:grok:grok-4.7-build-fast"]) {
+      const saved = resolveModel("claude", id);
+      expect(saved.id).toBe(id);
+      expect(() => nativeModelId(saved)).toThrow("current CC Studio lineup");
+    }
   });
 
   it("preserves CC Studio upstream IDs through live and unknown saved model resolution", () => {
-    const nativeId = "ccstudio:opencode-go:deepseek-v4.1-flash";
+    studioRuntime.enabled = true;
+    const nativeId = "ccstudio:experiential:deepseek-v4.1-flash";
     const id = `claude:${nativeId}`;
-    const model: AgentModel = { id, harness: "claude", name: "CC · OpenCode Go · DeepSeek V4.1 Flash", nativeId };
+    const model: AgentModel = { id, harness: "claude", name: "CC · DeepSeek 4.1 Flash (Experiential)", nativeId };
     setHarnessModels("claude", [model]);
     expect(nativeModelId(model)).toBe(nativeId);
     expect(nativeModelId(id)).toBe(nativeId);

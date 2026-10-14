@@ -112,6 +112,7 @@ const SETTING_ORDER = [
   "fast",
   "lead",
   "effort",
+  "ultracode",
   "sidekick",
   "reasoning",
   "reasoningEffort",
@@ -245,7 +246,7 @@ function recentMenuModels(
     const item = source.find(choice.model);
     return item?.harness === choice.harness ? [item] : [];
   });
-  if (!models.some((item) => item.id === current.id)) models.push(current);
+  if (!models.some((item) => item.id === current.id) && source.modelsFor(current.harness).some((item) => item.id === current.id)) models.push(current);
   return models.slice(0, 6);
 }
 
@@ -1656,8 +1657,11 @@ function ModelFlyout({
                         onClick={() => onPick(item)}
                         className="flex min-w-0 flex-1 items-center gap-2 px-1.5 text-left text-[13px] disabled:cursor-not-allowed"
                       >
-                        <span className="min-w-0 flex-1 truncate">
-                          {item.name}
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{item.name}</span>
+                          {item.nativeId?.startsWith("ccstudio:") && item.provider ? (
+                            <span className="block text-[11px] text-content/45">{item.provider.name}</span>
+                          ) : null}
                         </span>
                       </button>
                       {tab === "favorites" ? (
