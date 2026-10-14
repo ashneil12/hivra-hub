@@ -15,8 +15,8 @@ const SECTIONS: Record<string, ProjectItem[]> = {
 };
 
 const NEEDS: Need[] = [
-  { id: "n1", projectId: "exo-game", title: "Play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
-  { id: "n2", projectId: "exo-game", title: "Skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
+  { id: "n1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
+  { id: "n2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
   { id: "n3", projectId: "hivra", title: "Example: pick the waitlist headline", why: "Two versions tested about the same. Your taste call.", actionType: "open", actionLabel: "Open" },
 ];
 
@@ -25,7 +25,7 @@ const STUCK: StuckItem[] = [
 ];
 
 const SINCE: Record<string, string> = {
-  "exo-game": "The new level is in and working. Two things need your hands.",
+  "exo-game": "Example: the new level is in and working. Two things need your hands.",
   hivra: "Example: the nightly backup is stuck and hasn't been sent to anyone.",
 };
 
@@ -43,14 +43,16 @@ export const mockHubData: HubDataSource = {
     ...(SECTIONS[projectId] ?? []),
     { id: "being-built", kind: "being-built", title: "Being built" },
   ],
-  needCount: (projectId) =>
-    NEEDS.filter((n) => n.projectId === projectId && !n.later).length +
-    STUCK.filter((s) => s.projectId === projectId).length,
-  lastActiveAt: () => "2026-10-13T23:40:00+01:00",
+  // Example: Ash was last here at 2pm today.
+  lastActiveAt: () => {
+    const d = new Date();
+    d.setHours(14, 0, 0, 0);
+    return d.toISOString();
+  },
   sinceSummary: (projectId) => ({
     plainText: projectId
       ? (SINCE[projectId] ?? "Example: quiet since you were last here.")
-      : "The game's new level is in and working. In Hivra (example), the nightly backup is stuck and hasn't been sent to anyone. Nibbii and Operator OS were quiet.",
+      : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Nibbii and Operator OS were quiet.",
     details: "Example details.",
   }),
   listNeeds: (projectId) => NEEDS.filter((n) => !projectId || n.projectId === projectId),

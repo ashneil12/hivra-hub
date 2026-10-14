@@ -1,6 +1,6 @@
 import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { hubData } from "../model/hubData";
+import { hubData, sinceLabel, todayRows } from "../model/hubData";
 import type { HubSelection } from "../model/hubNav";
 import type { Need, StuckItem } from "../model/types";
 
@@ -46,13 +46,12 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   const data = hubData();
   const since = data.sinceSummary(projectId);
-  const needs = data.listNeeds(projectId).filter((n) => !n.later).slice(0, 5);
-  const stuck = data.listStuck(projectId);
+  const { needs, stuck } = todayRows(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
       <section>
-        <h2 className="mb-2 text-xs text-content/60">Since you were last here</h2>
+        <h2 className="mb-2 text-xs text-content/60">{sinceLabel(data.lastActiveAt())}</h2>
         <p className="text-[13px] leading-5 text-content/85">{since.plainText}</p>
       </section>
       {projects.map((p) => {
@@ -73,7 +72,6 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </section>
         );
       })}
-      <p className="text-[11px] text-content/60">Example data. Real Needs arrive when the backend is wired.</p>
     </div>
   );
 }

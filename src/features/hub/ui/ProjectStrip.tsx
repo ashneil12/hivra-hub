@@ -1,5 +1,5 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
-import { hubData } from "../model/hubData";
+import { hubData, todayCount } from "../model/hubData";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
@@ -44,7 +44,7 @@ export function ProjectStrip({
       />
       <div className="h-2 shrink-0" />
       {projects.map((project) => {
-        const count = data.needCount(project.id);
+        const count = todayCount(project.id);
         return (
           <StripButton
             key={project.id}
@@ -92,7 +92,7 @@ function StripButton({
         }`}
       >
         <Icon className="size-[18px]" strokeWidth={1.75} />
-        {count ? (
+        {(count ?? 0) > 0 ? (
           <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-background-base px-1 text-center text-[10px] leading-4 text-content/75">
             {count}
           </span>

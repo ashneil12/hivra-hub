@@ -87,7 +87,7 @@ import {
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
-import { hubData } from "../features/hub/model/hubData";
+import { hubData, nameHubProject } from "../features/hub/model/hubData";
 import {
   hubSurfaceOpen,
   setHubSelection,
@@ -12897,6 +12897,7 @@ function Workspace({
               onPickProject={(project) => {
                 closeChromeViews();
                 setHubSelection({ project: project.id, item: "coding-team" });
+                nameHubProject(project);
                 onSelectProject(project.folder);
               }}
               onCreateProject={pickProject}
@@ -12907,8 +12908,10 @@ function Workspace({
                   selection={hubSel}
                   onPick={(item) => {
                     closeChromeViews();
-                    if (item.kind === "coding-team" && hubProject)
+                    if (item.kind === "coding-team" && hubProject) {
+                      nameHubProject(hubProject);
                       onSelectProject(hubProject.folder);
+                    }
                   }}
                 />
               }
@@ -13004,7 +13007,11 @@ function Workspace({
               onOpenAutomations={onOpenAutomations}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
-              inboxActive={hubShown && hubSel.item === "inbox"}
+              inboxActive={
+                hubShown &&
+                hubSel.project !== "today" &&
+                hubSel.item === "inbox"
+              }
               notesActive={notesViewOpen}
               automationsActive={automationsViewOpen}
               notesEnabled={notesEnabled}

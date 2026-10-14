@@ -69,8 +69,6 @@ export type HubMono = {
 export interface HubDataSource {
   listProjects(): HubProject[];
   listProjectItems(projectId: string): ProjectItem[];
-  /** Open Needs plus stuck items needing Ash, per project. No zero badges. */
-  needCount(projectId: string): number;
   lastActiveAt(): string;
   sinceSummary(projectId?: string): SinceSummary;
   listNeeds(projectId?: string): Need[];
