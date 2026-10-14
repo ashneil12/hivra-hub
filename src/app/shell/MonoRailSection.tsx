@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import {
   useEffect,
   useMemo,
@@ -47,6 +48,8 @@ export type MonoRailProps = {
   onDelete: (monoId: string) => void;
   /** Hub mode: list only the Monos that work on this project folder. */
   projectFilter?: string;
+  /** Hub mode: a quiet header above each run of Monos with the same group. */
+  groupBy?: (mono: { projects: readonly string[] }) => string;
 };
 
 const IDLE: MonoState = { status: "idle" };
@@ -73,14 +76,22 @@ export function MonoRailSection({
   onCreate,
   onDelete,
   projectFilter,
+  groupBy,
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monos = useMemo(
     () =>
-      listMonos().filter(
-        (mono) => !projectFilter || mono.projects.includes(projectFilter),
-      ),
-    [snapshot, projectFilter],
+      {
+        const list = listMonos().filter(
+          (mono) => !projectFilter || mono.projects.includes(projectFilter),
+        );
+        if (!groupBy) return list;
+        // Keep each group together, in first-seen order.
+        const order: string[] = [];
+        for (const m of list) if (!order.includes(groupBy(m))) order.push(groupBy(m));
+        return order.flatMap((g) => list.filter((m) => groupBy(m) === g));
+      },
+    [snapshot, projectFilter, groupBy],
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
@@ -120,7 +131,14 @@ export function MonoRailSection({
         </button>
       </div>
       <div className="flex flex-col gap-px px-2">
-        {monos.map((mono) => {
+        {monos.map((mono, index) => {
+          const group = groupBy?.(mono);
+          const header =
+            group && group !== (index ? groupBy?.(monos[index - 1]) : undefined) ? (
+              <div key={`group:${group}`} className="px-2 pb-0.5 pt-2 text-[11px] text-content/45" data-mono-group={group}>
+                {group}
+              </div>
+            ) : null;
           const look = monoLook(mono);
           const state = states.get(mono.id) ?? IDLE;
           const selected = mono.id === activeId;
@@ -133,8 +151,9 @@ export function MonoRailSection({
               ? undefined
               : (state.activity ?? MONO_STATUS_LABEL[state.status]);
           return (
+            <Fragment key={mono.id}>
+            {header}
             <div
-              key={mono.id}
               ref={(el) => sortable.setItemRef(mono.id, el)}
               data-selected={selected || undefined}
               data-mono-status={state.status}
@@ -227,6 +246,7 @@ export function MonoRailSection({
                 <MoreHorizontal className="size-4" strokeWidth={1.75} />
               </button>
             </div>
+            </Fragment>
           );
         })}
       </div>

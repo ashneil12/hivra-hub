@@ -5,7 +5,7 @@ import { hubData } from "./hubData";
 import { listBuilds } from "./hubBuilds";
 import { activeWorkers } from "./hubWork";
 import { pendingProposals } from "./proposals";
-import { pendingConnectors } from "./connectors";
+import { pendingSignIns } from "./connectors";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
 
@@ -42,13 +42,7 @@ function needsAndProposals(pid: string): WaitingItem[] {
     id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
     detail: `Proposed by ${p.by}`, actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
   }));
-  // Each connector a restored setup needs is one Need until Ash signs in.
-  const signIns = pendingConnectors(pid).map((c): WaitingItem => ({
-    id: `connector:${c.id}`, projectId: pid, source: "inbox", title: `Sign in to ${c.name}`,
-    detail: "Your restored bots use it. Passwords and keys never travel in the setup file.",
-    actionLabel: "Sign in", connectorId: c.id,
-  }));
-  return [...signIns, ...needs, ...props];
+  return [...needs, ...props];
 }
 
 /** Needs and proposals over the cap: waiting under Later, not counted. */
@@ -93,4 +87,16 @@ export function waitingCount(projectId: string): number {
 
 export function findWaiting(id: string): WaitingItem | undefined {
   return waitingOnAsh().find((i) => i.id === id);
+}
+
+/**
+ * App-wide setup items (connector sign-ins after a restore). Shown once, in a
+ * Setup group at the top of Today; never filed under a project or counted in
+ * a project's strip count. Each goes away once signed in.
+ */
+export function setupItems(): WaitingItem[] {
+  return pendingSignIns().map((c): WaitingItem => ({
+    id: `connector:${c.id}`, projectId: "", source: "inbox", title: `Sign in to ${c.name}`,
+    detail: "", actionLabel: "Sign in", connectorId: c.id,
+  }));
 }

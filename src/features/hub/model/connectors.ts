@@ -50,3 +50,8 @@ export function pendingConnectors(projectId: string): Connector[] {
 export function signIn(id: string): void {
   save(list.map((c) => (c.id === id ? { ...c, signedIn: true } : c)));
 }
+
+/** Every connector still waiting for a sign-in, app-wide. */
+export function pendingSignIns(): Connector[] {
+  return list.filter((c) => !c.signedIn);
+}

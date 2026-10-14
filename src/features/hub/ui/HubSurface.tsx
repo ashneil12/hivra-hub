@@ -5,7 +5,7 @@ import { RestorePreview } from "./RestorePreview";
 import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { hubData, sinceLabel } from "../model/hubData";
-import { laterItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
+import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import type { Need } from "../model/types";
@@ -91,6 +91,17 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         <h2 className="mb-2 text-xs text-content/60">{sinceLabel(data.lastActiveAt())}</h2>
         <p className="text-[13px] leading-5 text-content/85">{since.plainText}</p>
       </section>
+      {!projectId && setupItems().length ? (
+        <section data-hub-setup>
+          <h2 className="mb-1 text-xs text-content/60">Setup</h2>
+          <p className="px-2 pb-1 text-[13px] text-content/60">Passwords and keys never travel in the setup file.</p>
+          <div className="flex flex-col">
+            {setupItems().map((w) => (
+              <StuckRow key={w.id} item={w} />
+            ))}
+          </div>
+        </section>
+      ) : null}
       {projects.map((p) => {
         const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
         const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
@@ -142,7 +153,7 @@ function StuckRow({ item }: { item: WaitingItem }) {
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
-        <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div>
+        {item.detail ? <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div> : null}
       </div>
       {item.state ? <StatusMark state={item.state} /> : null}
       {item.target || item.connectorId ? (

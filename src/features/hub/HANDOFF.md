@@ -92,3 +92,7 @@ per-page stores in `model/` (mock data, labelled "Example:").
 - **First items for the technical talk with Claude Code:** real bot import
   (souls, skills, memory, sessions into Monocode's Mono store and teams) and
   real connector auth (OAuth/keys per service, stored only in the keychain).
+- Update: connector sign-ins are **app-wide**. They sit in one "Setup" group at the
+  top of Today (`setupItems()`), are never filed under a project, never add to a
+  project's strip count, and go away once signed in. On Today, sidebar Monos are
+  grouped by project under quiet headers (`hubMonoGroup`, `MonoRailSection.groupBy`).

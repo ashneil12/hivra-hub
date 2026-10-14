@@ -39,3 +39,13 @@ export function sinceLabel(iso: string, now = new Date()): string {
   if (days < 7) return `Since ${then.toLocaleDateString("en-GB", { weekday: "long" })}`;
   return `Since ${then.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
 }
+
+/**
+ * Sidebar Monos on Today: grouped under a quiet project header, so same-named
+ * Monos (two Chiefs of Staff) are clear. The app's own Monos have no project.
+ */
+export function hubMonoGroup(mono: { projects: readonly string[] }): string {
+  const folder = mono.projects[0];
+  if (!folder) return "";
+  return source.listProjects().find((p) => p.folder === folder)?.name ?? "";
+}

@@ -1,4 +1,5 @@
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
+import { hubMonoGroup } from "../features/hub/model/hubData";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
 import {
@@ -12819,7 +12820,7 @@ function Workspace({
     setHubSelection({ project: hubSel.project, item: "inbox" });
   };
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, projectFilter: hubProject?.folder }
+    ? { ...sidebarMonos, projectFilter: hubProject?.folder, groupBy: hubProject ? undefined : hubMonoGroup }
     : undefined;
 
   const chromeSurfaceOpen =
