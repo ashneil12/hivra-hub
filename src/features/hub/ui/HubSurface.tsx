@@ -4,6 +4,7 @@ import { hubData, sinceLabel, todayRows } from "../model/hubData";
 import type { HubSelection } from "../model/hubNav";
 import type { Need, StuckItem } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
+import { StatusMark } from "./StatusMark";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 
 
@@ -102,19 +103,13 @@ function NeedRow({ need }: { need: Need }) {
 
 /** The only rows that carry a status: a 14px circle and a plain word. */
 function StuckRow({ item }: { item: StuckItem }) {
-  const gaveUp = item.state === "lead_gave_up";
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
         <div className="truncate text-[13px] text-content/60">{item.detail}</div>
       </div>
-      <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">
-        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
-          <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={gaveUp ? "rgb(239 68 68)" : "rgb(245 158 11)"} />
-        </svg>
-        {gaveUp ? "Gave up" : "Stuck"}
-      </span>
+      <StatusMark state={item.state} />
     </div>
   );
 }

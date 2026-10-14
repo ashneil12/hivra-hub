@@ -88,6 +88,9 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
 
+  // Hub: a project with no Monos shows nothing here; its empty Leadership
+  // team offers "Add a Mono" instead, so the intro card isn't doubled up.
+  if (monos.length === 0 && projectFilter) return null;
   // With no Mono yet, the card stands in for the section.
   if (monos.length === 0)
     return (

@@ -4,8 +4,13 @@
 import { useSyncExternalStore } from "react";
 import type { ChatMessage, GroupChat } from "./types";
 
-const m = (id: string, from: string, text: string, status?: ChatMessage["status"]): ChatMessage =>
-  status ? { id, from, text, status } : { id, from, text };
+const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
+  id,
+  from,
+  text,
+  ...(status ? { status } : {}),
+  ...(refId ? { refId } : {}),
+});
 
 let chats: GroupChat[] = [
   {
@@ -43,9 +48,9 @@ let chats: GroupChat[] = [
         when: "Today",
         title: "Example: backups and waitlist",
         messages: [
-          m("1", "chief-of-staff", "Example: the nightly backup has failed 3 times since 2am. Nobody has picked it up yet.", "stuck"),
-          m("2", "growth-lead", "Example: the waitlist headline test is a tie. That one is your taste call."),
-          m("3", "chief-of-staff", "Example: the lead tried two fixes for the email sender and gave up. It needs a person.", "lead_gave_up"),
+          m("1", "chief-of-staff", "Example: the nightly backup has failed 3 times since 2am. Nobody has picked it up yet.", "stuck", "s1"),
+          m("2", "growth-lead", "Example: the waitlist headline test is a tie. That one is your taste call.", undefined, "n3"),
+          m("3", "chief-of-staff", "Example: the lead tried two fixes for the email sender and gave up. It needs a person.", "lead_gave_up", "s2"),
         ],
       },
       { id: "c2", when: "Yesterday", title: "Example: launch timing", messages: [m("1", "growth-lead", "Example: launch looks best in the second week of November.")] },
@@ -123,13 +128,40 @@ export function removeMember(chatId: string, monoId: string): void {
   changed();
 }
 
-export function sendMessage(chatId: string, text: string): void {
+export function sendMessage(chatId: string, text: string, convId?: string): void {
   chats = chats.map((c) => {
     if (c.id !== chatId) return c;
     const msg: ChatMessage = { id: Date.now().toString(36), from: "ash", text };
+    const target = convId ? c.conversations.find((x) => x.id === convId) : undefined;
+    if (target)
+      return {
+        ...c,
+        conversations: c.conversations.map((x) =>
+          x.id === target.id
+            ? { ...x, title: x.messages.length ? x.title : text.slice(0, 40), messages: [...x.messages, msg] }
+            : x,
+        ),
+      };
     const [first, ...rest] = c.conversations;
     if (first && first.when === "Today") return { ...c, conversations: [{ ...first, messages: [...first.messages, msg] }, ...rest] };
     return { ...c, conversations: [{ id: msg.id, when: "Today", title: text.slice(0, 40), messages: [msg] }, ...c.conversations] };
   });
   changed();
+}
+
+export function renameChat(chatId: string, name: string): void {
+  const next = name.trim();
+  if (!next) return;
+  chats = chats.map((c) => (c.id === chatId ? { ...c, name: next } : c));
+  changed();
+}
+
+/** Start a fresh conversation at the top of the list; returns its id. */
+export function newConversation(chatId: string): string {
+  const id = `conv-${Date.now().toString(36)}`;
+  chats = chats.map((c) =>
+    c.id === chatId ? { ...c, conversations: [{ id, when: "Today", title: "New conversation", messages: [] }, ...c.conversations] } : c,
+  );
+  changed();
+  return id;
 }

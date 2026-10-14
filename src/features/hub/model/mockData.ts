@@ -23,6 +23,7 @@ const NEEDS: Need[] = [
 
 const STUCK: StuckItem[] = [
   { id: "s1", projectId: "hivra", title: "Example: nightly backup failing", detail: "Retried 3 times since 2am. No one picked it up.", state: "stuck" },
+  { id: "s2", projectId: "hivra", title: "Example: email sender broken", detail: "The lead tried two fixes and gave up. It needs a person.", state: "lead_gave_up" },
 ];
 
 const SINCE: Record<string, string> = {

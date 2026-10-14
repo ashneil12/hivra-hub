@@ -1,6 +1,7 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { Check, MessageMultiple, Plus } from "../../../shared/ui/icons";
+import { Check, MessageMultiple, Pencil, Plus, X } from "../../../shared/ui/icons";
 import {
   listMonos,
   monoLook,
@@ -17,6 +18,9 @@ import {
   createChat,
   ensureLeadership,
   getChat,
+  newConversation,
+  removeMember,
+  renameChat,
   sendMessage,
   useHubChatsVersion,
 } from "../model/hubChats";
@@ -49,7 +53,10 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const monos = useMonos();
   const members = chat.memberIds.map((id) => monos.find((m) => m.id === id)).filter((m): m is Mono => !!m);
   const [convId, setConvId] = useState<string | undefined>();
-  const [picker, setPicker] = useState(false);
+  const [picker, setPicker] = useState<DOMRect | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const openPicker = () => setPicker(addRef.current?.getBoundingClientRect() ?? null);
   const conv = chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0];
   const nameOf = (from: string) => {
     const mono = monos.find((m) => m.id === from);
@@ -60,8 +67,37 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
     <div className="flex min-h-0 min-w-0 flex-1" data-hub-chat={chat.id}>
       {/* Members and past conversations. */}
       <div className="sidebar-glass relative flex w-[240px] shrink-0 flex-col border-r border-stroke">
-        <div className="flex h-10 shrink-0 items-center gap-2 px-3" data-tauri-drag-region="deep">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{chat.name}</span>
+        <div className="group flex h-10 shrink-0 items-center gap-1 px-3" data-tauri-drag-region="deep">
+          {renaming ? (
+            <input
+              autoFocus
+              data-hub-rename-input
+              defaultValue={chat.name}
+              onBlur={(e) => {
+                renameChat(chat.id, e.currentTarget.value);
+                setRenaming(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setRenaming(false);
+              }}
+              className="min-w-0 flex-1 rounded-md bg-content/8 px-1.5 py-0.5 text-[13px] font-medium text-content outline-none"
+            />
+          ) : (
+            <>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{chat.name}</span>
+              <button
+                type="button"
+                title="Rename chat"
+                aria-label="Rename chat"
+                data-hub-rename
+                onClick={() => setRenaming(true)}
+                className="grid size-5 place-items-center rounded-md text-content/60 opacity-0 hover:bg-content/8 hover:text-content group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Pencil className="size-3" strokeWidth={1.75} />
+              </button>
+            </>
+          )}
         </div>
         <div className="px-3 pb-3">
           <div className="pb-1 text-xs leading-5 text-content/60">In this chat</div>
@@ -73,27 +109,50 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             {members.map((mono) => {
               const look = monoLook(mono);
               return (
-                <div key={mono.id} className="flex h-6 items-center gap-2 text-[13px] text-content/80">
+                <div key={mono.id} className="group flex h-6 items-center gap-2 text-[13px] text-content/80">
                   <MonoRailMascot name={look.mascot} color={look.color} />
-                  <span className="min-w-0 truncate">{look.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{look.name}</span>
+                  <button
+                    type="button"
+                    title={`Remove ${look.name} from this chat`}
+                    aria-label={`Remove ${look.name} from this chat`}
+                    data-hub-remove-member={mono.id}
+                    onClick={() => removeMember(chat.id, mono.id)}
+                    className="grid size-5 place-items-center rounded-md text-content/60 opacity-0 hover:bg-content/8 hover:text-content group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <X className="size-3" strokeWidth={1.75} />
+                  </button>
                 </div>
               );
             })}
           </div>
           <button
             type="button"
+            ref={addRef}
             data-hub-add-mono
-            onClick={() => setPicker((v) => !v)}
+            onClick={() => (picker ? setPicker(null) : openPicker())}
             className="mt-1 flex h-6 items-center gap-2 rounded-md px-0.5 text-[13px] text-content/60 hover:text-content"
           >
             <Plus className="size-3.5" strokeWidth={1.75} />
             Add a Mono
           </button>
         </div>
-        {picker ? <MonoPicker chat={chat} monos={monos} onClose={() => setPicker(false)} /> : null}
-        {chat.conversations.length ? (
+        {picker ? <MonoPicker chat={chat} monos={monos} anchor={picker} onClose={() => setPicker(null)} /> : null}
+        {members.length || chat.conversations.length ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-2">
-            <div className="px-1 pb-1 text-xs leading-5 text-content/60">Conversations</div>
+            <div className="flex items-center px-1 pb-1">
+              <span className="flex-1 text-xs leading-5 text-content/60">Conversations</span>
+              <button
+                type="button"
+                title="New conversation"
+                aria-label="New conversation"
+                data-hub-new-conversation
+                onClick={() => setConvId(newConversation(chat.id))}
+                className="grid size-5 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
+              >
+                <Plus className="size-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
             {chat.conversations.map((c) => (
               <button
                 key={c.id}
@@ -120,11 +179,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           {IS_MAC ? null : <div className="w-[120px]" />}
         </div>
         {members.length === 0 && !conv ? (
-          <EmptyChat chat={chat} onAdd={() => setPicker(true)} />
+          <EmptyChat chat={chat} onAdd={openPicker} />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 py-6 text-[13px] leading-5">
-              {conv ? (
+              {conv && conv.messages.length ? (
                 conv.messages.map((msg) =>
                   msg.from === "ash" ? (
                     <div key={msg.id} className="flex justify-end">
@@ -135,8 +194,15 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       <div className="pb-0.5 text-xs text-content/60">{nameOf(msg.from)}</div>
                       <AgentMarkdown text={msg.text} className="text-content" />
                       {msg.status ? (
-                        <div className="pt-1">
+                        <div className="flex items-center gap-3 pt-1.5">
                           <StatusMark state={msg.status} />
+                          <button
+                            type="button"
+                            onClick={() => setHubSelection({ project: chat.projectId, item: "inbox" })}
+                            className="rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+                          >
+                            Take a look
+                          </button>
                         </div>
                       ) : null}
                     </div>
@@ -156,12 +222,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             name={chatPhrase(chat)}
             onSubmit={(text) => {
               if (!text.trim()) return false;
-              sendMessage(chat.id, text.trim());
+              sendMessage(chat.id, text.trim(), conv?.id);
             }}
           />
-        </div>
-        <div className="flex h-7 shrink-0 items-center border-t border-stroke px-3 text-[11px] text-content/60">
-          {projectName(chat.projectId)} · {chat.isDefault ? "leadership team" : chat.name}
         </div>
       </div>
     </div>
@@ -189,13 +252,30 @@ function EmptyChat({ chat, onAdd }: { chat: GroupChat; onAdd: () => void }) {
   );
 }
 
-/** Any Mono can join any chat. */
-function MonoPicker({ chat, monos, onClose }: { chat: GroupChat; monos: Mono[]; onClose: () => void }) {
-  return (
+/** Any Mono can join any chat. A floating menu; clicking outside closes it. */
+function MonoPicker({ chat, monos, anchor, onClose }: { chat: GroupChat; monos: Mono[]; anchor: DOMRect; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const down = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const t = window.setTimeout(() => document.addEventListener("mousedown", down), 0);
+    document.addEventListener("keydown", key);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("mousedown", down);
+      document.removeEventListener("keydown", key);
+    };
+  }, [onClose]);
+  const top = Math.min(anchor.bottom + 6, window.innerHeight - 40 - monos.length * 44);
+  return createPortal(
     <div
+      ref={ref}
+      role="menu"
       data-hub-mono-picker
-      className="absolute left-2 right-2 z-20 rounded-lg border border-stroke bg-background-base p-1 shadow-xl"
-      style={{ top: 40 + 24 * (chat.memberIds.length + 2) + 34 }}
+      style={{ left: anchor.left, top: Math.max(8, top) }}
+      className="fixed z-50 w-[260px] rounded-lg border border-stroke bg-background-base p-1 shadow-2xl"
     >
       <div className="px-2 pb-1 pt-1 text-xs text-content/60">Add a Mono to {chat.name}</div>
       {monos.map((mono) => {
@@ -210,6 +290,7 @@ function MonoPicker({ chat, monos, onClose }: { chat: GroupChat; monos: Mono[]; 
           <button
             key={mono.id}
             type="button"
+            role="menuitem"
             disabled={inChat}
             onClick={() => {
               addMember(chat.id, mono.id);
@@ -222,11 +303,12 @@ function MonoPicker({ chat, monos, onClose }: { chat: GroupChat; monos: Mono[]; 
               <span className="block truncate text-[13px] text-content">{look.name}</span>
               <span className="block truncate text-[11px] text-content/60">{where}</span>
             </span>
-            {inChat ? <Check className="size-3.5 text-content/60" strokeWidth={1.75} /> : null}
+            {inChat ? <span className="text-[11px] text-content/60">In chat</span> : null}
           </button>
         );
       })}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -262,11 +344,17 @@ export function NewGroupChat({ projectId }: { projectId: string }) {
                 key={mono.id}
                 type="button"
                 onClick={() => setPicked(on ? picked.filter((id) => id !== mono.id) : [...picked, mono.id])}
-                className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] ${on ? "bg-selection text-content" : "text-content/80 hover:bg-content/6"}`}
+                role="checkbox"
+                aria-checked={on}
+                className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[13px] ${on ? "bg-content/14 font-medium text-content" : "text-content/80 hover:bg-content/6"}`}
               >
+                <span
+                  className={`grid size-4 shrink-0 place-items-center rounded-full ${on ? "bg-content text-background-base" : "border border-content/40"}`}
+                >
+                  {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
+                </span>
                 <MonoRailMascot name={look.mascot} color={look.color} />
                 <span className="min-w-0 flex-1 truncate">{look.name}</span>
-                {on ? <Check className="size-3.5 text-content/80" strokeWidth={1.75} /> : null}
               </button>
             );
           })}

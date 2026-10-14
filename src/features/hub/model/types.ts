@@ -83,6 +83,8 @@ export type ChatMessage = {
   text: string;
   /** Only stuck or given-up items carry a status. */
   status?: StuckState;
+  /** The Need or stuck item this message is about (same data as Today). */
+  refId?: string;
 };
 
 export type ChatConversation = {
