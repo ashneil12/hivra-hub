@@ -74,3 +74,21 @@ per-page stores in `model/` (mock data, labelled "Example:").
 - **To explore with Claude Code:** how agents can edit the setup (agent-editability),
   e.g. an agent proposing a change to a project's settings file, which then
   goes through the design-rules check and preview (unit 5).
+
+## Restore preview, bots and connectors (unit 6c)
+- A clean launch shows only the app's own **Lead** in the Monos list
+  (`model/builtInMonos.ts`). The dev page seeds our example Monos only behind
+  the example flag.
+- Setup file (`model/setupFile.ts`) now also carries `bots` (name, role,
+  project, team, skills count) and `connectors` (which services; never
+  passwords or keys). Example file: `/workspace/hub-spec/build/example-setup.json`.
+- Restore preview (`ui/RestorePreview.tsx`), used from onboarding, the empty
+  Today and Settings → Dashboards, shows projects and templates, bots grouped by
+  project and team (all ticked; expand a group to untick single bots), and
+  connectors marked "Sign in after restore". Nothing is added until Restore.
+- Each connector becomes one Need ("Sign in to GitHub") in the shared waiting
+  list. It shares the 5-Needs cap (the rest go under Later) and goes away once
+  signed in. The sign-in is a mock.
+- **First items for the technical talk with Claude Code:** real bot import
+  (souls, skills, memory, sessions into Monocode's Mono store and teams) and
+  real connector auth (OAuth/keys per service, stored only in the keychain).

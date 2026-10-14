@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { hubData } from "../model/hubData";
-import { downloadSetup, restoreSetup } from "../model/setupFile";
+import { downloadSetup, parseSetup, type SetupFile } from "../model/setupFile";
+import { RestorePreview } from "./RestorePreview";
 import {
   isCustomised,
   resetToTemplate,
@@ -20,6 +21,7 @@ export function DashboardsPage() {
   const projects = hubData().listProjects();
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ file: SetupFile; name: string } | null>(null);
 
   const doExport = () => {
     downloadSetup();
@@ -28,13 +30,20 @@ export function DashboardsPage() {
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     try {
-      const n = restoreSetup(await f.text());
-      setNote(`Restored ${n} project${n === 1 ? "" : "s"} from ${f.name}.`);
+      setPreview({ file: parseSetup(await f.text()), name: f.name });
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Couldn't read that file.");
     }
   };
 
+  if (preview)
+    return (
+      <div data-hub-dashboards>
+        <RestorePreview inline file={preview.file} name={preview.name} onBack={() => setPreview(null)}
+          onDone={() => { setNote(`Restored ${preview.file.projects.length} projects from ${preview.name}.`); setPreview(null); }} />
+        <input ref={fileRef} type="file" className="hidden" />
+      </div>
+    );
   return (
     <div className="flex flex-col gap-8" data-hub-dashboards>
       <section className="flex flex-col gap-0.5">

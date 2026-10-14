@@ -1,3 +1,7 @@
+import { useRef, useState } from "react";
+import { parseSetup, setPendingSetup } from "../model/setupFile";
+import { signIn, useConnectorsVersion } from "../model/connectors";
+import { RestorePreview } from "./RestorePreview";
 import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { hubData, sinceLabel } from "../model/hubData";
@@ -25,8 +29,10 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   useHubChatsVersion();
   useProposalsVersion();
   useTemplatesVersion();
+  useConnectorsVersion();
   useHubBuildsVersion();
   if (selection.item === "new-project") return <NewProjectView />;
+  if (selection.item === "restore") return <RestorePreview />;
   const data = hubData();
   if (selection.project !== "today") {
     if (selection.item === "leadership-team")
@@ -139,11 +145,11 @@ function StuckRow({ item }: { item: WaitingItem }) {
         <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div>
       </div>
       {item.state ? <StatusMark state={item.state} /> : null}
-      {item.target ? (
+      {item.target || item.connectorId ? (
         <button
           type="button"
           data-hub-take-look={item.id}
-          onClick={() => item.target && setHubSelection(item.target)}
+          onClick={() => (item.connectorId ? signIn(item.connectorId) : item.target && setHubSelection(item.target))}
           className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
         >
           {item.actionLabel ?? "Take a look"}
@@ -165,21 +171,45 @@ function Pending({ what, unit }: { what: string; unit: number }) {
 
 /** Clean first launch: no projects yet. One calm action. */
 function FirstTodayEmpty() {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const onFile = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      setPendingSetup(parseSetup(await f.text()), f.name);
+      setHubSelection({ project: "today", item: "restore" });
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Couldn't read that file.");
+    }
+  };
   return (
     <div className="grid h-full place-items-center px-8" data-hub-today-empty>
       <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
         <p className="text-[13px] text-content">No projects yet.</p>
         <p className="text-[13px] leading-5 text-content/60">
-          Make your first project and Today fills up with what changed and what's waiting on you. You can also restore a setup file in Settings, under Dashboards.
+          Make your first project, or bring yours back from a setup file. Then Today fills up with what changed and what's waiting on you.
         </p>
-        <button
-          type="button"
-          data-hub-today-new-project
-          onClick={() => setHubSelection({ project: "today", item: "new-project" })}
-          className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90"
-        >
-          New project
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-hub-today-new-project
+            onClick={() => setHubSelection({ project: "today", item: "new-project" })}
+            className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90"
+          >
+            New project
+          </button>
+          <button
+            type="button"
+            data-hub-today-restore
+            onClick={() => fileRef.current?.click()}
+            className="rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content"
+          >
+            Restore a setup file
+          </button>
+          <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-today-file
+            onChange={(e) => void onFile(e.target.files?.[0])} />
+        </div>
+        {note ? <p className="text-[13px] text-content/60">{note}</p> : null}
       </div>
     </div>
   );

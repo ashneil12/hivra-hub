@@ -5,6 +5,7 @@ import { hubData } from "./hubData";
 import { listBuilds } from "./hubBuilds";
 import { activeWorkers } from "./hubWork";
 import { pendingProposals } from "./proposals";
+import { pendingConnectors } from "./connectors";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
 
@@ -18,6 +19,8 @@ export type WaitingItem = {
   /** Set for stuck / gave-up items; Needs have none. */
   state?: StuckState;
   need?: Need;
+  /** Set for a connector sign-in Need. */
+  connectorId?: string;
   /** Button label on Today/Inbox; defaults to "Take a look". */
   actionLabel?: string;
   /** Where 'Take a look' from Today/Inbox goes. */
@@ -39,7 +42,13 @@ function needsAndProposals(pid: string): WaitingItem[] {
     id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
     detail: `Proposed by ${p.by}`, actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
   }));
-  return [...needs, ...props];
+  // Each connector a restored setup needs is one Need until Ash signs in.
+  const signIns = pendingConnectors(pid).map((c): WaitingItem => ({
+    id: `connector:${c.id}`, projectId: pid, source: "inbox", title: `Sign in to ${c.name}`,
+    detail: "Your restored bots use it. Passwords and keys never travel in the setup file.",
+    actionLabel: "Sign in", connectorId: c.id,
+  }));
+  return [...signIns, ...needs, ...props];
 }
 
 /** Needs and proposals over the cap: waiting under Later, not counted. */

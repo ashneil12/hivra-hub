@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
-import { restoreSetup } from "../model/setupFile";
+import { parseSetup, setPendingSetup } from "../model/setupFile";
 import { setHubSelection } from "../model/hubNav";
 import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 
@@ -16,16 +16,17 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     try {
-      const n = restoreSetup(await f.text());
-      setRestored(`Restored ${n} project${n === 1 ? "" : "s"} from ${f.name}.`);
+      const file = parseSetup(await f.text());
+      setPendingSetup(file, f.name);
+      setRestored(`Picked ${f.name}: ${file.projects.length} projects, ${file.bots?.length ?? 0} bots. You'll see it all before anything is added.`);
     } catch (e) {
       setRestored(e instanceof Error ? e.message : "Couldn't read that file.");
     }
   };
   const [theme, setTheme] = useState<ThemePresetId>("monocode");
-  const done = (next: "today" | "new-project" = "today") => {
+  const done = (next: "today" | "new-project" | "restore" = "today") => {
     finishOnboarding();
-    setHubSelection({ project: "today", item: next === "new-project" ? "new-project" : "inbox" });
+    setHubSelection({ project: "today", item: next === "today" ? "inbox" : next });
     onClose();
   };
 
@@ -88,7 +89,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
               The {THEME_PRESETS.find((t) => t.id === theme)?.label} look.{" "}
-              {start === "fresh" ? "Next, your first project." : restored ? `${restored} Today opens next.` : "Today opens next."}
+              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your setup file brings." : "Today opens next."}
             </p>
           </div>
         ) : null}
@@ -102,8 +103,8 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
               {step === 0 ? "Get started" : "Continue"}
             </button>
           ) : (
-            <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : "today")} className={PRIMARY}>
-              {start === "fresh" ? "Create your first project" : "Go to Today"}
+            <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
+              {start === "fresh" ? "Create your first project" : restored ? "Review the setup file" : "Go to Today"}
             </button>
           )}
         </div>

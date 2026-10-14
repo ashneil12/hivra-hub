@@ -3,6 +3,7 @@ import { hubData } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
 import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
+import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
@@ -30,6 +31,7 @@ export function ProjectStrip({
 }) {
   useProposalsVersion();
   useTemplatesVersion();
+  useConnectorsVersion();
   void onCreateProject;
   useHubBuildsVersion();
   const data = hubData();

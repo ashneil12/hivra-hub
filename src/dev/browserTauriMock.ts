@@ -12,12 +12,14 @@ if (new URLSearchParams(location.search).has("onboarding")) {
   if (!sessionStorage.getItem("hub-clean-start")) {
     sessionStorage.setItem("hub-clean-start", "1");
     for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded"]) localStorage.removeItem(k);
+    // Clean start: none of our example Monos.
+    localStorage.setItem("monocode:mono-roster", "[]");
   }
 } else {
   localStorage.setItem("monocode:hub-examples", "1");
   localStorage.setItem("monocode:hub-onboarded", "1");
 }
-if (localStorage.getItem("monocode:mono-roster") == null) {
+if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getItem("monocode:mono-roster") ?? "[]") === "[]") {
   localStorage.setItem(
     "monocode:mono-roster",
     JSON.stringify([

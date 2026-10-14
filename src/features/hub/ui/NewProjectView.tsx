@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowLeft, Check, Plus } from "../../../shared/ui/icons";
+import { ArrowLeft, Bot, Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { setHubSelection } from "../model/hubNav";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
@@ -71,7 +71,7 @@ export function NewProjectView() {
               <div className="flex flex-col gap-5" data-hub-np-questions>
                 {QUESTIONS.map((x, i) => (
                   <div key={x.q} className="flex flex-col gap-2">
-                    <div className="text-xs text-content/60">Chief of Staff</div>
+                    <div className="flex items-center gap-1.5 text-xs text-content/60"><Bot className="size-3" strokeWidth={1.75} />Lead</div>
                     <div className="text-[13px] leading-5 text-content">{x.q}</div>
                     <div className="flex justify-end">
                       <input
