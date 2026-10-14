@@ -25,6 +25,7 @@ import {
   useHubChatsVersion,
 } from "../model/hubChats";
 import { setHubSelection } from "../model/hubNav";
+import { findWaiting } from "../model/waiting";
 import type { GroupChat } from "../model/types";
 import { StatusMark } from "./StatusMark";
 
@@ -193,18 +194,23 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                     <div key={msg.id}>
                       <div className="pb-0.5 text-xs text-content/60">{nameOf(msg.from)}</div>
                       <AgentMarkdown text={msg.text} className="text-content" />
-                      {msg.status ? (
-                        <div className="flex items-center gap-3 pt-1.5">
-                          <StatusMark state={msg.status} />
-                          <button
-                            type="button"
-                            onClick={() => setHubSelection({ project: chat.projectId, item: "inbox" })}
-                            className="rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
-                          >
-                            Take a look
-                          </button>
-                        </div>
-                      ) : null}
+                      {(() => {
+                        const w = msg.refId ? findWaiting(msg.refId) : undefined;
+                        if (!w?.state) return null;
+                        return (
+                          <div className="flex items-center gap-3 pt-1.5">
+                            <StatusMark state={w.state} />
+                            <button
+                              type="button"
+                              data-hub-take-look={w.id}
+                              onClick={() => setHubSelection({ project: w.projectId, item: "inbox" })}
+                              className="rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+                            >
+                              Take a look
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </div>
                   ),
                 )

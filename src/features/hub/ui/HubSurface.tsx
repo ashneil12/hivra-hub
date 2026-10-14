@@ -1,11 +1,14 @@
 import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { hubData, sinceLabel, todayRows } from "../model/hubData";
+import { hubData, sinceLabel } from "../model/hubData";
+import { waitingOnAsh, type WaitingItem } from "../model/waiting";
+import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
-import type { Need, StuckItem } from "../model/types";
+import type { Need } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { StatusMark } from "./StatusMark";
 import { BuildsView } from "./BuildsView";
+import { BeingBuiltView } from "./BeingBuiltView";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 
 
@@ -22,6 +25,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
     if (selection.item.startsWith("chat:"))
       return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={selection.project} />;
     if (selection.item === "new-chat") return <NewGroupChat projectId={selection.project} />;
+    if (selection.item === "being-built") return <BeingBuiltView key={selection.project} projectId={selection.project} />;
     const section = data.listProjectItems(selection.project).find((i) => i.id === selection.item);
     if (section?.sectionType === "builds-playtests")
       return <BuildsView key={selection.project} projectId={selection.project} title={section.title} />;
@@ -61,7 +65,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   const data = hubData();
   const since = data.sinceSummary(projectId);
-  const { needs, stuck } = todayRows(projectId);
+  const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
@@ -70,8 +74,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         <p className="text-[13px] leading-5 text-content/85">{since.plainText}</p>
       </section>
       {projects.map((p) => {
-        const pNeeds = needs.filter((n) => n.projectId === p.id);
-        const pStuck = stuck.filter((s) => s.projectId === p.id);
+        const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
+        const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
         if (!pNeeds.length && !pStuck.length) return null;
         return (
           <section key={p.id}>
@@ -106,14 +110,24 @@ function NeedRow({ need }: { need: Need }) {
 }
 
 /** The only rows that carry a status: a 14px circle and a plain word. */
-function StuckRow({ item }: { item: StuckItem }) {
+function StuckRow({ item }: { item: WaitingItem }) {
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
-        <div className="truncate text-[13px] text-content/60">{item.detail}</div>
+        <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div>
       </div>
-      <StatusMark state={item.state} />
+      {item.state ? <StatusMark state={item.state} /> : null}
+      {item.target ? (
+        <button
+          type="button"
+          data-hub-take-look={item.id}
+          onClick={() => item.target && setHubSelection(item.target)}
+          className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+        >
+          Take a look
+        </button>
+      ) : null}
     </div>
   );
 }

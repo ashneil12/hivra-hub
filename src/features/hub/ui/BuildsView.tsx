@@ -1,18 +1,21 @@
 import { useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Play } from "../../../shared/ui/icons";
-import { addNote, firstBuildExpected, getBuild, listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
+import { addNote, markPlayed, firstBuildExpected, getBuild, listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
 import { hubData } from "../model/hubData";
 import type { Build } from "../model/types";
 import { StatusMark } from "./StatusMark";
+import { setHubSelection } from "../model/hubNav";
+import { findWaiting } from "../model/waiting";
 
 const ACTION =
   "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
 
 function statusText(b: Build): string {
-  if (b.status === "ready") return b.notes.length ? `Played · ${b.notes.length} note${b.notes.length > 1 ? "s" : ""}` : "Ready to play";
   if (b.status === "building") return "Building";
-  return "Failed";
+  if (b.status === "failed") return "Failed";
+  const n = b.notes.length ? ` · ${b.notes.length} note${b.notes.length > 1 ? "s" : ""}` : "";
+  return b.played ? `Played${n}` : n.slice(3);
 }
 
 function BuildAction({ build }: { build: Build }) {
@@ -102,12 +105,12 @@ function BuildList({ builds, onOpen }: { builds: Build[]; onOpen: (id: string) =
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] text-content">{b.title}</div>
               {b.status === "failed" && b.failReason ? (
-                <div className="truncate text-[13px] text-content/60">{b.failReason}</div>
+                <div className="line-clamp-2 text-[13px] text-content/60">{b.failReason}</div>
               ) : null}
             </div>
             {b.stuck ? <StatusMark state={b.stuck} /> : <span className="shrink-0 text-xs text-content/60">{statusText(b)}</span>}
-            <span className="w-14 shrink-0 text-right">
-              <BuildAction build={b} />
+            <span className="flex w-[84px] shrink-0 justify-end">
+              {b.stuck ? <TakeLook buildId={b.id} /> : <BuildAction build={b} />}
             </span>
           </div>
         ))}
@@ -128,14 +131,17 @@ function BuildDetail({ build }: { build: Build }) {
           <div className="text-[13px] text-content/60">Built {build.builtAt}</div>
         </div>
         {build.stuck ? <StatusMark state={build.stuck} /> : <span className="pt-1 text-xs text-content/60">{statusText(build)}</span>}
+        {build.status === "ready" && !build.played ? (
+          <button type="button" data-hub-mark-played onClick={() => markPlayed(build.id, "ash")} className={ACTION}>
+            Mark played
+          </button>
+        ) : null}
         <BuildAction build={build} />
       </div>
       {build.status === "failed" ? (
         <div className="flex items-center gap-3 rounded-lg bg-content/5 px-3 py-2.5">
           <p className="min-w-0 flex-1 text-[13px] leading-5 text-content/85">{build.failReason}</p>
-          <button type="button" className={ACTION}>
-            Take a look
-          </button>
+          <TakeLook buildId={build.id} />
         </div>
       ) : null}
       <section className="flex flex-col gap-2">
@@ -178,5 +184,24 @@ function BuildDetail({ build }: { build: Build }) {
         ) : null}
       </section>
     </div>
+  );
+}
+
+/** Reads the shared waiting list; opens the item in the project's Inbox. */
+function TakeLook({ buildId }: { buildId: string }) {
+  const w = findWaiting(`build:${buildId}`);
+  if (!w) return null;
+  return (
+    <button
+      type="button"
+      data-hub-take-look={w.id}
+      onClick={(e) => {
+        e.stopPropagation();
+        setHubSelection({ project: w.projectId, item: "inbox" });
+      }}
+      className={ACTION}
+    >
+      Take a look
+    </button>
   );
 }

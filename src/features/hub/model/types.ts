@@ -125,4 +125,27 @@ export type Build = {
   action?: "play" | "open";
   builtAt: string;
   notes: PlaytestNote[];
+  /** Only Ash can mark a build played; the data layer rejects anyone else. */
+  played?: { by: "ash"; at: string };
+};
+
+export type ActivityStep = { id: string; at: string; text: string };
+
+/** One active worker or Mono on a project (Being built). */
+export type Worker = {
+  id: string;
+  projectId: string;
+  /** Display name: a Mono's name or a plain worker name. */
+  who: string;
+  kind: "coding" | "mono" | "worker";
+  /** What it's doing now, in plain words. */
+  doing: string;
+  /** Minutes at it so far. */
+  minutes: number;
+  stuck?: StuckState;
+  steps: ActivityStep[];
+  /** Id of the waiting item that already covers this worker being stuck. */
+  waitingId?: string;
+  /** Set when finished today. */
+  finishedAt?: string;
 };

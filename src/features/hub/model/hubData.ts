@@ -1,7 +1,7 @@
 import { projectKey } from "../../../shared/lib/paths";
 import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
 import { mockHubData } from "./mockData";
-import type { HubDataSource, HubProject, Need, StuckItem } from "./types";
+import type { HubDataSource, HubProject } from "./types";
 
 let source: HubDataSource = mockHubData;
 
@@ -13,27 +13,6 @@ export function hubData(): HubDataSource {
 /** Claude Code swaps in the real backend here. */
 export function setHubDataSource(next: HubDataSource): void {
   source = next;
-}
-
-/** At most 5 Needs show; the rest wait in Later. */
-export const MAX_NEEDS = 5;
-
-/**
- * The rows a Today view shows. The strip count is the length of this list
- * for one project, so the number always matches what Ash sees.
- */
-export function todayRows(projectId?: string): { stuck: StuckItem[]; needs: Need[] } {
-  const data = hubData();
-  const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
-  const needs = projects.flatMap((p) =>
-    data.listNeeds(p.id).filter((n) => !n.later).slice(0, MAX_NEEDS),
-  );
-  return { stuck: data.listStuck(projectId), needs };
-}
-
-export function todayCount(projectId: string): number {
-  const { stuck, needs } = todayRows(projectId);
-  return stuck.length + needs.length;
 }
 
 /**

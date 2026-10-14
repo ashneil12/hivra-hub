@@ -1,5 +1,6 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
-import { hubData, todayCount } from "../model/hubData";
+import { hubData } from "../model/hubData";
+import { waitingCount } from "../model/waiting";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
@@ -44,7 +45,7 @@ export function ProjectStrip({
       />
       <div className="h-2 shrink-0" />
       {projects.map((project) => {
-        const count = todayCount(project.id);
+        const count = waitingCount(project.id);
         return (
           <StripButton
             key={project.id}
