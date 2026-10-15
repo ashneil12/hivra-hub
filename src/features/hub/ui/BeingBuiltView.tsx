@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowLeft, Terminal, Wrench } from "../../../shared/ui/icons";
+import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNow, workersFromJobs } from "../model/liveJobs";
 import { setHubSelection } from "../model/hubNav";
@@ -119,10 +119,14 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
       onKeyDown={(e) => e.key === "Enter" && toggle()}
       className="hub-fade-in flex cursor-default items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className={`truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
-          {w.doing}
+        <span className={`flex min-w-0 items-center gap-1 truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
+          {parts ? (
+            <ChevronRight data-hub-parts-chevron aria-hidden strokeWidth={1.75}
+              className={`size-3 shrink-0 text-content/50 transition-transform duration-150 motion-reduce:transition-none ${expanded ? "rotate-90" : ""}`} />
+          ) : null}
+          <span className="truncate">{w.doing}
           {parts ? <span className="text-content/60" data-hub-parts-done>, {partsDone(w)} of {parts.length} parts done</span> : null}
-          {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}
+          {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}</span>
         </span>
         {w.stuck && w.stuckReason ? (
           <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
