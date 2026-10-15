@@ -35,7 +35,7 @@ const RULES = {
 
 let proposals: Proposal[] = examples([
   {
-    id: "p1", projectId: "hivra", by: "Growth lead", status: "pending",
+    id: "p1", projectId: "hivra", by: "Hivra lead", status: "pending",
     title: "Example: add a Waitlist card to Hivra's Today",
     why: "Example: you check sign-ups every morning; this puts the number where you already look.",
     checked: [RULES.colour, RULES.edges, RULES.needs, RULES.example],
@@ -51,7 +51,7 @@ let proposals: Proposal[] = examples([
     after: { heading: "EXO game sidebar", rows: [{ text: "Coding team" }, { text: "Builds & playtests", moved: true }, { text: "Leadership team" }, { text: "Being built" }] },
   },
   {
-    id: "p3", projectId: "exo-game", by: "Critiquito", status: "rejected", appliedAt: "Today 7:48pm",
+    id: "p3", projectId: "exo-game", by: "Alfred", status: "rejected", appliedAt: "Today 7:48pm",
     title: "Example: give Stuck rows an orange glowing edge",
     why: "Example: so stuck work is harder to miss.",
     checked: [RULES.needs, RULES.example],

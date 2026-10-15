@@ -37,13 +37,15 @@ if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getIt
   localStorage.setItem(
     "monocode:mono-roster",
     JSON.stringify([
-      { id: "mono-invader", name: "Lead", mascot: "robot", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "playtester", name: "Playtester", mascot: "ghost", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/exo-game", "/Users/ash/harness/hivra"] },
-      { id: "projects-manager", name: "Projects Manager", mascot: "crab", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "design-critic", name: "Critiquito", mascot: "mushroom", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "growth-lead", name: "Growth lead", mascot: "rocket", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/hivra"] },
-      { id: "hivra-mailer", name: "Hivra mailer", mascot: "cat", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/hivra"] },
+      // The default team first (Critiquito is an add-on, off until Ash adds it), then each project's Lead.
+      { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
+      { id: "projects-manager", name: "Projects Manager", mascot: "crab", color: "hsl(211 92% 62%)", projects: [] },
+      { id: "frank", name: "frank", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
+      { id: "alfred", name: "Alfred", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
+      { id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
+      { id: "hivra-lead", name: "Hivra lead", mascot: "rocket", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/hivra"] },
+      { id: "nibbii-lead", name: "Nibbii lead", mascot: "cat", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/nibbii"] },
+      { id: "ash-lead", name: "Harness lead", mascot: "ghost", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/org"] },
     ]),
   );
 }

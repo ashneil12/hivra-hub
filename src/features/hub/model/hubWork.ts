@@ -17,7 +17,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w2", activeAgo: 2, projectId: "exo-game", who: "Playtester", kind: "mono", minutes: 12, state: "checking",
+    id: "w2", activeAgo: 2, projectId: "exo-game", who: "Lead", kind: "mono", minutes: 12, state: "checking",
     doing: "Example: playtesting build 0.14",
     steps: [
       { id: "1", at: "8:44pm", text: "Example: noted that the Area 2 jump feels late" },
@@ -36,7 +36,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w4", projectId: "exo-game", who: "Critiquito", kind: "mono", minutes: 35, finishedAt: "4:20pm",
+    id: "w4", projectId: "exo-game", who: "Lead", kind: "mono", minutes: 35, finishedAt: "4:20pm",
     doing: "Example: reviewed the Area 3 layout", steps: [{ id: "1", at: "4:20pm", text: "Example: left three notes on Area 3" }],
   },
   {
