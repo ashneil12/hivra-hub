@@ -111,3 +111,11 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 > - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "keys.read:Anthropic"). You may embed hub blocks with `hub.block(kind, data)`.
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
+
+## Pinning
+
+The answer may carry `pin: true` (next to the spec's own fields). That pins the page to the sidebar once Ash keeps it, marked "pinned by {Mono}". Ash can unpin it, or pin any page himself, from the Pages list.
+
+## No manual builder
+
+New page is only a prompt box. The bundled blocks (status, list, chart, barlist, note, calendar) are helpers the Mono builds with. Ash never picks them himself.

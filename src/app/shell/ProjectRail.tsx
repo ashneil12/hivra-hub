@@ -15,6 +15,7 @@ import {
   Zap,
   DashboardSquare,
 } from "../../shared/ui/icons";
+import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -436,6 +437,7 @@ export function ProjectRail({
                 ariaLabel="Pages"
               />
             ) : null}
+            {onOpenPages ? <PinnedPages onOpen={onOpenPages} /> : null}
           </div>
 
           <div
@@ -1250,5 +1252,31 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
         </Popover>
       ) : null}
     </>
+  );
+}
+
+/** Pinned pages (by Ash or by a Mono) under Pages; one click opens the page. */
+function PinnedPages({ onOpen }: { onOpen: () => void }) {
+  usePagesVersion();
+  const pinned = pinnedPages();
+  if (!pinned.length) return null;
+  return (
+    <div className="flex flex-col gap-px pl-6" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">
+      {pinned.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          title={`${p.title}, pinned by ${p.pinnedBy ?? "you"}`}
+          onClick={() => {
+            requestOpenPage(p.id);
+            onOpen();
+          }}
+          className="flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
+        >
+          <Pin className="size-3 shrink-0 text-content/50" strokeWidth={1.75} />
+          <span className="min-w-0 truncate">{p.title}</span>
+        </button>
+      ))}
+    </div>
   );
 }

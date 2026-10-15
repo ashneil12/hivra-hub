@@ -11,7 +11,7 @@ import { stubPageSpec } from "./stubPages";
  */
 export type BuildPageRequest = { projectId: string; monoId: string; prompt: string };
 export type BuildPageResult =
-  | { status: "ready"; spec: PageSpec; warnings: DesignIssue[] }
+  | { status: "ready"; spec: PageSpec; warnings: DesignIssue[]; /** The Mono asks for it to be pinned in the sidebar. */ pin?: boolean }
   | { status: "turned-down"; reason: string }
   | { status: "not-connected"; reason: string }
   | { status: "error"; reason: string };
@@ -49,10 +49,11 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
       return { status: "error", reason: err.message || "The build didn't go through." };
     }
   }
+  const pin = !!raw && typeof raw === "object" && (raw as { pin?: unknown }).pin === true ? { pin: true } : {};
   const spec = validatePageSpec(raw);
   if (!spec.ok) return { status: "turned-down", reason: spec.error };
-  if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [] };
+  if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [], ...pin };
   const check = checkBespokePage(spec.value);
   if (check.blocked) return { status: "turned-down", reason: check.blocked.plain };
-  return { status: "ready", spec: spec.value, warnings: check.warnings };
+  return { status: "ready", spec: spec.value, warnings: check.warnings, ...pin };
 }

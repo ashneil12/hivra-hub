@@ -24,6 +24,9 @@ export type Page = {
   warnings?: DesignIssue[];
   keptAt?: number;
   removed?: boolean;
+  /** Shown in the sidebar. Pinned by Ash, or by the Mono that built it. */
+  pinned?: boolean;
+  pinnedBy?: string;
 };
 
 /** A preview from a build result. */
@@ -116,6 +119,34 @@ export function importPages(list: Page[]): number {
     changed();
   }
   return add.length;
+}
+/** Every kept page, newest first, across all projects. */
+export function allPages(): Page[] {
+  return pages.filter((p) => !p.removed && p.keptAt).sort((a, b) => (b.keptAt ?? 0) - (a.keptAt ?? 0));
+}
+/** Pinned pages, for the sidebar. */
+export function pinnedPages(): Page[] {
+  return allPages().filter((p) => p.pinned);
+}
+/** Ash's pin toggle (by "you"), or a Mono pinning the page it built (by its name). */
+export function setPinned(id: string, on: boolean, by = "you"): void {
+  pages = pages.map((p) => (p.id === id ? { ...p, pinned: on, pinnedBy: on ? by : undefined } : p));
+  changed();
+}
+
+// The sidebar asks Pages to open one page.
+let openRequest: string | undefined;
+export function requestOpenPage(id: string | undefined): void {
+  openRequest = id;
+  changed();
+}
+export function pendingOpenPage(): string | undefined {
+  return openRequest;
+}
+export function takeOpenRequest(): string | undefined {
+  const id = openRequest;
+  openRequest = undefined;
+  return id;
 }
 /** Tests only. */
 export function resetPagesForTest(): void {

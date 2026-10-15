@@ -2,11 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowUp, DashboardSquare, Undo2 } from "../../../shared/ui/icons";
+import { ArrowUp, DashboardSquare, Pin, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { allowPage, approvedPermissions, needsAllow, keepPage, keptPages, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
+import { allPages, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, type BuildPageResult } from "../model/buildPage";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { handleBridgeCall, type BridgeCall } from "../model/bridge";
@@ -16,7 +16,8 @@ import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 
 /*
- * Pages: ask any Mono for a page; it shows a preview built from ready-made blocks; Keep or Throw away.
+ * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
+ * preview, Keep or Throw away. The bundled blocks are helpers the Mono builds with, not something Ash picks.
  * Every colour here is a theme token (content, surface, stroke, theme-accent, status-*), so a scheme restyles it.
  */
 const card = "rounded-xl bg-surface ring-1 ring-surface-ring";
@@ -265,14 +266,24 @@ type Build = { prompt: string } & ({ state: "building" } | BuildPageResult);
 export function PagesContent() {
   usePagesVersion();
   useHubDataVersion();
-  const projectId = useHubSelection().project;
-  const projectName = projectId === "today" ? "all projects" : hubData().listProjects().find((p) => p.id === projectId)?.name ?? projectId;
+  const selected = useHubSelection().project;
+  const projects = hubData().listProjects();
+  const nameOf = (id: string) => (id === "today" ? "All projects" : projects.find((p) => p.id === id)?.name ?? id);
+  const [filter, setFilter] = useState<string>("all");
   const [build, setBuild] = useState<Build>();
   const [open, setOpen] = useState<string>();
+  const [newPage, setNewPage] = useState(false);
   const [kept, setKept] = useState<string>();
   const [sentBack, setSentBack] = useState<string>();
-  const pages = keptPages(projectId);
+  // The sidebar's pinned pages open here.
+  const requested = pendingOpenPage();
+  useEffect(() => {
+    if (requested) { setOpen(takeOpenRequest()); setBuild(undefined); setNewPage(false); }
+  }, [requested]);
+  const pages = allPages();
   const shown = pages.find((p) => p.id === open);
+  // A new page belongs to the filtered project, else the one selected in the hub.
+  const projectId = filter !== "all" ? filter : selected;
 
   const ask = (prompt: string) => {
     setBuild({ prompt, state: "building" });
@@ -306,7 +317,7 @@ export function PagesContent() {
           </div>
         )}
         <div className="mt-4 flex gap-2">
-          <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Back to Pages</button>
+          <button type="button" className={quietBtn} onClick={() => { setBuild(undefined); setNewPage(false); }}>Back to Pages</button>
           {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} onClick={() => ask(build.prompt)}>Try again</button> : null}
         </div>
       </div>
@@ -342,61 +353,103 @@ export function PagesContent() {
           <span className="text-[12px] text-content/70">This is a preview. Nothing is saved until you keep it.</span>
           <span className="ml-auto" />
           <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Throw away</button>
-          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => { keepPage(preview); setKept(preview.title); setOpen(preview.id); setBuild(undefined); }}>{keepLabel}</button>
+          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => { keepPage(preview); if (build && "pin" in build && build.pin) setPinned(preview.id, true, preview.by); setKept(preview.title); setOpen(preview.id); setBuild(undefined); }}>{keepLabel}</button>
         </div>
       </div>
     );
   }
 
+  if (shown) {
+    return (
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-open>
+          <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
+          <div className="flex items-center gap-2">
+            <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
+            <PinToggle page={shown} />
+          </div>
+          <div className="mt-1 text-[12px] text-content/60">Kept · {nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
+          <div className="mb-4 mt-1"><Limits /></div>
+          {kept === shown.title ? (
+            <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
+              <span className="min-w-0 flex-1">Kept.</span>
+              <button type="button" data-pages-undo-keep className={`${quietBtn} flex items-center gap-1.5`} onClick={() => { const id = shown.id; setKept(undefined); setOpen(undefined); void undoBotChange([`page:${id}`]); }}>
+                <Undo2 className="size-3.5 text-content/60" />Undo
+              </button>
+            </div>
+          ) : null}
+          {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
+          <PageBody page={shown} live />
+        </div>
+      </div>
+    );
+  }
+
+  if (newPage || !pages.length) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center" data-pages-new>
+        <div>
+          <div className="text-[17px] font-medium text-content">{pages.length ? "New page" : "No pages yet"}</div>
+          <div className="mt-1 text-[13px] text-content/70">Describe the page. {ASKER} builds it and shows you a preview first.</div>
+          <div className="mt-2"><Limits /></div>
+        </div>
+        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} /></div>
+        {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
+      </div>
+    );
+  }
+
+  const groups = (filter === "all" ? [...new Set(pages.map((p) => p.projectId ?? "today"))] : [filter])
+    .map((id) => [id, pages.filter((p) => (p.projectId ?? "today") === id)] as const)
+    .filter(([, list]) => list.length);
+  const withPages = [...new Set(pages.map((p) => p.projectId ?? "today"))];
   return (
-    <div className="flex min-h-0 flex-1">
-      {pages.length ? (
-        <aside className="flex w-[240px] shrink-0 flex-col gap-0.5 border-r border-stroke p-2" aria-label="Your pages">
-          <div className="px-2 pb-1 pt-1.5 text-[11px] uppercase tracking-wide text-content/60">Pages · {projectName}</div>
-          {pages.map((p) => (
-            <button key={p.id} type="button" onClick={() => setOpen(p.id)}
-              className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] ${p.id === shown?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"}`}>
-              {p.title}
+    <div className="min-h-0 flex-1 overflow-auto">
+      <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-list>
+        <div className="flex items-center gap-2">
+          <h1 className="min-w-0 flex-1 text-[17px] font-medium text-content">Pages</h1>
+          <button type="button" data-pages-new-button className={primaryBtn} onClick={() => setNewPage(true)}>New page</button>
+        </div>
+        <div className="mt-1"><Limits /></div>
+        <div role="tablist" aria-label="Filter by project" className="mt-4 flex flex-wrap gap-1">
+          {["all", ...withPages].map((id) => (
+            <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)}
+              className={`rounded-md px-2 py-0.5 text-[12px] ${filter === id ? "bg-selection text-content" : "text-content/70 hover:bg-selection-hover"}`}>
+              {id === "all" ? "All" : nameOf(id)}
             </button>
           ))}
-          <button type="button" onClick={() => setOpen(undefined)} className="mt-1 rounded-md px-2 py-1.5 text-left text-[13px] text-content/70 hover:bg-selection-hover">+ New page</button>
-        </aside>
-      ) : null}
-      <div className="min-w-0 flex-1 overflow-auto">
-        {shown ? (
-          <div className="mx-auto w-full max-w-3xl px-8 py-6">
-            <h1 className="text-[17px] font-medium text-content">{shown.title}</h1>
-            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
-            <div className="mb-4 mt-1"><Limits /></div>
-            {kept === shown.title ? (
-              <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
-                <span className="min-w-0 flex-1">Kept.</span>
-                <button type="button" data-pages-undo-keep className={`${quietBtn} flex items-center gap-1.5`} onClick={() => { const id = shown.id; setKept(undefined); setOpen(undefined); void undoBotChange([`page:${id}`]); }}>
-                  <Undo2 className="size-3.5 text-content/60" />Undo
-                </button>
+        </div>
+        <div className="mt-4 flex flex-col gap-5">
+          {groups.map(([id, list]) => (
+            <section key={id} data-pages-group={id}>
+              <h2 className="px-2 pb-1 text-[11px] uppercase tracking-wide text-content/60">{nameOf(id)}</h2>
+              <div className="flex flex-col gap-px">
+                {list.map((p) => (
+                  <div key={p.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-row={p.id}>
+                    <button type="button" className="flex min-w-0 flex-1 flex-col text-left" onClick={() => setOpen(p.id)}>
+                      <span className="truncate text-[13px] text-content">{p.title}</span>
+                      <span className="truncate text-[12px] text-content/60">by {p.by}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
+                    </button>
+                    <PinToggle page={p} />
+                  </div>
+                ))}
               </div>
-            ) : null}
-            {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
-            <PageBody page={shown} live />
-          </div>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-5 px-8 text-center" data-pages-empty>
-            <DashboardSquare className="size-8 text-content/60" strokeWidth={1.5} />
-            <div>
-              <div className="text-[17px] font-medium text-content">{pages.length ? "Make another page" : `No pages for ${projectName} yet`}</div>
-              <div className="mt-1 text-[13px] text-content/70">Just ask any Mono. It builds a page, from the hub's blocks or its own design, and shows you a preview first.</div>
-              <div className="mt-2"><Limits /></div>
-            </div>
-            <div className="w-full max-w-[560px]"><AskBox onAsk={ask} /></div>
-            <div className="flex flex-wrap justify-center gap-2">
-              {["A dashboard for EXO bugs", "My schedule this week", "Hivra sign-ups and sales"].map((s) => (
-                <button key={s} type="button" className={`${card} ${btn} text-content/80 hover:bg-surface-raised`} onClick={() => ask(s)}>{s}</button>
-              ))}
-            </div>
-          </div>
-        )}
+            </section>
+          ))}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** Pin or unpin a page; pinned pages show in the sidebar. */
+function PinToggle({ page }: { page: Page }) {
+  return (
+    <button type="button" aria-pressed={!!page.pinned} aria-label={page.pinned ? `Unpin ${page.title}` : `Pin ${page.title}`} title={page.pinned ? "Unpin from the sidebar" : "Pin to the sidebar"}
+      data-pages-pin onClick={() => setPinned(page.id, !page.pinned)}
+      className={`grid size-7 shrink-0 place-items-center rounded-md hover:bg-surface-raised ${page.pinned ? "text-content" : "text-content/45 hover:text-content"}`}>
+      <Pin className="size-3.5" strokeWidth={page.pinned ? 2.25 : 1.75} />
+    </button>
   );
 }
 
