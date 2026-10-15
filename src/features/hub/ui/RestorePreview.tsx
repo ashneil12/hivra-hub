@@ -109,6 +109,21 @@ function Body({ file, name, onBack, onDone }: { file: SetupFile; name: string; o
         })}
       </section> : null}
 
+      {file.pages?.length ? (
+        <section className="flex flex-col gap-0.5" data-restore-pages>
+          <h2 className="pb-1 text-xs text-content/60">Pages</h2>
+          {file.pages.map((pg) => (
+            <div key={pg.id} className="flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px]">
+              <span className="min-w-0 flex-1 truncate text-content">{pg.title}</span>
+              <span className="text-xs text-content/60">
+                {file.projects.find((x) => x.id === pg.projectId)?.name ?? (pg.projectId === "today" ? "Today" : pg.projectId)}
+                {pg.spec.kind === "bespoke" && pg.spec.permissions.length ? " · asks again before it can do anything" : ""}
+              </span>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
       {file.connectors?.length ? (
         <section className="flex flex-col gap-0.5">
           <h2 className="pb-1 text-xs text-content/60">Connectors</h2>
