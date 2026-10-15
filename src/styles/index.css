@@ -65,6 +65,8 @@
      inputs, so every screen built on these restyles with no per-screen edits. Default: monochrome glass. */
   --color-surface: color-mix(in srgb, var(--color-content) var(--scheme-surface-strength, 4%), transparent);
   --color-surface-raised: color-mix(in srgb, var(--color-content) 8%, transparent);
+  /* Inner padding of a hub card; bespoke pages get it too. */
+  --space-card: 12px;
   --color-surface-ring: color-mix(in srgb, var(--color-content) 10%, transparent);
   --color-theme-accent: var(--scheme-accent, var(--color-content));
   /* Status only: the one place colour means something. */

@@ -8,7 +8,7 @@ import type { BespokeSpec } from "./pageSpec";
 export const SANDBOX = "allow-scripts";
 export const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri 'none'";
 /** The tokens a page can use; copied from the host's computed values so the page follows the active theme and scheme. */
-export const PAGE_TOKENS = ["--color-background-base", "--color-content", "--color-surface", "--color-surface-raised", "--color-surface-ring", "--color-stroke", "--color-theme-accent", "--color-status-ok", "--color-status-warn", "--color-status-bad", "--font-sans"] as const;
+export const PAGE_TOKENS = ["--color-background-base", "--color-content", "--color-surface", "--color-surface-raised", "--color-surface-ring", "--color-stroke", "--color-theme-accent", "--color-status-ok", "--color-status-warn", "--color-status-bad", "--font-sans", "--space-card"] as const;
 
 export function readTokens(root: Element = document.documentElement): Record<string, string> {
   const style = getComputedStyle(root);
@@ -38,7 +38,7 @@ const HELPER = `(() => {
 })();`;
 const BASE_CSS = `
 html,body{margin:0;background:transparent;color:var(--color-content);font-family:var(--font-sans);font-size:13px;line-height:1.5}
-.hub-block{background:var(--color-surface);border-radius:12px;box-shadow:inset 0 0 0 1px var(--color-surface-ring);padding:16px}
+.hub-block{background:var(--color-surface);border-radius:12px;box-shadow:inset 0 0 0 1px var(--color-surface-ring);padding:var(--space-card,12px)}
 .hub-block-title{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:color-mix(in srgb,var(--color-content) 60%,transparent);margin-bottom:10px}
 .hub-bar-row{display:flex;align-items:center;gap:12px;margin:6px 0}.hub-bar{flex:1;position:relative;border-radius:6px;background:color-mix(in srgb,var(--color-theme-accent) 22%,transparent);padding:4px 8px;white-space:nowrap}
 .hub-bar-value{min-width:32px;text-align:right;color:color-mix(in srgb,var(--color-content) 75%,transparent)}

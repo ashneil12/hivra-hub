@@ -108,3 +108,11 @@ it("Keep and allow waits about a second after a key ask appears", () => {
   expect(ready).toBe(true);
   vi.useRealTimers();
 });
+
+it("bespoke cards use the hub card padding token", async () => {
+  const { bespokeSrcdoc, PAGE_TOKENS } = await import("./sandbox");
+  expect(PAGE_TOKENS).toContain("--space-card");
+  const doc = bespokeSrcdoc({ kind: "bespoke", title: "t", html: "<p>x</p>", css: "", js: "", permissions: [] } as never, { "--space-card": "12px" }, "dark");
+  expect(doc).toContain("padding:var(--space-card,12px)");
+  expect(doc).toContain("--space-card:12px");
+});
