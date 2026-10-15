@@ -1,60 +1,48 @@
 import { useSyncExternalStore } from "react";
 import { recordPageChange, setPageHooks } from "../../hub/model/botChanges";
+import type { DesignIssue } from "./designCheck";
+import type { Capability, PageBlock, PageSpec } from "./pageSpec";
+import { stubPageSpec } from "./stubPages";
+
+export type { BlockKind, PageBlock } from "./pageSpec";
 
 /**
- * Pages: a Mono builds a page for you from ready-made blocks. For now the request is matched locally to a block
- * layout (no model call), and every block shows Example data. Kept pages are saved; Undo lives in Bot changes.
+ * Pages: a seated Mono builds a page (bundled blocks or a bespoke page) through buildPage; Ash previews it, then
+ * Keep (or Keep and allow, approving the page's asks) or Throw away. Kept pages and their approved permissions are
+ * saved per project; Undo in Bot changes takes a page away and revokes its permissions.
  */
-export type BlockKind = "status" | "list" | "chart" | "note" | "calendar";
-export type PageBlock =
-  | { kind: "status"; title: string; state: "ok" | "warn" | "bad"; line: string; detail: string }
-  | { kind: "list"; title: string; rows: { text: string; state: "ok" | "warn" | "bad"; label: string }[] }
-  | { kind: "chart"; title: string; bars: { label: string; value: number }[] }
-  | { kind: "note"; title: string; text: string }
-  | { kind: "calendar"; title: string; month: string; firstWeekday: number; days: number; marked: { day: number; text: string }[] };
+export type Page = {
+  id: string;
+  projectId: string;
+  title: string;
+  request: string;
+  by: string;
+  spec: PageSpec;
+  /** What Ash approved with Keep and allow. Empty after Undo. */
+  permissions: Capability[];
+  warnings?: DesignIssue[];
+  keptAt?: number;
+  removed?: boolean;
+};
 
-export type Page = { id: string; projectId: string; title: string; request: string; by: string; blocks: PageBlock[]; keptAt?: number; removed?: boolean };
-
-type Topic = { words: RegExp; title: string; list: string; rows: [string, "ok" | "warn" | "bad", string][]; chart: string; status: [string, string]; note: string; order: BlockKind[] };
-const TOPICS: Topic[] = [
-  { words: /bug|issue|crash|fix/i, title: "Bugs and fixes", list: "Open bugs",
-    rows: [["Shader step fails on Intel Macs", "bad", "Open"], ["Jump clips through the ledge", "bad", "Open"], ["Sound drops after pause", "ok", "Fixed"], ["Save slot shows wrong date", "ok", "Fixed"]],
-    chart: "Bugs fixed per day", status: ["2 bugs still open", "Oldest opened 3 days ago"], note: "Fix the shader step first: it blocks the playtest build.", order: ["status", "list", "chart", "calendar", "note"] },
-  { words: /calendar|schedule|meeting|week|plan/i, title: "This week", list: "Coming up",
-    rows: [["Playtest with five kids", "warn", "Thursday"], ["Pricing review", "ok", "Friday"], ["Ship build 0.14", "warn", "Monday"]],
-    chart: "Hours booked per day", status: ["Week on track", "3 things booked, nothing overdue"], note: "Keep Friday afternoon clear for the release check.", order: ["calendar", "list", "status", "chart", "note"] },
-  { words: /sale|revenue|money|sign[- ]?up|growth|user/i, title: "Sign-ups and sales", list: "Latest sign-ups",
-    rows: [["Waitlist: 42 new", "ok", "Today"], ["Trial to paid: 3", "ok", "This week"], ["Refund asked: 1", "warn", "Open"]],
-    chart: "Sign-ups per day", status: ["Sign-ups up this week", "212 so far, 38 more than last week"], note: "The new headline is doing better. Keep it for another week.", order: ["status", "chart", "list", "note", "calendar"] },
-];
-const GENERAL: Topic = { words: /.*/, title: "Overview", list: "Things to watch",
-  rows: [["Nightly backup", "ok", "Done"], ["Build 0.14", "warn", "Waiting"], ["Shader step", "bad", "Stuck"]],
-  chart: "Builds per day", status: ["Mostly on track", "One thing is stuck"], note: "Ask the Mono to change any block: add, remove, or reorder.", order: ["status", "list", "chart", "note", "calendar"] };
-
-/** "dashboard for EXO bugs" → a page title. */
-function titleFor(request: string, topic: Topic): string {
-  const proj = request.match(/\b(EXO|Hivra|Nibbii|Hub)\b/i)?.[1];
-  return proj ? `${proj[0].toUpperCase()}${proj.slice(1)} · ${topic.title}` : topic.title;
+/** A preview from a build result. */
+export function pageFromSpec(spec: PageSpec, request: string, by: string, projectId: string, warnings: DesignIssue[] = [], now = Date.now()): Page {
+  return { id: `page-${now.toString(36)}`, projectId, title: spec.title, request, by, spec, permissions: [], warnings };
 }
-
-/** Match a request to a block layout, locally. Every page gets all five blocks, ordered by what was asked. */
+/** Tests and the dev stub: a preview from the keyword stub. */
 export function buildPreview(request: string, by: string, now = Date.now(), projectId = "today"): Page {
-  const topic = TOPICS.find((t) => t.words.test(request)) ?? GENERAL;
-  const blocks: Record<BlockKind, PageBlock> = {
-    status: { kind: "status", title: "Status", state: topic.rows.some((r) => r[1] === "bad") ? "bad" : topic.rows.some((r) => r[1] === "warn") ? "warn" : "ok", line: topic.status[0], detail: topic.status[1] },
-    list: { kind: "list", title: topic.list, rows: topic.rows.map(([text, state, label]) => ({ text, state, label })) },
-    chart: { kind: "chart", title: topic.chart, bars: [["Mon", 2], ["Tue", 4], ["Wed", 3], ["Thu", 5], ["Fri", 1]].map(([label, value]) => ({ label: label as string, value: value as number })) },
-    note: { kind: "note", title: "Note", text: topic.note },
-    calendar: { kind: "calendar", title: "Calendar", month: "October 2026", firstWeekday: 3, days: 31, marked: [{ day: 15, text: "Today" }, { day: 16, text: "Playtest" }, { day: 19, text: "Ship" }] },
-  };
-  return { id: `page-${now.toString(36)}`, projectId, title: titleFor(request, topic), request, by, blocks: topic.order.map((k) => blocks[k]) };
+  return pageFromSpec(stubPageSpec(request), request, by, projectId, [], now);
+}
+/** A page's blocks (bespoke pages have none of their own). */
+export function pageBlocks(page: Page): PageBlock[] {
+  return page.spec.kind === "blocks" ? page.spec.blocks : [];
 }
 
 // ---- kept pages -------------------------------------------------------------------------------------------------------
 const KEY = "monocode:pages";
 function load(): Page[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as Page[]).filter((p) => p && p.id && Array.isArray(p.blocks));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as Page[]).filter((p) => p && p.id && p.spec && Array.isArray(p.permissions));
   } catch {
     return [];
   }
@@ -78,16 +66,24 @@ export function usePagesVersion(): number {
 export function keptPages(projectId: string): Page[] {
   return pages.filter((p) => !p.removed && (p.projectId ?? "today") === projectId).sort((a, b) => (b.keptAt ?? 0) - (a.keptAt ?? 0));
 }
+/** Keep (blocks) or Keep and allow (bespoke): the page's asks are approved and stored with it. */
 export function keepPage(page: Page, now = Date.now()): void {
-  pages = [{ ...page, keptAt: now, removed: false }, ...pages.filter((p) => p.id !== page.id)];
+  const permissions = page.spec.kind === "bespoke" ? page.spec.permissions : [];
+  pages = [{ ...page, permissions, keptAt: now, removed: false }, ...pages.filter((p) => p.id !== page.id)];
   changed();
   recordPageChange(page.id, page.by, page.title);
 }
+/** Undo takes the page away and revokes what it was allowed; Redo puts both back. */
 function setRemoved(id: string, removed: boolean) {
-  pages = pages.map((p) => (p.id === id ? { ...p, removed } : p));
+  pages = pages.map((p) => (p.id === id ? { ...p, removed, permissions: removed || p.spec.kind !== "bespoke" ? [] : p.spec.permissions } : p));
   changed();
 }
 setPageHooks({ remove: (id) => setRemoved(id, true), restore: (id) => setRemoved(id, false) });
+/** What a kept page may do right now (nothing once undone). */
+export function approvedPermissions(id: string): Capability[] {
+  const p = pages.find((x) => x.id === id);
+  return p && !p.removed ? p.permissions : [];
+}
 /** Tests only. */
 export function resetPagesForTest(): void {
   pages = [];

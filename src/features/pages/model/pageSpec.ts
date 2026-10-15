@@ -1,0 +1,114 @@
+/**
+ * What a Mono's page build returns (see docs/pages-build-contract.md): either a spec made of bundled blocks, or a
+ * bespoke page (HTML/CSS/JS) that runs in a sandboxed frame and reaches the hub only through permissions it asks for.
+ */
+
+// ---- blocks ---------------------------------------------------------------------------------------------------------
+export type Status = "ok" | "warn" | "bad";
+export type PageBlock =
+  | { kind: "status"; title: string; state: Status; line: string; detail: string }
+  | { kind: "list"; title: string; rows: { text: string; state: Status; label: string }[] }
+  | { kind: "chart"; title: string; bars: { label: string; value: number }[] }
+  | { kind: "barlist"; title: string; rows: { label: string; value: number }[] }
+  | { kind: "note"; title: string; text: string }
+  | { kind: "calendar"; title: string; month: string; firstWeekday: number; days: number; marked: { day: number; text: string }[] };
+export type BlockKind = PageBlock["kind"];
+export const BLOCK_KINDS: readonly BlockKind[] = ["status", "list", "chart", "barlist", "note", "calendar"];
+
+// ---- permissions ----------------------------------------------------------------------------------------------------
+/**
+ * A page may ask for any of these. `keys.read:<Name>` names one key (e.g. keys.read:Anthropic). Two walls can never be
+ * asked for: changing Monos (add, seat, rename, delete) and leaving the sandbox (direct IPC / Tauri).
+ */
+export const CAPABILITIES = ["tasks.read", "tasks.write", "project.read", "project.write", "mono.run", "automation.run", "settings.read", "settings.write"] as const;
+export type Capability = (typeof CAPABILITIES)[number] | `keys.read:${string}`;
+const WALLS = /^(monos?\.(add|seat|rename|delete|create|remove)|ipc|tauri)(\.|:|$)/i;
+export function isWall(cap: string): boolean {
+  return WALLS.test(cap);
+}
+export function isCapability(cap: string): cap is Capability {
+  return (CAPABILITIES as readonly string[]).includes(cap) || /^keys\.read:[\w .-]{1,40}$/.test(cap);
+}
+export function keyName(cap: string): string | undefined {
+  return cap.startsWith("keys.read:") ? cap.slice("keys.read:".length) : undefined;
+}
+const PLAIN: Record<(typeof CAPABILITIES)[number], string> = {
+  "tasks.read": "Read this project's tasks",
+  "tasks.write": "Add and change tasks",
+  "project.read": "Read this project's files and status",
+  "project.write": "Write to this project",
+  "mono.run": "Ask a Mono to run work",
+  "automation.run": "Run an automation",
+  "settings.read": "Read your settings",
+  "settings.write": "Change your settings",
+};
+/** Plain words for the preview. */
+export function describeCapability(cap: Capability): string {
+  const key = keyName(cap);
+  return key ? `Reads your keys: ${key}` : PLAIN[cap as (typeof CAPABILITIES)[number]];
+}
+
+// ---- the spec -------------------------------------------------------------------------------------------------------
+export type BlocksSpec = { kind: "blocks"; title: string; blocks: PageBlock[] };
+export type BespokeSpec = { kind: "bespoke"; title: string; html: string; css?: string; js?: string; permissions: Capability[] };
+export type PageSpec = BlocksSpec | BespokeSpec;
+
+/** The JSON schema the backend's answer must match (also printed in docs/pages-build-contract.md). */
+export const PAGE_SPEC_SCHEMA = {
+  $id: "monocode-hub/page-spec",
+  oneOf: [
+    { type: "object", required: ["kind", "title", "blocks"], properties: { kind: { const: "blocks" }, title: { type: "string", maxLength: 80 }, blocks: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", required: ["kind", "title"], properties: { kind: { enum: BLOCK_KINDS } } } } } },
+    { type: "object", required: ["kind", "title", "html", "permissions"], properties: { kind: { const: "bespoke" }, title: { type: "string", maxLength: 80 }, html: { type: "string", maxLength: 200000 }, css: { type: "string" }, js: { type: "string" }, permissions: { type: "array", maxItems: 30, items: { type: "string" } } } },
+  ],
+} as const;
+
+export type Validated<T> = { ok: true; value: T } | { ok: false; error: string };
+type Obj = Record<string, unknown>;
+const str = (v: unknown, max = 200): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
+const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const status = (v: unknown): v is Status => v === "ok" || v === "warn" || v === "bad";
+const arr = (v: unknown, max = 50): v is Obj[] => Array.isArray(v) && v.length <= max && v.every((r) => r && typeof r === "object");
+
+function validBlock(b: unknown): string | null {
+  if (!b || typeof b !== "object") return "a block isn't an object";
+  const x = b as Obj;
+  if (!BLOCK_KINDS.includes(x.kind as BlockKind)) return `“${String(x.kind)}” isn't a block the hub has`;
+  if (!str(x.title, 80)) return `a ${String(x.kind)} block has no title`;
+  switch (x.kind) {
+    case "status": return status(x.state) && str(x.line) && typeof x.detail === "string" ? null : "the status block is missing its state or line";
+    case "list": return arr(x.rows) && x.rows.every((r) => str(r.text) && status(r.state) && typeof r.label === "string") ? null : "a list row is missing text, state or label";
+    case "chart": return arr(x.bars, 31) && x.bars.every((r) => str(r.label, 20) && num(r.value)) ? null : "a chart bar is missing its label or number";
+    case "barlist": return arr(x.rows, 20) && x.rows.every((r) => str(r.label) && num(r.value) && r.value >= 0) ? null : "a bar list row is missing its label or number";
+    case "note": return str(x.text, 2000) ? null : "the note is empty";
+    case "calendar": return str(x.month, 40) && num(x.firstWeekday) && x.firstWeekday >= 0 && x.firstWeekday < 7 && num(x.days) && x.days >= 28 && x.days <= 31 && arr(x.marked, 31) ? null : "the calendar's month is off";
+  }
+  return null;
+}
+
+/** Check the backend's answer against the schema. Anything off comes back as one plain reason. */
+export function validatePageSpec(raw: unknown): Validated<PageSpec> {
+  if (!raw || typeof raw !== "object") return { ok: false, error: "The Mono's answer wasn't a page." };
+  const x = raw as Obj;
+  if (!str(x.title, 80)) return { ok: false, error: "The page has no title." };
+  if (x.kind === "blocks") {
+    if (!Array.isArray(x.blocks) || x.blocks.length === 0 || x.blocks.length > 12) return { ok: false, error: "The page needs 1 to 12 blocks." };
+    for (const b of x.blocks) {
+      const why = validBlock(b);
+      if (why) return { ok: false, error: `The page doesn't fit: ${why}.` };
+    }
+    return { ok: true, value: { kind: "blocks", title: x.title, blocks: x.blocks as PageBlock[] } };
+  }
+  if (x.kind === "bespoke") {
+    if (!str(x.html, 200000)) return { ok: false, error: "The page has no HTML." };
+    if (x.css !== undefined && typeof x.css !== "string") return { ok: false, error: "The page's CSS isn't text." };
+    if (x.js !== undefined && typeof x.js !== "string") return { ok: false, error: "The page's script isn't text." };
+    if (!Array.isArray(x.permissions) || x.permissions.length > 30) return { ok: false, error: "The page's permissions aren't a list." };
+    for (const p of x.permissions) {
+      if (typeof p !== "string") return { ok: false, error: "A permission isn't text." };
+      if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Pages can never add, seat, rename or delete Monos." : "Pages can never reach the app directly; everything goes through the page bridge." };
+      if (!isCapability(p)) return { ok: false, error: `“${p}” isn't a permission the hub knows.` };
+    }
+    return { ok: true, value: { kind: "bespoke", title: x.title, html: x.html, css: x.css as string | undefined, js: x.js as string | undefined, permissions: [...new Set(x.permissions as Capability[])] } };
+  }
+  return { ok: false, error: "The page is neither blocks nor a bespoke page." };
+}

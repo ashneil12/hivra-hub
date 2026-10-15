@@ -1,11 +1,16 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, DashboardSquare, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
-import { buildPreview, keepPage, keptPages, usePagesVersion, type Page, type PageBlock } from "../model/pages";
+import { approvedPermissions, keepPage, keptPages, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
+import { buildPage, type BuildPageResult } from "../model/buildPage";
+import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
+import { handleBridgeCall, type BridgeCall } from "../model/bridge";
+import { SANDBOX, bespokeSrcdoc, readTokens } from "../model/sandbox";
+import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 
 /*
  * Pages: ask any Mono for a page; it shows a preview built from ready-made blocks; Keep or Throw away.
@@ -17,6 +22,7 @@ const quietBtn = `${btn} text-content/70 hover:bg-surface-raised hover:text-cont
 const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const STATE_DOT = { ok: "bg-status-ok", warn: "bg-status-warn", bad: "bg-status-bad" } as const;
 const ASKER = "Projects Manager";
+const ASKER_ID = "projects-manager";
 export const PAGES_CANT = "This can't change the app's core screens, the sidebar, settings, keys or Monos.";
 function Limits() {
   return <p className="text-[12px] text-content/60" data-pages-cant>{PAGES_CANT}</p>;
@@ -77,6 +83,26 @@ export function Block({ block }: { block: PageBlock }) {
         </BlockFrame>
       );
     }
+    case "barlist": {
+      // Restyled from Tremor's BarList (tremorlabs/tremor, Apache-2.0): bars sized by value, label on the bar,
+      // value at the end. Theme tokens only: the accent tints the bars, content draws the text.
+      const max = Math.max(...block.rows.map((r) => r.value), 1);
+      return (
+        <BlockFrame title={block.title}>
+          <div className="flex flex-col gap-1.5" data-block-barlist>
+            {block.rows.map((r) => (
+              <div key={r.label} className="flex items-center gap-3 text-[13px]">
+                <div className="relative h-7 min-w-0 flex-1">
+                  <div className="absolute inset-y-0 left-0 rounded-md bg-theme-accent/20" style={{ width: `${Math.max(4, (r.value / max) * 100)}%` }} />
+                  <span className="relative flex h-full items-center truncate px-2 text-content/90">{r.label}</span>
+                </div>
+                <span className="w-10 shrink-0 text-right tabular-nums text-content/75">{r.value}</span>
+              </div>
+            ))}
+          </div>
+        </BlockFrame>
+      );
+    }
     case "note":
       return (
         <BlockFrame title={block.title}>
@@ -107,12 +133,75 @@ export function Block({ block }: { block: PageBlock }) {
   }
 }
 
-function PageBody({ page }: { page: Page }) {
+function PageBody({ page, live }: { page: Page; live?: boolean }) {
+  if (page.spec.kind === "bespoke") return <BespokeFrame pageId={page.id} spec={page.spec} live={live} />;
   return (
     <div className="grid grid-cols-2 gap-3">
-      {page.blocks.map((b, i) => <Block key={`${b.kind}-${i}`} block={b} />)}
+      {pageBlocks(page).map((b, i) => <Block key={`${b.kind}-${i}`} block={b} />)}
     </div>
   );
+}
+
+/**
+ * A bespoke page in its sandbox: sandbox="allow-scripts" only, a strict CSP, the theme tokens injected. Its only way
+ * out is hub.call over postMessage; the host answers only what Ash approved (none in preview), via the bridge.
+ */
+export function BespokeFrame({ pageId, spec, live }: { pageId: string; spec: BespokeSpec; live?: boolean }) {
+  const ref = useRef<HTMLIFrameElement>(null);
+  const scheme = loadActiveSchemeId();
+  const [doc] = useState(() => bespokeSrcdoc(spec, readTokens()));
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (!ref.current || e.source !== ref.current.contentWindow) return;
+      const m = e.data as { type?: string } & BridgeCall;
+      if (m?.type !== "hub:call") return;
+      const approved = live ? approvedPermissions(pageId) : [];
+      void handleBridgeCall(m, approved, {}).then((reply) => ref.current?.contentWindow?.postMessage({ type: "hub:reply", ...reply }, "*"));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [pageId, live]);
+  return <iframe ref={ref} key={scheme} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page className="h-[460px] w-full rounded-xl border-0 bg-transparent" />;
+}
+
+/** The asks a bespoke page makes, in plain words. Key asks get their own card on top. */
+function Permissions({ asks }: { asks: Capability[] }) {
+  const keys = asks.map(keyName).filter((k): k is string => !!k);
+  const rest = asks.filter((a) => !keyName(a));
+  if (!asks.length) return null;
+  return (
+    <div className="flex flex-col gap-2" data-page-permissions>
+      {keys.length ? (
+        <div className={`${card} px-4 py-3`} data-page-key-asks>
+          <div className="text-[13px] font-medium text-content">Reads your keys</div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {keys.map((k) => <span key={k} className="rounded-md bg-surface-raised px-2 py-0.5 text-[12px] text-content">{k}</span>)}
+          </div>
+        </div>
+      ) : null}
+      {rest.length ? (
+        <div className={`${card} px-4 py-3`}>
+          <div className="mb-1 text-[12px] text-content/70">This page asks to:</div>
+          <ul className="flex flex-col gap-0.5 text-[13px] text-content/90">
+            {rest.map((a) => <li key={a}>· {describeCapability(a)}</li>)}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** About a second before Keep and allow works when keys are asked for, so a quick click can't approve them. */
+export const KEY_CONFIRM_DELAY_MS = 1000;
+export function useKeyDelay(hasKeyAsk: boolean): boolean {
+  const [ready, setReady] = useState(!hasKeyAsk);
+  useEffect(() => {
+    if (!hasKeyAsk) return setReady(true);
+    setReady(false);
+    const t = window.setTimeout(() => setReady(true), KEY_CONFIRM_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [hasKeyAsk]);
+  return ready;
 }
 
 function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
@@ -134,23 +223,78 @@ function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
   );
 }
 
+type Build = { prompt: string } & ({ state: "building" } | BuildPageResult);
+
 export function PagesContent() {
   usePagesVersion();
   useHubDataVersion();
   const projectId = useHubSelection().project;
   const projectName = projectId === "today" ? "all projects" : hubData().listProjects().find((p) => p.id === projectId)?.name ?? projectId;
-  const [preview, setPreview] = useState<Page>();
+  const [build, setBuild] = useState<Build>();
   const [open, setOpen] = useState<string>();
   const [kept, setKept] = useState<string>();
+  const [sentBack, setSentBack] = useState<string>();
   const pages = keptPages(projectId);
   const shown = pages.find((p) => p.id === open);
 
+  const ask = (prompt: string) => {
+    setBuild({ prompt, state: "building" });
+    setSentBack(undefined);
+    void buildPage({ projectId, monoId: ASKER_ID, prompt }).then((result) => setBuild({ prompt, ...result }));
+  };
+  const preview = build && "status" in build && build.status === "ready" ? pageFromSpec(build.spec, build.prompt, ASKER, projectId, build.warnings) : undefined;
+  const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
+  const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
+
+  if (build && !preview) {
+    return (
+      <div className="mx-auto w-full max-w-2xl px-8 py-10" data-pages-build-state={"status" in build ? build.status : "building"}>
+        <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {ASKER}</div>
+        {"status" in build ? (
+          build.status === "not-connected" ? (
+            <div className={`${card} p-5`} data-pages-not-connected>
+              <div className="text-[14px] text-content">Not connected yet</div>
+              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} Once it's wired, {ASKER} builds the page here and you see a preview first.</p>
+            </div>
+          ) : (
+            <div className="rounded-lg px-3 py-2.5" data-pages-turned-down>
+              <div className="text-[13px] text-content">{build.status === "turned-down" ? "Sent back to " + ASKER : "That didn't work"}</div>
+              <div className="text-[13px] leading-5 text-content/60">Turned down automatically: {"reason" in build ? build.reason : ""}</div>
+            </div>
+          )
+        ) : (
+          <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status">
+            <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
+            {ASKER} is building your page…
+          </div>
+        )}
+        <div className="mt-4 flex gap-2">
+          <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Back to Pages</button>
+          {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} onClick={() => ask(build.prompt)}>Try again</button> : null}
+        </div>
+      </div>
+    );
+  }
+
   if (preview) {
+    const keepLabel = asks.length ? "Keep and allow" : "Keep";
     return (
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
         <div className="mb-1 text-[12px] text-content/60">“{preview.request}” · {preview.by} built this preview</div>
         <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
         <div className="mb-4 mt-1"><Limits /></div>
+        {asks.length ? <div className="mb-3"><Permissions asks={asks} /></div> : null}
+        {preview.warnings?.length ? (
+          <div className={`${card} mb-3 flex flex-col gap-2 px-4 py-3`} data-pages-warnings>
+            {preview.warnings.map((w) => (
+              <div key={w.rule} className="flex items-start gap-3 text-[13px]">
+                <span className="min-w-0 flex-1 leading-5 text-content/85">{w.plain}</span>
+                <button type="button" className={quietBtn} onClick={() => setSentBack(w.plain)}>Fix it</button>
+              </div>
+            ))}
+            {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {ASKER}: “{sentBack}”</div> : null}
+          </div>
+        ) : null}
         <div className="relative rounded-xl border border-dashed border-content/30 p-4">
           <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
             <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
@@ -160,8 +304,8 @@ export function PagesContent() {
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
           <span className="text-[12px] text-content/70">This is a preview. Nothing is saved until you keep it.</span>
           <span className="ml-auto" />
-          <button type="button" className={quietBtn} onClick={() => setPreview(undefined)}>Throw away</button>
-          <button type="button" className={primaryBtn} onClick={() => { keepPage(preview); setKept(preview.title); setOpen(preview.id); setPreview(undefined); }}>Keep</button>
+          <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Throw away</button>
+          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => { keepPage(preview); setKept(preview.title); setOpen(preview.id); setBuild(undefined); }}>{keepLabel}</button>
         </div>
       </div>
     );
@@ -185,27 +329,27 @@ export function PagesContent() {
         {shown ? (
           <div className="mx-auto w-full max-w-3xl px-8 py-6">
             <h1 className="text-[17px] font-medium text-content">{shown.title}</h1>
-            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”</div>
+            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”{shown.permissions.length ? ` · allowed: ${shown.permissions.map(describeCapability).join(", ")}` : ""}</div>
             <div className="mb-4 mt-1"><Limits /></div>
             {kept === shown.title ? (
               <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
                 <Undo2 className="size-3.5 text-content/60" />Kept. Changed your mind? Undo it any time in Settings → Changes → Bot changes.
               </div>
             ) : null}
-            <PageBody page={shown} />
+            <PageBody page={shown} live />
           </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-5 px-8 text-center" data-pages-empty>
             <DashboardSquare className="size-8 text-content/60" strokeWidth={1.5} />
             <div>
               <div className="text-[17px] font-medium text-content">{pages.length ? "Make another page" : `No pages for ${projectName} yet`}</div>
-              <div className="mt-1 text-[13px] text-content/70">Just ask any Mono. It builds a page from ready-made blocks and shows you a preview first.</div>
+              <div className="mt-1 text-[13px] text-content/70">Just ask any Mono. It builds a page, from the hub's blocks or its own design, and shows you a preview first.</div>
               <div className="mt-2"><Limits /></div>
             </div>
-            <div className="w-full max-w-[560px]"><AskBox onAsk={(t) => setPreview(buildPreview(t, ASKER, Date.now(), projectId))} /></div>
+            <div className="w-full max-w-[560px]"><AskBox onAsk={ask} /></div>
             <div className="flex flex-wrap justify-center gap-2">
               {["A dashboard for EXO bugs", "My schedule this week", "Hivra sign-ups and sales"].map((s) => (
-                <button key={s} type="button" className={`${card} ${btn} text-content/80 hover:bg-surface-raised`} onClick={() => setPreview(buildPreview(s, ASKER, Date.now(), projectId))}>{s}</button>
+                <button key={s} type="button" className={`${card} ${btn} text-content/80 hover:bg-surface-raised`} onClick={() => ask(s)}>{s}</button>
               ))}
             </div>
           </div>
