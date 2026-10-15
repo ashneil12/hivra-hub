@@ -142,8 +142,8 @@ function LetterTile({ letter }: { letter: string }) {
   return (
     <g data-letter-avatar={letter}>
       <rect x={1} y={1} width={14} height={14} rx={3.5} fill="currentColor" fillOpacity={0.14} stroke="currentColor" strokeOpacity={0.12} strokeWidth={0.6} />
-      <text x={8} y={8.4} textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600} fill="currentColor" fillOpacity={0.82} style={{ fontFamily: "inherit" }}>
-        {letter.charAt(0).toUpperCase()}
+      <text x={8} y={8.4} textAnchor="middle" dominantBaseline="central" fontSize={letter.length > 1 ? 7 : 9} fontWeight={600} fill="currentColor" fillOpacity={0.82} style={{ fontFamily: "inherit" }}>
+        {letter.length > 1 ? letter.slice(0, 2) : letter.toUpperCase()}
       </text>
     </g>
   );

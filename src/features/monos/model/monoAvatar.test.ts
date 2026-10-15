@@ -5,18 +5,26 @@ import { addMono, findMono, monoAvatar, monoLook, saveMonoMascot } from "./mono"
 beforeEach(() => localStorage.clear());
 
 it("a Mono shows its letter unless a mascot was picked on purpose", () => {
-  expect(monoAvatar({ mascot: "robot", name: "Hivra lead" })).toBe("letter:H");
-  expect(monoAvatar({ mascot: "ghost" })).toBe("letter:M");
+  expect(monoAvatar({ mascot: "robot", name: "Hivra lead" })).toBe("letter:Hi");
+  expect(monoAvatar({ mascot: "ghost" })).toBe("letter:Mo");
   expect(monoAvatar({ mascot: "cat", mascotPicked: true, name: "x" })).toBe("cat");
 });
 
 it("picking a mascot keeps it; picking Letter goes back", () => {
   addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "rocket", color: "gray", projects: [] });
-  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:H");
+  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:Hi");
   saveMonoMascot("hivra-lead", "cat");
   expect(findMono("hivra-lead")?.mascotPicked).toBe(true);
   expect(monoLook(findMono("hivra-lead")!).mascot).toBe("cat");
   saveMonoMascot("hivra-lead", "letter");
   expect(findMono("hivra-lead")?.mascotPicked).toBeUndefined();
-  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:H");
+  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:Hi");
+});
+
+it("Hivra lead and Harness lead no longer share a tile", async () => {
+  const { monoTileLetters } = await import("./mono");
+  const names = ["Chief of Staff", "Projects Manager", "frank", "Alfred", "EXO lead", "Hivra lead", "Nibbii lead", "Harness lead"];
+  const tiles = names.map(monoTileLetters);
+  expect(tiles).toEqual(["CS", "PM", "Fr", "Al", "Ex", "Hi", "Ni", "Ha"]);
+  expect(new Set(tiles).size).toBe(names.length);
 });

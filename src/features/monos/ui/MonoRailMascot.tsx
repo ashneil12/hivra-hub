@@ -1,5 +1,5 @@
 import { PixelMascot } from "../../projects/ui/PixelMascot";
-import type { MonoStatus } from "../model/mono";
+import { monoTileLetters, type MonoStatus } from "../model/mono";
 
 /** The rail mascot and its status circle, shared by both rail layouts. */
 export function MonoRailMascot({
@@ -22,9 +22,9 @@ export function MonoRailMascot({
         <span
           data-mono-letter
           aria-hidden
-          className="grid size-full place-items-center rounded-[4px] bg-content/12 text-[9px] font-semibold leading-none text-content/80 ring-1 ring-inset ring-content/10"
+          className="grid size-full place-items-center rounded-[4px] bg-content/12 text-[8px] font-semibold tracking-tight leading-none text-content/80 ring-1 ring-inset ring-content/10"
         >
-          {letter.charAt(0).toUpperCase()}
+          {letter.length > 2 ? monoTileLetters(letter) : letter}
         </span>
       ) : (
         <PixelMascot

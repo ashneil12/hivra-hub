@@ -366,8 +366,18 @@ export function isLetterAvatar(mascot: string | undefined): boolean {
 /** What a Mono wears: its letter unless the user picked a mascot on purpose. */
 export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
   if (mono.mascotPicked && !isLetterAvatar(mono.mascot)) return mono.mascot;
-  const name = mono.name?.trim() || "Mono";
-  return `${LETTER_AVATAR}:${name.charAt(0).toUpperCase()}`;
+  return `${LETTER_AVATAR}:${monoTileLetters(mono.name?.trim() || "Mono")}`;
+}
+
+/**
+ * Two letters, so Monos don't share a tile: the initials of two capitalised words ("Chief of Staff" → CS,
+ * "Projects Manager" → PM), otherwise the first two letters ("Hivra lead" → Hi, "Harness lead" → Ha, "frank" → Fr).
+ */
+export function monoTileLetters(name: string): string {
+  const caps = name.split(/\s+/).filter((w) => /^[A-Z]/.test(w));
+  if (caps.length >= 2) return `${caps[0][0]}${caps[1][0]}`;
+  const word = name.replace(/[^\p{L}\p{N}]/gu, "") || "M";
+  return `${word.charAt(0).toUpperCase()}${word.charAt(1).toLowerCase()}`;
 }
 
 export function addMonoProject(monoId: string, path: string): void {
