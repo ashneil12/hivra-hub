@@ -64,29 +64,51 @@ describe("ships clean", () => {
   });
 });
 
-describe("at most five Needs per project on Today", () => {
-  it("the demo data has a project with more than five, and the rest fold under Later", async () => {
+describe("at most five rows per project on Today", () => {
+  it("stuck rows count toward the five and come first; the rest fold under Later", async () => {
     const { mock, waiting } = await load(true);
     const exo = mock.mockHubData.listNeeds("exo-game");
     expect(exo.length).toBeGreaterThan(waiting.MAX_NEEDS);
-    const shown = waiting.waitingOnAsh("exo-game").filter((w) => w.need);
+    const shown = waiting.waitingOnAsh("exo-game").filter((w) => !w.done);
     expect(shown.length).toBe(waiting.MAX_NEEDS);
-    // The Needs past five come first under Later (a proposal is a Need too, so it waits there after them).
+    const stuck = shown.filter((w) => w.state);
+    expect(stuck.length).toBeGreaterThan(0);
+    // Stuck first, then Needs.
+    expect(shown.slice(0, stuck.length).every((w) => w.state)).toBe(true);
+    // The Needs that did not fit come first under Later, in order.
+    const shownNeeds = shown.filter((w) => w.need).length;
     const later = waiting.laterItems("exo-game").map((w) => w.id);
-    expect(later.slice(0, exo.length - waiting.MAX_NEEDS)).toEqual(exo.slice(waiting.MAX_NEEDS).map((n) => n.id));
+    expect(later.slice(0, exo.length - shownNeeds)).toEqual(exo.slice(shownNeeds).map((n) => n.id));
   });
 
-  it("Today shows five rows for that project and opens the rest from Later", async () => {
-    const { mock, waiting, HubSurface } = await load(true);
+  it("no project shows more than five open rows", async () => {
+    const { mock, waiting } = await load(true);
+    for (const p of mock.mockHubData.listProjects()) {
+      expect(waiting.waitingOnAsh(p.id).filter((w) => !w.done).length).toBeLessThanOrEqual(waiting.MAX_NEEDS);
+    }
+  });
+
+  it("the strip badge equals the rows shown plus the Later count", async () => {
+    const { mock, waiting } = await load(true);
+    for (const p of mock.mockHubData.listProjects()) {
+      const visible = waiting.waitingOnAsh(p.id).filter((w) => !w.done).length;
+      expect(waiting.waitingCount(p.id)).toBe(visible + waiting.laterItems(p.id).filter((w) => !w.done).length);
+    }
+  });
+
+  it("Today shows five rows for that project; the Later line is a real button and opens the rest", async () => {
+    const { waiting, HubSurface } = await load(true);
     const laterCount = waiting.laterItems("exo-game").length;
-    const exo = mock.mockHubData.listNeeds("exo-game");
     act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));
-    const ids = new Set(exo.map((n) => n.id));
-    const rows = () => [...container.querySelectorAll("[data-hub-need]")].map((r) => r.getAttribute("data-hub-need")!).filter((id) => ids.has(id));
-    expect(rows().length).toBe(5);
-    const fold = [...container.querySelectorAll("[data-hub-later] button")].find((b) => b.textContent === `${laterCount} more under Later`) as HTMLButtonElement;
-    expect(fold).toBeTruthy();
+    const section = [...container.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "EXO game" || s.querySelector("[data-hub-later]")) as HTMLElement;
+    expect(section).toBeTruthy();
+    const fold = section.querySelector("[data-hub-later-toggle]") as HTMLButtonElement;
+    expect(fold.tagName).toBe("BUTTON");
+    expect(fold.textContent).toBe(`${laterCount} more under Later`);
+    expect(fold.className).toMatch(/underline/);
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
     await act(async () => fold.click());
-    expect(rows().length).toBe(exo.length);
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    expect(section.querySelectorAll("[data-hub-later] [data-hub-need]").length).toBeGreaterThan(0);
   });
 });

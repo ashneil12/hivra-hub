@@ -160,7 +160,7 @@ function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet:
   if (!later.length) return null;
   return (
     <div className="flex flex-col" data-hub-later>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="self-start rounded-md px-2 pt-1 text-xs text-content/60 hover:text-content">
+      <button type="button" aria-expanded={open} data-hub-later-toggle onClick={() => setOpen((v) => !v)} className="mt-1 self-start cursor-pointer rounded-md px-2 py-1 text-xs text-content/80 underline decoration-content/40 underline-offset-2 hover:bg-content/5 hover:text-content">
         {open ? "Hide Later" : `${later.length} more under Later`}
       </button>
       {open ? later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onSheet={onSheet} /> : <StuckRow key={w.id} item={w} />)) : null}
