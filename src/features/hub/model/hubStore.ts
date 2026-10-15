@@ -44,6 +44,8 @@ export type HubStoreOptions = {
   transport: HubTransport;
   /** Pause before a burst of events turns into reads. */
   coalesceMs?: number;
+  /** At most one round of change-driven reads this often: Ash OS's feed also reports every ledger write. */
+  minGapMs?: number;
   /** How long after the feed drops before checking Ash OS is still there. */
   healthMs?: number;
   /** Poll interval while the feed is down. */
@@ -151,6 +153,8 @@ export class HubStore {
   private readonly listeners = new Set<() => void>();
   private readonly t: HubTransport;
   private readonly coalesceMs: number;
+  private readonly minGapMs: number;
+  private lastFlush = 0;
   private readonly healthMs: number;
   private readonly pollMs: number;
   private readonly retryMs: number[];
@@ -172,6 +176,7 @@ export class HubStore {
   constructor(options: HubStoreOptions) {
     this.t = options.transport;
     this.coalesceMs = options.coalesceMs ?? 120;
+    this.minGapMs = options.minGapMs ?? 1_000;
     this.healthMs = options.healthMs ?? 3_000;
     this.pollMs = options.pollMs ?? 30_000;
     this.retryMs = options.retryMs ?? [3_000, 5_000, 10_000, 20_000, 30_000];
@@ -434,11 +439,15 @@ export class HubStore {
     if (topics.has("needs")) this.queue.add("needs");
     if (topics.has("projects")) this.queue.add("projects");
     if (topics.has("since") || topics.has("activity")) this.queue.add("since");
-    if (this.queue.size && !this.timers.coalesce) this.timers.coalesce = setTimeout(() => void this.flush(), this.coalesceMs);
+    if (this.queue.size && !this.timers.coalesce) {
+      const wait = Math.max(this.coalesceMs, this.lastFlush + this.minGapMs - Date.now());
+      this.timers.coalesce = setTimeout(() => void this.flush(), wait);
+    }
   }
 
   private async flush(): Promise<void> {
     this.timers.coalesce = 0;
+    this.lastFlush = Date.now();
     const wanted = new Set(this.queue);
     this.queue.clear();
     if (wanted.has("all")) return void (await this.loadAll());

@@ -231,8 +231,8 @@ export async function startStub({
     const byProject = {};
     const byMono = {};
     for (const m of list) {
-      (byProject[m.projectId] ||= []).push(m);
-      (byMono[m.monoId] ||= []).push(m);
+      (byProject[m.projectId] ||= []).push(m.monoId);
+      (byMono[m.monoId] ||= []).push(m.projectId);
     }
     return { memberships: list, byProject, byMono };
   }

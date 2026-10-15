@@ -5,7 +5,7 @@ import { bridgeTransport, createStubBridge } from "../../../dev/hubStubBridge";
 import { HubStore, mergeStable } from "./hubStore";
 import type { Need } from "./types";
 
-const FAST = { coalesceMs: 10, healthMs: 30, pollMs: 80, retryMs: [30, 60], stopGraceMs: 5 };
+const FAST = { coalesceMs: 10, minGapMs: 0, healthMs: 30, pollMs: 80, retryMs: [30, 60], stopGraceMs: 5 };
 
 async function waitFor<T>(read: () => T | undefined | false, what: string, ms = 4000): Promise<T> {
   const end = Date.now() + ms;
@@ -142,6 +142,23 @@ describe("live changes land in place", () => {
     await waitFor(() => has("burst7"), "all burst needs");
     await new Promise((r) => setTimeout(r, 100));
     expect(needsCalls() - before).toBeLessThanOrEqual(2);
+  });
+
+  it("a steady stream of ledger writes costs at most one Needs read per gap, not one per write", async () => {
+    const slow = new HubStore({ transport: bridgeTransport(createStubBridge(stub.url, () => stub.token)), ...FAST, minGapMs: 300 });
+    stores.push(slow);
+    slow.start();
+    await waitFor(() => stub.calls.some((c) => c.path === "/api/ash-hub-events"), "feed");
+    await new Promise((r) => setTimeout(r, 60));
+    const before = needsCalls();
+    for (let i = 0; i < 12; i++) {
+      stub.emit("ask.updated", `a${i}`);
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    await new Promise((r) => setTimeout(r, 350));
+    const reads = needsCalls() - before;
+    expect(reads).toBeGreaterThanOrEqual(1);
+    expect(reads).toBeLessThanOrEqual(3);
   });
 
   it("a new project appears on the strip without touching the others", async () => {
