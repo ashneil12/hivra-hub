@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Ships clean: without the dev/demo flag there is no example data anywhere (no example bots, no Operator OS), and
+// Ships clean: without the dev/demo flag there is no example data anywhere (no example bots, no example projects such as Harness), and
 // Today on a first launch is one calm line and a New project button. With the flag, the demo data has a project with
 // more than five Needs, so the Later fold is exercised: five on Today, the rest under Later.
 import { act, createElement } from "react";

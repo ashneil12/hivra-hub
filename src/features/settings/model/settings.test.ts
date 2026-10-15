@@ -634,6 +634,8 @@ describe("settings navigation", () => {
       "archive",
       "worktrees",
     ]);
+    // SSH machines are "Remote machines"; app logins live under Connectors.
+    expect(groups.flatMap((g) => g.sections).find((s) => s.id === "connections")?.label).toBe("Remote machines");
   });
 
   it("points every indexed setting at a real section", () => {
