@@ -111,9 +111,9 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
           {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}
         </span>
         {w.stuck && w.stuckReason ? (
-          <span className="truncate text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
+          <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
         ) : null}
-        {w.stuck && w.sentNote ? <span className="truncate text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
+        {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-14 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active title={w.finishedAt ? undefined : `At it for ${durationLabel(w.minutes)}`}>
@@ -135,6 +135,9 @@ function Activity({ worker }: { worker: Worker }) {
             {live ? <span className="size-1.5 animate-pulse rounded-full bg-content/60" /> : null}
             {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
           </div>
+          {worker.stuck && worker.stuckReason ? (
+            <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-job-reason>{worker.stuckReason.replace(/^Example: /, "")}</div>
+          ) : null}
         </div>
         <JobStateLabel w={worker} />
         {worker.stuck ? <WorkerTakeLook w={worker} /> : null}
@@ -202,7 +205,7 @@ function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean })
         <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden className="shrink-0">
           <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={st === "gave_up" ? "rgb(239 68 68)" : "rgb(245 158 11)"} />
         </svg>
-        <span className="truncate">Stuck{reason && !compact ? `: ${reason}` : ""}</span>
+        <span>Stuck</span>
       </span>
     );
   if (st === "done_unseen")

@@ -11,7 +11,7 @@ import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import type { Need } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { CircleWord, StatusMark } from "./StatusMark";
+import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { BuildsView } from "./BuildsView";
@@ -211,6 +211,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
   const seen = need.canMarkSeen && need.actionType !== "accept" && !!data.markNeedSeen;
   const isQuestion = !!need.actionTarget?.startsWith("question:");
   const answering = data.answerState?.(need.id);
+  const mark = needMark(need);
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
     setProblem(null);
@@ -232,7 +233,8 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
-        <div className="truncate text-[13px] text-content/60">{need.why}</div>
+        {/* The reason wraps (never cut mid-word). */}
+        <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-need-why>{need.why}</div>
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
         {answering && !answering.sending && (answering.receipt || answering.problem) ? (
           <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>
@@ -248,7 +250,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         <span className="shrink-0 text-xs text-content/60" data-hub-sending>Sending…</span>
       ) : (
         <>
-          {need.circle && need.word ? <CircleWord circle={need.circle} word={need.word} /> : null}
+          {mark ? <CircleWord circle={mark.circle} word={mark.word} /> : null}
           <button
             type="button"
             disabled={busy}
@@ -269,8 +271,8 @@ function StuckRow({ item }: { item: WaitingItem }) {
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
-        {item.detail ? <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div> : null}
-        {item.note ? <div className="truncate text-[13px] text-content/60" data-hub-sent>{item.note}</div> : null}
+        {item.detail ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-stuck-reason>{item.detail}</div> : null}
+        {item.note ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-sent>{item.note}</div> : null}
       </div>
       {item.state ? <StatusMark state={item.state} /> : null}
       {item.target || item.connectorId ? (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clockLabel, workerOf, workersFromJobs } from "./liveJobs";
-import { lastActiveLabel } from "./hubWork";
+import { jobState, lastActiveLabel } from "./hubWork";
 import type { HubJob, HubJobGroup } from "./types";
 
 const T0 = Date.parse("2026-10-15T10:00:00Z");
@@ -36,7 +36,12 @@ describe("a job as a row", () => {
     expect(state({ state: "stuck", reason: "Disk full." })).toMatchObject({ stuck: "stuck", stuckReason: "Disk full." });
     expect(state({ state: "sent_to_lead", reason: "Disk full.", sentText: "Sent to coding team lead at 2:20pm", gotIt: { at: "", text: "Got it" } }))
       .toMatchObject({ stuck: "stuck", sentNote: "Sent to coding team lead at 2:20pm · Got it" });
-    expect(state({ state: "lead_gave_up" }).state).toBe("needs_you");
+    // Lead gave up: red Stuck with the reason (Ash's default), never the Needs you badge.
+    const gaveUp = state({ state: "lead_gave_up", reason: "The sender refused the login.", why: "Tried two fixes." });
+    expect(gaveUp).toMatchObject({ stuck: "lead_gave_up", stuckReason: "The sender refused the login." });
+    expect(gaveUp.state).toBeUndefined();
+    expect(jobState(gaveUp)).toBe("gave_up");
+    expect(state({ state: "lead_gave_up", why: "Tried two fixes." }).stuckReason).toBe("Tried two fixes.");
     const parked = state({ state: "parked", finishedAt: new Date(T0).toISOString() });
     expect([parked.state, parked.finishedAt]).toEqual(["parked", undefined]); // parked is not done
     expect(state({ state: "done", finishedAt: new Date(T0).toISOString() })).toMatchObject({ seen: false });

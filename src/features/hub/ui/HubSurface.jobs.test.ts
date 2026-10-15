@@ -137,13 +137,17 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(true);
   });
 
-  it("a given-up job is one red row: a 14px circle and a plain grey word, then See options", async () => {
+  it("a given-up job is one red row: a 14px circle and Stuck, the reason in full under it, then See options", async () => {
     mount(surface());
     await until(() => container.querySelector('[data-hub-need="j:j_sender"]'), "given-up row");
     const row = '[data-hub-need="j:j_sender"]';
     const mark = container.querySelector(`${row} [data-hub-circle]`)!;
     expect(mark.getAttribute("data-hub-circle")).toBe("red");
-    expect(mark.textContent).toBe("Needs you");
+    expect(mark.textContent).toBe("Stuck"); // Ash OS sends "Needs you"; Ash's default is red Stuck
+    expect(container.querySelector(row)!.textContent).not.toMatch(/Needs you|Lead gave up/);
+    const why = container.querySelector(`${row} [data-hub-need-why]`)!;
+    expect(why.textContent).toMatch(/since 11:10am, still failing\. Tried before it reached the lead: the runner's own attempt\.$/);
+    expect(why.className).not.toContain("truncate");
     expect(mark.querySelector("svg")?.getAttribute("width")).toBe("14");
     expect(mark.className).toContain("text-content/60");
     expect(container.querySelectorAll(`${row} button`).length).toBe(1);
@@ -213,7 +217,7 @@ describe("Being built, live", () => {
     expect(text()).not.toMatch(/helper|worker/i);
   });
 
-  it("Working is quiet, Stuck is amber with the reason on a second line, Needs you is the only badge, Done has a dot", async () => {
+  it("Working is quiet, Stuck is amber with the reason on a second line, Lead gave up is red Stuck with its reason, Done has a dot", async () => {
     mount(view());
     await until(() => container.querySelector("[data-hub-worker]"), "rows");
     expect(state("j_mail")).toBe("working");
@@ -223,12 +227,16 @@ describe("Being built, live", () => {
     expect(stuck.querySelector("svg circle")?.getAttribute("stroke")).toBe("rgb(245 158 11)");
     expect(stuck.querySelector("[data-hub-job-reason]")?.textContent).toBe("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
-    expect(state("j_sender")).toBe("needs_you");
-    expect(container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state] .rounded-full')?.textContent).toBe("Needs you");
+    expect(state("j_sender")).toBe("gave_up");
+    const gaveUp = container.querySelector('[data-hub-worker="j_sender"]')!;
+    expect(gaveUp.querySelector("[data-hub-job-state] svg circle")?.getAttribute("stroke")).toBe("rgb(239 68 68)");
+    expect(gaveUp.querySelector("[data-hub-job-state]")?.textContent).toBe("Stuck");
+    expect(gaveUp.querySelector("[data-hub-job-reason]")?.textContent).toBe("The email sender refused the login.");
+    expect(gaveUp.textContent).not.toMatch(/Needs you|Lead gave up/);
     expect(state("j_footer")).toBe("done_unseen");
     expect(container.querySelector('[data-hub-worker="j_footer"] [aria-label="Not seen yet"]')).toBeTruthy();
-    // the badge is the only one: no pill on any other row
-    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(2); // Needs you + the Done dot
+    // no pill on any row
+    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(1); // only the Done dot
   });
 
   it("columns are fixed width, so rows line up whatever the state", async () => {

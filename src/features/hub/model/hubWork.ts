@@ -105,7 +105,7 @@ export function durationLabel(min: number): string {
 }
 
 /** Default (Ash approved): Lead gave up = red Stuck. Alternative kept behind a dev flag for comparison. */
-function gaveUpAsNeedsYou(): boolean {
+export function gaveUpAsNeedsYou(): boolean {
   try { return localStorage.getItem("monocode:hub-gaveup-style") === "needs_you"; } catch { return false; }
 }
 
