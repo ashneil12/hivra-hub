@@ -231,3 +231,14 @@ export function pillText(model: string, subName: string): { name: string; billin
   const custom = findCustomModel(model);
   return custom ? { name: custom.name, billing: "billed separately" } : { name: subName };
 }
+
+/**
+ * Remove-model confirm copy, text only (to apply to CoS's 9468f70 confirm). `name` is the model's own display name
+ * (`CustomModel.name`), never hard-coded. Buttons match the remove-project dialog.
+ */
+export const REMOVE_MODEL_COPY = {
+  title: (name: string): string => `Remove ${name}? Its saved key is deleted too.`,
+  cancel: "Cancel",
+  confirm: "Remove",
+  keyDeleteFailed: (name: string): string => `Couldn't delete the key, so ${name} is still here. Try again.`,
+} as const;
