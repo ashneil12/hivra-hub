@@ -13,6 +13,8 @@ export type HubProject = {
   iconShape: ProjectIconShape;
   /** Folder the Coding team workspace opens. Null for a project with no code folder (no Coding team). */
   folder: string | null;
+  /** Shelved in Ash OS's registry. Not on the strip. */
+  parked?: boolean;
 };
 
 /** Everything a project has, listed where Monocode's sidebar lists Projects. */
@@ -50,7 +52,49 @@ export type Need = {
   doneAt?: string;
   doneReason?: string;
   detail?: string;
+  /** A job the Lead gave up on: a red circle and "Needs you" (a 14px circle and a plain grey word, nothing else). */
+  circle?: "amber" | "red";
+  word?: string;
+  /** Set for a Need that is a job's (target `job:<id>`): See options opens the job's sheet. */
+  jobId?: string;
+  /** A "Looks right" row: the one action is to mark it seen (`ash-hub-need-seen`). */
+  canMarkSeen?: boolean;
 };
+
+/** A job as Ash OS reports it (Being built). Times are ISO. */
+export type JobWireState =
+  | "working" | "checking" | "stuck" | "sent_to_lead" | "lead_gave_up" | "done" | "parked";
+
+export type HubJob = {
+  id: string;
+  projectId: string;
+  title: string;
+  /** The Mono running it (a Lead is "<Project> lead"); null while the project has no Lead. */
+  lead: string | null;
+  leadName: string | null;
+  state: JobWireState;
+  /** Why it is stuck, in plain words. */
+  reason: string;
+  startedAt: string;
+  lastActiveAt: string;
+  finishedAt: string | null;
+  seen: boolean;
+  circle?: "amber" | "red";
+  word?: string;
+  /** "Sent to coding team lead at 2:20pm" (stuck jobs sent to a Lead) and the Lead's "Got it". */
+  sentText?: string;
+  gotIt?: { at: string; text: string } | null;
+  tried?: string[];
+  why?: string;
+  retryAt?: string;
+};
+
+/** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
+export type HubJobGroup = { leadId: string | null; leadName: string; projectId: string; jobs: HubJob[] };
+
+/** One choice on a given-up job's "See options" sheet. */
+export type JobOption = { id: string; label: string; needsText: boolean; note: string; placeholder?: string };
+export type JobOptions = { jobId: string; projectId: string; title: string; why: string; options: JobOption[] };
 
 export type StuckState = "stuck" | "sent_to_lead" | "lead_gave_up";
 
@@ -61,6 +105,8 @@ export type StuckItem = {
   detail: string;
   state: StuckState;
   sentAt?: string;
+  /** A second quiet line: "Sent to coding team lead at 2:20pm", then the Lead's "Got it". */
+  note?: string;
 };
 
 export type SinceSummary = { plainText: string; details: string };
@@ -98,6 +144,17 @@ export interface HubDataSource {
   connection(): HubConnection;
   /** Ask the source to try again now. */
   retry(): void;
+  /** Older questions (recovered from past chats and the like): not Needs, in no count, shown collapsed. */
+  listOlder(projectId?: string): Need[];
+  /** Mark a Looks-right row seen. Live source only. */
+  markNeedSeen?(id: string): Promise<void>;
+  /** Being built jobs, grouped under their Lead. Present only on the live source; the example data uses its own store. */
+  listJobs?(projectId: string): HubJobGroup[];
+  /** The "See options" sheet for a given-up job, and Ash's pick. Live source only. */
+  jobOptions?(jobId: string): Promise<JobOptions>;
+  jobAct?(jobId: string, option: string, hint?: string): Promise<void>;
+  /** Ash has seen these finished jobs and left the page: they leave Being built (the record stays). */
+  markJobsSeen?(jobIds: string[]): void;
   listStuck(projectId?: string): StuckItem[];
   listMonos(projectId?: string): HubMono[];
 }
@@ -180,6 +237,8 @@ export type Worker = {
   state?: "working" | "checking" | "needs_you" | "parked";
   /** Plain reason, shown next to the Stuck mark. */
   stuckReason?: string;
+  /** "Sent to coding team lead at 2:20pm · Got it", under the reason. */
+  sentNote?: string;
   /** Done jobs: opened once (then they archive themselves). */
   seen?: boolean;
   /** Minutes since its last activity (0 = now). */

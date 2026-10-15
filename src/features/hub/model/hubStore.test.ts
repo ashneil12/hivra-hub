@@ -317,3 +317,126 @@ describe("mergeStable", () => {
     expect(mergeStable(prev, [n("a")], new Map(), new Set(["b"])).map((x) => x.id)).toEqual(["a"]);
   });
 });
+
+describe("older questions, Looks right and jobs", () => {
+  beforeEach(async () => {
+    await stub.close();
+    stub = await startStub({ jobs: true, pingMs: 200 });
+    store = makeStore();
+  });
+  const jobsOf = (pid: string) => store.getSnapshot().jobs.filter((g) => g.projectId === pid).flatMap((g) => g.jobs);
+
+  it("keeps older questions apart: collapsed data, in no Needs list and no count", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().older.length, "older");
+    const snap = store.getSnapshot();
+    expect(snap.older.map((n) => n.id).sort()).toEqual(["q:o1", "q:o2", "q:o3"]);
+    expect(snap.older).toHaveLength(3);
+    expect(snap.older.every((n) => n.later)).toBe(true);
+    for (const rows of Object.values(snap.needs)) for (const n of [...rows.shown, ...rows.later]) expect(snap.older.some((o) => o.id === n.id)).toBe(false);
+  });
+
+  it("marks a Looks-right row seen through ash-hub-need-seen and the row ticks off", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    const row = store.getSnapshot().needs.nibbii.shown.find((n) => n.id === "s:a_cannon")!;
+    expect(row.canMarkSeen).toBe(true);
+    expect(store.getSnapshot().needs.hivra.shown.find((n) => n.id === "j:j_sender")?.canMarkSeen).toBeUndefined();
+    await store.markNeedSeen("s:a_cannon");
+    const ticked = store.getSnapshot().needs.nibbii.shown.find((n) => n.id === "s:a_cannon")!;
+    expect(ticked).toMatchObject({ state: "done", doneReason: "seen" });
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(true);
+  });
+
+  it("refuses to mark anything but a Looks-right row seen, in plain words", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    await expect(store.markNeedSeen("q1")).rejects.toMatchObject({ message: expect.stringMatching(/Only a Looks-right row/) });
+  });
+
+  it("reads jobs grouped under their Lead; a given-up job is a red Needs row with its job id", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    const groups = store.getSnapshot().jobs;
+    expect(groups.map((g) => g.leadName)).toEqual(["EXO lead", "Hivra lead", "Nibbii (no lead yet)"]);
+    expect(jobsOf("hivra").map((j) => j.state)).toEqual(["working", "sent_to_lead", "lead_gave_up", "done"]);
+    const need = store.getSnapshot().needs.hivra.shown.find((n) => n.id === "j:j_sender")!;
+    expect(need).toMatchObject({ circle: "red", word: "Needs you", jobId: "j_sender", actionType: "see_options" });
+    const sent = jobsOf("hivra").find((j) => j.state === "sent_to_lead")!;
+    expect(sent).toMatchObject({ circle: "amber", word: "Stuck", sentText: expect.stringMatching(/^Sent to coding team lead at/), gotIt: { text: "Got it" } });
+  });
+
+  it("a job moving state never moves the rows: order stays, new jobs join the end of their Lead's group", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    const order = jobsOf("exo-game").map((j) => j.id);
+    stub.setJob("j_save", { state: "working", lastActiveAt: new Date().toISOString() }, "hub.job.active");
+    await waitFor(() => jobsOf("exo-game").find((j) => j.id === "j_save")?.state === "working", "job moved");
+    expect(jobsOf("exo-game").map((j) => j.id)).toEqual(order);
+    stub.addJob({ id: "j_new", projectId: "exo-game", title: "Another job", leadName: "EXO lead" });
+    await waitFor(() => jobsOf("exo-game").some((j) => j.id === "j_new"), "new job");
+    expect(jobsOf("exo-game").map((j) => j.id)).toEqual([...order, "j_new"]);
+  });
+
+  it("stuck jobs reach the screens as amber rows with no button, and the given-up one is not among them", async () => {
+    const data = (await import("./liveHubData")).createLiveHubData(store);
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    const stuck = data.listStuck("hivra");
+    expect(stuck.map((s) => s.title)).toEqual(["Moving the nightly backup"]);
+    expect(stuck[0]).toMatchObject({ state: "stuck", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to coding team lead at .* · Got it$/) });
+    expect(data.listStuck("nibbii").map((s) => s.title)).toEqual(["Tidying the sound files"]);
+    expect(data.listStuck("nibbii")[0].note).toBeUndefined();
+  });
+
+  it("the See options sheet comes from Ash OS and Ash's pick moves the job and ticks the row off", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    const sheet = await store.jobOptions("j_sender");
+    expect(sheet.options.map((o) => o.label)).toEqual(["Try again tonight", "Try it a different way…", "Pause this job", "Drop it"]);
+    expect(sheet.options.filter((o) => o.needsText).map((o) => o.id)).toEqual(["try_different"]);
+    await expect(store.jobAct("j_sender", "try_different")).rejects.toMatchObject({ message: "Say what to try." });
+    await store.jobAct("j_sender", "try_different", "use the other login");
+    const call = stub.calls.filter((c) => c.path === "/api/ash-hub-job-act").at(-1)!;
+    expect(call).toBeTruthy();
+    expect(store.getSnapshot().needs.hivra.shown.find((n) => n.id === "j:j_sender")?.state).toBe("done");
+    expect(jobsOf("hivra").find((j) => j.id === "j_sender")?.state).toBe("sent_to_lead");
+    await expect(store.jobOptions("j_sender")).rejects.toMatchObject({ message: "That job isn't waiting on you." });
+  });
+
+  it("Drop it removes the job from Being built; Pause parks it", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    await store.jobAct("j_sender", "pause");
+    expect(jobsOf("hivra").find((j) => j.id === "j_sender")?.state).toBe("parked");
+    stub.setJob("j_mail", { state: "lead_gave_up", circle: "red", word: "Needs you", why: "x" });
+    await waitFor(() => jobsOf("hivra").find((j) => j.id === "j_mail")?.state === "lead_gave_up", "gave up");
+    await store.jobAct("j_mail", "drop");
+    expect(jobsOf("hivra").some((j) => j.id === "j_mail")).toBe(false);
+  });
+
+  it("a finished job stays with its dot until Ash has seen it, then leaves Being built", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().jobs.length, "jobs");
+    expect(jobsOf("hivra").find((j) => j.id === "j_footer")).toMatchObject({ state: "done", seen: false });
+    store.markJobsSeen(["j_footer"]);
+    await waitFor(() => !jobsOf("hivra").some((j) => j.id === "j_footer"), "gone");
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-job-seen")).toBe(true);
+  });
+
+  it("an Ash OS without jobs yet is simply nothing being built, not an outage", async () => {
+    await stub.close();
+    stub = await startStub({ pingMs: 200 });
+    const real = bridgeTransport(createStubBridge(stub.url, () => stub.token));
+    const noJobs = new HubStore({
+      ...FAST,
+      transport: { ...real, call: (a, p) => (a === "ash-hub-jobs" ? Promise.reject(Object.assign(new Error("Unknown hub action"), { kind: "error", message: "Unknown hub action" })) : real.call(a, p)) },
+    });
+    stores.push(noJobs);
+    noJobs.start();
+    await waitFor(() => noJobs.getSnapshot().status === "ready", "ready");
+    await new Promise((r) => setTimeout(r, 80));
+    expect(noJobs.getSnapshot().jobs).toEqual([]);
+    expect(noJobs.getSnapshot().status).toBe("ready");
+  });
+});

@@ -21,6 +21,8 @@ export type WaitingItem = {
   need?: Need;
   /** Set for a connector sign-in Need. */
   connectorId?: string;
+  /** A second quiet line under the detail (e.g. "Sent to coding team lead at 2:20pm · Got it"). */
+  note?: string;
   /** A Need that was answered or cleared anywhere: shown ticked until Ash leaves the page, never counted. */
   done?: boolean;
   /** Button label on Today/Inbox; defaults to "Take a look". */
@@ -75,7 +77,7 @@ const PROVIDERS: Provider[] = [
   // Inbox stuck items.
   (pid) =>
     hubData().listStuck(pid).map((s): WaitingItem => ({
-      id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state,
+      id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state, ...(s.note ? { note: s.note } : {}),
       // Stuck items are talked through with the project's leadership team.
       target: { project: pid, item: "leadership-team", focus: s.id },
     })),

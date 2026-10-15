@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Terminal, Wrench } from "../../../shared/ui/icons";
-import { hubData } from "../model/hubData";
+import { hubData, useHubDataVersion } from "../model/hubData";
+import { useNow, workersFromJobs } from "../model/liveJobs";
 import { setHubSelection } from "../model/hubNav";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, lastActiveLabel, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
@@ -10,6 +11,12 @@ import { findWaiting } from "../model/waiting";
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
   useWorkVersion();
+  useHubDataVersion();
+  const data = hubData();
+  // Live: Ash OS's jobs (done ones stay, with a dot, until Ash has seen them and left). Examples: the mock store.
+  const live = !!data.listJobs;
+  const now = useNow(30_000);
+  const liveWorkers = live ? workersFromJobs(data.listJobs?.(projectId) ?? [], now) : [];
   const [openId, setOpenIdRaw] = useState<string | null>(null);
   const setOpenId = (id: string | null) => {
     if (openId) archiveIfSeen(openId);
@@ -17,10 +24,14 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
     setOpenIdRaw(id);
   };
   const [showDone, setShowDone] = useState(false);
-  const open = openId ? getWorker(openId) : undefined;
-  const active = activeWorkers(projectId);
-  const done = finishedToday(projectId);
-  const projectName = hubData().listProjects().find((p) => p.id === projectId)?.name ?? projectId;
+  const open = openId ? (live ? liveWorkers.find((w) => w.id === openId) : getWorker(openId)) : undefined;
+  const active = live ? liveWorkers : activeWorkers(projectId);
+  const done = live ? [] : finishedToday(projectId);
+  // Finished jobs Ash has had in front of him: when he leaves the page they have been seen and go.
+  const shownDone = useRef<string[]>([]);
+  shownDone.current = liveWorkers.filter((w) => w.finishedAt).map((w) => w.id);
+  useEffect(() => () => data.markJobsSeen?.(shownDone.current), [data]);
+  const projectName = data.listProjects().find((p) => p.id === projectId)?.name ?? projectId;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-hub-being-built>
@@ -91,6 +102,7 @@ function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) 
         {w.stuck && w.stuckReason ? (
           <span className="truncate text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
         ) : null}
+        {w.stuck && w.sentNote ? <span className="truncate text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-14 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active title={w.finishedAt ? undefined : `At it for ${durationLabel(w.minutes)}`}>

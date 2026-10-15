@@ -96,6 +96,7 @@ export const mockHubData: HubDataSource = {
   listStuck: (projectId) => STUCK.filter((s) => !projectId || s.projectId === projectId),
   listMonos: (projectId) => MONOS.filter((m) => !projectId || m.projectIds.includes(projectId)),
   listSetup: () => [],
+  listOlder: () => [],
   connection: () => ({ status: "ready" }),
   retry: () => undefined,
 };

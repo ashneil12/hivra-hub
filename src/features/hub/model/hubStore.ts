@@ -9,7 +9,9 @@
 // - No timers move data. The only timers are retries, the 30-second fallback poll while the feed is down, and the
 //   short pause that folds a burst of events into one read.
 import { toHubError, type HubFeedEvent, type HubFeedState, type HubTransport } from "./hubTransport";
-import type { HubConnection, HubProject, Need, NeedActionType, ProjectIconShape, SinceSummary } from "./types";
+import type {
+  HubConnection, HubJob, HubJobGroup, HubProject, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
+} from "./types";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
 
@@ -33,6 +35,10 @@ export type HubSnapshot = {
   projects: HubProject[];
   needs: Record<string, NeedRows>;
   setup: Need[];
+  /** Older questions: not Needs, in no count. Newest first, as Ash OS lists them. */
+  older: Need[];
+  /** Being built, grouped under the Mono running each job. Stable order. */
+  jobs: HubJobGroup[];
   since?: SinceData;
   lastActiveAt?: string;
   sinceAt?: string;
@@ -73,7 +79,7 @@ export function mapProject(raw: unknown): HubProject | undefined {
   if (!id) return undefined;
   const name = str(r.name, id);
   const icon = ICONS.find((i) => i === r.iconShape) ?? "folder";
-  return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null };
+  return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null, ...(r.status === "parked" ? { parked: true } : {}) };
 }
 
 export function mapNeed(raw: unknown, later = false): Need | undefined {
@@ -97,6 +103,12 @@ export function mapNeed(raw: unknown, later = false): Need | undefined {
   if (since) need.since = since;
   const detail = optStr(r.detail);
   if (detail) need.detail = detail;
+  if (r.circle === "amber" || r.circle === "red") need.circle = r.circle;
+  const word = optStr(r.word);
+  if (word) need.word = word;
+  if (target?.startsWith("job:")) need.jobId = target.slice(4);
+  // Only a "Looks right" row (finished critical work, id `s:<ask>`) can be marked seen.
+  if (id.startsWith("s:")) need.canMarkSeen = true;
   if (need.state === "done") {
     const doneAt = optStr(r.doneAt);
     if (doneAt) need.doneAt = doneAt;
@@ -113,6 +125,67 @@ function mapSummary(raw: unknown): SinceSummary & { detailLines: string[] } {
     details: str(r.details),
     detailLines: arr(r.detailLines).filter((l): l is string => typeof l === "string"),
   };
+}
+
+const JOB_STATES: readonly JobWireState[] = ["working", "checking", "stuck", "sent_to_lead", "lead_gave_up", "done", "parked"];
+
+export function mapJob(raw: unknown): HubJob | undefined {
+  const r = obj(raw);
+  const id = str(r.id);
+  const state = JOB_STATES.find((x) => x === r.state);
+  // A dropped job is never shown; an unknown state is not guessed at.
+  if (!id || !state) return undefined;
+  const job: HubJob = {
+    id,
+    projectId: str(r.projectId),
+    title: str(r.title),
+    lead: optStr(r.lead) ?? null,
+    leadName: optStr(r.leadName) ?? null,
+    state,
+    reason: str(r.reason),
+    startedAt: str(r.startedAt),
+    lastActiveAt: str(r.lastActiveAt, str(r.startedAt)),
+    finishedAt: optStr(r.finishedAt) ?? null,
+    seen: r.seen === true,
+  };
+  if (r.circle === "amber" || r.circle === "red") job.circle = r.circle;
+  const word = optStr(r.word);
+  if (word) job.word = word;
+  const sentText = optStr(r.sentText);
+  if (sentText) job.sentText = sentText;
+  const gotIt = obj(r.gotIt);
+  if (optStr(gotIt.text)) job.gotIt = { at: str(gotIt.at), text: str(gotIt.text) };
+  const tried = arr(r.tried).filter((t): t is string => typeof t === "string");
+  if (tried.length) job.tried = tried;
+  const why = optStr(r.why);
+  if (why) job.why = why;
+  const retryAt = optStr(r.retryAt);
+  if (retryAt) job.retryAt = retryAt;
+  return job;
+}
+
+/** Same order Ash already sees: groups and jobs still there keep their place, new ones join at the end. */
+export function mergeJobGroups(prev: HubJobGroup[], next: HubJobGroup[]): HubJobGroup[] {
+  const key = (g: HubJobGroup) => `${g.projectId}|${g.leadId ?? ""}`;
+  const incoming = new Map(next.map((g) => [key(g), g]));
+  const out: HubJobGroup[] = [];
+  const used = new Set<string>();
+  const merge = (old: HubJobGroup | undefined, g: HubJobGroup): HubJobGroup => {
+    if (!old) return g;
+    const byId = new Map(g.jobs.map((j) => [j.id, j]));
+    const kept = old.jobs.flatMap((j) => (byId.has(j.id) ? [byId.get(j.id)!] : []));
+    const keptIds = new Set(kept.map((j) => j.id));
+    return { ...g, jobs: [...kept, ...g.jobs.filter((j) => !keptIds.has(j.id))] };
+  };
+  for (const old of prev) {
+    const g = incoming.get(key(old));
+    if (g) {
+      out.push(merge(old, g));
+      used.add(key(old));
+    }
+  }
+  for (const g of next) if (!used.has(key(g))) out.push(g);
+  return out;
 }
 
 /**
@@ -148,6 +221,8 @@ export class HubStore {
     projects: [],
     needs: {},
     setup: [],
+    older: [],
+    jobs: [],
     seq: 0,
   };
   private readonly listeners = new Set<() => void>();
@@ -168,7 +243,7 @@ export class HubStore {
   private feedUp = false;
   private lastEventSeq = 0;
   private dismissed = new Set<string>();
-  private queue = new Set<"needs" | "projects" | "since" | "all">();
+  private queue = new Set<"needs" | "projects" | "since" | "jobs" | "all">();
   private timers = { coalesce: 0 as unknown, health: 0 as unknown, retry: 0 as unknown, stop: 0 as unknown, pending: 0 as unknown };
   private attempts = 0;
   private inflight?: Promise<void>;
@@ -264,6 +339,7 @@ export class HubStore {
         this.patch({ status: "ready", message: undefined, retrying: false, loadedOnce: true, seq });
         if (!this.feedClose || !this.feedUp) this.openFeed();
         void this.loadSince();
+        void this.loadJobs();
       } catch (error) {
         if (this.alive(gen)) this.fail(error);
       } finally {
@@ -330,6 +406,65 @@ export class HubStore {
     }
   }
 
+  /** Being built. A service without jobs yet ("Unknown hub action") just means nothing is being built. */
+  async loadJobs(): Promise<void> {
+    const gen = this.gen;
+    try {
+      const raw = obj(await this.t.call("ash-hub-jobs", {}));
+      if (!this.alive(gen)) return;
+      const groups = arr(raw.groups).map((g): HubJobGroup => {
+        const r = obj(g);
+        return {
+          leadId: optStr(r.leadId) ?? null,
+          leadName: str(r.leadName, "Nobody yet"),
+          projectId: str(r.projectId),
+          jobs: arr(r.jobs).map(mapJob).filter((j): j is HubJob => !!j),
+        };
+      });
+      this.patch({ jobs: mergeJobGroups(this.snap.jobs, groups.filter((g) => g.jobs.length)) });
+    } catch (error) {
+      const e = toHubError(error);
+      if (e.isDown && this.alive(gen)) this.fail(error);
+    }
+  }
+
+  // ---- Ash's choices ---------------------------------------------------------------------------------------------
+  /** "Looks right" rows: Ash has seen it. Ash OS ticks the row off; the answer is read at once, the feed follows. */
+  async markNeedSeen(id: string): Promise<void> {
+    await this.t.call("ash-hub-need-seen", { id });
+    await this.loadNeeds();
+  }
+
+  /** The "See options" sheet for a job the Lead gave up on. */
+  async jobOptions(jobId: string): Promise<JobOptions> {
+    const raw = obj(await this.t.call("ash-hub-job-options", { job_id: jobId }));
+    return {
+      jobId: str(raw.jobId, jobId),
+      projectId: str(raw.projectId),
+      title: str(raw.title),
+      why: str(raw.why),
+      options: arr(raw.options).map((o): JobOption => {
+        const r = obj(o);
+        return { id: str(r.id), label: str(r.label), needsText: r.needsText === true, note: str(r.note), ...(optStr(r.placeholder) ? { placeholder: str(r.placeholder) } : {}) };
+      }),
+    };
+  }
+
+  /** Ash's pick on a given-up job. The job moves and its Needs row ticks off. */
+  async jobAct(jobId: string, option: string, hint?: string): Promise<void> {
+    await this.t.call("ash-hub-job-act", { job_id: jobId, option, ...(hint ? { hint } : {}) });
+    await Promise.all([this.loadNeeds(), this.loadJobs()]);
+  }
+
+  /** Ash has seen these finished jobs and left the page. */
+  markJobsSeen(jobIds: string[]): void {
+    if (!jobIds.length || !this.running) return;
+    void this.t
+      .call("ash-hub-job-seen", { job_ids: jobIds })
+      .then(() => this.loadJobs())
+      .catch(() => undefined);
+  }
+
   // ---- applying --------------------------------------------------------------------------------------------------
   private applyProjects(raw: unknown): void {
     const projects = arr(obj(raw).projects).map(mapProject).filter((p): p is HubProject => !!p);
@@ -359,7 +494,8 @@ export class HubStore {
       if (ticks.length) next[pid] = { shown: ticks, later: [] };
     }
     const setup = arr(data.setup).map((n) => mapNeed(n)).filter((n): n is Need => !!n);
-    this.patch({ needs: next, setup });
+    const older = arr(obj(data.older).rows).map((n) => mapNeed(n, true)).filter((n): n is Need => !!n);
+    this.patch({ needs: next, setup, older });
   }
 
   /** Ash left the page: ticked-off rows go, and stay gone even while Ash OS still lists them. */
@@ -439,6 +575,7 @@ export class HubStore {
     if (topics.has("needs")) this.queue.add("needs");
     if (topics.has("projects")) this.queue.add("projects");
     if (topics.has("since") || topics.has("activity")) this.queue.add("since");
+    if (topics.has("jobs")) this.queue.add("jobs");
     if (this.queue.size && !this.timers.coalesce) {
       const wait = Math.max(this.coalesceMs, this.lastFlush + this.minGapMs - Date.now());
       this.timers.coalesce = setTimeout(() => void this.flush(), wait);
@@ -455,6 +592,7 @@ export class HubStore {
       wanted.has("needs") ? this.loadNeeds() : undefined,
       wanted.has("projects") ? this.loadProjects() : undefined,
       wanted.has("since") ? this.loadSince(0) : undefined,
+      wanted.has("jobs") ? this.loadJobs() : undefined,
     ]);
   }
 

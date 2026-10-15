@@ -10,7 +10,8 @@ import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import type { Need } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { StatusMark } from "./StatusMark";
+import { CircleWord, StatusMark } from "./StatusMark";
+import { OptionsSheet } from "./OptionsSheet";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { ProposalView } from "./ProposalView";
@@ -83,6 +84,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 }
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
+  const [sheetJob, setSheetJob] = useState<string | null>(null);
   const data = hubData();
   const connection = data.connection();
   if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
@@ -123,26 +125,85 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
                 <StuckRow key={s.id} item={s} />
               ))}
               {pNeeds.map((n) => (
-                <NeedRow key={n.id} need={n} />
+                <NeedRow key={n.id} need={n} onOptions={setSheetJob} />
               ))}
               {pOther.map((w) => (
                 <StuckRow key={w.id} item={w} />
               ))}
-              {laterItems(p.id).length ? (
-                <div className="px-2 pt-1 text-xs text-content/60" data-hub-later>
-                  {laterItems(p.id).length} more under Later
-                </div>
-              ) : null}
+              <LaterList projectId={p.id} onOptions={setSheetJob} />
             </div>
           </section>
         );
       })}
+      <OlderGroup projectId={projectId} onOptions={setSheetJob} />
+      {sheetJob ? <OptionsSheet jobId={sheetJob} onClose={() => setSheetJob(null)} /> : null}
     </div>
   );
 }
 
-function NeedRow({ need }: { need: Need }) {
+/** Under a project's Needs: the ones past the five, collapsed to one quiet line until opened. */
+function LaterList({ projectId, onOptions }: { projectId: string; onOptions: (jobId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const later = laterItems(projectId);
+  if (!later.length) return null;
+  return (
+    <div className="flex flex-col" data-hub-later>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="self-start rounded-md px-2 pt-1 text-xs text-content/60 hover:text-content">
+        {open ? "Hide Later" : `${later.length} more under Later`}
+      </button>
+      {open ? later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onOptions={onOptions} /> : <StuckRow key={w.id} item={w} />)) : null}
+    </div>
+  );
+}
+
+/**
+ * Older questions (recovered from past chats and the like). They are not Needs: in no badge and no count, and shut
+ * until Ash opens them. On Today they sit once at the bottom, under their project's name; in a project, its own.
+ */
+function OlderGroup({ projectId, onOptions }: { projectId: string | undefined; onOptions: (jobId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const data = hubData();
+  const older = data.listOlder(projectId);
+  if (!older.length) return null;
+  const names = new Map(data.listProjects().map((p) => [p.id, p.name]));
+  const groups = [...new Set(older.map((n) => n.projectId))];
+  return (
+    <section data-hub-older>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 text-xs text-content/60 hover:text-content">
+        Older ({older.length})
+      </button>
+      {open ? (
+        <div className="mt-1 flex flex-col">
+          {groups.map((pid) => (
+            <div key={pid} className="flex flex-col">
+              {projectId ? null : <h2 className="mb-1 mt-2 px-2 text-xs text-content/60">{names.get(pid) ?? pid}</h2>}
+              {older.filter((n) => n.projectId === pid).map((n) => (
+                <NeedRow key={n.id} need={n} onOptions={onOptions} />
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function NeedRow({ need, onOptions }: { need: Need; onOptions?: (jobId: string) => void }) {
   const done = need.state === "done";
+  const [busy, setBusy] = useState(false);
+  const data = hubData();
+  // One action per row. A Looks-right row is marked seen; a given-up job opens its options; the rest wait for their unit.
+  const onAction = async () => {
+    if (need.jobId && data.jobOptions) return onOptions?.(need.jobId);
+    if (need.canMarkSeen && data.markNeedSeen) {
+      setBusy(true);
+      try {
+        await data.markNeedSeen(need.id);
+      } catch {
+        setBusy(false);
+      }
+    }
+  };
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
       <div className="min-w-0 flex-1">
@@ -155,9 +216,17 @@ function NeedRow({ need }: { need: Need }) {
           <Check className="size-3.5" strokeWidth={1.75} />
         </span>
       ) : (
-        <button type="button" className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
-          {need.actionLabel}
-        </button>
+        <>
+          {need.circle && need.word ? <CircleWord circle={need.circle} word={need.word} /> : null}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onAction()}
+            className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60"
+          >
+            {need.canMarkSeen && data.markNeedSeen ? "Seen" : need.actionLabel}
+          </button>
+        </>
       )}
     </div>
   );
@@ -170,6 +239,7 @@ function StuckRow({ item }: { item: WaitingItem }) {
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
         {item.detail ? <div className="line-clamp-2 text-[13px] text-content/60">{item.detail}</div> : null}
+        {item.note ? <div className="truncate text-[13px] text-content/60" data-hub-sent>{item.note}</div> : null}
       </div>
       {item.state ? <StatusMark state={item.state} /> : null}
       {item.target || item.connectorId ? (
