@@ -88,11 +88,12 @@ describe("at most five rows per project on Today", () => {
     }
   });
 
-  it("the strip badge equals the rows shown plus the Later count", async () => {
+  it("the strip badge equals the open rows Today shows for the project, stuck included", async () => {
     const { mock, waiting } = await load(true);
     for (const p of mock.mockHubData.listProjects()) {
       const visible = waiting.waitingOnAsh(p.id).filter((w) => !w.done).length;
-      expect(waiting.waitingCount(p.id)).toBe(visible + waiting.laterItems(p.id).filter((w) => !w.done).length);
+      expect(waiting.waitingCount(p.id)).toBe(visible);
+      expect(waiting.waitingCount(p.id)).toBeLessThanOrEqual(waiting.MAX_NEEDS);
     }
   });
 
@@ -108,7 +109,15 @@ describe("at most five rows per project on Today", () => {
     expect(fold.className).toMatch(/underline/);
     expect(fold.getAttribute("aria-expanded")).toBe("false");
     await act(async () => fold.click());
-    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    expect(section.querySelector("[data-hub-later-toggle]")!.getAttribute("aria-expanded")).toBe("true");
     expect(section.querySelectorAll("[data-hub-later] [data-hub-need]").length).toBeGreaterThan(0);
+    // Open: a quiet heading in line with the rows, dimmed rows, and Hide Later in line underneath.
+    expect(section.querySelector("[data-hub-later-heading]")?.textContent).toBe("Later");
+    expect(section.querySelector("[data-hub-later-rows]")?.className).toMatch(/opacity-75/);
+    const hide = section.querySelector("[data-hub-later-toggle]") as HTMLButtonElement;
+    expect(hide.textContent).toBe("Hide Later");
+    expect(section.querySelector("[data-hub-later-rows]")!.compareDocumentPosition(hide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => hide.click());
+    expect(section.querySelector("[data-hub-later-heading]")).toBeNull();
   });
 });

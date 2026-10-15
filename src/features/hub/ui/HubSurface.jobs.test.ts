@@ -112,7 +112,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
     const later = container.querySelector("[data-hub-later] > button")!;
     expect(later.textContent).toBe("1 more under Later");
     act(() => (later as HTMLElement).click());
-    expect(later.textContent).toBe("Hide Later");
+    expect(container.querySelector("[data-hub-later-toggle]")!.textContent).toBe("Hide Later");
   });
 
   it("a Looks-right row shows Ash OS's own action, Looks right, which accepts it and ticks it off", async () => {

@@ -107,16 +107,12 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
 }
 
 /**
- * The strip badge. Live: the project's real Needs count (shown plus Later, the number the Since paragraph quotes);
- * rows still show at most five plus "N more under Later". Examples: what is waiting in the list. A row that ticked
- * itself off no longer counts.
+ * The strip badge: exactly the open rows Today shows for the project (stuck rows included, at most MAX_NEEDS), the
+ * same in example and real data (SPEC: "every count matches the items you can see"). Later is not counted: its own
+ * line says how many wait there. A row that ticked itself off no longer counts.
  */
 export function waitingCount(projectId: string): number {
-  const live = hubData().needsCount?.(projectId);
-  if (live !== undefined) return live;
-  // Examples: everything waiting, shown plus Later, so the badge equals the visible rows plus "N more under Later".
-  const { shown, later } = projectRows(projectId);
-  return [...shown, ...later].filter((i) => !i.done).length;
+  return waitingOnAsh(projectId).filter((i) => !i.done).length;
 }
 
 export function findWaiting(id: string): WaitingItem | undefined {

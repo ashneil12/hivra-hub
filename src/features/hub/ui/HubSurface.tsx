@@ -158,12 +158,21 @@ function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet:
   const [open, setOpen] = useState(false);
   const later = laterItems(projectId);
   if (!later.length) return null;
+  // Shut: one tappable line. Open: a quiet "Later" heading in line with the rows, the rows a little dimmer, and
+  // "Hide Later" in line with them underneath.
+  const toggle = (label: string) => (
+    <button type="button" aria-expanded={open} data-hub-later-toggle onClick={() => setOpen((v) => !v)} className="mt-1 self-start cursor-pointer rounded-md px-2 py-1 text-xs text-content/80 underline decoration-content/40 underline-offset-2 hover:bg-content/5 hover:text-content">
+      {label}
+    </button>
+  );
+  if (!open) return <div className="flex flex-col" data-hub-later>{toggle(`${later.length} more under Later`)}</div>;
   return (
-    <div className="flex flex-col" data-hub-later>
-      <button type="button" aria-expanded={open} data-hub-later-toggle onClick={() => setOpen((v) => !v)} className="mt-1 self-start cursor-pointer rounded-md px-2 py-1 text-xs text-content/80 underline decoration-content/40 underline-offset-2 hover:bg-content/5 hover:text-content">
-        {open ? "Hide Later" : `${later.length} more under Later`}
-      </button>
-      {open ? later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onSheet={onSheet} /> : <StuckRow key={w.id} item={w} />)) : null}
+    <div className="flex flex-col" data-hub-later data-hub-later-open>
+      <h3 className="mt-3 px-2 pb-1 text-xs font-normal text-content/60" data-hub-later-heading>Later</h3>
+      <div className="flex flex-col opacity-75" data-hub-later-rows>
+        {later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onSheet={onSheet} /> : <StuckRow key={w.id} item={w} />))}
+      </div>
+      {toggle("Hide Later")}
     </div>
   );
 }
