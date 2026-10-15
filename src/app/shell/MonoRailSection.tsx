@@ -235,10 +235,12 @@ export function MonoRailSection({
                     {shown(look.name).primary}
                   </Shimmer>
                 ) : (
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
-                    {shown(look.name).primary}
+                  <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
+                    <span className="min-w-0 truncate text-sm font-medium" data-mono-primary-name>
+                      {shown(look.name).primary}
+                    </span>
                     {shown(look.name).secondary ? (
-                      <span className="ml-1.5 text-xs font-normal text-content/45" data-mono-own-name>
+                      <span className="shrink-0 text-xs font-normal text-content/45" data-mono-own-name>
                         {shown(look.name).secondary}
                       </span>
                     ) : null}
