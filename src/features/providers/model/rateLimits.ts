@@ -206,6 +206,33 @@ export function formatRateLimitWindowChipLabel(
   return formatWindowLabel(window.windowMinutes);
 }
 
+/**
+ * The status-bar words for one window, from what the provider reports: `usedPercent` of the window consumed, and
+ * `resetsAt` when it starts over. "3% used · resets in 2h 45m" for the 5-hour session window, "Week: 99% used · resets
+ * in 5d 15h" for the weekly one. With "show remaining" on it says "left" instead.
+ */
+export function usageChipLabel(
+  kind: "session" | "weekly" | "monthly",
+  window: RateLimitWindow,
+  now = Date.now(),
+  showRemaining = false,
+): string {
+  const pct = clampUsedPercent(window.usedPercent);
+  const prefix =
+    kind === "weekly" ? "Week: "
+    : kind === "monthly" ? "Month: "
+    : window.windowMinutes === DAILY_WINDOW_MINUTES ? "Today: "
+    : "";
+  const amount = `${formatUsagePercent(showRemaining ? 100 - pct : pct)} ${showRemaining ? "left" : "used"}`;
+  const when =
+    window.resetsAt == null
+      ? `of ${formatWindowLabel(window.windowMinutes)}`
+      : window.resetsAt - now <= 0
+        ? "· resets now"
+        : `· resets in ${formatResetDuration(window.resetsAt - now)}`;
+  return `${prefix}${amount} ${when}`;
+}
+
 export function rateLimitWindowTooltip(
   window: RateLimitWindow,
   now = Date.now(),

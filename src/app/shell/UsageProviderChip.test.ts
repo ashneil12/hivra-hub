@@ -141,7 +141,7 @@ describe("UsageProviderChip", () => {
 
     const trigger = button("Codex usage details");
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(trigger.textContent).toBe("58% 2h·19% 2d 23h");
+    expect(trigger.textContent).toBe("58% left · resets in 2h·Week: 19% left · resets in 2d 23h");
     expect(trigger.title).toBe(
       "58% remaining · Resets in 2h · 19% remaining · Resets in 2d 23h",
     );
@@ -185,7 +185,7 @@ describe("UsageProviderChip", () => {
     );
 
     const trigger = button("Codex usage details");
-    expect(trigger.textContent).toBe("42% 2h·81% 2d 23h");
+    expect(trigger.textContent).toBe("42% used · resets in 2h·Week: 81% used · resets in 2d 23h");
     expect(trigger.title).toBe(
       "42% used · Resets in 2h · 81% used · Resets in 2d 23h",
     );
@@ -232,7 +232,7 @@ describe("UsageProviderChip", () => {
       };
 
       await changePreference(true);
-      expect(trigger.textContent).toBe("58% 2h·19% 2d 23h");
+      expect(trigger.textContent).toBe("58% left · resets in 2h·Week: 19% left · resets in 2d 23h");
       expect(trigger.title).toContain("19% remaining");
       expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
         "width: 19%;",
@@ -246,7 +246,7 @@ describe("UsageProviderChip", () => {
       );
 
       await changePreference(false);
-      expect(trigger.textContent).toBe("42% 2h·81% 2d 23h");
+      expect(trigger.textContent).toBe("42% used · resets in 2h·Week: 81% used · resets in 2d 23h");
       expect(trigger.title).toContain("81% used");
       expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
         "width: 81%;",
