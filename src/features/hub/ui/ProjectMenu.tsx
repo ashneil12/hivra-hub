@@ -228,7 +228,7 @@ export function RemovedUndoToast() {
   if (!pending) return null;
   return (
     <div role="status" data-project-undo
-      className="sidebar-glass fixed bottom-4 left-20 z-50 flex items-center gap-3 rounded-lg px-3 py-2 text-[12px] text-content/85 shadow-lg ring-1 ring-content/10">
+      className="sidebar-glass fixed bottom-14 left-20 z-50 flex items-center gap-3 rounded-lg px-3 py-2 text-[12px] text-content/85 shadow-lg ring-1 ring-content/10">
       <span>{pending.project.name} removed from the hub</span>
       <button type="button" onClick={() => void pending.undo()} className="rounded-md px-2 py-0.5 text-content hover:bg-content/10">Undo</button>
     </div>
