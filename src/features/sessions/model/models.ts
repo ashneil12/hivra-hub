@@ -1,6 +1,7 @@
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
+import { findCustomModel, isCustomModelId } from "./customModels";
 import {
   hasProbedHarnessAvailability,
   isHarnessAvailable,
@@ -359,6 +360,11 @@ function lookupModel(id: string): AgentModel | undefined {
 }
 
 export function resolveModel(harness: HarnessId, id?: string): AgentModel {
+  // A custom model ("Other models" in the picker) keeps its own id; CoS's router reads its route.
+  if (id && isCustomModelId(id)) {
+    const custom = findCustomModel(id);
+    return { id, harness, name: custom?.name ?? "Custom model", nativeId: custom?.modelId };
+  }
   const available = modelsFor(harness);
   if (id) {
     const exact = findModel(id);

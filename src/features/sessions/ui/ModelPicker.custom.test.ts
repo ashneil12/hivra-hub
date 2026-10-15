@@ -228,3 +228,11 @@ describe("the bottom pill", () => {
     expect(q("[data-pill-billing]")).toBeNull();
   });
 });
+
+describe("a session on a custom model", () => {
+  it("keeps its custom id through the app's model resolution (so the session's model stays custom:<id>)", async () => {
+    localStorage.setItem("monocode:custom-models", JSON.stringify([{ id: "xai-1", name: "Grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4" }]));
+    const { resolveModel } = await import("../model/models");
+    expect(resolveModel("claude", "custom:xai-1")).toMatchObject({ id: "custom:xai-1", harness: "claude", name: "Grok", nativeId: "grok-4" });
+  });
+});
