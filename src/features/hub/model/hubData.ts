@@ -8,6 +8,10 @@ import { tauriHubTransport } from "./hubTransport";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
+import { seedHubBundleDefaults } from "./hubBundle";
+
+// Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
+seedHubBundleDefaults();
 
 // The app ships clean: it reads Ash OS. The example data answers only behind the dev flag
 // (`monocode:hub-examples`, set by hub-dev.html), or when a source is swapped in with `setHubDataSource`.
