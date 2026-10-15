@@ -28,6 +28,9 @@ function Side({ side }: { side: ChangeSide }) {
   );
 }
 
+/** The Not connected yet card says only this, with Back. */
+export const NOT_ON_COPY = "This isn't switched on yet. Once it is, you'll see your hub next to the preview.";
+
 export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projectId: string }) {
   const [text, setText] = useState("");
   const [state, setState] = useState<{ prompt: string; result?: ChangeResult; applied?: boolean }>();
@@ -57,8 +60,8 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
       ) : r.status === "not-connected" ? (
         <div className={`${card} p-5`} data-hub-change-not-connected>
           <div className="text-[14px] text-content">Not connected yet</div>
-          <p className="mt-1 text-[13px] leading-5 text-content/70">{r.reason} Once it's wired, you'll see your hub now beside the preview build, then Apply or Discard.</p>
-          <div className="mt-3 flex gap-2"><button type="button" className={quietBtn} onClick={() => setState(undefined)}>Back</button><button type="button" className={primaryBtn} onClick={() => ask(state.prompt)}>Try again</button></div>
+          <p className="mt-1 text-[13px] leading-5 text-content/70">{NOT_ON_COPY}</p>
+          <div className="mt-3 flex gap-2"><button type="button" className={quietBtn} onClick={() => setState(undefined)}>Back</button></div>
         </div>
       ) : r.status !== "ready" ? (
         <div className="rounded-lg px-3 py-2.5" data-hub-change-turned-down>
