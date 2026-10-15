@@ -114,7 +114,7 @@ export function StripButton({
       aria-current={selected || undefined}
       onClick={onClick}
       onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu({ x: e.clientX, y: e.clientY }); } : undefined}
-      className="group flex w-14 shrink-0 flex-col items-center gap-1 py-1"
+      className="group flex w-14 shrink-0 flex-col items-center gap-1.5 pb-2 pt-1"
     >
       <span
         className={`relative grid size-9 place-items-center rounded-[10px] transition-colors ${
@@ -129,7 +129,7 @@ export function StripButton({
         ) : null}
       </span>
       {label ? (
-        <span className={`max-w-full truncate text-[11px] leading-3 ${selected ? "text-content" : "text-content/60"}`}>
+        <span className={`max-w-full truncate px-0.5 text-[11px] leading-[14px] ${selected ? "text-content" : "text-content/60"}`}>
           {label}
         </span>
       ) : null}
