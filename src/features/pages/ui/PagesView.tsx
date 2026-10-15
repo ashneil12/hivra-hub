@@ -5,7 +5,7 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, DashboardSquare, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
-import { approvedPermissions, keepPage, keptPages, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
+import { allowPage, approvedPermissions, needsAllow, keepPage, keptPages, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, type BuildPageResult } from "../model/buildPage";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { handleBridgeCall, type BridgeCall } from "../model/bridge";
@@ -206,6 +206,20 @@ export function useKeyDelay(hasKeyAsk: boolean): boolean {
   return ready;
 }
 
+/** An imported page asks again: the same list and Keep and allow, with the key delay. Until then it can do nothing. */
+function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
+  const ready = useKeyDelay(asks.some((a) => !!keyName(a)));
+  return (
+    <div className="mb-4 flex flex-col gap-2" data-pages-allow-again>
+      <div className="text-[12px] text-content/70">This page came from a setup file. It can't do anything until you allow what it asks for.</div>
+      <Permissions asks={asks} />
+      <div className="flex justify-end">
+        <button type="button" data-pages-allow disabled={!ready} className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Keep and allow</button>
+      </div>
+    </div>
+  );
+}
+
 function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
@@ -338,6 +352,7 @@ export function PagesContent() {
                 <Undo2 className="size-3.5 text-content/60" />Kept. Changed your mind? Undo it any time in Settings → Changes → Bot changes.
               </div>
             ) : null}
+            {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
             <PageBody page={shown} live />
           </div>
         ) : (

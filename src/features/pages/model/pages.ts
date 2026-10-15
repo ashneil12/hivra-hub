@@ -85,6 +85,19 @@ export function approvedPermissions(id: string): Capability[] {
   const p = pages.find((x) => x.id === id);
   return p && !p.removed ? p.permissions : [];
 }
+/** A kept bespoke page whose asks aren't approved yet (it came from a setup file). */
+export function needsAllow(page: Page): boolean {
+  return !page.removed && page.spec.kind === "bespoke" && page.spec.permissions.length > 0 && page.permissions.length === 0;
+}
+/** Keep and allow on an imported page: approves its asks, with a Bot changes row so Undo revokes them. */
+export function allowPage(id: string): void {
+  const p = pages.find((x) => x.id === id);
+  if (!p || !needsAllow(p) || p.spec.kind !== "bespoke") return;
+  const permissions = p.spec.permissions;
+  pages = pages.map((x) => (x.id === id ? { ...x, permissions } : x));
+  changed();
+  recordPageChange(p.id, p.by, p.title);
+}
 /** Every kept page, for the setup file. */
 export function allKeptPages(): Page[] {
   return pages.filter((p) => !p.removed && p.keptAt);
