@@ -16,3 +16,10 @@ it("a kept page's line reads Allowed: N things", async () => {
   expect(allowedLabel(3)).toBe("Allowed: 3 things");
   expect(pages).toMatch(/data-pages-allowed-list/);
 });
+
+it("an imported page that already says Kept asks with Allow, behind the key delay", () => {
+  const block = pages.slice(pages.indexOf("function AllowAgain"), pages.indexOf("function AskBox"));
+  expect(block).toMatch(/useKeyDelay\(/);
+  expect(block).toMatch(/disabled=\{!ready\}[\s\S]{0,200}>Allow<\/button>/);
+  expect(block).not.toContain("Keep and allow");
+});

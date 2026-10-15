@@ -235,7 +235,7 @@ function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
       <div className="text-[12px] text-content/70">This page came from a setup file. It can't do anything until you allow what it asks for.</div>
       <Permissions asks={asks} />
       <div className="flex justify-end">
-        <button type="button" data-pages-allow disabled={!ready} className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Keep and allow</button>
+        <button type="button" data-pages-allow disabled={!ready} className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
       </div>
     </div>
   );
