@@ -314,7 +314,11 @@ describe("point 13, item 3: a big job's workers show only in Being built, and on
     expect(row().textContent).toContain("Rebuild the waitlist, 0 of 3 parts done");
     expect(row().querySelector("[data-hub-last-active]")?.textContent).toBe("just started");
     expect(row().getAttribute("aria-expanded")).toBe("false");
+    const chevron = () => row().querySelector("[data-hub-parts-chevron]")!;
+    expect(chevron().getAttribute("class")).not.toContain("rotate-90");
+    expect(container.querySelectorAll("[data-hub-parts-chevron]")).toHaveLength(1); // only the big job has one
     act(() => (row() as HTMLElement).click());
+    expect(chevron().getAttribute("class")).toContain("rotate-90");
     expect([...container.querySelectorAll('[data-hub-parts-of="big:big"] [data-hub-worker]')].map((r) => r.getAttribute("data-hub-worker"))).toEqual(big);
     expect(sidebar()).toEqual(ROSTER); // no worker became a Mono
     expect(container.querySelector("[data-mono-rail]")?.textContent).not.toMatch(/Part \d|Rebuild|worker/i);
