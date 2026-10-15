@@ -60,13 +60,13 @@ let proposals: Proposal[] = examples([
     after: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck, with orange glowing edge", isNew: true }, { text: "Play Areas 1 and 2" }] },
   },
   {
-    // Operator OS already has 5 Needs, so this valid proposal waits under Later.
-    id: "p4", projectId: "operator-os", by: "Chief of Staff", status: "pending",
-    title: "Example: add a Hiring card to Operator OS's Today",
+    // Harness already has 5 Needs, so this valid proposal waits under Later.
+    id: "p4", projectId: "harness", by: "Chief of Staff", status: "pending",
+    title: "Example: add a Hiring card to the Harness Today",
     why: "Example: three open roles move every day.",
     checked: [RULES.colour, RULES.edges, RULES.needs, RULES.example],
-    before: { heading: "Operator OS · Today", rows: [{ text: "Since 2pm" }, { text: "Approve the Q4 hiring plan" }] },
-    after: { heading: "Operator OS · Today", rows: [{ text: "Since 2pm" }, { text: "Hiring: 3 open roles", isNew: true }, { text: "Approve the Q4 hiring plan" }] },
+    before: { heading: "Harness · Today", rows: [{ text: "Since 2pm" }, { text: "Approve the Q4 hiring plan" }] },
+    after: { heading: "Harness · Today", rows: [{ text: "Since 2pm" }, { text: "Hiring: 3 open roles", isNew: true }, { text: "Approve the Q4 hiring plan" }] },
   },
   {
     id: "p0", projectId: "hivra", by: "Monocode", status: "applied", appliedAt: "Yesterday 6:12pm",

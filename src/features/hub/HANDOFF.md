@@ -294,7 +294,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   automatically: breaks "<rule>"" with the reason, and no Undo.
 - **A valid proposal is a Need.** It shares the 5-Needs cap per project; when a
   project already has 5 Needs, the proposal goes under Later like any other
-  Need (`laterItems`). There is no separate "waiting" state. Mock: Operator OS
+  Need (`laterItems`). There is no separate "waiting" state. Mock: Harness
   has 5 Needs, and its Hiring card proposal (p4) is under Later.
 
 ## Focus on 'Take a look'

@@ -34,7 +34,7 @@ if (process.argv.includes("--before")) {
   let { page, context } = await open(BEFORE);
   await page.waitForSelector("text=Example: play Areas 1 and 2");
   await shot(page, "before-1-today.png");
-  await page.click('button[aria-label^="Operator OS"]');
+  await page.click('button[aria-label^="Harness"]');
   await page.click("text=Inbox >> nth=0");
   await page.waitForSelector("text=Example: approve the Q4 hiring plan");
   await shot(page, "before-2-inbox-with-needs.png");
