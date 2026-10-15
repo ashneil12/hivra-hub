@@ -248,10 +248,10 @@ function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
   return (
     <form className={`${card} flex items-center gap-2 px-3 py-2`} onSubmit={(e) => { e.preventDefault(); send(); }}>
       <input
-        aria-label="Ask a Mono to build a page"
+        aria-label="Describe the page"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Ask a Mono to build a page…"
+        placeholder="Describe the page…"
         className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-content outline-none placeholder:text-content/60"
       />
       <button type="submit" aria-label="Send to a Mono" disabled={!text.trim()} className="grid size-7 place-items-center rounded-full bg-content/12 text-content hover:bg-content/18 disabled:opacity-40">
