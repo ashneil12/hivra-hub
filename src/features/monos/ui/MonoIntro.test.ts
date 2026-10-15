@@ -69,3 +69,15 @@ it("never offers or names a ghost when making a Mono", async () => {
   expect(defaultMonoName("ghost")).toBe("MonoWisp");
   for (let n = 0; n < 12; n++) expect(nextMonoLook(Array.from({ length: n }, (_, i) => ({ mascot: PICKABLE_MASCOTS[i % PICKABLE_MASCOTS.length].name, color: "x" }))).mascot).not.toBe("ghost");
 });
+
+it("the mascot row starts with Letter, selected by default, and has nothing ghost-like", async () => {
+  const { MascotPicker } = await import("./monoPanelParts");
+  act(() => root.render(createElement(MascotPicker, { current: "letter:F", color: "gray", onPick: () => {} })));
+  const choices = [...document.body.querySelectorAll<HTMLElement>("[data-mascot-choice]")];
+  expect(choices[0].getAttribute("aria-label")).toBe("Letter");
+  expect(choices[0].getAttribute("aria-checked")).toBe("true");
+  const names = choices.map((c) => c.dataset.mascotChoice);
+  expect(names).not.toContain("ghost");
+  expect(names).not.toContain("skull");
+  expect(choices.filter((c) => c.getAttribute("aria-checked") === "true")).toHaveLength(1);
+});

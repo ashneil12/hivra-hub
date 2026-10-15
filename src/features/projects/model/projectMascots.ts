@@ -275,5 +275,9 @@ export function projectMascot(
   return PROJECT_MASCOTS[hash % PROJECT_MASCOTS.length];
 }
 
-/** Mascots offered when making or restyling a Mono. The ghost stays drawable for Monos that already wear it, but isn't offered. */
-export const PICKABLE_MASCOTS: readonly ProjectMascot[] = PROJECT_MASCOTS.filter((m) => m.name !== "ghost");
+/**
+ * Mascots offered when restyling a Mono, after "Letter" (the default). Nothing ghost-like: the ghost and the skull stay
+ * drawable for Monos that already wear them, but aren't offered.
+ */
+const NOT_OFFERED = new Set(["ghost", "skull"]);
+export const PICKABLE_MASCOTS: readonly ProjectMascot[] = PROJECT_MASCOTS.filter((m) => !NOT_OFFERED.has(m.name));

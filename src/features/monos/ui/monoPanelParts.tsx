@@ -8,7 +8,7 @@ import {
 import { ChevronLeft, type IconComponent } from "../../../shared/ui/icons";
 import { IconButton } from "../../../app/shell/TitleBar";
 import { PICKABLE_MASCOTS } from "../../projects/model/projectMascots";
-import { MONO_COLORS } from "../model/mono";
+import { isLetterAvatar, LETTER_AVATAR, MONO_COLORS } from "../model/mono";
 import {
   ColorPickerPopover,
   ColorSwatchRow,
@@ -232,16 +232,18 @@ export function MascotPicker({
       aria-label="Mascot"
       className={`grid gap-0.5 px-1 ${large ? "grid-cols-5 gap-1" : "grid-cols-10"}`}
     >
-      {PICKABLE_MASCOTS.map(({ name }) => {
-        const selected = name === current;
+      {[LETTER_AVATAR, ...PICKABLE_MASCOTS.map((m) => m.name)].map((name) => {
+        const letter = name === LETTER_AVATAR;
+        const selected = letter ? isLetterAvatar(current) || !current : name === current;
         return (
           <button
             key={name}
             type="button"
             role="radio"
             aria-checked={selected}
-            aria-label={name}
-            title={name.charAt(0).toUpperCase() + name.slice(1)}
+            aria-label={letter ? "Letter" : name}
+            title={letter ? "Letter" : name.charAt(0).toUpperCase() + name.slice(1)}
+            data-mascot-choice={name}
             onClick={() => onPick(name)}
             className={`grid min-w-0 place-items-center ${
               large ? "h-12 rounded-lg" : "h-8 rounded-md"
@@ -252,7 +254,7 @@ export function MascotPicker({
             }`}
           >
             <PixelMascot
-              name={name}
+              name={letter ? (isLetterAvatar(current) && current.includes(":") ? current : "letter:A") : name}
               color={color}
               still={!selected}
               className={large ? "size-8" : "size-5"}
