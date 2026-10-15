@@ -28,10 +28,13 @@ export function ProjectStrip({
   selection,
   onPickProject,
   onCreateProject,
+  onLeaveCovers,
 }: {
   selection: HubSelection;
   onPickProject: (project: HubProject) => void;
   onCreateProject: () => void;
+  /** Today and New project leave whatever covers the hub (Pages, Automations, Notes, Inbox, Search) first. */
+  onLeaveCovers?: () => void;
 }) {
   useHubDataVersion();
   useProposalsVersion();
@@ -55,7 +58,7 @@ export function ProjectStrip({
         label="Today"
         title="Today, all projects"
         selected={selection.project === "today"}
-        onClick={() => setHubSelection({ project: "today", item: "inbox" })}
+        onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "inbox" }); }}
         Icon={Clock}
       />
       <div className="h-2 shrink-0" />
@@ -74,7 +77,7 @@ export function ProjectStrip({
           />
         );
       })}
-      <StripButton label="" title="New project" selected={false} onClick={() => setHubSelection({ project: "today", item: "new-project" })} Icon={Plus} />
+      <StripButton label="" title="New project" selected={false} onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }} Icon={Plus} />
       {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
       <RemovedUndoToast />
     </nav>

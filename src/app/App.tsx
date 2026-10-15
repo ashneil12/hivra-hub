@@ -12928,6 +12928,7 @@ function Workspace({
                 }
               }}
               onCreateProject={pickProject}
+              onLeaveCovers={closeChromeViews}
             />
             <Sidebar
               hubItems={
