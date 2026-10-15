@@ -1548,7 +1548,7 @@ function ModelFlyout({
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
   const groups = modelGroups(tab, models);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<false | { name?: string }>(false);
   useCustomModels();
   const showOther = !!otherModels && tab === "claude";
 
@@ -1694,7 +1694,7 @@ function ModelFlyout({
           className="min-h-0 flex-1 overflow-y-auto overscroll-none p-1"
         >
           {adding && otherModels ? (
-            <AddModelForm onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
+            <AddModelForm initial={adding || undefined} onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
           ) : models.length === 0 ? (
             <div className="px-2 py-3 text-[12px] text-content/50">
               {tab === "favorites" && !query.trim()
@@ -1728,7 +1728,7 @@ function ModelFlyout({
             ))
           )}
           {showOther && !adding ? (
-            <OtherModelsSection query={query} currentModel={otherModels!.currentModel} onPick={otherModels!.onPick} onAdd={() => setAdding(true)} />
+            <OtherModelsSection query={query} currentModel={otherModels!.currentModel} onPick={otherModels!.onPick} onAdd={(preset) => setAdding(preset ?? {})} />
           ) : null}
         </div>
       </div>

@@ -228,7 +228,8 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
 export async function removeCustomModel(id: string): Promise<void> {
   const model = listCustomModels().find((m) => m.id === id);
   if (!model) return;
-  if (needsKey(model.provider)) await store.deleteModelKey(id);
+  // A delete that answers false is a failure too: the model stays, like a thrown one, so the inline line shows.
+  if (needsKey(model.provider) && (await store.deleteModelKey(id)) === false) throw new Error("The key wasn't deleted");
   writeModels(listCustomModels().filter((m) => m.id !== id));
 }
 

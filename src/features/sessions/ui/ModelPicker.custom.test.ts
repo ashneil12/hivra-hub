@@ -302,3 +302,26 @@ it("the Claude-key line has a neutral grey dot, not red", async () => {
   expect(q("[data-key-test-dot]")!.className).toContain("bg-content/40");
   expect(q("[data-key-test-dot]")!.className).not.toContain("bg-red");
 });
+
+describe("Grok with no key", () => {
+  it("is listed first under Other models with a grey 'Add key' tag, and opens Add model with xAI and Grok filled in", () => {
+    localStorage.setItem("monocode:custom-models", JSON.stringify([{ id: "or-1", name: "Kimi", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", modelId: "kimi" }]));
+    render();
+    open();
+    const rows = [...document.querySelectorAll("[data-other-models] > button")];
+    expect(rows[0].hasAttribute("data-grok-add-key")).toBe(true);
+    expect(rows[0].textContent).toBe("GrokAdd key");
+    expect(rows[0].querySelector("span:last-child")!.className).toContain("text-content/40");
+    act(() => (rows[0] as HTMLButtonElement).click());
+    expect(q<HTMLInputElement>('[aria-label="Name"]')!.value).toBe("Grok");
+    expect(q("[data-provider-button]")!.getAttribute("data-provider-button")).toBe("xai");
+  });
+
+  it("goes away once an xAI model is saved", () => {
+    localStorage.setItem("monocode:custom-models", JSON.stringify([{ id: "xai-1", name: "Grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4.6" }]));
+    render();
+    open();
+    expect(q("[data-grok-add-key]")).toBeNull();
+    expect(q('[data-custom-model="xai-1"]')).toBeTruthy();
+  });
+});

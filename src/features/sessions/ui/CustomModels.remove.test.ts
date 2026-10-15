@@ -74,10 +74,39 @@ describe("removing a custom model", () => {
     expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
   });
 
+  it("a delete that answers false is a failure too: the model stays and the line shows", async () => {
+    seed([grok]);
+    invoke.mockImplementation(async () => false);
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    await click(host.querySelector('[data-remove-model="xai-1"]'));
+    await click(host.querySelector("[data-remove-yes]"));
+    expect(listCustomModels()).toHaveLength(1);
+    expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
+  });
+
   it("an Ollama model has no key, so nothing is asked of the Keychain", async () => {
     seed([llama]);
     await removeCustomModel("ollama-1");
     expect(invoke).not.toHaveBeenCalled();
     expect(listCustomModels()).toEqual([]);
+  });
+});
+
+describe("the remove confirm title", () => {
+  it("wraps instead of being cut off, with the buttons on their own row", async () => {
+    seed([{ ...grok, name: "A rather long model display name from OpenRouter" }]);
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    await click(host.querySelector('[data-remove-model="xai-1"]'));
+    const confirm = host.querySelector('[data-remove-confirm="xai-1"]')!;
+    const title = host.querySelector("[data-remove-title]")!;
+    expect(title.textContent).toBe("Remove A rather long model display name from OpenRouter? Its saved key is deleted too.");
+    for (const cut of ["truncate", "text-ellipsis", "whitespace-nowrap", "overflow-hidden"]) {
+      expect(title.className).not.toContain(cut);
+      expect(confirm.className).not.toContain(cut);
+    }
+    expect(title.className).toContain("whitespace-normal");
+    expect(confirm.className).not.toMatch(/\bh-\d/);
+    expect(confirm.className).toContain("flex-col");
+    expect(title.contains(host.querySelector("[data-remove-yes]"))).toBe(false);
   });
 });
