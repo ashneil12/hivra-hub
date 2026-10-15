@@ -5,6 +5,7 @@ import { addMockProject } from "../model/mockData";
 import { setHubSelection } from "../model/hubNav";
 import { clearProjectDraft, projectDraft, saveProjectDraft } from "../model/projectDraft";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
+import { plainName } from "../model/roleNames";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { SHAPES, StripButton } from "./ProjectStrip";
 
@@ -61,7 +62,7 @@ export function NewProjectView() {
   };
 
   useEffect(() => {
-    if (saved?.started && saved.lines.at(-1)?.from === "ash" && !saved.tpl) {
+    if (saved?.started && saved.lines[saved.lines.length - 1]?.from === "ash" && !saved.tpl) {
       const a = saved.answers;
       if (a.length < QUESTIONS.length) cosSays(QUESTIONS[a.length]);
       else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(a.join(" "))));
@@ -150,14 +151,14 @@ export function NewProjectView() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-xs text-content/60">Team</span>
-                    <div className="text-[13px] text-content">{[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].join(", ")}</div>
+                    <div className="text-[13px] text-content">{[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].map((m) => plainName(m).primary).join(", ")}</div>
                   </div>
                   <label className="flex cursor-default items-center gap-2 text-[13px] text-content/85" data-hub-addon>
                     <button type="button" role="checkbox" aria-checked={addon} onClick={() => setAddon(!addon)}
                       className="grid size-4 place-items-center rounded bg-content/10 text-content">
                       {addon ? <Check className="size-3" strokeWidth={2} /> : null}
                     </button>
-                    Also add {ADDON_OFFER.name}: {ADDON_OFFER.what}
+                    Also add {plainName(ADDON_OFFER.name).primary}: {ADDON_OFFER.what}
                   </label>
                   <div className="flex gap-2">
                     <button type="button" className={PRIMARY} onClick={create} data-hub-create-project>Create project</button>

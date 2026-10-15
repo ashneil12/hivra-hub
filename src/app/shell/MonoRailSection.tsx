@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
   useEffect,
   useMemo,
@@ -93,6 +94,9 @@ export function MonoRailSection({
   rank,
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
+  useRoleNamesVersion();
+  // Role names are a hub thing; plain Monocode keeps the Monos' own names.
+  const shown = (name: string) => (rank ? plainName(name) : { primary: name });
   const monos = useMemo(
     () =>
       {
@@ -142,6 +146,17 @@ export function MonoRailSection({
           <Plus className="size-3.5" strokeWidth={1.75} />
         </button>
       </div>
+      {rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
+        <div className="mx-3 mb-1.5 flex items-center gap-2 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
+          <span className="min-w-0 flex-1">Monos now go by what they do.</span>
+          <button type="button" onClick={() => setRoleNames(false)} className="shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
+            Keep current names
+          </button>
+          <button type="button" onClick={() => setRoleNames(true)} className="shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
+            OK
+          </button>
+        </div>
+      ) : null}
       <div className="flex flex-col gap-px px-2">
         {monos.map((mono) => {
           const look = monoLook(mono);
@@ -217,11 +232,16 @@ export function MonoRailSection({
                     duration={1.4}
                     className="min-w-0 flex-1 truncate text-sm font-medium leading-tight"
                   >
-                    {look.name}
+                    {shown(look.name).primary}
                   </Shimmer>
                 ) : (
                   <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
-                    {look.name}
+                    {shown(look.name).primary}
+                    {shown(look.name).secondary ? (
+                      <span className="ml-1.5 text-xs font-normal text-content/45" data-mono-own-name>
+                        {shown(look.name).secondary}
+                      </span>
+                    ) : null}
                   </span>
                 )}
                 {unseen ? (
