@@ -15,6 +15,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -360,6 +361,43 @@ pub fn stream_once(
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// One feed for the whole app, however many windows ask for it. Events go out to every window, so a second window
+/// shares the running feed instead of replacing it, and the feed stops when the last one has closed.
+#[derive(Default)]
+struct Feed {
+    openers: usize,
+    last_state: Option<Value>,
+}
+
+static FEED: Mutex<Feed> = Mutex::new(Feed {
+    openers: 0,
+    last_state: None,
+});
+
+impl Feed {
+    /// Someone opened the feed. True when it has to be started (nobody had it open).
+    fn open(&mut self) -> bool {
+        self.openers += 1;
+        self.openers == 1
+    }
+    /// Someone closed the feed. True when it has to be stopped (nobody has it open any more).
+    fn close(&mut self) -> bool {
+        if self.openers == 0 {
+            return false;
+        }
+        self.openers -= 1;
+        if self.openers == 0 {
+            self.last_state = None;
+            return true;
+        }
+        false
+    }
+}
+
+fn feed() -> std::sync::MutexGuard<'static, Feed> {
+    FEED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn pause(total: Duration, still_current: &dyn Fn() -> bool) {
     let mut left = total;
     let step = Duration::from_millis(200);
@@ -424,12 +462,21 @@ async fn hub_call(action: String, payload: Option<Value>) -> Result<Value, HubEr
     .map_err(|_| HubError::new("error", "The call was interrupted."))?
 }
 
-/// `hub_events_open(after)`: start (or restart) the live feed. Changes arrive as `hub:event`, the connection as `hub:state`.
+/// `hub_events_open(after)`: start the live feed (or join the one already running). Changes arrive as `hub:event`, the
+/// connection as `hub:state`.
 #[tauri::command]
 fn hub_events_open<R: Runtime>(app: AppHandle<R>, after: Option<u64>) -> Result<(), HubError> {
     let endpoint = Endpoint::from_env()?;
+    let start = feed().open();
+    if !start {
+        // The feed is already running for another window: tell this one how it stands.
+        if let Some(last) = feed().last_state.clone() {
+            let _ = app.emit(EVENT_STATE, last);
+        }
+        return Ok(());
+    }
     let mine = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("hub-feed".into())
         .spawn(move || {
             let current = move || GENERATION.load(Ordering::SeqCst) == mine;
@@ -438,20 +485,28 @@ fn hub_events_open<R: Runtime>(app: AppHandle<R>, after: Option<u64>) -> Result<
                     return;
                 }
                 let _ = match msg {
-                    FeedMsg::State(v) => app.emit(EVENT_STATE, v),
+                    FeedMsg::State(v) => {
+                        feed().last_state = Some(v.clone());
+                        app.emit(EVENT_STATE, v)
+                    }
                     FeedMsg::Change(v) => app.emit(EVENT_CHANGE, v),
                 };
             };
             run_feed(endpoint, after.unwrap_or(0), &current, &mut emit);
-        })
-        .map_err(|_| HubError::new("error", "Couldn't start the live feed."))?;
+        });
+    if spawned.is_err() {
+        feed().close();
+        return Err(HubError::new("error", "Couldn't start the live feed."));
+    }
     Ok(())
 }
 
-/// `hub_events_close()`: stop the live feed.
+/// `hub_events_close()`: this window no longer needs the feed; it stops when no window does.
 #[tauri::command]
 fn hub_events_close() {
-    GENERATION.fetch_add(1, Ordering::SeqCst);
+    if feed().close() {
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The plugin. Registered in `lib.rs` with one `.plugin(hub::init())`; its permissions come from `build.rs`.
@@ -868,6 +923,20 @@ id: 6\nevent: hub\ndata: {\"seq\": 6, \"kind\": \"hub.need.done\", \"ref\": \"q1
         )
         .unwrap_err();
         assert_eq!(error.kind, "unauthorized");
+    }
+
+    #[test]
+    fn two_windows_share_one_feed_which_stops_when_the_last_one_closes() {
+        let mut feed = Feed::default();
+        assert!(feed.open(), "the first window starts the feed");
+        assert!(!feed.open(), "the second joins it");
+        assert!(
+            !feed.close(),
+            "one window closing leaves it running for the other"
+        );
+        assert!(feed.close(), "the last one closing stops it");
+        assert!(!feed.close(), "closing too often is harmless");
+        assert!(feed.open(), "and it can start again");
     }
 
     #[test]

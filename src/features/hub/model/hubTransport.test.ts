@@ -64,6 +64,15 @@ describe("the Tauri transport", () => {
     expect(invoke).toHaveBeenCalledWith("plugin:hub|hub_events_close");
   });
 
+  it("does not close a feed it never opened (another window may be using it)", async () => {
+    invoke.mockResolvedValue(undefined);
+    const close = tauriHubTransport.openFeed(1, { onEvent: () => undefined, onState: () => undefined });
+    close(); // closed before the listeners were even in place
+    await new Promise((r) => setTimeout(r, 20));
+    expect(invoke).not.toHaveBeenCalledWith("plugin:hub|hub_events_open", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("plugin:hub|hub_events_close");
+  });
+
   it("says the feed is down when it can't be opened", async () => {
     invoke.mockRejectedValue({ kind: "unreachable", message: "Ash OS isn't set up on this Mac." });
     const states: unknown[] = [];

@@ -72,6 +72,7 @@ export const tauriHubTransport: HubTransport = {
   },
   openFeed(after, handlers) {
     let closed = false;
+    let opened = false;
     const unlisten: Array<() => void> = [];
     void (async () => {
       try {
@@ -85,6 +86,9 @@ export const tauriHubTransport: HubTransport = {
         }
         unlisten.push(...offs);
         await invoke(`${PLUGIN}hub_events_open`, { after });
+        opened = true;
+        // Closed while the open was still on its way: close it now, it is ours.
+        if (closed) void invoke(`${PLUGIN}hub_events_close`).catch(() => undefined);
       } catch (error) {
         if (!closed) handlers.onState({ connected: false, message: toHubError(error).message });
       }
@@ -92,7 +96,8 @@ export const tauriHubTransport: HubTransport = {
     return () => {
       closed = true;
       unlisten.splice(0).forEach((off) => off());
-      void invoke(`${PLUGIN}hub_events_close`).catch(() => undefined);
+      // Only a feed this window really opened is closed: another window may be sharing the running one.
+      if (opened) void invoke(`${PLUGIN}hub_events_close`).catch(() => undefined);
     };
   },
 };
