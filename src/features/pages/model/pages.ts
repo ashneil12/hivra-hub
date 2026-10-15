@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { recordPageChange, setPageHooks } from "../../hub/model/botChanges";
 import type { DesignIssue } from "./designCheck";
 import type { Capability, PageBlock, PageSpec } from "./pageSpec";
+import { validatePageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 
 export type { BlockKind, PageBlock } from "./pageSpec";
@@ -83,6 +84,25 @@ setPageHooks({ remove: (id) => setRemoved(id, true), restore: (id) => setRemoved
 export function approvedPermissions(id: string): Capability[] {
   const p = pages.find((x) => x.id === id);
   return p && !p.removed ? p.permissions : [];
+}
+/** Every kept page, for the setup file. */
+export function allKeptPages(): Page[] {
+  return pages.filter((p) => !p.removed && p.keptAt);
+}
+/**
+ * Pages from a setup file. They come back with no permissions: a file can't grant
+ * a page anything, so its asks wait for Ash to allow them again.
+ */
+export function importPages(list: Page[]): number {
+  const have = new Set(pages.map((p) => p.id));
+  const add = list
+    .filter((p) => p && p.id && p.spec && !have.has(p.id) && validatePageSpec(p.spec).ok)
+    .map((p) => ({ ...p, permissions: [] as Capability[], removed: false, keptAt: p.keptAt ?? Date.now() }));
+  if (add.length) {
+    pages = [...add, ...pages];
+    changed();
+  }
+  return add.length;
 }
 /** Tests only. */
 export function resetPagesForTest(): void {
