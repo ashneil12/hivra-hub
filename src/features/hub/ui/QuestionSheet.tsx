@@ -41,7 +41,11 @@ export function QuestionSheet({ needId, onClose }: { needId: string; onClose: ()
     let alive = true;
     data.question?.(needId).then(
       (loaded) => alive && setQ(loaded),
-      (e: unknown) => alive && setProblem(e instanceof Error ? e.message : "Couldn't load the question."),
+      (e: unknown) => {
+        const said = e instanceof Error ? e.message : "";
+        // An Ash OS from before the answer calls: say so plainly instead of its error.
+        if (alive) setProblem(/unknown hub action/i.test(said) ? "Ash OS needs its update before it can show this question here." : said || "Couldn't load the question.");
+      },
     );
     return () => {
       alive = false;
