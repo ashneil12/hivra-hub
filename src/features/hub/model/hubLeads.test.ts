@@ -115,6 +115,7 @@ describe("the project Leads", () => {
       "working in /Users/ash/Projects/boxin game?/vg-game",
     ])
       expect(soul).toContain(phrase);
+    expect(leadSoul(LEADS[3], "/x")).toMatch(/^You are Harness lead, the lead for the harness \(Ash OS project `ash`\), working in \/x\./);
   });
 
   it("get their SOUL.md and MEMORY.md written into the app-data folder (monos/<id>/)", async () => {

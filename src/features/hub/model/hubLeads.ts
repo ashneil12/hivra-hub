@@ -12,7 +12,7 @@ export const LEADS: readonly LeadSpec[] = [
   { projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO" },
   { projectId: "hivra", id: "hivra-lead", name: "Hivra lead", projectName: "Hivra" },
   { projectId: "nibbii", id: "nibbii-lead", name: "Nibbii lead", projectName: "Nibbii" },
-  { projectId: "ash", id: "ash-lead", name: "Harness lead", projectName: "the harness (Ash OS)" },
+  { projectId: "ash", id: "ash-lead", name: "Harness lead", projectName: "the harness" },
 ];
 
 export function leadFor(monoId: string): LeadSpec | undefined {
