@@ -64,7 +64,7 @@ function Body({ file, name, onBack, onDone }: { file: SetupFile; name: string; o
         Here's what {name} brings. Nothing is added until you press Restore.
       </p>
 
-      <section className="flex flex-col gap-0.5">
+      {file.projects.length ? <section className="flex flex-col gap-0.5" data-restore-projects>
         <h2 className="pb-1 text-xs text-content/60">Projects</h2>
         {file.projects.map((p) => (
           <div key={p.id} className="flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px]">
@@ -72,7 +72,7 @@ function Body({ file, name, onBack, onDone }: { file: SetupFile; name: string; o
             <span className="text-xs text-content/60">{TEMPLATES.find((t) => t.id === p.template)?.label}</span>
           </div>
         ))}
-      </section>
+      </section> : null}
 
       {bots.length ? <section className="flex flex-col gap-0.5">
         <h2 className="pb-1 text-xs text-content/60">Bots ({ticked.size} of {bots.length})</h2>

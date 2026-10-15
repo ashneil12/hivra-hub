@@ -24,3 +24,11 @@ it("the Restore preview lists the Pages it will restore, and says which will ask
   expect(text).toContain("Example: growth room");
   expect(text).toContain("asks again before it can do anything");
 });
+
+it("no Projects heading when the file has no projects", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const file = { format: "monocode-hub-setup", version: 1, projects: [], pages: [] } as never;
+  await act(async () => createRoot(host).render(createElement(RestorePreview, { file, name: "s.json", inline: true })));
+  expect(host.querySelector("[data-restore-projects]")).toBeNull();
+});
