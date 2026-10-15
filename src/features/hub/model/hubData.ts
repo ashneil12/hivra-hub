@@ -4,7 +4,13 @@ import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tab
 import { examplesOn } from "./examples";
 import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
-import { tauriHubTransport } from "./hubTransport";
+import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
+import { makesProjectLeads } from "./hubBundle";
+import { ensureProjectLeads, leadMcpArgs } from "./hubLeads";
+import { stripProjects } from "./hubProjects";
+import { loadMonoFiles } from "../../monos/model/monoFiles";
+import { monoForSession } from "../../monos/model/mono";
+import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
@@ -28,8 +34,34 @@ function choose(): { source: HubDataSource; store?: HubStore } {
       whileRunning: (s) => startActivityTracking((at) => void s.reportActive(at)),
     });
     chosen = { source: createLiveHubData(store), store };
+    if (makesProjectLeads()) startHubBundleLeads(store);
   }
   return chosen;
+}
+
+/**
+ * The Hub bundle's project Leads: once Ash OS has said which projects there are (and their folders), make the Leads
+ * that are missing and write their souls; their Claude Code sessions carry their ash-os identity.
+ */
+function startHubBundleLeads(store: HubStore): void {
+  void tauriAshOsServer().then((server) =>
+    setClaudeExtraArgs((sessionId) => {
+      const mono = monoForSession(sessionId);
+      return mono ? leadMcpArgs(mono.id, server) : [];
+    }),
+  );
+  let done = false;
+  const tryLeads = () => {
+    const projects = store.getSnapshot().projects;
+    if (done || !projects.length) return;
+    done = true;
+    const result = ensureProjectLeads(stripProjects(projects), (monoId, projectId) =>
+      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
+    );
+    // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
+    for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
+  };
+  store.subscribe(tryLeads);
 }
 
 /** The one place the frontend gets hub data from. */

@@ -509,13 +509,38 @@ fn hub_events_close() {
     }
 }
 
+/// The `ash-os` MCP server entry from Claude Code's own user config (`~/.claude.json`, `mcpServers["ash-os"]`): its
+/// command, args and env, nothing else from that file. A project Lead's session reuses it with its identity added.
+pub fn ash_os_server_from(config: &Value) -> Option<Value> {
+    let entry = config.get("mcpServers")?.get("ash-os")?;
+    let command = entry.get("command")?.as_str()?;
+    let mut out = json!({ "command": command });
+    if let Some(args) = entry.get("args").filter(|a| a.is_array()) {
+        out["args"] = args.clone();
+    }
+    if let Some(env) = entry.get("env").filter(|e| e.is_object()) {
+        out["env"] = env.clone();
+    }
+    Some(out)
+}
+
+/// `hub_ash_os_mcp()`: Ash's ash-os MCP entry, or null when Claude Code has none.
+#[tauri::command]
+fn hub_ash_os_mcp() -> Option<Value> {
+    let home = std::env::var_os("HOME")?;
+    let raw = std::fs::read_to_string(PathBuf::from(home).join(".claude.json")).ok()?;
+    let config: Value = serde_json::from_str(&raw).ok()?;
+    ash_os_server_from(&config)
+}
+
 /// The plugin. Registered in `lib.rs` with one `.plugin(hub::init())`; its permissions come from `build.rs`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("hub")
         .invoke_handler(tauri::generate_handler![
             hub_call,
             hub_events_open,
-            hub_events_close
+            hub_events_close,
+            hub_ash_os_mcp
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {
@@ -937,6 +962,26 @@ id: 6\nevent: hub\ndata: {\"seq\": 6, \"kind\": \"hub.need.done\", \"ref\": \"q1
         )
         .unwrap_err();
         assert_eq!(error.kind, "unauthorized");
+    }
+
+    #[test]
+    fn only_the_ash_os_entry_is_taken_from_claude_codes_config() {
+        let config = json!({
+            "oauthAccount": { "emailAddress": "someone@example.com" },
+            "mcpServers": {
+                "ash-os": { "type": "stdio", "command": "/opt/homebrew/bin/python3", "args": ["/x/bin/ash-os-mcp"], "env": {} },
+                "other": { "command": "secret-thing", "env": { "TOKEN": "nope" } }
+            }
+        });
+        let entry = ash_os_server_from(&config).unwrap();
+        assert_eq!(
+            entry,
+            json!({ "command": "/opt/homebrew/bin/python3", "args": ["/x/bin/ash-os-mcp"], "env": {} })
+        );
+        assert!(!entry.to_string().contains("someone@example.com"));
+        assert!(!entry.to_string().contains("nope"));
+        assert_eq!(ash_os_server_from(&json!({ "mcpServers": {} })), None);
+        assert_eq!(ash_os_server_from(&json!({})), None);
     }
 
     #[test]

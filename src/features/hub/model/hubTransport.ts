@@ -61,6 +61,15 @@ export interface HubTransport {
 
 const PLUGIN = "plugin:hub|";
 
+/** Ash's own ash-os MCP entry (command, args, env) from Claude Code's config, read by the plugin; null without one. */
+export async function tauriAshOsServer(): Promise<{ command: string; args?: string[]; env?: Record<string, string> } | null> {
+  try {
+    return await invoke(`${PLUGIN}hub_ash_os_mcp`);
+  } catch {
+    return null;
+  }
+}
+
 /** The real transport: the Rust plugin's `hub_call` and `hub_events_open`, plus its `hub:event` / `hub:state` events. */
 export const tauriHubTransport: HubTransport = {
   async call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {

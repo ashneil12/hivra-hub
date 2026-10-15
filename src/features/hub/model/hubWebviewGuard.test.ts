@@ -26,6 +26,6 @@ describe("the webview never holds Ash OS's key", () => {
 
   it("reaches Ash OS only through the plugin's commands", () => {
     const transport = readFileSync(join(__dirname, "hubTransport.ts"), "utf8");
-    expect([...new Set([...transport.matchAll(/`\$\{PLUGIN\}(\w+)`/g)].map((m) => m[1]))].sort()).toEqual(["hub_call", "hub_events_close", "hub_events_open"]);
+    expect([...new Set([...transport.matchAll(/`\$\{PLUGIN\}(\w+)`/g)].map((m) => m[1]))].sort()).toEqual(["hub_ash_os_mcp", "hub_call", "hub_events_close", "hub_events_open"]);
   });
 });

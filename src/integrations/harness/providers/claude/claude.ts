@@ -1,4 +1,5 @@
 import { TurnNotReadyError } from "../../core/types";
+import { claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
@@ -542,7 +543,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   await spawnChild(
     input.sessionId,
     path,
-    buildClaudeSpawnArgs(launch),
+    [...buildClaudeSpawnArgs(launch), ...claudeExtraArgs(input.sessionId)],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",

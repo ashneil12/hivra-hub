@@ -239,6 +239,18 @@ export function createMono(projects: readonly string[] = []): Mono {
   return mono;
 }
 
+/**
+ * Adds a Mono made elsewhere with its own id (the hub's project Leads). Nothing happens when the id is taken or not
+ * a Mono id; returns whether it was added.
+ */
+export function addMono(mono: Mono): boolean {
+  const parsed = parseMono(mono);
+  const roster = listMonos();
+  if (!parsed || roster.some((existing) => existing.id === parsed.id)) return false;
+  saveRoster([...roster, { ...parsed, projects: uniqueProjects(parsed.projects) }]);
+  return true;
+}
+
 const OPEN_MONO_KEY = "monocode:open-mono";
 
 /** The Mono whose conversation was open, so the next launch reopens it. */

@@ -15,6 +15,7 @@ import {
 } from "./mono";
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
+import { leadWorkingFolder } from "../../hub/model/hubLeads";
 
 const openingMonos = new Map<string, Promise<Session | undefined>>();
 
@@ -51,7 +52,8 @@ async function loadMonoSession(
     const existing = await host.load(mono.sessionId);
     if (existing) return existing;
   }
-  const home = await host.home();
+  // A project's Lead (the hub's "<Project> lead") works in its project's folder; any other Mono starts at home.
+  const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
   const session: Session = { ...host.create(home), runtimeMode: "auto" };

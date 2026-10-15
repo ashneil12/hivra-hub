@@ -20,6 +20,8 @@ if (stubUrl) {
   for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
   localStorage.setItem("monocode:hub-onboarded", "1");
   localStorage.setItem("monocode:mono-roster", "[]");
+  // Make the project Leads as the Hub bundle does, so the Coding team shows them here too.
+  localStorage.setItem("monocode:hub-leads-dev", "1");
 } else if (new URLSearchParams(location.search).has("onboarding")) {
   if (!sessionStorage.getItem("hub-clean-start")) {
     sessionStorage.setItem("hub-clean-start", "1");

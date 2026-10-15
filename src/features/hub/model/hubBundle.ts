@@ -8,6 +8,19 @@ export const IS_HUB_BUNDLE = import.meta.env.VITE_MONOCODE_HUB === "1";
 const SEEDED = "monocode:hub-bundle-seeded";
 
 /**
+ * The project Leads are made in the Hub bundle, and on the dev page when it reads a stub or the live proxy (it sets
+ * `monocode:hub-leads-dev`), so they can be seen without building the app.
+ */
+export function makesProjectLeads(): boolean {
+  if (IS_HUB_BUNDLE) return true;
+  try {
+    return localStorage.getItem("monocode:hub-leads-dev") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * First run of the Hub bundle: new chats start on Claude Code (MonoCode's own fallback is Cursor). Only when nothing
  * was chosen yet, and only once, so Ash's later picks stick.
  */

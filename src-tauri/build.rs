@@ -11,7 +11,12 @@ fn main() {
     }
     // The hub plugin's three commands get their permissions here (capabilities/default.json allows `hub:default`).
     let hub = tauri_build::InlinedPlugin::new()
-        .commands(&["hub_call", "hub_events_open", "hub_events_close"])
+        .commands(&[
+            "hub_call",
+            "hub_events_open",
+            "hub_events_close",
+            "hub_ash_os_mcp",
+        ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))
         .expect("failed to run tauri-build");
