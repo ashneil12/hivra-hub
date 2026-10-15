@@ -18,10 +18,11 @@ mod gitlab;
 mod harness;
 mod harness_updates;
 mod hub;
-mod launch_guard;
+mod hub_keychain;
 mod inbox_media;
 mod jira;
 mod jsonc;
+mod launch_guard;
 mod linear;
 mod link_preview;
 #[cfg(target_os = "macos")]

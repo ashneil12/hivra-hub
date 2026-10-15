@@ -284,11 +284,15 @@ function StuckRow({ item }: { item: WaitingItem }) {
         {item.note ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-sent>{item.note}</div> : null}
       </div>
       {item.state ? <StatusMark state={item.state} /> : null}
-      {item.target || item.connectorId ? (
+      {item.signIn === "waiting" ? (
+        <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="waiting" role="status">Waiting for your Mac…</span>
+      ) : item.signIn === "on-this-mac" ? (
+        <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="on-this-mac" role="status">On this Mac</span>
+      ) : item.target || item.connectorId ? (
         <button
           type="button"
           data-hub-take-look={item.id}
-          onClick={() => (item.connectorId ? signIn(item.connectorId) : item.target && setHubSelection(item.target))}
+          onClick={() => (item.connectorId ? void signIn(item.connectorId) : item.target && setHubSelection(item.target))}
           className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
         >
           {item.actionLabel ?? "Take a look"}

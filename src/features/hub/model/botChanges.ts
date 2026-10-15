@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { examples } from "./examples";
+import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 
 /**
  * Changes bots made to themselves (skills, how they work). Shown only under
@@ -16,9 +17,42 @@ export type BotChange = {
   after: string;
   small?: boolean;
   undone?: boolean;
+  /** A real change: which Mono's file it rewrote, and the whole file before and after. Undo writes `beforeText` back. */
+  monoId?: string;
+  file?: AgentFilePath;
+  beforeText?: string;
+  afterText?: string;
+  /** Why the last Undo did nothing (the file moved on since), in plain words. */
+  problem?: string;
 };
 
-let list: BotChange[] = examples([
+/** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
+export type BotFiles = {
+  read(monoId: string, file: AgentFilePath): Promise<{ text: string | null; hash: string }>;
+  write(monoId: string, file: AgentFilePath, text: string, expectedHash: string): Promise<string>;
+};
+let files: BotFiles = { read: readAgentFile, write: writeAgentFile };
+export function setBotFiles(next: BotFiles): void {
+  files = next;
+}
+
+const KEY = "monocode:hub-bot-changes";
+function loadReal(): BotChange[] {
+  try {
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && c.monoId && c.file);
+  } catch {
+    return [];
+  }
+}
+function saveReal(): void {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => c.monoId && c.file)));
+  } catch {
+    /* best effort */
+  }
+}
+
+let list: BotChange[] = [...loadReal(), ...examples<BotChange>([
   { id: "bc1", bot: "Projects Manager", day: "Today", line: "Example: Projects Manager changed how it reviews code",
     now: "Reviews every change line by line before it merges.", after: "Reviews the risky files closely; skims renames and formatting." },
   { id: "bc2", bot: "Chief of Staff", day: "Today", line: "Example: Chief of Staff changed when it writes the daily summary",
@@ -29,7 +63,7 @@ let list: BotChange[] = examples([
   { id: "bc6", bot: "frank", day: "Today", small: true, line: "updated a link in the setup skill", now: "old docs link", after: "new docs link" },
   { id: "bc7", bot: "Alfred", day: "Yesterday", line: "Example: Alfred changed how it files your receipts",
     now: "One folder per month.", after: "One folder per project, then per month." },
-]);
+])];
 
 let version = 0;
 const subs = new Set<() => void>();
@@ -62,7 +96,39 @@ export function botChangeRows(): BotChangeRow[] {
   });
 }
 
-export function undoBotChange(ids: string[]): void {
-  list = list.map((c) => (ids.includes(c.id) ? { ...c, undone: true } : c));
+/** A bot rewrote one of its own files: the row Ash sees, with what it can put back. Kept across restarts. */
+export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & Required<Pick<BotChange, "monoId" | "file" | "beforeText" | "afterText">>): void {
+  list = [change, ...list.filter((c) => c.id !== change.id)];
+  saveReal();
+  changed();
+}
+
+/**
+ * Undo puts the bot's file back the way it was, for real: only when the file still reads what the change left
+ * (otherwise nothing is touched and the row says why), saved over the hash it was read at, then read back. The row
+ * stays, marked undone. Example rows (no file) only mark themselves undone.
+ */
+export async function undoBotChange(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    const c = list.find((x) => x.id === id);
+    if (!c || c.undone) continue;
+    let next: BotChange = { ...c, undone: true, problem: undefined };
+    if (c.monoId && c.file && c.beforeText !== undefined) {
+      try {
+        const now = await files.read(c.monoId, c.file);
+        if ((now.text ?? "") !== (c.afterText ?? "")) {
+          next = { ...c, problem: `${c.bot} changed this again since, so nothing was undone.` };
+        } else {
+          await files.write(c.monoId, c.file, c.beforeText, now.hash);
+          const back = await files.read(c.monoId, c.file);
+          if ((back.text ?? "") !== c.beforeText) next = { ...c, problem: "The file didn't go back. Nothing is marked undone." };
+        }
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    }
+    list = list.map((x) => (x.id === id ? next : x));
+  }
+  saveReal();
   changed();
 }

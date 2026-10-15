@@ -47,9 +47,10 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
         <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
           className={`min-w-0 flex-1 truncate text-left text-[13px] ${undone ? "text-content/60" : "text-content"}`}>{line}</button>
         {undone ? <span className="text-xs text-content/60">Undone</span> : (
-          <button type="button" className={UNDO} onClick={() => undoBotChange(items.map((c) => c.id))}>Undo</button>
+          <button type="button" className={UNDO} onClick={() => void undoBotChange(items.map((c) => c.id))}>Undo</button>
         )}
       </div>
+      {items.find((c) => c.problem) ? <div className="mt-1 text-xs text-content/60" data-hub-bot-change-problem>{items.find((c) => c.problem)!.problem}</div> : null}
       {open ? (
         <div className="hub-fade-in mt-2 flex flex-col gap-2 text-[13px]">
           {items.map((c) => (

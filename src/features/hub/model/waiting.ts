@@ -5,7 +5,7 @@ import { hubData } from "./hubData";
 import { listBuilds } from "./hubBuilds";
 import { activeWorkers } from "./hubWork";
 import { pendingProposals } from "./proposals";
-import { pendingSignIns } from "./connectors";
+import { pendingSignIns, signInProblem, signInState } from "./connectors";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
 
@@ -21,6 +21,8 @@ export type WaitingItem = {
   need?: Need;
   /** Set for a connector sign-in Need. */
   connectorId?: string;
+  /** A sign-in row: waiting on the Mac's Keychain prompt, or landed "On this Mac". */
+  signIn?: "waiting" | "on-this-mac";
   /** A second quiet line under the detail (e.g. "Sent to coding team lead at 2:20pm · Got it"). */
   note?: string;
   /** A Need that was answered or cleared anywhere: shown ticked until Ash leaves the page, never counted. */
@@ -127,10 +129,13 @@ export function findWaiting(id: string): WaitingItem | undefined {
  */
 export function setupItems(): WaitingItem[] {
   return [
-    ...pendingSignIns().map((c): WaitingItem => ({
-      id: `connector:${c.id}`, projectId: "", source: "inbox", title: `Sign in to ${c.name}`,
-      detail: "", actionLabel: "Sign in", connectorId: c.id,
-    })),
+    ...pendingSignIns().map((c): WaitingItem => {
+      const state = signInState(c.id);
+      return {
+        id: `connector:${c.id}`, projectId: "", source: "inbox", title: `Sign in to ${c.name}`,
+        detail: signInProblem(c.id) ?? "", actionLabel: "Sign in", connectorId: c.id, ...(state ? { signIn: state } : {}),
+      };
+    }),
     // Sign-ins Ash OS lists (nothing writes them yet). Read-only here: the Keychain sign-in is a later unit.
     ...hubData().listSetup().map((n): WaitingItem => ({
       id: `setup:${n.id}`, projectId: "", source: "inbox", title: n.title, detail: n.why, actionLabel: n.actionLabel,

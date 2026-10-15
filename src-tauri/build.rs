@@ -16,6 +16,9 @@ fn main() {
             "hub_events_open",
             "hub_events_close",
             "hub_ash_os_mcp",
+            "connector_login_store",
+            "connector_login_exists",
+            "connector_login_delete",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))
