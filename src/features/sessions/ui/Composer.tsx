@@ -5,6 +5,8 @@ import {
   CircleDashed,
   CursorMagicSelection,
   FilePlus,
+  Camera,
+  Mic,
   Plus,
   Share,
   Square,
@@ -2283,6 +2285,36 @@ export function Composer({
                       ) : null}
                     </button>
                   ) : null}
+                                  <button
+                    type="button"
+                    disabled
+                    aria-disabled
+                    data-composer-plus-unwired
+                    className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content opacity-50"
+                  >
+                    <Camera className="mt-0.5 size-4 shrink-0 text-content/60" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px]">Screenshot</span>
+                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
+                        Not connected yet
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled
+                    aria-disabled
+                    data-composer-plus-unwired
+                    className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content opacity-50"
+                  >
+                    <Mic className="mt-0.5 size-4 shrink-0 text-content/60" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px]">Voice</span>
+                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
+                        Not connected yet
+                      </span>
+                    </span>
+                  </button>
                 </Popover>
               ) : null}
             </div>
