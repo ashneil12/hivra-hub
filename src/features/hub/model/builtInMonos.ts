@@ -11,14 +11,20 @@ const BUILT_IN = [
 ];
 
 /** On first launch with an empty roster, add the built-in Monos. */
-export function ensureBuiltInMonos(): void {
+const SEEDED_KEY = "monocode:mono-team-seeded";
+/** Once only: if Ash later removes every Mono, the team doesn't come back on its own. Returns whether it added them. */
+export function ensureBuiltInMonos(): boolean {
   try {
+    if (localStorage.getItem(SEEDED_KEY) === "1") return false;
+    localStorage.setItem(SEEDED_KEY, "1");
     const raw = localStorage.getItem(ROSTER_KEY);
     const list = raw ? (JSON.parse(raw) as unknown[]) : [];
-    if (Array.isArray(list) && list.length) return;
+    if (Array.isArray(list) && list.length) return false;
     localStorage.setItem(ROSTER_KEY, JSON.stringify(BUILT_IN));
+    window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
+    return true;
   } catch {
-    /* best effort */
+    return false;
   }
 }
 

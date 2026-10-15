@@ -12,6 +12,7 @@ import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
+import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { saveMonosEnabled } from "../../features/settings/model/settings";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
@@ -96,11 +97,16 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
 
+  // Hub: a clean first launch starts with the default team in normal rows, not Monocode's intro card.
+  useEffect(() => {
+    if (rank) ensureBuiltInMonos();
+  }, [rank]);
+
   // Hub: a project with no Monos shows nothing here; its empty Leadership
   // team offers "Add a Mono" instead, so the intro card isn't doubled up.
   if (monos.length === 0 && projectFilter) return null;
-  // With no Mono yet, the card stands in for the section.
-  if (monos.length === 0)
+  // With no Mono yet, the card stands in for the section (plain Monocode only; the hub has its default team).
+  if (monos.length === 0 && !rank)
     return (
       <div className="mb-2 shrink-0" data-mono-rail>
         <MonoIntroCard

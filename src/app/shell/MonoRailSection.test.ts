@@ -85,3 +85,19 @@ it("counts a mono's unread replies, except the one open", () => {
   render({ activeId: mono.id, unseenCounts: new Map([[mono.id, 3]]) });
   expect(badge()).toBeNull();
 });
+
+it("hub, clean first launch: the default team in normal rows, no intro card, no blue switch, one create button", async () => {
+  const { hubMonoRank } = await import("../../features/hub/model/hubData");
+  render({ rank: hubMonoRank });
+  const names = [...container.querySelectorAll("[data-mono-status] > button[title]")].map((b) => b.getAttribute("title")!.split("\n")[0]).filter((t) => t !== "Mono options");
+  expect(names).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred"]);
+  expect(intro()).toBeNull();
+  expect(container.querySelector('[role="switch"]')).toBeNull();
+  expect(container.querySelector(".bg-accent")).toBeNull();
+  expect([...container.querySelectorAll("button")].filter((b) => /create mono|new mono/i.test(b.getAttribute("aria-label") ?? b.textContent ?? ""))).toHaveLength(1);
+  // removed later: the team doesn't come back by itself
+  localStorage.setItem("monocode:mono-roster", "[]");
+  window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
+  render({ rank: hubMonoRank });
+  expect(container.querySelectorAll("[data-mono-status]")).toHaveLength(0);
+});

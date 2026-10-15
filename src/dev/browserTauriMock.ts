@@ -25,7 +25,7 @@ if (stubUrl) {
 } else if (new URLSearchParams(location.search).has("onboarding")) {
   if (!sessionStorage.getItem("hub-clean-start")) {
     sessionStorage.setItem("hub-clean-start", "1");
-    for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded"]) localStorage.removeItem(k);
+    for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded", "monocode:mono-team-seeded"]) localStorage.removeItem(k);
     // Clean start: none of our example Monos.
     localStorage.setItem("monocode:mono-roster", "[]");
   }
