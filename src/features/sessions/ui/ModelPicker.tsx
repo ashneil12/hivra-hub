@@ -43,6 +43,7 @@ import {
   subscribeHarnessAvailability,
   getHarnessAvailabilitySnapshot,
 } from "../../../integrations/harness/core/availability";
+import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -356,6 +357,8 @@ export function ModelPicker({
   const [activeRow, setActiveRow] = useState<HTMLButtonElement | null>(null);
   const [query, setQuery] = useState("");
   const [favorites, setFavorites] = useState(loadFavoriteModels);
+  const foldOlder = useSyncExternalStore(subscribeFoldOlderVersions, loadFoldOlderVersions, () => false);
+  const [olderOpen, setOlderOpen] = useState(false);
   const recentMenuId = useId();
   const button = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -449,6 +452,15 @@ export function ModelPicker({
       : pool;
     return inProviderOrder(visibleTab, matches);
   }, [source, catalogVersion, favorites, providerKey, query, visibleTab]);
+
+  // Older versions fold (setting, off by default): never while searching, so search still finds everything.
+  const older = useMemo(() => {
+    if (!foldOlder || visibleTab === "favorites" || query.trim()) return undefined;
+    const split = splitOlderVersions(visibleModels);
+    return split.older.length ? split : undefined;
+  }, [foldOlder, visibleModels, visibleTab, query]);
+  const flyoutModels = older ? [...older.latest, ...(olderOpen ? older.older : [])] : visibleModels;
+  const olderFold = older ? { count: older.older.length, at: older.latest.length, open: olderOpen, onToggle: () => setOlderOpen((v) => !v) } : undefined;
 
   const dismiss = (restore: boolean) => {
     setOpen(false);
@@ -804,7 +816,8 @@ export function ModelPicker({
           onDismiss={(reason) => dismiss(reason === "escape")}
           harnesses={pickerHarnesses}
           tab={visibleTab}
-          models={visibleModels}
+          models={flyoutModels}
+          olderFold={olderFold}
           currentId={current.id}
           active={activeModel}
           query={query}
@@ -1000,7 +1013,8 @@ export function ModelPicker({
               autoFocusSearch
               harnesses={pickerHarnesses}
               tab={visibleTab}
-              models={visibleModels}
+              models={flyoutModels}
+              olderFold={olderFold}
               currentId={current.id}
               active={activeModel}
               query={query}
@@ -1477,6 +1491,7 @@ function ModelFlyout({
   harnesses,
   tab,
   models,
+  olderFold,
   currentId,
   active,
   query,
@@ -1495,6 +1510,8 @@ function ModelFlyout({
   harnesses: HarnessId[];
   tab: ModelPickerTab;
   models: AgentModel[];
+  /** The Older versions row: how many it hides, where it sits (after the newest of each family) and whether it is open. */
+  olderFold?: { count: number; at: number; open: boolean; onToggle: () => void };
   currentId: string;
   active: number;
   query: string;
@@ -1675,6 +1692,21 @@ function ModelFlyout({
                   </div>
                 ) : null}
                 {group.models.map(({ item, index }) => {
+                  const row = modelRow(item, index);
+                  return olderFold && olderFold.open && index === olderFold.at ? (
+                    <Fragment key={item.id}>{olderToggle(olderFold)}{row}</Fragment>
+                  ) : row;
+                })}
+                {olderFold && !olderFold.open && group.models.length === olderFold.at ? olderToggle(olderFold) : null}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </Popover>
+  );
+
+  function modelRow(item: AgentModel, index: number) {
                   const selected = item.id === currentId;
                   const highlighted = index === active;
                   const favorited = favorites.includes(item.id);
@@ -1762,13 +1794,24 @@ function ModelFlyout({
                       ) : null}
                     </div>
                   );
-                })}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </Popover>
+  }
+}
+
+/** One quiet row: "Older versions (6)", with a chevron that turns when it opens. */
+function olderToggle(fold: { count: number; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      key="older-versions"
+      type="button"
+      data-model-older-toggle
+      aria-expanded={fold.open}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={fold.onToggle}
+      className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2.5 text-left text-[12px] text-content/50 hover:bg-content/5 hover:text-content/70"
+    >
+      <ChevronRight className={`size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${fold.open ? "rotate-90" : ""}`} strokeWidth={1.75} />
+      <span>Older versions ({fold.count})</span>
+    </button>
   );
 }
 
