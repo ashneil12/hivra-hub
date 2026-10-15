@@ -109,7 +109,20 @@ different way… (a hint box, Send), Pause this job, Drop it, from
 `ash-hub-job-options`; the pick goes through `ash-hub-job-act`, the sheet closes
 and the row ticks off. A refusal ("That job isn't waiting on you.") shows in
 plain words and the sheet stays. See options on a **question** row
-(`question:<id>`) still does nothing: Ash OS has no question-options call yet.
+(`question:<id>`) opens `QuestionSheet` (`ash-hub-question` / `ash-hub-answer`,
+branch `ash-os-hub-answer`; fixture `fixtures/ash-os-real-shapes-answer.json` from
+that branch's code). Most questions have no options (127 of 145 open on 15 Oct),
+so the sheet always shows the suggestion with **Go with this** (quick `agree`,
+only when there is one) plus quiet **Not now** (`park`) and **Drop it** (`drop`);
+options, when there are any, are rows to pick (the suggested one marked
+"Suggested"); **Say something else…** takes his words; one **Send** sends the pick
+and/or words. Sending closes the sheet at once and never blocks: the row says
+"Sending…" (an option or typed answer is read by the model, up to a minute), then
+shows the receipt, and ticks off only when Ash OS says `rowDone`. Until the branch
+lands, the live service answers "Unknown hub action" and the sheet says Ash OS
+needs its update. **Open** and **Start** rows open `DetailSheet` (title, why,
+detail; no ids). A refused action (e.g. Looks right on work without evidence)
+shows Ash OS's words under the row.
 
 **Being built (jobs).** `snap.jobs` is `ash-hub-jobs` grouped under the Mono
 running each job, in Ash OS's order, merged stably (`mergeJobGroups`): a job that
@@ -128,6 +141,25 @@ rows with no button (`StuckItem.quiet`); a given-up job is not among them, it is
 the red Needs row. Clicking a job opens a small story built from what Ash OS
 says (started, tried, sent, "got it"); there is no step log to show yet.
 A service without `ash-hub-jobs` just means nothing is being built.
+
+**Project Leads (`hubLeads.ts`).** In the Hub bundle (and on the dev page with a
+stub or the live proxy), once Ash OS has listed the projects, each gets its Lead
+Mono if missing: `vg-game-lead` "EXO lead", `hivra-lead`, `nibbii-lead`,
+`ash-lead` "Harness lead". Each is tied to its project's folder (so the Coding
+team's Monos rail shows it), gets a soul in Ash's words (orchestrator, his full
+words to workers, `sonnet` workers, `ash_recall` first, `ash_dump` verbatim,
+verify, Looks right only when critical, its identity), is written to
+`<app data>/monos/<id>/SOUL.md` right away, and is registered in Ash OS as the
+project's Lead (`ash-hub-mono-project-add`, role lead). Never re-made, renamed or
+re-souled. A Lead's chats start in its project's folder (`monoWorkspace.ts`);
+other Monos still start at home. Its Claude Code sessions get Ash's own `ash-os`
+MCP entry (read in Rust, `hub_ash_os_mcp`, only that entry from `~/.claude.json`)
+with `ASH_MONO_ID` / `ASH_ROLE=lead` in its env, through
+`claudeExtraArgs.ts` (MonoCode registers nothing there). Claude Code gives MCP
+servers only HOME, LOGNAME, PATH, SHELL and USER of its own env (checked on this
+Mac with `claude mcp list` and `ps eww`), which is why the identity is in the
+entry. Not proven: that Claude Code lets this `--mcp-config` entry replace the
+user-scope `ash-os` entry of the same name (no session was started).
 
 ### The MonoCode Hub app (a separate bundle)
 `src-tauri/tauri.hub.conf.json` builds **MonoCode Hub** (`com.ash.monocode-hub`)
