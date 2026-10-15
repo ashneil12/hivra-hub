@@ -108,11 +108,8 @@ function type(label: string, value: string) {
   });
 }
 function choose(provider: string) {
-  const el = q<HTMLSelectElement>('[aria-label="Provider"]')!;
-  act(() => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, provider);
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  if (!q("[data-provider-menu]")) act(() => q<HTMLButtonElement>("[data-provider-button]")!.click());
+  act(() => q<HTMLButtonElement>(`[data-provider-choice="${provider}"]`)!.click());
 }
 const onChange = vi.fn();
 const onSettingsChange = vi.fn();
@@ -259,5 +256,21 @@ describe("model id is filled in per provider", () => {
     await act(async () => q("[data-test-key]")!.click());
     expect(q("[data-model-advanced]")!.getAttribute("data-model-advanced")).toBe("open");
     expect(q('[data-form-error="modelId"]')).toBeTruthy();
+  });
+});
+
+describe("provider menu", () => {
+  it("is the picker's own menu, not a native select, and shows the choice", () => {
+    render();
+    open();
+    act(() => q("[data-add-model]")!.click());
+    expect(document.querySelector("[data-add-model-form] select")).toBeNull();
+    act(() => q<HTMLButtonElement>("[data-provider-button]")!.click());
+    const items = [...document.querySelectorAll('[data-provider-menu] [role="menuitemradio"]')].map((e) => e.textContent);
+    expect(items).toEqual(["xAI", "OpenRouter", "DeepSeek", "Ollama", "Custom"]);
+    expect(q('[data-provider-choice="xai"]')!.getAttribute("aria-checked")).toBe("true");
+    act(() => q<HTMLButtonElement>('[data-provider-choice="deepseek"]')!.click());
+    expect(q("[data-provider-menu]")).toBeNull();
+    expect(q("[data-provider-button]")!.textContent).toBe("DeepSeek");
   });
 });

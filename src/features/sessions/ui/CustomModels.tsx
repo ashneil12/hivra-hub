@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { ChevronRight, Plus } from "../../../shared/ui/icons";
+import { Check, ChevronDown, ChevronRight, Plus } from "../../../shared/ui/icons";
 import {
   addCustomModel,
   CUSTOM_PROVIDERS,
@@ -17,7 +17,6 @@ import {
   showsAdvanced,
   type CustomModel,
   type CustomModelForm,
-  type CustomProvider,
   type KeyTestResult,
 } from "../model/customModels";
 
@@ -89,6 +88,7 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
   const [test, setTest] = useState<KeyTestResult | "testing" | null>(null);
   const [saving, setSaving] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+  const [providerOpen, setProviderOpen] = useState(false);
   const errors = validateCustomModel(form);
   const valid = Object.keys(errors).length === 0;
   const passed = test !== null && test !== "testing" && test.ok;
@@ -110,22 +110,36 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
         <input className={input} value={form.name} placeholder="Grok" aria-label="Name" onChange={(e) => set({ name: e.target.value })} />
         {field("name")}
       </label>
-      <label className="flex flex-col gap-1 text-[11px] text-content/55">
-        Provider
-        <select
-          className={input}
-          aria-label="Provider"
-          value={form.provider}
-          onChange={(e) => {
-            const provider = e.target.value as CustomProvider;
-            set({ provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: needsKey(provider) ? form.key : "" });
-          }}
-        >
-          {CUSTOM_PROVIDERS.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      </label>
+      <div className="relative flex flex-col gap-1 text-[11px] text-content/55">
+        <span id="add-model-provider">Provider</span>
+        <button type="button" aria-labelledby="add-model-provider" aria-label="Provider" aria-haspopup="menu" aria-expanded={providerOpen}
+          data-provider-button={form.provider}
+          onClick={() => setProviderOpen((v) => !v)}
+          className={`${input} flex items-center justify-between text-left`}>
+          <span>{providerName(form.provider)}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-content/45" strokeWidth={1.75} />
+        </button>
+        {providerOpen ? (
+          <div role="menu" aria-label="Provider" data-provider-menu
+            className="sidebar-glass absolute left-0 right-0 top-full z-10 mt-1 rounded-lg p-1 shadow-lg ring-1 ring-content/10">
+            {CUSTOM_PROVIDERS.map((p) => {
+              const selected = p.id === form.provider;
+              return (
+                <button key={p.id} type="button" role="menuitemradio" aria-checked={selected} data-provider-choice={p.id}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setProviderOpen(false);
+                    set({ provider: p.id, baseUrl: defaultBaseUrl(p.id), modelId: defaultModelId(p.id), key: needsKey(p.id) ? form.key : "" });
+                  }}
+                  className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] text-content hover:bg-content/5">
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  {selected ? <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
       {showsBaseUrl(form.provider) ? (
         <label className="flex flex-col gap-1 text-[11px] text-content/55">
           Base URL
