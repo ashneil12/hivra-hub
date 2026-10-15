@@ -13,7 +13,9 @@ Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 //
 // With `?stub=http://127.0.0.1:<port>` the hub reads a hub-stub-server (started with --dev) through the app's real
 // transport code, as it would read Ash OS through the Rust plugin: no example data, no onboarding.
-const stubUrl = new URLSearchParams(location.search).get("stub");
+// With `?live=http://127.0.0.1:18869` it reads the REAL Ash OS through scripts/hub-live-proxy.mjs, which holds the key.
+const liveUrl = new URLSearchParams(location.search).get("live");
+const stubUrl = new URLSearchParams(location.search).get("stub") ?? liveUrl;
 if (stubUrl) {
   for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
   localStorage.setItem("monocode:hub-onboarded", "1");
@@ -77,7 +79,7 @@ function emulateNativeGlass(a: GlassArgs | undefined) {
 
 // The hub plugin's stand-in: the same three commands, served by the stub server.
 const stubBridge = stubUrl
-  ? createStubBridge(stubUrl, async () => ((await (await fetch(`${stubUrl}/__stub/token`)).json()) as { token: string }).token)
+  ? createStubBridge(stubUrl, liveUrl ? () => "added-by-the-dev-proxy" : async () => ((await (await fetch(`${stubUrl}/__stub/token`)).json()) as { token: string }).token)
   : undefined;
 let closeStubFeed: (() => void) | undefined;
 function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {

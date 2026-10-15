@@ -44,6 +44,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
           title: j.title,
           detail: j.reason,
           state: "stuck" as const,
+          quiet: true,
           ...(j.sentText ? { note: j.gotIt ? `${j.sentText} · ${j.gotIt.text}` : j.sentText } : {}),
         })),
     listMonos: () => [],

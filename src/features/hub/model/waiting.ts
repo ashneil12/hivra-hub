@@ -78,8 +78,9 @@ const PROVIDERS: Provider[] = [
   (pid) =>
     hubData().listStuck(pid).map((s): WaitingItem => ({
       id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state, ...(s.note ? { note: s.note } : {}),
-      // Stuck items are talked through with the project's leadership team.
-      target: { project: pid, item: "leadership-team", focus: s.id },
+      // Stuck items are talked through with the project's leadership team. A job that is stuck for real went to the
+      // Lead by itself: no button.
+      ...(s.quiet ? {} : { target: { project: pid, item: "leadership-team", focus: s.id } }),
     })),
   // Needs plus valid proposals, at most MAX_NEEDS; the rest are Later.
   (pid) => needsAndProposals(pid).shown,

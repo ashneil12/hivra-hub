@@ -107,6 +107,8 @@ export type StuckItem = {
   sentAt?: string;
   /** A second quiet line: "Sent to coding team lead at 2:20pm", then the Lead's "Got it". */
   note?: string;
+  /** No button: it went to the Lead by itself and there is nothing for Ash to press. */
+  quiet?: boolean;
 };
 
 export type SinceSummary = { plainText: string; details: string };
