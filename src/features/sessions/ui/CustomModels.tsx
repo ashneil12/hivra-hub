@@ -71,10 +71,38 @@ export function OtherModelsSection({
           <span className="shrink-0 text-[10px] text-content/40">Add key</span>
         </button>
       ) : null}
-      {models.map((m) =>
-        confirming === m.id ? (
+      {models.map((m) => (
+        <div key={m.id}>
+        <div className="group relative">
+        <button
+          key={m.id}
+          type="button"
+          role="option"
+          aria-selected={currentModel === `custom:${m.id}`}
+          aria-label={`${m.name}, ${providerName(m.provider)}, billed separately`}
+          data-custom-model={m.id}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onPick(m)}
+          className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content hover:bg-content/5"
+        >
+          <span className="min-w-0 flex-1 truncate">{m.name}</span>
+          <span className="shrink-0 text-[10px] text-content/40 group-hover:invisible" data-billed-separately>billed separately</span>
+        </button>
+        <button
+          type="button"
+          data-remove-model={m.id}
+          aria-label={`Remove ${m.name}`}
+          title="Remove"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setConfirming(m.id)}
+          className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded px-1.5 text-[12px] text-content/45 hover:bg-content/8 hover:text-content/80 group-hover:block"
+        >
+          ×
+        </button>
+        </div>
+        {confirming === m.id ? (
           // The title wraps onto as many lines as it needs (never cut off), with the buttons on their own row below.
-          <div key={m.id} data-remove-confirm={m.id} className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-content/80">
+          <div data-remove-confirm={m.id} className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-content/80">
             <p data-remove-title className="whitespace-normal break-words leading-snug">{REMOVE_MODEL_COPY.title(m.name)}</p>
             <div className="flex items-center justify-end gap-1.5">
             <button
@@ -105,36 +133,9 @@ export function OtherModelsSection({
             </button>
             </div>
           </div>
-        ) : (
-        <div key={m.id} className="group relative">
-        <button
-          key={m.id}
-          type="button"
-          role="option"
-          aria-selected={currentModel === `custom:${m.id}`}
-          aria-label={`${m.name}, ${providerName(m.provider)}, billed separately`}
-          data-custom-model={m.id}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => onPick(m)}
-          className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content hover:bg-content/5"
-        >
-          <span className="min-w-0 flex-1 truncate">{m.name}</span>
-          <span className="shrink-0 text-[10px] text-content/40 group-hover:invisible" data-billed-separately>billed separately</span>
-        </button>
-        <button
-          type="button"
-          data-remove-model={m.id}
-          aria-label={`Remove ${m.name}`}
-          title="Remove"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setConfirming(m.id)}
-          className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded px-1.5 text-[12px] text-content/45 hover:bg-content/8 hover:text-content/80 group-hover:block"
-        >
-          ×
-        </button>
+        ) : null}
         </div>
-        ),
-      )}
+      ))}
       {problem ? <div className="px-2.5 py-1 text-[11px] text-content/55" data-remove-problem>{problem}</div> : null}
       {needle ? null : (
         <button
