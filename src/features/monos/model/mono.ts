@@ -35,6 +35,8 @@ export const MONO_COLORS = [
  */
 export type Mono = {
   id: string;
+  /** True only when the user picked `mascot` on purpose; otherwise the Mono shows its letter avatar. */
+  mascotPicked?: boolean;
   /** Its conversation; absent until it is first opened. */
   sessionId?: string;
   /** Replaces the mascot's own name. */
@@ -173,6 +175,7 @@ function parseMono(value: unknown): Mono | undefined {
       ? { showStartedSessionsInSidebar: entry.showStartedSessionsInSidebar }
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
+    ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
@@ -344,8 +347,27 @@ export function saveMonoName(monoId: string, name: string): void {
   updateMono(monoId, (mono) => ({ ...mono, name }));
 }
 
+/** Picking "Letter" goes back to the letter avatar; any other mascot is kept as picked on purpose. */
 export function saveMonoMascot(monoId: string, mascot: string): void {
-  updateMono(monoId, (mono) => ({ ...mono, mascot }));
+  updateMono(monoId, (mono) => {
+    if (isLetterAvatar(mascot)) {
+      const { mascotPicked: _, ...rest } = mono;
+      return rest;
+    }
+    return { ...mono, mascot, mascotPicked: true };
+  });
+}
+
+/** The letter avatar's mascot value: "letter:F" draws F, light on a grey glass square. "letter" alone is the picker's choice. */
+export const LETTER_AVATAR = "letter";
+export function isLetterAvatar(mascot: string | undefined): boolean {
+  return mascot === LETTER_AVATAR || !!mascot?.startsWith(`${LETTER_AVATAR}:`);
+}
+/** What a Mono wears: its letter unless the user picked a mascot on purpose. */
+export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
+  if (mono.mascotPicked && !isLetterAvatar(mono.mascot)) return mono.mascot;
+  const name = mono.name?.trim() || "Mono";
+  return `${LETTER_AVATAR}:${name.charAt(0).toUpperCase()}`;
 }
 
 export function addMonoProject(monoId: string, path: string): void {
@@ -394,6 +416,7 @@ const MONO_NAME: Record<string, string> = { mushroom: "Shroom", ghost: "Wisp" };
 
 /** The name a Mono goes by until the user names it: "MonoCrab", "MonoShroom". */
 export function defaultMonoName(mascot: string): string {
+  if (isLetterAvatar(mascot)) return "Mono";
   return `Mono${MONO_NAME[mascot] ?? mascot.charAt(0).toUpperCase() + mascot.slice(1)}`;
 }
 
@@ -413,7 +436,7 @@ export function monoLook(mono: Mono): MonoLook {
   const labels = loadTabGroupLabels();
   return {
     name: mono.name?.trim() || defaultMonoName(mono.mascot),
-    mascot: mono.mascot,
+    mascot: monoAvatar({ ...mono, name: mono.name?.trim() || defaultMonoName(mono.mascot) }),
     color: mono.color,
     projects: mono.projects.map((path) => ({
       path,
