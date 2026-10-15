@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { dismissWaitingSoul, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
   useEffect,
@@ -95,6 +96,8 @@ export function MonoRailSection({
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   useRoleNamesVersion();
+  useWaitingSoulsVersion();
+  const waiting = rank ? waitingSouls() : [];
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
   const shown = (name: string) => (rank ? plainName(name) : { primary: name });
   const monos = useMemo(
@@ -155,6 +158,20 @@ export function MonoRailSection({
           <button type="button" onClick={() => setRoleNames(true)} className="shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
             OK
           </button>
+        </div>
+      ) : null}
+      {waiting.length ? (
+        <div className="mx-2 mb-1.5 flex flex-col gap-px" data-souls-waiting>
+          {waiting.map((w) => (
+            <div key={w.monoId} className="rounded-md border border-dashed border-content/25 px-2 py-1 text-[13px] leading-tight">
+              <span className="flex items-center gap-1">
+                <span className="min-w-0 flex-1 truncate text-content/80">{w.name}</span>
+                <button type="button" onClick={() => void seatWaitingSoul(w.monoId)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
+                <button type="button" onClick={() => dismissWaitingSoul(w.monoId)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">Not now</button>
+              </span>
+              <span className="block text-[11px] text-content/50">Waiting for your OK</span>
+            </div>
+          ))}
         </div>
       ) : null}
       <div className="flex flex-col gap-px px-2">

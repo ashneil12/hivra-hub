@@ -5,8 +5,9 @@ import { hubData } from "./hubData";
 import { setTemplate, templateOf, TEMPLATES, type TemplateId } from "./templates";
 import { addConnectors, allConnectors } from "./connectors";
 import { allKeptPages, importPages, type Page } from "../../pages/model/pages";
-import { addMember, ensureLeadership, getChat, leadershipChatId } from "./hubChats";
+import { ensureLeadership, getChat, leadershipChatId } from "./hubChats";
 import type { HubProject } from "./types";
+import { collectSouls, importSouls, type SetupSoul } from "./setupSouls";
 
 export type SetupBot = {
   id: string;
@@ -29,6 +30,8 @@ export type SetupFile = {
   connectors?: SetupConnector[];
   /** Kept Pages. They come back with no permissions; Ash allows their asks again. */
   pages?: Page[];
+  /** Each Mono's soul: role, rules, memory, workflows and skills. Monos that aren't seated wait for Ash's OK. */
+  souls?: SetupSoul[];
 };
 
 type RosterEntry = { id: string; name?: string; mascot?: string; projects?: string[] };
@@ -67,7 +70,7 @@ export function exportSetup(): string {
 export function parseSetup(text: string): SetupFile {
   const data = JSON.parse(text) as Partial<SetupFile>;
   if (data.format !== "monocode-hub-setup" || !Array.isArray(data.projects)) throw new Error("That file isn't a Monocode setup export.");
-  return { format: "monocode-hub-setup", version: 1, projects: data.projects, bots: data.bots ?? [], connectors: data.connectors ?? [], pages: Array.isArray(data.pages) ? data.pages : [] };
+  return { format: "monocode-hub-setup", version: 1, projects: data.projects, bots: data.bots ?? [], connectors: data.connectors ?? [], pages: Array.isArray(data.pages) ? data.pages : [], souls: Array.isArray(data.souls) ? data.souls : [] };
 }
 
 /** Adds the projects, the ticked bots and the connectors (as sign-in Needs). */
@@ -77,24 +80,16 @@ export function applySetup(file: SetupFile, botIds?: ReadonlySet<string>): numbe
     addMockProject(project);
     if (TEMPLATES.some((t) => t.id === template)) setTemplate(project.id, template);
   }
+  // Monos are never seated by a file: each one that isn't seated waits for Ash's OK, with its soul if the file has one.
   const bots = (file.bots ?? []).filter((b) => !botIds || botIds.has(b.id));
-  if (bots.length) {
-    const folder = (pid: string) => file.projects.find((p) => p.id === pid)?.folder ?? "";
-    try {
-      const roster = JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string }[];
-      const have = new Set(roster.map((m) => m.id));
-      const added = bots.filter((b) => !have.has(b.id)).map((b) => ({
-        id: b.id, name: b.name, mascot: b.mascot, color: "hsl(210 8% 58%)", projects: [folder(b.projectId)],
-      }));
-      localStorage.setItem("monocode:mono-roster", JSON.stringify([...roster, ...added]));
-    } catch {
-      /* best effort */
-    }
-    for (const b of bots.filter((x) => x.team === "leadership")) {
-      ensureLeadership(b.projectId);
-      addMember(leadershipChatId(b.projectId), b.id);
-    }
-  }
+  const souls = file.souls ?? [];
+  const soulFor = new Map(souls.map((x) => [x.monoId, x]));
+  importSouls([
+    // Unticked bots stay out; souls with no bot row always come in (as waiting).
+    ...souls.filter((x) => !botIds || botIds.has(x.monoId) || !(file.bots ?? []).some((b) => b.id === x.monoId)),
+    ...bots.filter((b) => !soulFor.has(b.id)).map((b) => ({ monoId: b.id, name: b.name, role: b.role, rules: "", memory: "", workflows: "", skills: [], mascot: b.mascot })),
+  ]);
+  for (const b of bots.filter((x) => x.team === "leadership")) ensureLeadership(b.projectId);
   addConnectors(file.connectors ?? []);
   importPages(file.pages ?? []);
   return file.projects.length;
@@ -117,8 +112,15 @@ export function clearPendingSetup(): void {
   pending = null;
 }
 
-export function downloadSetup(): void {
-  const blob = new Blob([exportSetup()], { type: "application/json" });
+/** The file with every Mono's soul read in. */
+export async function exportSetupWithSouls(read?: Parameters<typeof collectSouls>[0]): Promise<string> {
+  const file = JSON.parse(exportSetup()) as SetupFile;
+  file.souls = await collectSouls(read);
+  return JSON.stringify(file, null, 2);
+}
+
+export async function downloadSetup(): Promise<void> {
+  const blob = new Blob([await exportSetupWithSouls()], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "monocode-setup.json";

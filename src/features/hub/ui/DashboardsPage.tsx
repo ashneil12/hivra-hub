@@ -25,7 +25,7 @@ export function DashboardsPage() {
   const [preview, setPreview] = useState<{ file: SetupFile; name: string } | null>(null);
 
   const doExport = () => {
-    downloadSetup();
+    void downloadSetup();
     setNote("Saved monocode-setup.json. Keep it somewhere safe; Restore setup brings it all back.");
   };
   const onFile = async (f: File | undefined) => {

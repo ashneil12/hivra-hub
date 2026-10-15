@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Check } from "../../../shared/ui/icons";
 import { setHubSelection } from "../model/hubNav";
+import { isSeated } from "../model/setupSouls";
 import { applySetup, clearPendingSetup, pendingSetup, type SetupBot, type SetupFile } from "../model/setupFile";
 import { TEMPLATES } from "../model/templates";
 
@@ -108,6 +109,24 @@ function Body({ file, name, onBack, onDone }: { file: SetupFile; name: string; o
           );
         })}
       </section> : null}
+
+      {file.souls?.length ? (
+        <section className="flex flex-col gap-0.5" data-restore-souls>
+          <h2 className="pb-1 text-xs text-content/60">Souls</h2>
+          {file.souls.map((x) => (
+            <div key={x.monoId} className="flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px]">
+              <span className="min-w-0 flex-1 truncate text-content">
+                {x.name}
+                <span className="ml-1.5 text-xs text-content/60">
+                  {[x.role, x.memory ? "memory" : "", x.workflows ? "workflows" : "", x.skills.length ? `${x.skills.length} ${x.skills.length === 1 ? "skill" : "skills"}` : ""].filter(Boolean).join(" · ")}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs text-content/60">{isSeated(x.monoId) ? "Already seated, keeps its own soul" : "Waiting for your OK"}</span>
+            </div>
+          ))}
+          <p className="px-2 pt-1 text-[13px] text-content/60">No Mono is seated from a file. Each one waits for your OK in the Monos list.</p>
+        </section>
+      ) : null}
 
       {file.pages?.length ? (
         <section className="flex flex-col gap-0.5" data-restore-pages>
