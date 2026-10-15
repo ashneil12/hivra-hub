@@ -20,8 +20,24 @@ export const PROJECT_ICONS: Record<string, IconComponent> = {
 export const PROJECT_EMOJI = ["🚀", "🎮", "🛠️", "📦", "🧪", "🌱", "🔥", "⭐", "🎨", "📈", "🧠", "💬", "🏠", "🍀", "🐝", "🌊"];
 
 /** First letter, light, on a grey glass square: the default for every project. */
-export function letterOf(project: Pick<HubProject, "name" | "shortName">): string {
-  return ([...(project.shortName || project.name).trim()][0] ?? "?").toUpperCase();
+/**
+ * A project's tile letters: its first letter, or its first two ("Hi", "Ha") when another project on the hub shares
+ * that first letter. `others` is every project shown (it may include this one).
+ */
+export function letterOf(project: Pick<HubProject, "id" | "name" | "shortName">, others: readonly Pick<HubProject, "id" | "name" | "shortName">[] = []): string {
+  const chars = (p: Pick<HubProject, "name" | "shortName">) => [...(p.shortName || p.name).trim()];
+  const own = chars(project);
+  const first = (own[0] ?? "?").toUpperCase();
+  const shared = others.some((o) => o.id !== project.id && (chars(o)[0] ?? "").toUpperCase() === first);
+  return shared && own[1] ? first + own[1].toLowerCase() : first;
+}
+
+function safeProjects(): HubProject[] {
+  try {
+    return hubData().listProjects();
+  } catch {
+    return [];
+  }
 }
 
 /** What a project's tile shows: Ash's emoji, icon or image, else its first letter. Same size everywhere. */
@@ -36,14 +52,15 @@ export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size
   }
   if (choice?.kind === "image")
     return <img data-project-glyph="image" alt="" src={choice.src} style={{ width: size + 4, height: size + 4 }} className="rounded-[6px] object-cover" />;
+  const letters = letterOf(project, safeProjects());
   return (
     <span
       data-project-glyph="letter"
       aria-hidden
-      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * 0.72) }}
+      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * (letters.length > 1 ? 0.56 : 0.72)) }}
       className="grid place-items-center rounded-[7px] bg-content/10 font-medium leading-none text-content/85 ring-1 ring-inset ring-content/10"
     >
-      {letterOf(project)}
+      {letters}
     </span>
   );
 }
