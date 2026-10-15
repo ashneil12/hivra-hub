@@ -103,12 +103,12 @@ describe("Later, Older, Looks right and the options sheet", () => {
     // not in any badge: Hivra has 2 real Needs (the headline and the given-up job), 2 old ones
     const badge = (name: string) => container.querySelector(`button[aria-label^="${name}"] span.hub-count-badge`)?.textContent;
     expect(badge("Hivra")).toBe("2");
-    expect(badge("EXO game")).toBe("2");
+    expect(badge("EXO")).toBe("2");
     act(() => (older as HTMLElement).click());
     expect(text()).toContain("Example: which Hivra folder is the real one?");
-    expect([...container.querySelectorAll("[data-hub-older] h2")].map((h) => h.textContent)).toEqual(["Hivra", "EXO game"]);
+    expect([...container.querySelectorAll("[data-hub-older] h2")].map((h) => h.textContent)).toEqual(["Hivra", "EXO"]);
     expect(badge("Hivra")).toBe("2"); // opening it changes no count
-    // Later (Org has one past five): a line that opens
+    // Later (the harness has one past five): a line that opens
     const later = container.querySelector("[data-hub-later] > button")!;
     expect(later.textContent).toBe("1 more under Later");
     act(() => (later as HTMLElement).click());
@@ -264,7 +264,7 @@ describe("Being built, live", () => {
   });
 
   it("with nothing being built it says so quietly", async () => {
-    mount(createElement(BeingBuiltView, { projectId: "org" }));
+    mount(createElement(BeingBuiltView, { projectId: "ash" }));
     await until(() => container.querySelector("[data-hub-being-built-empty]"), "empty");
     expect(text()).toContain("Nobody's working on");
   });

@@ -44,8 +44,8 @@ describe("first read", () => {
     expect(store.getSnapshot().status).toBe("loading");
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     const snap = store.getSnapshot();
-    expect(snap.projects.map((p) => p.id)).toEqual(["exo-game", "hivra", "nibbii", "org"]);
-    expect(snap.projects[0]).toEqual({ id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "ghost", folder: "/Users/example/Projects/exo-game" });
+    expect(snap.projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "ash"]);
+    expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game" });
     expect(snap.projects[3].folder).toBeNull();
     await waitFor(() => store.getSnapshot().since, "since");
     expect(store.getSnapshot().since?.overall.plainText).toContain("Example:");
@@ -75,7 +75,7 @@ describe("first read", () => {
   it("shows at most 5 Needs per project and files the rest under Later, so counts match the rows", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    const org = store.getSnapshot().needs.org;
+    const org = store.getSnapshot().needs.ash;
     expect(org.shown).toHaveLength(5);
     expect(org.later.map((n) => n.id)).toEqual(["q9"]);
     expect(org.later[0].later).toBe(true);
@@ -95,41 +95,41 @@ describe("live changes land in place", () => {
   it("a new Need joins at the bottom of its group and nothing above it moves", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    const before = needIds(store, "exo-game");
-    const firstRowObject = store.getSnapshot().needs["exo-game"].shown[0];
+    const before = needIds(store, "vg-game");
+    const firstRowObject = store.getSnapshot().needs["vg-game"].shown[0];
     // rank 0 would sort first if the store re-sorted
-    stub.addNeed({ id: "q10", projectId: "exo-game", title: "Example: urgent thing", rank: 0 });
-    await waitFor(() => needIds(store, "exo-game").includes("q10"), "new need");
-    expect(needIds(store, "exo-game")).toEqual([...before, "q10"]);
-    expect(store.getSnapshot().needs["exo-game"].shown[0]).toEqual(firstRowObject);
+    stub.addNeed({ id: "q10", projectId: "vg-game", title: "Example: urgent thing", rank: 0 });
+    await waitFor(() => needIds(store, "vg-game").includes("q10"), "new need");
+    expect(needIds(store, "vg-game")).toEqual([...before, "q10"]);
+    expect(store.getSnapshot().needs["vg-game"].shown[0]).toEqual(firstRowObject);
   });
 
   it("a Need answered somewhere else ticks itself off where it stands, and stops counting", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    stub.addNeed({ id: "q10", projectId: "org", title: "Example: sixth thing", rank: 9 });
-    await waitFor(() => store.getSnapshot().needs.org.later.some((n) => n.id === "q10"), "sixth need under Later");
-    const order = needIds(store, "org");
+    stub.addNeed({ id: "q10", projectId: "ash", title: "Example: sixth thing", rank: 9 });
+    await waitFor(() => store.getSnapshot().needs.ash.later.some((n) => n.id === "q10"), "sixth need under Later");
+    const order = needIds(store, "ash");
     expect(order).toEqual(["q4", "q5", "q6", "q7", "q8"]);
     stub.doneNeed("q5", "answered");
-    const ticked = await waitFor(() => store.getSnapshot().needs.org.shown.find((n) => n.id === "q5" && n.state === "done"), "tick");
+    const ticked = await waitFor(() => store.getSnapshot().needs.ash.shown.find((n) => n.id === "q5" && n.state === "done"), "tick");
     expect(ticked.doneReason).toBe("answered");
     // the Need waiting under Later moves up to the bottom of the list; the ticked row and the rest did not move
-    await waitFor(() => needIds(store, "org").includes("q10"), "promotion");
-    expect(needIds(store, "org")).toEqual([...order, "q10"]);
-    expect(store.getSnapshot().needs.org.later.map((n) => n.id)).toEqual(["q9"]);
+    await waitFor(() => needIds(store, "ash").includes("q10"), "promotion");
+    expect(needIds(store, "ash")).toEqual([...order, "q10"]);
+    expect(store.getSnapshot().needs.ash.later.map((n) => n.id)).toEqual(["q9"]);
   });
 
   it("ticked rows stay until Ash leaves the page, then go and stay gone while Ash OS still lists them", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     stub.doneNeed("q1");
-    await waitFor(() => store.getSnapshot().needs["exo-game"].shown.some((n) => n.state === "done"), "tick");
+    await waitFor(() => store.getSnapshot().needs["vg-game"].shown.some((n) => n.state === "done"), "tick");
     store.dismissDone();
-    expect(needIds(store, "exo-game")).toEqual(["q2"]);
-    stub.addNeed({ id: "q11", projectId: "exo-game", title: "Example: another" });
-    await waitFor(() => needIds(store, "exo-game").includes("q11"), "refresh");
-    expect(needIds(store, "exo-game")).toEqual(["q2", "q11"]);
+    expect(needIds(store, "vg-game")).toEqual(["q2"]);
+    stub.addNeed({ id: "q11", projectId: "vg-game", title: "Example: another" });
+    await waitFor(() => needIds(store, "vg-game").includes("q11"), "refresh");
+    expect(needIds(store, "vg-game")).toEqual(["q2", "q11"]);
   });
 
   it("a burst of changes becomes one read of Needs, not one per event", async () => {
@@ -166,7 +166,7 @@ describe("live changes land in place", () => {
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     stub.addProject({ id: "side", name: "Side thing" });
     await waitFor(() => store.getSnapshot().projects.some((p) => p.id === "side"), "project");
-    expect(store.getSnapshot().projects.map((p) => p.id)).toEqual(["exo-game", "hivra", "nibbii", "org", "side"]);
+    expect(store.getSnapshot().projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "ash", "side"]);
     expect(store.getSnapshot().projects.at(-1)?.iconShape).toBe("folder");
   });
 
@@ -179,13 +179,13 @@ describe("live changes land in place", () => {
     expect(store.getSnapshot().since?.overall.plainText).toMatch(/on their way/);
     stub.finishPendingSince();
     await waitFor(() => store.getSnapshot().since?.pending === false, "finished since");
-    expect(store.getSnapshot().since?.overall.plainText).toContain("Org has five decisions");
+    expect(store.getSnapshot().since?.overall.plainText).toContain("the harness has five decisions");
   });
 
   it("Since for one project and for all of them come from the same read", async () => {
     store.start();
     const since = await waitFor(() => store.getSnapshot().since, "since");
-    expect(since.byProject["exo-game"].plainText).toContain("new level");
+    expect(since.byProject["vg-game"].plainText).toContain("new level");
     expect(since.byProject.nibbii).toBeUndefined();
   });
 });
@@ -369,13 +369,13 @@ describe("older questions, Looks right and jobs", () => {
   it("a job moving state never moves the rows: order stays, new jobs join the end of their Lead's group", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().jobs.length, "jobs");
-    const order = jobsOf("exo-game").map((j) => j.id);
+    const order = jobsOf("vg-game").map((j) => j.id);
     stub.setJob("j_save", { state: "working", lastActiveAt: new Date().toISOString() }, "hub.job.active");
-    await waitFor(() => jobsOf("exo-game").find((j) => j.id === "j_save")?.state === "working", "job moved");
-    expect(jobsOf("exo-game").map((j) => j.id)).toEqual(order);
-    stub.addJob({ id: "j_new", projectId: "exo-game", title: "Another job", leadName: "EXO lead" });
-    await waitFor(() => jobsOf("exo-game").some((j) => j.id === "j_new"), "new job");
-    expect(jobsOf("exo-game").map((j) => j.id)).toEqual([...order, "j_new"]);
+    await waitFor(() => jobsOf("vg-game").find((j) => j.id === "j_save")?.state === "working", "job moved");
+    expect(jobsOf("vg-game").map((j) => j.id)).toEqual(order);
+    stub.addJob({ id: "j_new", projectId: "vg-game", title: "Another job", leadName: "EXO lead" });
+    await waitFor(() => jobsOf("vg-game").some((j) => j.id === "j_new"), "new job");
+    expect(jobsOf("vg-game").map((j) => j.id)).toEqual([...order, "j_new"]);
   });
 
   it("stuck jobs reach the screens as amber rows with no button, and the given-up one is not among them", async () => {

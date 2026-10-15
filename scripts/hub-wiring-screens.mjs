@@ -61,7 +61,7 @@ if (process.argv.includes("--before")) {
   await page.waitForSelector("text=Example: play Areas 1 and 2");
   await shot(page, "after-1-today.png");
 
-  await page.click('button[aria-label^="Org"]'); // no code folder: opens on its own Inbox
+  await page.click('button[aria-label^="Harness"]'); // no code folder: opens on its own Inbox
   await page.waitForSelector("text=Example: approve the Q4 hiring plan");
   await shot(page, "after-2-inbox-with-needs-and-later.png");
 
@@ -71,7 +71,7 @@ if (process.argv.includes("--before")) {
   await shot(page, "after-3-need-ticked-itself-off.png");
 
   // a new Need arrives at the bottom without a reload
-  await control({ op: "addNeed", need: { id: "q30", projectId: "org", title: "Example: new arrival from the live feed", why: "Arrived while the page was open.", rank: 0 } });
+  await control({ op: "addNeed", need: { id: "q30", projectId: "ash", title: "Example: new arrival from the live feed", why: "Arrived while the page was open.", rank: 0 } });
   await page.waitForSelector('[data-hub-need="q30"]');
   await shot(page, "after-4-new-need-arrived-live.png");
   await context.close();

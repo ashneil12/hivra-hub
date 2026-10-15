@@ -1,7 +1,8 @@
 // The real data source: what the hub screens read, backed by the live store (projects, Needs, Since and last-active
 // from Ash OS). Parts Ash OS can't supply yet (jobs, chats, builds, sections, connectors) are not here: their stores
 // stay empty unless the examples flag is on (see HANDOFF.md, "Not wired yet").
-import { projectItems, userProjects } from "./mockData";
+import { projectItems } from "./mockData";
+import { stripProjects } from "./hubProjects";
 import type { HubStore } from "./hubStore";
 import type { HubDataSource, HubProject, Need, SinceSummary, StuckItem } from "./types";
 
@@ -9,12 +10,14 @@ const QUIET = "Nothing new here since then.";
 
 export function createLiveHubData(store: HubStore): HubDataSource {
   const snap = () => store.getSnapshot();
+  // Ash's four projects, in his order, each its own shape (hubProjects.ts). Parked and other projects are not shown.
+  let memo: { from: HubProject[]; out: HubProject[] } | undefined;
   const projects = (): HubProject[] => {
-    // A parked project is shelved (the registry's own word): it is not on the strip.
-    const live = snap().projects.filter((p) => !p.parked);
-    // Projects made on this Mac before Ash OS knows them (the New project flow is not wired yet) stay on the strip.
-    return [...live, ...userProjects().filter((u) => !live.some((p) => p.id === u.id))];
+    const live = snap().projects;
+    if (memo?.from !== live) memo = { from: live, out: stripProjects(live.filter((p) => !p.parked)) };
+    return memo.out;
   };
+  const onStrip = (id: string) => projects().some((p) => p.id === id);
   return {
     listProjects: projects,
     listProjectItems: (projectId) => projectItems(projectId, !!projects().find((p) => p.id === projectId)?.folder),
@@ -23,7 +26,8 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     sinceSummary: (projectId?: string): SinceSummary => {
       const since = snap().since;
       if (!since) return { plainText: "", details: "" };
-      return projectId ? (since.byProject[projectId] ?? { plainText: QUIET, details: "" }) : since.overall;
+      const pending = since.pending ? { pending: true } : {};
+      return projectId ? { ...(since.byProject[projectId] ?? { plainText: QUIET, details: "" }), ...pending } : { ...since.overall, ...pending };
     },
     listNeeds: (projectId?: string): Need[] => {
       const rows = snap().needs;
@@ -48,7 +52,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
           ...(j.sentText ? { note: j.gotIt ? `${j.sentText} · ${j.gotIt.text}` : j.sentText } : {}),
         })),
     listMonos: () => [],
-    listOlder: (projectId?: string) => snap().older.filter((n) => !projectId || n.projectId === projectId),
+    listOlder: (projectId?: string) => snap().older.filter((n) => (projectId ? n.projectId === projectId : onStrip(n.projectId))),
     markNeedSeen: (id: string) => store.markNeedSeen(id),
     listJobs: (projectId: string) => snap().jobs.filter((g) => g.projectId === projectId),
     jobOptions: (jobId: string) => store.jobOptions(jobId),

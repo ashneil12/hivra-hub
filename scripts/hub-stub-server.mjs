@@ -49,34 +49,34 @@ export function seedState(now = Date.now()) {
   const h = 3600_000;
   return {
     projects: [
-      { id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "ghost", folder: "/Users/example/Projects/exo-game", workOwner: "ash_os", status: "active" },
-      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
-      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
-      { id: "org", name: "Org", shortName: "Org", iconShape: "gauge", folder: null, workOwner: "ash_os", status: "active" },
+      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game", workOwner: "ash_os", status: "active" },
+      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
+      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "folder", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
+      { id: "ash", name: "Harness & how I work", shortName: "Harness", iconShape: "folder", folder: null, workOwner: "ash_os", status: "active" },
     ],
     needs: [
-      { id: "q1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionTarget: "gate:project:playtests", rank: 1, since: now - 5 * h },
-      { id: "q2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "see_options", actionTarget: "question:q2", rank: 2, since: now - 4 * h },
+      { id: "q1", projectId: "vg-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionTarget: "gate:project:playtests", rank: 1, since: now - 5 * h },
+      { id: "q2", projectId: "vg-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "see_options", actionTarget: "question:q2", rank: 2, since: now - 4 * h },
       { id: "q3", projectId: "hivra", title: "Example: pick the waitlist headline", why: "Two versions tested about the same. Your taste call.", actionType: "see_options", actionTarget: "question:q3", rank: 2, since: now - 3 * h },
-      { id: "q4", projectId: "org", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionTarget: "ask:a4", rank: 3, since: now - 2 * h },
-      { id: "q5", projectId: "org", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionTarget: "ask:a5", rank: 3, since: now - 2 * h },
-      { id: "q6", projectId: "org", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionTarget: "ask:a6", rank: 3, since: now - 2 * h },
-      { id: "q7", projectId: "org", title: "Example: pick the offsite dates", why: "Three options; everyone else has voted.", actionType: "see_options", actionTarget: "question:q7", rank: 3, since: now - 2 * h },
-      { id: "q8", projectId: "org", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionTarget: "ask:a8", rank: 3, since: now - 2 * h },
-      { id: "q9", projectId: "org", title: "Example: renew the domain names", why: "Recovered from an old chat. Nothing is due.", actionType: "see_options", actionTarget: "question:q9", rank: 9, later: true, since: now - 30 * h },
+      { id: "q4", projectId: "ash", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionTarget: "ask:a4", rank: 3, since: now - 2 * h },
+      { id: "q5", projectId: "ash", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionTarget: "ask:a5", rank: 3, since: now - 2 * h },
+      { id: "q6", projectId: "ash", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionTarget: "ask:a6", rank: 3, since: now - 2 * h },
+      { id: "q7", projectId: "ash", title: "Example: pick the offsite dates", why: "Three options; everyone else has voted.", actionType: "see_options", actionTarget: "question:q7", rank: 3, since: now - 2 * h },
+      { id: "q8", projectId: "ash", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionTarget: "ask:a8", rank: 3, since: now - 2 * h },
+      { id: "q9", projectId: "ash", title: "Example: renew the domain names", why: "Recovered from an old chat. Nothing is due.", actionType: "see_options", actionTarget: "question:q9", rank: 9, later: true, since: now - 30 * h },
     ].map((n) => ({ later: false, state: "open", ...n })),
     activity: { lastActive: now - 20 * 60_000, since: now - 6 * h, sessionStart: now - 25 * 60_000 },
     since: {
-      overall: "Example: the game's new level is in and working. Hivra has a headline to pick. Org has five decisions waiting for you.",
+      overall: "Example: the game's new level is in and working. Hivra has a headline to pick. the harness has five decisions waiting for you.",
       projects: {
-        "exo-game": "Example: the new level is in and working. Two things need your hands.",
+        "vg-game": "Example: the new level is in and working. Two things need your hands.",
         hivra: "Example: the waitlist headline is waiting for your pick.",
-        org: "Example: five decisions are waiting for you.",
+        ash: "Example: five decisions are waiting for you.",
       },
-      details: ["EXO game - Example: level 3 build finished (card c-101)", "Hivra - Example: headline test finished (ask a-77)"],
+      details: ["EXO - Example: level 3 build finished (card c-101)", "Hivra - Example: headline test finished (ask a-77)"],
     },
     memberships: [
-      { monoId: "chief-of-staff", projectId: "exo-game", role: "member", addedAt: iso(now - 90 * h) },
+      { monoId: "chief-of-staff", projectId: "vg-game", role: "member", addedAt: iso(now - 90 * h) },
       { monoId: "chief-of-staff", projectId: "hivra", role: "member", addedAt: iso(now - 90 * h) },
     ],
   };
@@ -90,14 +90,14 @@ export function jobsScenario(now = Date.now()) {
   const min = 60_000;
   const iso2 = (ms) => iso(ms);
   const job = (id, projectId, title, state, extra = {}) => ({
-    id, projectId, title, lead: extra.noLead ? null : `${projectId}-lead`, leadName: extra.noLead ? null : `${projectId === "exo-game" ? "EXO" : projectId[0].toUpperCase() + projectId.slice(1)} lead`,
+    id, projectId, title, lead: extra.noLead ? null : `${projectId}-lead`, leadName: extra.noLead ? null : `${projectId === "vg-game" ? "EXO" : projectId[0].toUpperCase() + projectId.slice(1)} lead`,
     owner: "in-app-lead", state, reason: "", startedAt: iso2(now - (extra.ago ?? 40) * min), lastActiveAt: iso2(now - (extra.active ?? 1) * min),
     finishedAt: null, sourceRef: `ask:a_${id}`, seen: false, ...extra.wire,
   });
   const jobs = [
-    job("j_air", "exo-game", "Adding the air dodge", "working", { ago: 42, active: 0 }),
-    job("j_save", "exo-game", "Fixing the save bug", "checking", { ago: 12, active: 2 }),
-    job("j_photo", "exo-game", "The photo mode", "parked", { ago: 300, active: 160, wire: { reason: "Paused by you", finishedAt: iso2(now - 160 * min) } }),
+    job("j_air", "vg-game", "Adding the air dodge", "working", { ago: 42, active: 0 }),
+    job("j_save", "vg-game", "Fixing the save bug", "checking", { ago: 12, active: 2 }),
+    job("j_photo", "vg-game", "The photo mode", "parked", { ago: 300, active: 160, wire: { reason: "Paused by you", finishedAt: iso2(now - 160 * min) } }),
     job("j_mail", "hivra", "Writing the welcome emails", "working", { ago: 25, active: 3 }),
     job("j_backup", "hivra", "Moving the nightly backup", "sent_to_lead", {
       ago: 130, active: 6,
@@ -115,7 +115,7 @@ export function jobsScenario(now = Date.now()) {
     { id: "j:j_sender", projectId: "hivra", title: "Sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
     ...[
       ["o1", "hivra", "Example: which Hivra folder is the real one?"], ["o2", "hivra", "Example: should the old waitlist be archived?"],
-      ["o3", "exo-game", "Example: is the second boss still wanted?"],
+      ["o3", "vg-game", "Example: is the second boss still wanted?"],
     ].map(([id, projectId, title], i) => ({ id: `q:${id}`, projectId, title, why: "Recovered from an old chat. Nothing is due.", actionType: "see_options", actionTarget: `question:${id}`, rank: 9, since: now - (30 + i) * 3600_000, state: "open", later: false, older: true })),
   ];
   return { jobs, needs };
