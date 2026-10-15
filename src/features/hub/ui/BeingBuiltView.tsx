@@ -4,7 +4,7 @@ import { ArrowLeft, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNow, workersFromJobs } from "../model/liveJobs";
 import { setHubSelection } from "../model/hubNav";
-import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, lastActiveLabel, markSeen, useWorkVersion } from "../model/hubWork";
+import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
 
@@ -116,8 +116,8 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
         {w.stuck && w.sentNote ? <span className="truncate text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
-      <span className="w-14 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active title={w.finishedAt ? undefined : `At it for ${durationLabel(w.minutes)}`}>
-        {lastActiveLabel(w)}
+      <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
+        {`for ${durationLabel(w.minutes)}`}
       </span>
       <span className="flex w-24 shrink-0 justify-end">{w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}</span>
     </div>
@@ -133,7 +133,7 @@ function Activity({ worker }: { worker: Worker }) {
           <div className="text-[15px] text-content">{worker.doing}</div>
           <div className="flex items-center gap-1.5 text-[13px] text-content/60">
             {live ? <span className="size-1.5 animate-pulse rounded-full bg-content/60" /> : null}
-            {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
+            {worker.who} · {`${worker.finishedAt ? "took" : live ? "working" : "at it"} ${worker.finishedAt ? "" : "for "}${durationLabel(worker.minutes)}`}
           </div>
         </div>
         <JobStateLabel w={worker} />
@@ -184,15 +184,16 @@ function byMono(jobs: Worker[]): [string, Worker[]][] {
   return [...m.entries()];
 }
 
-/** Calm state text. Stuck = amber circle (still fixing itself). Needs you is the
- * one soft badge. Lead gave up = red Stuck with the reason (Ash's default). Done (not seen) = small dot. */
+/** Calm state text. Stuck = amber circle (still fixing itself). Needs you is a
+ * dot and plain text, like every other state. Lead gave up = red Stuck with the reason (Ash's default). Done (not seen) = small dot. */
 function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean }) {
   const st = jobState(w);
   const reason = w.stuckReason ? w.stuckReason.replace(/^Example: /, "") : "";
   if (st === "needs_you")
     return (
       <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
-        <span className="shrink-0 rounded-full bg-content/10 px-2 py-0.5 text-content">Needs you</span>
+        <span className="size-1.5 shrink-0 rounded-full bg-content" aria-hidden />
+        <span className="shrink-0 text-content">Needs you</span>
         {reason && !compact ? <span className="truncate text-content/60">{reason}</span> : null}
       </span>
     );

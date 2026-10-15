@@ -213,7 +213,7 @@ describe("Being built, live", () => {
     expect(text()).not.toMatch(/helper|worker/i);
   });
 
-  it("Working is quiet, Stuck is amber with the reason on a second line, Needs you is the only badge, Done has a dot", async () => {
+  it("Working is quiet, Stuck is amber with the reason on a second line, Needs you and Done are a dot and plain text", async () => {
     mount(view());
     await until(() => container.querySelector("[data-hub-worker]"), "rows");
     expect(state("j_mail")).toBe("working");
@@ -224,11 +224,13 @@ describe("Being built, live", () => {
     expect(stuck.querySelector("[data-hub-job-reason]")?.textContent).toBe("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
     expect(state("j_sender")).toBe("needs_you");
-    expect(container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state] .rounded-full')?.textContent).toBe("Needs you");
+    expect(container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state]')?.textContent).toBe("Needs you");
+    expect(container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state] .rounded-full')?.textContent).toBe("");
     expect(state("j_footer")).toBe("done_unseen");
     expect(container.querySelector('[data-hub-worker="j_footer"] [aria-label="Not seen yet"]')).toBeTruthy();
-    // the badge is the only one: no pill on any other row
-    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(2); // Needs you + the Done dot
+    // no filled pill anywhere: only the two small dots (Needs you, Done)
+    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(2);
+    expect(container.querySelectorAll("[data-hub-job-state] .px-2").length).toBe(0);
   });
 
   it("columns are fixed width, so rows line up whatever the state", async () => {
@@ -236,7 +238,7 @@ describe("Being built, live", () => {
     await until(() => container.querySelectorAll("[data-hub-worker]").length === 4, "rows");
     const cols = [...container.querySelectorAll("[data-hub-worker]")].map((r) => [...r.children].slice(1).map((c) => c.className.split(" ").filter((k) => /^w-\d+$/.test(k)).join("")));
     expect(new Set(cols.map((c) => c.join(","))).size).toBe(1);
-    expect(cols[0]).toEqual(["w-28", "w-14", "w-24"]);
+    expect(cols[0]).toEqual(["w-28", "w-24", "w-24"]);
   });
 
   it("a change from the feed lands in place: a job's state changes, a new one joins the end, nothing moves", async () => {
