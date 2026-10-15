@@ -92,14 +92,17 @@ under Later" opens them (`LaterList`). `older` (questions recovered from past
 chats, backlog-sweep questions, failures no longer failing) is `snap.older`: not
 Needs, so in no badge, count or cap, shown as "Older (n)" shut, once at the
 bottom of Today (opened, grouped by project) and per project in its Inbox.
-The badge counts the visible Needs (at most 5 per project); Ash OS's own count
-(shown + later) is not shown anywhere as a number.
+The strip badge is the project's real Needs count (shown plus Later, the number
+Ash OS and the Since paragraph quote; `HubDataSource.needsCount`, kept live by
+the feed); rows still show at most five plus "N more under Later". Older rows
+and ticked rows never count. (With the examples flag the badge is still the
+count of the waiting list.)
 
-**One action per row.** A Looks-right row (`s:<ask>`) has one button, **Seen**,
-which calls `ash-hub-need-seen`; the row ticks off. (Ash OS's own button label
-is "Open" with target `ask:<id>`; there is no screen to open it in yet, and
-`ash-accept` is outside `ash-hub-*`, so Seen is the one action the app can take.
-Decide if that is the right label.) A job the Lead gave up on is one row:
+**One action per row, as Ash OS names it.** A Looks-right row whose
+`actionType` is `accept` shows Ash OS's label (**Looks right**) and calls
+`ash-hub-need-accept {id}` (app-only in Ash OS; being added there, proven against
+the stub). A Looks-right row that still comes as action `open` (`s:<ask>`) has one
+button, **Seen**, calling `ash-hub-need-seen`. Either way the row ticks off. A job the Lead gave up on is one row:
 `CircleWord` (14px red circle, plain grey "Needs you") then **See options**.
 That opens `OptionsSheet`: what was tried, then Try again tonight, Try it a
 different way… (a hint box, Send), Pause this job, Drop it, from
@@ -131,7 +134,14 @@ A service without `ash-hub-jobs` just means nothing is being built.
 next to Ash's MonoCode without touching it: its own name and bundle id, so its
 own app-data folder (`~/Library/Application Support/com.ash.monocode-hub`) and
 its own webview storage; no updater artifacts (the updater has no endpoints);
-`VITE_MONOCODE_HUB=1` so it opens straight on the hub (Today) with no onboarding.
+`VITE_MONOCODE_HUB=1` (`model/hubBundle.ts`, `IS_HUB_BUNDLE`) so it opens straight
+on the hub (Today) with no onboarding, new chats start on Claude Code on its
+first run (MonoCode's own fallback, Cursor, is untouched; a choice Ash makes
+sticks), and the quick composer's panels are not pre-built offscreen at launch
+(MonoCode pre-builds a hidden 'MonoCode' panel and a 'Choose workspace' popup;
+the Hub builds them the first time the composer opens). On the hub's views the
+"Harness update available" toast sits bottom-left over the sidebar instead of
+over Today; it is still dismissible.
 The data source is the live one (the examples flag is never set outside the dev
 page), through the Rust plugin to 127.0.0.1:18767.
 ```
