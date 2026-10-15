@@ -849,6 +849,7 @@ function SidebarComponent({
     inboxActive ||
     notesActive ||
     automationsActive ||
+    pagesActive ||
     hubSurfaceActive ||
     settingsOpen;
   // A remembered Mono sits underneath these views; select it only while visible.
