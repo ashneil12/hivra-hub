@@ -2150,7 +2150,7 @@ export function Composer({
                     }}
                     className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <FilePlus className="mt-0.5 size-4 shrink-0" />
+                    <FilePlus className="mt-0.5 size-4 shrink-0 text-content/60" />
                     <span className="min-w-0">
                       <span className="block text-[13px]">Upload file</span>
                       <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
@@ -2178,7 +2178,7 @@ export function Composer({
                       }}
                       className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
                     >
-                      <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
+                      <AiIdea className="mt-0.5 size-4 shrink-0 text-content/60" />
                       <span className="min-w-0 flex-1">
                         <span className="block text-[13px]">Plan mode</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
@@ -2186,7 +2186,7 @@ export function Composer({
                         </span>
                       </span>
                       {planActive ? (
-                        <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-content/70" />
                       ) : null}
                     </button>
                   ) : null}
@@ -2208,7 +2208,7 @@ export function Composer({
                       }}
                       className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
                     >
-                      <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-sky-300/80" />
+                      <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-content/60" />
                       <span className="min-w-0 flex-1">
                         <span className="block text-[13px]">Operator</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
@@ -2216,7 +2216,7 @@ export function Composer({
                         </span>
                       </span>
                       {operatorActive ? (
-                        <Check className="mt-0.5 size-3.5 shrink-0 text-sky-300/80" />
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-content/70" />
                       ) : null}
                     </button>
                   ) : null}
@@ -2238,11 +2238,11 @@ export function Composer({
                       }}
                       className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
                     >
-                      <Share className="mt-0.5 size-4 shrink-0 text-fuchsia-300/65" />
+                      <Share className="mt-0.5 size-4 shrink-0 text-content/60" />
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5">
                           <span className="text-[13px]">Orchestrator</span>
-                          <span className="rounded-full bg-fuchsia-300/10 px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-wide text-fuchsia-200/55 mb-px">
+                          <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-wide text-content/50 mb-px">
                             v1
                           </span>
                         </span>
@@ -2251,7 +2251,7 @@ export function Composer({
                         </span>
                       </span>
                       {orchestrationActive && (
-                        <Check className="mt-0.5 size-3.5 shrink-0 text-fuchsia-300/80" />
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-content/70" />
                       )}
                     </button>
                   )}
@@ -2279,7 +2279,7 @@ export function Composer({
                         </span>
                       </span>
                       {draftActive ? (
-                        <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-content/70" />
                       ) : null}
                     </button>
                   ) : null}
