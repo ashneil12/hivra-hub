@@ -11,8 +11,8 @@ export type HubProject = {
   /** Short name under the strip icon (at least 11px, 60% bright). */
   shortName: string;
   iconShape: ProjectIconShape;
-  /** Folder the Coding team workspace opens. */
-  folder: string;
+  /** Folder the Coding team workspace opens. Null for a project with no code folder (no Coding team). */
+  folder: string | null;
 };
 
 /** Everything a project has, listed where Monocode's sidebar lists Projects. */
@@ -42,6 +42,14 @@ export type Need = {
   actionLabel: string;
   actionTarget?: string;
   later?: boolean;
+  /** "done" once it was answered or cleared anywhere: the row ticks itself off and stays until Ash leaves the page. */
+  state?: "open" | "done";
+  /** ISO time it appeared (from Ash OS). */
+  since?: string;
+  /** ISO time it ticked off, and why (answered, expired, ...). */
+  doneAt?: string;
+  doneReason?: string;
+  detail?: string;
 };
 
 export type StuckState = "stuck" | "sent_to_lead" | "lead_gave_up";
@@ -57,6 +65,15 @@ export type StuckItem = {
 
 export type SinceSummary = { plainText: string; details: string };
 
+/** Whether the data comes from a live source that can be down. The example data is always "ready". */
+export type HubConnection = {
+  status: "loading" | "ready" | "unreachable";
+  /** A plain sentence when unreachable. */
+  message?: string;
+  /** True while a retry is under way. */
+  retrying?: boolean;
+};
+
 export type HubMono = {
   id: string;
   name: string;
@@ -69,9 +86,18 @@ export type HubMono = {
 export interface HubDataSource {
   listProjects(): HubProject[];
   listProjectItems(projectId: string): ProjectItem[];
-  lastActiveAt(): string;
+  /** ISO time Ash was last in the app, if known. */
+  lastActiveAt(): string | undefined;
+  /** ISO time "Since <time>" starts from (when Ash last left), if known. */
+  sinceAt(): string | undefined;
   sinceSummary(projectId?: string): SinceSummary;
   listNeeds(projectId?: string): Need[];
+  /** App-wide setup items from Ash OS (connector sign-ins), counted once and never under a project. */
+  listSetup(): Need[];
+  /** Is the data there, loading, or is its source down? */
+  connection(): HubConnection;
+  /** Ask the source to try again now. */
+  retry(): void;
   listStuck(projectId?: string): StuckItem[];
   listMonos(projectId?: string): HubMono[];
 }

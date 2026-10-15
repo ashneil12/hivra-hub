@@ -21,6 +21,8 @@ export type WaitingItem = {
   need?: Need;
   /** Set for a connector sign-in Need. */
   connectorId?: string;
+  /** A Need that was answered or cleared anywhere: shown ticked until Ash leaves the page, never counted. */
+  done?: boolean;
   /** Button label on Today/Inbox; defaults to "Take a look". */
   actionLabel?: string;
   /** Where 'Take a look' from Today/Inbox goes. */
@@ -33,21 +35,40 @@ export const MAX_NEEDS = 5;
 type Provider = (projectId: string) => WaitingItem[];
 
 // Needs and valid proposals share the cap: a proposal is a Need. Beyond
-// MAX_NEEDS per project the rest go under Later, like any other Need.
-function needsAndProposals(pid: string): WaitingItem[] {
-  const needs = hubData().listNeeds(pid).filter((n) => !n.later).map((n): WaitingItem => ({
-    id: n.id, projectId: pid, source: "inbox", title: n.title, detail: n.why, need: n,
-  }));
-  const props = pendingProposals(pid).map((p): WaitingItem => ({
-    id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
-    detail: `Proposed by ${p.by}`, actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
-  }));
-  return [...needs, ...props];
+// MAX_NEEDS per project the rest go under Later, like any other Need. A Need
+// ticked off in Ash OS stays in its place (not counted, not using a slot) until
+// Ash leaves the page; Needs Ash OS itself files under Later go there too.
+function needsAndProposals(pid: string): { shown: WaitingItem[]; later: WaitingItem[] } {
+  const all = hubData().listNeeds(pid);
+  const toItem = (n: Need): WaitingItem => ({
+    id: n.id, projectId: pid, source: "inbox", title: n.title, detail: n.why, need: n, ...(n.state === "done" ? { done: true } : {}),
+  });
+  const items = [
+    ...all.filter((n) => !n.later).map(toItem),
+    ...pendingProposals(pid).map((p): WaitingItem => ({
+      id: `proposal:${p.id}`, projectId: pid, source: "proposal", title: p.title,
+      detail: `Proposed by ${p.by}`, actionLabel: "Preview", target: { project: pid, item: `proposal:${p.id}` },
+    })),
+  ];
+  const shown: WaitingItem[] = [];
+  const later: WaitingItem[] = [];
+  let open = 0;
+  for (const item of items) {
+    if (item.done) {
+      shown.push(item);
+    } else if (open < MAX_NEEDS) {
+      shown.push(item);
+      open += 1;
+    } else {
+      later.push(item);
+    }
+  }
+  return { shown, later: [...later, ...all.filter((n) => n.later).map(toItem)] };
 }
 
-/** Needs and proposals over the cap: waiting under Later, not counted. */
+/** Needs and proposals over the cap, and the ones Ash OS files under Later: waiting there, not counted. */
 export function laterItems(projectId: string): WaitingItem[] {
-  return needsAndProposals(projectId).slice(MAX_NEEDS);
+  return needsAndProposals(projectId).later;
 }
 
 const PROVIDERS: Provider[] = [
@@ -59,7 +80,7 @@ const PROVIDERS: Provider[] = [
       target: { project: pid, item: "leadership-team", focus: s.id },
     })),
   // Needs plus valid proposals, at most MAX_NEEDS; the rest are Later.
-  (pid) => needsAndProposals(pid).slice(0, MAX_NEEDS),
+  (pid) => needsAndProposals(pid).shown,
   // Builds & playtests: failed builds that are stuck or gave up.
   (pid) =>
     listBuilds(pid).filter((b) => b.status === "failed" && b.stuck).map((b): WaitingItem => ({
@@ -81,8 +102,9 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
   return [...all.filter((i) => i.state), ...all.filter((i) => !i.state)];
 }
 
+/** What is waiting on Ash for a project. A row that ticked itself off no longer counts. */
 export function waitingCount(projectId: string): number {
-  return waitingOnAsh(projectId).length;
+  return waitingOnAsh(projectId).filter((i) => !i.done).length;
 }
 
 export function findWaiting(id: string): WaitingItem | undefined {
@@ -95,8 +117,14 @@ export function findWaiting(id: string): WaitingItem | undefined {
  * a project's strip count. Each goes away once signed in.
  */
 export function setupItems(): WaitingItem[] {
-  return pendingSignIns().map((c): WaitingItem => ({
-    id: `connector:${c.id}`, projectId: "", source: "inbox", title: `Sign in to ${c.name}`,
-    detail: "", actionLabel: "Sign in", connectorId: c.id,
-  }));
+  return [
+    ...pendingSignIns().map((c): WaitingItem => ({
+      id: `connector:${c.id}`, projectId: "", source: "inbox", title: `Sign in to ${c.name}`,
+      detail: "", actionLabel: "Sign in", connectorId: c.id,
+    })),
+    // Sign-ins Ash OS lists (nothing writes them yet). Read-only here: the Keychain sign-in is a later unit.
+    ...hubData().listSetup().map((n): WaitingItem => ({
+      id: `setup:${n.id}`, projectId: "", source: "inbox", title: n.title, detail: n.why, actionLabel: n.actionLabel,
+    })),
+  ];
 }

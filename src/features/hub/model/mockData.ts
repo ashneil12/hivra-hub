@@ -53,25 +53,37 @@ function loadUserProjects(): HubProject[] {
     return [];
   }
 }
-const PROJECTS: HubProject[] = [...(examplesOn() ? EXAMPLE_PROJECTS : []), ...loadUserProjects()];
+const USER_PROJECTS: HubProject[] = loadUserProjects();
+const PROJECTS: HubProject[] = [...(examplesOn() ? EXAMPLE_PROJECTS : []), ...USER_PROJECTS];
 
-export const mockHubData: HubDataSource = {
-  listProjects: () => PROJECTS,
-  listProjectItems: (projectId) => [
-    { id: "coding-team", kind: "coding-team", title: "Coding team" },
+/** Projects made here or restored from a setup file (kept locally). The live source adds them to Ash OS's list. */
+export function userProjects(): HubProject[] {
+  return USER_PROJECTS;
+}
+
+/** What a project lists in the sidebar: its teams, chats, template sections and Being built. No folder, no Coding team. */
+export function projectItems(projectId: string, hasFolder = true): ProjectItem[] {
+  return [
+    ...(hasFolder ? [{ id: "coding-team", kind: "coding-team" as const, title: "Coding team" }] : []),
     { id: "leadership-team", kind: "leadership-team", title: "Leadership team" },
     ...listChats(projectId)
       .filter((c) => !c.isDefault)
       .map((c): ProjectItem => ({ id: `chat:${c.id}`, kind: "group-chat", title: c.name })),
     ...templateOf(projectId).sections,
     { id: "being-built", kind: "being-built", title: "Being built" },
-  ],
+  ];
+}
+
+export const mockHubData: HubDataSource = {
+  listProjects: () => PROJECTS,
+  listProjectItems: (projectId) => projectItems(projectId),
   // Example: Ash was last here at 2pm today.
   lastActiveAt: () => {
     const d = new Date();
     d.setHours(14, 0, 0, 0);
     return d.toISOString();
   },
+  sinceAt: () => mockHubData.lastActiveAt(),
   sinceSummary: (projectId) => ({
     plainText: !examplesOn()
       ? "Nothing new yet. As your teams start work, what changed shows up here."
@@ -83,6 +95,9 @@ export const mockHubData: HubDataSource = {
   listNeeds: (projectId) => NEEDS.filter((n) => !projectId || n.projectId === projectId),
   listStuck: (projectId) => STUCK.filter((s) => !projectId || s.projectId === projectId),
   listMonos: (projectId) => MONOS.filter((m) => !projectId || m.projectIds.includes(projectId)),
+  listSetup: () => [],
+  connection: () => ({ status: "ready" }),
+  retry: () => undefined,
 };
 
 /** Mock: create a project from the new-project flow. */
@@ -90,6 +105,7 @@ export function addMockProject(p: HubProject): void {
   if (PROJECTS.some((x) => x.id === p.id)) return;
   PROJECTS.push(p);
   if (EXAMPLE_PROJECTS.some((x) => x.id === p.id)) return;
+  USER_PROJECTS.push(p);
   try {
     localStorage.setItem(USER_KEY, JSON.stringify([...loadUserProjects().filter((x) => x.id !== p.id), p]));
   } catch {
