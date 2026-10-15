@@ -79,6 +79,8 @@ export function hasDirectConnector(c: Connector): boolean {
   const n = c.name.toLowerCase().replace(/^example:\s*/, "");
   return DIRECT.includes(n.split(/\s+/)[0]);
 }
-export function loginLivesOn(c: Connector): "On this Mac" | "On Composio" {
-  return composioOn() && !hasDirectConnector(c) ? "On Composio" : "On this Mac";
+export function loginLivesOn(c: Connector): "On this Mac" | "On Composio" | "Needs Composio" {
+  if (hasDirectConnector(c)) return "On this Mac";
+  // An app with no direct connector only works through Composio; with the switch off it has no login anywhere.
+  return composioOn() ? "On Composio" : "Needs Composio";
 }
