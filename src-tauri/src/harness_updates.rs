@@ -86,7 +86,8 @@ pub async fn harness_update(
             return Err("harness_update: not a resolved harness CLI".to_string());
         }
         let output = exec_output(&command, &args, None, UPDATE_TIMEOUT)?;
-        if output.status.success() {
+        // Some updaters exit 0 after printing that they failed.
+        if output.status.success() && !reports_failure(&output.stdout, &output.stderr) {
             return Ok(());
         }
         Err(update_failure(&output.stdout, &output.stderr))
@@ -109,6 +110,19 @@ fn update_failure(stdout: &[u8], stderr: &[u8]) -> String {
         })
         .next()
         .unwrap_or_else(|| "Update failed".to_string())
+}
+
+fn reports_failure(stdout: &[u8], stderr: &[u8]) -> bool {
+    [stdout, stderr].iter().any(|bytes| {
+        String::from_utf8_lossy(bytes).lines().any(|line| {
+            let line = line.trim().to_ascii_lowercase();
+            line.contains("update failed")
+                || line.contains("failed to update")
+                || line.contains("failed to install")
+                || line.starts_with("error")
+                || line.contains("permission denied")
+        })
+    })
 }
 
 fn latest_version(body: &Value) -> Option<String> {
@@ -147,6 +161,14 @@ mod tests {
         );
         assert_eq!(update_failure(b"no write access\n", b""), "no write access");
         assert_eq!(update_failure(b"", b""), "Update failed");
+    }
+
+    #[test]
+    fn a_clean_exit_that_says_it_failed_is_not_success() {
+        assert!(reports_failure(b"Checking for updates...\nUpdate failed: EACCES\n", b""));
+        assert!(reports_failure(b"", b"Error: could not write versions dir\n"));
+        assert!(!reports_failure(b"Successfully updated from 2.1.296 to 2.1.300\n", b""));
+        assert!(!reports_failure(b"Claude Code is up to date (2.1.300)\n", b""));
     }
 
     #[test]

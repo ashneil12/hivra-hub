@@ -108,6 +108,8 @@ describe("HarnessUpdateNotice", () => {
   });
 
   it("on the hub's views sits bottom-left over the sidebar, stays dismissible, and takes no room from the top", async () => {
+    // Still behind when re-checked: the card re-asks the CLI before showing.
+    installed = "2.1.284 (Claude Code)";
     const container = document.createElement("div");
     const root = createRoot(container);
     const heights: number[] = [];
@@ -127,6 +129,64 @@ describe("HarnessUpdateNotice", () => {
     const dismiss = notice.querySelector<HTMLButtonElement>('[aria-label="Dismiss harness updates"]')!;
     await act(async () => dismiss.click());
     expect(document.body.querySelector('[aria-label="Harness updates"]')).toBeNull();
+    act(() => root.unmount());
+  });
+});
+
+describe("HarnessUpdateNotice fresh checks and failures", () => {
+  beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("stillBehind drops a harness that is now current and refreshes the installed version", async () => {
+    const { stillBehind } = await import("./HarnessUpdateNotice");
+    const updates = [
+      { harness: "claude" as const, installed: "2.1.296", latest: "2.1.300" },
+      { harness: "codex" as const, installed: "0.1.0", latest: "0.3.0" },
+    ];
+    const next = await stillBehind(updates, async (id) =>
+      id === "claude" ? "2.1.300 (Claude Code)" : "codex-cli 0.2.0",
+    );
+    expect(next).toEqual([{ harness: "codex", installed: "0.2.0", latest: "0.3.0" }]);
+  });
+
+  it("hides the card when the CLI is already current (no cached version)", async () => {
+    vi.resetModules();
+    claimed = false;
+    installed = "2.1.285 (Claude Code)";
+    const { HarnessUpdateNotice: Fresh } = await import("./HarnessUpdateNotice");
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(createElement(Fresh)));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.body.querySelector('[aria-label="Harness updates"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("an update that leaves the old version shows the plain failure with only Try again", async () => {
+    vi.resetModules();
+    claimed = false;
+    installed = "2.1.284 (Claude Code)";
+    const child = await import("../../../integrations/harness/core/child");
+    vi.mocked(child.updateHarnessCli).mockImplementationOnce(async () => undefined);
+    const { HarnessUpdateNotice: Fresh } = await import("./HarnessUpdateNotice");
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(createElement(Fresh)));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const notice = document.body.querySelector('[aria-label="Harness updates"]')!;
+    const update = Array.from(notice.querySelectorAll("button")).find((b) => b.textContent === "Update")!;
+    await act(async () => {
+      update.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(notice.textContent).not.toContain("Updated to");
+    const alert = notice.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Couldn't update Claude Code. Try again, or open Terminal for details.");
+    expect(alert.textContent).toContain("Installed 2.1.284 · Latest 2.1.285");
+    const buttons = Array.from(notice.querySelectorAll("button")).filter((b) => !b.getAttribute("aria-label"));
+    expect(buttons.map((b) => b.textContent)).toEqual(["Try again"]);
     act(() => root.unmount());
   });
 });

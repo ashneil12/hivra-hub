@@ -63,7 +63,37 @@ type RowState =
   | { status: "idle" }
   | { status: "updating" }
   | { status: "updated"; version: string }
-  | { status: "failed"; error: string };
+  | { status: "failed"; error: string; installed?: string; latest: string };
+
+export function updateFailedMessage(harness: HarnessId): string {
+  return `Couldn't update ${HARNESS_TITLE[harness]}. Try again, or open Terminal for details.`;
+}
+
+/**
+ * Asks the CLI itself, fresh, what it is on now. An update finished in
+ * Terminal or another window must clear the card instead of leaving the
+ * version read at launch on screen.
+ */
+export async function stillBehind(
+  updates: HarnessUpdate[],
+  installedVersion: (id: HarnessId) => Promise<string | undefined> = async (
+    id,
+  ) => (await inspectHarnessBinary(id)).version,
+): Promise<HarnessUpdate[]> {
+  const checked = await Promise.all(
+    updates.map(async (update) => {
+      try {
+        const now = parseOpenCodeVersion((await installedVersion(update.harness)) ?? "");
+        if (!now) return update;
+        if (compareSemver(now, update.latest) >= 0) return null;
+        return { ...update, installed: now };
+      } catch {
+        return update;
+      }
+    }),
+  );
+  return checked.filter((u): u is HarnessUpdate => u !== null);
+}
 
 /**
  * Some updaters exit cleanly without installing anything, so success is the
@@ -71,25 +101,30 @@ type RowState =
  * reloaded before the row says so, so the picker is current by then.
  */
 async function runUpdate(update: HarnessUpdate): Promise<RowState> {
+  let version: string | undefined;
   try {
     await updateHarnessCli(update.harness);
+  } catch (error) {
+    // An updater can exit non-zero after it did install; the version decides.
+    void error;
+  }
+  try {
     const after = await inspectHarnessBinary(update.harness);
-    const version = parseOpenCodeVersion(after.version ?? "");
-    if (version && compareSemver(version, update.latest) >= 0) {
+    version = parseOpenCodeVersion(after.version ?? "") ?? undefined;
+    if (!after.error && version && compareSemver(version, update.latest) >= 0) {
       await refreshHarnessCatalogs([update.harness], { force: true });
       void announceHarnessUpdated(update.harness).catch(() => undefined);
       return { status: "updated", version };
     }
-    return {
-      status: "failed",
-      error: `Still on ${version ?? update.installed} after updating.`,
-    };
-  } catch (error) {
-    return {
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
+  } catch {
+    // Could not read the version: never call that a success.
   }
+  return {
+    status: "failed",
+    error: updateFailedMessage(update.harness),
+    installed: version ?? update.installed,
+    latest: update.latest,
+  };
 }
 
 /** Checked once per app launch, in whichever window asks first. */
@@ -121,11 +156,33 @@ export function HarnessUpdateNotice({
 
   useEffect(() => {
     let cancelled = false;
-    void checkForHarnessUpdates().then((next) => {
-      if (!cancelled) setUpdates(next);
-    });
+    void checkForHarnessUpdates()
+      .then((next) => stillBehind(next))
+      .then((next) => {
+        if (!cancelled) setUpdates(next);
+      });
+    // Re-check whenever the window comes back, e.g. after updating in Terminal.
+    const recheck = () => {
+      setUpdates((current) => {
+        if (current.length === 0) return current;
+        void stillBehind(current).then((next) => {
+          if (cancelled) return;
+          if (next.length === 0) launchCheck = Promise.resolve([]);
+          setUpdates((latest) =>
+            latest.filter((u) => next.some((n) => n.harness === u.harness)).map(
+              (u) => next.find((n) => n.harness === u.harness) ?? u,
+            ),
+          );
+        });
+        return current;
+      });
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
     };
   }, []);
 
@@ -193,7 +250,7 @@ export function HarnessUpdateNotice({
               ? "Harness update available"
               : "Harness updates available"}
           </span>
-          {pending.length > 1 ? (
+          {pending.length > 1 && !updates.some((u) => stateOf(u.harness).status === "failed") ? (
             <button
               type="button"
               className="rounded-md px-2 py-1 text-[11px] font-medium text-content/70 hover:bg-content/10 hover:text-content"
@@ -254,7 +311,7 @@ function HarnessUpdateRow({
             <Check className="size-3.5" />
             Updated to {state.version}
           </span>
-        ) : (
+        ) : state.status === "failed" ? null : (
           <>
             <span className="shrink-0 font-mono text-[11px] text-content/50">
               {update.installed} → {update.latest}
@@ -270,8 +327,6 @@ function HarnessUpdateRow({
                   <Loader className="size-3 animate-spin" />
                   Updating
                 </>
-              ) : state.status === "failed" ? (
-                "Retry"
               ) : (
                 "Update"
               )}
@@ -280,13 +335,21 @@ function HarnessUpdateRow({
         )}
       </div>
       {state.status === "failed" ? (
-        <p
-          role="alert"
-          className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-red-300/90"
-          title={state.error}
-        >
-          {state.error}
-        </p>
+        <div role="alert" className="mt-1.5">
+          <p className="text-[12px] leading-relaxed text-content/90">
+            {state.error}
+          </p>
+          <p className="mt-1 font-mono text-[10px] text-content/40">
+            Installed {state.installed ?? update.installed} · Latest {state.latest}
+          </p>
+          <button
+            type="button"
+            className="mt-2 rounded-md bg-content/10 px-2 py-1 text-[11px] font-medium hover:bg-content/15"
+            onClick={onUpdate}
+          >
+            Try again
+          </button>
+        </div>
       ) : null}
     </article>
   );
