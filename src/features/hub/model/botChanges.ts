@@ -27,7 +27,22 @@ export type BotChange = {
   problem?: string;
   /** A Lead retired with its project: Undo restores its folder and roster entry. */
   retired?: RetiredMono;
+  /** A Page kept from a Mono's preview: Undo takes it off the Pages list, Redo puts it back. */
+  pageId?: string;
 };
+
+/** Pages registers how its kept pages come and go, so Undo here doesn't import the Pages store. */
+type PageHooks = { remove(pageId: string): void; restore(pageId: string): void };
+let pageHooks: PageHooks | undefined;
+export function setPageHooks(next: PageHooks): void {
+  pageHooks = next;
+}
+/** A kept Page: a Bot changes row whose Undo takes it away again. */
+export function recordPageChange(pageId: string, by: string, title: string): void {
+  list = [{ id: `page:${pageId}`, bot: by, day: "Today", line: `${by} added the page “${title}”`, now: "No page", after: `Page “${title}” on your Pages list`, pageId }, ...list.filter((c) => c.id !== `page:${pageId}`)];
+  saveReal();
+  changed();
+}
 
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
 export type BotFiles = {
@@ -42,14 +57,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired)));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId)));
   } catch {
     /* best effort */
   }
@@ -126,7 +141,10 @@ export async function undoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || c.undone) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
-    if (c.retired) {
+    if (c.pageId) {
+      if (pageHooks) pageHooks.remove(c.pageId);
+      else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
+    } else if (c.retired) {
       try {
         await restoreRetiredMono(c.retired);
       } catch (e) {
@@ -166,7 +184,10 @@ export async function redoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || !c.undone) continue;
     let next: BotChange = { ...c, undone: false, problem: undefined };
-    if (c.retired) {
+    if (c.pageId) {
+      if (pageHooks) pageHooks.restore(c.pageId);
+      else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
+    } else if (c.retired) {
       try {
         const again = await retireMono(c.retired.mono.id);
         if (again) next = { ...next, retired: again };

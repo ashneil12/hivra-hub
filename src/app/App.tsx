@@ -834,6 +834,10 @@ const NotesView = lazySurface(
   },
   { suspense: false },
 );
+const PagesView = lazySurface(async () => {
+  const module = await import("../features/pages/ui/PagesView");
+  return { default: module.PagesView };
+}, { suspense: false });
 const AutomationsView = lazySurface(
   async () => {
     const module = await import("../features/automations/ui/AutomationsView");
@@ -1252,6 +1256,8 @@ function Workspace({
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
+  /** Pages rides on the Automations view slot, so every place that closes Automations also closes Pages. */
+  const [pagesMode, setPagesMode] = useState(false);
   const [inspectedWorkerId, setInspectedWorkerId] = useState<string | null>(
     null,
   );
@@ -11680,6 +11686,20 @@ function Workspace({
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
+      setPagesMode(false);
+      setAutomationsViewOpen(true);
+    });
+  }, []);
+
+  const onOpenPages = useCallback(() => {
+    workspaceNavigation.cancel();
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setPagesMode(true);
       setAutomationsViewOpen(true);
     });
   }, []);
@@ -13012,6 +13032,7 @@ function Workspace({
               onOpenInboxItem={onOpenLinkedWorkItem}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenPages={onOpenPages}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
               inboxActive={
@@ -13020,7 +13041,8 @@ function Workspace({
                 hubSel.item === "inbox"
               }
               notesActive={notesViewOpen}
-              automationsActive={automationsViewOpen}
+              automationsActive={automationsViewOpen && !pagesMode}
+              pagesActive={automationsViewOpen && pagesMode}
               notesEnabled={notesEnabled}
               projectRailOpen={projectRailOpen}
               compactProjectRail={compactProjectRail}
@@ -13387,7 +13409,14 @@ function Workspace({
                   onToggleSidebar={onToggleSidebar}
                 />
               ) : null}
-              {automationsViewOpen ? (
+              {automationsViewOpen && pagesMode ? (
+                <PagesView
+                  onClose={onLeaveAutomations}
+                  onToggleSidebar={onToggleSidebar}
+                  besideRail={projectRailOpen || compactProjectRail}
+                  compactRail={compactRailActive}
+                />
+              ) : automationsViewOpen ? (
                 <AutomationsView
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}

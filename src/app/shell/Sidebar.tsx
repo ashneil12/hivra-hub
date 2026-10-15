@@ -31,6 +31,7 @@ import {
   Settings,
   StickyNote,
   Zap,
+  DashboardSquare,
 } from "../../shared/ui/icons";
 import {
   memo,
@@ -326,6 +327,8 @@ type Props = {
   onOpenInboxItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenPages?: () => void;
+  pagesActive?: boolean;
   onGoToFile?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
@@ -426,6 +429,8 @@ function SidebarComponent({
   onOpenInboxItem,
   onOpenNotes,
   onOpenAutomations,
+  onOpenPages,
+  pagesActive = false,
   onGoToFile,
   searchActive = false,
   inboxActive = false,
@@ -1807,6 +1812,8 @@ function SidebarComponent({
               onOpenNotificationSettings={onOpenNotificationSettings}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenPages={onOpenPages}
+              pagesActive={pagesActive}
               searchActive={searchActive}
               inboxActive={inboxActive}
               notesActive={notesActive}
@@ -2335,6 +2342,8 @@ function SidebarComponent({
           onOpenNotes={notesEnabled ? onOpenNotes : undefined}
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
+          onOpenPages={onOpenPages}
+          pagesActive={pagesActive}
           automationsActive={automationsActive}
           onOpenSettings={onOpenSettings}
           onTogglePanel={onToggleProjectRail}
@@ -2366,6 +2375,8 @@ function SidebarComponent({
           onOpenNotes={onOpenNotes}
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
+          onOpenPages={onOpenPages}
+          pagesActive={pagesActive}
           automationsActive={automationsActive}
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
@@ -2445,6 +2456,8 @@ function SidebarProjectPicker({
   onOpenNotificationSettings,
   onOpenNotes,
   onOpenAutomations,
+  onOpenPages,
+  pagesActive = false,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
@@ -2463,6 +2476,8 @@ function SidebarProjectPicker({
   onOpenNotificationSettings?: (projectPath?: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenPages?: () => void;
+  pagesActive?: boolean;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
@@ -2541,6 +2556,11 @@ function SidebarProjectPicker({
             <Zap className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
+        {onOpenPages ? (
+          <IconButton label="Pages" active={pagesActive} onClick={onOpenPages}>
+            <DashboardSquare className="size-3.5" strokeWidth={1.75} />
+          </IconButton>
+        ) : null}
       </div>
       {inboxMenu ? (
         <InboxNotificationMenu
@@ -2582,6 +2602,8 @@ function CompactProjectRail({
   onOpenNotes,
   notesActive,
   onOpenAutomations,
+  onOpenPages,
+  pagesActive = false,
   automationsActive,
   onOpenSettings,
   onTogglePanel,
@@ -2615,6 +2637,8 @@ function CompactProjectRail({
   onOpenNotes?: () => void;
   notesActive: boolean;
   onOpenAutomations?: () => void;
+  onOpenPages?: () => void;
+  pagesActive?: boolean;
   automationsActive: boolean;
   onOpenSettings?: () => void;
   onTogglePanel?: () => void;
@@ -2808,6 +2832,14 @@ function CompactProjectRail({
           active={automationsActive}
           onClick={action(automationsActive, onOpenAutomations)}
         />
+        {onOpenPages ? (
+          <CompactRailAction
+            label="Pages"
+            icon={DashboardSquare}
+            active={pagesActive}
+            onClick={action(pagesActive, onOpenPages)}
+          />
+        ) : null}
       </div>
       <div className="min-h-2 flex-1" />
       <div className="flex w-full flex-col items-center gap-1 py-1.5">

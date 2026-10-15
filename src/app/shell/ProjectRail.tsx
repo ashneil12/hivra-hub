@@ -13,6 +13,7 @@ import {
   Search,
   Settings,
   Zap,
+  DashboardSquare,
 } from "../../shared/ui/icons";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
@@ -107,6 +108,8 @@ type Props = {
   onOpenNotes?: () => void;
   notesActive?: boolean;
   onOpenAutomations?: () => void;
+  onOpenPages?: () => void;
+  pagesActive?: boolean;
   automationsActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
@@ -151,6 +154,8 @@ export function ProjectRail({
   onOpenNotes,
   notesActive = false,
   onOpenAutomations,
+  onOpenPages,
+  pagesActive = false,
   automationsActive = false,
   onTogglePanel,
   onSelectProject,
@@ -422,6 +427,15 @@ export function ProjectRail({
               active={automationsActive}
               ariaLabel="Automations"
             />
+            {onOpenPages ? (
+              <RailAction
+                label="Pages"
+                icon={DashboardSquare}
+                onClick={onOpenPages}
+                active={pagesActive}
+                ariaLabel="Pages"
+              />
+            ) : null}
           </div>
 
           <div
