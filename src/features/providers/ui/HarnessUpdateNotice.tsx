@@ -96,9 +96,13 @@ async function runUpdate(update: HarnessUpdate): Promise<RowState> {
 export function HarnessUpdateNotice({
   topOffset = 12,
   onHeightChange,
+  placement = "top-right",
 }: {
   topOffset?: number;
   onHeightChange?: (height: number) => void;
+  /** "bottom-left" keeps it over the sidebar, off a full-width view such as the hub's Today. It then takes no room
+   * from the top-right toast stack. */
+  placement?: "top-right" | "bottom-left";
 }) {
   const panelRef = useRef<HTMLElement>(null);
   const [updates, setUpdates] = useState<HarnessUpdate[]>([]);
@@ -129,7 +133,7 @@ export function HarnessUpdateNotice({
   useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!panel || !onHeightChange) return;
-    const measure = () => onHeightChange(panel.offsetHeight);
+    const measure = () => onHeightChange(placement === "top-right" ? panel.offsetHeight : 0);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(panel);
@@ -137,7 +141,7 @@ export function HarnessUpdateNotice({
       observer.disconnect();
       onHeightChange(0);
     };
-  }, [visible, onHeightChange]);
+  }, [visible, onHeightChange, placement]);
   if (!visible) return null;
 
   const stateOf = (harness: HarnessId): RowState =>
@@ -175,8 +179,11 @@ export function HarnessUpdateNotice({
       ref={panelRef}
       aria-label="Harness updates"
       role="status"
-      style={{ zIndex: LAYER.toast, top: topOffset }}
-      className="fixed right-3 isolate w-[min(340px,calc(100vw-24px))] overflow-hidden rounded-xl border border-content/10 text-content shadow-xl"
+      data-placement={placement}
+      style={placement === "top-right" ? { zIndex: LAYER.toast, top: topOffset } : { zIndex: LAYER.toast, bottom: 36, left: 8 }}
+      className={`fixed isolate overflow-hidden rounded-xl border border-content/10 text-content shadow-xl ${
+        placement === "top-right" ? "right-3 w-[min(340px,calc(100vw-24px))]" : "w-[244px]"
+      }`}
     >
       <GlassBackdrop />
       <div className="relative z-[1]">

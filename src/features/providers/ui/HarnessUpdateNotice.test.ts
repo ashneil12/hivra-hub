@@ -106,4 +106,27 @@ describe("HarnessUpdateNotice", () => {
     });
     act(() => root.unmount());
   });
+
+  it("on the hub's views sits bottom-left over the sidebar, stays dismissible, and takes no room from the top", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const heights: number[] = [];
+    await act(async () => {
+      root.render(createElement(HarnessUpdateNotice, { placement: "bottom-left", onHeightChange: (h: number) => heights.push(h) }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const notice = document.body.querySelector<HTMLElement>('[aria-label="Harness updates"]')!;
+    expect(notice.dataset.placement).toBe("bottom-left");
+    expect(notice.style.bottom).toBe("36px");
+    expect(notice.style.left).toBe("8px");
+    expect(notice.style.top).toBe("");
+    expect(notice.className).not.toContain("right-3");
+    expect(heights.every((h) => h === 0)).toBe(true);
+    const dismiss = notice.querySelector<HTMLButtonElement>('[aria-label="Dismiss harness updates"]')!;
+    await act(async () => dismiss.click());
+    expect(document.body.querySelector('[aria-label="Harness updates"]')).toBeNull();
+    act(() => root.unmount());
+  });
 });

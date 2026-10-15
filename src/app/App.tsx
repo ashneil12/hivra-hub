@@ -13500,6 +13500,8 @@ function Workspace({
               12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)
             }
             onHeightChange={setHarnessUpdateHeight}
+            // On the hub's views it sits over the sidebar instead of over Today's content.
+            placement={hubShown ? "bottom-left" : "top-right"}
           />
           <ApprovalToasts
             notices={hiddenApprovalToasts}
