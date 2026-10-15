@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { parseSetup, setPendingSetup } from "../model/setupFile";
 import { signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
-import { Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { hubData, sinceLabel } from "../model/hubData";
+import { dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
@@ -26,6 +26,9 @@ import { useHubBuildsVersion } from "../model/hubBuilds";
  * Monocode's own views (no breadcrumbs), the bodies are filled in later units.
  */
 export function HubSurface({ selection }: { selection: HubSelection }) {
+  useHubDataVersion();
+  // Needs that ticked themselves off while Ash was looking go away once he leaves the page.
+  useEffect(() => dismissDoneNeeds, [selection.project, selection.item]);
   useHubChatsVersion();
   useProposalsVersion();
   useTemplatesVersion();
@@ -81,14 +84,19 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   const data = hubData();
+  const connection = data.connection();
+  if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
+  // Reading Ash OS for the first time: say nothing rather than flash "No projects yet".
+  if (connection.status === "loading" && !data.listProjects().length) return <div data-hub-loading />;
   if (!data.listProjects().length) return <FirstTodayEmpty />;
   const since = data.sinceSummary(projectId);
+  const sinceAt = data.sinceAt();
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
       <section>
-        <h2 className="mb-2 text-xs text-content/60">{sinceLabel(data.lastActiveAt())}</h2>
+        {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{sinceLabel(sinceAt)}</h2> : null}
         <p className="text-[13px] leading-5 text-content/85">{since.plainText}</p>
       </section>
       {!projectId && setupItems().length ? (
@@ -134,15 +142,23 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
 }
 
 function NeedRow({ need }: { need: Need }) {
+  const done = need.state === "done";
   return (
-    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
+    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] text-content">{need.title}</div>
+        <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         <div className="truncate text-[13px] text-content/60">{need.why}</div>
       </div>
-      <button type="button" className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
-        {need.actionLabel}
-      </button>
+      {done ? (
+        // It ticked itself off (answered or cleared somewhere else). It stays here until Ash leaves the page.
+        <span className="grid size-6 shrink-0 place-items-center text-content/60" role="img" aria-label="Done">
+          <Check className="size-3.5" strokeWidth={1.75} />
+        </span>
+      ) : (
+        <button type="button" className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
+          {need.actionLabel}
+        </button>
+      )}
     </div>
   );
 }
@@ -176,6 +192,29 @@ function Pending({ what, unit }: { what: string; unit: number }) {
       <p className="text-[13px] text-content/60">
         {what} is built in Unit {unit}. Unit 1 is the app shell.
       </p>
+    </div>
+  );
+}
+
+/** Ash OS can't be reached: one calm sentence and one button. Never example data. */
+function AshOsDown({ message, retrying, onRetry }: { message?: string; retrying?: boolean; onRetry: () => void }) {
+  const heading = "Ash OS isn't running.";
+  const help = message && message !== heading ? message : "Start it, then try again. Your projects and Needs come back on their own.";
+  return (
+    <div className="grid h-full place-items-center px-8" data-hub-down>
+      <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
+        <p className="text-[13px] text-content">{heading}</p>
+        <p className="text-[13px] leading-5 text-content/60">{help}</p>
+        <button
+          type="button"
+          data-hub-down-retry
+          disabled={retrying}
+          onClick={onRetry}
+          className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-60"
+        >
+          {retrying ? "Trying…" : "Try again"}
+        </button>
+      </div>
     </div>
   );
 }

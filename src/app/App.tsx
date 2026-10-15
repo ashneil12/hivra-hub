@@ -89,7 +89,7 @@ import {
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
-import { hubData, nameHubProject } from "../features/hub/model/hubData";
+import { hubData, nameHubProject, useHubDataVersion } from "../features/hub/model/hubData";
 import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
@@ -12795,6 +12795,7 @@ function Workspace({
 
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
+  useHubDataVersion();
   const hubProject = hubData()
     .listProjects()
     .find((project) => project.id === hubSel.project);
@@ -12820,7 +12821,7 @@ function Workspace({
     setHubSelection({ project: hubSel.project, item: "inbox" });
   };
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, projectFilter: hubProject?.folder, groupBy: hubProject ? undefined : hubMonoGroup }
+    ? { ...sidebarMonos, projectFilter: hubProject?.folder ?? undefined, groupBy: hubProject ? undefined : hubMonoGroup }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -12899,9 +12900,12 @@ function Workspace({
               selection={hubSel}
               onPickProject={(project) => {
                 closeChromeViews();
-                setHubSelection({ project: project.id, item: "coding-team" });
-                nameHubProject(project);
-                onSelectProject(project.folder);
+                // A project with no code folder has no Coding team: it opens on its own Inbox.
+                setHubSelection({ project: project.id, item: project.folder ? "coding-team" : "inbox" });
+                if (project.folder) {
+                  nameHubProject(project);
+                  onSelectProject(project.folder);
+                }
               }}
               onCreateProject={pickProject}
             />
@@ -12911,7 +12915,7 @@ function Workspace({
                   selection={hubSel}
                   onPick={(item) => {
                     closeChromeViews();
-                    if (item.kind === "coding-team" && hubProject) {
+                    if (item.kind === "coding-team" && hubProject?.folder) {
                       nameHubProject(hubProject);
                       onSelectProject(hubProject.folder);
                     }

@@ -1,5 +1,5 @@
 import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
-import { hubData } from "../model/hubData";
+import { hubData, useHubDataVersion } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
 import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
@@ -29,6 +29,7 @@ export function ProjectStrip({
   onPickProject: (project: HubProject) => void;
   onCreateProject: () => void;
 }) {
+  useHubDataVersion();
   useProposalsVersion();
   useTemplatesVersion();
   useConnectorsVersion();

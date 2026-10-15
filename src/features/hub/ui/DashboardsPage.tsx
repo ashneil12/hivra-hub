@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { hubData } from "../model/hubData";
+import { hubData, useHubDataVersion } from "../model/hubData";
 import { downloadSetup, parseSetup, type SetupFile } from "../model/setupFile";
 import { RestorePreview } from "./RestorePreview";
 import {
@@ -17,6 +17,7 @@ const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/8
 
 /** Settings → Dashboards: each project's template, reset, export and restore. */
 export function DashboardsPage() {
+  useHubDataVersion();
   useTemplatesVersion();
   const projects = hubData().listProjects();
   const fileRef = useRef<HTMLInputElement>(null);

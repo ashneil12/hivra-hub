@@ -1,5 +1,5 @@
 import { Plus, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
-import { hubData } from "../model/hubData";
+import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { ProjectItem } from "../model/types";
@@ -26,6 +26,7 @@ export function HubProjectItems({
   selection: HubSelection;
   onPick: (item: ProjectItem) => void;
 }) {
+  useHubDataVersion();
   useHubChatsVersion();
   if (selection.project === "today") return null;
   const project = hubData().listProjects().find((p) => p.id === selection.project);

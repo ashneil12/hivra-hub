@@ -1,6 +1,6 @@
 import { pastChanges, undoProposal, useProposalsVersion } from "../model/proposals";
 import { useState } from "react";
-import { hubData } from "../model/hubData";
+import { hubData, useHubDataVersion } from "../model/hubData";
 import { botChangeRows, undoBotChange, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
 
 const UNDO = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
@@ -68,6 +68,7 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
 }
 
 function ProjectChanges() {
+  useHubDataVersion();
   useProposalsVersion();
   const ids = new Set(hubData().listProjects().map((p) => p.id));
   const list = pastChanges().filter((p) => ids.has(p.projectId));
