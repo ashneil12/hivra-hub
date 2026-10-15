@@ -123,3 +123,24 @@ describe("retire the Lead with its project", () => {
     expect(disk.archive).toHaveBeenCalledWith("hivra-lead", expect.any(String));
   });
 });
+
+describe("retiring a default-team Mono round-trips", () => {
+  it("is marked removed by Ash while retired, so the repair skips it; Undo clears that and it stays", async () => {
+    const { mono, changes } = await load();
+    const team = await import("../model/builtInMonos");
+    const archive = await import("../../monos/model/monoArchive");
+    team.ensureBuiltInMonos();
+    const cos = mono.listMonos().find((m) => team.isDefaultTeamMono(m))!;
+    const before = mono.listMonos().map((m) => m.id);
+    const r = (await archive.retireMono(cos.id))!;
+    changes.recordRetirement(r, "Harness");
+    expect(team.isMonoRemovedByUser(cos.id)).toBe(true);
+    team.ensureBuiltInMonos();
+    expect(mono.findMono(cos.id)).toBeUndefined();
+    const row = changes.botChangeRows().find((x) => x.kind === "one" && x.change.retired?.mono.id === cos.id)!;
+    await changes.undoBotChange([row.kind === "one" ? row.change.id : ""]);
+    expect(team.isMonoRemovedByUser(cos.id)).toBe(false);
+    team.ensureBuiltInMonos();
+    expect(mono.listMonos().map((m) => m.id)).toEqual(before);
+  });
+});

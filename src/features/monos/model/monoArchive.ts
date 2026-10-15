@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { addMono, listMonos, removeMono, reorderMonos, type Mono } from "./mono";
+import { clearMonoRemovedByUser } from "../../hub/model/builtInMonos";
 
 /**
  * Retiring a Mono: its folder (memory, rules, habits, notes) moves into `monos/.archive/` on disk and its roster entry
@@ -25,7 +26,7 @@ export async function retireMono(monoId: string, now = new Date()): Promise<Reti
   if (index < 0) return undefined;
   const stamp = now.toISOString().replace(/[^0-9]/g, "").slice(0, 14);
   const archive = (await store.archive(monoId, stamp)) ?? `${monoId}-${stamp}`;
-  removeMono(monoId);
+  removeMono(monoId); // also marks a default-team Mono as removed by Ash, so the team repair won't bring it back
   return { mono: roster[index], index, archive, at: now.toISOString() };
 }
 
@@ -37,4 +38,6 @@ export async function restoreRetiredMono(r: RetiredMono): Promise<void> {
     order.splice(Math.min(r.index, order.length), 0, r.mono.id);
     reorderMonos(order);
   }
+  // Back in the roster: the team repair may treat it as present again.
+  clearMonoRemovedByUser(r.mono.id, r.mono.name);
 }
