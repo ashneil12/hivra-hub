@@ -111,7 +111,12 @@ export type StuckItem = {
   quiet?: boolean;
 };
 
-export type SinceSummary = { plainText: string; details: string };
+export type SinceSummary = {
+  plainText: string;
+  details: string;
+  /** Ash OS is still writing the nicer text: show a quiet line, the text swaps in when it is ready. */
+  pending?: boolean;
+};
 
 /** Whether the data comes from a live source that can be down. The example data is always "ready". */
 export type HubConnection = {

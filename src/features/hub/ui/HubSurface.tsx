@@ -4,7 +4,8 @@ import { signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
 import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
+import { examplesOn } from "../model/examples";
+import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
@@ -99,7 +100,12 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
       <section>
         {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{sinceLabel(sinceAt)}</h2> : null}
-        <p className="text-[13px] leading-5 text-content/85">{since.plainText}</p>
+        {since.pending ? (
+          // Ash OS is still writing it: a quiet line, and the paragraph swaps in here when it is ready.
+          <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
+        ) : (
+          <p className="line-clamp-4 text-[13px] leading-5 text-content/85" data-hub-since>{calmSummary(since.plainText)}</p>
+        )}
       </section>
       {!projectId && setupItems().length ? (
         <section data-hub-setup>
@@ -257,6 +263,8 @@ function StuckRow({ item }: { item: WaitingItem }) {
 }
 
 function Pending({ what, unit }: { what: string; unit: number }) {
+  // Ships clean: a placeholder is never reachable without the examples flag (the sections that led here are hidden).
+  if (!examplesOn()) return null;
   return (
     <div className="grid h-full place-items-center px-8 text-center">
       <p className="text-[13px] text-content/60">

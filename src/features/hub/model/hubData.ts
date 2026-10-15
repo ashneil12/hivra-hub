@@ -68,6 +68,18 @@ export function nameHubProject(project: HubProject): void {
   if (loadTabGroupLabels()[key] !== project.name) saveTabGroupLabel(key, project.name);
 }
 
+/**
+ * The Since paragraph as Ash reads it: no lists of raw titles in brackets (Ash OS's plain fallback text quotes them),
+ * tidy spacing. The screen also clamps it to four lines.
+ */
+export function calmSummary(text: string): string {
+  return text
+    .replace(/\s*\(([^()]*)\)/g, (whole, inner: string) => (inner.length > 24 || inner.includes(",") || inner.includes(";") ? "" : whole))
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 /** "Since 2pm", "Since yesterday", "Since Monday", "Since 3 Oct". */
 export function sinceLabel(iso: string, now = new Date()): string {
   const then = new Date(iso);

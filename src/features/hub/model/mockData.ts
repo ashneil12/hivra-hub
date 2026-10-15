@@ -69,7 +69,9 @@ export function projectItems(projectId: string, hasFolder = true): ProjectItem[]
     ...listChats(projectId)
       .filter((c) => !c.isDefault)
       .map((c): ProjectItem => ({ id: `chat:${c.id}`, kind: "group-chat", title: c.name })),
-    ...templateOf(projectId).sections,
+    // Template sections (Builds & playtests, Users & emails) have no backend yet: their screens are example data or a
+    // "built in Unit N" placeholder, so a normal build doesn't list them. They come back when they are wired.
+    ...(examplesOn() ? templateOf(projectId).sections : []),
     { id: "being-built", kind: "being-built", title: "Being built" },
   ];
 }

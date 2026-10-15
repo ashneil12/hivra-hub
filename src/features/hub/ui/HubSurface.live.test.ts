@@ -99,7 +99,7 @@ describe("Today, live", () => {
     await until(() => text().includes("Since"), "since label");
     expect(text()).toMatch(/Since (yesterday|\d|[A-Z][a-z]+)/);
     expect(text()).toContain("Example: the game's new level is in and working");
-    for (const name of ["EXO game", "Hivra", "Org"]) expect(text()).toContain(name);
+    for (const name of ["EXO", "Hivra", "Harness"]) expect(text()).toContain(name);
     expect(text()).not.toContain("Nibbii"); // nothing waiting: no heading, no zero
     const org = container.querySelectorAll('[data-hub-need]');
     for (const row of org) expect(row.querySelectorAll("button").length).toBe(1);
@@ -111,9 +111,9 @@ describe("Today, live", () => {
     mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
     await until(() => rows().length >= 8, "needs");
     const badge = (name: string) => container.querySelector(`button[aria-label^="${name}"] span.hub-count-badge`)?.textContent;
-    expect(badge("EXO game")).toBe("2");
+    expect(badge("EXO")).toBe("2");
     expect(badge("Hivra")).toBe("1");
-    expect(badge("Org")).toBe("5");
+    expect(badge("Harness")).toBe("5");
     expect(badge("Nibbii")).toBeUndefined();
     expect(container.querySelectorAll("[data-hub-strip] .hub-count-badge").length).toBe(3);
   });
@@ -138,7 +138,7 @@ describe("Today, live", () => {
   it("a new Need arrives at the bottom of its project without a reload", async () => {
     mount(surface());
     await until(() => rows().length >= 8, "needs");
-    stub.addNeed({ id: "q20", projectId: "exo-game", title: "Example: late arrival", rank: 0 });
+    stub.addNeed({ id: "q20", projectId: "vg-game", title: "Example: late arrival", rank: 0 });
     await until(() => rows().includes("q20"), "new row");
     const r = rows();
     expect(r.indexOf("q20")).toBe(r.indexOf("q2") + 1);
@@ -149,7 +149,7 @@ describe("Today, live", () => {
     mount(surface());
     await until(() => container.querySelector("[data-hub-down]"), "down state");
     expect(text()).toContain("Ash OS isn't running.");
-    expect(text()).not.toMatch(/Example|EXO game|Hivra/);
+    expect(text()).not.toMatch(/Example|EXO|Hivra/);
     expect(container.querySelectorAll("button").length).toBe(1);
     expect(container.querySelector("[data-hub-down-retry]")?.textContent).toBe("Try again");
     stub = await startStub();
@@ -172,8 +172,44 @@ describe("Today, live", () => {
     mount(createElement("div"));
     await act(async () => store.start());
     await until(() => store.getSnapshot().status === "ready", "ready");
-    const items = createLiveHubData(store).listProjectItems("org").map((i) => i.id);
+    const items = createLiveHubData(store).listProjectItems("ash").map((i) => i.id);
     expect(items).not.toContain("coding-team");
     expect(createLiveHubData(store).listProjectItems("hivra").map((i) => i.id)).toContain("coding-team");
+  });
+});
+
+describe("ships clean and calm", () => {
+  it("lists no template section (they lead to example data or a 'built in Unit N' placeholder)", async () => {
+    await act(async () => store.start());
+    await until(() => store.getSnapshot().status === "ready", "ready");
+    const data = createLiveHubData(store);
+    for (const id of ["vg-game", "hivra", "nibbii", "ash"]) {
+      const kinds = data.listProjectItems(id).map((i) => i.kind);
+      expect(kinds).not.toContain("section");
+    }
+    expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
+  });
+
+  it("the strip shows EXO, Hivra, Nibbii, Harness in that order, each its own shape", async () => {
+    mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
+    await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
+    const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
+    expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Harness"]);
+    const icons = [...container.querySelectorAll("[data-hub-strip] button")].slice(1, 5).map((b) => b.querySelector("svg")?.innerHTML);
+    expect(new Set(icons).size).toBe(4);
+  });
+
+  it("while Ash OS is still writing the summary it shows a quiet line, then swaps the paragraph in place", async () => {
+    await stub.close();
+    stub = await startStub({ pendingSinceOnce: true });
+    url = stub.url;
+    mount(surface());
+    await until(() => container.querySelector("[data-hub-since-pending]"), "pending line");
+    expect(container.querySelector("[data-hub-since-pending]")?.textContent).toBe("Writing up what changed…");
+    expect(text()).not.toContain("on their way");
+    stub.finishPendingSince();
+    await until(() => container.querySelector("[data-hub-since]"), "paragraph", 6000);
+    expect(container.querySelector("[data-hub-since-pending]")).toBeNull();
+    expect(container.querySelector("[data-hub-since]")?.className).toContain("line-clamp-4");
   });
 });
