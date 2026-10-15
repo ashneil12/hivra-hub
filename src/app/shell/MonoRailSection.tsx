@@ -12,6 +12,7 @@ import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
+import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { saveMonosEnabled } from "../../features/settings/model/settings";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
@@ -48,8 +49,8 @@ export type MonoRailProps = {
   onDelete: (monoId: string) => void;
   /** Hub mode: list only the Monos that work on this project folder. */
   projectFilter?: string;
-  /** Hub mode: a quiet header above each run of Monos with the same group. */
-  groupBy?: (mono: { projects: readonly string[] }) => string;
+  /** Hub mode: one flat list, sorted by this rank (lower first; ties keep their order). No headers. */
+  rank?: (mono: { id: string; name?: string }) => number;
 };
 
 const IDLE: MonoState = { status: "idle" };
@@ -76,7 +77,7 @@ export function MonoRailSection({
   onCreate,
   onDelete,
   projectFilter,
-  groupBy,
+  rank,
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monos = useMemo(
@@ -85,13 +86,10 @@ export function MonoRailSection({
         const list = listMonos().filter(
           (mono) => !projectFilter || mono.projects.includes(projectFilter),
         );
-        if (!groupBy) return list;
-        // Keep each group together, in first-seen order.
-        const order: string[] = [];
-        for (const m of list) if (!order.includes(groupBy(m))) order.push(groupBy(m));
-        return order.flatMap((g) => list.filter((m) => groupBy(m) === g));
+        if (!rank) return list;
+        return list.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
       },
-    [snapshot, projectFilter, groupBy],
+    [snapshot, projectFilter, rank],
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
@@ -99,11 +97,16 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
 
+  // Hub: a clean first launch starts with the default team in normal rows, not Monocode's intro card.
+  useEffect(() => {
+    if (rank) ensureBuiltInMonos();
+  }, [rank]);
+
   // Hub: a project with no Monos shows nothing here; its empty Leadership
   // team offers "Add a Mono" instead, so the intro card isn't doubled up.
   if (monos.length === 0 && projectFilter) return null;
-  // With no Mono yet, the card stands in for the section.
-  if (monos.length === 0)
+  // With no Mono yet, the card stands in for the section (plain Monocode only; the hub has its default team).
+  if (monos.length === 0 && !rank)
     return (
       <div className="mb-2 shrink-0" data-mono-rail>
         <MonoIntroCard
@@ -131,14 +134,7 @@ export function MonoRailSection({
         </button>
       </div>
       <div className="flex flex-col gap-px px-2">
-        {monos.map((mono, index) => {
-          const group = groupBy?.(mono);
-          const header =
-            group && group !== (index ? groupBy?.(monos[index - 1]) : undefined) ? (
-              <div key={`group:${group}`} className="px-2 pb-0.5 pt-2 text-[11px] text-content/45" data-mono-group={group}>
-                {group}
-              </div>
-            ) : null;
+        {monos.map((mono) => {
           const look = monoLook(mono);
           const state = states.get(mono.id) ?? IDLE;
           const selected = mono.id === activeId;
@@ -152,7 +148,6 @@ export function MonoRailSection({
               : (state.activity ?? MONO_STATUS_LABEL[state.status]);
           return (
             <Fragment key={mono.id}>
-            {header}
             <div
               ref={(el) => sortable.setItemRef(mono.id, el)}
               data-selected={selected || undefined}

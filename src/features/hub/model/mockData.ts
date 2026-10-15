@@ -9,16 +9,16 @@ const EXAMPLE_PROJECTS: HubProject[] = [
   { id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/harness/exo-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/harness/hivra" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/harness/nibbii" },
-  { id: "operator-os", name: "Operator OS", shortName: "Operator", iconShape: "gauge", folder: "/Users/ash/harness/org" },
+  { id: "harness", name: "Harness", shortName: "Harness", iconShape: "gauge", folder: "/Users/ash/harness/org" },
 ];
 
 
 const NEEDS: Need[] = examples([
-  { id: "o1", projectId: "operator-os", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionLabel: "Open" },
-  { id: "o2", projectId: "operator-os", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionLabel: "Open" },
-  { id: "o3", projectId: "operator-os", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionLabel: "Open" },
-  { id: "o4", projectId: "operator-os", title: "Example: pick the offsite dates", why: "Three options; everyone else has voted.", actionType: "open", actionLabel: "Open" },
-  { id: "o5", projectId: "operator-os", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionLabel: "Open" },
+  { id: "o1", projectId: "harness", title: "Example: approve the Q4 hiring plan", why: "Two roles changed since last week.", actionType: "open", actionLabel: "Open" },
+  { id: "o2", projectId: "harness", title: "Example: sign the vendor renewal", why: "Due Friday; price is unchanged.", actionType: "open", actionLabel: "Open" },
+  { id: "o3", projectId: "harness", title: "Example: review the on-call rota", why: "Next month has a gap on the 12th.", actionType: "open", actionLabel: "Open" },
+  { id: "o4", projectId: "harness", title: "Example: pick the offsite dates", why: "Three options; everyone else has voted.", actionType: "open", actionLabel: "Open" },
+  { id: "o5", projectId: "harness", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionLabel: "Open" },
   { id: "n1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
   { id: "n2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
   // More than five for one project, so the Later fold shows (five on Today, the rest under Later).
@@ -41,9 +41,8 @@ const SINCE: Record<string, string> = {
 };
 
 const MONOS: HubMono[] = [
-  { id: "mono-invader", name: "Lead", mascot: "robot", color: "teal", status: "working", projectIds: ["exo-game"] },
-  { id: "playtester", name: "Playtester", mascot: "ghost", color: "violet", status: "idle", projectIds: ["exo-game"] },
-  { id: "hivra-mailer", name: "Hivra mailer", mascot: "cat", color: "amber", status: "idle", projectIds: ["hivra"] },
+  { id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "teal", status: "working", projectIds: ["exo-game"] },
+  { id: "hivra-lead", name: "Hivra lead", mascot: "rocket", color: "teal", status: "idle", projectIds: ["hivra"] },
 ];
 
 /**
@@ -97,7 +96,7 @@ export const mockHubData: HubDataSource = {
       ? "Nothing new yet. As your teams start work, what changed shows up here."
       : projectId
       ? (SINCE[projectId] ?? "Example: quiet since you were last here.")
-      : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Operator OS has five decisions for you. Nibbii was quiet.",
+      : "Example: the game's new level is in and working. In Hivra, the nightly backup is stuck and hasn't been sent to anyone. Harness has five decisions for you. Nibbii was quiet.",
     details: "Example details.",
   }),
   listNeeds: (projectId) => NEEDS.filter((n) => !projectId || n.projectId === projectId),

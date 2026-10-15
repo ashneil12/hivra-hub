@@ -6,12 +6,13 @@ import {
   FolderTree,
   Ghost,
   Globe,
-  Internet,
   Keyboard,
   MessageSquare,
   Palette,
   SlidersHorizontal,
   Sparkles,
+  Terminal,
+  Zap,
   type IconComponent, Undo2, DashboardSquare } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
@@ -21,7 +22,7 @@ import {
 
 const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   general: SlidersHorizontal,
-  connections: Internet,
+  connections: Terminal,
   appearance: Palette,
   keybindings: Keyboard,
   chat: MessageSquare,
@@ -34,7 +35,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   archive: Archive,
   changes: Undo2,
   dashboards: DashboardSquare,
-  connectors: Internet,
+  connectors: Zap,
 };
 
 type Props = {

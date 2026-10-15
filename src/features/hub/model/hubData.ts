@@ -1,3 +1,5 @@
+import { DEFAULT_TEAM } from "./builtInMonos";
+import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
@@ -133,11 +135,13 @@ export function sinceLabel(iso: string, now = new Date()): string {
 }
 
 /**
- * Sidebar Monos on Today: grouped under a quiet project header, so same-named
- * Monos (two Chiefs of Staff) are clear. The app's own Monos have no project.
+ * The hub's Monos list is one flat list: the default team first (Chief of Staff, Projects Manager, frank, Alfred),
+ * then the project Leads, then anything else Ash added. Temporary workers are not Monos and never appear here; they
+ * show only in a project's Being built.
  */
-export function hubMonoGroup(mono: { projects: readonly string[] }): string {
-  const folder = mono.projects[0];
-  if (!folder) return "";
-  return hubData().listProjects().find((p) => p.folder === folder)?.name ?? "";
+export function hubMonoRank(mono: { id: string; name?: string }): number {
+  const team = DEFAULT_TEAM.indexOf(mono.name ?? "");
+  if (team >= 0) return team;
+  if (leadFor(mono.id)) return 10;
+  return 20;
 }

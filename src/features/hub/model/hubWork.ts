@@ -17,7 +17,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w2", activeAgo: 2, projectId: "exo-game", who: "Playtester", kind: "mono", minutes: 12, state: "checking",
+    id: "w2", activeAgo: 2, projectId: "exo-game", who: "Lead", kind: "mono", minutes: 12, state: "checking",
     doing: "Example: playtesting build 0.14",
     steps: [
       { id: "1", at: "8:44pm", text: "Example: noted that the Area 2 jump feels late" },
@@ -36,7 +36,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w4", projectId: "exo-game", who: "Critiquito", kind: "mono", minutes: 35, finishedAt: "4:20pm",
+    id: "w4", projectId: "exo-game", who: "Lead", kind: "mono", minutes: 35, finishedAt: "4:20pm",
     doing: "Example: reviewed the Area 3 layout", steps: [{ id: "1", at: "4:20pm", text: "Example: left three notes on Area 3" }],
   },
   {
@@ -44,9 +44,9 @@ const WORKERS: Worker[] = examples([
     doing: "Example: built 0.14, new level and autosave", steps: [{ id: "1", at: "4:10am", text: "Example: build 0.14 is ready to play" }],
   },
   {
-    id: "w6", activeAgo: 55, projectId: "hivra", who: "Projects Manager", kind: "mono", minutes: 50, stuck: "lead_gave_up", waitingId: "s2", stuckReason: "Example: the email sender refused the login",
+    id: "w6", activeAgo: 55, projectId: "hivra", who: "Projects Manager", kind: "mono", minutes: 50, stuck: "lead_gave_up", waitingId: "s2", stuckReason: "Example: The email sender refused the login",
     doing: "Example: sending the waitlist welcome emails",
-    steps: [{ id: "1", at: "7:55pm", text: "Example: the email sender refused the login; the lead gave up" }],
+    steps: [{ id: "1", at: "7:55pm", text: "Example: The email sender refused the login; the lead gave up" }],
   },
 ]);
 

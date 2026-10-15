@@ -354,6 +354,53 @@ mod tests {
         root
     }
 
+    /// Point 13, item 1: a fact told to Mono A is on disk in A's folder only. A fresh load (what a restart does: the
+    /// store keeps nothing in memory) still has it for A, and B and C never see it.
+    #[test]
+    fn a_memory_fact_survives_a_reload_and_stays_with_its_own_mono() {
+        let root = temp_root();
+        for mono in ["mono-a", "mono-b", "mono-c"] {
+            load(&root, mono, None).unwrap();
+        }
+        let before = load(&root, "mono-a", None).unwrap();
+        let fact = "- 2026-10-15 · the launch is on Friday";
+        save(&root, "mono-a", None, MEMORY_FILE, fact, Some(&before.memory_hash)).unwrap();
+        save(&root, "mono-a", None, "memory/launch.md", "Friday, 9am", None).unwrap();
+
+        // "Restart": nothing cached, read straight back from the same folder on disk.
+        let a = load(&root, "mono-a", None).unwrap();
+        assert_eq!(a.memory, fact);
+        assert_eq!(a.topics, vec!["launch".to_string()]);
+        for other in ["mono-b", "mono-c"] {
+            let files = load(&root, other, None).unwrap();
+            assert_eq!(files.memory, "", "{other} must not see A's memory");
+            assert!(files.topics.is_empty(), "{other} must not see A's topic notes");
+            assert_ne!(files.memory_path, a.memory_path);
+            assert_eq!(read(&root, other, None, "memory/launch.md").unwrap().text, None);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Point 13, item 2: rewriting A's SOUL.md (its rules) changes no one else's.
+    #[test]
+    fn changing_one_monos_rules_leaves_every_other_soul_alone() {
+        let root = temp_root();
+        let monos = ["mono-a", "mono-b", "mono-c"];
+        for mono in monos {
+            save(&root, mono, None, SOUL_FILE, &format!("# Soul\n\n- I am {mono}"), None).unwrap();
+        }
+        let a = load(&root, "mono-a", None).unwrap();
+        save(&root, "mono-a", None, SOUL_FILE, "# Soul\n\n- Always answer in French", Some(&a.soul_hash)).unwrap();
+        assert_eq!(load(&root, "mono-a", None).unwrap().soul.as_deref(), Some("# Soul\n\n- Always answer in French"));
+        for mono in ["mono-b", "mono-c"] {
+            assert_eq!(load(&root, mono, None).unwrap().soul, Some(format!("# Soul\n\n- I am {mono}")));
+        }
+        // A path can never reach another Mono's folder.
+        assert!(save(&root, "mono-a", None, "../mono-b/SOUL.md", "x", None).is_err());
+        assert!(save(&root, "mono-a", None, "memory/../../mono-b/SOUL.md", "x", None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn creates_one_folder_per_mono_with_empty_memory() {
         let root = temp_root();

@@ -51,7 +51,7 @@ const DEFAULTS: Record<string, TemplateId> = {
   "exo-game": "game-studio",
   hivra: "product-saas",
   nibbii: "product-saas",
-  "operator-os": "org-ops",
+  "harness": "org-ops",
 };
 
 const KEY = "monocode:hub-templates";

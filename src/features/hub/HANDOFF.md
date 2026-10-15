@@ -294,7 +294,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   automatically: breaks "<rule>"" with the reason, and no Undo.
 - **A valid proposal is a Need.** It shares the 5-Needs cap per project; when a
   project already has 5 Needs, the proposal goes under Later like any other
-  Need (`laterItems`). There is no separate "waiting" state. Mock: Operator OS
+  Need (`laterItems`). There is no separate "waiting" state. Mock: Harness
   has 5 Needs, and its Hiring card proposal (p4) is under Later.
 
 ## Focus on 'Take a look'
@@ -353,7 +353,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 - Connector sign-ins are **app-wide**. They sit in one "Setup" group at the
   top of Today (`setupItems()`), are never filed under a project, never add to a
   project's strip count, and go away once signed in. On Today, sidebar Monos are
-  grouped by project under quiet headers (`hubMonoGroup`, `MonoRailSection.groupBy`).
+  one flat list: default team, then project Leads (`hubMonoRank`, `MonoRailSection.rank`); workers only in Being built.
 
 ## Decisions from the technical talk (2026-10-14)
 See /workspace/hub-spec/SPEC.md, the section "Decisions 2026-10-14". Agents are separate, with per-agent update files and only the Lead writing the board; temporary workers show only in Being built; live updates must stay calm.

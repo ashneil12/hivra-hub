@@ -1,10 +1,10 @@
-import { allConnectors, composioOn, loginLivesOn, setComposio, signIn, useConnectorsVersion, type Connector } from "../model/connectors";
+import { allConnectors, composioOn, hasDirectConnector, loginLivesOn, setComposio, signIn, useConnectorsVersion, type Connector } from "../model/connectors";
 import { examples } from "../model/examples";
 
 const EXAMPLE: Connector[] = examples([
   { id: "ex-github", name: "Example: GitHub", projectId: "exo-game", signedIn: true },
   { id: "ex-gmail", name: "Example: Gmail", projectId: "hivra", signedIn: true },
-  { id: "ex-slack", name: "Example: Slack", projectId: "operator", signedIn: false },
+  { id: "ex-slack", name: "Example: Slack", projectId: "harness", signedIn: false },
   { id: "ex-pipedrive", name: "Example: Pipedrive", projectId: "hivra", signedIn: true },
 ]);
 
@@ -19,7 +19,9 @@ export function ConnectorsPage() {
         {list.length ? list.map((c) => (
           <div key={c.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-connector={c.id}>
             <span className="min-w-0 flex-1 truncate text-[13px] text-content">{c.name}</span>
-            {c.signedIn ? (
+            {!on && !hasDirectConnector(c) ? (
+              <span className="shrink-0 text-xs text-content/60" data-hub-connector-needs-composio>Needs Composio</span>
+            ) : c.signedIn ? (
               <span className="shrink-0 text-xs text-content/60">{loginLivesOn(c)}</span>
             ) : (
               <button type="button" onClick={() => signIn(c.id)}
@@ -33,7 +35,7 @@ export function ConnectorsPage() {
           <span className="flex-1 text-[13px] text-content">Use Composio for logins</span>
           <button type="button" role="switch" aria-checked={on} aria-label="Use Composio for logins" data-hub-composio
             onClick={() => setComposio(!on)}
-            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}>
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-content/60" : "bg-content/20"}`}>
             <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${on ? "left-4.5" : "left-0.5"}`} />
           </button>
         </div>

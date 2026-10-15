@@ -64,8 +64,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "connections",
     group: "app",
-    label: "Connections",
-    description: "Connect your machines and run agents remotely through SSH.",
+    label: "Remote machines",
+    description: "Connect your other computers and run agents on them through SSH. For app logins, see Connectors.",
     keywords: "ssh remote host machine server environment always on",
   },
   {
@@ -95,7 +95,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "connectors",
     group: "app",
     label: "Connectors",
-    description: "The apps your Monos use, and where each login lives.",
+    description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
   },
   {
