@@ -87,6 +87,9 @@ export type HubJob = {
   tried?: string[];
   why?: string;
   retryAt?: string;
+  /** A part of a bigger job the Lead split up (its workers): the big job's id and title. Shown as one row. */
+  parentId?: string;
+  parentTitle?: string;
 };
 
 /** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
@@ -281,6 +284,11 @@ export type Worker = {
   seen?: boolean;
   /** Minutes since its last activity (0 = now). */
   activeAgo?: number;
+  /** One part of a bigger job (see HubJob.parentId); the parts fold into one row. */
+  parentId?: string;
+  parentTitle?: string;
+  /** A folded big job: its parts, in order. */
+  parts?: Worker[];
   archived?: boolean;
 };
 

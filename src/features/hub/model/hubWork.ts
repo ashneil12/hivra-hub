@@ -26,7 +26,7 @@ const WORKERS: Worker[] = examples([
     ],
   },
   {
-    id: "w3", activeAgo: 6, projectId: "exo-game", who: "Lead", kind: "coding", minutes: 80, stuck: "stuck", waitingId: "build:b13b", stuckReason: "Example: the shader step keeps failing",
+    id: "w3", activeAgo: 6, projectId: "exo-game", who: "Lead", kind: "coding", minutes: 80, stuck: "stuck", waitingId: "build:b13b", stuckReason: "Example: The shader step keeps failing",
     doing: "Example: building 0.13.1 (shader fix)",
     steps: [
       { id: "1", at: "8:40pm", text: "Example: shader step timed out again (third try)" },

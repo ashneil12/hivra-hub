@@ -305,16 +305,31 @@ describe("point 13, item 3: a big job's workers show only in Being built, and on
     mount(page());
     await until(() => rowsNow().length === 4, "rows");
     expect(sidebar()).toEqual(ROSTER);
-    // A big job: the Lead splits it over three workers running in parallel.
+    // A big job: the Lead splits it over three workers running in parallel. It is ONE row, counted once.
     const big = ["j_big_1", "j_big_2", "j_big_3"];
-    big.forEach((id, i) => stub.addJob({ id, projectId: "hivra", title: `Big job part ${i + 1}`, leadName: "Hivra lead", lead: "hivra-lead" }));
-    await until(() => big.every((id) => rowsNow().includes(id)), "workers in Being built");
-    expect(container.querySelector('[data-hub-mono-jobs="Hivra lead"]')?.textContent).toContain("Big job part 3");
+    big.forEach((id, i) => stub.addJob({ id, projectId: "hivra", title: `Part ${i + 1}`, parentId: "big", parentTitle: "Rebuild the waitlist", leadName: "Hivra lead", lead: "hivra-lead" }));
+    await until(() => rowsNow().includes("big:big"), "the big job's row");
+    expect(rowsNow()).toEqual(["j_mail", "j_backup", "j_sender", "j_footer", "big:big"]);
+    const row = () => container.querySelector('[data-hub-worker="big:big"]')!;
+    expect(row().textContent).toContain("Rebuild the waitlist, 0 of 3 parts done");
+    expect(row().querySelector("[data-hub-last-active]")?.textContent).toBe("just started");
+    expect(row().getAttribute("aria-expanded")).toBe("false");
+    act(() => (row() as HTMLElement).click());
+    expect([...container.querySelectorAll('[data-hub-parts-of="big:big"] [data-hub-worker]')].map((r) => r.getAttribute("data-hub-worker"))).toEqual(big);
     expect(sidebar()).toEqual(ROSTER); // no worker became a Mono
-    expect(container.querySelector("[data-mono-rail]")?.textContent).not.toMatch(/Big job|worker/i);
-    // Done and seen: they leave Being built.
-    big.forEach((id) => stub.setJob(id, { state: "done", finishedAt: new Date().toISOString(), seen: true }));
-    await until(() => big.every((id) => !rowsNow().includes(id)), "workers gone");
+    expect(container.querySelector("[data-mono-rail]")?.textContent).not.toMatch(/Part \d|Rebuild|worker/i);
+    // One part done: the count moves, the row stays.
+    stub.setJob("j_big_1", { state: "done", finishedAt: new Date().toISOString() });
+    await until(() => row()?.textContent?.includes("1 of 3 parts done"), "one part done");
+    expect(rowsNow().filter((id) => !big.includes(id!))).toEqual(["j_mail", "j_backup", "j_sender", "j_footer", "big:big"]);
+    // All done: the row is Done and shows the time it finished, not a duration.
+    stub.setJob("j_big_2", { state: "done", finishedAt: new Date().toISOString() });
+    stub.setJob("j_big_3", { state: "done", finishedAt: new Date().toISOString() });
+    await until(() => row()?.querySelector("[data-hub-job-state]")?.getAttribute("data-hub-job-state") === "done_unseen", "big job done");
+    expect(row().querySelector("[data-hub-last-active]")?.textContent).toMatch(/^\d{1,2}:\d{2}(am|pm)$/);
+    // Seen: gone from Being built.
+    big.forEach((id) => stub.setJob(id, { seen: true }));
+    await until(() => !rowsNow().includes("big:big"), "big job gone");
     expect(sidebar()).toEqual(ROSTER);
     expect(JSON.parse(localStorage.getItem("monocode:mono-roster")!).length).toBe(ROSTER.length);
   });

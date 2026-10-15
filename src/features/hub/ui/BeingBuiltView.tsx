@@ -7,6 +7,7 @@ import { setHubSelection } from "../model/hubNav";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
+import { foldParts, partsDone } from "../model/jobParts";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -25,7 +26,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   };
   const [showDone, setShowDone] = useState(false);
   const open = openId ? (live ? liveWorkers.find((w) => w.id === openId) : getWorker(openId)) : undefined;
-  const active = live ? liveWorkers : activeWorkers(projectId);
+  const active = foldParts(live ? liveWorkers : activeWorkers(projectId));
   const done = live ? [] : finishedToday(projectId);
   // Finished jobs Ash has had in front of him: when he leaves the page they have been seen and go.
   const shownDone = useRef<string[]>([]);
@@ -100,14 +101,27 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
 }
 
 /** `showWho`: name the Mono after a finished job's title (in the finished-today list; under a Lead's heading it is redundant). */
+/** Under a minute: "just started". Done: the time it finished, like "11:56am". Otherwise how long it has run. */
+export function jobTimeLabel(w: Worker): string {
+  if (w.finishedAt) return w.finishedAt;
+  if (w.minutes < 1) return "just started";
+  return `for ${durationLabel(w.minutes)}`;
+}
+
 function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) => void; showWho: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const parts = w.parts;
+  const toggle = () => (parts ? setExpanded((v) => !v) : onOpen(w.id));
   return (
-    <div role="button" tabIndex={0} data-hub-worker={w.id} onClick={() => onOpen(w.id)}
-      onKeyDown={(e) => e.key === "Enter" && onOpen(w.id)}
+    <>
+    <div role="button" tabIndex={0} data-hub-worker={w.id} data-hub-job-parts={parts ? parts.length : undefined}
+      aria-expanded={parts ? expanded : undefined} onClick={toggle}
+      onKeyDown={(e) => e.key === "Enter" && toggle()}
       className="hub-fade-in flex cursor-default items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5">
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
           {w.doing}
+          {parts ? <span className="text-content/60" data-hub-parts-done>, {partsDone(w)} of {parts.length} parts done</span> : null}
           {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}
         </span>
         {w.stuck && w.stuckReason ? (
@@ -117,10 +131,16 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
-        {`for ${durationLabel(w.minutes)}`}
+        {jobTimeLabel(w)}
       </span>
       <span className="flex w-24 shrink-0 justify-end">{w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}</span>
     </div>
+    {parts && expanded ? (
+      <div className="flex flex-col gap-0.5 pl-6" data-hub-parts-of={w.id}>
+        {parts.map((p) => <WorkerLine key={p.id} w={p} onOpen={onOpen} showWho={false} />)}
+      </div>
+    ) : null}
+    </>
   );
 }
 
@@ -133,7 +153,7 @@ function Activity({ worker }: { worker: Worker }) {
           <div className="text-[15px] text-content">{worker.doing}</div>
           <div className="flex items-center gap-1.5 text-[13px] text-content/60">
             {live ? <span className="size-1.5 animate-pulse rounded-full bg-content/60" /> : null}
-            {worker.who} · {`${worker.finishedAt ? "took" : live ? "working" : "at it"} ${worker.finishedAt ? "" : "for "}${durationLabel(worker.minutes)}`}
+            {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : worker.minutes < 1 ? "just started" : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
           </div>
           {worker.stuck && worker.stuckReason ? (
             <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-job-reason>{worker.stuckReason.replace(/^Example: /, "")}</div>
