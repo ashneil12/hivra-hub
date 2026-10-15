@@ -120,7 +120,21 @@ export function validateCustomModel(form: CustomModelForm): Partial<Record<keyof
 
 // ---- the key store (CoS wires this to the Keychain) ------------------------------------------------------------------
 
-export type KeyTestResult = { ok: true; message: string } | { ok: false; message: string };
+/** `code` is the backend's error identifier, when it has one (see CLAUDE_KEY_ERROR). */
+export type KeyTestResult = { ok: true; message: string } | { ok: false; message: string; code?: string };
+
+/**
+ * The backend's own words for a pasted Claude/Anthropic key (save_key_in / session_token in src-tauri/src/model_router.rs).
+ * The frontend never looks at the key itself; it only matches this substring in the error, or `code` on a failed result.
+ */
+export const CLAUDE_KEY_ERROR = "looks like a Claude key";
+export const CLAUDE_KEY_MESSAGE = "Claude uses your subscription, so no key is needed.";
+export function isClaudeKeyError(e: unknown): boolean {
+  if (!e) return false;
+  if (typeof e === "string") return e.includes(CLAUDE_KEY_ERROR);
+  const r = e as { code?: unknown; message?: unknown; kind?: unknown };
+  return r.code === CLAUDE_KEY_ERROR || r.kind === CLAUDE_KEY_ERROR || (typeof r.message === "string" && r.message.includes(CLAUDE_KEY_ERROR));
+}
 
 export interface ModelKeyStore {
   /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file. */
@@ -143,6 +157,8 @@ export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, st
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")
         return /down/.test(baseUrl) ? { ok: false, message: OLLAMA_DOWN } : { ok: true, message: OLLAMA_UP };
+      // Stands in for the backend, which answers a Claude key with its own error.
+      if (/^sk-ant-/.test(key)) return { ok: false, message: `That ${CLAUDE_KEY_ERROR}` };
       return key.length >= 8 && !/bad/i.test(key)
         ? { ok: true, message: replied(modelId) }
         : { ok: false, message: KEY_FAILED };
@@ -169,8 +185,10 @@ export function modelKeyStore(): ModelKeyStore {
 /** Runs the check the form shows inline. */
 export async function testCustomModel(form: CustomModelForm): Promise<KeyTestResult> {
   try {
-    return await store.testModelKey(form.provider, form.baseUrl.trim() || defaultBaseUrl(form.provider), form.modelId.trim(), needsKey(form.provider) ? form.key : "");
-  } catch {
+    const r = await store.testModelKey(form.provider, form.baseUrl.trim() || defaultBaseUrl(form.provider), form.modelId.trim(), needsKey(form.provider) ? form.key : "");
+    return !r.ok && isClaudeKeyError(r) ? { ok: false, code: CLAUDE_KEY_ERROR, message: CLAUDE_KEY_MESSAGE } : r;
+  } catch (e) {
+    if (isClaudeKeyError(e)) return { ok: false, code: CLAUDE_KEY_ERROR, message: CLAUDE_KEY_MESSAGE };
     return { ok: false, message: form.provider === "ollama" ? OLLAMA_DOWN : KEY_FAILED };
   }
 }

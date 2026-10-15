@@ -274,3 +274,16 @@ describe("provider menu", () => {
     expect(q("[data-provider-button]")!.textContent).toBe("DeepSeek");
   });
 });
+
+describe("a Claude key", () => {
+  it("shows the subscription line when the backend answers with its Claude-key error (test or save), never a generic failure", async () => {
+    const m = await import("../model/customModels");
+    const form = { ...m.emptyForm("xai"), name: "x", key: "anything-long" };
+    m.setModelKeyStore({ saveModelKey: async () => {}, testModelKey: async () => ({ ok: false, code: m.CLAUDE_KEY_ERROR, message: "nope" }) });
+    expect(await m.testCustomModel(form)).toMatchObject({ ok: false, message: "Claude uses your subscription, so no key is needed." });
+    m.setModelKeyStore({ saveModelKey: async () => {}, testModelKey: async () => { throw new Error(`backend: ${m.CLAUDE_KEY_ERROR}`); } });
+    expect((await m.testCustomModel(form)).message).toBe(m.CLAUDE_KEY_MESSAGE);
+    m.setModelKeyStore({ saveModelKey: async () => {}, testModelKey: async () => ({ ok: false, message: "401" }) });
+    expect((await m.testCustomModel(form)).message).toBe("401");
+  });
+});

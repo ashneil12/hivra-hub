@@ -14,6 +14,10 @@ import {
   validateCustomModel,
   defaultBaseUrl,
   defaultModelId,
+  isClaudeKeyError,
+  CLAUDE_KEY_ERROR,
+  CLAUDE_KEY_MESSAGE,
+  KEY_FAILED,
   showsAdvanced,
   type CustomModel,
   type CustomModelForm,
@@ -211,6 +215,10 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
             setSaving(true);
             try {
               onDone(await addCustomModel(form));
+            } catch (e) {
+              // saveModelKey can refuse a Claude key with the backend's own error, too.
+              const claude = isClaudeKeyError(e);
+              setTest({ ok: false, code: claude ? CLAUDE_KEY_ERROR : undefined, message: claude ? CLAUDE_KEY_MESSAGE : KEY_FAILED });
             } finally {
               setSaving(false);
             }
