@@ -2,7 +2,7 @@
 // The live Today and project strip, rendered against the stub server: what Ash sees when Ash OS is there, when a
 // Need ticks itself off, when it is slow to answer and when it isn't running. Never example data.
 import http from "node:http";
-import { act, createElement } from "react";
+import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startStub, type Stub } from "../../../../scripts/hub-stub-server.mjs";
@@ -250,6 +250,17 @@ describe("Being built, live", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(stub.calls.some((c) => c.path === "/api/ash-hub-job-seen")).toBe(true);
     expect(stub.state.jobs.find((j) => j.id === "j_footer")).toMatchObject({ seen: true });
+  });
+
+  it("React's dev double-run does not count as leaving: a finished job keeps its dot until Ash really leaves", async () => {
+    mount(createElement(StrictMode, null, view()));
+    await until(() => container.querySelector('[data-hub-worker="j_footer"]'), "done row");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-job-seen")).toBe(false);
+    expect(container.querySelector('[data-hub-worker="j_footer"] [aria-label="Not seen yet"]')).toBeTruthy();
+    mount(createElement("div"));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-job-seen")).toBe(true);
   });
 
   it("with nothing being built it says so quietly", async () => {

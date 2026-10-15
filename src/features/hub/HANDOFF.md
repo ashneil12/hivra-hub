@@ -7,9 +7,12 @@ only behind the dev flag `monocode:hub-examples` (what `hub-dev.html` sets).
 
 ## Live data from Ash OS (unit 0, app side)
 
-**Wired:** projects (strip, names, shapes, folders), Needs (shown, Later, ticks),
-Since (text, time), Ash's last-active time (`ash-hub-active`), and the live
-change feed. **Not wired yet** is listed below.
+**Wired:** projects (strip, names, shapes, folders; parked projects are left off
+the strip), Needs (shown, Later as an opening list, `older` as a shut "Older (n)"
+group in no count, ticks, Looks right marked seen), Since (text, time), Ash's
+last-active time (`ash-hub-active`), jobs (Being built, amber Stuck rows, the red
+"Needs you" row and its See options sheet), and the live change feed.
+**Not wired yet** is listed below.
 
 How it fits together (all new code under `src/features/hub/model/` unless noted):
 - `src-tauri/src/hub.rs` is the Rust plugin `hub`, the only door to Ash OS:
@@ -61,12 +64,52 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
 - Projects made on this Mac through the New project flow (not wired yet) stay on
   the strip next to Ash OS's list (`userProjects()`), as before.
 
+**Needs, Later and Older.** `Need.later` rows are under Later: the line "N more
+under Later" opens them (`LaterList`). `older` (questions recovered from past
+chats, backlog-sweep questions, failures no longer failing) is `snap.older`: not
+Needs, so in no badge, count or cap, shown as "Older (n)" shut, once at the
+bottom of Today (opened, grouped by project) and per project in its Inbox.
+The badge counts the visible Needs (at most 5 per project); Ash OS's own count
+(shown + later) is not shown anywhere as a number.
+
+**One action per row.** A Looks-right row (`s:<ask>`) has one button, **Seen**,
+which calls `ash-hub-need-seen`; the row ticks off. (Ash OS's own button label
+is "Open" with target `ask:<id>`; there is no screen to open it in yet, and
+`ash-accept` is outside `ash-hub-*`, so Seen is the one action the app can take.
+Decide if that is the right label.) A job the Lead gave up on is one row:
+`CircleWord` (14px red circle, plain grey "Needs you") then **See options**.
+That opens `OptionsSheet`: what was tried, then Try again tonight, Try it a
+different way… (a hint box, Send), Pause this job, Drop it, from
+`ash-hub-job-options`; the pick goes through `ash-hub-job-act`, the sheet closes
+and the row ticks off. A refusal ("That job isn't waiting on you.") shows in
+plain words and the sheet stays. See options on a **question** row
+(`question:<id>`) still does nothing: Ash OS has no question-options call yet.
+
+**Being built (jobs).** `snap.jobs` is `ash-hub-jobs` grouped under the Mono
+running each job, in Ash OS's order, merged stably (`mergeJobGroups`): a job that
+changes state keeps its row, a new one joins the end of its group. The feed's
+`jobs` topic re-reads it. `liveJobs.ts` turns a job into the same row the example
+data used (`workerOf`): Working and Checking quiet text; Stuck (job states
+`stuck` and `sent_to_lead`) an amber circle, "Stuck", the reason on a second
+line and "Sent to coding team lead at 2:20pm · Got it" on a third; Needs you
+(`lead_gave_up`) the one pill badge; Done a dot until seen; Parked plain. The
+"last active" label is counted from `lastActiveAt` against a clock that ticks
+every 30 s (`useNow`), in fixed-width columns, so it changes in place. No helper
+or worker is ever named. When Ash leaves the page the finished jobs he had in
+front of him are sent to `ash-hub-job-seen` and go (React's dev double-run does
+not count as leaving). Stuck jobs also appear on Today and the Inbox as amber
+rows with no button (`StuckItem.quiet`); a given-up job is not among them, it is
+the red Needs row. Clicking a job opens a small story built from what Ash OS
+says (started, tried, sent, "got it"); there is no step log to show yet.
+A service without `ash-hub-jobs` just means nothing is being built.
+
 ### Run it against the stub (no Ash OS needed)
 `scripts/hub-stub-server.mjs` answers the documented shapes with invented data
 (every title starts "Example:"): same token, Host and Origin checks, poll, long
 poll and server-sent events.
 ```
-node scripts/hub-stub-server.mjs --port 18868 --dev        # --dev adds CORS + /__stub/control for the dev page
+node scripts/hub-stub-server.mjs --port 18868 --dev --jobs # --dev adds CORS + /__stub/control; --jobs adds leads and jobs in every state,
+                                                            # a given-up job's red row, Looks right and older questions
 pnpm dev                                                    # vite on :1420
 open "http://localhost:1420/hub-dev.html?stub=http://127.0.0.1:18868"
 ```
@@ -75,8 +118,25 @@ through the app's own `invoke`/`listen` code (`src/dev/hubStubBridge.ts`). Witho
 it, `hub-dev.html` shows the examples as before. `?stub=http://127.0.0.1:1`
 shows the "isn't running" state. Move things while it is open:
 `curl -XPOST localhost:18868/__stub/control -d '{"op":"doneNeed","id":"q5"}'`
-(ops: `doneNeed`, `addNeed`, `setSince`, `finishPendingSince`, `restart`).
-`scripts/hub-wiring-screens.mjs <dir> [--before]` takes the screenshots.
+(ops: `doneNeed`, `addNeed`, `addJob`, `setJob`, `setSince`, `finishPendingSince`, `restart`).
+`scripts/hub-wiring-screens.mjs <dir> [--before]` and `scripts/hub-jobs-screens.mjs <dir>`
+take the screenshots.
+
+### Look at the REAL Ash OS in the browser dev page
+A browser can't read the key file, so `scripts/hub-live-proxy.mjs` stands in for
+the Rust plugin: it binds 127.0.0.1, reads the key per request, adds it to
+`ash-hub-*` calls and forwards them to 127.0.0.1:18767; the page never sees it
+and nothing prints it. It is **read-only** by default (reads only; activity,
+seen, job choices, owners and projects get a 403, so looking can't move Ash's
+real "Since" time or touch a job); `--allow-writes` lifts that.
+```
+node scripts/hub-live-proxy.mjs          # :18869
+pnpm dev
+open "http://localhost:1420/hub-dev.html?live=http://127.0.0.1:18869"
+node scripts/hub-live-screens.mjs <dir>  # screenshots of Today, Since and each project's Inbox
+```
+Writes (Seen, job choices) are proven only against the stub: nothing here has
+pressed them on Ash's real data.
 
 ### Run it against the real service
 1. Ash OS must be running a build with the hub calls (branch `ash-os-hub-core`
@@ -89,15 +149,21 @@ shows the "isn't running" state. Move things while it is open:
 
 ### Tests
 `pnpm test` (vitest): `model/hubStore.test.ts` (store against the stub over real
-HTTP and SSE), `hubActivity.test.ts`, `hubTransport.test.ts`,
-`hubContract.test.ts` (the real `ashos.hub.Hub`'s own answers in
-`model/fixtures/ash-os-real-shapes.json`, made by `scripts/hub-real-shapes.py`;
-the store reads them and the stub invents no field), `ui/HubSurface.live.test.ts`
-(Today and the strip rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
+HTTP and SSE, including older, need-seen and jobs), `hubActivity.test.ts`,
+`hubTransport.test.ts`, `liveJobs.test.ts`, `hubContract.test.ts` (the real
+`ashos.hub.Hub`'s own answers: `fixtures/ash-os-real-shapes.json` from the live
+code, `fixtures/ash-os-real-shapes-jobs.json` from the jobs branch (not live),
+made by `scripts/hub-real-shapes.py` and `scripts/hub-real-shapes-jobs.py`; the
+store reads them and the stub invents no field), `ui/HubSurface.live.test.ts` and
+`ui/HubSurface.jobs.test.ts` (Today, Later, Older, Seen, the options sheet and
+Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 
 ### Not wired yet (their mock paths stay behind the examples flag)
-- **Jobs and the stuck state machine** (Being built, stuck and "gave up" rows,
-  Sent to lead): Ash OS has no `hub_jobs` yet; `listStuck()` is empty.
+- **Jobs against the live service:** the code is wired and proven against the
+  stub and the jobs branch's own answers, but `ash-hub-jobs` is not live yet
+  (branch `ash-os-hub-jobs`): today Being built says nobody is working.
+  `ash-hub-job-owner`, `-work-owner`, `-unreachable` (the app telling Ash OS a
+  Lead's session could not start) are not called.
 - **Group chats** and the chat engine (`hubChats.ts`), Today's chat box.
 - **Builds & playtests** (`hubBuilds.ts`, "only Ash marks played").
 - **Connectors** and the Keychain (`connectors.ts`): Ash OS's `setup` list is
@@ -106,13 +172,12 @@ the store reads them and the stub invents no field), `ui/HubSurface.live.test.ts
   `proposals.ts`): local mock stores.
 - **New project, Create, setup export/import**: still local (`addMockProject`);
   `ash-hub-project-create` exists in Ash OS but the preview step does not.
-- **Needs buttons** do nothing yet (`need-act`, `gate-done`, the options sheet
-  are not in Ash OS yet). **Show details** is not rendered (`details` is read
-  into the store, not shown). **Later** is a count, not a list.
+- **Question and gate Needs buttons** (See options on a question, Open, Start)
+  still do nothing: Ash OS has no `need-act`, `gate-done` or question options.
+  **Show details** is not rendered (`details` is read into the store, not shown).
+- **Unsorted Needs** (`unsorted` in `ash-hub-needs`) are not read or shown.
 - **Monos rail by membership** (`ash-hub-mono-projects`) and `ASH_MONO_ID`
   identity: Monos still come from MonoCode's own roster.
-- **Needs for projects the registry doesn't list** (Ash OS files unrouted ones
-  under project `inbox`): they are in the store but no screen shows them.
 - Capture hook, heartbeat for the doctor banner, keep-alive and launch at login.
 - Not verified: the plugin inside a running Tauri window (see the report).
 

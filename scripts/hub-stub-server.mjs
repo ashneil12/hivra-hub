@@ -36,6 +36,12 @@ const TOPICS = [
 const topicsOf = (kind) => (TOPICS.find(([re]) => re.test(kind)) || [null, []])[1];
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"));
 
+/** "2:20pm", in this machine's own time zone (what the real service puts in sentText). */
+const clock = (ms) => {
+  const d = new Date(ms);
+  return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")}${d.getHours() < 12 ? "am" : "pm"}`;
+};
+
 const ACTION_LABELS = { start: "Start", open: "Open", sign_in: "Sign in", see_options: "See options" };
 
 /** The invented starting state: four projects, a few Needs, a "since" paragraph. */
@@ -329,7 +335,7 @@ export async function startStub({
     if (option.needsText && !String(v.hint || "").trim()) throw new Error("Say what to try.");
     const t = now();
     if (v.option === "try_tonight") Object.assign(j, { state: "working", reason: "Trying again tonight at 2:00am", retryAt: iso(t + 3600_000) });
-    else if (v.option === "try_different") Object.assign(j, { state: "sent_to_lead", reason: "Trying it your way", hint: String(v.hint).trim(), circle: "amber", word: "Stuck", sentText: "Sent to coding team lead at now", gotIt: null });
+    else if (v.option === "try_different") Object.assign(j, { state: "sent_to_lead", reason: "Trying it your way", hint: String(v.hint).trim(), circle: "amber", word: "Stuck", sentText: `Sent to coding team lead at ${clock(t)}`, gotIt: null });
     else if (v.option === "pause") Object.assign(j, { state: "parked", reason: "Paused by you", finishedAt: iso(t) });
     else Object.assign(j, { state: "dropped" });
     delete j.tried;

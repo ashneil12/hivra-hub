@@ -30,7 +30,17 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   // Finished jobs Ash has had in front of him: when he leaves the page they have been seen and go.
   const shownDone = useRef<string[]>([]);
   shownDone.current = liveWorkers.filter((w) => w.finishedAt).map((w) => w.id);
-  useEffect(() => () => data.markJobsSeen?.(shownDone.current), [data]);
+  // Only a real leave counts: React's dev double-run (unmount, mount) must not mark them seen.
+  const here = useRef(false);
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+      setTimeout(() => {
+        if (!here.current) data.markJobsSeen?.(shownDone.current);
+      }, 0);
+    };
+  }, [data]);
   const projectName = data.listProjects().find((p) => p.id === projectId)?.name ?? projectId;
 
   return (
@@ -57,7 +67,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                 {byMono(active).map(([mono, jobs]) => (
                   <div key={mono} className="flex flex-col gap-0.5" data-hub-mono-jobs={mono}>
                     <div className="px-3 text-xs text-content/60">{mono}</div>
-                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} />)}
+                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} />)}
                   </div>
                 ))}
               </div>
@@ -70,7 +80,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                   className="self-start rounded-md px-3 py-1 text-xs text-content/60 hover:bg-content/5 hover:text-content">
                   {showDone ? "Hide" : "Show"} finished today ({done.length})
                 </button>
-                {showDone ? done.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} />) : null}
+                {showDone ? done.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho />) : null}
               </div>
             ) : null}
           </div>
@@ -89,7 +99,8 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   );
 }
 
-function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) {
+/** `showWho`: name the Mono after a finished job's title (in the finished-today list; under a Lead's heading it is redundant). */
+function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) => void; showWho: boolean }) {
   return (
     <div role="button" tabIndex={0} data-hub-worker={w.id} onClick={() => onOpen(w.id)}
       onKeyDown={(e) => e.key === "Enter" && onOpen(w.id)}
@@ -97,7 +108,7 @@ function WorkerLine({ w, onOpen }: { w: Worker; onOpen: (id: string) => void }) 
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate text-[13px] ${w.finishedAt ? "text-content/60" : "text-content"}`}>
           {w.doing}
-          {w.finishedAt ? <span className="text-content/60"> · {w.who}</span> : null}
+          {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}
         </span>
         {w.stuck && w.stuckReason ? (
           <span className="truncate text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
