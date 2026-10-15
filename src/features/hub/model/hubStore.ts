@@ -163,6 +163,13 @@ export function mapJob(raw: unknown): HubJob | undefined {
   if (why) job.why = why;
   const retryAt = optStr(r.retryAt);
   if (retryAt) job.retryAt = retryAt;
+  // A part of a bigger job (one of its workers): folded into one row in Being built.
+  const parentId = optStr(r.parentId);
+  if (parentId) {
+    job.parentId = parentId;
+    const parentTitle = optStr(r.parentTitle);
+    if (parentTitle) job.parentTitle = parentTitle;
+  }
   return job;
 }
 
