@@ -1,3 +1,4 @@
+import { draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
 import { useState, type ReactNode } from "react";
 import { Clock, Folder, Gauge, MoreHorizontal, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
@@ -44,6 +45,8 @@ export function ProjectStrip({
   useHubBuildsVersion();
   const data = hubData();
   const projects = data.listProjects();
+  useProjectDraftVersion();
+  const draftProject = projectDraft();
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
   return (
     <nav
@@ -77,6 +80,17 @@ export function ProjectStrip({
           />
         );
       })}
+      {draftProject ? (
+        <div data-hub-project-draft className="opacity-70">
+          <StripButton
+            label={draftProject.name.split(" ")[0]}
+            title={`Draft: ${draftProject.name}, still being set up`}
+            selected={selection.item === "new-project"}
+            onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }}
+            glyph={<span className="grid size-full place-items-center rounded-[inherit] border border-dashed border-content/40 text-[11px] text-content/70">{draftInitial(draftProject.name)}</span>}
+          />
+        </div>
+      ) : null}
       <StripButton label="" title="New project" selected={false} onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }} Icon={Plus} />
       {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
       <RemovedUndoToast />

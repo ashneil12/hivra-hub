@@ -3,6 +3,7 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { setHubSelection } from "../model/hubNav";
+import { clearProjectDraft, projectDraft, saveProjectDraft } from "../model/projectDraft";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { SHAPES, StripButton } from "./ProjectStrip";
@@ -32,14 +33,20 @@ function guessTemplate(text: string): TemplateId {
  * questions in chat. It ends on a preview card; nothing exists until Create.
  */
 export function NewProjectView() {
-  const [name, setName] = useState("");
-  const [started, setStarted] = useState(false);
-  const [lines, setLines] = useState<Line[]>([]);
+  // Picks up where Ash left off: the sidebar draft keeps the interview.
+  const [saved] = useState(projectDraft);
+  const [name, setName] = useState(saved?.name ?? "");
+  const [started, setStarted] = useState(saved?.started ?? false);
+  const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState("");
-  const [answers, setAnswers] = useState<string[]>([]);
-  const [tpl, setTpl] = useState<TemplateId | null>(null);
-  const [addon, setAddon] = useState(false);
+  const [answers, setAnswers] = useState<string[]>(saved?.answers ?? []);
+  const [tpl, setTpl] = useState<TemplateId | null>(saved?.tpl ?? null);
+  const [addon, setAddon] = useState(saved?.addon ?? false);
+  const ended = useRef(false);
+  useEffect(() => {
+    if (!ended.current && started) saveProjectDraft({ name, started, lines, answers, tpl, addon });
+  }, [name, started, lines, answers, tpl, addon]);
   const end = useRef<HTMLDivElement>(null);
   const n = name.trim();
   const done = answers.length >= QUESTIONS.length;
@@ -53,6 +60,14 @@ export function NewProjectView() {
     }, 900);
   };
 
+  useEffect(() => {
+    if (saved?.started && saved.lines.at(-1)?.from === "ash" && !saved.tpl) {
+      const a = saved.answers;
+      if (a.length < QUESTIONS.length) cosSays(QUESTIONS[a.length]);
+      else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(a.join(" "))));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [lines.length, typing]);
 
   const start = () => {
@@ -77,9 +92,15 @@ export function NewProjectView() {
     const id = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
     addMockProject({ id, name: n, shortName: n.split(" ")[0], iconShape: t.icon, folder: `/Users/ash/harness/${id}` });
     setTemplate(id, tpl);
+    ended.current = true;
+    clearProjectDraft();
     setHubSelection({ project: id, item: "inbox" });
   };
-  const cancel = () => setHubSelection({ project: "today", item: "inbox" });
+  const cancel = () => {
+    ended.current = true;
+    clearProjectDraft();
+    setHubSelection({ project: "today", item: "inbox" });
+  };
   const t = tpl ? TEMPLATES.find((x) => x.id === tpl)! : null;
 
   return (
