@@ -29,7 +29,21 @@ export type BotChange = {
   retired?: RetiredMono;
   /** A Page kept from a Mono's preview: Undo takes it off the Pages list, Redo puts it back. */
   pageId?: string;
+  /** An applied Change the hub / Edit Today / Connect data preview: Undo asks the backend to put it back. */
+  hubChangeId?: string;
 };
+
+type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
+let hubChangeHooks: HubChangeHooks | undefined;
+export function setHubChangeHooks(next: HubChangeHooks): void {
+  hubChangeHooks = next;
+}
+/** An applied hub change: a Bot changes row whose Undo reverts it through the backend. */
+export function recordHubChange(id: string, by: string, line: string, after: string): void {
+  list = [{ id: `hub:${id}`, bot: by, day: "Today", line, now: "As it was", after, hubChangeId: id }, ...list.filter((c) => c.id !== `hub:${id}`)];
+  saveReal();
+  changed();
+}
 
 /** Pages registers how its kept pages come and go, so Undo here doesn't import the Pages store. */
 type PageHooks = { remove(pageId: string): void; restore(pageId: string): void };
@@ -57,14 +71,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId)));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId)));
   } catch {
     /* best effort */
   }
@@ -141,7 +155,14 @@ export async function undoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || c.undone) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
-    if (c.pageId) {
+    if (c.hubChangeId) {
+      try {
+        if (!hubChangeHooks) throw new Error("Not connected yet, so nothing was undone.");
+        await hubChangeHooks.undo(c.hubChangeId);
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    } else if (c.pageId) {
       if (pageHooks) pageHooks.remove(c.pageId);
       else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
     } else if (c.retired) {
@@ -184,7 +205,14 @@ export async function redoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || !c.undone) continue;
     let next: BotChange = { ...c, undone: false, problem: undefined };
-    if (c.pageId) {
+    if (c.hubChangeId) {
+      try {
+        if (!hubChangeHooks) throw new Error("Not connected yet, so nothing was redone.");
+        await hubChangeHooks.redo(c.hubChangeId);
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.pageId) {
       if (pageHooks) pageHooks.restore(c.pageId);
       else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
     } else if (c.retired) {

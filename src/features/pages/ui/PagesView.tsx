@@ -11,6 +11,8 @@ import { describeCapability, keyName, type BespokeSpec, type Capability } from "
 import { handleBridgeCall, type BridgeCall } from "../model/bridge";
 import { SANDBOX, bespokeSrcdoc, readTokens } from "../model/sandbox";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
+import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
+import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 
 /*
  * Pages: ask any Mono for a page; it shows a preview built from ready-made blocks; Keep or Throw away.
@@ -360,6 +362,9 @@ export function PagesContent() {
 }
 
 export function PagesView({ onClose, onToggleSidebar, besideRail = true, compactRail = false }: { onClose: () => void; onToggleSidebar?: () => void; besideRail?: boolean; compactRail?: boolean }) {
+  const [tab, setTab] = useState<"pages" | ChangeFlow>("pages");
+  const projectId = useHubSelection().project;
+  const tabs: ["pages" | ChangeFlow, string][] = [["pages", "Pages"], ["hub", FLOW_LABEL.hub], ["today", FLOW_LABEL.today], ["connect", FLOW_LABEL.connect]];
   return (
     <div role="region" aria-label="Pages" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
       <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
@@ -369,10 +374,16 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
           <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
           <span className="min-w-0 truncate text-content">Pages</span>
+          <div role="tablist" aria-label="Pages and changes" className="ml-3 flex gap-0.5">
+            {tabs.map(([id, label]) => (
+              <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+                className={`rounded-md px-2 py-0.5 text-[12px] ${tab === id ? "bg-selection text-content" : "text-content/70 hover:bg-selection-hover"}`}>{label}</button>
+            ))}
+          </div>
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
-      <PagesContent />
+      {tab === "pages" ? <PagesContent /> : <div className="min-h-0 flex-1 overflow-auto"><HubChangeContent key={tab} flow={tab} projectId={projectId} /></div>}
     </div>
   );
 }
