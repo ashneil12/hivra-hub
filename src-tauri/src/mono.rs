@@ -357,7 +357,8 @@ fn archive(root: &Path, mono: &str, stamp: &str) -> Result<String, String> {
     let dir = root.join(mono);
     let name = format!("{mono}-{stamp}");
     let archive_root = root.join(ARCHIVE_DIR);
-    std::fs::create_dir_all(&archive_root).map_err(|e| format!("{}: {e}", archive_root.display()))?;
+    std::fs::create_dir_all(&archive_root)
+        .map_err(|e| format!("{}: {e}", archive_root.display()))?;
     let dest = archive_root.join(&name);
     if dest.exists() {
         return Err("That archive already exists".into());
@@ -366,7 +367,8 @@ fn archive(root: &Path, mono: &str, stamp: &str) -> Result<String, String> {
         std::fs::rename(&dir, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     } else {
         // Never opened: an empty archive still records the retirement.
-        std::fs::create_dir_all(dest.join(MEMORY_DIR)).map_err(|e| format!("{}: {e}", dest.display()))?;
+        std::fs::create_dir_all(dest.join(MEMORY_DIR))
+            .map_err(|e| format!("{}: {e}", dest.display()))?;
     }
     Ok(name)
 }
@@ -384,11 +386,20 @@ fn unarchive(root: &Path, mono: &str, name: &str) -> Result<(), String> {
     }
     if dir.exists() {
         // A fresh empty folder (made by a load since) gives way; anything with content is never overwritten.
-        let empty_memory = std::fs::read_to_string(dir.join(MEMORY_FILE)).map(|t| t.is_empty()).unwrap_or(true);
+        let empty_memory = std::fs::read_to_string(dir.join(MEMORY_FILE))
+            .map(|t| t.is_empty())
+            .unwrap_or(true);
         let only_defaults = std::fs::read_dir(&dir)
-            .map(|it| it.flatten().all(|e| { let n = e.file_name(); n == MEMORY_FILE || n == MEMORY_DIR }))
+            .map(|it| {
+                it.flatten().all(|e| {
+                    let n = e.file_name();
+                    n == MEMORY_FILE || n == MEMORY_DIR
+                })
+            })
             .unwrap_or(false)
-            && std::fs::read_dir(dir.join(MEMORY_DIR)).map(|mut it| it.next().is_none()).unwrap_or(true);
+            && std::fs::read_dir(dir.join(MEMORY_DIR))
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(true);
         if !(empty_memory && only_defaults) {
             return Err("A Mono with that id has files again, so nothing was moved back".into());
         }
@@ -433,8 +444,24 @@ mod tests {
         }
         let before = load(&root, "mono-a", None).unwrap();
         let fact = "- 2026-10-15 · the launch is on Friday";
-        save(&root, "mono-a", None, MEMORY_FILE, fact, Some(&before.memory_hash)).unwrap();
-        save(&root, "mono-a", None, "memory/launch.md", "Friday, 9am", None).unwrap();
+        save(
+            &root,
+            "mono-a",
+            None,
+            MEMORY_FILE,
+            fact,
+            Some(&before.memory_hash),
+        )
+        .unwrap();
+        save(
+            &root,
+            "mono-a",
+            None,
+            "memory/launch.md",
+            "Friday, 9am",
+            None,
+        )
+        .unwrap();
 
         // "Restart": nothing cached, read straight back from the same folder on disk.
         let a = load(&root, "mono-a", None).unwrap();
@@ -443,9 +470,15 @@ mod tests {
         for other in ["mono-b", "mono-c"] {
             let files = load(&root, other, None).unwrap();
             assert_eq!(files.memory, "", "{other} must not see A's memory");
-            assert!(files.topics.is_empty(), "{other} must not see A's topic notes");
+            assert!(
+                files.topics.is_empty(),
+                "{other} must not see A's topic notes"
+            );
             assert_ne!(files.memory_path, a.memory_path);
-            assert_eq!(read(&root, other, None, "memory/launch.md").unwrap().text, None);
+            assert_eq!(
+                read(&root, other, None, "memory/launch.md").unwrap().text,
+                None
+            );
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -456,32 +489,83 @@ mod tests {
         let root = temp_root();
         let monos = ["mono-a", "mono-b", "mono-c"];
         for mono in monos {
-            save(&root, mono, None, SOUL_FILE, &format!("# Soul\n\n- I am {mono}"), None).unwrap();
+            save(
+                &root,
+                mono,
+                None,
+                SOUL_FILE,
+                &format!("# Soul\n\n- I am {mono}"),
+                None,
+            )
+            .unwrap();
         }
         let a = load(&root, "mono-a", None).unwrap();
-        save(&root, "mono-a", None, SOUL_FILE, "# Soul\n\n- Always answer in French", Some(&a.soul_hash)).unwrap();
-        assert_eq!(load(&root, "mono-a", None).unwrap().soul.as_deref(), Some("# Soul\n\n- Always answer in French"));
+        save(
+            &root,
+            "mono-a",
+            None,
+            SOUL_FILE,
+            "# Soul\n\n- Always answer in French",
+            Some(&a.soul_hash),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&root, "mono-a", None).unwrap().soul.as_deref(),
+            Some("# Soul\n\n- Always answer in French")
+        );
         for mono in ["mono-b", "mono-c"] {
-            assert_eq!(load(&root, mono, None).unwrap().soul, Some(format!("# Soul\n\n- I am {mono}")));
+            assert_eq!(
+                load(&root, mono, None).unwrap().soul,
+                Some(format!("# Soul\n\n- I am {mono}"))
+            );
         }
         // A path can never reach another Mono's folder.
         assert!(save(&root, "mono-a", None, "../mono-b/SOUL.md", "x", None).is_err());
-        assert!(save(&root, "mono-a", None, "memory/../../mono-b/SOUL.md", "x", None).is_err());
+        assert!(save(
+            &root,
+            "mono-a",
+            None,
+            "memory/../../mono-b/SOUL.md",
+            "x",
+            None
+        )
+        .is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
-
 
     #[test]
     fn retiring_moves_the_folder_into_the_archive_and_undo_brings_it_back() {
         let root = temp_root();
         let a = load(&root, "hivra-lead", None).unwrap();
-        save(&root, "hivra-lead", None, MEMORY_FILE, "- 2026-10-15 · remember this", Some(&a.memory_hash)).unwrap();
-        save(&root, "hivra-lead", None, SOUL_FILE, "# Soul\n- my rules", None).unwrap();
+        save(
+            &root,
+            "hivra-lead",
+            None,
+            MEMORY_FILE,
+            "- 2026-10-15 · remember this",
+            Some(&a.memory_hash),
+        )
+        .unwrap();
+        save(
+            &root,
+            "hivra-lead",
+            None,
+            SOUL_FILE,
+            "# Soul\n- my rules",
+            None,
+        )
+        .unwrap();
         let name = archive(&root, "hivra-lead", "20261015").unwrap();
         assert!(!root.join("hivra-lead").exists());
         let kept = root.join(ARCHIVE_DIR).join(&name);
-        assert_eq!(std::fs::read_to_string(kept.join(MEMORY_FILE)).unwrap(), "- 2026-10-15 · remember this");
-        assert_eq!(std::fs::read_to_string(kept.join(SOUL_FILE)).unwrap(), "# Soul\n- my rules");
+        assert_eq!(
+            std::fs::read_to_string(kept.join(MEMORY_FILE)).unwrap(),
+            "- 2026-10-15 · remember this"
+        );
+        assert_eq!(
+            std::fs::read_to_string(kept.join(SOUL_FILE)).unwrap(),
+            "# Soul\n- my rules"
+        );
         // something loads the id meanwhile: an empty default folder gives way on Undo
         load(&root, "hivra-lead", None).unwrap();
         unarchive(&root, "hivra-lead", &name).unwrap();
@@ -498,7 +582,15 @@ mod tests {
         load(&root, "mono-a", None).unwrap();
         let name = archive(&root, "mono-a", "1").unwrap();
         let fresh = load(&root, "mono-a", None).unwrap();
-        save(&root, "mono-a", None, MEMORY_FILE, "- new", Some(&fresh.memory_hash)).unwrap();
+        save(
+            &root,
+            "mono-a",
+            None,
+            MEMORY_FILE,
+            "- new",
+            Some(&fresh.memory_hash),
+        )
+        .unwrap();
         assert!(unarchive(&root, "mono-a", &name).is_err());
         assert!(root.join(ARCHIVE_DIR).join(&name).is_dir());
         assert!(unarchive(&root, "mono-b", &name).is_err());

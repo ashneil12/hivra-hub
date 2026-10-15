@@ -3,9 +3,15 @@
 // Keychain; in dev and tests it is an in-memory stub. A key never touches localStorage or a file from here.
 import { invoke } from "@tauri-apps/api/core";
 import type { ModelTarget } from "./session";
+import { TEXT_MODEL as GROK_MODEL } from "../../../integrations/harness/providers/grok/grokProtocol";
 
 export type CustomProvider = "xai" | "openrouter" | "deepseek" | "ollama" | "custom";
 
+/**
+ * The model each provider gets without asking. xAI takes the Grok harness's own TEXT_MODEL, so it moves with the
+ * harness (one place); OpenRouter routes the same Grok by its "x-ai/" name; DeepSeek's chat model; Ollama's small
+ * Llama. Custom has none: its model id is under Advanced.
+ */
 export const CUSTOM_PROVIDERS: { id: CustomProvider; name: string; baseUrl: string }[] = [
   { id: "xai", name: "xAI", baseUrl: "https://api.x.ai/v1" },
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
@@ -13,6 +19,20 @@ export const CUSTOM_PROVIDERS: { id: CustomProvider; name: string; baseUrl: stri
   { id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434" },
   { id: "custom", name: "Custom", baseUrl: "" },
 ];
+/** Read when asked, not at load: the Grok harness module and this one import each other through models.ts. */
+export function defaultModelId(id: CustomProvider): string {
+  switch (id) {
+    case "xai": return GROK_MODEL;
+    case "openrouter": return `x-ai/${GROK_MODEL}`;
+    case "deepseek": return "deepseek-chat";
+    case "ollama": return "llama3.2";
+    default: return "";
+  }
+}
+/** The model id field only shows, under a collapsed Advanced, for Custom and Ollama. */
+export function showsAdvanced(id: CustomProvider): boolean {
+  return id === "custom" || id === "ollama";
+}
 
 export function providerName(id: CustomProvider): string {
   return CUSTOM_PROVIDERS.find((p) => p.id === id)?.name ?? id;
@@ -81,7 +101,7 @@ function writeModels(list: CustomModel[]): void {
 export type CustomModelForm = { name: string; provider: CustomProvider; baseUrl: string; modelId: string; key: string };
 
 export function emptyForm(provider: CustomProvider = "xai"): CustomModelForm {
-  return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: "", key: "" };
+  return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: "" };
 }
 
 /** Plain-words problems with the form, by field. Empty when it can be tested. */
@@ -101,7 +121,21 @@ export function validateCustomModel(form: CustomModelForm): Partial<Record<keyof
 
 // ---- the key store (CoS wires this to the Keychain) ------------------------------------------------------------------
 
-export type KeyTestResult = { ok: true; message: string } | { ok: false; message: string };
+/** `code` is the backend's error identifier, when it has one (see CLAUDE_KEY_ERROR). */
+export type KeyTestResult = { ok: true; message: string } | { ok: false; message: string; code?: string };
+
+/**
+ * The backend's own words for a pasted Claude/Anthropic key (save_key_in / session_token in src-tauri/src/model_router.rs).
+ * The frontend never looks at the key itself; it only matches this substring in the error, or `code` on a failed result.
+ */
+export const CLAUDE_KEY_ERROR = "looks like a Claude key";
+export const CLAUDE_KEY_MESSAGE = "Claude uses your subscription, so no key is needed.";
+export function isClaudeKeyError(e: unknown): boolean {
+  if (!e) return false;
+  if (typeof e === "string") return e.includes(CLAUDE_KEY_ERROR);
+  const r = e as { code?: unknown; message?: unknown; kind?: unknown };
+  return r.code === CLAUDE_KEY_ERROR || r.kind === CLAUDE_KEY_ERROR || (typeof r.message === "string" && r.message.includes(CLAUDE_KEY_ERROR));
+}
 
 export interface ModelKeyStore {
   /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file. */
@@ -129,6 +163,8 @@ export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, st
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")
         return /down/.test(baseUrl) ? { ok: false, message: OLLAMA_DOWN } : { ok: true, message: OLLAMA_UP };
+      // Stands in for the backend, which answers a Claude key with its own error.
+      if (/^sk-ant-/.test(key)) return { ok: false, message: `That ${CLAUDE_KEY_ERROR}` };
       return key.length >= 8 && !/bad/i.test(key)
         ? { ok: true, message: replied(modelId) }
         : { ok: false, message: KEY_FAILED };
@@ -164,8 +200,10 @@ export function modelKeyStore(): ModelKeyStore {
 /** Runs the check the form shows inline. */
 export async function testCustomModel(form: CustomModelForm): Promise<KeyTestResult> {
   try {
-    return await store.testModelKey(form.provider, form.baseUrl.trim() || defaultBaseUrl(form.provider), form.modelId.trim(), needsKey(form.provider) ? form.key : "");
-  } catch {
+    const r = await store.testModelKey(form.provider, form.baseUrl.trim() || defaultBaseUrl(form.provider), form.modelId.trim(), needsKey(form.provider) ? form.key : "");
+    return !r.ok && isClaudeKeyError(r) ? { ok: false, code: CLAUDE_KEY_ERROR, message: CLAUDE_KEY_MESSAGE } : r;
+  } catch (e) {
+    if (isClaudeKeyError(e)) return { ok: false, code: CLAUDE_KEY_ERROR, message: CLAUDE_KEY_MESSAGE };
     return { ok: false, message: form.provider === "ollama" ? OLLAMA_DOWN : KEY_FAILED };
   }
 }
@@ -217,3 +255,14 @@ export function pillText(model: string, subName: string): { name: string; billin
   const custom = findCustomModel(model);
   return custom ? { name: custom.name, billing: "billed separately" } : { name: subName };
 }
+
+/**
+ * Remove-model confirm copy, text only (to apply to CoS's 9468f70 confirm). `name` is the model's own display name
+ * (`CustomModel.name`), never hard-coded. Buttons match the remove-project dialog.
+ */
+export const REMOVE_MODEL_COPY = {
+  title: (name: string): string => `Remove ${name}? Its saved key is deleted too.`,
+  cancel: "Cancel",
+  confirm: "Remove",
+  keyDeleteFailed: (name: string): string => `Couldn't delete the key, so ${name} is still here. Try again.`,
+} as const;

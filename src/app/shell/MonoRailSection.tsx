@@ -210,7 +210,6 @@ export function MonoRailSection({
                   name={look.mascot}
                   color={look.color}
                   status={state.status}
-                  letter={look.name}
                 />
                 {state.status === "working" ? (
                   <Shimmer

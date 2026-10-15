@@ -163,19 +163,19 @@ export const PIXEL_MASCOT_NAMES: readonly string[] = PROJECT_MASCOTS.map(
   (mascot) => mascot.name,
 );
 
-/** The 8×8 front rows for a mascot, `#` filled; unknown names get the ghost. */
+/** The 8×8 front rows for a mascot, `#` filled; unknown names get the robot. */
 export function pixelSprite(name: string, talking = false): readonly string[] {
-  const mascot = SPRITES[name] ?? SPRITES.ghost;
+  const mascot = SPRITES[name] ?? SPRITES.robot;
   return talking ? mascot.talk : mascot.rest;
 }
 
 function figure(name: string): Figure {
-  return FIGURES[name] ?? FIGURES.ghost;
+  return FIGURES[name] ?? FIGURES.robot;
 }
 
 /** Eye cells for a mascot frame, in sprite cells. */
 export function pixelEyes(name: string, talking = false): readonly Cell[] {
-  const { eyes } = figure(SPRITES[name] ? name : "ghost");
+  const { eyes } = figure(SPRITES[name] ? name : "robot");
   return talking ? eyes.talk : eyes.rest;
 }
 
@@ -273,11 +273,16 @@ export function pixelLayers(
   color: string,
   talking = false,
 ): PixelLayers {
+  // The letter avatar, where only pixels can be drawn (the native menu): a plain grey rounded block, no creature.
+  if (name.startsWith("letter")) {
+    const g = "rgb(128 128 128 / 0.45)";
+    return { body: [rect(1, 0, 6, 8, g), rect(0, 1, 8, 6, g)], open: [], closed: [] };
+  }
   const key = `${name}|${color}|${talking}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const known = SPRITES[name] ? name : "ghost";
+  const known = SPRITES[name] ? name : "robot";
   const rows = pixelSprite(known, talking);
   const fig = figure(known);
   const base = pastel(parse(color));

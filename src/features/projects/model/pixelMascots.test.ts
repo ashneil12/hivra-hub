@@ -26,11 +26,17 @@ it("puts every eye in a hole of its frame", () => {
   }
 });
 
-it("falls back to the ghost for unknown names", () => {
-  expect(pixelSprite("unicorn")).toBe(pixelSprite("ghost"));
+it("falls back to the robot (never the ghost) for unknown names", () => {
+  expect(pixelSprite("unicorn")).toBe(pixelSprite("robot"));
   expect(pixelLayers("unicorn", "#ff8800")).toEqual(
-    pixelLayers("ghost", "#ff8800"),
+    pixelLayers("robot", "#ff8800"),
   );
+});
+
+it("draws the letter avatar as a plain block with no eyes", () => {
+  const l = pixelLayers("letter:F", "#ff8800");
+  expect(l.open).toEqual([]);
+  expect(l.body.length).toBe(2);
 });
 
 it("gives every mascot open and closed eyes", () => {
