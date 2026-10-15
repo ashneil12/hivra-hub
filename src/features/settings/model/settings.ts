@@ -316,6 +316,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "colorblind color blind accessibility added removed red green blue orange high contrast changes",
   },
   {
+    id: "color-presets",
+    section: "appearance",
+    label: "Presets",
+    keywords: "color theme palette hue saturation lightness sidebar opacity preset",
+  },
+  {
     id: "hue",
     section: "appearance",
     label: "Hue",
