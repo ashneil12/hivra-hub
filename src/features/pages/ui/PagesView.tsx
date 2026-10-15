@@ -5,6 +5,7 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, DashboardSquare, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
+import { undoBotChange } from "../../hub/model/botChanges";
 import { allowPage, approvedPermissions, needsAllow, keepPage, keptPages, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, type BuildPageResult } from "../model/buildPage";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
@@ -349,7 +350,10 @@ export function PagesContent() {
             <div className="mb-4 mt-1"><Limits /></div>
             {kept === shown.title ? (
               <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
-                <Undo2 className="size-3.5 text-content/60" />Kept. Changed your mind? Undo it any time in Settings → Changes → Bot changes.
+                <span className="min-w-0 flex-1">Kept.</span>
+                <button type="button" data-pages-undo-keep className={`${quietBtn} flex items-center gap-1.5`} onClick={() => { const id = shown.id; setKept(undefined); setOpen(undefined); void undoBotChange([`page:${id}`]); }}>
+                  <Undo2 className="size-3.5 text-content/60" />Undo
+                </button>
               </div>
             ) : null}
             {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
