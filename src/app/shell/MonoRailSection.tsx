@@ -65,6 +65,19 @@ export function unreadLabel(count: number): string {
 }
 
 /**
+ * Which Monos the rail lists, in order. The hub (`rank` set) shows one global list, the same on every project:
+ * the default four, then every project's Lead (hubMonoRank). Plain Monocode can still filter by project folder.
+ */
+export function railMonos<M extends { id: string; name?: string; projects: string[] }>(
+  list: M[],
+  projectFilter: string | undefined,
+  rank: ((mono: M) => number) | undefined,
+): M[] {
+  if (!rank) return list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  return list.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
+}
+
+/**
  * The user's Monos, above the projects. Each opens like a project does, but
  * into its conversation; none belongs to a project, so they get a section of
  * their own and the shaded mascot rather than a project's flat one.
@@ -83,11 +96,7 @@ export function MonoRailSection({
   const monos = useMemo(
     () =>
       {
-        const list = listMonos().filter(
-          (mono) => !projectFilter || mono.projects.includes(projectFilter),
-        );
-        if (!rank) return list;
-        return list.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
+        return railMonos(listMonos(), projectFilter, rank);
       },
     [snapshot, projectFilter, rank],
   );

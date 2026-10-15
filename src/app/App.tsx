@@ -12821,7 +12821,7 @@ function Workspace({
     setHubSelection({ project: hubSel.project, item: "inbox" });
   };
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, projectFilter: hubProject?.folder ?? undefined, rank: hubMonoRank }
+    ? { ...sidebarMonos, rank: hubMonoRank } // one global list on every project, not filtered by the selected one
     : undefined;
 
   const chromeSurfaceOpen =
