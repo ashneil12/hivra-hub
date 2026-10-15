@@ -287,3 +287,18 @@ describe("a Claude key", () => {
     expect((await m.testCustomModel(form)).message).toBe("401");
   });
 });
+
+it("the Claude-key line has a neutral grey dot, not red", async () => {
+  const m = await import("../model/customModels");
+  m.setModelKeyStore({ saveModelKey: async () => {}, testModelKey: async () => ({ ok: false, message: "That looks like a Claude key" }) });
+  render();
+  open();
+  act(() => q("[data-add-model]")!.click());
+  type("Name", "Claude");
+  type("Key", "anything-long");
+  await act(async () => q("[data-test-key]")!.click());
+  await flush();
+  expect(q("[data-key-test]")!.getAttribute("data-key-test")).toBe("guidance");
+  expect(q("[data-key-test-dot]")!.className).toContain("bg-content/40");
+  expect(q("[data-key-test-dot]")!.className).not.toContain("bg-red");
+});

@@ -79,5 +79,6 @@ it("the mascot row starts with Letter, selected by default, and has nothing ghos
   const names = choices.map((c) => c.dataset.mascotChoice);
   expect(names).not.toContain("ghost");
   expect(names).not.toContain("skull");
+  expect(names).not.toContain("mushroom");
   expect(choices.filter((c) => c.getAttribute("aria-checked") === "true")).toHaveLength(1);
 });
