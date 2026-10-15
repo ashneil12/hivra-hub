@@ -190,13 +190,14 @@ describe("ships clean and calm", () => {
     expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
   });
 
-  it("the strip shows EXO, Hivra, Nibbii, Harness in that order, each its own shape", async () => {
+  it("the strip shows EXO, Hivra, Nibbii, Harness in that order, each its own letter tile", async () => {
     mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
     expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Harness"]);
-    const icons = [...container.querySelectorAll("[data-hub-strip] button")].slice(1, 5).map((b) => b.querySelector("svg")?.innerHTML);
-    expect(new Set(icons).size).toBe(4);
+    // No ghost and no per-project shape by default: the first letter on a grey glass tile (Ash can pick an icon).
+    const tiles = [...container.querySelectorAll("[data-hub-strip] button:not([data-project-more])")].slice(1, 5).map((b) => b.textContent?.trim()[0]);
+    expect(tiles).toEqual(["E", "H", "N", "H"]);
   });
 
   it("while Ash OS is still writing the summary it shows a quiet line, then swaps the paragraph in place", async () => {

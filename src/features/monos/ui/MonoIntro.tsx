@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { PROJECT_MASCOTS } from "../../projects/model/projectMascots";
+import { PICKABLE_MASCOTS } from "../../projects/model/projectMascots";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { TAB_GROUP_COLORS } from "../../workspace/model/tabGroups";
 import { playCue } from "../../settings/model/sounds";
@@ -22,7 +22,7 @@ export function monoIntroCrowd(look: Look) {
   const colors = TAB_GROUP_COLORS.slice(1).filter(
     (color) => color !== look.color,
   );
-  return PROJECT_MASCOTS.map((mascot) => mascot.name)
+  return PICKABLE_MASCOTS.map((mascot) => mascot.name)
     .filter((name) => name !== look.mascot)
     .map((name, i) => ({ name, color: colors[i % colors.length] }));
 }

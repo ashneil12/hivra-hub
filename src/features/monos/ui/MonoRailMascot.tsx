@@ -7,21 +7,34 @@ export function MonoRailMascot({
   color,
   status = "idle",
   className = "size-4 shrink-0",
+  letter,
 }: {
   name: string;
+  /** The sidebar's neutral avatar: this initial, light on a grey glass square, instead of the mascot. */
+  letter?: string;
   color: string;
   status?: MonoStatus;
   className?: string;
 }) {
   return (
     <span className={`relative grid place-items-center ${className}`}>
-      <PixelMascot
-        name={name}
-        color={color}
-        status={status}
-        still={status === "idle"}
-        className="size-full"
-      />
+      {letter ? (
+        <span
+          data-mono-letter
+          aria-hidden
+          className="grid size-full place-items-center rounded-[4px] bg-content/12 text-[9px] font-semibold leading-none text-content/80 ring-1 ring-inset ring-content/10"
+        >
+          {letter.charAt(0).toUpperCase()}
+        </span>
+      ) : (
+        <PixelMascot
+          name={name}
+          color={color}
+          status={status}
+          still={status === "idle"}
+          className="size-full"
+        />
+      )}
       <MonoStatusDot
         status={status}
         color={color}

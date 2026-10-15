@@ -7,7 +7,7 @@ import {
 } from "react";
 import { ChevronLeft, type IconComponent } from "../../../shared/ui/icons";
 import { IconButton } from "../../../app/shell/TitleBar";
-import { PROJECT_MASCOTS } from "../../projects/model/projectMascots";
+import { PICKABLE_MASCOTS } from "../../projects/model/projectMascots";
 import { MONO_COLORS } from "../model/mono";
 import {
   ColorPickerPopover,
@@ -232,7 +232,7 @@ export function MascotPicker({
       aria-label="Mascot"
       className={`grid gap-0.5 px-1 ${large ? "grid-cols-5 gap-1" : "grid-cols-10"}`}
     >
-      {PROJECT_MASCOTS.map(({ name }) => {
+      {PICKABLE_MASCOTS.map(({ name }) => {
         const selected = name === current;
         return (
           <button

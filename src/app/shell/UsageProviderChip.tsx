@@ -3,7 +3,7 @@ import {
   clampUsedPercent,
   DAILY_WINDOW_MINUTES,
   formatExtraUsageBalance,
-  formatRateLimitWindowChipLabel,
+  usageChipLabel,
   formatResetCountdown,
   formatResetDuration,
   formatUsagePercent,
@@ -283,13 +283,8 @@ export function UsageProviderChip({
                   {index > 0 ? (
                     <span className="text-content/25">·</span>
                   ) : null}
-                  <span>
-                    {formatUsagePercent(
-                      showRemaining
-                        ? 100 - clampUsedPercent(entry.window.usedPercent)
-                        : entry.window.usedPercent,
-                    )}{" "}
-                    {formatRateLimitWindowChipLabel(entry.window, now)}
+                  <span data-usage-window={entry.key}>
+                    {usageChipLabel(entry.key, entry.window, now, showRemaining)}
                   </span>
                 </span>
               ))}
