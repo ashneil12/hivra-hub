@@ -1,5 +1,5 @@
-import { useState, useSyncExternalStore } from "react";
-import { Check, ChevronDown, ChevronRight, Plus } from "../../../shared/ui/icons";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { Check, ChevronDown, Plus } from "../../../shared/ui/icons";
 import {
   addCustomModel,
   CUSTOM_PROVIDERS,
@@ -10,7 +10,6 @@ import {
   providerName,
   removeCustomModel,
   REMOVE_MODEL_COPY,
-  showsBaseUrl,
   subscribeCustomModels,
   testCustomModel,
   validateCustomModel,
@@ -20,7 +19,6 @@ import {
   CLAUDE_KEY_ERROR,
   CLAUDE_KEY_MESSAGE,
   KEY_FAILED,
-  showsAdvanced,
   type CustomModel,
   type CustomModelForm,
   type KeyTestResult,
@@ -156,57 +154,113 @@ export function OtherModelsSection({
 const input =
   "w-full rounded-md border border-content/15 bg-content/3 px-2 py-1.5 text-[12px] text-content outline-none placeholder:text-content/35 focus:border-content/35";
 
-/** Name, provider, model id and a masked key; Test first, then Save. The key goes to the key store, never settings. */
-export function AddModelForm({ onDone, onCancel, initial }: { onDone: (model: CustomModel) => void; onCancel: () => void; initial?: { name?: string } }) {
+/** Shared Esc hook: only one Add model form is open at a time. */
+export const addModelEscRef: { current: ((event?: Event) => boolean) | null } = { current: null };
+// More than one window listener sees the same Esc (the picker's and its popover's); each press acts once.
+const seenEsc = new WeakSet<Event>();
+
+export type AuthMode = "key" | "oauth";
+export const OAUTH_NOT_CONNECTED = "Not connected yet. Signing in with your provider account isn't built. Use an API key for now.";
+
+/**
+ * Name, provider, how to sign in, address, model id and a masked key. The provider list opens in the form's own flow
+ * (it pushes the fields down, never covers them), closes on a pick, and Esc closes it. Back and Esc return to the list.
+ * The key goes to the key store, never settings.
+ */
+export function AddModelForm({
+  onDone,
+  onCancel,
+  initial,
+  escRef,
+}: {
+  onDone: (model: CustomModel) => void;
+  onCancel: () => void;
+  initial?: { name?: string };
+  /** The picker calls this on Esc while the form is open; true when the form handled it. */
+  escRef?: { current: ((event?: Event) => boolean) | null };
+}) {
   const [form, setForm] = useState<CustomModelForm>(() => ({ ...emptyForm(), ...(initial?.name ? { name: initial.name } : {}) }));
   const [touched, setTouched] = useState(false);
   const [test, setTest] = useState<KeyTestResult | "testing" | null>(null);
   const [saving, setSaving] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
+  const [auth, setAuth] = useState<AuthMode>("key");
   const [providerOpen, setProviderOpen] = useState(false);
   const errors = validateCustomModel(form);
   const valid = Object.keys(errors).length === 0;
   const passed = test !== null && test !== "testing" && test.ok;
-  // Any change after a test means it has to be tested again.
+  const keyed = needsKey(form.provider);
+  const oauth = keyed && auth === "oauth";
   const set = (patch: Partial<CustomModelForm>) => {
     setForm((f) => ({ ...f, ...patch }));
     setTest(null);
   };
+  const esc = (event?: Event) => {
+    if (event) {
+      if (seenEsc.has(event)) return true;
+      seenEsc.add(event);
+    }
+    if (providerOpen) setProviderOpen(false);
+    else onCancel();
+    return true;
+  };
+  if (escRef) escRef.current = esc;
+  useEffect(() => () => { if (escRef) escRef.current = null; }, [escRef]);
   const field = (name: keyof CustomModelForm) =>
     touched && errors[name] ? <span className="text-[11px] text-content/55" data-form-error={name}>{errors[name]}</span> : null;
-  const keyed = needsKey(form.provider);
-  // Opens by itself when Custom's model id is missing, so the error is never hidden.
-  const showModelId = advanced || (touched && !!errors.modelId);
+  const runTest = async (): Promise<boolean> => {
+    setTouched(true);
+    if (!valid) return false;
+    setTest("testing");
+    const r = await testCustomModel(form);
+    setTest(r);
+    return r.ok;
+  };
+  const chip = (on: boolean) =>
+    `rounded-md px-2 py-1 text-[12px] ${on ? "bg-selection text-content" : "bg-content/5 text-content/65 hover:bg-content/10"}`;
   return (
-    <div className="flex flex-col gap-2.5 p-2" data-add-model-form onKeyDown={(e) => e.stopPropagation()}>
-      <div className="text-[13px] text-content">Add a model</div>
+    <div
+      className="flex flex-col gap-2.5 p-2"
+      data-add-model-form
+      onKeyDown={(e) => {
+        // The picker's window listener usually handles Esc first (and marks it handled); this is the fallback.
+        if (e.key === "Escape") { e.preventDefault(); esc(e.nativeEvent); }
+        e.stopPropagation();
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <button type="button" data-add-model-back aria-label="Back to models" onClick={onCancel}
+          className="rounded-md px-1.5 py-0.5 text-[12px] text-content/60 hover:bg-content/8 hover:text-content/85">
+          ← Back
+        </button>
+        <div className="text-[13px] text-content">Add a model</div>
+      </div>
       <label className="flex flex-col gap-1 text-[11px] text-content/55">
         Name
         <input className={input} value={form.name} placeholder="Grok" aria-label="Name" onChange={(e) => set({ name: e.target.value })} />
         {field("name")}
       </label>
-      <div className="relative flex flex-col gap-1 text-[11px] text-content/55">
+      <div className="flex flex-col gap-1 text-[11px] text-content/55">
         <span id="add-model-provider">Provider</span>
         <button type="button" aria-labelledby="add-model-provider" aria-label="Provider" aria-haspopup="menu" aria-expanded={providerOpen}
           data-provider-button={form.provider}
           onClick={() => setProviderOpen((v) => !v)}
           className={`${input} flex items-center justify-between text-left`}>
           <span>{providerName(form.provider)}</span>
-          <ChevronDown className="size-3.5 shrink-0 text-content/45" strokeWidth={1.75} />
+          <ChevronDown className={`size-3.5 shrink-0 text-content/45 transition-transform ${providerOpen ? "rotate-180" : ""}`} strokeWidth={1.75} />
         </button>
         {providerOpen ? (
-          <div role="menu" aria-label="Provider" data-provider-menu
-            className="sidebar-glass absolute left-0 right-0 top-full z-10 mt-1 rounded-lg p-1 shadow-lg ring-1 ring-content/10">
+          // In the form's own flow, not floating: it pushes the fields below down, so nothing is covered.
+          <div role="menu" aria-label="Provider" data-provider-menu className="rounded-lg bg-content/4 p-1 ring-1 ring-content/10">
             {CUSTOM_PROVIDERS.map((p) => {
               const selected = p.id === form.provider;
               return (
                 <button key={p.id} type="button" role="menuitemradio" aria-checked={selected} data-provider-choice={p.id}
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     setProviderOpen(false);
-                    set({ provider: p.id, baseUrl: defaultBaseUrl(p.id), modelId: defaultModelId(p.id), key: needsKey(p.id) ? form.key : "" });
+                    if (p.id !== form.provider)
+                      set({ provider: p.id, baseUrl: defaultBaseUrl(p.id), modelId: defaultModelId(p.id), key: needsKey(p.id) ? form.key : "" });
                   }}
-                  className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] text-content hover:bg-content/5">
+                  className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-content hover:bg-content/8">
                   <span className="min-w-0 flex-1 truncate">{p.name}</span>
                   {selected ? <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} /> : null}
                 </button>
@@ -215,80 +269,62 @@ export function AddModelForm({ onDone, onCancel, initial }: { onDone: (model: Cu
           </div>
         ) : null}
       </div>
-      {showsBaseUrl(form.provider) ? (
-        <label className="flex flex-col gap-1 text-[11px] text-content/55">
-          Base URL
-          <input className={input} value={form.baseUrl} placeholder="https://…/v1" aria-label="Base URL" onChange={(e) => set({ baseUrl: e.target.value })} />
-          {field("baseUrl")}
-        </label>
-      ) : null}
-      {showsAdvanced(form.provider) ? (
-        <div data-model-advanced={showModelId ? "open" : "closed"}>
-          <button type="button" onClick={() => setAdvanced((v) => !v)} aria-expanded={showModelId}
-            className="flex items-center gap-1 text-[11px] text-content/45 hover:text-content/70">
-            <ChevronRight className={`size-3 transition-transform ${showModelId ? "rotate-90" : ""}`} strokeWidth={1.75} />
-            Advanced
-          </button>
-          {showModelId ? (
-            <label className="mt-1.5 flex flex-col gap-1 text-[11px] text-content/55">
-              Model id
-              <input className={input} value={form.modelId} placeholder={defaultModelId(form.provider) || "model-name"} aria-label="Model id" onChange={(e) => set({ modelId: e.target.value })} />
-              {field("modelId")}
-            </label>
-          ) : null}
+      <label className="flex flex-col gap-1 text-[11px] text-content/55">
+        Your provider's address
+        <input className={input} value={form.baseUrl} placeholder="https://api.example.com/v1" aria-label="Base URL" onChange={(e) => set({ baseUrl: e.target.value })} />
+        {field("baseUrl")}
+      </label>
+      <label className="flex flex-col gap-1 text-[11px] text-content/55">
+        Model ID
+        <input className={input} value={form.modelId} placeholder={defaultModelId(form.provider) || "model-name"} aria-label="Model id" onChange={(e) => set({ modelId: e.target.value })} />
+        {field("modelId")}
+      </label>
+      {keyed ? (
+        <div className="flex flex-col gap-1 text-[11px] text-content/55" role="radiogroup" aria-label="Sign in with">
+          Sign in with
+          <div className="flex gap-1.5">
+            <button type="button" role="radio" aria-checked={auth === "key"} data-auth="key" className={chip(auth === "key")} onClick={() => setAuth("key")}>API key</button>
+            <button type="button" role="radio" aria-checked={auth === "oauth"} data-auth="oauth" className={chip(auth === "oauth")} onClick={() => setAuth("oauth")}>Sign in (OAuth)</button>
+          </div>
         </div>
       ) : null}
-      {keyed ? (
+      {oauth ? (
+        <div data-oauth-not-connected className="rounded-md bg-content/5 px-2.5 py-2 text-[12px] text-content/70">{OAUTH_NOT_CONNECTED}</div>
+      ) : keyed ? (
         <label className="flex flex-col gap-1 text-[11px] text-content/55">
           Key
-          <input
-            className={input}
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={form.key}
-            placeholder="Kept in your Keychain"
-            aria-label="Key"
-            onChange={(e) => set({ key: e.target.value })}
-          />
+          <input className={input} type="password" autoComplete="off" spellCheck={false} value={form.key}
+            placeholder="Kept in your Keychain" aria-label="Key" onChange={(e) => set({ key: e.target.value })} />
           {field("key")}
         </label>
       ) : null}
-      {test && test !== "testing" ? (
+      {oauth ? null : test === "testing" ? (
+        <div className="text-[12px] text-content/55" data-key-test="testing">Testing…</div>
+      ) : test ? (
         <div className="flex items-center gap-1.5 text-[12px] text-content/70" data-key-test={test.ok ? "ok" : test.code === CLAUDE_KEY_ERROR ? "guidance" : "failed"}>
-          {/* A Claude key isn't a failure, just guidance: a neutral grey dot. */}
           <span className={`size-1.5 shrink-0 rounded-full ${test.ok ? "bg-emerald-500" : test.code === CLAUDE_KEY_ERROR ? "bg-content/40" : "bg-red-500"}`} aria-hidden data-key-test-dot />
           {test.message}
         </div>
       ) : null}
       <div className="flex items-center justify-end gap-1.5 pt-1">
-        <button type="button" onClick={onCancel} className="rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8">
+        <button type="button" data-add-model-cancel onClick={onCancel} className="rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8">
           Cancel
         </button>
-        <button
-          type="button"
-          data-test-key
-          disabled={test === "testing"}
-          onClick={async () => {
-            setTouched(true);
-            if (!valid) return;
-            setTest("testing");
-            setTest(await testCustomModel(form));
-          }}
-          className="rounded-md bg-content/8 px-2.5 py-1 text-[12px] text-content/85 hover:bg-content/12 disabled:opacity-40"
-        >
+        <button type="button" data-test-key disabled={test === "testing" || oauth} onClick={() => void runTest()}
+          className="rounded-md bg-content/8 px-2.5 py-1 text-[12px] text-content/85 hover:bg-content/12 disabled:opacity-40">
           {test === "testing" ? "Testing…" : keyed ? "Test key" : "Test connection"}
         </button>
         <button
           type="button"
           data-save-model
-          disabled={!valid || !passed || saving}
+          disabled={!valid || oauth || saving || test === "testing"}
           onClick={async () => {
+            // Save tests first when it hasn't been tested, and only keeps a model that answered.
+            if (!passed && !(await runTest())) return;
             setSaving(true);
             try {
               onDone(await addCustomModel(form));
             } catch (e) {
-              // saveModelKey can refuse a Claude key with the backend's own error, too.
               const claude = isClaudeKeyError(e);
               setTest({ ok: false, code: claude ? CLAUDE_KEY_ERROR : undefined, message: claude ? CLAUDE_KEY_MESSAGE : KEY_FAILED });
             } finally {

@@ -29,9 +29,9 @@ export function defaultModelId(id: CustomProvider): string {
     default: return "";
   }
 }
-/** The model id field only shows, under a collapsed Advanced, for Custom and Ollama. */
-export function showsAdvanced(id: CustomProvider): boolean {
-  return id === "custom" || id === "ollama";
+/** The model id field is always visible now (land-5); kept for callers that still ask. */
+export function showsAdvanced(_id: CustomProvider): boolean {
+  return false;
 }
 
 export function providerName(id: CustomProvider): string {
@@ -44,9 +44,9 @@ export function defaultBaseUrl(id: CustomProvider): string {
 export function needsKey(id: CustomProvider): boolean {
   return id !== "ollama";
 }
-/** Custom always asks for a base URL; Ollama shows it (prefilled) so another port can be used. */
-export function showsBaseUrl(id: CustomProvider): boolean {
-  return id === "custom" || id === "ollama";
+/** Every provider shows its address: Custom must fill it in, the rest are prefilled and editable. */
+export function showsBaseUrl(_id: CustomProvider): boolean {
+  return true;
 }
 
 /** What settings keep for a custom model. Never a key. */
@@ -112,8 +112,10 @@ export function validateCustomModel(form: CustomModelForm): Partial<Record<keyof
   else if (/\s/.test(form.modelId.trim())) errors.modelId = "The model id has no spaces";
   if (showsBaseUrl(form.provider)) {
     const url = form.baseUrl.trim();
-    if (!url) errors.baseUrl = "Add the base URL";
-    else if (!/^https?:\/\/[^\s/]+/.test(url)) errors.baseUrl = "The base URL starts with http:// or https://";
+    if (!url) errors.baseUrl = "Add your provider's address";
+    else if (!/^https?:\/\/[^\s/]+/.test(url)) errors.baseUrl = "The address starts with https://";
+    else if (/anthropic\.com|\/anthropic\b|claude\.ai/i.test(url))
+      errors.baseUrl = "Use the provider's OpenAI-style address (usually ending in /v1), not an Anthropic one";
   }
   if (needsKey(form.provider) && !form.key.trim()) errors.key = "Add the key";
   return errors;

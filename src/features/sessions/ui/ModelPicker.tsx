@@ -43,7 +43,7 @@ import {
   subscribeHarnessAvailability,
   getHarnessAvailabilitySnapshot,
 } from "../../../integrations/harness/core/availability";
-import { AddModelForm, OtherModelsSection, useCustomModels } from "./CustomModels";
+import { AddModelForm, addModelEscRef, OtherModelsSection, useCustomModels } from "./CustomModels";
 import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
 import { useModelSource, type ModelSource } from "./modelSource";
@@ -588,6 +588,8 @@ export function ModelPicker({
       if (!openRef.current || event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
+      // With Add model open, Esc closes its provider list or goes back to the models, not the whole picker.
+      if (addModelEscRef.current?.(event)) return;
       dismiss(true);
     };
 
@@ -1604,7 +1606,11 @@ function ModelFlyout({
       layer={LAYER.submenu}
       role="dialog"
       aria-label="Models"
-      onDismiss={onDismiss}
+      // With Add model open, Esc closes its provider list or goes back to the models, not the whole picker.
+      onDismiss={(...args: Parameters<NonNullable<typeof onDismiss>>) => {
+        if (args[0] === "escape" && addModelEscRef.current?.(window.event)) return;
+        onDismiss?.(...args);
+      }}
       onKeyDown={(event) => {
         // Keyboard nav once focus leaves the search field (which stops its
         // own keys). Scoped to the list so provider tabs keep their buttons.
@@ -1694,7 +1700,7 @@ function ModelFlyout({
           className="min-h-0 flex-1 overflow-y-auto overscroll-none p-1"
         >
           {adding && otherModels ? (
-            <AddModelForm initial={adding || undefined} onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
+            <AddModelForm escRef={addModelEscRef} initial={adding || undefined} onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
           ) : models.length === 0 ? (
             <div className="px-2 py-3 text-[12px] text-content/50">
               {tab === "favorites" && !query.trim()

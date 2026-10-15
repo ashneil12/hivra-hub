@@ -131,7 +131,8 @@ describe("form validation", () => {
     expect(Object.keys(validateCustomModel(emptyForm("xai")))).toEqual(["name", "key"]);
     expect(Object.keys(validateCustomModel(emptyForm("custom")))).toEqual(["name", "modelId", "baseUrl", "key"]);
     expect(validateCustomModel({ ...emptyForm("xai"), name: "Grok", modelId: "grok 4", key: "k" }).modelId).toBe("The model id has no spaces");
-    expect(validateCustomModel({ ...emptyForm("custom"), name: "Mine", modelId: "m", key: "k" }).baseUrl).toBe("Add the base URL");
+    expect(validateCustomModel({ ...emptyForm("custom"), name: "Mine", modelId: "m", key: "k" }).baseUrl).toBe("Add your provider's address");
+    expect(validateCustomModel({ ...emptyForm("deepseek"), name: "D", key: "k", baseUrl: "https://api.deepseek.com/anthropic" }).baseUrl).toMatch(/OpenAI-style/);
     expect(validateCustomModel({ ...emptyForm("custom"), name: "Mine", modelId: "m", key: "k", baseUrl: "ftp://x" }).baseUrl).toMatch(/http/);
     expect(validateCustomModel({ ...emptyForm("ollama"), name: "Llama", modelId: "llama3.2" })).toEqual({});
   });
@@ -155,7 +156,7 @@ describe("Other models in the Claude Code tab", () => {
     expect(q("[data-add-model]")).toBeTruthy();
   });
 
-  it("Test key gates Save: a bad key says so and Save stays off; a good one says the model replied", async () => {
+  it("Save turns on once the fields are filled, but only keeps a model whose test passed", async () => {
     render();
     open();
     act(() => q("[data-add-model]")!.click());
@@ -163,7 +164,11 @@ describe("Other models in the Claude Code tab", () => {
     expect(q<HTMLInputElement>('[aria-label="Key"]')!.type).toBe("password");
     await addGrok("bad-key-123");
     expect(q("[data-key-test]")!.textContent).toBe(KEY_FAILED);
-    expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(true);
+    expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(false);
+    await act(async () => q("[data-save-model]")!.click());
+    await flush();
+    expect(localStorage.getItem("monocode:custom-models")).toBeNull();
+    expect(q("[data-add-model-form]")).toBeTruthy();
     type("Key", "xai-good-key-123");
     expect(q("[data-key-test]")).toBeNull(); // a change means test again
     await act(async () => q("[data-test-key]")!.click());
@@ -180,15 +185,12 @@ describe("Other models in the Claude Code tab", () => {
     expect(q('[aria-label="Key"]')).toBeNull();
     expect(q<HTMLInputElement>('[aria-label="Base URL"]')!.value).toBe("http://localhost:11434");
     type("Name", "Llama");
-    expect(q('[aria-label="Model id"]')).toBeNull();
-    act(() => q<HTMLButtonElement>("[data-model-advanced] button")!.click());
     expect(q<HTMLInputElement>('[aria-label="Model id"]')!.value).toBe("llama3.2");
     expect(q("[data-test-key]")!.textContent).toBe("Test connection");
     type("Base URL", "http://down:11434");
     await act(async () => q("[data-test-key]")!.click());
     await flush();
     expect(q("[data-key-test]")!.textContent).toBe(OLLAMA_DOWN);
-    expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(true);
     type("Base URL", "http://localhost:11434");
     await act(async () => q("[data-test-key]")!.click());
     await flush();
@@ -238,7 +240,7 @@ describe("a session on a custom model", () => {
 });
 
 describe("model id is filled in per provider", () => {
-  it("xAI uses the Grok harness's own model; no model id field outside Advanced; Custom's Advanced opens on a missing id", async () => {
+  it("every provider shows its address and model id right away, prefilled and editable; Custom starts empty", async () => {
     const { defaultModelId } = await import("../model/customModels");
     expect(defaultModelId("xai")).toBe(TEXT_MODEL);
     expect(defaultModelId("openrouter")).toBe(`x-ai/${TEXT_MODEL}`);
@@ -247,25 +249,77 @@ describe("model id is filled in per provider", () => {
     render();
     open();
     act(() => q("[data-add-model]")!.click());
-    expect(q('[aria-label="Model id"]')).toBeNull();
-    expect(q("[data-model-advanced]")).toBeNull();
-    for (const p of ["openrouter", "deepseek"]) { choose(p); expect(q("[data-model-advanced]")).toBeNull(); }
-    choose("custom");
-    expect(q("[data-model-advanced]")!.getAttribute("data-model-advanced")).toBe("closed");
+    const want: Record<string, [string, string]> = {
+      xai: ["https://api.x.ai/v1", TEXT_MODEL],
+      openrouter: ["https://openrouter.ai/api/v1", `x-ai/${TEXT_MODEL}`],
+      deepseek: ["https://api.deepseek.com/v1", "deepseek-chat"],
+      ollama: ["http://localhost:11434", "llama3.2"],
+      custom: ["", ""],
+    };
+    for (const round of [1, 2]) for (const [p, [url, model]] of Object.entries(want)) {
+      choose(p);
+      expect(q("[data-provider-menu]"), `round ${round}`).toBeNull();
+      expect(q<HTMLInputElement>('[aria-label="Base URL"]')!.value).toBe(url);
+      expect(q<HTMLInputElement>('[aria-label="Model id"]')!.value).toBe(model);
+    }
     type("Name", "Mine");
+    type("Key", "custom-good-key-1");
     await act(async () => q("[data-test-key]")!.click());
-    expect(q("[data-model-advanced]")!.getAttribute("data-model-advanced")).toBe("open");
+    expect(q('[data-form-error="baseUrl"]')).toBeTruthy();
     expect(q('[data-form-error="modelId"]')).toBeTruthy();
+    type("Base URL", "https://my.provider.dev/v1");
+    type("Model id", "my-model");
+    await act(async () => q("[data-save-model]")!.click());
+    await flush();
+    const saved = JSON.parse(localStorage.getItem("monocode:custom-models")!);
+    expect(saved[0]).toMatchObject({ provider: "custom", baseUrl: "https://my.provider.dev/v1", modelId: "my-model" });
+  });
+});
+
+describe("getting out of Add model", () => {
+  it("Back and Cancel return to the model list; Esc closes the provider list first, then goes back, without closing the picker", () => {
+    render();
+    open();
+    act(() => q("[data-add-model]")!.click());
+    act(() => q<HTMLButtonElement>("[data-add-model-back]")!.click());
+    expect(q("[data-add-model-form]")).toBeNull();
+    expect(q("[data-add-model]")).toBeTruthy();
+    act(() => q("[data-add-model]")!.click());
+    act(() => q<HTMLButtonElement>("[data-add-model-cancel]")!.click());
+    expect(q("[data-add-model-form]")).toBeNull();
+    act(() => q("[data-add-model]")!.click());
+    act(() => q<HTMLButtonElement>("[data-provider-button]")!.click());
+    const esc = () => act(() => { q<HTMLButtonElement>("[data-provider-button]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    esc();
+    expect(q("[data-provider-menu]")).toBeNull();
+    expect(q("[data-add-model-form]")).toBeTruthy();
+    esc();
+    expect(q("[data-add-model-form]")).toBeNull();
+    expect(q("[data-add-model]")).toBeTruthy();
+  });
+
+  it("Sign in (OAuth) shows Not connected yet and turns Test and Save off; API key brings the key back", () => {
+    render();
+    open();
+    act(() => q("[data-add-model]")!.click());
+    act(() => q<HTMLButtonElement>('[data-auth="oauth"]')!.click());
+    expect(q("[data-oauth-not-connected]")!.textContent).toMatch(/^Not connected yet/);
+    expect(q('[aria-label="Key"]')).toBeNull();
+    expect(q<HTMLButtonElement>("[data-test-key]")!.disabled).toBe(true);
+    expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(true);
+    act(() => q<HTMLButtonElement>('[data-auth="key"]')!.click());
+    expect(q('[aria-label="Key"]')).toBeTruthy();
   });
 });
 
 describe("provider menu", () => {
-  it("is the picker's own menu, not a native select, and shows the choice", () => {
+  it("is the picker's own menu in the form's flow (never floating over the fields), and shows the choice", () => {
     render();
     open();
     act(() => q("[data-add-model]")!.click());
     expect(document.querySelector("[data-add-model-form] select")).toBeNull();
     act(() => q<HTMLButtonElement>("[data-provider-button]")!.click());
+    expect(q("[data-provider-menu]")!.className).not.toMatch(/\babsolute\b/);
     const items = [...document.querySelectorAll('[data-provider-menu] [role="menuitemradio"]')].map((e) => e.textContent);
     expect(items).toEqual(["xAI", "OpenRouter", "DeepSeek", "Ollama", "Custom"]);
     expect(q('[data-provider-choice="xai"]')!.getAttribute("aria-checked")).toBe("true");
