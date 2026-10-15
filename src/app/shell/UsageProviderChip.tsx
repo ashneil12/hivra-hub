@@ -275,10 +275,10 @@ export function UsageProviderChip({
             ) : null}
             {tightest ? <MiniBar usedPct={tightest.usedPercent} /> : null}
             <span className="flex min-w-0 items-center gap-1 tabular-nums">
-              {windows.map((entry, index) => (
+              {fullestFirst(windows).map((entry, index) => (
                 <span
                   key={entry.key}
-                  className="inline-flex items-center gap-1"
+                  className={`inline-flex items-center gap-1 ${index > 0 ? "text-content/40" : ""}`}
                 >
                   {index > 0 ? (
                     <span className="text-content/25">·</span>
@@ -1184,6 +1184,11 @@ function emptyUsageLabel(limits: ProviderRateLimits): string {
   const text = limits.error?.toLowerCase() ?? "";
   if (text.includes("expired") || text.includes("sign-in")) return "expired";
   return "—";
+}
+
+/** The fullest window leads, next to the bar that shows it; the rest follow, quieter. Ties keep their order. */
+export function fullestFirst<T extends { window: RateLimitWindow }>(windows: readonly T[]): T[] {
+  return [...windows].sort((a, b) => b.window.usedPercent - a.window.usedPercent);
 }
 
 function MiniBar({ usedPct }: { usedPct: number }) {

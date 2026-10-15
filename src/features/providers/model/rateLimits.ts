@@ -208,7 +208,7 @@ export function formatRateLimitWindowChipLabel(
 
 /**
  * The status-bar words for one window, from what the provider reports: `usedPercent` of the window consumed, and
- * `resetsAt` when it starts over. "3% used · resets in 2h 45m" for the 5-hour session window, "Week: 99% used · resets
+ * `resetsAt` when it starts over. "5h: 3% used · resets in 2h 45m" for the 5-hour session window, "Week: 99% used · resets
  * in 5d 15h" for the weekly one. With "show remaining" on it says "left" instead.
  */
 export function usageChipLabel(
@@ -222,6 +222,7 @@ export function usageChipLabel(
     kind === "weekly" ? "Week: "
     : kind === "monthly" ? "Month: "
     : window.windowMinutes === DAILY_WINDOW_MINUTES ? "Today: "
+    : window.windowMinutes === SESSION_WINDOW_MINUTES ? "5h: "
     : "";
   const amount = `${formatUsagePercent(showRemaining ? 100 - pct : pct)} ${showRemaining ? "left" : "used"}`;
   const when =
