@@ -344,6 +344,75 @@ pub async fn mono_save(
     .map_err(|e| e.to_string())?
 }
 
+/// Where retired Monos' folders go. Hidden from `load` (not a valid id), never deleted by the app.
+const ARCHIVE_DIR: &str = ".archive";
+
+/// Retire: move `<root>/<mono>` (its SOUL.md, MEMORY.md, habits and notes) into `<root>/.archive/<mono>-<stamp>`.
+/// Returns the archive folder's name. Nothing is deleted.
+fn archive(root: &Path, mono: &str, stamp: &str) -> Result<String, String> {
+    if !valid_id(mono) || !valid_id(stamp) {
+        return Err("Not a Mono id".into());
+    }
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    let dir = root.join(mono);
+    let name = format!("{mono}-{stamp}");
+    let archive_root = root.join(ARCHIVE_DIR);
+    std::fs::create_dir_all(&archive_root).map_err(|e| format!("{}: {e}", archive_root.display()))?;
+    let dest = archive_root.join(&name);
+    if dest.exists() {
+        return Err("That archive already exists".into());
+    }
+    if dir.is_dir() {
+        std::fs::rename(&dir, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    } else {
+        // Never opened: an empty archive still records the retirement.
+        std::fs::create_dir_all(dest.join(MEMORY_DIR)).map_err(|e| format!("{}: {e}", dest.display()))?;
+    }
+    Ok(name)
+}
+
+/// Undo a retirement: move the archive folder back, only if nothing has taken the Mono's place since.
+fn unarchive(root: &Path, mono: &str, name: &str) -> Result<(), String> {
+    if !valid_id(mono) || !name.starts_with(&format!("{mono}-")) || !valid_id(name) {
+        return Err("Not that Mono's archive".into());
+    }
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    let from = root.join(ARCHIVE_DIR).join(name);
+    let dir = root.join(mono);
+    if !from.is_dir() {
+        return Err("The archived folder isn't there any more".into());
+    }
+    if dir.exists() {
+        // A fresh empty folder (made by a load since) gives way; anything with content is never overwritten.
+        let empty_memory = std::fs::read_to_string(dir.join(MEMORY_FILE)).map(|t| t.is_empty()).unwrap_or(true);
+        let only_defaults = std::fs::read_dir(&dir)
+            .map(|it| it.flatten().all(|e| { let n = e.file_name(); n == MEMORY_FILE || n == MEMORY_DIR }))
+            .unwrap_or(false)
+            && std::fs::read_dir(dir.join(MEMORY_DIR)).map(|mut it| it.next().is_none()).unwrap_or(true);
+        if !(empty_memory && only_defaults) {
+            return Err("A Mono with that id has files again, so nothing was moved back".into());
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::rename(&from, &dir).map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+#[tauri::command]
+pub async fn mono_archive(app: AppHandle, mono: String, stamp: String) -> Result<String, String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || archive(&root, &mono, &stamp))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mono_unarchive(app: AppHandle, mono: String, archive: String) -> Result<(), String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || unarchive(&root, &mono, &archive))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +467,42 @@ mod tests {
         // A path can never reach another Mono's folder.
         assert!(save(&root, "mono-a", None, "../mono-b/SOUL.md", "x", None).is_err());
         assert!(save(&root, "mono-a", None, "memory/../../mono-b/SOUL.md", "x", None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
+    fn retiring_moves_the_folder_into_the_archive_and_undo_brings_it_back() {
+        let root = temp_root();
+        let a = load(&root, "hivra-lead", None).unwrap();
+        save(&root, "hivra-lead", None, MEMORY_FILE, "- 2026-10-15 · remember this", Some(&a.memory_hash)).unwrap();
+        save(&root, "hivra-lead", None, SOUL_FILE, "# Soul\n- my rules", None).unwrap();
+        let name = archive(&root, "hivra-lead", "20261015").unwrap();
+        assert!(!root.join("hivra-lead").exists());
+        let kept = root.join(ARCHIVE_DIR).join(&name);
+        assert_eq!(std::fs::read_to_string(kept.join(MEMORY_FILE)).unwrap(), "- 2026-10-15 · remember this");
+        assert_eq!(std::fs::read_to_string(kept.join(SOUL_FILE)).unwrap(), "# Soul\n- my rules");
+        // something loads the id meanwhile: an empty default folder gives way on Undo
+        load(&root, "hivra-lead", None).unwrap();
+        unarchive(&root, "hivra-lead", &name).unwrap();
+        let back = load(&root, "hivra-lead", None).unwrap();
+        assert_eq!(back.memory, "- 2026-10-15 · remember this");
+        assert_eq!(back.soul.as_deref(), Some("# Soul\n- my rules"));
+        assert!(!kept.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn undo_never_overwrites_a_mono_that_has_files_again() {
+        let root = temp_root();
+        load(&root, "mono-a", None).unwrap();
+        let name = archive(&root, "mono-a", "1").unwrap();
+        let fresh = load(&root, "mono-a", None).unwrap();
+        save(&root, "mono-a", None, MEMORY_FILE, "- new", Some(&fresh.memory_hash)).unwrap();
+        assert!(unarchive(&root, "mono-a", &name).is_err());
+        assert!(root.join(ARCHIVE_DIR).join(&name).is_dir());
+        assert!(unarchive(&root, "mono-b", &name).is_err());
+        assert!(archive(&root, "../x", "1").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -117,6 +117,7 @@ mockIPC(
       return true;
     }
     if (cmd === "plugin:path|resolve_directory" || cmd === "home_dir") return "/Users/ash";
+    if (cmd === "mono_archive") { const a = args as { mono: string; stamp: string }; return `${a.mono}-${a.stamp}`; }
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;

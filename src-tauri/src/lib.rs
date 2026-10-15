@@ -548,6 +548,8 @@ pub fn run() {
             mono::mono_load,
             mono::mono_read,
             mono::mono_save,
+            mono::mono_archive,
+            mono::mono_unarchive,
             checkpoint::session_checkpoint_ensure,
             checkpoint::session_checkpoint_begin_turn,
             checkpoint::session_checkpoint_finish_turn,

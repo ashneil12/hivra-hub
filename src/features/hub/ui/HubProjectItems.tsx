@@ -1,4 +1,7 @@
-import { Plus, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { useState } from "react";
+import type { PopoverAnchor } from "../../../shared/ui/Popover";
+import { ProjectGlyph, ProjectMenu } from "./ProjectMenu";
+import { MoreHorizontal, Plus, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
@@ -28,14 +31,22 @@ export function HubProjectItems({
 }) {
   useHubDataVersion();
   useHubChatsVersion();
+  const [menu, setMenu] = useState<PopoverAnchor>();
   if (selection.project === "today") return null;
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
   const items = hubData().listProjectItems(project.id);
   return (
     <div className="mb-2 shrink-0" data-hub-items>
-      <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+      <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header
+        onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}>
+        <span className="grid size-4 shrink-0 place-items-center"><ProjectGlyph project={project} size={11} /></span>
         <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+        <button type="button" title={`${project.name} options`} aria-label={`${project.name} options`} data-project-more
+          onClick={(e) => setMenu(e.currentTarget)}
+          className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 opacity-0 hover:bg-content/8 hover:text-content focus:opacity-100 group-hover/head:opacity-100">
+          <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
+        </button>
         <button
           type="button"
           title="New group chat"
@@ -69,6 +80,7 @@ export function HubProjectItems({
           );
         })}
       </div>
+      {menu ? <ProjectMenu project={project} anchor={menu} onClose={() => setMenu(undefined)} /> : null}
     </div>
   );
 }

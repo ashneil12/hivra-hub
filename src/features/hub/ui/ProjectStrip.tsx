@@ -1,4 +1,7 @@
-import { Clock, Folder, Gauge, Ghost, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
+import { useState, type ReactNode } from "react";
+import { Clock, Folder, Gauge, MoreHorizontal, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
+import type { PopoverAnchor } from "../../../shared/ui/Popover";
+import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
 import { useProposalsVersion } from "../model/proposals";
@@ -8,8 +11,9 @@ import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
 
+/** Ash OS's shape names. "ghost" is no longer drawn: a project shows its letter tile unless Ash picks an icon. */
 export const SHAPES: Record<ProjectIconShape, IconComponent> = {
-  ghost: Ghost,
+  ghost: Folder,
   sparkles: Sparkles,
   palette: Palette,
   gauge: Gauge,
@@ -37,6 +41,7 @@ export function ProjectStrip({
   useHubBuildsVersion();
   const data = hubData();
   const projects = data.listProjects();
+  const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
   return (
     <nav
       aria-label="Projects"
@@ -63,12 +68,15 @@ export function ProjectStrip({
             title={count ? `${project.name}, ${count} waiting on you` : project.name}
             selected={selection.project === project.id}
             onClick={() => onPickProject(project)}
-            Icon={SHAPES[project.iconShape]}
+            glyph={<ProjectGlyph project={project} />}
             count={count}
+            onMenu={(anchor) => setMenu({ project, anchor })}
           />
         );
       })}
       <StripButton label="" title="New project" selected={false} onClick={() => setHubSelection({ project: "today", item: "new-project" })} Icon={Plus} />
+      {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
+      <RemovedUndoToast />
     </nav>
   );
 }
@@ -79,22 +87,30 @@ export function StripButton({
   selected,
   onClick,
   Icon,
+  glyph,
   count,
+  onMenu,
 }: {
   label: string;
   title: string;
   selected: boolean;
   onClick: () => void;
-  Icon: IconComponent;
+  Icon?: IconComponent;
+  /** A project's own tile (letter, emoji, icon or image) instead of Icon. */
+  glyph?: ReactNode;
   count?: number;
+  /** Right-click, or the hover "⋯", opens the project's menu. */
+  onMenu?: (anchor: PopoverAnchor) => void;
 }) {
   return (
+    <div className="group/strip relative">
     <button
       type="button"
       title={title}
       aria-label={title}
       aria-current={selected || undefined}
       onClick={onClick}
+      onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu({ x: e.clientX, y: e.clientY }); } : undefined}
       className="group flex w-14 shrink-0 flex-col items-center gap-1 py-1"
     >
       <span
@@ -102,7 +118,7 @@ export function StripButton({
           selected ? "bg-content/12 text-content" : "text-content/65 group-hover:bg-content/8 group-hover:text-content"
         }`}
       >
-        <Icon className="size-[18px]" strokeWidth={1.75} />
+        {glyph ?? (Icon ? <Icon className="size-[18px]" strokeWidth={1.75} /> : null)}
         {(count ?? 0) > 0 ? (
           <span className="absolute -right-1 -top-1 min-w-4 hub-count-badge rounded-full bg-background-base px-1 text-center text-[10px] leading-4 text-content/75">
             {count}
@@ -115,5 +131,13 @@ export function StripButton({
         </span>
       ) : null}
     </button>
+    {onMenu ? (
+      <button type="button" aria-label={`${title} options`} data-project-more
+        onClick={(e) => onMenu(e.currentTarget)}
+        className="absolute right-0 top-0 grid size-4 place-items-center rounded-full bg-background-base text-content/60 opacity-0 ring-1 ring-content/10 transition-opacity hover:text-content focus:opacity-100 group-hover/strip:opacity-100">
+        <MoreHorizontal className="size-3" strokeWidth={2} />
+      </button>
+    ) : null}
+    </div>
   );
 }

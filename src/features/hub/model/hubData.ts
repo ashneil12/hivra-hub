@@ -17,6 +17,7 @@ import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
 import { seedHubBundleDefaults } from "./hubBundle";
+import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
 seedHubBundleDefaults();
@@ -68,7 +69,25 @@ function startHubBundleLeads(store: HubStore): void {
 
 /** The one place the frontend gets hub data from. */
 export function hubData(): HubDataSource {
-  return (override ?? choose()).source;
+  return withProjectPrefs((override ?? choose()).source);
+}
+
+/** Every screen reads projects with Ash's own name, order and "Remove from hub" applied (projectPrefs.ts). */
+const wrapped = new WeakMap<HubDataSource, HubDataSource>();
+function withProjectPrefs(source: HubDataSource): HubDataSource {
+  let w = wrapped.get(source);
+  if (!w) {
+    let memo: { from: HubProject[]; v: number; out: HubProject[] } | undefined;
+    w = Object.create(source) as HubDataSource;
+    w.listProjects = () => {
+      const from = source.listProjects();
+      const v = projectPrefsVersion();
+      if (!memo || memo.from !== from || memo.v !== v) memo = { from, v, out: applyProjectPrefs(from) };
+      return memo.out;
+    };
+    wrapped.set(source, w);
+  }
+  return w;
 }
 
 /**
@@ -87,6 +106,7 @@ const noSnapshot = () => undefined;
  * what starts the live store (the first screen to subscribe) and stops it (a moment after the last one leaves).
  */
 export function useHubDataVersion(): void {
+  useProjectPrefsVersion();
   const store = (override ?? choose()).store;
   useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
 }

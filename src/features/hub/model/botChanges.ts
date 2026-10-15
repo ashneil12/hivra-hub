@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { examples } from "./examples";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
+import { restoreRetiredMono, retireMono, type RetiredMono } from "../../monos/model/monoArchive";
 
 /**
  * Changes bots made to themselves (skills, how they work). Shown only under
@@ -24,6 +25,8 @@ export type BotChange = {
   afterText?: string;
   /** Why the last Undo did nothing (the file moved on since), in plain words. */
   problem?: string;
+  /** A Lead retired with its project: Undo restores its folder and roster entry. */
+  retired?: RetiredMono;
 };
 
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
@@ -39,14 +42,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && c.monoId && c.file);
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => c.monoId && c.file)));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired)));
   } catch {
     /* best effort */
   }
@@ -103,6 +106,16 @@ export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & 
   changed();
 }
 
+/** A Lead was retired (with "Retire <Project> Lead too"): a Bot changes row whose Undo brings it back. */
+export function recordRetirement(r: RetiredMono, projectName: string): string {
+  const name = r.mono.name ?? r.mono.id;
+  const id = `retire:${r.mono.id}:${r.at}`;
+  list = [{ id, bot: name, day: "Today", line: `${name} was retired with ${projectName}`, now: "Active", after: "Retired, its chats and memory archived", monoId: r.mono.id, retired: r }, ...list];
+  saveReal();
+  changed();
+  return id;
+}
+
 /**
  * Undo puts the bot's file back the way it was, for real: only when the file still reads what the change left
  * (otherwise nothing is touched and the row says why), saved over the hash it was read at, then read back. The row
@@ -113,7 +126,13 @@ export async function undoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || c.undone) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
-    if (c.monoId && c.file && c.beforeText !== undefined) {
+    if (c.retired) {
+      try {
+        await restoreRetiredMono(c.retired);
+      } catch (e) {
+        next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    } else if (c.monoId && c.file && c.beforeText !== undefined) {
       try {
         const now = await files.read(c.monoId, c.file);
         if ((now.text ?? "") !== (c.afterText ?? "")) {
@@ -147,7 +166,14 @@ export async function redoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || !c.undone) continue;
     let next: BotChange = { ...c, undone: false, problem: undefined };
-    if (c.monoId && c.file && c.afterText !== undefined) {
+    if (c.retired) {
+      try {
+        const again = await retireMono(c.retired.mono.id);
+        if (again) next = { ...next, retired: again };
+      } catch (e) {
+        next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.monoId && c.file && c.afterText !== undefined) {
       try {
         const now = await files.read(c.monoId, c.file);
         if ((now.text ?? "") !== (c.beforeText ?? "")) {
