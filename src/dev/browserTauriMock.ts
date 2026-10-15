@@ -1,6 +1,8 @@
 // Dev only: boots the real app in a plain browser (hub-dev.html) so the hub
 // frontend can be run with vite and screenshotted. Never shipped.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
+import { createStubBridge } from "./hubStubBridge";
 
 // Look like the Mac app (traffic-light space, ⌘ shortcuts).
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -8,7 +10,15 @@ Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 // Example Monos for the hub's mock projects (real ones come from the store).
 // Dev page: example data and no onboarding, unless ?onboarding is in the URL,
 // which starts like a clean first launch (no projects, as the app ships).
-if (new URLSearchParams(location.search).has("onboarding")) {
+//
+// With `?stub=http://127.0.0.1:<port>` the hub reads a hub-stub-server (started with --dev) through the app's real
+// transport code, as it would read Ash OS through the Rust plugin: no example data, no onboarding.
+const stubUrl = new URLSearchParams(location.search).get("stub");
+if (stubUrl) {
+  for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
+  localStorage.setItem("monocode:hub-onboarded", "1");
+  localStorage.setItem("monocode:mono-roster", "[]");
+} else if (new URLSearchParams(location.search).has("onboarding")) {
   if (!sessionStorage.getItem("hub-clean-start")) {
     sessionStorage.setItem("hub-clean-start", "1");
     for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded"]) localStorage.removeItem(k);
@@ -65,6 +75,28 @@ function emulateNativeGlass(a: GlassArgs | undefined) {
   document.body.style.background = "transparent";
 }
 
+// The hub plugin's stand-in: the same three commands, served by the stub server.
+const stubBridge = stubUrl
+  ? createStubBridge(stubUrl, async () => ((await (await fetch(`${stubUrl}/__stub/token`)).json()) as { token: string }).token)
+  : undefined;
+let closeStubFeed: (() => void) | undefined;
+function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {
+  if (!stubBridge) return Promise.reject({ kind: "unreachable", message: "Ash OS isn't running." });
+  if (cmd === "plugin:hub|hub_call") return stubBridge.call(String(args?.action), (args?.payload ?? {}) as Record<string, unknown>);
+  if (cmd === "plugin:hub|hub_events_open") {
+    closeStubFeed?.();
+    closeStubFeed = stubBridge.openFeed(
+      Number(args?.after ?? 0),
+      (e) => void emit("hub:event", e),
+      (s) => void emit("hub:state", s),
+    );
+    return null;
+  }
+  closeStubFeed?.();
+  closeStubFeed = undefined;
+  return null;
+}
+
 mockWindows("main");
 const seen = new Set<string>();
 mockIPC(
@@ -73,6 +105,7 @@ mockIPC(
       seen.add(cmd);
       (window as unknown as { __ipc: string[] }).__ipc = [...seen];
     }
+    if (cmd.startsWith("plugin:hub|")) return hubIpc(cmd, args as Record<string, unknown> | undefined);
     if (cmd === "set_window_glass_enabled") {
       emulateNativeGlass(args as GlassArgs);
       return true;
