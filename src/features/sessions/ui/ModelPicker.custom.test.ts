@@ -2,6 +2,7 @@
 import { act, createElement, type CSSProperties, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEXT_MODEL } from "../../../integrations/harness/providers/grok/grokProtocol";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   getHarnessAvailabilitySnapshot: () => 0,
@@ -123,7 +124,6 @@ const open = () => act(() => q<HTMLButtonElement>('button[aria-haspopup="dialog"
 async function addGrok(key = "xai-good-key-123") {
   if (!q("[data-add-model-form]")) act(() => q("[data-add-model]")!.click());
   type("Name", "Grok");
-  type("Model id", "grok-4");
   type("Key", key);
   await act(async () => q("[data-test-key]")!.click());
   await flush();
@@ -131,7 +131,8 @@ async function addGrok(key = "xai-good-key-123") {
 
 describe("form validation", () => {
   it("needs a name, a model id without spaces, a key, and for Custom an http(s) base URL", () => {
-    expect(Object.keys(validateCustomModel(emptyForm("xai")))).toEqual(["name", "modelId", "key"]);
+    expect(Object.keys(validateCustomModel(emptyForm("xai")))).toEqual(["name", "key"]);
+    expect(Object.keys(validateCustomModel(emptyForm("custom")))).toEqual(["name", "modelId", "baseUrl", "key"]);
     expect(validateCustomModel({ ...emptyForm("xai"), name: "Grok", modelId: "grok 4", key: "k" }).modelId).toBe("The model id has no spaces");
     expect(validateCustomModel({ ...emptyForm("custom"), name: "Mine", modelId: "m", key: "k" }).baseUrl).toBe("Add the base URL");
     expect(validateCustomModel({ ...emptyForm("custom"), name: "Mine", modelId: "m", key: "k", baseUrl: "ftp://x" }).baseUrl).toMatch(/http/);
@@ -170,7 +171,7 @@ describe("Other models in the Claude Code tab", () => {
     expect(q("[data-key-test]")).toBeNull(); // a change means test again
     await act(async () => q("[data-test-key]")!.click());
     await flush();
-    expect(q("[data-key-test]")!.textContent).toBe("Connected, grok-4 replied");
+    expect(q("[data-key-test]")!.textContent).toBe(`Connected, ${TEXT_MODEL} replied`);
     expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(false);
   });
 
@@ -182,7 +183,9 @@ describe("Other models in the Claude Code tab", () => {
     expect(q('[aria-label="Key"]')).toBeNull();
     expect(q<HTMLInputElement>('[aria-label="Base URL"]')!.value).toBe("http://localhost:11434");
     type("Name", "Llama");
-    type("Model id", "llama3.2");
+    expect(q('[aria-label="Model id"]')).toBeNull();
+    act(() => q<HTMLButtonElement>("[data-model-advanced] button")!.click());
+    expect(q<HTMLInputElement>('[aria-label="Model id"]')!.value).toBe("llama3.2");
     expect(q("[data-test-key]")!.textContent).toBe("Test connection");
     type("Base URL", "http://down:11434");
     await act(async () => q("[data-test-key]")!.click());
@@ -210,8 +213,8 @@ describe("Other models in the Claude Code tab", () => {
     // picking it (saving picks it) sets the session's model and the route CoS's router reads
     const id = saved[0].id;
     expect(onChange).toHaveBeenLastCalledWith("claude", `custom:${id}`);
-    expect(onSettingsChange).toHaveBeenLastCalledWith({ provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4", customModelId: id });
-    expect(customModelRoute({ model: `custom:${id}`, modelSettings: {} })).toEqual({ provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4", customModelId: id });
+    expect(onSettingsChange).toHaveBeenLastCalledWith({ provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: TEXT_MODEL, customModelId: id });
+    expect(customModelRoute({ model: `custom:${id}`, modelSettings: {} })).toEqual({ provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: TEXT_MODEL, customModelId: id });
     expect(customModelRoute({ model: "claude:opus-5-5", modelSettings: {} })).toBeUndefined();
   });
 });
@@ -234,5 +237,27 @@ describe("a session on a custom model", () => {
     localStorage.setItem("monocode:custom-models", JSON.stringify([{ id: "xai-1", name: "Grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4" }]));
     const { resolveModel } = await import("../model/models");
     expect(resolveModel("claude", "custom:xai-1")).toMatchObject({ id: "custom:xai-1", harness: "claude", name: "Grok", nativeId: "grok-4" });
+  });
+});
+
+describe("model id is filled in per provider", () => {
+  it("xAI uses the Grok harness's own model; no model id field outside Advanced; Custom's Advanced opens on a missing id", async () => {
+    const { defaultModelId } = await import("../model/customModels");
+    expect(defaultModelId("xai")).toBe(TEXT_MODEL);
+    expect(defaultModelId("openrouter")).toBe(`x-ai/${TEXT_MODEL}`);
+    expect(defaultModelId("deepseek")).toBe("deepseek-chat");
+    expect(defaultModelId("ollama")).toBe("llama3.2");
+    render();
+    open();
+    act(() => q("[data-add-model]")!.click());
+    expect(q('[aria-label="Model id"]')).toBeNull();
+    expect(q("[data-model-advanced]")).toBeNull();
+    for (const p of ["openrouter", "deepseek"]) { choose(p); expect(q("[data-model-advanced]")).toBeNull(); }
+    choose("custom");
+    expect(q("[data-model-advanced]")!.getAttribute("data-model-advanced")).toBe("closed");
+    type("Name", "Mine");
+    await act(async () => q("[data-test-key]")!.click());
+    expect(q("[data-model-advanced]")!.getAttribute("data-model-advanced")).toBe("open");
+    expect(q('[data-form-error="modelId"]')).toBeTruthy();
   });
 });

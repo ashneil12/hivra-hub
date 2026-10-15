@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { Plus } from "../../../shared/ui/icons";
+import { ChevronRight, Plus } from "../../../shared/ui/icons";
 import {
   addCustomModel,
   CUSTOM_PROVIDERS,
@@ -13,6 +13,8 @@ import {
   testCustomModel,
   validateCustomModel,
   defaultBaseUrl,
+  defaultModelId,
+  showsAdvanced,
   type CustomModel,
   type CustomModelForm,
   type CustomProvider,
@@ -86,6 +88,7 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
   const [touched, setTouched] = useState(false);
   const [test, setTest] = useState<KeyTestResult | "testing" | null>(null);
   const [saving, setSaving] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const errors = validateCustomModel(form);
   const valid = Object.keys(errors).length === 0;
   const passed = test !== null && test !== "testing" && test.ok;
@@ -97,6 +100,8 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
   const field = (name: keyof CustomModelForm) =>
     touched && errors[name] ? <span className="text-[11px] text-content/55" data-form-error={name}>{errors[name]}</span> : null;
   const keyed = needsKey(form.provider);
+  // Opens by itself when Custom's model id is missing, so the error is never hidden.
+  const showModelId = advanced || (touched && !!errors.modelId);
   return (
     <div className="flex flex-col gap-2.5 p-2" data-add-model-form onKeyDown={(e) => e.stopPropagation()}>
       <div className="text-[13px] text-content">Add a model</div>
@@ -113,7 +118,7 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
           value={form.provider}
           onChange={(e) => {
             const provider = e.target.value as CustomProvider;
-            set({ provider, baseUrl: defaultBaseUrl(provider), key: needsKey(provider) ? form.key : "" });
+            set({ provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: needsKey(provider) ? form.key : "" });
           }}
         >
           {CUSTOM_PROVIDERS.map((p) => (
@@ -128,11 +133,22 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
           {field("baseUrl")}
         </label>
       ) : null}
-      <label className="flex flex-col gap-1 text-[11px] text-content/55">
-        Model id
-        <input className={input} value={form.modelId} placeholder={form.provider === "ollama" ? "llama3.2" : "grok-4"} aria-label="Model id" onChange={(e) => set({ modelId: e.target.value })} />
-        {field("modelId")}
-      </label>
+      {showsAdvanced(form.provider) ? (
+        <div data-model-advanced={showModelId ? "open" : "closed"}>
+          <button type="button" onClick={() => setAdvanced((v) => !v)} aria-expanded={showModelId}
+            className="flex items-center gap-1 text-[11px] text-content/45 hover:text-content/70">
+            <ChevronRight className={`size-3 transition-transform ${showModelId ? "rotate-90" : ""}`} strokeWidth={1.75} />
+            Advanced
+          </button>
+          {showModelId ? (
+            <label className="mt-1.5 flex flex-col gap-1 text-[11px] text-content/55">
+              Model id
+              <input className={input} value={form.modelId} placeholder={defaultModelId(form.provider) || "model-name"} aria-label="Model id" onChange={(e) => set({ modelId: e.target.value })} />
+              {field("modelId")}
+            </label>
+          ) : null}
+        </div>
+      ) : null}
       {keyed ? (
         <label className="flex flex-col gap-1 text-[11px] text-content/55">
           Key

@@ -2,9 +2,15 @@
 // his subscription. Only metadata lives in settings. The key goes through ModelKeyStore, which CoS wires to the macOS
 // Keychain; in dev and tests it is an in-memory stub. A key never touches localStorage or a file from here.
 import type { ModelTarget } from "./session";
+import { TEXT_MODEL as GROK_MODEL } from "../../../integrations/harness/providers/grok/grokProtocol";
 
 export type CustomProvider = "xai" | "openrouter" | "deepseek" | "ollama" | "custom";
 
+/**
+ * The model each provider gets without asking. xAI takes the Grok harness's own TEXT_MODEL, so it moves with the
+ * harness (one place); OpenRouter routes the same Grok by its "x-ai/" name; DeepSeek's chat model; Ollama's small
+ * Llama. Custom has none: its model id is under Advanced.
+ */
 export const CUSTOM_PROVIDERS: { id: CustomProvider; name: string; baseUrl: string }[] = [
   { id: "xai", name: "xAI", baseUrl: "https://api.x.ai/v1" },
   { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
@@ -12,6 +18,20 @@ export const CUSTOM_PROVIDERS: { id: CustomProvider; name: string; baseUrl: stri
   { id: "ollama", name: "Ollama", baseUrl: "http://localhost:11434" },
   { id: "custom", name: "Custom", baseUrl: "" },
 ];
+/** Read when asked, not at load: the Grok harness module and this one import each other through models.ts. */
+export function defaultModelId(id: CustomProvider): string {
+  switch (id) {
+    case "xai": return GROK_MODEL;
+    case "openrouter": return `x-ai/${GROK_MODEL}`;
+    case "deepseek": return "deepseek-chat";
+    case "ollama": return "llama3.2";
+    default: return "";
+  }
+}
+/** The model id field only shows, under a collapsed Advanced, for Custom and Ollama. */
+export function showsAdvanced(id: CustomProvider): boolean {
+  return id === "custom" || id === "ollama";
+}
 
 export function providerName(id: CustomProvider): string {
   return CUSTOM_PROVIDERS.find((p) => p.id === id)?.name ?? id;
@@ -80,7 +100,7 @@ function writeModels(list: CustomModel[]): void {
 export type CustomModelForm = { name: string; provider: CustomProvider; baseUrl: string; modelId: string; key: string };
 
 export function emptyForm(provider: CustomProvider = "xai"): CustomModelForm {
-  return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: "", key: "" };
+  return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: "" };
 }
 
 /** Plain-words problems with the form, by field. Empty when it can be tested. */
