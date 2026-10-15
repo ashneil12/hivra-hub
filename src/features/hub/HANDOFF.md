@@ -1,7 +1,120 @@
 # Hub frontend: handoff notes for Claude Code
 
-All hub data comes through `model/hubData.ts` (`setHubDataSource`) and the
-per-page stores in `model/` (mock data, labelled "Example:").
+All hub data comes through `model/hubData.ts` (`hubData()`, `setHubDataSource`).
+The app ships clean and reads **Ash OS** (live source, below). The example data
+(`model/mockData.ts` and the per-page mock stores, labelled "Example:") answers
+only behind the dev flag `monocode:hub-examples` (what `hub-dev.html` sets).
+
+## Live data from Ash OS (unit 0, app side)
+
+**Wired:** projects (strip, names, shapes, folders), Needs (shown, Later, ticks),
+Since (text, time), Ash's last-active time (`ash-hub-active`), and the live
+change feed. **Not wired yet** is listed below.
+
+How it fits together (all new code under `src/features/hub/model/` unless noted):
+- `src-tauri/src/hub.rs` is the Rust plugin `hub`, the only door to Ash OS:
+  `hub_call(action, payload)`, `hub_events_open(after)`, `hub_events_close()`.
+  It reads Ash OS's key from `~/.local/share/exo-cc-studio/token` on every call
+  (Ash OS writes a new one at each start), sends only `ash-hub-<name>` actions
+  to `127.0.0.1:18767`, and returns errors as `{kind, message}` in plain words.
+  The key is never given to the webview (CSP also blocks the webview from
+  reaching Ash OS; `hubWebviewGuard.test.ts` keeps the front end free of the key,
+  the address and any direct fetch). The feed is server-sent events re-emitted as
+  Tauri events `hub:event` / `hub:state`, reconnecting at 1, 2, 4, 8 then every
+  15 s; windows share one feed. Registered by `.plugin(hub::init())` in `lib.rs`;
+  its three permissions come from `build.rs` (an inlined plugin) and
+  `hub:default` in `capabilities/default.json`. No Keychain commands (unit 7b).
+- `hubTransport.ts`: the TypeScript end (`tauriHubTransport`) behind a small
+  `HubTransport` interface, so everything below is tested against a stand-in.
+- `hubStore.ts`: one `HubStore` read with `useSyncExternalStore`. Starts when the
+  first screen subscribes, stops a second after the last leaves. First read is
+  projects + Needs, then Since; after that the feed names what changed
+  (`topics`) and only that slice is read again, folded into one round at most a
+  second apart (Ash OS's feed also reports every ledger write). Feed down: a
+  quiet check after 3 s and a poll every 30 s. `hub.code.version` or `reset`
+  (Ash OS restarted or its ledger was restored): read everything again.
+  Ash OS down: status `unreachable`, retried quietly at 3, 5, 10, 20, then every
+  30 s, plus the Try again button. Stale data is kept while it is down.
+- Rows update in place. `mergeStable`: a Need that is still there keeps its
+  place, a new one joins at the bottom of its group, one answered anywhere
+  becomes a tick where it stands (`state: "done"`, not counted, not using one of
+  the 5 slots) and goes once Ash leaves the page (`dismissDoneNeeds()`, run when
+  the selection changes). A row Ash OS lists as done that this session never
+  showed open is not shown.
+- `liveHubData.ts`: the `HubDataSource` the screens read. `hubData()` returns it
+  unless the examples flag is on. Components that read `hubData()` while
+  rendering call `useHubDataVersion()` (it also starts the store).
+- `hubActivity.ts`: real use only (key, pointer, wheel, touch, window focus;
+  ignored while the window is hidden). Reports the time of the latest input to
+  `ash-hub-active`, at most once a minute, never from a timer, so an idle open
+  window changes nothing. The first input after a 30-minute gap is reported at
+  once; Ash OS decides what counts as leaving and sets "Since".
+- Timestamps are ISO from Ash OS (`Need.since`, `doneAt`, `sinceAt`,
+  `lastActiveAt`). `sinceLabel()` formats them. Mock stores for builds, chats
+  and jobs still hold display strings; they are not wired.
+- Look is unchanged. New states only: the "Ash OS isn't running." panel with one
+  Try again button (shown instead of Today when the live source is down, never
+  example data), a blank page while the first read is on its way (so "No
+  projects yet." doesn't flash), and the tick on a Need answered elsewhere.
+- A project with no code folder (`folder: null`, e.g. the harness) has no Coding
+  team: its strip button opens its Inbox and the sidebar skips Coding team.
+- Projects made on this Mac through the New project flow (not wired yet) stay on
+  the strip next to Ash OS's list (`userProjects()`), as before.
+
+### Run it against the stub (no Ash OS needed)
+`scripts/hub-stub-server.mjs` answers the documented shapes with invented data
+(every title starts "Example:"): same token, Host and Origin checks, poll, long
+poll and server-sent events.
+```
+node scripts/hub-stub-server.mjs --port 18868 --dev        # --dev adds CORS + /__stub/control for the dev page
+pnpm dev                                                    # vite on :1420
+open "http://localhost:1420/hub-dev.html?stub=http://127.0.0.1:18868"
+```
+`?stub=` makes `browserTauriMock` serve `hub_call` and the feed from the stub
+through the app's own `invoke`/`listen` code (`src/dev/hubStubBridge.ts`). Without
+it, `hub-dev.html` shows the examples as before. `?stub=http://127.0.0.1:1`
+shows the "isn't running" state. Move things while it is open:
+`curl -XPOST localhost:18868/__stub/control -d '{"op":"doneNeed","id":"q5"}'`
+(ops: `doneNeed`, `addNeed`, `setSince`, `finishPendingSince`, `restart`).
+`scripts/hub-wiring-screens.mjs <dir> [--before]` takes the screenshots.
+
+### Run it against the real service
+1. Ash OS must be running a build with the hub calls (branch `ash-os-hub-core`
+   landed). Until then the running service answers "Unknown hub action" and the
+   app shows the "isn't running" panel.
+2. `pnpm tauri dev` (or the built app). Nothing to configure: the plugin finds
+   the key itself. To aim the plugin at another local port or key file (for
+   example the stub started with `--token-file`): `MONOCODE_HUB_PORT` and
+   `MONOCODE_HUB_TOKEN_FILE`. The host is always 127.0.0.1.
+
+### Tests
+`pnpm test` (vitest): `model/hubStore.test.ts` (store against the stub over real
+HTTP and SSE), `hubActivity.test.ts`, `hubTransport.test.ts`,
+`hubContract.test.ts` (the real `ashos.hub.Hub`'s own answers in
+`model/fixtures/ash-os-real-shapes.json`, made by `scripts/hub-real-shapes.py`;
+the store reads them and the stub invents no field), `ui/HubSurface.live.test.ts`
+(Today and the strip rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
+
+### Not wired yet (their mock paths stay behind the examples flag)
+- **Jobs and the stuck state machine** (Being built, stuck and "gave up" rows,
+  Sent to lead): Ash OS has no `hub_jobs` yet; `listStuck()` is empty.
+- **Group chats** and the chat engine (`hubChats.ts`), Today's chat box.
+- **Builds & playtests** (`hubBuilds.ts`, "only Ash marks played").
+- **Connectors** and the Keychain (`connectors.ts`): Ash OS's `setup` list is
+  shown read-only (no Sign in button yet).
+- **Sections, templates, proposals, Changes, Bot changes** (`templates.ts`,
+  `proposals.ts`): local mock stores.
+- **New project, Create, setup export/import**: still local (`addMockProject`);
+  `ash-hub-project-create` exists in Ash OS but the preview step does not.
+- **Needs buttons** do nothing yet (`need-act`, `gate-done`, the options sheet
+  are not in Ash OS yet). **Show details** is not rendered (`details` is read
+  into the store, not shown). **Later** is a count, not a list.
+- **Monos rail by membership** (`ash-hub-mono-projects`) and `ASH_MONO_ID`
+  identity: Monos still come from MonoCode's own roster.
+- **Needs for projects the registry doesn't list** (Ash OS files unrouted ones
+  under project `inbox`): they are in the store but no screen shows them.
+- Capture hook, heartbeat for the doctor banner, keep-alive and launch at login.
+- Not verified: the plugin inside a running Tauri window (see the report).
 
 ## One "waiting on Ash" list
 - `model/waiting.ts` is the only list of things waiting on Ash. Each page adds
