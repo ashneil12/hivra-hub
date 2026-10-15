@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const out = process.argv[2];
+const prefix = process.argv.includes("--prefix") ? process.argv[process.argv.indexOf("--prefix") + 1] : "live";
 if (!out) throw new Error("usage: hub-live-screens.mjs <outDir>");
 fs.mkdirSync(out, { recursive: true });
 const URL = "http://localhost:1420/hub-dev.html?live=http://127.0.0.1:18869";
@@ -25,13 +26,17 @@ page.on("console", (m) => m.type() === "error" && problems.push(m.text()));
 page.on("pageerror", (e) => problems.push(String(e)));
 const shot = async (name, opts = {}) => {
   await page.waitForTimeout(500);
-  await page.screenshot({ path: path.join(out, name), ...opts });
-  console.log("wrote", name);
+  await page.screenshot({ path: path.join(out, name.replace(/^live-/, `${prefix}-`)), ...opts });
+  console.log("wrote", name.replace(/^live-/, `${prefix}-`));
 };
 
 await page.goto(URL);
 await page.waitForSelector("[data-hub-need]", { timeout: 30000 });
 await page.waitForSelector("h2:text-matches(\"^Since \")", { timeout: 60000 });
+if (await page.locator("[data-hub-since-pending]").count()) {
+  await shot("live-0-today-since-pending.png");
+  await page.waitForSelector("[data-hub-since]", { timeout: 60000 });
+}
 await shot("live-1-today.png");
 // Since, close up
 const since = await page.locator("section", { has: page.locator("h2:text-matches(\"^Since \")") }).first().boundingBox();

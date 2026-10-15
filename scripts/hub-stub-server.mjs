@@ -602,6 +602,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     token: arg("token", "stub-token-not-a-real-key"),
     dev: process.argv.includes("--dev"),
     jobs: process.argv.includes("--jobs"),
+    pendingSinceOnce: process.argv.includes("--pending-since"),
   });
   console.log(`hub stub on ${stub.url}${arg("token-file") ? ` (key written to ${arg("token-file")})` : ""}`);
   process.on("SIGINT", () => stub.close().then(() => process.exit(0)));
