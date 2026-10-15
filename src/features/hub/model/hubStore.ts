@@ -10,7 +10,7 @@
 //   short pause that folds a burst of events into one read.
 import { toHubError, type HubFeedEvent, type HubFeedState, type HubTransport } from "./hubTransport";
 import type {
-  HubConnection, HubJob, HubJobGroup, HubProject, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
+  HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
 } from "./types";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
@@ -433,6 +433,30 @@ export class HubStore {
   async markNeedSeen(id: string): Promise<void> {
     await this.t.call("ash-hub-need-seen", { id });
     await this.loadNeeds();
+  }
+
+  /** A question's options sheet (`ash-hub-question`). */
+  async question(questionId: string): Promise<HubQuestion> {
+    const raw = obj(await this.t.call("ash-hub-question", { id: questionId }));
+    const index = typeof raw.recommendedIndex === "number" ? raw.recommendedIndex : undefined;
+    return {
+      id: questionId,
+      question: str(raw.question),
+      options: arr(raw.options).map((o) => {
+        const r = obj(o);
+        return { label: str(r.label), ...(optStr(r.detail) ? { detail: str(r.detail) } : {}) };
+      }).filter((o) => o.label),
+      recommendation: str(raw.recommendation),
+      ...(index !== undefined ? { recommendedIndex: index } : {}),
+      ...(optStr(raw.askedAt) ? { askedAt: str(raw.askedAt) } : {}),
+    };
+  }
+
+  /** Ash's answer (Ash only in Ash OS). Returns the receipt line; the row ticks off on the next read. */
+  async answer(questionId: string, answer: { choice?: number; text?: string }): Promise<string> {
+    const raw = obj(await this.t.call("ash-hub-answer", { id: questionId, ...answer }));
+    await this.loadNeeds();
+    return str(raw.receipt, "Got it.");
   }
 
   /** "Looks right": Ash accepts finished critical work. Ash OS ticks the row off; the answer is read at once. */

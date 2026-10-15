@@ -385,6 +385,33 @@ export async function startStub({
     return { id: n.id, accepted: true };
   }
 
+  // ---- questions (ash-hub-question / ash-hub-answer, contract from the coordinator; branch ash-os-hub-answer) ----
+  const QUESTIONS = {
+    q2: { options: [{ label: "They match what I meant" }, { label: "Two of them are off", detail: "Say which in your own words." }, { label: "Park the rules for now" }], recommendedIndex: 0, recommendation: "Yes: they read like what you said on 12 Oct." },
+    q3: { options: [{ label: "Headline A", detail: "\"Your agents, on your Mac\"" }, { label: "Headline B", detail: "\"Hire the team you can't afford\"" }], recommendedIndex: 1, recommendation: "B tested a little better with founders." },
+  };
+  const questionOf = (id) => state.needs.find((n) => n.actionTarget === `question:${id}`);
+  function questionCall(v) {
+    const n = questionOf(v.id);
+    if (!n) throw new Error("No such question.");
+    const q = QUESTIONS[v.id] ?? { options: [{ label: "Yes" }, { label: "No" }], recommendedIndex: 0, recommendation: "Yes." };
+    return { question: n.title, options: q.options, recommendation: q.recommendation, ...(q.recommendedIndex != null ? { recommendedIndex: q.recommendedIndex } : {}), asks: [`a_${v.id}`], askedAt: iso(n.since) };
+  }
+  function answerCall(v) {
+    const n = questionOf(v.id);
+    if (!n || n.state !== "open") throw new Error("That question isn't waiting on you any more.");
+    const q = QUESTIONS[v.id] ?? { options: [{ label: "Yes" }, { label: "No" }] };
+    const text = String(v.text ?? "").trim();
+    const picked = typeof v.choice === "number" ? q.options[v.choice]?.label : undefined;
+    if (!picked && !text) throw new Error("Pick an option or say something.");
+    if (typeof v.choice === "number" && !picked) throw new Error("That option isn't one of the choices.");
+    Object.assign(n, { state: "done", doneAt: now(), doneReason: "answered" });
+    emit("question.answered", v.id, n.projectId);
+    emit("hub.need.done", n.id, n.projectId);
+    const project = state.projects.find((p) => p.id === n.projectId)?.name ?? n.projectId;
+    return { ok: true, receipt: `Got it: ${picked ?? `"${text}"`}. ${project}'s lead picks it up from here.` };
+  }
+
   async function action(name, v) {
     switch (name) {
       case "jobs": return jobsCall(v);
@@ -393,6 +420,8 @@ export async function startStub({
       case "job-seen": return jobSeenCall(v);
       case "need-seen": return needSeenCall(v);
       case "need-accept": return needAcceptCall(v);
+      case "question": return questionCall(v);
+      case "answer": return answerCall(v);
       case "projects": return projectsCall(v);
       case "needs": return needsCall(v);
       case "active": return activeCall(v);

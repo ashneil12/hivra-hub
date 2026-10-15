@@ -24,7 +24,7 @@ const SERVICE_PORT = Number(arg("service-port", 18767));
 const TOKEN_FILE = process.env.MONOCODE_HUB_TOKEN_FILE || path.join(os.homedir(), ".local/share/exo-cc-studio/token");
 const WRITES = process.argv.includes("--allow-writes");
 
-const READS = new Set(["projects", "needs", "since", "events", "mono-projects", "mono-acts", "jobs", "job-options"]);
+const READS = new Set(["projects", "needs", "since", "events", "mono-projects", "mono-acts", "jobs", "job-options", "question"]);
 const ACTION = /^ash-hub-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
 

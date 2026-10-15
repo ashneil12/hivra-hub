@@ -190,6 +190,21 @@ describe("live changes land in place", () => {
   });
 });
 
+describe("questions", () => {
+  it("reads a question's sheet by its question id and sends Ash's pick as the option's index", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    const q = await store.question("q3");
+    expect(q).toMatchObject({ id: "q3", question: "Example: pick the waitlist headline", recommendedIndex: 1 });
+    expect(q.options.map((o) => o.label)).toEqual(["Headline A", "Headline B"]);
+    expect(stub.calls.at(-1)?.path).toBe("/api/ash-hub-question");
+    const receipt = await store.answer("q3", { choice: 1 });
+    expect(receipt).toMatch(/^Got it: Headline B/);
+    expect(store.getSnapshot().needs.hivra.shown.find((n) => n.id === "q3")).toMatchObject({ state: "done", doneReason: "answered" });
+    await expect(store.answer("q3", { choice: 0 })).rejects.toMatchObject({ message: "That question isn't waiting on you any more." });
+  });
+});
+
 describe("Ash's activity", () => {
   it("tells Ash OS the time of the real input, and picks up the new Since time after a gap", async () => {
     store.start();

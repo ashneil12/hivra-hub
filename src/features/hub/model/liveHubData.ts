@@ -55,6 +55,8 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     listOlder: (projectId?: string) => snap().older.filter((n) => (projectId ? n.projectId === projectId : onStrip(n.projectId))),
     markNeedSeen: (id: string) => store.markNeedSeen(id),
     acceptNeed: (id: string) => store.acceptNeed(id),
+    question: (questionId: string) => store.question(questionId),
+    answer: (questionId: string, answer: { choice?: number; text?: string }) => store.answer(questionId, answer),
     // The badge is the project's real Needs count (what Ash OS counts: shown plus Later), kept live by the feed.
     needsCount: (projectId: string) => {
       const rows = snap().needs[projectId];

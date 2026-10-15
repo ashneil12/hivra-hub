@@ -92,6 +92,16 @@ export type HubJob = {
 /** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
 export type HubJobGroup = { leadId: string | null; leadName: string; projectId: string; jobs: HubJob[] };
 
+/** A question Ash is asked (`ash-hub-question`): its options, the suggested one, and when it was asked. */
+export type HubQuestion = {
+  id: string;
+  question: string;
+  options: { label: string; detail?: string }[];
+  recommendation: string;
+  recommendedIndex?: number;
+  askedAt?: string;
+};
+
 /** One choice on a given-up job's "See options" sheet. */
 export type JobOption = { id: string; label: string; needsText: boolean; note: string; placeholder?: string };
 export type JobOptions = { jobId: string; projectId: string; title: string; why: string; options: JobOption[] };
@@ -155,6 +165,9 @@ export interface HubDataSource {
   listOlder(projectId?: string): Need[];
   /** Mark a Looks-right row seen. Live source only. */
   markNeedSeen?(id: string): Promise<void>;
+  /** A question's options sheet, and Ash's answer (an option's index and/or his own words); the answer's receipt line. */
+  question?(questionId: string): Promise<HubQuestion>;
+  answer?(questionId: string, answer: { choice?: number; text?: string }): Promise<string>;
   /** "Looks right" on finished critical work (actionType `accept`). Live source only. */
   acceptNeed?(id: string): Promise<void>;
   /** The project's real Needs count (shown plus Later) for its badge; absent at zero. Live source only. */

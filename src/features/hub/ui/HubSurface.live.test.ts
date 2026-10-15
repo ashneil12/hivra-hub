@@ -213,3 +213,64 @@ describe("ships clean and calm", () => {
     expect(container.querySelector("[data-hub-since]")?.className).toContain("line-clamp-4");
   });
 });
+
+describe("questions and asks open something useful", () => {
+  const btn = (scope: string, label: string) =>
+    [...container.querySelectorAll(`${scope} button`)].find((b) => b.textContent?.trim() === label) as HTMLButtonElement | undefined;
+
+  it("See options on a question opens its sheet: the question, one row per option, Suggested marked quietly, one Send", async () => {
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-need="q2"]'), "question row");
+    await act(async () => btn('[data-hub-need="q2"]', "See options")!.click());
+    await until(() => container.querySelector("[data-hub-question]"), "sheet");
+    expect(container.querySelector("[data-hub-question]")?.textContent).toBe("Example: skim the new game rules");
+    const options = [...container.querySelectorAll("[data-hub-question-option]")];
+    expect(options.map((o) => o.querySelector("span span")?.textContent)).toEqual(["They match what I meant", "Two of them are off", "Park the rules for now"]);
+    expect(options[0].querySelector("[data-hub-suggested]")?.textContent).toBe("Suggested");
+    expect(container.querySelectorAll("[data-hub-suggested]").length).toBe(1);
+    expect(container.querySelectorAll("[data-hub-send]").length).toBe(1);
+    expect((container.querySelector("[data-hub-send]") as HTMLButtonElement).disabled).toBe(true);
+    expect(container.querySelector('input[placeholder="Say something else…"]')).toBeTruthy();
+  });
+
+  it("picking an option and sending shows the receipt briefly, then the row ticks off in place", async () => {
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-need="q2"]'), "question row");
+    const order = rows();
+    await act(async () => btn('[data-hub-need="q2"]', "See options")!.click());
+    await until(() => container.querySelector("[data-hub-question-option]"), "sheet");
+    act(() => (container.querySelectorAll("[data-hub-question-option]")[1] as HTMLButtonElement).click());
+    expect(container.querySelectorAll("[data-hub-question-option]")[1].getAttribute("aria-checked")).toBe("true");
+    await act(async () => (container.querySelector("[data-hub-send]") as HTMLButtonElement).click());
+    await until(() => container.querySelector("[data-hub-receipt]"), "receipt");
+    expect(container.querySelector("[data-hub-receipt]")?.textContent).toMatch(/^Got it: Two of them are off\./);
+    await until(() => container.querySelector('[data-hub-need="q2"][data-hub-need-done]'), "ticked");
+    expect(rows().slice(0, order.length)).toEqual(order);
+    await until(() => !container.querySelector("[data-hub-question]"), "sheet closes by itself", 5000);
+  });
+
+  it("Say something else sends his own words", async () => {
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-need="q3"]'), "question row");
+    await act(async () => btn('[data-hub-need="q3"]', "See options")!.click());
+    await until(() => container.querySelector("[data-hub-question-option]"), "sheet");
+    const input = container.querySelector('input[placeholder="Say something else…"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Neither; try a third one");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => (container.querySelector("[data-hub-send]") as HTMLButtonElement).click());
+    await until(() => container.querySelector("[data-hub-receipt]"), "receipt");
+    expect(container.querySelector("[data-hub-receipt]")?.textContent).toContain('"Neither; try a third one"');
+  });
+
+  it("Open on an ask shows it in full (title, why, detail), and no ids", async () => {
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-need="q4"]'), "ask row");
+    await act(async () => btn('[data-hub-need="q4"]', "Open")!.click());
+    const sheet = container.querySelector("[data-hub-detail]")!;
+    expect(sheet.textContent).toContain("Example: approve the Q4 hiring plan");
+    expect(sheet.textContent).toContain("Two roles changed since last week.");
+    expect(sheet.textContent).not.toMatch(/a4|ask:/);
+  });
+});

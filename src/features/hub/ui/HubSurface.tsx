@@ -13,6 +13,7 @@ import type { Need } from "../model/types";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { CircleWord, StatusMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
+import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { ProposalView } from "./ProposalView";
@@ -85,7 +86,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 }
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
-  const [sheetJob, setSheetJob] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<SheetFor | null>(null);
   const data = hubData();
   const connection = data.connection();
   if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
@@ -131,24 +132,29 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
                 <StuckRow key={s.id} item={s} />
               ))}
               {pNeeds.map((n) => (
-                <NeedRow key={n.id} need={n} onOptions={setSheetJob} />
+                <NeedRow key={n.id} need={n} onSheet={setSheet} />
               ))}
               {pOther.map((w) => (
                 <StuckRow key={w.id} item={w} />
               ))}
-              <LaterList projectId={p.id} onOptions={setSheetJob} />
+              <LaterList projectId={p.id} onSheet={setSheet} />
             </div>
           </section>
         );
       })}
-      <OlderGroup projectId={projectId} onOptions={setSheetJob} />
-      {sheetJob ? <OptionsSheet jobId={sheetJob} onClose={() => setSheetJob(null)} /> : null}
+      <OlderGroup projectId={projectId} onSheet={setSheet} />
+      {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
+      {sheet?.kind === "question" ? <QuestionSheet questionId={sheet.questionId} onClose={() => setSheet(null)} /> : null}
+      {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
     </div>
   );
 }
 
 /** Under a project's Needs: the ones past the five, collapsed to one quiet line until opened. */
-function LaterList({ projectId, onOptions }: { projectId: string; onOptions: (jobId: string) => void }) {
+/** Which sheet a Need's one button opens. */
+type SheetFor = { kind: "job"; jobId: string } | { kind: "question"; questionId: string } | { kind: "detail"; need: Need };
+
+function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet: SheetFor) => void }) {
   const [open, setOpen] = useState(false);
   const later = laterItems(projectId);
   if (!later.length) return null;
@@ -157,7 +163,7 @@ function LaterList({ projectId, onOptions }: { projectId: string; onOptions: (jo
       <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="self-start rounded-md px-2 pt-1 text-xs text-content/60 hover:text-content">
         {open ? "Hide Later" : `${later.length} more under Later`}
       </button>
-      {open ? later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onOptions={onOptions} /> : <StuckRow key={w.id} item={w} />)) : null}
+      {open ? later.map((w) => (w.need ? <NeedRow key={w.id} need={w.need} onSheet={onSheet} /> : <StuckRow key={w.id} item={w} />)) : null}
     </div>
   );
 }
@@ -166,7 +172,7 @@ function LaterList({ projectId, onOptions }: { projectId: string; onOptions: (jo
  * Older questions (recovered from past chats and the like). They are not Needs: in no badge and no count, and shut
  * until Ash opens them. On Today they sit once at the bottom, under their project's name; in a project, its own.
  */
-function OlderGroup({ projectId, onOptions }: { projectId: string | undefined; onOptions: (jobId: string) => void }) {
+function OlderGroup({ projectId, onSheet }: { projectId: string | undefined; onSheet: (sheet: SheetFor) => void }) {
   const [open, setOpen] = useState(false);
   const data = hubData();
   const older = data.listOlder(projectId);
@@ -184,7 +190,7 @@ function OlderGroup({ projectId, onOptions }: { projectId: string | undefined; o
             <div key={pid} className="flex flex-col">
               {projectId ? null : <h2 className="mb-1 mt-2 px-2 text-xs text-content/60">{names.get(pid) ?? pid}</h2>}
               {older.filter((n) => n.projectId === pid).map((n) => (
-                <NeedRow key={n.id} need={n} onOptions={onOptions} />
+                <NeedRow key={n.id} need={n} onSheet={onSheet} />
               ))}
             </div>
           ))}
@@ -194,32 +200,39 @@ function OlderGroup({ projectId, onOptions }: { projectId: string | undefined; o
   );
 }
 
-function NeedRow({ need, onOptions }: { need: Need; onOptions?: (jobId: string) => void }) {
+function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) => void }) {
   const done = need.state === "done";
   const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const data = hubData();
-  // One action per row, as Ash OS names it: Looks right accepts; a given-up job opens its options; an older
-  // Looks-right row (action "open") is marked seen; the rest wait for their unit.
+  // One action per row, as Ash OS names it: Looks right accepts; See options opens the job's or the question's
+  // sheet; an older Looks-right row (action "open") is marked seen; Open and Start show the row in full.
   const accept = need.actionType === "accept" && !!data.acceptNeed;
   const seen = need.canMarkSeen && need.actionType !== "accept" && !!data.markNeedSeen;
+  const questionId = need.actionTarget?.startsWith("question:") ? need.actionTarget.slice(9) : undefined;
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
+    setProblem(null);
     try {
       await call();
-    } catch {
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "That didn't go through.");
       setBusy(false);
     }
   };
   const onAction = async () => {
-    if (need.jobId && data.jobOptions) return onOptions?.(need.jobId);
+    if (need.jobId && data.jobOptions) return onSheet?.({ kind: "job", jobId: need.jobId });
     if (accept) return run(() => data.acceptNeed!(need.id));
     if (seen) return run(() => data.markNeedSeen!(need.id));
+    if (questionId && data.question) return onSheet?.({ kind: "question", questionId });
+    if (need.actionType === "open" || need.actionType === "start") return onSheet?.({ kind: "detail", need });
   };
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         <div className="truncate text-[13px] text-content/60">{need.why}</div>
+        {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
       </div>
       {done ? (
         // It ticked itself off (answered or cleared somewhere else). It stays here until Ash leaves the page.
