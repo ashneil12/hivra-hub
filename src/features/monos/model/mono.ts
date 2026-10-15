@@ -1,3 +1,4 @@
+import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import {
   loadTabGroupColors,
@@ -314,6 +315,8 @@ export function updateMono(
 
 /** Forgets the Mono and its background. Its folder of files stays on disk. */
 export function removeMono(id: string): void {
+  // A default-team Mono Ash removes stays gone (hub repair skips it until Undo clears it).
+  markMonoRemovedByUser(id, findMono(id)?.name);
   removeMonoBackground(id);
   saveRoster(listMonos().filter((mono) => mono.id !== id));
 }
