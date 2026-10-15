@@ -18,6 +18,7 @@ mod gitlab;
 mod harness;
 mod harness_updates;
 mod hub;
+mod launch_guard;
 mod inbox_media;
 mod jira;
 mod jsonc;

@@ -517,6 +517,20 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             hub_events_open,
             hub_events_close
         ])
+        // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
+        .on_event(|app, event| match event {
+            tauri::RunEvent::Ready => crate::launch_guard::start(app.clone()),
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Focused(true),
+                ..
+            } => {
+                if let Some(window) = tauri::Manager::get_webview_window(app, label) {
+                    crate::launch_guard::check(app, &window, "focused");
+                }
+            }
+            _ => {}
+        })
         .build()
 }
 
