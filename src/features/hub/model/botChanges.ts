@@ -132,3 +132,37 @@ export async function undoBotChange(ids: string[]): Promise<void> {
   saveReal();
   changed();
 }
+
+/** "Back to 12 steps (was 8 steps)": what an undone change reads like. */
+export function undoneLine(c: Pick<BotChange, "now" | "after">): string {
+  return `Back to ${c.now} (was ${c.after})`;
+}
+
+/**
+ * Redo puts the change back, for real: only when the file still reads what Undo left (the old rules), saved over the
+ * hash it was read at, then read back. The row is no longer undone.
+ */
+export async function redoBotChange(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    const c = list.find((x) => x.id === id);
+    if (!c || !c.undone) continue;
+    let next: BotChange = { ...c, undone: false, problem: undefined };
+    if (c.monoId && c.file && c.afterText !== undefined) {
+      try {
+        const now = await files.read(c.monoId, c.file);
+        if ((now.text ?? "") !== (c.beforeText ?? "")) {
+          next = { ...c, problem: `${c.bot}'s file changed since the Undo, so nothing was redone.` };
+        } else {
+          await files.write(c.monoId, c.file, c.afterText, now.hash);
+          const back = await files.read(c.monoId, c.file);
+          if ((back.text ?? "") !== c.afterText) next = { ...c, problem: "The change didn't go back in. Nothing was redone." };
+        }
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    }
+    list = list.map((x) => (x.id === id ? next : x));
+  }
+  saveReal();
+  changed();
+}

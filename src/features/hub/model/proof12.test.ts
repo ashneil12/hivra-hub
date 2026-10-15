@@ -101,6 +101,7 @@ describe("Undo in Bot changes really reverts the bot's rules", () => {
     expect(f.disk.get("frank|SOUL.md")).toBe(before);
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc1");
     expect(row && row.kind === "one" && row.change.undone).toBe(true);
+    expect(b.undoneLine({ now: "12 steps", after: "8 steps" })).toBe("Back to 12 steps (was 8 steps)");
     vi.resetModules();
     const again = await import("./botChanges");
     const kept = again.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc1");
@@ -117,5 +118,32 @@ describe("Undo in Bot changes really reverts the bot's rules", () => {
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc2")!;
     expect(row.kind === "one" && row.change.undone).toBeFalsy();
     expect(row.kind === "one" && row.change.problem).toMatch(/changed this again/);
+  });
+});
+
+describe("Redo really reapplies an undone change", () => {
+  it("writes the change back in and clears undone; refuses if the file moved on", async () => {
+    const b = await import("./botChanges");
+    const before = "# Soul\n\n- 12 steps\n";
+    const after = "# Soul\n\n- 8 steps\n";
+    const disk = new Map([["frank|SOUL.md", after]]);
+    b.setBotFiles({
+      read: async (m, f) => ({ text: disk.get(`${m}|${f}`) ?? null, hash: String(disk.get(`${m}|${f}`)) }),
+      write: async (m, f, t, h) => { if (String(disk.get(`${m}|${f}`)) !== h) throw new Error("conflict"); disk.set(`${m}|${f}`, t); return t; },
+    });
+    b.recordBotChange({ id: "rd1", bot: "frank", day: "Today", line: "x", now: "12 steps", after: "8 steps", monoId: "frank", file: "SOUL.md", beforeText: before, afterText: after });
+    await b.undoBotChange(["rd1"]);
+    expect(disk.get("frank|SOUL.md")).toBe(before);
+    await b.redoBotChange(["rd1"]);
+    expect(disk.get("frank|SOUL.md")).toBe(after);
+    const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rd1")!;
+    expect(row.kind === "one" && row.change.undone).toBe(false);
+    await b.undoBotChange(["rd1"]);
+    disk.set("frank|SOUL.md", "# Soul\n\n- something else\n");
+    await b.redoBotChange(["rd1"]);
+    expect(disk.get("frank|SOUL.md")).toBe("# Soul\n\n- something else\n");
+    const kept = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rd1")!;
+    expect(kept.kind === "one" && kept.change.undone).toBe(true);
+    expect(kept.kind === "one" && kept.change.problem).toMatch(/changed since the Undo/);
   });
 });

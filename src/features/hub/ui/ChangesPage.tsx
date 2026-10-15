@@ -1,7 +1,7 @@
 import { pastChanges, undoProposal, useProposalsVersion } from "../model/proposals";
 import { useState } from "react";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { botChangeRows, undoBotChange, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
+import { botChangeRows, redoBotChange, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
 
 const UNDO = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
 
@@ -46,7 +46,13 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
       <div className="flex items-center gap-3">
         <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
           className={`min-w-0 flex-1 truncate text-left text-[13px] ${undone ? "text-content/60" : "text-content"}`}>{line}</button>
-        {undone ? <span className="text-xs text-content/60">Undone</span> : (
+        {undone ? (
+          <span className="flex shrink-0 items-center gap-2 text-xs text-content/60" data-hub-bot-change-undone>
+            <span>{row.kind === "one" ? undoneLine(row.change) : "Undone"}</span>
+            <button type="button" data-hub-bot-change-redo onClick={() => void redoBotChange(items.map((c) => c.id))}
+              className="rounded-md px-1.5 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">Redo</button>
+          </span>
+        ) : (
           <button type="button" className={UNDO} onClick={() => void undoBotChange(items.map((c) => c.id))}>Undo</button>
         )}
       </div>
