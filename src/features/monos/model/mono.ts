@@ -181,7 +181,21 @@ export function listMonos(): Mono[] {
   migrateLegacyMonoStorage();
   const parsed = readJson(ROSTER_KEY);
   if (!Array.isArray(parsed)) return [];
-  return parsed.flatMap((entry) => parseMono(entry) ?? []);
+  // Each Mono has its own conversation. A roster that names one session twice (a restored setup file, a hand-edited
+  // roster, an old copy) would make both Monos answer as the first one and write its memory and soul, so only the
+  // first keeps the session; the other starts a fresh chat of its own.
+  const owned = new Set<string>();
+  return parsed.flatMap((entry) => {
+    const mono = parseMono(entry);
+    if (!mono) return [];
+    if (!mono.sessionId) return [mono];
+    if (owned.has(mono.sessionId)) {
+      const { sessionId: _, ...own } = mono;
+      return [own];
+    }
+    owned.add(mono.sessionId);
+    return [mono];
+  });
 }
 
 function saveRoster(roster: readonly Mono[]): void {
@@ -316,6 +330,9 @@ export function reorderMonos(ids: readonly string[]): void {
 }
 
 export function saveMonoSessionId(monoId: string, sessionId: string): void {
+  // One conversation belongs to one Mono: never hand another Mono's chat over.
+  const owner = monoForSession(sessionId);
+  if (owner && owner.id !== monoId) return;
   updateMono(monoId, (mono) => ({ ...mono, sessionId }));
 }
 
