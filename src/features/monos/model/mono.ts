@@ -16,6 +16,7 @@ import {
 } from "../../sessions/model/session";
 import {
   PROJECT_MASCOTS,
+  PICKABLE_MASCOTS,
   projectMascot,
 } from "../../projects/model/projectMascots";
 import { removeMonoBackground } from "./monoBackground";
@@ -232,8 +233,8 @@ export function nextMonoLook(
   const palette = MONO_COLORS;
   return {
     mascot: (
-      PROJECT_MASCOTS.find((mascot) => !mascots.has(mascot.name)) ??
-      PROJECT_MASCOTS[roster.length % PROJECT_MASCOTS.length]
+      PICKABLE_MASCOTS.find((mascot) => !mascots.has(mascot.name)) ??
+      PICKABLE_MASCOTS[roster.length % PICKABLE_MASCOTS.length]
     ).name,
     color:
       palette.find((color) => !colors.has(color)) ??
@@ -386,7 +387,7 @@ export function monosSnapshot(): string {
 }
 
 /** Mascots whose Mono name is shorter than the mascot's. */
-const MONO_NAME: Record<string, string> = { mushroom: "Shroom" };
+const MONO_NAME: Record<string, string> = { mushroom: "Shroom", ghost: "Wisp" };
 
 /** The name a Mono goes by until the user names it: "MonoCrab", "MonoShroom". */
 export function defaultMonoName(mascot: string): string {
@@ -397,7 +398,7 @@ export function defaultMonoName(mascot: string): string {
 export type MonoProject = { path: string; name: string };
 
 export type MonoLook = {
-  /** The user's name for it, or its default: "MonoInvader", "MonoGhost". */
+  /** The user's name for it, or its default: "MonoInvader", "MonoCrab". */
   name: string;
   mascot: string;
   color: string;
