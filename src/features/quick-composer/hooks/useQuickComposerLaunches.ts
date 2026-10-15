@@ -6,6 +6,7 @@ import { emit, listen, type Event } from "@tauri-apps/api/event";
 import { loadQuickComposerEnabled } from "../../settings/model/settings";
 import { launchReceiver } from "../model/launchDelivery";
 import { prepareQuickComposerWhenIdle } from "../model/prepareQuickComposer";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import {
   liveQuickCatalog,
   isHarnessId,
@@ -35,8 +36,10 @@ export function useQuickComposerLaunches(
     if (!quickComposerSupported()) return;
     const enabled = loadQuickComposerEnabled();
     // Each prepared panel is a resident webview; with the shortcut off it
-    // waits for the menu bar to build it on first open instead.
-    const stopPreparing = enabled ? prepareQuickComposerWhenIdle() : () => {};
+    // waits for the menu bar to build it on first open instead. The Hub
+    // bundle never pre-builds them: nothing hidden or offscreen exists at
+    // launch, and the panel is built the first time it is opened.
+    const stopPreparing = enabled && !IS_HUB_BUNDLE ? prepareQuickComposerWhenIdle() : () => {};
     void setQuickComposerShortcut(enabled).catch(() => undefined);
 
     let disposed = false;
