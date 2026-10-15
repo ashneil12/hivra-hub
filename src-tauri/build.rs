@@ -9,5 +9,10 @@ fn main() {
     {
         println!("cargo::rustc-link-arg-cdylib=-Wl,--exclude-libs=ALL,--exclude-all-symbols");
     }
-    tauri_build::build()
+    // The hub plugin's three commands get their permissions here (capabilities/default.json allows `hub:default`).
+    let hub = tauri_build::InlinedPlugin::new()
+        .commands(&["hub_call", "hub_events_open", "hub_events_close"])
+        .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
+    tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))
+        .expect("failed to run tauri-build");
 }

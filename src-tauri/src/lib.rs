@@ -17,6 +17,7 @@ mod fs;
 mod gitlab;
 mod harness;
 mod harness_updates;
+mod hub;
 mod inbox_media;
 mod jira;
 mod jsonc;
@@ -261,6 +262,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(hub::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_filter(window::is_workspace_window)
