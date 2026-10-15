@@ -147,9 +147,9 @@ export function MonoRailSection({
         </button>
       </div>
       {rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
-        <div className="mx-3 mb-1.5 flex items-center gap-2 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
-          <span className="min-w-0 flex-1">Monos now go by what they do.</span>
-          <button type="button" onClick={() => setRoleNames(false)} className="shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
+        <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
+          <span className="w-full">Monos now go by what they do.</span>
+          <button type="button" onClick={() => setRoleNames(false)} className="-ml-1 shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
             Keep current names
           </button>
           <button type="button" onClick={() => setRoleNames(true)} className="shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
