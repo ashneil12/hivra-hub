@@ -111,6 +111,8 @@ export interface ModelKeyStore {
    * Resolve with { ok: true } and the model's name when it replied.
    */
   testModelKey(provider: CustomProvider, baseUrl: string, modelId: string, key: string): Promise<KeyTestResult>;
+  /** Forget this custom model's key (true if there was one). */
+  deleteModelKey(customModelId: string): Promise<boolean>;
 }
 
 /** Dev and test stand-in: keys stay in memory only. A key containing "bad" fails; Ollama is up unless its URL says "down". */
@@ -120,6 +122,9 @@ export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, st
     keys,
     async saveModelKey(id, key) {
       keys.set(id, key);
+    },
+    async deleteModelKey(id) {
+      return keys.delete(id);
     },
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")
@@ -144,6 +149,7 @@ export const tauriModelKeyStore: ModelKeyStore = {
   saveModelKey: (customModelId, key) => invoke("plugin:hub|model_key_save", { customModelId, key }),
   testModelKey: (provider, baseUrl, modelId, key) =>
     invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
+  deleteModelKey: (customModelId) => invoke<boolean>("plugin:hub|model_key_delete", { customModelId }),
 };
 
 let store: ModelKeyStore = createDevModelKeyStore();
@@ -177,6 +183,15 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
   };
   writeModels([...listCustomModels(), model]);
   return model;
+}
+
+/** Remove a custom model: its Keychain key first (so no key is left behind), then its settings entry. If the key
+ * can't be removed, the model stays so Ash can try again. Ollama models have no key. */
+export async function removeCustomModel(id: string): Promise<void> {
+  const model = listCustomModels().find((m) => m.id === id);
+  if (!model) return;
+  if (needsKey(model.provider)) await store.deleteModelKey(id);
+  writeModels(listCustomModels().filter((m) => m.id !== id));
 }
 
 // ---- for CoS's router -------------------------------------------------------------------------------------------------

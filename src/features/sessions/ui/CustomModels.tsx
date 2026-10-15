@@ -8,6 +8,7 @@ import {
   listCustomModels,
   needsKey,
   providerName,
+  removeCustomModel,
   showsBaseUrl,
   subscribeCustomModels,
   testCustomModel,
@@ -37,6 +38,9 @@ export function OtherModelsSection({
   onAdd: () => void;
 }) {
   const all = useCustomModels();
+  // Removing is a big deal (it also deletes the key), so it asks first.
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const needle = query.trim().toLowerCase();
   const models = needle
     ? all.filter((m) => `${m.name} ${providerName(m.provider)} ${m.modelId}`.toLowerCase().includes(needle))
@@ -45,7 +49,39 @@ export function OtherModelsSection({
   return (
     <div role="group" aria-label="Other models" data-other-models className="mt-1 border-t border-stroke pt-1">
       <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-content/40">Other models</div>
-      {models.map((m) => (
+      {models.map((m) =>
+        confirming === m.id ? (
+          <div key={m.id} data-remove-confirm={m.id} className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] text-content/80">
+            <span className="min-w-0 flex-1 truncate">Remove {m.name} and its key?</span>
+            <button
+              type="button"
+              data-remove-keep
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setConfirming(null)}
+              className="rounded-md px-2 py-0.5 text-content/60 hover:bg-content/8"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              data-remove-yes
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={async () => {
+                try {
+                  await removeCustomModel(m.id);
+                  setProblem(null);
+                } catch {
+                  setProblem("Couldn't remove the key from the Keychain, so the model was kept");
+                }
+                setConfirming(null);
+              }}
+              className="rounded-md bg-red-500/15 px-2 py-0.5 text-red-400 hover:bg-red-500/25"
+            >
+              Remove
+            </button>
+          </div>
+        ) : (
+        <div key={m.id} className="group relative">
         <button
           key={m.id}
           type="button"
@@ -58,9 +94,23 @@ export function OtherModelsSection({
           className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content hover:bg-content/5"
         >
           <span className="min-w-0 flex-1 truncate">{m.name}</span>
-          <span className="shrink-0 text-[10px] text-content/40" data-billed-separately>billed separately</span>
+          <span className="shrink-0 text-[10px] text-content/40 group-hover:invisible" data-billed-separately>billed separately</span>
         </button>
-      ))}
+        <button
+          type="button"
+          data-remove-model={m.id}
+          aria-label={`Remove ${m.name}`}
+          title="Remove"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setConfirming(m.id)}
+          className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded px-1.5 text-[12px] text-content/45 hover:bg-content/8 hover:text-content/80 group-hover:block"
+        >
+          ×
+        </button>
+        </div>
+        ),
+      )}
+      {problem ? <div className="px-2.5 py-1 text-[11px] text-content/55" data-remove-problem>{problem}</div> : null}
       {needle ? null : (
         <button
           type="button"
