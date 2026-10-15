@@ -139,13 +139,13 @@ export function sendMessage(chatId: string, text: string, convId?: string): void
         ...c,
         conversations: c.conversations.map((x) =>
           x.id === target.id
-            ? { ...x, title: x.messages.length ? x.title : text.slice(0, 40), messages: [...x.messages, msg] }
+            ? { ...x, title: x.messages.length || x.named ? x.title : autoTitle(text), messages: [...x.messages, msg] }
             : x,
         ),
       };
     const [first, ...rest] = c.conversations;
     if (first && first.when === "Today") return { ...c, conversations: [{ ...first, messages: [...first.messages, msg] }, ...rest] };
-    return { ...c, conversations: [{ id: msg.id, when: "Today", title: text.slice(0, 40), messages: [msg] }, ...c.conversations] };
+    return { ...c, conversations: [{ id: msg.id, when: "Today", title: autoTitle(text), messages: [msg] }, ...c.conversations] };
   });
   changed();
 }
@@ -155,6 +155,40 @@ export function renameChat(chatId: string, name: string): void {
   if (!next) return;
   chats = chats.map((c) => (c.id === chatId ? { ...c, name: next } : c));
   changed();
+}
+
+/** A conversation names itself from its first message: the first line, cut at a word near 40 characters. */
+export function autoTitle(text: string): string {
+  const line = text.trim().split("\n")[0];
+  if (line.length <= 40) return line;
+  const cut = line.slice(0, 40);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 20 ? cut.slice(0, space) : cut}…`;
+}
+
+/** Ash renames a conversation (double-click its name). Empty keeps the old name. */
+export function renameConversation(chatId: string, convId: string, title: string): void {
+  const next = title.trim();
+  if (!next) return;
+  chats = chats.map((c) =>
+    c.id === chatId ? { ...c, conversations: c.conversations.map((x) => (x.id === convId ? { ...x, title: next, named: true } : x)) } : c,
+  );
+  changed();
+}
+
+/**
+ * The New conversation screen sends its first message: only now is a conversation made, named from that message.
+ * Returns its id.
+ */
+let convSeq = 0;
+export function startConversation(chatId: string, text: string): string {
+  const id = `conv-${Date.now().toString(36)}-${++convSeq}`;
+  const msg: ChatMessage = { id: `${id}-1`, from: "ash", text };
+  chats = chats.map((c) =>
+    c.id === chatId ? { ...c, conversations: [{ id, when: "Today", title: autoTitle(text), messages: [msg] }, ...c.conversations] } : c,
+  );
+  changed();
+  return id;
 }
 
 /** Start a fresh conversation at the top of the list; returns its id. */

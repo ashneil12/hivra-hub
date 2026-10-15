@@ -18,9 +18,10 @@ import {
   createChat,
   ensureLeadership,
   getChat,
-  newConversation,
   removeMember,
   renameChat,
+  renameConversation,
+  startConversation,
   sendMessage,
   simulateReplies,
   typingIn,
@@ -58,9 +59,12 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const [convId, setConvId] = useState<string | undefined>();
   const [picker, setPicker] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
+  /** New conversation opens a screen; nothing is made until the first message is sent. */
+  const [drafting, setDrafting] = useState(false);
+  const [renamingConv, setRenamingConv] = useState<string | null>(null);
   const addRef = useRef<HTMLButtonElement>(null);
   const openPicker = () => setPicker(addRef.current?.getBoundingClientRect() ?? null);
-  const conv = chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0];
+  const conv = drafting ? undefined : chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0];
   // 'Take a look' can land here with a focus: open that conversation, scroll
   // to the exact message and highlight it briefly.
   const sel = useHubSelection();
@@ -168,26 +172,54 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                 title="New conversation"
                 aria-label="New conversation"
                 data-hub-new-conversation
-                onClick={() => setConvId(newConversation(chat.id))}
+                onClick={() => setDrafting(true)}
                 className="grid size-5 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
               >
                 <Plus className="size-3.5" strokeWidth={1.75} />
               </button>
             </div>
-            {chat.conversations.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => setConvId(c.id)}
-                className={`flex h-7 shrink-0 items-center rounded-md px-2 text-left text-[13px] ${
-                  c.id === conv?.id ? "bg-selection text-content" : "text-content/80 hover:bg-content/6"
-                }`}
-              >
-                <span className="min-w-0 truncate">
-                  {c.when} · {c.title}
-                </span>
-              </button>
-            ))}
+            {drafting ? (
+              <div data-hub-conversation-draft className="flex h-7 shrink-0 items-center rounded-md border border-dashed border-content/25 bg-selection px-2 text-[13px] text-content">
+                New conversation
+              </div>
+            ) : null}
+            {chat.conversations.map((c) =>
+              renamingConv === c.id ? (
+                <input
+                  key={c.id}
+                  autoFocus
+                  aria-label="Conversation name"
+                  data-hub-conversation-rename
+                  defaultValue={c.title}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={(e) => {
+                    renameConversation(chat.id, c.id, e.currentTarget.value);
+                    setRenamingConv(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setRenamingConv(null);
+                  }}
+                  className="h-7 shrink-0 rounded-md bg-selection px-2 text-[13px] text-content outline-none ring-1 ring-content/30"
+                />
+              ) : (
+                <button
+                  key={c.id}
+                  type="button"
+                  title="Double-click to rename"
+                  data-hub-conversation={c.id}
+                  onClick={() => { setDrafting(false); setConvId(c.id); }}
+                  onDoubleClick={() => setRenamingConv(c.id)}
+                  className={`flex h-7 shrink-0 items-center rounded-md px-2 text-left text-[13px] ${
+                    c.id === conv?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"
+                  }`}
+                >
+                  <span className="min-w-0 truncate">
+                    {c.when} · {c.title}
+                  </span>
+                </button>
+              ),
+            )}
           </div>
         ) : null}
       </div>
@@ -196,11 +228,22 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-stroke px-3" data-tauri-drag-region="deep">
           <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-          <span className="min-w-0 truncate text-[13px] text-content">{conv ? conv.title : chat.name}</span>
+          <span className="min-w-0 truncate text-[13px] text-content">{drafting ? "New conversation" : conv ? conv.title : chat.name}</span>
           {IS_MAC ? null : <div className="w-[120px]" />}
         </div>
         {members.length === 0 && !conv ? (
           <EmptyChat chat={chat} onAdd={openPicker} />
+        ) : drafting ? (
+          <NewConversationScreen
+            members={members}
+            phrase={chatPhrase(chat)}
+            onPick={(text) => {
+              const id = startConversation(chat.id, text);
+              setDrafting(false);
+              setConvId(id);
+              simulateReplies(chat.id, id);
+            }}
+          />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 py-6 text-[13px] leading-5">
@@ -256,10 +299,49 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             name={chatPhrase(chat)}
             onSubmit={(text) => {
               if (!text.trim()) return false;
+              if (drafting) {
+                const id = startConversation(chat.id, text.trim());
+                setDrafting(false);
+                setConvId(id);
+                simulateReplies(chat.id, id);
+                return;
+              }
               sendMessage(chat.id, text.trim(), conv?.id);
               simulateReplies(chat.id, conv?.id);
             }}
           />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The calm screen New conversation opens: who you're talking to, a few starters, and the composer below. */
+function NewConversationScreen({ members, phrase, onPick }: { members: Mono[]; phrase: string; onPick: (text: string) => void }) {
+  const starters = ["What changed since yesterday?", "What needs me today?", "Plan this week with me"];
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center px-8" data-hub-new-conversation-screen>
+      <div className="flex max-w-[460px] flex-col items-center gap-4 text-center">
+        <div className="flex -space-x-1">
+          {members.slice(0, 5).map((m) => {
+            const look = monoLook(m);
+            return (
+              <span key={m.id} className="grid size-9 place-items-center rounded-[10px] bg-surface-raised ring-1 ring-surface-ring">
+                <MonoRailMascot name={look.mascot} color={look.color} className="size-5" />
+              </span>
+            );
+          })}
+        </div>
+        <div>
+          <p className="text-[17px] font-medium text-content">Talk to {phrase}</p>
+          <p className="mt-1 text-[13px] leading-5 text-content/70">Nothing is saved until you send your first message. It names the conversation; double-click the name to change it.</p>
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          {starters.map((s) => (
+            <button key={s} type="button" onClick={() => onPick(s)} className="rounded-md bg-surface px-3 py-1.5 text-[12px] text-content/85 ring-1 ring-surface-ring hover:bg-surface-raised">
+              {s}
+            </button>
+          ))}
         </div>
       </div>
     </div>

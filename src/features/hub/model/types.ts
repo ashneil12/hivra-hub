@@ -218,6 +218,8 @@ export type ChatConversation = {
   /** "Today", "Yesterday", "12 Oct". */
   when: string;
   title: string;
+  /** Ash renamed it: the first message no longer names it. */
+  named?: boolean;
   messages: ChatMessage[];
 };
 
