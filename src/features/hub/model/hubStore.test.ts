@@ -191,17 +191,50 @@ describe("live changes land in place", () => {
 });
 
 describe("questions", () => {
-  it("reads a question's sheet by its question id and sends Ash's pick as the option's index", async () => {
+  const states = () => store.getSnapshot().answering;
+  it("reads a question by its Needs row id: options, the recommendation and the quick answers", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     const q = await store.question("q3");
-    expect(q).toMatchObject({ id: "q3", question: "Example: pick the waitlist headline", recommendedIndex: 1 });
+    expect(q).toMatchObject({ id: "q3", questionId: "q3", status: "open", question: "Example: pick the waitlist headline", recommendation: { optionIndex: 1 } });
     expect(q.options.map((o) => o.label)).toEqual(["Headline A", "Headline B"]);
-    expect(stub.calls.at(-1)?.path).toBe("/api/ash-hub-question");
-    const receipt = await store.answer("q3", { choice: 1 });
-    expect(receipt).toMatch(/^Got it: Headline B/);
-    expect(store.getSnapshot().needs.hivra.shown.find((n) => n.id === "q3")).toMatchObject({ state: "done", doneReason: "answered" });
-    await expect(store.answer("q3", { choice: 0 })).rejects.toMatchObject({ message: "That question isn't waiting on you any more." });
+    expect(q.quickAnswers.map((a) => a.id)).toEqual(["agree", "drop", "park"]);
+    const none = await store.question("q4");
+    expect(none.options).toEqual([]);
+  });
+
+  it("an answer goes in the background: Sending…, then the receipt, and the row ticks off only when it closed", async () => {
+    await stub.close();
+    stub = await startStub({ pingMs: 200, answerDelayMs: 300 });
+    store = makeStore();
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    store.answer("q3", { choice: 1 });
+    expect(states().q3).toEqual({ sending: true });
+    expect(store.getSnapshot().needs.hivra.shown.find((n) => n.id === "q3")?.state).toBe("open");
+    await waitFor(() => states().q3 && !states().q3.sending, "answer back");
+    expect(states().q3).toMatchObject({ sending: false, closed: true, receipt: "Saved to memory as your decision." });
+    expect(stub.calls.filter((c) => c.path === "/api/ash-hub-answer")).toHaveLength(1);
+    await waitFor(() => store.getSnapshot().needs.hivra.shown.find((n) => n.id === "q3")?.state === "done", "ticked");
+  });
+
+  it("an answer Ash OS could not close leaves the row open with the receipt", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    store.answer("q2", { text: "something unclear" });
+    await waitFor(() => states().q2 && !states().q2.sending, "answer back");
+    expect(states().q2).toMatchObject({ closed: false, receipt: expect.stringMatching(/stays open/) });
+    expect(store.getSnapshot().needs["vg-game"].shown.find((n) => n.id === "q2")?.state).toBe("open");
+  });
+
+  it("a refused answer comes back in plain words, and leaving the page clears finished receipts", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    store.answer("q4", { quick: "agree", text: "x" } as never);
+    await waitFor(() => states().q4 && !states().q4.sending, "refused");
+    expect(states().q4.problem).toBe("A quick answer goes alone.");
+    store.dismissDone();
+    expect(states().q4).toBeUndefined();
   });
 });
 

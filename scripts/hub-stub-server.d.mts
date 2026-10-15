@@ -7,6 +7,8 @@ export type StubOptions = {
   pendingSinceOnce?: boolean;
   /** Add the jobs scenario: leads and jobs in every state, a given-up job's Needs row, Looks right, older questions. */
   jobs?: boolean;
+  /** How long an option or typed answer takes (the real one is read by the model). */
+  answerDelayMs?: number;
   seq?: number;
   now?: () => number;
 };

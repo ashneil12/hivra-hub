@@ -187,3 +187,54 @@ describe("the stub's jobs only say what the real jobs code says", () => {
     expect([...paths(act)].filter((p) => !known("job_act_pause").has(p))).toEqual([]);
   });
 });
+
+// ---- questions and answers: the real hub code on branch ash-os-hub-answer ------------------------------------------------
+const realAnswer = JSON.parse(readFileSync(join(__dirname, "fixtures", "ash-os-real-shapes-answer.json"), "utf8")) as Record<string, Json>;
+
+describe("the store reads what the real answer code sends", () => {
+  it("reads a question with options, one without, and one with nothing to agree to", async () => {
+    const replies: Record<string, Json> = {
+      "q:with": realAnswer.question_with_options, "q:none": realAnswer.question_no_options, "q:bare": realAnswer.question_bare,
+    };
+    const transport: HubTransport = { call: async <T,>(_a: string, p?: Record<string, unknown>) => replies[String(p?.id)] as T, openFeed: () => () => undefined };
+    const store = new HubStore({ transport });
+    const withOptions = await store.question("q:with");
+    expect(withOptions.options).toEqual([{ label: "Shield first" }, { label: "Combo first", detail: "bigger" }, { label: "Second weapon set first" }]);
+    expect(withOptions.recommendation).toEqual({ text: "Do the shield first. It is missing.", optionIndex: 0 });
+    expect(withOptions.quickAnswers.map((q) => q.id)).toEqual(["agree", "drop", "park"]);
+    expect((await store.question("q:none")).recommendation.optionIndex).toBeNull();
+    expect((await store.question("q:bare")).quickAnswers.map((q) => q.id)).toEqual(["drop", "park"]);
+  });
+
+  it("an answer the model could not read yet leaves the row open and says the words are saved", async () => {
+    const transport: HubTransport = {
+      call: async <T,>(a: string) => (a === "ash-hub-answer" ? realAnswer.answer_choice_model_down : { projects: [] }) as T,
+      openFeed: () => () => undefined,
+    };
+    const store = new HubStore({ transport });
+    store.start();
+    store.answer("q:with", { choice: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(store.getSnapshot().answering["q:with"]).toMatchObject({ sending: false, closed: false, receipt: expect.stringMatching(/^Saved your answer/) });
+    store.stop();
+  });
+});
+
+describe("the stub's questions only say what the real answer code says", () => {
+  let stub: Stub;
+  let transport: HubTransport;
+  beforeAll(async () => {
+    stub = await startStub();
+    transport = bridgeTransport(createStubBridge(stub.url, () => stub.token));
+  });
+  afterAll(() => stub.close());
+  const known = (...keys: string[]) => new Set(keys.flatMap((k) => [...paths(realAnswer[k])]));
+  it("ash-hub-question and ash-hub-answer", async () => {
+    for (const id of ["q2", "q4"]) {
+      const got = await transport.call<Json>("ash-hub-question", { id });
+      expect([...paths(got)].filter((p) => !known("question_with_options", "question_no_options", "question_bare").has(p))).toEqual([]);
+    }
+    const answered = await transport.call<Json>("ash-hub-answer", { id: "q2", quick: "park" });
+    expect([...paths(answered)].filter((p) => !known("answer_quick_park", "answer_choice_model_down").has(p))).toEqual([]);
+  });
+});

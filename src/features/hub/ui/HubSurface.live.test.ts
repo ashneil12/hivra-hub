@@ -217,51 +217,70 @@ describe("ships clean and calm", () => {
 describe("questions and asks open something useful", () => {
   const btn = (scope: string, label: string) =>
     [...container.querySelectorAll(`${scope} button`)].find((b) => b.textContent?.trim() === label) as HTMLButtonElement | undefined;
-
-  it("See options on a question opens its sheet: the question, one row per option, Suggested marked quietly, one Send", async () => {
-    mount(surface());
-    await until(() => container.querySelector('[data-hub-need="q2"]'), "question row");
-    await act(async () => btn('[data-hub-need="q2"]', "See options")!.click());
+  const open = async (row: string) => {
+    await until(() => container.querySelector(`[data-hub-need="${row}"]`), `row ${row}`);
+    await act(async () => btn(`[data-hub-need="${row}"]`, "See options")!.click());
     await until(() => container.querySelector("[data-hub-question]"), "sheet");
+  };
+
+  it("a question with options: the question, the suggestion with Go with this, one row per option (Suggested marked quietly), Not now, Drop it, one Send", async () => {
+    mount(surface());
+    await open("q2");
     expect(container.querySelector("[data-hub-question]")?.textContent).toBe("Example: skim the new game rules");
+    expect(container.querySelector("[data-hub-recommendation]")?.textContent).toContain("Yes: they read like what you said on 12 Oct.");
     const options = [...container.querySelectorAll("[data-hub-question-option]")];
     expect(options.map((o) => o.querySelector("span span")?.textContent)).toEqual(["They match what I meant", "Two of them are off", "Park the rules for now"]);
     expect(options[0].querySelector("[data-hub-suggested]")?.textContent).toBe("Suggested");
-    expect(container.querySelectorAll("[data-hub-suggested]").length).toBe(1);
+    expect([...container.querySelectorAll("[data-hub-quick]")].map((b) => b.textContent)).toEqual(["Go with this", "Not now", "Drop it"]);
     expect(container.querySelectorAll("[data-hub-send]").length).toBe(1);
     expect((container.querySelector("[data-hub-send]") as HTMLButtonElement).disabled).toBe(true);
     expect(container.querySelector('input[placeholder="Say something else…"]')).toBeTruthy();
   });
 
-  it("picking an option and sending shows the receipt briefly, then the row ticks off in place", async () => {
+  it("a question with no options still works: the suggestion, Go with this, Not now, Drop it, Say something else", async () => {
     mount(surface());
-    await until(() => container.querySelector('[data-hub-need="q2"]'), "question row");
-    const order = rows();
-    await act(async () => btn('[data-hub-need="q2"]', "See options")!.click());
-    await until(() => container.querySelector("[data-hub-question-option]"), "sheet");
-    act(() => (container.querySelectorAll("[data-hub-question-option]")[1] as HTMLButtonElement).click());
-    expect(container.querySelectorAll("[data-hub-question-option]")[1].getAttribute("aria-checked")).toBe("true");
-    await act(async () => (container.querySelector("[data-hub-send]") as HTMLButtonElement).click());
-    await until(() => container.querySelector("[data-hub-receipt]"), "receipt");
-    expect(container.querySelector("[data-hub-receipt]")?.textContent).toMatch(/^Got it: Two of them are off\./);
-    await until(() => container.querySelector('[data-hub-need="q2"][data-hub-need-done]'), "ticked");
-    expect(rows().slice(0, order.length)).toEqual(order);
-    await until(() => !container.querySelector("[data-hub-question]"), "sheet closes by itself", 5000);
+    await until(() => container.querySelector('[data-hub-need="q4"]'), "row");
+    // q4 is an ask (Open); make a plain question row to open
+    stub.addNeed({ id: "q:qx", projectId: "hivra", title: "Example: archive the old waitlist?", why: "My suggestion: Park it for later.", actionType: "see_options", actionTarget: "question:qx" });
+    await open("q:qx");
+    expect(container.querySelectorAll("[data-hub-question-option]").length).toBe(0);
+    expect(container.querySelector("[data-hub-recommendation]")?.textContent).toContain("Park it for later.");
+    expect([...container.querySelectorAll("[data-hub-quick]")].map((b) => b.textContent)).toEqual(["Go with this", "Not now", "Drop it"]);
+    await act(async () => (container.querySelector('[data-hub-quick="park"]') as HTMLButtonElement).click());
+    await until(() => container.querySelector('[data-hub-need="q:qx"][data-hub-need-done]'), "ticked");
+    expect(container.querySelector('[data-hub-need="q:qx"] [data-hub-answer-receipt]')?.textContent).toBe("Parked for later. It comes back when you mention it again.");
   });
 
-  it("Say something else sends his own words", async () => {
+  it("sending a pick closes the sheet at once; the row says Sending… while the model reads it, then ticks off with the receipt", async () => {
+    await stub.close();
+    stub = await startStub({ answerDelayMs: 400 });
+    url = stub.url;
     mount(surface());
-    await until(() => container.querySelector('[data-hub-need="q3"]'), "question row");
-    await act(async () => btn('[data-hub-need="q3"]', "See options")!.click());
-    await until(() => container.querySelector("[data-hub-question-option]"), "sheet");
+    await open("q2");
+    const order = rows();
+    act(() => (container.querySelectorAll("[data-hub-question-option]")[1] as HTMLButtonElement).click());
+    await act(async () => (container.querySelector("[data-hub-send]") as HTMLButtonElement).click());
+    expect(container.querySelector("[data-hub-question]")).toBeNull(); // nothing waits on the sheet
+    expect(container.querySelector('[data-hub-need="q2"] [data-hub-sending]')?.textContent).toBe("Sending…");
+    expect(container.querySelector('[data-hub-need="q2"] button')).toBeNull();
+    await until(() => container.querySelector('[data-hub-need="q2"][data-hub-need-done]'), "ticked");
+    expect(container.querySelector('[data-hub-need="q2"] [data-hub-answer-receipt]')?.textContent).toBe("Saved to memory as your decision.");
+    expect(rows().slice(0, order.length)).toEqual(order);
+  });
+
+  it("words Ash OS can't act on leave the row open with the receipt, its button back", async () => {
+    mount(surface());
+    await open("q3");
     const input = container.querySelector('input[placeholder="Say something else…"]') as HTMLInputElement;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Neither; try a third one");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "something unclear");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => (container.querySelector("[data-hub-send]") as HTMLButtonElement).click());
-    await until(() => container.querySelector("[data-hub-receipt]"), "receipt");
-    expect(container.querySelector("[data-hub-receipt]")?.textContent).toContain('"Neither; try a third one"');
+    await until(() => container.querySelector('[data-hub-need="q3"] [data-hub-answer-receipt]'), "receipt");
+    expect(container.querySelector('[data-hub-need="q3"] [data-hub-answer-receipt]')?.textContent).toMatch(/stays open/);
+    expect(container.querySelector('[data-hub-need="q3"][data-hub-need-done]')).toBeNull();
+    expect(btn('[data-hub-need="q3"]', "See options")).toBeTruthy();
   });
 
   it("Open on an ask shows it in full (title, why, detail), and no ids", async () => {

@@ -92,15 +92,27 @@ export type HubJob = {
 /** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
 export type HubJobGroup = { leadId: string | null; leadName: string; projectId: string; jobs: HubJob[] };
 
-/** A question Ash is asked (`ash-hub-question`): its options, the suggested one, and when it was asked. */
+/** A question Ash is asked (`ash-hub-question`). Most have no options: then the recommendation and the quick answers. */
 export type HubQuestion = {
+  /** The Needs row id (`q:<question id>`), which both calls take. */
   id: string;
+  questionId: string;
+  status: "open" | "answered" | "expired";
   question: string;
   options: { label: string; detail?: string }[];
-  recommendation: string;
-  recommendedIndex?: number;
+  recommendation: { text: string; optionIndex: number | null };
+  /** `agree` (only with a recommendation), `drop`, `park`. */
+  quickAnswers: { id: string; label: string }[];
   askedAt?: string;
+  /** His answer is saved and waits for the model (it was down). */
+  heldAnswer?: string;
 };
+
+/** Ash's answer: an option's index and/or his words, or one quick answer alone. */
+export type HubAnswer = { choice?: number; text?: string; quick?: "agree" | "drop" | "park" };
+
+/** An answer on its way or back: "Sending…" in the row, then the receipt; the row ticks off only if it closed. */
+export type AnswerState = { sending: boolean; receipt?: string; problem?: string; closed?: boolean };
 
 /** One choice on a given-up job's "See options" sheet. */
 export type JobOption = { id: string; label: string; needsText: boolean; note: string; placeholder?: string };
@@ -166,8 +178,10 @@ export interface HubDataSource {
   /** Mark a Looks-right row seen. Live source only. */
   markNeedSeen?(id: string): Promise<void>;
   /** A question's options sheet, and Ash's answer (an option's index and/or his own words); the answer's receipt line. */
-  question?(questionId: string): Promise<HubQuestion>;
-  answer?(questionId: string, answer: { choice?: number; text?: string }): Promise<string>;
+  question?(needId: string): Promise<HubQuestion>;
+  /** Sends in the background (an option or typed answer can take a minute); progress is `answerState`. */
+  answer?(needId: string, answer: HubAnswer): void;
+  answerState?(needId: string): AnswerState | undefined;
   /** "Looks right" on finished critical work (actionType `accept`). Live source only. */
   acceptNeed?(id: string): Promise<void>;
   /** The project's real Needs count (shown plus Later) for its badge; absent at zero. Live source only. */

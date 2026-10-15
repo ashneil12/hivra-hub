@@ -10,7 +10,7 @@
 //   short pause that folds a burst of events into one read.
 import { toHubError, type HubFeedEvent, type HubFeedState, type HubTransport } from "./hubTransport";
 import type {
-  HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
+  AnswerState, HubAnswer, HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
 } from "./types";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
@@ -39,6 +39,8 @@ export type HubSnapshot = {
   older: Need[];
   /** Being built, grouped under the Mono running each job. Stable order. */
   jobs: HubJobGroup[];
+  /** Answers on their way or just back, by Needs row id. */
+  answering: Record<string, AnswerState>;
   since?: SinceData;
   lastActiveAt?: string;
   sinceAt?: string;
@@ -223,6 +225,7 @@ export class HubStore {
     setup: [],
     older: [],
     jobs: [],
+    answering: {},
     seq: 0,
   };
   private readonly listeners = new Set<() => void>();
@@ -435,28 +438,47 @@ export class HubStore {
     await this.loadNeeds();
   }
 
-  /** A question's options sheet (`ash-hub-question`). */
-  async question(questionId: string): Promise<HubQuestion> {
-    const raw = obj(await this.t.call("ash-hub-question", { id: questionId }));
-    const index = typeof raw.recommendedIndex === "number" ? raw.recommendedIndex : undefined;
+  /** A question's sheet (`ash-hub-question`), by its Needs row id. */
+  async question(needId: string): Promise<HubQuestion> {
+    const raw = obj(await this.t.call("ash-hub-question", { id: needId }));
+    const rec = obj(raw.recommendation);
+    const status = raw.status === "answered" || raw.status === "expired" ? raw.status : "open";
     return {
-      id: questionId,
+      id: str(raw.id, needId),
+      questionId: str(raw.questionId),
+      status,
       question: str(raw.question),
-      options: arr(raw.options).map((o) => {
-        const r = obj(o);
-        return { label: str(r.label), ...(optStr(r.detail) ? { detail: str(r.detail) } : {}) };
-      }).filter((o) => o.label),
-      recommendation: str(raw.recommendation),
-      ...(index !== undefined ? { recommendedIndex: index } : {}),
+      options: arr(raw.options)
+        .map((o) => {
+          const r = obj(o);
+          return { label: str(r.label), ...(optStr(r.detail) ? { detail: str(r.detail) } : {}) };
+        })
+        .filter((o) => o.label),
+      recommendation: { text: str(rec.text), optionIndex: typeof rec.optionIndex === "number" ? rec.optionIndex : null },
+      quickAnswers: arr(raw.quickAnswers)
+        .map((q) => ({ id: str(obj(q).id), label: str(obj(q).label) }))
+        .filter((q) => q.id),
       ...(optStr(raw.askedAt) ? { askedAt: str(raw.askedAt) } : {}),
+      ...(optStr(raw.heldAnswer) ? { heldAnswer: str(raw.heldAnswer) } : {}),
     };
   }
 
-  /** Ash's answer (Ash only in Ash OS). Returns the receipt line; the row ticks off on the next read. */
-  async answer(questionId: string, answer: { choice?: number; text?: string }): Promise<string> {
-    const raw = obj(await this.t.call("ash-hub-answer", { id: questionId, ...answer }));
-    await this.loadNeeds();
-    return str(raw.receipt, "Got it.");
+  /**
+   * Ash's answer (Ash only in Ash OS). It goes in the background: an option or typed answer is read by the model and
+   * can take a minute, and nothing else waits for it. The row says "Sending…", then the receipt; it ticks off only when
+   * Ash OS says the question closed (`rowDone`).
+   */
+  answer(needId: string, answer: HubAnswer): void {
+    const set = (state: AnswerState) => this.patch({ answering: { ...this.snap.answering, [needId]: state } });
+    set({ sending: true });
+    void this.t
+      .call("ash-hub-answer", { id: needId, ...answer })
+      .then(async (raw) => {
+        const r = obj(raw);
+        set({ sending: false, receipt: str(r.receipt, "Got it."), closed: r.rowDone === true });
+        if (r.rowDone === true) await this.loadNeeds();
+      })
+      .catch((error) => set({ sending: false, problem: toHubError(error).message }));
   }
 
   /** "Looks right": Ash accepts finished critical work. Ash OS ticks the row off; the answer is read at once. */
@@ -540,7 +562,9 @@ export class HubStore {
       }
       needs[pid] = { shown: rows.shown.filter((n) => n.state !== "done"), later: rows.later };
     }
-    if (any) this.patch({ needs });
+    // The receipts of answers that are back go too; one still on its way stays.
+    const answering = Object.fromEntries(Object.entries(this.snap.answering).filter(([, a]) => a.sending));
+    if (any || Object.keys(answering).length !== Object.keys(this.snap.answering).length) this.patch({ needs, answering });
   }
 
   // ---- the change feed -------------------------------------------------------------------------------------------

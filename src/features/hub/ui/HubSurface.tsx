@@ -144,7 +144,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       })}
       <OlderGroup projectId={projectId} onSheet={setSheet} />
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
-      {sheet?.kind === "question" ? <QuestionSheet questionId={sheet.questionId} onClose={() => setSheet(null)} /> : null}
+      {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
     </div>
   );
@@ -152,7 +152,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
 
 /** Under a project's Needs: the ones past the five, collapsed to one quiet line until opened. */
 /** Which sheet a Need's one button opens. */
-type SheetFor = { kind: "job"; jobId: string } | { kind: "question"; questionId: string } | { kind: "detail"; need: Need };
+type SheetFor = { kind: "job"; jobId: string } | { kind: "question"; needId: string } | { kind: "detail"; need: Need };
 
 function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet: SheetFor) => void }) {
   const [open, setOpen] = useState(false);
@@ -209,7 +209,8 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
   // sheet; an older Looks-right row (action "open") is marked seen; Open and Start show the row in full.
   const accept = need.actionType === "accept" && !!data.acceptNeed;
   const seen = need.canMarkSeen && need.actionType !== "accept" && !!data.markNeedSeen;
-  const questionId = need.actionTarget?.startsWith("question:") ? need.actionTarget.slice(9) : undefined;
+  const isQuestion = !!need.actionTarget?.startsWith("question:");
+  const answering = data.answerState?.(need.id);
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
     setProblem(null);
@@ -224,7 +225,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
     if (need.jobId && data.jobOptions) return onSheet?.({ kind: "job", jobId: need.jobId });
     if (accept) return run(() => data.acceptNeed!(need.id));
     if (seen) return run(() => data.markNeedSeen!(need.id));
-    if (questionId && data.question) return onSheet?.({ kind: "question", questionId });
+    if (isQuestion && data.question) return onSheet?.({ kind: "question", needId: need.id });
     if (need.actionType === "open" || need.actionType === "start") return onSheet?.({ kind: "detail", need });
   };
   return (
@@ -233,12 +234,18 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         <div className="truncate text-[13px] text-content/60">{need.why}</div>
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
+        {answering && !answering.sending && (answering.receipt || answering.problem) ? (
+          <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>
+        ) : null}
       </div>
       {done ? (
         // It ticked itself off (answered or cleared somewhere else). It stays here until Ash leaves the page.
         <span className="grid size-6 shrink-0 place-items-center text-content/60" role="img" aria-label="Done">
           <Check className="size-3.5" strokeWidth={1.75} />
         </span>
+      ) : answering?.sending ? (
+        // His answer is on its way (the model can take a minute); nothing else waits for it.
+        <span className="shrink-0 text-xs text-content/60" data-hub-sending>Sending…</span>
       ) : (
         <>
           {need.circle && need.word ? <CircleWord circle={need.circle} word={need.word} /> : null}

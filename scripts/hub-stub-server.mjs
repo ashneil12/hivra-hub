@@ -132,6 +132,7 @@ export async function startStub({
   pingMs = 15_000,
   pendingSinceOnce = false,
   jobs: withJobs = false,
+  answerDelayMs = 0,
   seq = 100,
   now = () => Date.now(),
 } = {}) {
@@ -385,31 +386,52 @@ export async function startStub({
     return { id: n.id, accepted: true };
   }
 
-  // ---- questions (ash-hub-question / ash-hub-answer, contract from the coordinator; branch ash-os-hub-answer) ----
+  // ---- questions (ash-hub-question / ash-hub-answer; the shapes of branch ash-os-hub-answer, docs "Questions and answers") ----
+  // Most real questions have no options (127 of 145 open on 15 Oct); q2 and q3 have some, the rest none.
   const QUESTIONS = {
-    q2: { options: [{ label: "They match what I meant" }, { label: "Two of them are off", detail: "Say which in your own words." }, { label: "Park the rules for now" }], recommendedIndex: 0, recommendation: "Yes: they read like what you said on 12 Oct." },
-    q3: { options: [{ label: "Headline A", detail: "\"Your agents, on your Mac\"" }, { label: "Headline B", detail: "\"Hire the team you can't afford\"" }], recommendedIndex: 1, recommendation: "B tested a little better with founders." },
+    q2: { options: [{ label: "They match what I meant" }, { label: "Two of them are off", detail: "say which" }, { label: "Park the rules for now" }], rec: "Yes: they read like what you said on 12 Oct.", optionIndex: 0 },
+    q3: { options: [{ label: "Headline A", detail: "Your agents, on your Mac" }, { label: "Headline B", detail: "Hire the team you can't afford" }], rec: "Go with headline B: it tested a little better with founders.", optionIndex: 1 },
   };
-  const questionOf = (id) => state.needs.find((n) => n.actionTarget === `question:${id}`);
+  const questionNeed = (id) => {
+    const bare = String(id || "").replace(/^q:/, "");
+    return state.needs.find((n) => n.actionTarget === `question:${bare}` || n.id === id);
+  };
+  const quickAnswersFor = (rec) => [...(rec ? [{ id: "agree", label: "Yes, do that" }] : []), { id: "drop", label: "Drop it" }, { id: "park", label: "Later" }];
   function questionCall(v) {
-    const n = questionOf(v.id);
-    if (!n) throw new Error("No such question.");
-    const q = QUESTIONS[v.id] ?? { options: [{ label: "Yes" }, { label: "No" }], recommendedIndex: 0, recommendation: "Yes." };
-    return { question: n.title, options: q.options, recommendation: q.recommendation, ...(q.recommendedIndex != null ? { recommendedIndex: q.recommendedIndex } : {}), asks: [`a_${v.id}`], askedAt: iso(n.since) };
+    const n = questionNeed(v.id);
+    if (!n) throw new Error("There is no question with that id.");
+    const qid = n.actionTarget.replace(/^question:/, "");
+    const q = QUESTIONS[qid] ?? { options: [], rec: n.why.replace(/^My suggestion: /, ""), optionIndex: null };
+    return {
+      id: n.id, questionId: qid, project: n.projectId, status: n.state === "done" ? "answered" : "open", question: n.title, options: q.options,
+      recommendation: { text: q.rec, optionIndex: q.optionIndex }, quickAnswers: quickAnswersFor(q.rec), asks: [{ id: `a_${qid}`, title: n.title }], askedAt: iso(n.since),
+    };
   }
-  function answerCall(v) {
-    const n = questionOf(v.id);
-    if (!n || n.state !== "open") throw new Error("That question isn't waiting on you any more.");
-    const q = QUESTIONS[v.id] ?? { options: [{ label: "Yes" }, { label: "No" }] };
+  const RECEIPTS = { agree: "Going ahead: it is checked before an agent starts it, and anything about production, money, messages sent as you or keys waits for you.", drop: "Dropped. Nothing will be done on it.", park: "Parked for later. It comes back when you mention it again." };
+  async function answerCall(v) {
+    const n = questionNeed(v.id);
+    if (!n) throw new Error("There is no question with that id.");
+    const qid = n.actionTarget.replace(/^question:/, "");
+    const q = QUESTIONS[qid] ?? { options: [], rec: n.why.replace(/^My suggestion: /, ""), optionIndex: null };
     const text = String(v.text ?? "").trim();
-    const picked = typeof v.choice === "number" ? q.options[v.choice]?.label : undefined;
-    if (!picked && !text) throw new Error("Pick an option or say something.");
-    if (typeof v.choice === "number" && !picked) throw new Error("That option isn't one of the choices.");
-    Object.assign(n, { state: "done", doneAt: now(), doneReason: "answered" });
-    emit("question.answered", v.id, n.projectId);
-    emit("hub.need.done", n.id, n.projectId);
-    const project = state.projects.find((p) => p.id === n.projectId)?.name ?? n.projectId;
-    return { ok: true, receipt: `Got it: ${picked ?? `"${text}"`}. ${project}'s lead picks it up from here.` };
+    if (v.quick) {
+      if (v.choice != null || text) throw new Error("A quick answer goes alone.");
+      if (!["agree", "drop", "park"].includes(v.quick) || (v.quick === "agree" && !q.rec)) throw new Error("That quick answer isn't offered here.");
+    } else {
+      if (v.choice == null && !text) throw new Error("Pick an option or say something.");
+      if (v.choice != null && !q.options[v.choice]) throw new Error("That option isn't one of the choices.");
+      if (text.length > 4000) throw new Error("That is too long.");
+      await new Promise((r) => setTimeout(r, answerDelayMs)); // the model reads an option or typed answer
+    }
+    const base = { ok: true, id: n.id, questionId: qid };
+    if (!v.quick && /unclear/i.test(text)) return { ...base, outcome: "unclear", receipt: "I couldn't tell what you want from that, so the question stays open. Say it another way?", rowDone: false };
+    if (n.state === "open") {
+      Object.assign(n, { state: "done", doneAt: now(), doneReason: "answered" });
+      emit("question.answered", qid, n.projectId);
+      emit("hub.need.done", n.id, n.projectId);
+    }
+    const receipt = v.quick ? RECEIPTS[v.quick] : "Saved to memory as your decision.";
+    return { ...base, outcome: v.quick ?? "answered", receipt, rowDone: true };
   }
 
   async function action(name, v) {
@@ -644,6 +666,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     dev: process.argv.includes("--dev"),
     jobs: process.argv.includes("--jobs"),
     pendingSinceOnce: process.argv.includes("--pending-since"),
+    answerDelayMs: Number(arg("answer-delay-ms", 1500)),
   });
   console.log(`hub stub on ${stub.url}${arg("token-file") ? ` (key written to ${arg("token-file")})` : ""}`);
   process.on("SIGINT", () => stub.close().then(() => process.exit(0)));

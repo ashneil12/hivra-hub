@@ -4,7 +4,7 @@
 import { projectItems } from "./mockData";
 import { stripProjects } from "./hubProjects";
 import type { HubStore } from "./hubStore";
-import type { HubDataSource, HubProject, Need, SinceSummary, StuckItem } from "./types";
+import type { HubAnswer, HubDataSource, HubProject, Need, SinceSummary, StuckItem } from "./types";
 
 const QUIET = "Nothing new here since then.";
 
@@ -55,8 +55,9 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     listOlder: (projectId?: string) => snap().older.filter((n) => (projectId ? n.projectId === projectId : onStrip(n.projectId))),
     markNeedSeen: (id: string) => store.markNeedSeen(id),
     acceptNeed: (id: string) => store.acceptNeed(id),
-    question: (questionId: string) => store.question(questionId),
-    answer: (questionId: string, answer: { choice?: number; text?: string }) => store.answer(questionId, answer),
+    question: (needId: string) => store.question(needId),
+    answer: (needId: string, answer: HubAnswer) => store.answer(needId, answer),
+    answerState: (needId: string) => snap().answering[needId],
     // The badge is the project's real Needs count (what Ash OS counts: shown plus Later), kept live by the feed.
     needsCount: (projectId: string) => {
       const rows = snap().needs[projectId];
