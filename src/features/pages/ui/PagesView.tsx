@@ -4,6 +4,8 @@ import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, DashboardSquare, Pin, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
+import { leadFor } from "../../hub/model/hubLeads";
+import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { undoBotChange } from "../../hub/model/botChanges";
 import { allPages, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
@@ -27,6 +29,14 @@ const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const STATE_DOT = { ok: "bg-status-ok", warn: "bg-status-warn", bad: "bg-status-bad" } as const;
 const ASKER = "Projects Manager";
 const ASKER_ID = "projects-manager";
+export const NOT_TIED = "Not tied to a project";
+/** The project's lead if one is seated, else Projects Manager, else the first seated Mono. */
+export function defaultBuilder(projectId: string, seated: { id: string }[]): string {
+  const folder = hubData().listProjects().find((p) => p.id === projectId)?.folder;
+  const lead = folder ? listMonos().find((m) => leadFor(m.id) && monoWorksOn(m, folder)) : undefined;
+  if (lead && seated.some((m) => m.id === lead.id)) return lead.id;
+  return seated.some((m) => m.id === ASKER_ID) ? ASKER_ID : seated[0]?.id ?? ASKER_ID;
+}
 export const PAGES_CANT = "This can't change the app's core screens, the sidebar, settings, keys or Monos.";
 function Limits() {
   return <p className="text-[12px] text-content/60" data-pages-cant>{PAGES_CANT}</p>;
@@ -242,7 +252,7 @@ function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   );
 }
 
-function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
+function AskBox({ onAsk, monos, monoId, onPick }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void }) {
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
   return (
@@ -254,6 +264,10 @@ function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
         placeholder="Describe the page…"
         className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-content outline-none placeholder:text-content/60"
       />
+      <select aria-label="Mono that builds it" data-pages-mono-picker value={monoId} onChange={(e) => onPick(e.target.value)}
+        className="max-w-[160px] shrink-0 truncate rounded-md bg-surface-raised px-2 py-1 text-[12px] text-content outline-none">
+        {monos.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+      </select>
       <button type="submit" aria-label="Send to a Mono" disabled={!text.trim()} className="grid size-7 place-items-center rounded-full bg-content/12 text-content hover:bg-content/18 disabled:opacity-40">
         <ArrowUp className="size-3.5" strokeWidth={2} />
       </button>
@@ -268,7 +282,7 @@ export function PagesContent() {
   useHubDataVersion();
   const selected = useHubSelection().project;
   const projects = hubData().listProjects();
-  const nameOf = (id: string) => (id === "today" ? "All projects" : projects.find((p) => p.id === id)?.name ?? id);
+  const nameOf = (id: string) => (id === "today" ? NOT_TIED : projects.find((p) => p.id === id)?.name ?? id);
   const [filter, setFilter] = useState<string>("all");
   const [build, setBuild] = useState<Build>();
   const [open, setOpen] = useState<string>();
@@ -285,35 +299,41 @@ export function PagesContent() {
   // A new page belongs to the filtered project, else the one selected in the hub.
   const projectId = filter !== "all" ? filter : selected;
 
+  // Who builds it: any seated Mono (never a temporary worker), the project's lead first.
+  const seated = listMonos().map((m) => ({ id: m.id, name: m.name ?? m.id }));
+  const [picked, setPicked] = useState<string>();
+  const askerId = picked && seated.some((m) => m.id === picked) ? picked : defaultBuilder(projectId, seated);
+  const asker = seated.find((m) => m.id === askerId)?.name ?? ASKER;
+
   const ask = (prompt: string) => {
     setBuild({ prompt, state: "building" });
     setSentBack(undefined);
-    void buildPage({ projectId, monoId: ASKER_ID, prompt }).then((result) => setBuild({ prompt, ...result }));
+    void buildPage({ projectId, monoId: askerId, prompt }).then((result) => setBuild({ prompt, ...result }));
   };
-  const preview = build && "status" in build && build.status === "ready" ? pageFromSpec(build.spec, build.prompt, ASKER, projectId, build.warnings) : undefined;
+  const preview = build && "status" in build && build.status === "ready" ? pageFromSpec(build.spec, build.prompt, asker, projectId, build.warnings) : undefined;
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
 
   if (build && !preview) {
     return (
       <div className="mx-auto w-full max-w-2xl px-8 py-10" data-pages-build-state={"status" in build ? build.status : "building"}>
-        <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {ASKER}</div>
+        <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {asker}</div>
         {"status" in build ? (
           build.status === "not-connected" ? (
             <div className={`${card} p-5`} data-pages-not-connected>
               <div className="text-[14px] text-content">Not connected yet</div>
-              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} Once it's wired, {ASKER} builds the page here and you see a preview first.</p>
+              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} Once it's wired, {asker} builds the page here and you see a preview first.</p>
             </div>
           ) : (
             <div className="rounded-lg px-3 py-2.5" data-pages-turned-down>
-              <div className="text-[13px] text-content">{build.status === "turned-down" ? "Sent back to " + ASKER : "That didn't work"}</div>
+              <div className="text-[13px] text-content">{build.status === "turned-down" ? "Sent back to " + asker : "That didn't work"}</div>
               <div className="text-[13px] leading-5 text-content/60">Turned down automatically: {"reason" in build ? build.reason : ""}</div>
             </div>
           )
         ) : (
           <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status">
             <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-            {ASKER} is building your page…
+            {asker} is building your page…
           </div>
         )}
         <div className="mt-4 flex gap-2">
@@ -340,7 +360,7 @@ export function PagesContent() {
                 <button type="button" className={quietBtn} onClick={() => setSentBack(w.plain)}>Fix it</button>
               </div>
             ))}
-            {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {ASKER}: “{sentBack}”</div> : null}
+            {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {asker}: “{sentBack}”</div> : null}
           </div>
         ) : null}
         <div className="relative rounded-xl border border-dashed border-content/30 p-4">
@@ -366,7 +386,7 @@ export function PagesContent() {
           <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
-            <PinToggle page={shown} />
+            <PinToggle page={shown} inHeader />
           </div>
           <div className="mt-1 text-[12px] text-content/60">Kept · {nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
           <div className="mb-4 mt-1"><Limits /></div>
@@ -390,10 +410,10 @@ export function PagesContent() {
       <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center" data-pages-new>
         <div>
           <div className="text-[17px] font-medium text-content">{pages.length ? "New page" : "No pages yet"}</div>
-          <div className="mt-1 text-[13px] text-content/70">Describe the page. {ASKER} builds it and shows you a preview first.</div>
+          <div className="mt-1 text-[13px] text-content/70">Describe the page. {asker} builds it and shows you a preview first.</div>
           <div className="mt-2"><Limits /></div>
         </div>
-        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} /></div>
+        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} /></div>
         {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
       </div>
     );
@@ -402,7 +422,8 @@ export function PagesContent() {
   const groups = (filter === "all" ? [...new Set(pages.map((p) => p.projectId ?? "today"))] : [filter])
     .map((id) => [id, pages.filter((p) => (p.projectId ?? "today") === id)] as const)
     .filter(([, list]) => list.length);
-  const withPages = [...new Set(pages.map((p) => p.projectId ?? "today"))];
+  // Every project gets a tab, pages or not; "Not tied to a project" for pages that belong to none.
+  const withPages = [...projects.map((p) => p.id), "today"];
   return (
     <div className="min-h-0 flex-1 overflow-auto">
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-list>
@@ -419,6 +440,13 @@ export function PagesContent() {
             </button>
           ))}
         </div>
+        {!groups.length ? (
+          <div className="mt-8 flex flex-col items-center gap-3 text-center" data-pages-filter-empty>
+            <div className="text-[14px] text-content">No pages yet</div>
+            <div className="text-[13px] text-content/70">Nothing for {nameOf(filter)} so far.</div>
+            <button type="button" className={primaryBtn} onClick={() => setNewPage(true)}>New page</button>
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([id, list]) => (
             <section key={id} data-pages-group={id}>
@@ -443,11 +471,12 @@ export function PagesContent() {
 }
 
 /** Pin or unpin a page; pinned pages show in the sidebar. */
-function PinToggle({ page }: { page: Page }) {
+/** Unpinned: hidden until the row is hovered (always shown, at 70% content, beside an open page's title). Pinned: solid. */
+function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
   return (
     <button type="button" aria-pressed={!!page.pinned} aria-label={page.pinned ? `Unpin ${page.title}` : `Pin ${page.title}`} title={page.pinned ? "Unpin from the sidebar" : "Pin to the sidebar"}
       data-pages-pin onClick={() => setPinned(page.id, !page.pinned)}
-      className={`grid size-7 shrink-0 place-items-center rounded-md hover:bg-surface-raised ${page.pinned ? "text-content" : "text-content/45 hover:text-content"}`}>
+      className={`grid size-7 shrink-0 place-items-center rounded-md hover:bg-surface-raised ${page.pinned ? "text-content" : inHeader ? "text-content/70 hover:text-content" : "text-content/70 opacity-0 hover:text-content focus-visible:opacity-100 group-hover:opacity-100"}`}>
       <Pin className="size-3.5" strokeWidth={page.pinned ? 2.25 : 1.75} />
     </button>
   );
