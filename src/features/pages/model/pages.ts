@@ -13,7 +13,7 @@ export type PageBlock =
   | { kind: "note"; title: string; text: string }
   | { kind: "calendar"; title: string; month: string; firstWeekday: number; days: number; marked: { day: number; text: string }[] };
 
-export type Page = { id: string; title: string; request: string; by: string; blocks: PageBlock[]; keptAt?: number; removed?: boolean };
+export type Page = { id: string; projectId: string; title: string; request: string; by: string; blocks: PageBlock[]; keptAt?: number; removed?: boolean };
 
 type Topic = { words: RegExp; title: string; list: string; rows: [string, "ok" | "warn" | "bad", string][]; chart: string; status: [string, string]; note: string; order: BlockKind[] };
 const TOPICS: Topic[] = [
@@ -23,7 +23,7 @@ const TOPICS: Topic[] = [
   { words: /calendar|schedule|meeting|week|plan/i, title: "This week", list: "Coming up",
     rows: [["Playtest with five kids", "warn", "Thursday"], ["Pricing review", "ok", "Friday"], ["Ship build 0.14", "warn", "Monday"]],
     chart: "Hours booked per day", status: ["Week on track", "3 things booked, nothing overdue"], note: "Keep Friday afternoon clear for the release check.", order: ["calendar", "list", "status", "chart", "note"] },
-  { words: /sale|revenue|money|sign ?up|growth|user/i, title: "Sign-ups and sales", list: "Latest sign-ups",
+  { words: /sale|revenue|money|sign[- ]?up|growth|user/i, title: "Sign-ups and sales", list: "Latest sign-ups",
     rows: [["Waitlist: 42 new", "ok", "Today"], ["Trial to paid: 3", "ok", "This week"], ["Refund asked: 1", "warn", "Open"]],
     chart: "Sign-ups per day", status: ["Sign-ups up this week", "212 so far, 38 more than last week"], note: "The new headline is doing better. Keep it for another week.", order: ["status", "chart", "list", "note", "calendar"] },
 ];
@@ -38,7 +38,7 @@ function titleFor(request: string, topic: Topic): string {
 }
 
 /** Match a request to a block layout, locally. Every page gets all five blocks, ordered by what was asked. */
-export function buildPreview(request: string, by: string, now = Date.now()): Page {
+export function buildPreview(request: string, by: string, now = Date.now(), projectId = "today"): Page {
   const topic = TOPICS.find((t) => t.words.test(request)) ?? GENERAL;
   const blocks: Record<BlockKind, PageBlock> = {
     status: { kind: "status", title: "Status", state: topic.rows.some((r) => r[1] === "bad") ? "bad" : topic.rows.some((r) => r[1] === "warn") ? "warn" : "ok", line: topic.status[0], detail: topic.status[1] },
@@ -47,7 +47,7 @@ export function buildPreview(request: string, by: string, now = Date.now()): Pag
     note: { kind: "note", title: "Note", text: topic.note },
     calendar: { kind: "calendar", title: "Calendar", month: "October 2026", firstWeekday: 3, days: 31, marked: [{ day: 15, text: "Today" }, { day: 16, text: "Playtest" }, { day: 19, text: "Ship" }] },
   };
-  return { id: `page-${now.toString(36)}`, title: titleFor(request, topic), request, by, blocks: topic.order.map((k) => blocks[k]) };
+  return { id: `page-${now.toString(36)}`, projectId, title: titleFor(request, topic), request, by, blocks: topic.order.map((k) => blocks[k]) };
 }
 
 // ---- kept pages -------------------------------------------------------------------------------------------------------
@@ -74,8 +74,9 @@ function changed() {
 export function usePagesVersion(): number {
   return useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => version);
 }
-export function keptPages(): Page[] {
-  return pages.filter((p) => !p.removed).sort((a, b) => (b.keptAt ?? 0) - (a.keptAt ?? 0));
+/** Each project has its own Pages; "today" holds pages for all projects. Older pages without a project count as "today". */
+export function keptPages(projectId: string): Page[] {
+  return pages.filter((p) => !p.removed && (p.projectId ?? "today") === projectId).sort((a, b) => (b.keptAt ?? 0) - (a.keptAt ?? 0));
 }
 export function keepPage(page: Page, now = Date.now()): void {
   pages = [{ ...page, keptAt: now, removed: false }, ...pages.filter((p) => p.id !== page.id)];

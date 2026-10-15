@@ -3,6 +3,8 @@ import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, DashboardSquare, Undo2 } from "../../../shared/ui/icons";
+import { useHubSelection } from "../../hub/model/hubNav";
+import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { buildPreview, keepPage, keptPages, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 
 /*
@@ -134,10 +136,13 @@ function AskBox({ onAsk }: { onAsk: (text: string) => void }) {
 
 export function PagesContent() {
   usePagesVersion();
+  useHubDataVersion();
+  const projectId = useHubSelection().project;
+  const projectName = projectId === "today" ? "all projects" : hubData().listProjects().find((p) => p.id === projectId)?.name ?? projectId;
   const [preview, setPreview] = useState<Page>();
   const [open, setOpen] = useState<string>();
   const [kept, setKept] = useState<string>();
-  const pages = keptPages();
+  const pages = keptPages(projectId);
   const shown = pages.find((p) => p.id === open);
 
   if (preview) {
@@ -166,7 +171,7 @@ export function PagesContent() {
     <div className="flex min-h-0 flex-1">
       {pages.length ? (
         <aside className="flex w-[240px] shrink-0 flex-col gap-0.5 border-r border-stroke p-2" aria-label="Your pages">
-          <div className="px-2 pb-1 pt-1.5 text-[11px] uppercase tracking-wide text-content/60">Your pages</div>
+          <div className="px-2 pb-1 pt-1.5 text-[11px] uppercase tracking-wide text-content/60">Pages · {projectName}</div>
           {pages.map((p) => (
             <button key={p.id} type="button" onClick={() => setOpen(p.id)}
               className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] ${p.id === shown?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"}`}>
@@ -193,14 +198,14 @@ export function PagesContent() {
           <div className="flex h-full flex-col items-center justify-center gap-5 px-8 text-center" data-pages-empty>
             <DashboardSquare className="size-8 text-content/60" strokeWidth={1.5} />
             <div>
-              <div className="text-[17px] font-medium text-content">{pages.length ? "Make another page" : "No pages yet"}</div>
+              <div className="text-[17px] font-medium text-content">{pages.length ? "Make another page" : `No pages for ${projectName} yet`}</div>
               <div className="mt-1 text-[13px] text-content/70">Just ask any Mono. It builds a page from ready-made blocks and shows you a preview first.</div>
               <div className="mt-2"><Limits /></div>
             </div>
-            <div className="w-full max-w-[560px]"><AskBox onAsk={(t) => setPreview(buildPreview(t, ASKER))} /></div>
+            <div className="w-full max-w-[560px]"><AskBox onAsk={(t) => setPreview(buildPreview(t, ASKER, Date.now(), projectId))} /></div>
             <div className="flex flex-wrap justify-center gap-2">
               {["A dashboard for EXO bugs", "My schedule this week", "Hivra sign-ups and sales"].map((s) => (
-                <button key={s} type="button" className={`${card} ${btn} text-content/80 hover:bg-surface-raised`} onClick={() => setPreview(buildPreview(s, ASKER))}>{s}</button>
+                <button key={s} type="button" className={`${card} ${btn} text-content/80 hover:bg-surface-raised`} onClick={() => setPreview(buildPreview(s, ASKER, Date.now(), projectId))}>{s}</button>
               ))}
             </div>
           </div>
