@@ -235,8 +235,9 @@ export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel
         </label>
       ) : null}
       {test && test !== "testing" ? (
-        <div className="flex items-center gap-1.5 text-[12px] text-content/70" data-key-test={test.ok ? "ok" : "failed"}>
-          <span className={`size-1.5 shrink-0 rounded-full ${test.ok ? "bg-emerald-500" : "bg-red-500"}`} aria-hidden />
+        <div className="flex items-center gap-1.5 text-[12px] text-content/70" data-key-test={test.ok ? "ok" : test.code === CLAUDE_KEY_ERROR ? "guidance" : "failed"}>
+          {/* A Claude key isn't a failure, just guidance: a neutral grey dot. */}
+          <span className={`size-1.5 shrink-0 rounded-full ${test.ok ? "bg-emerald-500" : test.code === CLAUDE_KEY_ERROR ? "bg-content/40" : "bg-red-500"}`} aria-hidden data-key-test-dot />
           {test.message}
         </div>
       ) : null}
