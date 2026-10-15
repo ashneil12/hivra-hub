@@ -110,3 +110,80 @@ describe("the stub only says what the real service says", () => {
     expect(extra).toEqual([]);
   });
 });
+
+// ---- jobs, older and need-seen: the real hub code on the jobs branch (not live yet) --------------------------------------
+const realJobs = JSON.parse(readFileSync(join(__dirname, "fixtures", "ash-os-real-shapes-jobs.json"), "utf8")) as Record<string, Json>;
+
+describe("the store reads what the real jobs code sends", () => {
+  const answers: Record<string, Json> = {
+    "ash-hub-projects": real.projects,
+    "ash-hub-needs": realJobs.needs_with_older,
+    "ash-hub-since": real.since,
+    "ash-hub-jobs": realJobs.jobs,
+    "ash-hub-job-options": realJobs.job_options,
+  };
+  const transport: HubTransport = { call: async <T,>(a: string) => answers[a] as T, openFeed: () => () => undefined };
+
+  it("reads Being built: groups under their Lead, every state, nothing invented", async () => {
+    const store = new HubStore({ transport, minGapMs: 0 });
+    store.start();
+    await new Promise((r) => setTimeout(r, 50));
+    const snap = store.getSnapshot();
+    expect(snap.jobs.map((g) => g.leadName)).toEqual(["Hivra lead", "Nibbii (no lead yet)"]);
+    const hivra = snap.jobs[0].jobs;
+    expect(hivra.map((j) => j.state).sort()).toEqual(["checking", "done", "lead_gave_up", "sent_to_lead", "working"]);
+    const sent = hivra.find((j) => j.state === "sent_to_lead")!;
+    expect(sent).toMatchObject({ circle: "amber", word: "Stuck", reason: "The disk was full twice.", sentText: "Sent to coding team lead at 4:51am", gotIt: { text: "Got it" } });
+    const gaveUp = hivra.find((j) => j.state === "lead_gave_up")!;
+    expect(gaveUp).toMatchObject({ circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"] });
+    expect(snap.jobs[1].jobs[0]).toMatchObject({ state: "stuck", lead: null, leadName: null });
+    const sheet = await store.jobOptions(gaveUp.id);
+    expect(sheet.options.map((o) => o.id)).toEqual(["try_tonight", "try_different", "pause", "drop"]);
+    expect(sheet.options[1]).toMatchObject({ needsText: true, placeholder: "A hint for the coding team lead" });
+    store.stop();
+  });
+
+  it("reads the older group and the Looks-right and given-up rows from the real Needs", async () => {
+    const store = new HubStore({ transport, minGapMs: 0 });
+    store.start();
+    await new Promise((r) => setTimeout(r, 50));
+    const snap = store.getSnapshot();
+    expect(snap.older).toHaveLength(1);
+    expect(snap.older[0]).toMatchObject({ projectId: "vg-game", title: "Old question from an old chat?" });
+    const looks = Object.values(snap.needs).flatMap((r) => [...r.shown, ...r.later]).find((n) => n.id.startsWith("s:"))!;
+    expect(looks).toMatchObject({ canMarkSeen: true, actionType: "open" });
+    // the older question is in no Needs list, so in no count
+    expect(Object.values(snap.needs).flatMap((r) => [...r.shown, ...r.later]).some((n) => n.id === snap.older[0].id)).toBe(false);
+    store.stop();
+  });
+});
+
+describe("the stub's jobs only say what the real jobs code says", () => {
+  let stub: Stub;
+  let transport: HubTransport;
+  beforeAll(async () => {
+    stub = await startStub({ jobs: true });
+    transport = bridgeTransport(createStubBridge(stub.url, () => stub.token));
+  });
+  afterAll(() => stub.close());
+
+  const known = (...keys: string[]) => new Set(keys.flatMap((k) => [...paths(realJobs[k])]));
+  it("ash-hub-jobs", async () => {
+    const got = await transport.call<Json>("ash-hub-jobs", {});
+    expect([...paths(got)].filter((p) => !known("jobs", "jobs_hivra", "jobs_after").has(p))).toEqual([]);
+  });
+  it("ash-hub-job-options", async () => {
+    const got = await transport.call<Json>("ash-hub-job-options", { job_id: "j_sender" });
+    expect([...paths(got)].filter((p) => !known("job_options").has(p))).toEqual([]);
+  });
+  it("ash-hub-needs with older rows, a given-up job and Looks right", async () => {
+    const got = await transport.call<Json>("ash-hub-needs", {});
+    expect([...paths(got)].filter((p) => !new Set([...known("needs_with_older", "needs_with_gave_up_job"), ...paths(real.needs)]).has(p))).toEqual([]);
+  });
+  it("ash-hub-need-seen and ash-hub-job-act (pause)", async () => {
+    const seen = await transport.call<Json>("ash-hub-need-seen", { id: "s:a_cannon" });
+    expect([...paths(seen)].filter((p) => !known("need_seen").has(p))).toEqual([]);
+    const act = await transport.call<Json>("ash-hub-job-act", { job_id: "j_sender", option: "pause" });
+    expect([...paths(act)].filter((p) => !known("job_act_pause").has(p))).toEqual([]);
+  });
+});
