@@ -32,3 +32,26 @@ it("a valid preview comes back ready; Apply adds a Bot changes row with Undo", a
   expect(call).toHaveBeenLastCalledWith("ash-hub-change-apply", { previewId: preview.previewId });
   expect(botChangeRows().some((row) => row.kind === "one" && row.change.hubChangeId === preview.previewId)).toBe(true);
 });
+
+it("Undo in Bot changes calls the backend to revert; when it isn't wired the row says so and stays", async () => {
+  const { tauriHubTransport } = await import("../../hub/model/hubTransport");
+  const { undoBotChange, redoBotChange } = await import("../../hub/model/botChanges");
+  const { CHANGE_ACTIONS } = await import("./hubChange");
+  const preview = { ...stubPreview(req), previewId: "pv-undo" };
+  const ok = { call: vi.fn(async () => ({})) as never, openFeed: () => () => undefined };
+  await applyChange("hub", preview, { transport: ok });
+  const row = () => botChangeRows().flatMap((r) => (r.kind === "one" ? [r.change] : r.changes)).find((c) => c.hubChangeId === "pv-undo")!;
+
+  const spy = vi.spyOn(tauriHubTransport, "call").mockResolvedValue({} as never);
+  await undoBotChange([row().id]);
+  expect(spy).toHaveBeenCalledWith(CHANGE_ACTIONS.undo, { previewId: "pv-undo" });
+  expect(row().undone).toBe(true);
+  await redoBotChange([row().id]);
+  expect(spy).toHaveBeenCalledWith(CHANGE_ACTIONS.redo, { previewId: "pv-undo" });
+
+  spy.mockRejectedValue(new HubCallError("unreachable", "down"));
+  await undoBotChange([row().id]);
+  expect(row().undone).toBeFalsy();
+  expect(row().problem).toBe("Not connected yet, so nothing was undone.");
+  spy.mockRestore();
+});
