@@ -41,7 +41,8 @@ export function OtherModelsSection({
   query: string;
   currentModel: string;
   onPick: (model: CustomModel) => void;
-  onAdd: () => void;
+  /** Opens Add model; the Grok row passes its name, with xAI (the form's default) already chosen. */
+  onAdd: (preset?: { name: string }) => void;
 }) {
   const all = useCustomModels();
   // Removing is a big deal (it also deletes the key), so it asks first.
@@ -51,10 +52,25 @@ export function OtherModelsSection({
   const models = needle
     ? all.filter((m) => `${m.name} ${providerName(m.provider)} ${m.modelId}`.toLowerCase().includes(needle))
     : all;
-  if (needle && !models.length) return null;
+  const grokPlaceholder = !all.some((m) => m.provider === "xai") && (!needle || "grok xai".includes(needle));
+  if (needle && !models.length && !grokPlaceholder) return null;
   return (
     <div role="group" aria-label="Other models" data-other-models className="mt-1 border-t border-stroke pt-1">
       <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-content/40">Other models</div>
+      {/* Grok is always first: until an xAI model is saved, a row that opens Add model with xAI filled in. */}
+      {grokPlaceholder ? (
+        <button
+          type="button"
+          data-grok-add-key
+          aria-label="Grok, xAI, add key"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onAdd({ name: "Grok" })}
+          className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content hover:bg-content/5"
+        >
+          <span className="min-w-0 flex-1 truncate">Grok</span>
+          <span className="shrink-0 text-[10px] text-content/40">Add key</span>
+        </button>
+      ) : null}
       {models.map((m) =>
         confirming === m.id ? (
           <div key={m.id} data-remove-confirm={m.id} className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] text-content/80">
@@ -122,7 +138,7 @@ export function OtherModelsSection({
           type="button"
           data-add-model
           onMouseDown={(e) => e.preventDefault()}
-          onClick={onAdd}
+          onClick={() => onAdd()}
           className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2.5 text-left text-[12px] text-content/50 hover:bg-content/5 hover:text-content/70"
         >
           <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
@@ -137,8 +153,8 @@ const input =
   "w-full rounded-md border border-content/15 bg-content/3 px-2 py-1.5 text-[12px] text-content outline-none placeholder:text-content/35 focus:border-content/35";
 
 /** Name, provider, model id and a masked key; Test first, then Save. The key goes to the key store, never settings. */
-export function AddModelForm({ onDone, onCancel }: { onDone: (model: CustomModel) => void; onCancel: () => void }) {
-  const [form, setForm] = useState<CustomModelForm>(() => emptyForm());
+export function AddModelForm({ onDone, onCancel, initial }: { onDone: (model: CustomModel) => void; onCancel: () => void; initial?: { name?: string } }) {
+  const [form, setForm] = useState<CustomModelForm>(() => ({ ...emptyForm(), ...(initial?.name ? { name: initial.name } : {}) }));
   const [touched, setTouched] = useState(false);
   const [test, setTest] = useState<KeyTestResult | "testing" | null>(null);
   const [saving, setSaving] = useState(false);
