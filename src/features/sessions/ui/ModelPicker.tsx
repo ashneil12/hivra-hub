@@ -43,6 +43,8 @@ import {
   subscribeHarnessAvailability,
   getHarnessAvailabilitySnapshot,
 } from "../../../integrations/harness/core/availability";
+import { AddModelForm, OtherModelsSection, useCustomModels } from "./CustomModels";
+import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
@@ -400,6 +402,8 @@ export function ModelPicker({
     current.harness === "claude"
       ? current.name.replace(/^Claude /, "")
       : current.name;
+  useCustomModels();
+  const pill = pillText(model, triggerModelName);
   const triggerTitle = [
     HARNESS_TITLE[current.harness],
     current.provider?.name,
@@ -605,6 +609,15 @@ export function ModelPicker({
     onSettingsChange({ ...values, [setting.id]: value });
   };
 
+  /** A custom model: the session's model becomes `custom:<id>` and its modelSettings carry the route
+   * ({provider, baseUrl, modelId, customModelId}) that CoS's router reads (see customModelRoute). */
+  const pickCustomModel = (item: CustomModel) => {
+    onChange("claude", `custom:${item.id}`);
+    onSettingsChange({ ...values, ...customModelSettings(item) });
+    dismiss(true);
+  };
+  const otherModels = { currentModel: model, onPick: pickCustomModel };
+
   const pickModel = (item: AgentModel) => {
     if (!source.available(item.harness)) return;
     onChange(item.harness, item.id);
@@ -791,9 +804,12 @@ export function ModelPicker({
         <span
           className={`whitespace-nowrap ${variant === "pill" ? "text-[11px]" : ""} ${labelClassName}`}
         >
-          {triggerLabel ?? triggerModelName}
+          {triggerLabel ?? pill.name}
+          {!triggerLabel && pill.billing ? (
+            <span className="text-content/50" data-pill-billing> · {pill.billing}</span>
+          ) : null}
         </span>
-        {!triggerLabel && triggerEffortLabel ? (
+        {!triggerLabel && triggerEffortLabel && !pill.billing ? (
           <span
             className={`shrink-0 text-content/50 ${variant === "pill" ? "text-[11px]" : ""} ${labelClassName}`}
           >
@@ -818,6 +834,7 @@ export function ModelPicker({
           tab={visibleTab}
           models={flyoutModels}
           olderFold={olderFold}
+          otherModels={otherModels}
           currentId={current.id}
           active={activeModel}
           query={query}
@@ -1015,6 +1032,7 @@ export function ModelPicker({
               tab={visibleTab}
               models={flyoutModels}
               olderFold={olderFold}
+              otherModels={otherModels}
               currentId={current.id}
               active={activeModel}
               query={query}
@@ -1492,6 +1510,7 @@ function ModelFlyout({
   tab,
   models,
   olderFold,
+  otherModels,
   currentId,
   active,
   query,
@@ -1512,6 +1531,8 @@ function ModelFlyout({
   models: AgentModel[];
   /** The Older versions row: how many it hides, where it sits (after the newest of each family) and whether it is open. */
   olderFold?: { count: number; at: number; open: boolean; onToggle: () => void };
+  /** "Other models" under the Claude Code tab's list: Ash's own models, billed by their provider. */
+  otherModels?: { currentModel: string; onPick: (model: CustomModel) => void };
   currentId: string;
   active: number;
   query: string;
@@ -1527,6 +1548,9 @@ function ModelFlyout({
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
   const groups = modelGroups(tab, models);
+  const [adding, setAdding] = useState(false);
+  useCustomModels();
+  const showOther = !!otherModels && tab === "claude";
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
@@ -1669,7 +1693,9 @@ function ModelFlyout({
           aria-label="Models"
           className="min-h-0 flex-1 overflow-y-auto overscroll-none p-1"
         >
-          {models.length === 0 ? (
+          {adding && otherModels ? (
+            <AddModelForm onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
+          ) : models.length === 0 ? (
             <div className="px-2 py-3 text-[12px] text-content/50">
               {tab === "favorites" && !query.trim()
                 ? "No favorite models"
@@ -1701,6 +1727,9 @@ function ModelFlyout({
               </div>
             ))
           )}
+          {showOther && !adding ? (
+            <OtherModelsSection query={query} currentModel={otherModels!.currentModel} onPick={otherModels!.onPick} onAdd={() => setAdding(true)} />
+          ) : null}
         </div>
       </div>
     </Popover>
