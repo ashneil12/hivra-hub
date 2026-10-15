@@ -145,7 +145,8 @@ export interface ModelKeyStore {
    * Resolve with { ok: true } and the model's name when it replied.
    */
   testModelKey(provider: CustomProvider, baseUrl: string, modelId: string, key: string): Promise<KeyTestResult>;
-  /** Forget this custom model's key (true if there was one). */
+  /** Forget this custom model's key. True when it's gone, including when there was no key to begin with; false or a
+   * thrown error only for a real Keychain failure. */
   deleteModelKey(customModelId: string): Promise<boolean>;
 }
 
@@ -158,7 +159,8 @@ export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, st
       keys.set(id, key);
     },
     async deleteModelKey(id) {
-      return keys.delete(id);
+      keys.delete(id);
+      return true; // a missing key counts as removed, like the backend
     },
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")

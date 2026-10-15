@@ -110,3 +110,30 @@ describe("the remove confirm title", () => {
     expect(title.contains(host.querySelector("[data-remove-yes]"))).toBe(false);
   });
 });
+
+describe("a key that isn't there", () => {
+  it("counts as removed: the backend answers true for 'no key found', so the model goes", async () => {
+    seed([grok]);
+    invoke.mockImplementation(async () => true); // model_key_delete: deleted or missing are both true
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    await click(host.querySelector('[data-remove-model="xai-1"]'));
+    await click(host.querySelector("[data-remove-yes]"));
+    expect(listCustomModels()).toEqual([]);
+    expect(host.querySelector("[data-remove-problem]")).toBeNull();
+  });
+
+  it("only a real Keychain failure (false) keeps the model and shows the line", async () => {
+    seed([grok]);
+    invoke.mockImplementation(async () => false);
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    await click(host.querySelector('[data-remove-model="xai-1"]'));
+    await click(host.querySelector("[data-remove-yes]"));
+    expect(listCustomModels()).toHaveLength(1);
+    expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
+  });
+
+  it("the dev store treats a missing key as removed too", async () => {
+    const { createDevModelKeyStore } = await import("../model/customModels");
+    expect(await createDevModelKeyStore().deleteModelKey("never-saved")).toBe(true);
+  });
+});

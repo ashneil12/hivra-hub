@@ -188,14 +188,22 @@ pub async fn model_key_save(custom_model_id: String, key: String) -> Result<(), 
         .map_err(|_| "Couldn't reach the Keychain.".to_string())?
 }
 
+/// What removing a model's key means to the UI: deleted, or there was no key to begin with, are both success (true).
+/// Only a real Keychain error is a failure, and it comes back as an error the UI shows.
+pub fn delete_outcome(result: Result<bool, String>) -> Result<bool, String> {
+    result.map(|_deleted_or_missing| true)
+}
+
+pub fn delete_key_in(service: &str, custom_model_id: &str) -> Result<bool, String> {
+    check_model_id(custom_model_id)?;
+    delete_outcome(crate::hub_keychain::delete(service, custom_model_id))
+}
+
 #[tauri::command]
 pub async fn model_key_delete(custom_model_id: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        check_model_id(&custom_model_id)?;
-        crate::hub_keychain::delete(KEY_SERVICE, &custom_model_id)
-    })
-    .await
-    .map_err(|_| "Couldn't reach the Keychain.".to_string())?
+    tauri::async_runtime::spawn_blocking(move || delete_key_in(KEY_SERVICE, &custom_model_id))
+        .await
+        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
 }
 
 // ---- key test ---------------------------------------------------------------------------------------------------------
@@ -1184,6 +1192,18 @@ mod tests {
     /// Real Keychain round trip with a dummy key under `monocode-hub-test:model-key`, deleted at the end.
     /// Opt-in: `MONOCODE_KEYCHAIN_PROOF=1 cargo test model_router -- --nocapture`
     #[test]
+    fn a_missing_key_counts_as_removed_and_only_a_real_error_fails() {
+        assert_eq!(delete_outcome(Ok(true)), Ok(true), "deleted");
+        assert_eq!(
+            delete_outcome(Ok(false)),
+            Ok(true),
+            "no key found is a success"
+        );
+        assert!(delete_outcome(Err("The Keychain didn't remove the login.".into())).is_err());
+        assert!(delete_key_in(TEST_KEY_SERVICE, "bad id/..").is_err());
+    }
+
+    #[test]
     fn a_dummy_model_key_round_trips_the_keychain() {
         if std::env::var("MONOCODE_KEYCHAIN_PROOF").as_deref() != Ok("1") {
             return;
@@ -1194,8 +1214,10 @@ mod tests {
             read_key_in(TEST_KEY_SERVICE, &id).unwrap().as_deref(),
             Some("not-a-real-key")
         );
-        assert!(crate::hub_keychain::delete(TEST_KEY_SERVICE, &id).unwrap());
+        assert!(delete_key_in(TEST_KEY_SERVICE, &id).unwrap());
         assert_eq!(read_key_in(TEST_KEY_SERVICE, &id).unwrap(), None);
+        // deleting again finds no key, which still counts as removed
+        assert!(delete_key_in(TEST_KEY_SERVICE, &id).unwrap());
         println!("[model-key proof] stored, read back, deleted {TEST_KEY_SERVICE} / {id}");
     }
 
