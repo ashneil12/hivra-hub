@@ -44,6 +44,15 @@ pub fn exists(service: &str, account: &str) -> Result<bool, String> {
     }
 }
 
+/// For the app's own use in Rust only (the model router). Never exposed as a command: secrets don't go back to the webview.
+pub(crate) fn read(service: &str, account: &str) -> Result<Option<String>, String> {
+    match entry(service, account)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("Couldn't read the key from the Keychain.".into()),
+    }
+}
+
 pub fn delete(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.delete_credential() {
         Ok(()) => Ok(true),

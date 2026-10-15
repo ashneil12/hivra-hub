@@ -31,6 +31,7 @@ mod macos;
 mod macos_background;
 mod mcp;
 mod menu;
+mod model_router;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;

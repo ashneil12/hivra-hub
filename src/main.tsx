@@ -23,6 +23,11 @@ import { initializeProviderBinaryPaths } from "./features/providers/model/provid
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
+import { isTauri } from "@tauri-apps/api/core";
+import { setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
+
+// "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
+if (isTauri()) setModelKeyStore(tauriModelKeyStore);
 
 performance.mark("monocode:bootstrap");
 // Let local boot IPC overlap loading/evaluating the workspace UI.

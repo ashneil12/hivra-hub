@@ -1,6 +1,7 @@
 // "Other models" in the model picker: models Ash adds himself (Grok first), billed by their own provider rather than
 // his subscription. Only metadata lives in settings. The key goes through ModelKeyStore, which CoS wires to the macOS
 // Keychain; in dev and tests it is an in-memory stub. A key never touches localStorage or a file from here.
+import { invoke } from "@tauri-apps/api/core";
 import type { ModelTarget } from "./session";
 
 export type CustomProvider = "xai" | "openrouter" | "deepseek" | "ollama" | "custom";
@@ -136,6 +137,14 @@ export const OLLAMA_DOWN = "Can't reach Ollama on this Mac";
 export function replied(model: string): string {
   return `Connected, ${model} replied`;
 }
+
+/** The real store: the hub plugin keeps the key in the macOS Keychain (service `monocode-hub:model-key`) and runs one
+ * tiny request to the provider for the test. The key goes in and never comes back to the webview. */
+export const tauriModelKeyStore: ModelKeyStore = {
+  saveModelKey: (customModelId, key) => invoke("plugin:hub|model_key_save", { customModelId, key }),
+  testModelKey: (provider, baseUrl, modelId, key) =>
+    invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
+};
 
 let store: ModelKeyStore = createDevModelKeyStore();
 /** CoS: call this once at startup with the Keychain-backed store. */

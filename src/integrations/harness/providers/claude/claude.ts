@@ -1,6 +1,7 @@
 import { TurnNotReadyError } from "../../core/types";
 import { claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId } from "../../../../features/sessions/model/models";
+import { customModelRoute } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
   RuntimeMode,
@@ -547,6 +548,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",
+    undefined,
+    undefined,
+    // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
+    customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
 
   liveByThread.set(input.sessionId, live);
@@ -1785,7 +1790,8 @@ function launchOptions(
   sessionId?: string;
   settings?: ClaudeCliSettings;
 } {
-  const native = nativeModelId(input.model);
+  const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
+  const native = route ? route.modelId : nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
   const context = input.modelSettings?.context;
   const settings: ClaudeCliSettings = {};
@@ -1802,8 +1808,8 @@ function launchOptions(
     settings.disableAllHooks = true;
   }
   return {
-    model: resolveClaudeApiModelId(native, context),
-    effort: normalizeClaudeCliEffort(effortRaw, native),
+    model: route ? route.modelId : resolveClaudeApiModelId(native, context),
+    effort: route ? undefined : normalizeClaudeCliEffort(effortRaw, native),
     permissionMode:
       input.intent === "plan"
         ? "plan"

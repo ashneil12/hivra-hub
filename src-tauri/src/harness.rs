@@ -902,6 +902,7 @@ pub fn harness_spawn(
     binary_path: Option<String>,
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
+    custom_route: Option<crate::model_router::CustomRoute>,
 ) -> Result<u32, String> {
     let workdir = expand_home(&cwd);
     if !workdir.is_dir() {
@@ -923,6 +924,14 @@ pub fn harness_spawn(
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
 
+    // Prepared before anything is reserved or stopped, so a missing key fails cleanly.
+    let routed = match custom_route.as_ref() {
+        None => None,
+        Some(_) if binary_provider.as_deref() != Some("claude") => {
+            return Err("Other models run through Claude Code only".into())
+        }
+        Some(route) => Some(crate::model_router::prepare_routed_session(route)?),
+    };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
     if let Some(prev) = prev {
@@ -938,6 +947,16 @@ pub fn harness_spawn(
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
+    // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
+    // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
+    if let Some((set, remove)) = routed {
+        for key in remove {
+            cmd.env_remove(key);
+        }
+        for (key, value) in set {
+            cmd.env(key, value);
+        }
+    }
     let codex_store = match codex_store.as_deref() {
         None => None,
         Some("mono")

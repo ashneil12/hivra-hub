@@ -543,7 +543,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             hub_ash_os_mcp,
             crate::hub_keychain::connector_login_store,
             crate::hub_keychain::connector_login_exists,
-            crate::hub_keychain::connector_login_delete
+            crate::hub_keychain::connector_login_delete,
+            crate::model_router::model_key_save,
+            crate::model_router::model_key_test,
+            crate::model_router::model_key_delete
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {

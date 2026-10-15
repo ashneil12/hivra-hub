@@ -19,6 +19,9 @@ fn main() {
             "connector_login_store",
             "connector_login_exists",
             "connector_login_delete",
+            "model_key_save",
+            "model_key_test",
+            "model_key_delete",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))
