@@ -340,10 +340,7 @@ function FirstTodayEmpty() {
   return (
     <div className="grid h-full place-items-center px-8" data-hub-today-empty>
       <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
-        <p className="text-[13px] text-content">No projects yet.</p>
-        <p className="text-[13px] leading-5 text-content/60">
-          Make your first project, or bring yours back from a setup file. Then Today fills up with what changed and what's waiting on you.
-        </p>
+        <p className="text-[13px] text-content" data-hub-today-empty-line>No projects yet. Start one and Today fills up with what's waiting on you.</p>
         <div className="flex items-center gap-2">
           <button
             type="button"

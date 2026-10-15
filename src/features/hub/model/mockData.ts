@@ -21,6 +21,12 @@ const NEEDS: Need[] = examples([
   { id: "o5", projectId: "operator-os", title: "Example: check the budget summary", why: "Spend is 4% under plan.", actionType: "open", actionLabel: "Open" },
   { id: "n1", projectId: "exo-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionLabel: "Start playtest" },
   { id: "n2", projectId: "exo-game", title: "Example: skim the new game rules", why: "Four rules written down. Check they match what you meant.", actionType: "open", actionLabel: "Open" },
+  // More than five for one project, so the Later fold shows (five on Today, the rest under Later).
+  { id: "n4", projectId: "exo-game", title: "Example: pick the boss music", why: "Two takes are ready. It's a taste call.", actionType: "open", actionLabel: "Open" },
+  { id: "n5", projectId: "exo-game", title: "Example: approve the new controller layout", why: "The dodge moved to the right bumper after the playtest.", actionType: "open", actionLabel: "Open" },
+  { id: "n6", projectId: "exo-game", title: "Example: check the Area 3 sketches", why: "Three rooms drawn. Say which one feels right.", actionType: "open", actionLabel: "Open" },
+  { id: "n7", projectId: "exo-game", title: "Example: name the second world", why: "Four names shortlisted; none is a clear winner.", actionType: "open", actionLabel: "Open" },
+  { id: "n8", projectId: "exo-game", title: "Example: confirm the demo build date", why: "The lead suggests next Friday. Nothing else is waiting on it.", actionType: "open", actionLabel: "Open" },
   { id: "n3", projectId: "hivra", title: "Example: pick the waitlist headline", why: "Two versions tested about the same. Your taste call.", actionType: "open", actionLabel: "Open" },
 ]);
 
