@@ -15,6 +15,10 @@ const quietBtn = `${btn} text-content/70 hover:bg-surface-raised hover:text-cont
 const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const STATE_DOT = { ok: "bg-status-ok", warn: "bg-status-warn", bad: "bg-status-bad" } as const;
 const ASKER = "Projects Manager";
+export const PAGES_CANT = "This can't change the app's core screens, the sidebar, settings, keys or Monos.";
+function Limits() {
+  return <p className="text-[12px] text-content/60" data-pages-cant>{PAGES_CANT}</p>;
+}
 
 function Dot({ state }: { state: keyof typeof STATE_DOT }) {
   return <span aria-hidden className={`inline-block size-1.5 shrink-0 rounded-full ${STATE_DOT[state]}`} />;
@@ -140,7 +144,8 @@ export function PagesContent() {
     return (
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
         <div className="mb-1 text-[12px] text-content/60">“{preview.request}” · {preview.by} built this preview</div>
-        <h1 className="mb-4 text-[17px] font-medium text-content">{preview.title}</h1>
+        <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
+        <div className="mb-4 mt-1"><Limits /></div>
         <div className="relative rounded-xl border border-dashed border-content/30 p-4">
           <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
             <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
@@ -175,7 +180,8 @@ export function PagesContent() {
         {shown ? (
           <div className="mx-auto w-full max-w-3xl px-8 py-6">
             <h1 className="text-[17px] font-medium text-content">{shown.title}</h1>
-            <div className="mb-4 mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”</div>
+            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”</div>
+            <div className="mb-4 mt-1"><Limits /></div>
             {kept === shown.title ? (
               <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
                 <Undo2 className="size-3.5 text-content/60" />Kept. Changed your mind? Undo it any time in Settings → Changes → Bot changes.
@@ -189,6 +195,7 @@ export function PagesContent() {
             <div>
               <div className="text-[17px] font-medium text-content">{pages.length ? "Make another page" : "No pages yet"}</div>
               <div className="mt-1 text-[13px] text-content/70">Just ask any Mono. It builds a page from ready-made blocks and shows you a preview first.</div>
+              <div className="mt-2"><Limits /></div>
             </div>
             <div className="w-full max-w-[560px]"><AskBox onAsk={(t) => setPreview(buildPreview(t, ASKER))} /></div>
             <div className="flex flex-wrap justify-center gap-2">
