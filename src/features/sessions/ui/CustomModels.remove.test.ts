@@ -74,6 +74,16 @@ describe("removing a custom model", () => {
     expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
   });
 
+  it("a delete that answers false is a failure too: the model stays and the line shows", async () => {
+    seed([grok]);
+    invoke.mockImplementation(async () => false);
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    await click(host.querySelector('[data-remove-model="xai-1"]'));
+    await click(host.querySelector("[data-remove-yes]"));
+    expect(listCustomModels()).toHaveLength(1);
+    expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
+  });
+
   it("an Ollama model has no key, so nothing is asked of the Keychain", async () => {
     seed([llama]);
     await removeCustomModel("ollama-1");
