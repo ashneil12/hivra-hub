@@ -64,6 +64,29 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
 - Projects made on this Mac through the New project flow (not wired yet) stay on
   the strip next to Ash OS's list (`userProjects()`), as before.
 
+**The strip: Ash's four projects.** Ash (15 Oct): "i only need hivra, the game,
+the harness n nibbii". `hubProjects.ts` keeps the strip to `vg-game`, `hivra`,
+`nibbii`, `ash` in that order (EXO, Hivra, Nibbii, Harness; `ash` is named
+"Harness"); other and parked projects are off the strip and off Today (their
+older questions too). Projects are told apart by shape: on 15 Oct the live
+service returned `iconShape: "folder"` for every project, so `distinctShapes`
+gives each a stable distinct shape (the design's own for these four: EXO ghost,
+Hivra sparkles, Nibbii palette, Harness gauge; any other id hashes into a free
+shape). **Ash OS should own both** (the list and `iconShape`); once it returns
+just these with distinct shapes, the app uses its shapes and the filter changes
+nothing and can go.
+
+**Ships clean.** Template sections (Builds & playtests, Users & emails) are only
+listed with the examples flag: their screens are example data or the "built in
+Unit N" placeholder, and the placeholder renders nothing without the flag. They
+come back as each is wired.
+
+**Since.** The paragraph is clamped to four lines and drops bracketed lists of
+raw titles (`calmSummary`; Ash OS's plain fallback text quotes ask titles, which
+is being fixed there). While `summary.pending` is true it shows a quiet
+"Writing up what changed…" line; the paragraph swaps in place when
+`hub.since.ready` arrives.
+
 **Needs, Later and Older.** `Need.later` rows are under Later: the line "N more
 under Later" opens them (`LaterList`). `older` (questions recovered from past
 chats, backlog-sweep questions, failures no longer failing) is `snap.older`: not
@@ -102,6 +125,24 @@ rows with no button (`StuckItem.quiet`); a given-up job is not among them, it is
 the red Needs row. Clicking a job opens a small story built from what Ash OS
 says (started, tried, sent, "got it"); there is no step log to show yet.
 A service without `ash-hub-jobs` just means nothing is being built.
+
+### The MonoCode Hub app (a separate bundle)
+`src-tauri/tauri.hub.conf.json` builds **MonoCode Hub** (`com.ash.monocode-hub`)
+next to Ash's MonoCode without touching it: its own name and bundle id, so its
+own app-data folder (`~/Library/Application Support/com.ash.monocode-hub`) and
+its own webview storage; no updater artifacts (the updater has no endpoints);
+`VITE_MONOCODE_HUB=1` so it opens straight on the hub (Today) with no onboarding.
+The data source is the live one (the examples flag is never set outside the dev
+page), through the Rust plugin to 127.0.0.1:18767.
+```
+npx tauri build --config src-tauri/tauri.hub.conf.json --bundles app   # release; ad-hoc signed
+cp -R "target/release/bundle/macos/MonoCode Hub.app" ~/Applications/
+```
+Build release, not debug: a debug build rewrites a dev bundle under MonoCode's own
+id (`macos::ensure_dev_bundle`). Shared with MonoCode on purpose or by design:
+Claude Code and the other harness CLIs it starts, Codex Mono migration folders in
+the home folder, and the quick composer's global shortcut (if both apps register
+the same one, the second fails quietly).
 
 ### Run it against the stub (no Ash OS needed)
 `scripts/hub-stub-server.mjs` answers the documented shapes with invented data
