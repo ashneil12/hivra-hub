@@ -43,7 +43,7 @@ describe("removing a custom model", () => {
     seed([grok, llama]);
     act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
     await click(host.querySelector('[data-remove-model="xai-1"]'));
-    expect(host.querySelector('[data-remove-confirm="xai-1"]')?.textContent).toContain("Remove Grok and its key?");
+    expect(host.querySelector('[data-remove-confirm="xai-1"]')?.textContent).toBe("Remove Grok? Its saved key is deleted too.CancelRemove");
     expect(invoke).not.toHaveBeenCalled();
     expect(listCustomModels()).toHaveLength(2);
 
@@ -53,11 +53,11 @@ describe("removing a custom model", () => {
     expect(host.querySelector('[data-custom-model="xai-1"]')).toBeNull();
   });
 
-  it("Keep leaves the model and its key alone", async () => {
+  it("Cancel leaves the model and its key alone", async () => {
     seed([grok]);
     act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
     await click(host.querySelector('[data-remove-model="xai-1"]'));
-    await click(host.querySelector("[data-remove-keep]"));
+    await click(host.querySelector("[data-remove-cancel]"));
     expect(invoke).not.toHaveBeenCalled();
     expect(listCustomModels()).toHaveLength(1);
   });
@@ -71,7 +71,7 @@ describe("removing a custom model", () => {
     await click(host.querySelector('[data-remove-model="xai-1"]'));
     await click(host.querySelector("[data-remove-yes]"));
     expect(listCustomModels()).toHaveLength(1);
-    expect(host.querySelector("[data-remove-problem]")?.textContent).toContain("Couldn't remove the key");
+    expect(host.querySelector("[data-remove-problem]")?.textContent).toBe("Couldn't delete the key, so Grok is still here. Try again.");
   });
 
   it("an Ollama model has no key, so nothing is asked of the Keychain", async () => {

@@ -9,6 +9,7 @@ import {
   needsKey,
   providerName,
   removeCustomModel,
+  REMOVE_MODEL_COPY,
   showsBaseUrl,
   subscribeCustomModels,
   testCustomModel,
@@ -57,15 +58,15 @@ export function OtherModelsSection({
       {models.map((m) =>
         confirming === m.id ? (
           <div key={m.id} data-remove-confirm={m.id} className="flex h-8 w-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] text-content/80">
-            <span className="min-w-0 flex-1 truncate">Remove {m.name} and its key?</span>
+            <span className="min-w-0 flex-1 truncate">{REMOVE_MODEL_COPY.title(m.name)}</span>
             <button
               type="button"
-              data-remove-keep
+              data-remove-cancel
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setConfirming(null)}
               className="rounded-md px-2 py-0.5 text-content/60 hover:bg-content/8"
             >
-              Keep
+              {REMOVE_MODEL_COPY.cancel}
             </button>
             <button
               type="button"
@@ -76,13 +77,13 @@ export function OtherModelsSection({
                   await removeCustomModel(m.id);
                   setProblem(null);
                 } catch {
-                  setProblem("Couldn't remove the key from the Keychain, so the model was kept");
+                  setProblem(REMOVE_MODEL_COPY.keyDeleteFailed(m.name));
                 }
                 setConfirming(null);
               }}
               className="rounded-md bg-red-500/15 px-2 py-0.5 text-red-400 hover:bg-red-500/25"
             >
-              Remove
+              {REMOVE_MODEL_COPY.confirm}
             </button>
           </div>
         ) : (

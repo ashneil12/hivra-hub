@@ -1160,6 +1160,19 @@ mod tests {
 
     #[test]
     fn a_fake_key_check_fails_cleanly_without_network_for_bad_input() {
+        // The frontend matches this exact phrase (CLAUDE_KEY_ERROR in customModels.ts); keep the wording.
+        const CLAUDE_KEY_ERROR: &str = "looks like a Claude key";
+        assert!(
+            test_key("xai", "https://api.x.ai/v1", "grok-4", "sk-ant-api03-x")
+                .message
+                .contains(CLAUDE_KEY_ERROR)
+        );
+        assert!(session_token("xai", Some("sk-ant-oat01-x"))
+            .unwrap_err()
+            .contains(CLAUDE_KEY_ERROR));
+        assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-x")
+            .unwrap_err()
+            .contains(CLAUDE_KEY_ERROR));
         assert_eq!(
             test_key("xai", "https://api.x.ai/v1", "grok-4", "").message,
             "Add the key"
