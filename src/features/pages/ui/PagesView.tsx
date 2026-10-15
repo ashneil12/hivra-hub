@@ -207,6 +207,26 @@ export function useKeyDelay(hasKeyAsk: boolean): boolean {
   return ready;
 }
 
+/** "Allowed: N things" under a kept page's title; the full list opens behind it. */
+export function allowedLabel(n: number): string {
+  return `Allowed: ${n} ${n === 1 ? "thing" : "things"}`;
+}
+function AllowedLine({ asks }: { asks: Capability[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span data-pages-allowed>
+      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="rounded px-1 text-content/70 underline decoration-content/30 underline-offset-2 hover:bg-surface-raised hover:text-content">
+        {allowedLabel(asks.length)}
+      </button>
+      {open ? (
+        <ul className={`${card} mt-1.5 flex flex-col gap-0.5 px-3 py-2 text-[12px] text-content/90`} data-pages-allowed-list>
+          {asks.map((a) => <li key={a}>· {describeCapability(a)}</li>)}
+        </ul>
+      ) : null}
+    </span>
+  );
+}
+
 /** An imported page asks again: the same list and Keep and allow, with the key delay. Until then it can do nothing. */
 function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   const ready = useKeyDelay(asks.some((a) => !!keyName(a)));
@@ -346,7 +366,7 @@ export function PagesContent() {
         {shown ? (
           <div className="mx-auto w-full max-w-3xl px-8 py-6">
             <h1 className="text-[17px] font-medium text-content">{shown.title}</h1>
-            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”{shown.permissions.length ? ` · allowed: ${shown.permissions.map(describeCapability).join(", ")}` : ""}</div>
+            <div className="mt-1 text-[12px] text-content/60">Kept · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
             <div className="mb-4 mt-1"><Limits /></div>
             {kept === shown.title ? (
               <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
