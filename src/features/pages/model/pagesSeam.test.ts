@@ -89,7 +89,7 @@ it("a bespoke page can't reach the host: scripts only, no same-origin, no networ
   expect(CSP).toContain("connect-src 'none'");
   const doc = bespokeSrcdoc({ html: "<p>x</p>", js: "window.__TAURI__ && 1; </script><script>alert(1)" }, { "--color-content": "hsl(240 0% 92%)" });
   expect(doc).toContain(`content="${CSP}"`);
-  expect(doc).toContain(":root{--color-content:hsl(240 0% 92%)}");
+  expect(doc).toContain(":root{--color-content:hsl(240 0% 92%);color-scheme:dark}");
   expect(doc).not.toContain("</script><script>alert(1)");
   expect(doc).toContain("parent.postMessage");
 });

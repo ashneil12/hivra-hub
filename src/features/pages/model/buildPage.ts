@@ -45,7 +45,7 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
       raw = await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, { projectId: req.projectId, monoId: req.monoId, prompt: req.prompt });
     } catch (e) {
       const err = e instanceof HubCallError ? e : toHubError(e);
-      if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: "Not connected yet: building pages with a Mono isn't wired to the backend yet." };
+      if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: "Building pages with a Mono isn't wired to the backend yet." };
       return { status: "error", reason: err.message || "The build didn't go through." };
     }
   }

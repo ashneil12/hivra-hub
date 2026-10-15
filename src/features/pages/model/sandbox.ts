@@ -46,9 +46,9 @@ html,body{margin:0;background:transparent;color:var(--color-content);font-family
 `;
 const escapeClose = (s: string, tag: string) => s.replace(new RegExp(`</${tag}`, "gi"), `<\\/${tag}`);
 
-export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>): string {
+export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark"): string {
   const vars = Object.entries(tokens).filter(([, v]) => v && !/[;{}<>]/.test(v)).map(([k, v]) => `${k}:${v}`).join(";");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">
-<style>:root{${vars}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style>
+<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style>
 <script>${HELPER}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
 }

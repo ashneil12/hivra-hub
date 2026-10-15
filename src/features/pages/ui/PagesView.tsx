@@ -149,7 +149,7 @@ function PageBody({ page, live }: { page: Page; live?: boolean }) {
 export function BespokeFrame({ pageId, spec, live }: { pageId: string; spec: BespokeSpec; live?: boolean }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const scheme = loadActiveSchemeId();
-  const [doc] = useState(() => bespokeSrcdoc(spec, readTokens()));
+  const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark"));
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (!ref.current || e.source !== ref.current.contentWindow) return;
