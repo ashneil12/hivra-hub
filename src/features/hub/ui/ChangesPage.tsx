@@ -1,7 +1,7 @@
 import { pastChanges, undoProposal, useProposalsVersion } from "../model/proposals";
 import { useState } from "react";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { botChangeRows, redoBotChange, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
+import { botChangeRows, redoBotChange, undoAllFrom, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
 
 const UNDO = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
 
@@ -27,11 +27,26 @@ function BotChanges() {
   let day = "";
   return (
     <div className="flex flex-col gap-0.5" data-hub-bot-changes>
+      <UndoAllFrom rows={rows} />
       {rows.map((r) => {
         const d = r.kind === "one" ? r.change.day : r.day;
         const head = d !== day ? <div className="px-3 pb-1 pt-3 text-xs text-content/60 first:pt-0">{(day = d)}</div> : null;
         return <div key={r.kind === "one" ? r.change.id : r.id}>{head}<BotChangeLine row={r} /></div>;
       })}
+    </div>
+  );
+}
+
+/** One "Undo all from {Mono}" per Mono with changes still standing. */
+function UndoAllFrom({ rows }: { rows: BotChangeRow[] }) {
+  const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone);
+  const bots = [...new Set(standing.map((c) => c.bot))];
+  if (!bots.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 px-3 pb-2" data-undo-all-from>
+      {bots.map((b) => (
+        <button key={b} type="button" className={UNDO} onClick={() => void undoAllFrom(b)}>Undo all from {b}</button>
+      ))}
     </div>
   );
 }

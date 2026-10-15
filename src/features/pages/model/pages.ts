@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { recordPageChange, setPageHooks } from "../../hub/model/botChanges";
+import { recordPageChange, recordPinChange, setPageHooks, setPinHook } from "../../hub/model/botChanges";
 import type { DesignIssue } from "./designCheck";
 import type { Capability, PageBlock, PageSpec } from "./pageSpec";
 import { validatePageSpec } from "./pageSpec";
@@ -130,9 +130,17 @@ export function pinnedPages(): Page[] {
 }
 /** Ash's pin toggle (by "you"), or a Mono pinning the page it built (by its name). */
 export function setPinned(id: string, on: boolean, by = "you"): void {
+  const page = pages.find((p) => p.id === id);
+  if (!page || !!page.pinned === on) return;
   pages = pages.map((p) => (p.id === id ? { ...p, pinned: on, pinnedBy: on ? by : undefined } : p));
   changed();
+  // A Mono's pin or unpin goes in Bot changes under that Mono, so Undo (and Undo all from) covers it.
+  if (by !== "you") recordPinChange(id, by, page.title, on);
 }
+setPinHook((id, pinned) => {
+  pages = pages.map((p) => (p.id === id ? { ...p, pinned, pinnedBy: pinned ? p.pinnedBy ?? "you" : undefined } : p));
+  changed();
+});
 
 // The sidebar asks Pages to open one page.
 let openRequest: string | undefined;

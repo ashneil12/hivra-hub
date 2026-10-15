@@ -31,6 +31,8 @@ export type BotChange = {
   pageId?: string;
   /** An applied Change the hub / Edit Today / Connect data preview: Undo asks the backend to put it back. */
   hubChangeId?: string;
+  /** A Mono pinned or unpinned a page: Undo flips it back, Redo flips it again. */
+  pin?: { pageId: string; pinned: boolean };
 };
 
 type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
@@ -58,6 +60,24 @@ export function recordPageChange(pageId: string, by: string, title: string): voi
   changed();
 }
 
+/** Pages registers how a page's pin is set, for Undo and Redo of a Mono's pin. */
+let pinHook: ((pageId: string, pinned: boolean) => void) | undefined;
+export function setPinHook(next: (pageId: string, pinned: boolean) => void): void {
+  pinHook = next;
+}
+/** A Mono pinned or unpinned a page: a Bot changes row under that Mono. */
+export function recordPinChange(pageId: string, by: string, title: string, pinned: boolean): void {
+  const id = `pin:${pageId}:${Date.now().toString(36)}`;
+  list = [{ id, bot: by, day: "Today", line: `${by} ${pinned ? "pinned" : "unpinned"} the page “${title}”`, now: pinned ? "Not pinned" : "Pinned", after: pinned ? "Pinned in the sidebar" : "Not pinned", pin: { pageId, pinned } }, ...list];
+  saveReal();
+  changed();
+}
+
+/** Undo all from one Mono: every change of theirs that isn't undone yet. */
+export async function undoAllFrom(bot: string): Promise<void> {
+  await undoBotChange(list.filter((c) => c.bot === bot && !c.undone).map((c) => c.id));
+}
+
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
 export type BotFiles = {
   read(monoId: string, file: AgentFilePath): Promise<{ text: string | null; hash: string }>;
@@ -71,14 +91,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId)));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin)));
   } catch {
     /* best effort */
   }
@@ -162,6 +182,9 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
       }
+    } else if (c.pin) {
+      if (pinHook) pinHook(c.pin.pageId, !c.pin.pinned);
+      else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
     } else if (c.pageId) {
       if (pageHooks) pageHooks.remove(c.pageId);
       else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
@@ -212,6 +235,9 @@ export async function redoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
+    } else if (c.pin) {
+      if (pinHook) pinHook(c.pin.pageId, c.pin.pinned);
+      else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
     } else if (c.pageId) {
       if (pageHooks) pageHooks.restore(c.pageId);
       else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
