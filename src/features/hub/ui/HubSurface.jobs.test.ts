@@ -13,6 +13,8 @@ import { createLiveHubData } from "../model/liveHubData";
 import { ProjectStrip } from "./ProjectStrip";
 import { HubSurface } from "./HubSurface";
 import { BeingBuiltView } from "./BeingBuiltView";
+import { MonoRailSection } from "../../../app/shell/MonoRailSection";
+import { hubMonoRank } from "../model/hubData";
 
 /** Calls over plain node http (happy-dom's fetch won't talk to a local server); no live feed, so the store polls. */
 function httpTransport(baseUrl: () => string, token: () => string): HubTransport {
@@ -280,5 +282,34 @@ describe("Being built, live", () => {
     mount(createElement(BeingBuiltView, { projectId: "ash" }));
     await until(() => container.querySelector("[data-hub-being-built-empty]"), "empty");
     expect(text()).toContain("Nobody's working on");
+  });
+});
+
+describe("point 13, item 3: a big job's workers show only in Being built, and only while it runs", () => {
+  const ROSTER = ["Chief of Staff", "Projects Manager", "frank", "Alfred", "Hivra lead"];
+  const sidebar = () => [...container.querySelectorAll("[data-mono-rail] [data-mono-status] > button[title]")].map((b) => b.getAttribute("title")!.split("\n")[0]).filter((t) => t !== "Mono options");
+  const rowsNow = () => [...container.querySelectorAll("[data-hub-worker]")].map((r) => r.getAttribute("data-hub-worker"));
+  const page = () =>
+    createElement("div", null,
+      createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: hubMonoRank }),
+      createElement(BeingBuiltView, { projectId: "hivra" }));
+
+  it("running: the job's workers are rows under the Lead; done: they go; the Monos sidebar never changes", async () => {
+    localStorage.setItem("monocode:mono-roster", JSON.stringify(ROSTER.map((name, i) => ({ id: i === 4 ? "hivra-lead" : `m${i}`, name, mascot: "robot", color: "x", projects: [] }))));
+    mount(page());
+    await until(() => rowsNow().length === 4, "rows");
+    expect(sidebar()).toEqual(ROSTER);
+    // A big job: the Lead splits it over three workers running in parallel.
+    const big = ["j_big_1", "j_big_2", "j_big_3"];
+    big.forEach((id, i) => stub.addJob({ id, projectId: "hivra", title: `Big job part ${i + 1}`, leadName: "Hivra lead", lead: "hivra-lead" }));
+    await until(() => big.every((id) => rowsNow().includes(id)), "workers in Being built");
+    expect(container.querySelector('[data-hub-mono-jobs="Hivra lead"]')?.textContent).toContain("Big job part 3");
+    expect(sidebar()).toEqual(ROSTER); // no worker became a Mono
+    expect(container.querySelector("[data-mono-rail]")?.textContent).not.toMatch(/Big job|worker/i);
+    // Done and seen: they leave Being built.
+    big.forEach((id) => stub.setJob(id, { state: "done", finishedAt: new Date().toISOString(), seen: true }));
+    await until(() => big.every((id) => !rowsNow().includes(id)), "workers gone");
+    expect(sidebar()).toEqual(ROSTER);
+    expect(JSON.parse(localStorage.getItem("monocode:mono-roster")!).length).toBe(ROSTER.length);
   });
 });
