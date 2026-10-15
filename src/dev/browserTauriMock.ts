@@ -117,6 +117,11 @@ mockIPC(
       return true;
     }
     if (cmd === "plugin:path|resolve_directory" || cmd === "home_dir") return "/Users/ash";
+    if (cmd === "fetch_claude_usage") {
+      // Dev only: a plan 3% into its 5-hour window and 99% into its week, so the usage bar shows both words and red.
+      const at = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
+      return { status: "ok", body: JSON.stringify({ five_hour: { utilization: 3, resets_at: at(165) }, seven_day: { utilization: 99, resets_at: at((5 * 24 + 15) * 60) } }) };
+    }
     if (cmd === "mono_archive") { const a = args as { mono: string; stamp: string }; return `${a.mono}-${a.stamp}`; }
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
