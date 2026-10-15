@@ -198,17 +198,22 @@ function NeedRow({ need, onOptions }: { need: Need; onOptions?: (jobId: string) 
   const done = need.state === "done";
   const [busy, setBusy] = useState(false);
   const data = hubData();
-  // One action per row. A Looks-right row is marked seen; a given-up job opens its options; the rest wait for their unit.
+  // One action per row, as Ash OS names it: Looks right accepts; a given-up job opens its options; an older
+  // Looks-right row (action "open") is marked seen; the rest wait for their unit.
+  const accept = need.actionType === "accept" && !!data.acceptNeed;
+  const seen = need.canMarkSeen && need.actionType !== "accept" && !!data.markNeedSeen;
+  const run = async (call: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await call();
+    } catch {
+      setBusy(false);
+    }
+  };
   const onAction = async () => {
     if (need.jobId && data.jobOptions) return onOptions?.(need.jobId);
-    if (need.canMarkSeen && data.markNeedSeen) {
-      setBusy(true);
-      try {
-        await data.markNeedSeen(need.id);
-      } catch {
-        setBusy(false);
-      }
-    }
+    if (accept) return run(() => data.acceptNeed!(need.id));
+    if (seen) return run(() => data.markNeedSeen!(need.id));
   };
   return (
     <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
@@ -230,7 +235,7 @@ function NeedRow({ need, onOptions }: { need: Need; onOptions?: (jobId: string) 
             onClick={() => void onAction()}
             className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60"
           >
-            {need.canMarkSeen && data.markNeedSeen ? "Seen" : need.actionLabel}
+            {seen ? "Seen" : need.actionLabel}
           </button>
         </>
       )}

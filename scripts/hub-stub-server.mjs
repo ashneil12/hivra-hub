@@ -42,7 +42,7 @@ const clock = (ms) => {
   return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")}${d.getHours() < 12 ? "am" : "pm"}`;
 };
 
-const ACTION_LABELS = { start: "Start", open: "Open", sign_in: "Sign in", see_options: "See options" };
+const ACTION_LABELS = { start: "Start", open: "Open", sign_in: "Sign in", see_options: "See options", accept: "Looks right" };
 
 /** The invented starting state: four projects, a few Needs, a "since" paragraph. */
 export function seedState(now = Date.now()) {
@@ -111,7 +111,9 @@ export function jobsScenario(now = Date.now()) {
     job("j_sound", "nibbii", "Tidying the sound files", "stuck", { noLead: true, ago: 80, active: 14, wire: { reason: "No sound card in the test box.", circle: "amber", word: "Stuck" } }),
   ];
   const needs = [
-    { id: "s:a_cannon", projectId: "nibbii", title: "Example: rework the app's notch pet", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "open", actionTarget: "ask:a_cannon", rank: 3, since: now - 6 * 3600_000, state: "open", later: false },
+    { id: "s:a_cannon", projectId: "nibbii", title: "Example: rework the app's notch pet", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "accept", actionTarget: "ask:a_cannon", rank: 3, since: now - 6 * 3600_000, state: "open", later: false },
+    // What Ash OS sent for a Looks-right row before "accept" existed: action Open, marked seen instead.
+    { id: "s:a_legacy", projectId: "nibbii", title: "Example: tidy the settings page", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "open", actionTarget: "ask:a_legacy", rank: 3, since: now - 7 * 3600_000, state: "open", later: false },
     { id: "j:j_sender", projectId: "hivra", title: "Sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
     ...[
       ["o1", "hivra", "Example: which Hivra folder is the real one?"], ["o2", "hivra", "Example: should the old waitlist be archived?"],
@@ -374,6 +376,15 @@ export async function startStub({
     return { id: n.id, seen: true };
   }
 
+  function needAcceptCall(v) {
+    const n = state.needs.find((x) => x.id === v.id);
+    if (!n || n.state !== "open") throw new Error("That isn't waiting on you any more.");
+    if (n.actionType !== "accept") throw new Error("Only finished work waiting for Looks right can be accepted.");
+    Object.assign(n, { state: "done", doneAt: now(), doneReason: "accepted or changed" });
+    emit("hub.need.done", n.id, n.projectId);
+    return { id: n.id, accepted: true };
+  }
+
   async function action(name, v) {
     switch (name) {
       case "jobs": return jobsCall(v);
@@ -381,6 +392,7 @@ export async function startStub({
       case "job-act": return jobActCall(v);
       case "job-seen": return jobSeenCall(v);
       case "need-seen": return needSeenCall(v);
+      case "need-accept": return needAcceptCall(v);
       case "projects": return projectsCall(v);
       case "needs": return needsCall(v);
       case "active": return activeCall(v);

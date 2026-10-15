@@ -348,6 +348,26 @@ describe("older questions, Looks right and jobs", () => {
     expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(true);
   });
 
+  it("accepts a Looks-right row through ash-hub-need-accept when Ash OS names the action 'accept'", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    const row = store.getSnapshot().needs.nibbii.shown.find((n) => n.id === "s:a_cannon")!;
+    expect(row).toMatchObject({ actionType: "accept", actionLabel: "Looks right" });
+    await store.acceptNeed("s:a_cannon");
+    expect(store.getSnapshot().needs.nibbii.shown.find((n) => n.id === "s:a_cannon")).toMatchObject({ state: "done", doneReason: "accepted or changed" });
+    await expect(store.acceptNeed("s:a_legacy")).rejects.toMatchObject({ message: expect.stringMatching(/Only finished work/) });
+  });
+
+  it("the badge count is the real Needs count, live, and a ticked row stops counting", async () => {
+    const data = (await import("./liveHubData")).createLiveHubData(store);
+    store.start();
+    await waitFor(() => store.getSnapshot().status === "ready", "ready");
+    expect(data.needsCount!("ash")).toBe(6);
+    expect(data.needsCount!("hivra")).toBe(2);
+    stub.doneNeed("q4");
+    await waitFor(() => data.needsCount!("ash") === 5, "count after tick");
+  });
+
   it("refuses to mark anything but a Looks-right row seen, in plain words", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");

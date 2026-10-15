@@ -105,8 +105,14 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
   return [...all.filter((i) => i.state), ...all.filter((i) => !i.state)];
 }
 
-/** What is waiting on Ash for a project. A row that ticked itself off no longer counts. */
+/**
+ * The strip badge. Live: the project's real Needs count (shown plus Later, the number the Since paragraph quotes);
+ * rows still show at most five plus "N more under Later". Examples: what is waiting in the list. A row that ticked
+ * itself off no longer counts.
+ */
 export function waitingCount(projectId: string): number {
+  const live = hubData().needsCount?.(projectId);
+  if (live !== undefined) return live;
   return waitingOnAsh(projectId).filter((i) => !i.done).length;
 }
 

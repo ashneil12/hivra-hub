@@ -107,13 +107,13 @@ describe("Today, live", () => {
     expect(text()).not.toContain("renew the domain names"); // Later is a count until its list is built
   });
 
-  it("the strip's counts are exactly the rows Ash can see, with no zero badge", async () => {
+  it("the strip's badge is the project's real Needs count (shown plus Later), with no zero badge", async () => {
     mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
     await until(() => rows().length >= 8, "needs");
     const badge = (name: string) => container.querySelector(`button[aria-label^="${name}"] span.hub-count-badge`)?.textContent;
     expect(badge("EXO")).toBe("2");
     expect(badge("Hivra")).toBe("1");
-    expect(badge("Harness")).toBe("5");
+    expect(badge("Harness")).toBe("6"); // five rows shown plus one under Later
     expect(badge("Nibbii")).toBeUndefined();
     expect(container.querySelectorAll("[data-hub-strip] .hub-count-badge").length).toBe(3);
   });

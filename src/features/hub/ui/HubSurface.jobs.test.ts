@@ -115,14 +115,25 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(later.textContent).toBe("Hide Later");
   });
 
-  it("a Looks-right row has one action, Seen, and ticks itself off when pressed", async () => {
+  it("a Looks-right row shows Ash OS's own action, Looks right, which accepts it and ticks it off", async () => {
     mount(surface());
     await until(() => container.querySelector('[data-hub-need="s:a_cannon"]'), "looks-right row");
     const row = '[data-hub-need="s:a_cannon"]';
     expect(container.querySelectorAll(`${row} button`).length).toBe(1);
-    await act(async () => button(row, "Seen")!.click());
+    await act(async () => button(row, "Looks right")!.click());
     await until(() => container.querySelector(`${row}[data-hub-need-done]`), "ticked");
     expect(container.querySelector(`${row} button`)).toBeNull();
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-accept")).toBe(true);
+    expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(false);
+  });
+
+  it("an older Looks-right row (action Open) keeps its one action, Seen", async () => {
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-need="s:a_legacy"]'), "legacy row");
+    const row = '[data-hub-need="s:a_legacy"]';
+    expect([...container.querySelectorAll(`${row} button`)].map((b) => b.textContent)).toEqual(["Seen"]);
+    await act(async () => button(row, "Seen")!.click());
+    await until(() => container.querySelector(`${row}[data-hub-need-done]`), "ticked");
     expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(true);
   });
 

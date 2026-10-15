@@ -65,7 +65,7 @@ export type HubStoreOptions = {
 };
 
 const ICONS: readonly ProjectIconShape[] = ["ghost", "sparkles", "palette", "gauge", "folder"];
-const ACTIONS: readonly NeedActionType[] = ["start", "open", "sign_in", "see_options"];
+const ACTIONS: readonly NeedActionType[] = ["start", "open", "sign_in", "see_options", "accept"];
 
 type Raw = Record<string, unknown>;
 const obj = (v: unknown): Raw => (v && typeof v === "object" && !Array.isArray(v) ? (v as Raw) : {});
@@ -432,6 +432,12 @@ export class HubStore {
   /** "Looks right" rows: Ash has seen it. Ash OS ticks the row off; the answer is read at once, the feed follows. */
   async markNeedSeen(id: string): Promise<void> {
     await this.t.call("ash-hub-need-seen", { id });
+    await this.loadNeeds();
+  }
+
+  /** "Looks right": Ash accepts finished critical work. Ash OS ticks the row off; the answer is read at once. */
+  async acceptNeed(id: string): Promise<void> {
+    await this.t.call("ash-hub-need-accept", { id });
     await this.loadNeeds();
   }
 

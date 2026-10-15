@@ -33,7 +33,7 @@ export type ProjectItem = {
   sectionType?: string;
 };
 
-export type NeedActionType = "start" | "open" | "sign_in" | "see_options";
+export type NeedActionType = "start" | "open" | "sign_in" | "see_options" | "accept";
 
 export type Need = {
   id: string;
@@ -155,6 +155,10 @@ export interface HubDataSource {
   listOlder(projectId?: string): Need[];
   /** Mark a Looks-right row seen. Live source only. */
   markNeedSeen?(id: string): Promise<void>;
+  /** "Looks right" on finished critical work (actionType `accept`). Live source only. */
+  acceptNeed?(id: string): Promise<void>;
+  /** The project's real Needs count (shown plus Later) for its badge; absent at zero. Live source only. */
+  needsCount?(projectId: string): number;
   /** Being built jobs, grouped under their Lead. Present only on the live source; the example data uses its own store. */
   listJobs?(projectId: string): HubJobGroup[];
   /** The "See options" sheet for a given-up job, and Ash's pick. Live source only. */
