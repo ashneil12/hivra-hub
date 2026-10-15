@@ -61,6 +61,16 @@
     transparent
   );
   --color-accent: hsl(211 92% 62%);
+  /* Theme tokens for hub surfaces (Pages, Appearance schemes). A scheme only overrides the --theme-* and --scheme-*
+     inputs, so every screen built on these restyles with no per-screen edits. Default: monochrome glass. */
+  --color-surface: color-mix(in srgb, var(--color-content) var(--scheme-surface-strength, 4%), transparent);
+  --color-surface-raised: color-mix(in srgb, var(--color-content) 8%, transparent);
+  --color-surface-ring: color-mix(in srgb, var(--color-content) 10%, transparent);
+  --color-theme-accent: var(--scheme-accent, var(--color-content));
+  /* Status only: the one place colour means something. */
+  --color-status-ok: var(--scheme-status-ok, #34d399);
+  --color-status-warn: var(--scheme-status-warn, #fbbf24);
+  --color-status-bad: var(--scheme-status-bad, #f87171);
   --color-skill: #e8c547;
   --color-mention: #38bdf8;
   --font-mono:

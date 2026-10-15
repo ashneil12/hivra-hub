@@ -303,6 +303,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "dark light system appearance mode",
   },
   {
+    id: "theme-schemes",
+    section: "appearance",
+    label: "Scheme",
+    keywords: "theme scheme graphite dusk colour color palette save named",
+  },
+  {
     id: "accent-color",
     section: "appearance",
     label: "Accent color",

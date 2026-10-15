@@ -1,3 +1,4 @@
+import { allSchemes, applySchemeAccent, loadActiveSchemeId, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
@@ -2158,6 +2159,60 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
   );
 }
 
+/**
+ * Named schemes. A scheme only overrides theme tokens, so every screen follows it. Glass (monochrome) is the default;
+ * a scheme can carry real colour. "Save as scheme" keeps the current sliders under a name, as Ash or a Mono would.
+ */
+function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
+  const [schemes, setSchemes] = useState(allSchemes);
+  const [active, setActive] = useState(loadActiveSchemeId);
+  const [naming, setNaming] = useState<string | null>(null);
+  const apply = (scheme: ThemeScheme) => {
+    appearance.onTint(scheme.hue, scheme.saturation);
+    appearance.onDarkLightness(scheme.lightness);
+    appearance.onOpacity(Math.round(scheme.opacity * 100));
+    applySchemeAccent(scheme.accent);
+    saveActiveSchemeId(scheme.id);
+    setActive(scheme.id);
+  };
+  return (
+    <Row id="theme-schemes" label="Scheme" description="Each scheme restyles the whole app. Glass is the default.">
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {schemes.map((scheme) => (
+          <button
+            key={scheme.id}
+            type="button"
+            aria-pressed={scheme.id === active}
+            data-scheme={scheme.id}
+            onClick={() => apply(scheme)}
+            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ${scheme.id === active ? "bg-selection text-content ring-content/30" : "text-content/75 ring-surface-ring hover:bg-selection-hover"}`}
+          >
+            <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: scheme.accent ?? `hsl(${scheme.hue} ${scheme.saturation}% ${Math.max(scheme.lightness, 30)}%)` }} />
+            {scheme.name}
+          </button>
+        ))}
+        {naming === null ? (
+          <button type="button" onClick={() => setNaming("")} className="rounded-md px-2.5 py-1 text-[12px] text-content/70 hover:bg-selection-hover">Save as scheme…</button>
+        ) : (
+          <form className="flex items-center gap-1" onSubmit={(e) => {
+            e.preventDefault();
+            if (!naming.trim()) return;
+            const made = saveCustomScheme({ name: naming.trim(), hue: appearance.themeHue, saturation: appearance.themeSaturation, lightness: appearance.themeDarkLightness, opacity: appearance.opacity, accent: appearance.accentColor });
+            setSchemes(allSchemes());
+            saveActiveSchemeId(made.id);
+            setActive(made.id);
+            setNaming(null);
+          }}>
+            <input autoFocus aria-label="Scheme name" value={naming} onChange={(e) => setNaming(e.target.value)} placeholder="Name"
+              className="w-24 rounded-md bg-surface px-2 py-1 text-[12px] text-content outline-none ring-1 ring-surface-ring placeholder:text-content/60" />
+            <button type="submit" className="rounded-md bg-content/12 px-2 py-1 text-[12px] text-content">Save</button>
+          </form>
+        )}
+      </div>
+    </Row>
+  );
+}
+
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
@@ -2184,6 +2239,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
             onChange={appearance.onThemePreference}
           />
         </Row>
+        <SchemesRow appearance={appearance} />
         <Row
           id="accent-color"
           label="Accent color"
