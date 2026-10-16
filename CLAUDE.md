@@ -95,3 +95,36 @@ npm run hub:build && npm run hub:verify
 - Backup app bundles (`~/Applications/MonoCode-Hub-backup-*`) are throwaway build snapshots. Check the
   identifier before trusting one — at least one was built before the identity fix and carries
   `com.monocode.desktop`.
+
+## Signing (why the app kept asking for your password)
+
+The hub was built **ad-hoc signed** (`signingIdentity: "-"`). An ad-hoc signature's designated
+requirement is a bare `cdhash`, so **every rebuild produced a different app identity**. macOS keys two
+things off that identity, and both broke on each rebuild:
+
+1. **Keychain** — the model key (`monocode-hub:model-key`) is read when a session starts, so the
+   "MonoCode Hub wants to use your confidential information" prompt came back after every rebuild,
+   twice per fresh chat.
+2. **Folder permissions (TCC)** — the Documents/Desktop/Downloads grants were discarded, so the
+   "would like to access files in your Documents folder" prompt came back too.
+
+The hub overlay now pins a real signing identity, so the requirement is
+`identifier "com.ash.monocode-hub" and anchor apple generic and certificate leaf[subject.CN] = ...`
+— stable across rebuilds. Permissions granted once now stick.
+
+`src-tauri/tauri.hub.conf.json` → `bundle.macOS.signingIdentity`. It is set to the local
+"Apple Development: Ashneil Lanelle (JTBS9WU942)" certificate's SHA-1. If that certificate is ever
+renewed or this repo moves to another Mac, update it:
+
+```bash
+security find-identity -v -p codesigning        # pick the Apple Development / Developer ID line
+```
+
+Then rebuild with `npm run hub:build`. To confirm the requirement is stable and not a hash:
+
+```bash
+codesign -d -r- "$HOME/Applications/MonoCode Hub.app"   # must NOT print a bare cdhash
+```
+
+Upstream CI passes its own `signingIdentity` through `tauri.release.conf.json`, so this does not change
+packaged release builds.
