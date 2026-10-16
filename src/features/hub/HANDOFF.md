@@ -193,7 +193,7 @@ poll and server-sent events.
 ```
 node scripts/hub-stub-server.mjs --port 18868 --dev --jobs # --dev adds CORS + /__stub/control; --jobs adds leads and jobs in every state,
                                                             # a given-up job's red row, Looks right and older questions
-pnpm dev                                                    # vite on :1420
+npm run dev                                                 # vite on :1420
 open "http://localhost:1420/hub-dev.html?stub=http://127.0.0.1:18868"
 ```
 `?stub=` makes `browserTauriMock` serve `hub_call` and the feed from the stub
@@ -214,7 +214,7 @@ seen, job choices, owners and projects get a 403, so looking can't move Ash's
 real "Since" time or touch a job); `--allow-writes` lifts that.
 ```
 node scripts/hub-live-proxy.mjs          # :18869
-pnpm dev
+npm run dev
 open "http://localhost:1420/hub-dev.html?live=http://127.0.0.1:18869"
 node scripts/hub-live-screens.mjs <dir>  # screenshots of Today, Since and each project's Inbox
 ```
@@ -225,13 +225,13 @@ pressed them on Ash's real data.
 1. Ash OS must be running a build with the hub calls (branch `ash-os-hub-core`
    landed). Until then the running service answers "Unknown hub action" and the
    app shows the "isn't running" panel.
-2. `pnpm tauri dev` (or the built app). Nothing to configure: the plugin finds
+2. `npm run hub:dev` for the live-reloading dev app, or the built app. Nothing to configure: the plugin finds
    the key itself. To aim the plugin at another local port or key file (for
    example the stub started with `--token-file`): `MONOCODE_HUB_PORT` and
    `MONOCODE_HUB_TOKEN_FILE`. The host is always 127.0.0.1.
 
 ### Tests
-`pnpm test` (vitest): `model/hubStore.test.ts` (store against the stub over real
+`npm test` (vitest): `model/hubStore.test.ts` (store against the stub over real
 HTTP and SSE, including older, need-seen and jobs), `hubActivity.test.ts`,
 `hubTransport.test.ts`, `liveJobs.test.ts`, `hubContract.test.ts` (the real
 `ashos.hub.Hub`'s own answers: `fixtures/ash-os-real-shapes.json` from the live

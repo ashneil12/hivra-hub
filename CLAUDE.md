@@ -91,7 +91,26 @@ npm run hub:build && npm run hub:verify
   (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`). Run it before calling anything done.
 - The hub flag `VITE_MONOCODE_HUB=1` is a **build-time** Vite variable (`src/features/hub/model/hubBundle.ts`,
   `IS_HUB_BUNDLE`). It is what makes the app open straight on the hub. Both `tauri.conf.json` and the overlay
-  set it, so it is always on.
+  set it, so it is always on — in a build **and in dev** (`npm run hub:dev`; checked by
+  `scripts/hub-dev-loop.test.cjs`, which fails if the dev command loses the flag).
+
+### See a Hub change in the running app (the dev loop)
+
+Never hand-build and re-install the app just to look at a frontend change. On this fork the frontend
+is served from vite, so HMR applies it where it stands:
+
+```bash
+npm run hub:dev      # tauri dev with the Hub overlay: vite on :1420 + HMR, the app in a real window
+```
+
+- **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
+- **Rust change** (`src-tauri/**`): `tauri dev` recompiles and relaunches the app by itself; the window
+  comes back with the change. Nothing to do by hand.
+- **Anything Ash should keep using / that must survive a reboot:** that is a release build —
+  `npm run hub:build && npm run hub:install`. Reserve it for a change that is finished, tested and landed.
+
+Use `npm run dev` + a `hub-dev.html` page only for a browse-only look at the Hub's screens (stub or live
+proxy). It has no Rust side, so `hub_call` needs the stub or the live proxy to answer.
 - Backup app bundles (`~/Applications/MonoCode-Hub-backup-*`) are throwaway build snapshots. Check the
   identifier before trusting one — at least one was built before the identity fix and carries
   `com.monocode.desktop`.
