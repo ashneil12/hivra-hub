@@ -1,7 +1,7 @@
 import { TurnNotReadyError } from "../../core/types";
 import { claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId } from "../../../../features/sessions/model/models";
-import { customModelRoute } from "../../../../features/sessions/model/customModels";
+import { customModelRoute, modelKeyStore } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
   RuntimeMode,
@@ -561,6 +561,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     providerAccountId: input.providerAccountId,
   });
 
+  // The meter needs the window before the turn ends: mid-turn Claude Code sends only the level, and it sends
+  // the window on the turn's `result`. Ask the router for the provider's own window now, so a routed session
+  // draws a real ring from its first reading instead of none. Never awaited as a gate on the turn, and a
+  // provider that publishes no window leaves it unknown rather than guessed.
+  void seedRoutedWindow(live, input);
+
   try {
     await writeJson(
       input.sessionId,
@@ -818,6 +824,35 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
     emitTaskListIfNeeded(live, tool.name, parsed);
     return;
   }
+}
+
+/**
+ * Tell the session the provider's own context window, before the turn's `result` arrives.
+ *
+ * Mid-turn Claude Code reports only the level; the window comes on the `result` at the end. The context meter
+ * draws a ring only when it has both, so without this a routed session shows no bar while it is working, and a
+ * session whose last turn was cut short (a quit) keeps a stale level forever. The Rust side remembers the
+ * window per route, so this is one provider call per model per run. A provider that publishes no window leaves
+ * it unknown — a guessed window is worse than none.
+ *
+ * Fire-and-forget: a failed lookup must never hold up or fail the turn.
+ */
+function seedRoutedWindow(
+  live: Live,
+  input: Pick<HarnessSessionInput, "model" | "modelSettings">,
+): void {
+  const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
+  const window = modelKeyStore().contextWindow;
+  if (!route || !window) return;
+  void Promise.resolve(
+    window(route.provider, route.baseUrl, route.modelId, route.customModelId),
+  )
+    .then((found) => {
+      if (typeof found === "number" && found > 0) {
+        live.onEvent({ type: "context", window: found });
+      }
+    })
+    .catch(() => undefined);
 }
 
 function handleAssistant(live: Live, rec: Record<string, unknown>): void {

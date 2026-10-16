@@ -150,6 +150,14 @@ export interface ModelKeyStore {
   /** Forget this custom model's key. True when it's gone, including when there was no key to begin with; false or a
    * thrown error only for a real Keychain failure. */
   deleteModelKey(customModelId: string): Promise<boolean>;
+  /**
+   * The provider's own context window for this route, or null when the provider publishes no such field.
+   *
+   * The context meter needs the window as well as the level, and only the level arrives mid-turn (Claude Code
+   * sends the window on the turn's `result`, at the end). Without this a routed session shows no bar while a
+   * turn runs. Remembered per route in Rust, so it costs one provider call per model per run.
+   */
+  contextWindow?(provider: CustomProvider, baseUrl: string, modelId: string, customModelId: string): Promise<number | null>;
 }
 
 /** Dev and test stand-in: keys stay in memory only. A key containing "bad" fails; Ollama is up unless its URL says "down". */
@@ -190,6 +198,8 @@ export const tauriModelKeyStore: ModelKeyStore = {
   testModelKey: (provider, baseUrl, modelId, key) =>
     invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
   deleteModelKey: (customModelId) => invoke<boolean>("plugin:hub|model_key_delete", { customModelId }),
+  contextWindow: (provider, baseUrl, modelId, customModelId) =>
+    invoke<number | null>("plugin:hub|model_context_window", { provider, baseUrl, modelId, customModelId }),
 };
 
 let store: ModelKeyStore = createDevModelKeyStore();

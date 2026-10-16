@@ -433,6 +433,45 @@ pub async fn model_key_test(
         .map_err(|_| "The check didn't finish.".to_string())
 }
 
+/// The provider's own context window for a saved route, for the context meter.
+///
+/// The meter needs BOTH halves to draw a ring, and only the level arrives in the stream mid-turn: Claude Code
+/// sends the window on the turn's `result`, which lands at the end. Without this the ring cannot render while a
+/// turn is running, and a session that is resumed after a quit shows a stale frozen level. Remembered per route,
+/// so this is one provider call per model per run. Answers `None` when the provider has no such field — an
+/// unknown window must stay unknown rather than becoming a number we invented.
+#[tauri::command]
+pub async fn model_context_window(
+    provider: String,
+    base_url: String,
+    model_id: String,
+    custom_model_id: String,
+) -> Result<Option<u64>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let route = CustomRoute {
+            provider,
+            base_url,
+            model_id,
+            custom_model_id,
+        };
+        if !may_route(&route) {
+            return Ok(None);
+        }
+        let key = if route.provider == "ollama" {
+            None
+        } else {
+            match read_key_in(KEY_SERVICE, &route.custom_model_id) {
+                Ok(found) => found,
+                // No key is not an error for a window lookup: the answer is simply unknown.
+                Err(_) => None,
+            }
+        };
+        Ok(remembered_window(&route, key.as_deref()))
+    })
+    .await
+    .map_err(|_| "The window lookup didn't finish.".to_string())?
+}
+
 // ---- translation: Anthropic Messages -> OpenAI chat completions -------------------------------------------------------
 
 fn text_of(content: &Value) -> String {
