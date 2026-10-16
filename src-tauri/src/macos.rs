@@ -818,12 +818,17 @@ fn write_dev_bundle_icons(
 }
 
 /// Must match `CFBundleIdentifier` in the generated dev bundle plist and tauri.conf.json.
+///
+/// This is the Hub fork, so the dev bundle carries the Hub's own identity. It must never be
+/// `com.monocode.desktop`: Tauri keys the app data directory off the identifier
+/// (`app_data_dir() = ~/Library/Application Support/<identifier>`), so a bundle with upstream's
+/// identifier reads and writes upstream MonoCode's database — see scripts/identity-guard.sh.
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_DEFAULT_NAME: &str = "MonoCode";
+const DEV_BUNDLE_DEFAULT_NAME: &str = "MonoCode Hub";
 #[cfg(debug_assertions)]
 const DEV_BUNDLE_NAME_ENV: &str = "MONOCODE_DEV_APP_NAME";
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_ID: &str = "com.monocode.desktop";
+const DEV_BUNDLE_ID: &str = "com.ash.monocode-hub";
 #[cfg(debug_assertions)]
 const DEV_ICNS: &[u8] = include_bytes!("../icons/icon.icns");
 #[cfg(debug_assertions)]
@@ -892,7 +897,7 @@ fn dev_bundle_plist(app_name: &str, version: &str, bundle_version: &str) -> Vec<
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.monocode.desktop</string>
+	<string>com.ash.monocode-hub</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -990,5 +995,57 @@ mod tests {
         let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev", "1.2.3", "1.2.3")).unwrap();
         assert!(plist.contains("<string>MonoCode Dev</string>"));
         assert!(!plist.contains("<string>MonoCode</string>"));
+    }
+
+    /// Tauri keys the app data directory off the bundle identifier, so a Hub build carrying
+    /// upstream's `com.monocode.desktop` would read and write upstream MonoCode's database.
+    /// That is what hid Ash's conversations on 16 Oct 2026. The dev bundle must never do it.
+    #[test]
+    fn dev_bundle_plist_carries_the_hub_identifier_not_upstreams() {
+        let plist =
+            String::from_utf8(dev_bundle_plist("MonoCode Hub", "0.13.0", "0.13.0")).unwrap();
+        assert!(
+            plist.contains("<string>com.ash.monocode-hub</string>"),
+            "the dev bundle plist must carry the Hub identifier"
+        );
+        assert!(
+            !plist.contains("com.monocode.desktop"),
+            "the dev bundle must never carry upstream's identifier — it would share upstream's database"
+        );
+    }
+
+    #[test]
+    fn dev_bundle_constants_match_the_hub_identity() {
+        assert_eq!(
+            DEV_BUNDLE_ID, "com.ash.monocode-hub",
+            "DEV_BUNDLE_ID must match CFBundleIdentifier in tauri.conf.json"
+        );
+        assert_eq!(
+            DEV_BUNDLE_DEFAULT_NAME, "MonoCode Hub",
+            "the dev bundle name must match productName in tauri.conf.json"
+        );
+    }
+
+    /// `src-tauri/tauri.conf.json` is the single source of the app identity. Nothing may swallow an
+    /// upstream merge and quietly restore `com.monocode.desktop`.
+    #[test]
+    fn tauri_conf_declares_the_hub_identity() {
+        let conf = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+            .expect("src-tauri/tauri.conf.json must exist");
+        let value: serde_json::Value =
+            serde_json::from_str(&conf).expect("tauri.conf.json must be valid JSON");
+        assert_eq!(
+            value["identifier"], "com.ash.monocode-hub",
+            "the app identifier must stay the Hub's own"
+        );
+        assert_eq!(value["productName"], "MonoCode Hub");
+
+        let hub_conf =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.hub.conf.json"))
+                .expect("src-tauri/tauri.hub.conf.json must exist");
+        assert!(
+            !hub_conf.contains("identifier"),
+            "the overlay must not define a second identifier"
+        );
     }
 }

@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoCode",
+  "productName": "MonoCode Hub",
   "version": "0.13.0",
-  "identifier": "com.monocode.desktop",
+  "identifier": "com.ash.monocode-hub",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "VITE_MONOCODE_HUB=1 npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "MonoCode",
+        "title": "MonoCode Hub",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
