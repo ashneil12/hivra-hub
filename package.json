@@ -26,7 +26,12 @@
     "setup:linux:fedora": "bash scripts/install-linux-deps-fedora.sh",
     "build:linux": "tauri build --bundles deb,appimage && bash scripts/repack-appimage.sh",
     "build:fedora": "tauri build --bundles rpm",
-    "build:windows": "set \"RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc\" && tauri build --bundles nsis"
+    "build:windows": "set \"RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc\" && tauri build --bundles nsis",
+    "hub:check": "bash scripts/identity-guard.sh",
+    "hub:build": "tauri build --config src-tauri/tauri.hub.conf.json --bundles app",
+    "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
+    "hub:install": "npm run hub:verify && rm -rf \"$HOME/Applications/MonoCode Hub.app\" && cp -R \"target/release/bundle/macos/MonoCode Hub.app\" \"$HOME/Applications/\" && echo \"installed: ~/Applications/MonoCode Hub.app\"",
+    "hub:recover": "bash scripts/recover-sessions.sh"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",
