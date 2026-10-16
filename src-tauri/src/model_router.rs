@@ -128,9 +128,19 @@ pub fn session_token(provider: &str, key: Option<&str>) -> Result<String, String
 
 /// Env for a routed Claude Code session. Set the token explicitly and remove the other credential variables, so the
 /// saved claude.ai login is never the active credential for a routed session.
-pub fn routed_env(route: &CustomRoute, token: &str, port: u16) -> RoutedEnv {
+///
+/// `context_window` is the model's real window when the provider told us one. Claude Code has never heard of a
+/// non-Claude model, so it falls back to assuming 200K: on a 1M model auto-compact would fire about five times too
+/// early, and the context meter would read "100%" from the first tool call onward. Naming the window is what makes
+/// both honest. `None` leaves the variable out entirely — Claude Code's own assumption beats a number we invented.
+pub fn routed_env(
+    route: &CustomRoute,
+    token: &str,
+    port: u16,
+    context_window: Option<u64>,
+) -> RoutedEnv {
     let m = route.model_id.trim().to_string();
-    let set = vec![
+    let mut set = vec![
         ("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}")),
         ("ANTHROPIC_AUTH_TOKEN", token.to_string()),
         ("ANTHROPIC_MODEL", m.clone()),
@@ -141,6 +151,9 @@ pub fn routed_env(route: &CustomRoute, token: &str, port: u16) -> RoutedEnv {
         ("CLAUDE_CODE_SUBAGENT_MODEL", m),
         ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into()),
     ];
+    if let Some(pair) = context_window_env(context_window) {
+        set.push(pair);
+    }
     let remove = vec![
         "ANTHROPIC_API_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -148,6 +161,105 @@ pub fn routed_env(route: &CustomRoute, token: &str, port: u16) -> RoutedEnv {
         "CLAUDE_CODE_USE_VERTEX",
     ];
     (set, remove)
+}
+
+/// The env pair that tells Claude Code the window, or `None` when the provider never said.
+pub fn context_window_env(window: Option<u64>) -> Option<(&'static str, String)> {
+    window
+        .filter(|w| *w > 0)
+        .map(|w| ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", w.to_string()))
+}
+
+/// One model's window out of an OpenAI-style `/models` list.
+///
+/// Providers spell the field differently, and the names are not equivalent: `max_input_tokens` is the prompt window
+/// (what Claude Code means by its context window), while `max_context_length` / `max_model_len` / a bare
+/// `context_length` are usually the model's *total* window, prompt plus room for the reply. So a name that says
+/// "input" wins; the totals are the fallback, since an over-named window only means compacting a little later than
+/// the model could. A missing or zero value is `None`: unknown, not zero.
+pub fn model_window(list: &Value, model_id: &str) -> Option<u64> {
+    const FIELDS: [&str; 6] = [
+        "max_input_tokens",
+        "input_token_limit",
+        "context_length",
+        "context_window",
+        "max_context_length",
+        "max_model_len",
+    ];
+    let wanted = model_id.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    list["data"].as_array()?.iter().find_map(|m| {
+        if m["id"].as_str()? != wanted {
+            return None;
+        }
+        FIELDS
+            .iter()
+            .find_map(|key| m[*key].as_u64())
+            .filter(|n| *n > 0)
+    })
+}
+
+fn models_url(provider: &str, base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    if provider == "ollama" && !base.ends_with("/v1") {
+        format!("{base}/v1/models")
+    } else {
+        format!("{base}/models")
+    }
+}
+
+/// Ask the provider for the model's real window. Best effort: anything that goes wrong answers `None`.
+pub fn context_window_from_models(
+    provider: &str,
+    base_url: &str,
+    model_id: &str,
+    key: &str,
+) -> Option<u64> {
+    if model_id.trim().is_empty() {
+        return None;
+    }
+    let mut request = agent(5).get(&models_url(provider, base_url));
+    if provider != "ollama" && !key.trim().is_empty() {
+        request = request.set("Authorization", &format!("Bearer {}", key.trim()));
+    }
+    let body = request.call().ok()?.into_string().ok()?;
+    model_window(&serde_json::from_str::<Value>(&body).ok()?, model_id)
+}
+
+/// Windows already learned, by route. Only a real answer is kept, so a provider that was unreachable or said nothing
+/// is asked again next time instead of being stuck unknown until the app restarts.
+static WINDOWS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+fn window_key(route: &CustomRoute) -> String {
+    format!(
+        "{}|{}|{}",
+        route.provider,
+        route.base_url.trim(),
+        route.model_id.trim()
+    )
+}
+
+fn remembered_window(route: &CustomRoute, key: Option<&str>) -> Option<u64> {
+    let name = window_key(route);
+    {
+        let known = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, window)) = known.iter().find(|(route_name, _)| *route_name == name) {
+            return Some(*window);
+        }
+    }
+    let found = context_window_from_models(
+        &route.provider,
+        &route.base_url,
+        &route.model_id,
+        key.unwrap_or_default(),
+    )?;
+    WINDOWS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((name, found));
+    Some(found)
 }
 
 // ---- keys -------------------------------------------------------------------------------------------------------------
@@ -908,7 +1020,10 @@ pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> 
     };
     let token = session_token(&route.provider, key.as_deref())?;
     let port = ensure_router(route, &token)?;
-    Ok(routed_env(route, &token, port))
+    // The provider's own window for this model, asked once per route. Nothing here may fail the spawn: a session on
+    // an assumed-200K window is still a working session.
+    let window = remembered_window(route, key.as_deref());
+    Ok(routed_env(route, &token, port, window))
 }
 
 #[cfg(test)]
@@ -973,6 +1088,7 @@ mod tests {
             &route("xai", "https://api.x.ai/v1", "grok-4"),
             "xai-fake",
             4321,
+            None,
         );
         let get = |k: &str| set.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
         assert_eq!(
@@ -1001,6 +1117,116 @@ mod tests {
         h.insert("authorization".to_string(), "Bearer xai-fake".to_string());
         assert!(authorize(&h, "xai-fake").is_ok());
         assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-zzz").is_err());
+    }
+
+    /// The window a routed model really has comes from the provider's own list, under whatever name it uses; an
+    /// unknown window must stay unknown rather than being invented, since Claude Code's 200K assumption beats a
+    /// made-up number.
+    #[test]
+    fn a_model_window_is_read_from_the_providers_own_list() {
+        let list = json!({"object": "list", "data": [
+            {"id": "deepseek-ai/DeepSeek-V4.1-Flash", "context_length": 1048576},
+            {"id": "other-model", "context_window": 8192},
+            {"id": "nameless-window", "max_model_len": 32768},
+            {"id": "no-window-at-all"},
+            {"id": "zero-window", "context_length": 0}
+        ]});
+        assert_eq!(
+            model_window(&list, "deepseek-ai/DeepSeek-V4.1-Flash"),
+            Some(1048576)
+        );
+        assert_eq!(model_window(&list, "other-model"), Some(8192));
+        assert_eq!(model_window(&list, "nameless-window"), Some(32768));
+        assert_eq!(model_window(&list, "no-window-at-all"), None);
+        assert_eq!(model_window(&list, "zero-window"), None);
+        assert_eq!(model_window(&list, "not-in-the-list"), None);
+        assert_eq!(model_window(&list, "  "), None);
+        assert_eq!(model_window(&json!({"data": "not a list"}), "x"), None);
+
+        // The prompt window wins over a total: `max_input_tokens` is what Claude Code means by its context window.
+        let both = json!({"data": [
+            {"id": "m", "max_input_tokens": 200000, "context_length": 262144, "max_model_len": 262144}
+        ]});
+        assert_eq!(model_window(&both, "m"), Some(200000));
+
+        let (name, value) = context_window_env(Some(1048576)).unwrap();
+        assert_eq!(
+            (name, value.as_str()),
+            ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "1048576")
+        );
+        assert_eq!(context_window_env(None), None);
+        assert_eq!(
+            context_window_env(Some(0)),
+            None,
+            "a zero window is no window"
+        );
+
+        // The routed session carries the window through, and leaves the variable out when nobody told us one.
+        let r = route("custom", "https://lighthouse.dphn.ai/run/text-v/v1", "m");
+        let (set, _) = routed_env(&r, "k", 4321, Some(262144));
+        assert!(set
+            .iter()
+            .any(|(n, v)| *n == "CLAUDE_CODE_MAX_CONTEXT_TOKENS" && v == "262144"));
+        let (set, _) = routed_env(&r, "k", 4321, None);
+        assert!(!set
+            .iter()
+            .any(|(n, _)| *n == "CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
+    }
+
+    /// End to end: a fake provider that answers `/models` with a window, so the whole path — URL, auth header,
+    /// parsing — is the one a real provider goes through.
+    #[test]
+    fn the_window_is_asked_for_over_the_real_http_path() {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(Mutex::new(String::new()));
+        let seen2 = seen.clone();
+        std::thread::spawn(move || {
+            let (mut s, _) = upstream.accept().unwrap();
+            let req = read_request(&mut s).unwrap();
+            *seen2.lock().unwrap() = req.path.clone();
+            let text = r#"{"object":"list","data":[{"id":"fake-model","context_length":1048576}]}"#;
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{text}", text.len());
+        });
+        assert_eq!(
+            context_window_from_models(
+                "custom",
+                &format!("http://127.0.0.1:{up_port}/v1"),
+                "fake-model",
+                "fake-key"
+            ),
+            Some(1048576)
+        );
+        assert_eq!(*seen.lock().unwrap(), "/v1/models");
+    }
+
+    /// Opt-in proof against a real routed provider. Give it a saved custom model id:
+    /// `MONOCODE_REAL_WINDOW=custom-mva0kfwr1s1b MONOCODE_REAL_BASE=https://lighthouse.dphn.ai/run/text-v/v1
+    ///  MONOCODE_REAL_MODEL=deepseek-ai/DeepSeek-V4.1-Flash cargo test real_window -- --nocapture`
+    #[test]
+    fn real_window_reads_the_live_provider() {
+        let Ok(custom_model_id) = std::env::var("MONOCODE_REAL_WINDOW") else {
+            return;
+        };
+        let (Ok(base_url), Ok(model_id)) = (
+            std::env::var("MONOCODE_REAL_BASE"),
+            std::env::var("MONOCODE_REAL_MODEL"),
+        ) else {
+            println!("[real-window] set MONOCODE_REAL_BASE and MONOCODE_REAL_MODEL too");
+            return;
+        };
+        let Ok(key) = read_key_in(KEY_SERVICE, &custom_model_id) else {
+            println!("[real-window] no key saved for {custom_model_id}");
+            return;
+        };
+        let window = context_window_from_models(
+            "custom",
+            &base_url,
+            &model_id,
+            key.as_deref().unwrap_or_default(),
+        );
+        println!("[real-window] {model_id} -> {window:?}");
+        assert!(window.is_some_and(|w| w > 200_000), "read {window:?}");
     }
 
     #[test]
@@ -1249,7 +1475,7 @@ mod tests {
         let r = route("ollama", "http://localhost:11434", &model);
         let token = session_token("ollama", None).unwrap();
         let port = start_router(r.clone(), token.clone()).unwrap();
-        let (set, remove) = routed_env(&r, &token, port);
+        let (set, remove) = routed_env(&r, &token, port, None);
         let dir =
             std::env::temp_dir().join(format!("monocode-router-proof-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1283,5 +1509,106 @@ mod tests {
                 .collect::<String>()
         );
         assert!(out.status.success());
+    }
+
+    /// Opt-in, real Claude Code through the router to the real routed provider, checking the two things Ash saw:
+    /// the window Claude Code believes, and whether a tool-calling turn reports a whole-turn total as its level.
+    /// Needs the model's key saved (add it once in the app).
+    ///
+    /// `MONOCODE_LIVE_ROUTE=custom-mva0kfwr1s1b MONOCODE_REAL_BASE=https://lighthouse.dphn.ai/run/text-v/v1
+    ///  MONOCODE_REAL_MODEL=deepseek-ai/DeepSeek-V4.1-Flash cargo test live_routed_window -- --nocapture`
+    #[test]
+    fn live_routed_session_reports_the_real_window() {
+        let Ok(custom_model_id) = std::env::var("MONOCODE_LIVE_ROUTE") else {
+            return;
+        };
+        let (Ok(base_url), Ok(model_id)) = (
+            std::env::var("MONOCODE_REAL_BASE"),
+            std::env::var("MONOCODE_REAL_MODEL"),
+        ) else {
+            println!("[live-route] set MONOCODE_REAL_BASE and MONOCODE_REAL_MODEL too");
+            return;
+        };
+        let r = route("custom", &base_url, &model_id);
+        let key = read_key_in(KEY_SERVICE, &custom_model_id).unwrap();
+        let token = session_token("custom", key.as_deref()).unwrap();
+        let port = start_router(r.clone(), token.clone()).unwrap();
+        let window = remembered_window(&r, key.as_deref());
+        println!("[live-route] window from the provider: {window:?}");
+        assert_eq!(window, Some(1048576));
+
+        // Told the window: Claude Code believes it.
+        let with = one_routed_turn(&r, &token, port, window, &model_id);
+        println!(
+            "[live-route] num_turns={:?} contextWindow={:?} iterations={:?}",
+            with.0, with.1, with.2
+        );
+        assert_eq!(
+            with.1,
+            Some(1048576),
+            "Claude Code must be told the real window, not its 200K assumption"
+        );
+        // The control: with no window named — exactly the code path before this fix — Claude Code is back to
+        // assuming 200K. This is what proves the 1M above comes from the variable and nothing else.
+        let without = one_routed_turn(&r, &token, port, None, &model_id);
+        println!("[live-route] control: contextWindow={:?}", without.1);
+        assert_eq!(
+            without.1,
+            Some(200000),
+            "without the window named, Claude Code's own assumption is 200K"
+        );
+    }
+
+    /// One real Claude Code turn through the router. Answers `(num_turns, contextWindow, iterations)`.
+    fn one_routed_turn(
+        r: &CustomRoute,
+        token: &str,
+        port: u16,
+        window: Option<u64>,
+        model_id: &str,
+    ) -> (Option<u64>, Option<u64>, Value) {
+        let (set, remove) = routed_env(r, token, port, window);
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-live-route-{}-{window:?}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cmd = std::process::Command::new("claude");
+        cmd.args([
+            "-p",
+            "Read the file package.json and tell me the version field, one line.",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            model_id,
+        ])
+        .current_dir("/Users/ash/Worktrees/monocode-hub-context-fix")
+        .env("CLAUDE_CONFIG_DIR", &dir)
+        .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
+        for k in remove {
+            cmd.env_remove(k);
+        }
+        for (k, v) in set {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let result = stdout
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|v| v["type"] == "result")
+            .expect("a result line");
+        let window_seen = result["modelUsage"]
+            .as_object()
+            .and_then(|m| m.values().next().cloned())
+            .and_then(|e| e["contextWindow"].as_u64());
+        (
+            result["num_turns"].as_u64(),
+            window_seen,
+            result["usage"]["iterations"].clone(),
+        )
     }
 }

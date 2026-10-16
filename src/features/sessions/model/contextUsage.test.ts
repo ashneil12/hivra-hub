@@ -5,6 +5,7 @@ import {
   contextTooltip,
   dropContextWindow,
   formatTokens,
+  isOverWindow,
   mergeContextUsage,
 } from "./contextUsage";
 
@@ -18,8 +19,8 @@ describe("contextRatio", () => {
     expect(contextRatio(undefined)).toBeNull();
   });
 
-  it("clamps a window overrun to full rather than overflowing the ring", () => {
-    expect(contextRatio({ used: 300_000, window: 256_000 })).toBe(1);
+  it("reports a window overrun as itself, so a wrong window is visible", () => {
+    expect(contextRatio({ used: 300_000, window: 256_000 })).toBe(300_000 / 256_000);
   });
 
   it("rejects nonsense readings", () => {
@@ -62,6 +63,23 @@ describe("contextTooltip", () => {
       headline: "Context used",
       detail: "176K tokens",
     });
+  });
+
+  it("says so out loud when the reading passed the window", () => {
+    expect(contextTooltip({ used: 5_800_000, window: 200_000 })).toEqual({
+      headline: "2900% context used",
+      detail: "5.8M / 200K tokens",
+      note: "More than this model's reported window; auto-compact uses that window.",
+    });
+  });
+});
+
+describe("isOverWindow", () => {
+  it("is true only past the window", () => {
+    expect(isOverWindow({ used: 300_000, window: 256_000 })).toBe(true);
+    expect(isOverWindow({ used: 256_000, window: 256_000 })).toBe(false);
+    expect(isOverWindow({ used: 100 })).toBe(false);
+    expect(isOverWindow(undefined)).toBe(false);
   });
 });
 

@@ -847,8 +847,54 @@ describe("contextFromResult", () => {
     expect(contextFromResult(rec)).toEqual({ used: 70_305, window: 200000 });
   });
 
+  it("reads the top level when a single-request turn sends no iterations", () => {
+    // A native turn carries no `iterations`, and one request makes the top level the level itself.
+    const rec = {
+      type: "result",
+      num_turns: 1,
+      usage: {
+        input_tokens: 2,
+        cache_creation_input_tokens: 12_941,
+        cache_read_input_tokens: 16_652,
+        output_tokens: 13,
+      },
+      modelUsage: { "claude-sonnet-5": { contextWindow: 1000000 } },
+    };
+    expect(contextFromResult(rec)).toEqual({ used: 29608, window: 1000000 });
+  });
+
+  it("does not read a whole-turn total as the level when the route sends no iterations", () => {
+    // The live "Other models" route sends `iterations: []` on every turn, so the top-level usage is the sum over
+    // every request in the turn — roughly double the window occupancy after one tool call. The per-`assistant`
+    // readings already carried the true figure; the result must not overwrite it with the sum.
+    const rec = {
+      type: "result",
+      num_turns: 2,
+      usage: {
+        input_tokens: 20,
+        cache_read_input_tokens: 120_000,
+        output_tokens: 92,
+        iterations: [],
+      },
+      modelUsage: { "deepseek-ai/DeepSeek-V4.1-Flash": { contextWindow: 200000 } },
+    };
+    expect(contextFromResult(rec)).toEqual({ window: 200000 });
+  });
+
+  it("still reads the window when the route sends no usage at all", () => {
+    const rec = {
+      type: "result",
+      usage: { iterations: [] },
+      modelUsage: { "some-model": { contextWindow: 1048576 } },
+    };
+    expect(contextFromResult(rec)).toEqual({ window: 1048576 });
+  });
+
   it("has nothing to report for a turn that never called the API", () => {
     expect(contextFromResult({ type: "result", usage: {} })).toBeUndefined();
+    expect(
+      contextFromResult({ type: "result", usage: { iterations: [] } }),
+    ).toBeUndefined();
   });
 });
 

@@ -50,7 +50,7 @@ export function ContextMeter({
     ) : null;
   }
 
-  const { headline, detail } = contextTooltip(usage);
+  const { headline, detail, note } = contextTooltip(usage);
   const actionsOpen = open && onCompact != null;
 
   return (
@@ -84,6 +84,11 @@ export function ContextMeter({
         >
           <div className="text-[12px] leading-4 text-content">{headline}</div>
           <div className="text-[11px] leading-4 text-content/50">{detail}</div>
+          {note ? (
+            <div className="max-w-[15rem] text-[11px] leading-4 text-content/50">
+              {note}
+            </div>
+          ) : null}
           {actionsOpen ? (
             <button
               type="button"
@@ -109,12 +114,15 @@ export function ContextMeter({
 }
 
 function MeterRing({ ratio, label }: { ratio: number; label?: string }) {
+  // The ring is geometry: a reading past the window still draws as a full
+  // ring, while `ratio` itself stays unclamped for the number in the tooltip.
+  const filled = Math.min(1, ratio);
   return (
     <svg
       width={SIZE}
       height={SIZE}
       viewBox={`0 0 ${SIZE} ${SIZE}`}
-      className={ringClass(ratio)}
+      className={ringClass(filled)}
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
@@ -129,7 +137,7 @@ function MeterRing({ ratio, label }: { ratio: number; label?: string }) {
         className="opacity-25"
       />
       {/* A round cap would leave a dot on an empty ring. */}
-      {ratio > 0 ? (
+      {filled > 0 ? (
         <circle
           cx={SIZE / 2}
           cy={SIZE / 2}
@@ -139,7 +147,7 @@ function MeterRing({ ratio, label }: { ratio: number; label?: string }) {
           strokeWidth={STROKE}
           strokeLinecap="round"
           strokeDasharray={CIRCUMFERENCE}
-          strokeDashoffset={CIRCUMFERENCE * (1 - ratio)}
+          strokeDashoffset={CIRCUMFERENCE * (1 - filled)}
           transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
         />
       ) : null}

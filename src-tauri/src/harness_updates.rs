@@ -165,10 +165,22 @@ mod tests {
 
     #[test]
     fn a_clean_exit_that_says_it_failed_is_not_success() {
-        assert!(reports_failure(b"Checking for updates...\nUpdate failed: EACCES\n", b""));
-        assert!(reports_failure(b"", b"Error: could not write versions dir\n"));
-        assert!(!reports_failure(b"Successfully updated from 2.1.296 to 2.1.300\n", b""));
-        assert!(!reports_failure(b"Claude Code is up to date (2.1.300)\n", b""));
+        assert!(reports_failure(
+            b"Checking for updates...\nUpdate failed: EACCES\n",
+            b""
+        ));
+        assert!(reports_failure(
+            b"",
+            b"Error: could not write versions dir\n"
+        ));
+        assert!(!reports_failure(
+            b"Successfully updated from 2.1.296 to 2.1.300\n",
+            b""
+        ));
+        assert!(!reports_failure(
+            b"Claude Code is up to date (2.1.300)\n",
+            b""
+        ));
     }
 
     #[test]

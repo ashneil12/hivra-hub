@@ -1188,6 +1188,14 @@ export function contextUsedFromAssistant(
  * of `usage.iterations` is what actually sits in the window. `modelUsage`
  * carries the window itself, which is why we let the CLI tell us rather than
  * keeping a model table in sync.
+ *
+ * With no iterations to read, the top level is only the level when the turn
+ * made a single request; `num_turns` says how many it made. Some routes (a
+ * gateway in front of a non-Claude model) send `iterations: []` on every turn,
+ * where the top level is a whole-turn total — one tool call makes a two-request
+ * turn report roughly double what is in the window, so it must NOT be read as
+ * the level. The per-`assistant` readings already carried the true figure for
+ * that turn; the result then only adds the window.
  */
 export function contextFromResult(
   rec: Record<string, unknown>,
@@ -1195,7 +1203,9 @@ export function contextFromResult(
   const usage = asRecord(rec.usage);
   const iterations = Array.isArray(usage?.iterations) ? usage.iterations : [];
   const last = asRecord(iterations[iterations.length - 1]);
-  const used = contextUsedFromUsage(last ?? usage);
+  const requests = numberField(rec, "num_turns");
+  const used =
+    last || requests <= 1 ? contextUsedFromUsage(last ?? usage) : 0;
 
   let window: number | undefined;
   const modelUsage = asRecord(rec.modelUsage);
