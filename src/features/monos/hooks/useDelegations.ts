@@ -25,7 +25,11 @@ function isMainWindow(): boolean {
   }
 }
 
-/** Who a Claude session is, for Ash OS: a Mono's chat (a Lead, the checker, or another), a delegated worker, or a plain chat. */
+/**
+ * Who a Claude session is, for Ash OS: a Mono's chat (a Lead, the checker, or another), a worker, or a plain chat. A
+ * chat started through the app CLI (`app-<caller>-<request>`) stays a worker after its task finished, as its ash-os
+ * identity does (hub/model/hubMcp.ts), so a rebind at the next launch never drops the role.
+ */
 export function chatBinding(
   session: Pick<Session, "id" | "harness" | "providerSessionId">,
   openDelegation?: string,
@@ -38,7 +42,7 @@ export function chatBinding(
       : leadFor(mono.id)
         ? "lead"
         : "mono"
-    : openDelegation
+    : openDelegation || session.id.startsWith("app-")
       ? "worker"
       : undefined;
   return {

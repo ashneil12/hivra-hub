@@ -11486,7 +11486,11 @@ function Workspace({
                 rememberSession({
                   sessionId: id,
                   cwd: created?.cwd ?? launch.cwd,
-                  title: created?.title ?? launch.prompt.trim().slice(0, 300),
+                  // A delegation's card names the job, not the brief's "[MonoCode brief from ...]" opening line.
+                  title:
+                    delegation?.title ??
+                    created?.title ??
+                    launch.prompt.trim().slice(0, 300),
                   harness: created?.harness ?? launch.harness,
                   model:
                     created?.model ??
