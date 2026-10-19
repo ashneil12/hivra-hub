@@ -107,7 +107,8 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         path,
     };
     app.manage(host.clone());
-    if enabled {
+    // A dev copy never opens phone access (port 38416, UPnP), even with a copied setting (src/instance.rs).
+    if enabled && crate::instance::policy().phone_access {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(error) = start(&app, &host).await {
@@ -247,6 +248,9 @@ pub async fn mobile_configure(
     open_router: bool,
     remote_address: String,
 ) -> Result<(), String> {
+    if enabled && !crate::instance::policy().phone_access {
+        return Err("Phone access is off in a dev copy.".into());
+    }
     if !remote_address.trim().is_empty() {
         Address::parse(&remote_address)?;
     }

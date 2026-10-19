@@ -740,6 +740,10 @@ pub fn automation_runs_recover(
     started_before: i64,
     now: i64,
 ) -> Result<Vec<DueAutomationRun>, String> {
+    // A dev copy never runs automations on its own (src/instance.rs); its runs stay as they are.
+    if !crate::instance::policy().automations {
+        return Ok(Vec::new());
+    }
     let mut conn = store.lock_conn()?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut statement = tx
@@ -848,6 +852,10 @@ pub fn automations_claim_due(
     if next_run_at <= expected_next_run_at {
         return Err("The following automation occurrence must advance the schedule.".into());
     }
+    // A dev copy never runs a scheduled automation (src/instance.rs). "Run now" is the user's own action and stays.
+    if !crate::instance::policy().automations {
+        return Ok(None);
+    }
     let mut conn = store.lock_conn()?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let current = get(&tx, &automation_id)?.ok_or_else(|| "Automation not found.".to_string())?;
@@ -917,6 +925,10 @@ pub fn automations_claim_event(
     }
     if claim.prompt.trim().is_empty() || claim.prompt.len() > MAX_PROMPT + 10_000 {
         return Err("Invalid automation run prompt.".into());
+    }
+    // A dev copy never runs an automation from an Inbox event (src/instance.rs).
+    if !crate::instance::policy().automations {
+        return Ok(None);
     }
     let scheduled_for = if claim.scheduled_for > 0 {
         claim.scheduled_for

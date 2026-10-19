@@ -16,8 +16,9 @@
     "host": "node build/host/monocode-host.mjs",
     "pretest:host": "npm run host:build",
     "test:host": "vitest run --config host/vitest.config.ts",
-    "check": "npm run check:web && npm run check:rust",
+    "check": "npm run check:web && npm run check:scripts && npm run check:rust",
     "check:web": "vitest run && tsc --noEmit",
+    "check:scripts": "node --test scripts/*.test.cjs",
     "check:rust": "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test",
     "set-version": "node scripts/bump-version.mjs",
     "tauri": "tauri",
@@ -28,13 +29,11 @@
     "build:fedora": "tauri build --bundles rpm",
     "build:windows": "set \"RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc\" && tauri build --bundles nsis",
     "hub:check": "bash scripts/identity-guard.sh",
-    "hub:dev": "tauri dev --config src-tauri/tauri.hub.conf.json",
+    "hub:dev": "tauri dev --config src-tauri/tauri.hub.conf.json --config '{\"identifier\":\"com.ash.monocode-hub.dev.default\",\"productName\":\"MonoCode Hub Dev\"}'",
     "hub:build": "tauri build --config src-tauri/tauri.hub.conf.json --bundles app",
     "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
     "hub:install": "npm run hub:verify && rm -rf \"$HOME/Applications/MonoCode Hub.app\" && cp -R \"target/release/bundle/macos/MonoCode Hub.app\" \"$HOME/Applications/\" && echo \"installed: ~/Applications/MonoCode Hub.app\"",
-    "hub:recover": "bash scripts/recover-sessions.sh",
-    "hub:test-copy:build": "tauri build --config src-tauri/tauri.test-copy.conf.json --features test-copy --bundles app",
-    "hub:test-copy:verify": "node scripts/verify-test-copy.mjs"
+    "hub:recover": "bash scripts/recover-sessions.sh"
   },
   "dependencies": {
     "@codemirror/lang-cpp": "^6.0.3",

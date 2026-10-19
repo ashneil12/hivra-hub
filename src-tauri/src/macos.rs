@@ -836,12 +836,24 @@ pub(crate) fn install_dock_menu(app: &AppHandle) {
     }
 }
 
+/// What the dev wrapper bundle carries, all from the copy's own config: its product name, its identifier (a dev
+/// slot's, never the daily one: a debug build with the daily identity is refused before this runs) and the
+/// certificate to sign with.
+#[cfg(debug_assertions)]
+pub(crate) struct DevBundle<'a> {
+    pub name: &'a str,
+    pub identifier: &'a str,
+    pub version: &'a str,
+    pub bundle_version: &'a str,
+    pub signing_identity: Option<&'a str>,
+}
+
 /// `tauri dev` launches a raw binary. The Dock then skips Icon Services and
 /// paints Tauri's embedded icns edge-to-edge. Wrap that binary in a real
 /// `.app` so macOS applies the plate, mask, and padding.
 #[cfg(debug_assertions)]
-pub(crate) fn ensure_dev_bundle(version: &str, bundle_version: &str) {
-    if let Err(err) = relaunch_from_dev_bundle(version, bundle_version) {
+pub(crate) fn ensure_dev_bundle(bundle: &DevBundle) {
+    if let Err(err) = relaunch_from_dev_bundle(bundle) {
         eprintln!("monocode: macos dev bundle: {err}");
     }
 }
@@ -889,17 +901,23 @@ fn existing_bundle_root_from_exe(exe: &Path) -> Option<(std::path::PathBuf, Stri
 }
 
 #[cfg(debug_assertions)]
-fn relaunch_from_dev_bundle(version: &str, bundle_version: &str) -> Result<(), String> {
+fn relaunch_from_dev_bundle(bundle: &DevBundle) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
+    if !dev_bundle_identifier_allowed(bundle.identifier) {
+        return Err(format!(
+            "refusing to wrap {} in a dev bundle: not a dev copy's identifier",
+            bundle.identifier
+        ));
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     if let Some((app, app_name)) = existing_bundle_root_from_exe(&exe) {
-        write_dev_bundle_icons(&app, &app_name, version, bundle_version)?;
+        write_dev_bundle_icons(&app, &app_name, bundle)?;
         return Ok(());
     }
-    let app_name = dev_bundle_name_from_env(DEV_BUNDLE_DEFAULT_NAME);
+    let app_name = dev_bundle_name_from_env(bundle.name);
 
     let app = exe
         .parent()
@@ -907,7 +925,7 @@ fn relaunch_from_dev_bundle(version: &str, bundle_version: &str) -> Result<(), S
         .join(dev_bundle_dir_name(&app_name));
     let macos_dir = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos_dir).map_err(|e| e.to_string())?;
-    write_dev_bundle_icons(&app, &app_name, version, bundle_version)?;
+    write_dev_bundle_icons(&app, &app_name, bundle)?;
 
     let bundled = macos_dir.join("monocode");
     let _ = std::fs::remove_file(&bundled);
@@ -922,13 +940,27 @@ fn relaunch_from_dev_bundle(version: &str, bundle_version: &str) -> Result<(), S
 
     // The linker's ad-hoc signature carries a `monocode-<hash>` identifier.
     // UNUserNotificationCenter refuses authorization, without prompting,
-    // unless the signing identifier matches CFBundleIdentifier.
-    let signed = Command::new("/usr/bin/codesign")
-        .args(["--force", "--sign", "-", "--identifier", DEV_BUNDLE_ID])
-        .arg(&app)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
+    // unless the signing identifier matches CFBundleIdentifier. Sign with the
+    // configured certificate when there is one: an ad-hoc signature changes on
+    // every rebuild, so the Keychain and folder permissions would ask again.
+    let sign = |identity: &str| {
+        Command::new("/usr/bin/codesign")
+            .args([
+                "--force",
+                "--sign",
+                identity,
+                "--identifier",
+                bundle.identifier,
+            ])
+            .arg(&app)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    let certificate = bundle
+        .signing_identity
+        .filter(|identity| !identity.is_empty() && *identity != "-");
+    let signed = certificate.is_some_and(sign) || sign("-");
     if !signed {
         eprintln!("monocode: macos dev bundle: codesign failed; notifications stay off");
     }
@@ -940,17 +972,17 @@ fn relaunch_from_dev_bundle(version: &str, bundle_version: &str) -> Result<(), S
 }
 
 #[cfg(debug_assertions)]
-fn write_dev_bundle_icons(
-    app: &Path,
-    app_name: &str,
-    version: &str,
-    bundle_version: &str,
-) -> Result<(), String> {
+fn write_dev_bundle_icons(app: &Path, app_name: &str, bundle: &DevBundle) -> Result<(), String> {
     let resources = app.join("Contents/Resources");
     std::fs::create_dir_all(&resources).map_err(|e| e.to_string())?;
     std::fs::write(
         app.join("Contents/Info.plist"),
-        dev_bundle_plist(app_name, version, bundle_version),
+        dev_bundle_plist(
+            app_name,
+            bundle.identifier,
+            bundle.version,
+            bundle.bundle_version,
+        ),
     )
     .map_err(|e| e.to_string())?;
     std::fs::write(resources.join("AppIcon.icns"), DEV_ICNS).map_err(|e| e.to_string())?;
@@ -961,18 +993,18 @@ fn write_dev_bundle_icons(
     Ok(())
 }
 
-/// Must match `CFBundleIdentifier` in the generated dev bundle plist and tauri.conf.json.
-///
-/// This is the Hub fork, so the dev bundle carries the Hub's own identity. It must never be
-/// `com.monocode.desktop`: Tauri keys the app data directory off the identifier
-/// (`app_data_dir() = ~/Library/Application Support/<identifier>`), so a bundle with upstream's
-/// identifier reads and writes upstream MonoCode's database — see scripts/identity-guard.sh.
+/// Only a dev copy is wrapped. Tauri keys the app data directory off the identifier
+/// (`app_data_dir() = ~/Library/Application Support/<identifier>`), so a dev bundle carrying the daily
+/// identifier would open Ash's real chats, and upstream's `com.monocode.desktop` upstream MonoCode's
+/// database (scripts/identity-guard.sh).
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_DEFAULT_NAME: &str = "MonoCode Hub";
+fn dev_bundle_identifier_allowed(identifier: &str) -> bool {
+    crate::instance::Identity::classify(identifier)
+        .is_ok_and(|identity| identity.kind == crate::instance::Kind::Dev)
+}
+
 #[cfg(debug_assertions)]
 const DEV_BUNDLE_NAME_ENV: &str = "MONOCODE_DEV_APP_NAME";
-#[cfg(debug_assertions)]
-const DEV_BUNDLE_ID: &str = "com.ash.monocode-hub";
 #[cfg(debug_assertions)]
 const DEV_ICNS: &[u8] = include_bytes!("../icons/icon.icns");
 #[cfg(debug_assertions)]
@@ -1021,8 +1053,14 @@ fn escape_plist_text(value: &str) -> String {
 }
 
 #[cfg(debug_assertions)]
-fn dev_bundle_plist(app_name: &str, version: &str, bundle_version: &str) -> Vec<u8> {
+fn dev_bundle_plist(
+    app_name: &str,
+    identifier: &str,
+    version: &str,
+    bundle_version: &str,
+) -> Vec<u8> {
     let app_name = escape_plist_text(app_name);
+    let identifier = escape_plist_text(identifier);
     let version = escape_plist_text(version);
     let bundle_version = escape_plist_text(bundle_version);
     format!(
@@ -1041,7 +1079,7 @@ fn dev_bundle_plist(app_name: &str, version: &str, bundle_version: &str) -> Vec<
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.ash.monocode-hub</string>
+	<string>{identifier}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -1182,38 +1220,45 @@ mod tests {
 
     #[test]
     fn dev_bundle_plist_uses_the_provided_app_name() {
-        let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev", "1.2.3", "1.2.3")).unwrap();
+        let plist = String::from_utf8(dev_bundle_plist(
+            "MonoCode Dev",
+            "com.ash.monocode-hub.dev.wt",
+            "1.2.3",
+            "1.2.3",
+        ))
+        .unwrap();
         assert!(plist.contains("<string>MonoCode Dev</string>"));
         assert!(!plist.contains("<string>MonoCode</string>"));
     }
 
-    /// Tauri keys the app data directory off the bundle identifier, so a Hub build carrying
-    /// upstream's `com.monocode.desktop` would read and write upstream MonoCode's database.
-    /// That is what hid Ash's conversations on 16 Oct 2026. The dev bundle must never do it.
+    /// Tauri keys the app data directory off the bundle identifier. The dev bundle carries the dev
+    /// copy's own identifier from its config: never the daily one (Ash's real chats) and never
+    /// upstream's `com.monocode.desktop`, which hid Ash's conversations on 16 Oct 2026.
     #[test]
-    fn dev_bundle_plist_carries_the_hub_identifier_not_upstreams() {
-        let plist =
-            String::from_utf8(dev_bundle_plist("MonoCode Hub", "0.13.0", "0.13.0")).unwrap();
-        assert!(
-            plist.contains("<string>com.ash.monocode-hub</string>"),
-            "the dev bundle plist must carry the Hub identifier"
-        );
-        assert!(
-            !plist.contains("com.monocode.desktop"),
-            "the dev bundle must never carry upstream's identifier — it would share upstream's database"
-        );
+    fn dev_bundle_plist_carries_the_copys_own_identifier() {
+        let plist = String::from_utf8(dev_bundle_plist(
+            "MonoCode Hub Dev",
+            "com.ash.monocode-hub.dev.hub-1b-identity",
+            "0.16.0",
+            "0.16.0",
+        ))
+        .unwrap();
+        assert!(plist.contains("<string>com.ash.monocode-hub.dev.hub-1b-identity</string>"));
+        assert!(!plist.contains("<string>com.ash.monocode-hub</string>"));
+        assert!(!plist.contains("com.monocode.desktop"));
     }
 
     #[test]
-    fn dev_bundle_constants_match_the_hub_identity() {
-        assert_eq!(
-            DEV_BUNDLE_ID, "com.ash.monocode-hub",
-            "DEV_BUNDLE_ID must match CFBundleIdentifier in tauri.conf.json"
-        );
-        assert_eq!(
-            DEV_BUNDLE_DEFAULT_NAME, "MonoCode Hub",
-            "the dev bundle name must match productName in tauri.conf.json"
-        );
+    fn only_a_dev_copy_is_wrapped_in_a_dev_bundle() {
+        assert!(dev_bundle_identifier_allowed("com.ash.monocode-hub.dev.wt"));
+        for refused in [
+            "com.ash.monocode-hub",
+            "com.monocode.desktop",
+            "com.ash.monocode-hub.sandbox",
+            "com.ash.monocode-hub.dev.",
+        ] {
+            assert!(!dev_bundle_identifier_allowed(refused), "{refused}");
+        }
     }
 
     /// `src-tauri/tauri.conf.json` is the single source of the app identity. Nothing may swallow an

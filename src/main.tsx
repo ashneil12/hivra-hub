@@ -27,6 +27,7 @@ import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
+import { DevRibbon } from "./app/shell/DevRibbon";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
 if (isTauri()) setModelKeyStore(tauriModelKeyStore);
@@ -122,6 +123,7 @@ void Promise.all([
             history={history}
             historyCwd={historyCwd}
           />
+          <DevRibbon />
         </BootGate>
       </React.StrictMode>,
     );

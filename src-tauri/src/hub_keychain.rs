@@ -3,8 +3,15 @@
 //! Only items whose service starts with `monocode-hub` are ever written, checked or deleted: the app can never reach
 //! another Keychain item through these commands. A login's secret goes in and never comes back out to the webview:
 //! `connector_login_exists` answers yes or no only.
+//!
+//! A dev copy (src/instance.rs) only ever uses `monocode-hub-dev:*`: it can never ask for, overwrite or delete one of
+//! the daily app's logins or keys.
+
+use crate::instance::Kind;
 
 const PREFIX: &str = "monocode-hub";
+/// Every Keychain service a dev copy uses starts with this.
+pub(crate) const DEV_PREFIX: &str = "monocode-hub-dev:";
 
 fn check_service(service: &str) -> Result<(), String> {
     let tidy = service.starts_with(PREFIX)
@@ -19,11 +26,19 @@ fn check_service(service: &str) -> Result<(), String> {
     }
 }
 
-fn scoped_service(service: &str) -> String {
-    if cfg!(feature = "test-copy") {
-        format!("monocode-hub-sandbox:{service}")
-    } else {
-        service.to_string()
+/// The Keychain service this copy really uses for `service`. The daily app uses it as given. A dev copy maps
+/// `monocode-hub:<name>` to `monocode-hub-dev:<name>` and puts `monocode-hub-dev:` in front of anything else, so none
+/// of its names is ever a daily one.
+pub(crate) fn scoped_service(kind: Kind, service: &str) -> String {
+    match kind {
+        Kind::Daily => service.to_string(),
+        Kind::Dev => {
+            let name = service
+                .strip_prefix(DEV_PREFIX)
+                .or_else(|| service.strip_prefix("monocode-hub:"))
+                .unwrap_or(service);
+            format!("{DEV_PREFIX}{name}")
+        }
     }
 }
 
@@ -32,7 +47,7 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
-    let service = scoped_service(service);
+    let service = scoped_service(crate::instance::kind(), service);
     keyring::Entry::new(&service, account).map_err(|_| "Couldn't reach the Keychain.".to_string())
 }
 
@@ -117,6 +132,37 @@ mod tests {
         }
         assert!(check_service("monocode-hub:github").is_ok());
         assert!(check_service("monocode-hub-test:proof").is_ok());
+    }
+
+    #[test]
+    fn a_dev_copy_never_forms_a_daily_keychain_name() {
+        for service in [
+            crate::model_router::KEY_SERVICE,
+            "monocode-hub:github",
+            "monocode-hub:gmail",
+            "monocode-hub",
+            "monocode-hub-test:proof",
+            "monocode-hub-sandbox:model-key",
+            "monocode-hub-dev:github",
+            "monocode-hub:monocode-hub:x",
+        ] {
+            assert!(check_service(service).is_ok(), "{service}");
+            let dev = scoped_service(Kind::Dev, service);
+            assert!(dev.starts_with(DEV_PREFIX), "{service} -> {dev}");
+            assert!(!dev.starts_with("monocode-hub:"), "{service} -> {dev}");
+            // Applying it twice changes nothing: a dev name stays the same dev name.
+            assert_eq!(scoped_service(Kind::Dev, &dev), dev);
+            // The daily app's names are exactly what it was given.
+            assert_eq!(scoped_service(Kind::Daily, service), service);
+        }
+        assert_eq!(
+            scoped_service(Kind::Dev, crate::model_router::KEY_SERVICE),
+            "monocode-hub-dev:model-key"
+        );
+        assert_eq!(
+            scoped_service(Kind::Dev, "monocode-hub:github"),
+            "monocode-hub-dev:github"
+        );
     }
 
     /// Real Keychain round trip with a DUMMY login only (service `monocode-hub-test…`), deleted at the end.

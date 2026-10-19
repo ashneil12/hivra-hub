@@ -11,6 +11,9 @@
 //! Dev override (for running against the stub in scripts/hub-stub-server.mjs):
 //! `MONOCODE_HUB_PORT` and `MONOCODE_HUB_TOKEN_FILE`. The host is always
 //! 127.0.0.1, so a changed variable can never send the key off this Mac.
+//!
+//! A dev copy (src/instance.rs) never reaches the live Ash OS: its bridge is off unless both variables point at the
+//! stub or the read-only proxy (scripts/hub-live-proxy.mjs), and it refuses port 18767 and the live key file.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -64,33 +67,69 @@ pub struct Endpoint {
     token_path: PathBuf,
 }
 
+const DEV_OFF: &str = "This dev copy stays off the live Ash OS. To see the hub, start the stub \
+     (node scripts/hub-stub-server.mjs) or the read-only proxy (node scripts/hub-live-proxy.mjs) and set \
+     MONOCODE_HUB_PORT and MONOCODE_HUB_TOKEN_FILE.";
+
 impl Endpoint {
     pub fn from_env() -> Result<Self, HubError> {
-        if cfg!(feature = "test-copy") {
-            return Err(HubError::new(
-                "unreachable",
-                "This test copy is isolated from the live harness service.",
-            ));
+        Self::resolve(
+            crate::instance::policy().live_ash_os,
+            std::env::var("MONOCODE_HUB_PORT").ok(),
+            std::env::var_os("MONOCODE_HUB_TOKEN_FILE").map(PathBuf::from),
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(PathBuf::from),
+        )
+    }
+
+    /// `live`: whether this copy may use the live Ash OS (the daily app). A dev copy needs both overrides, and never
+    /// gets the live port or the live key file.
+    fn resolve(
+        live: bool,
+        port: Option<String>,
+        token_file: Option<PathBuf>,
+        home: Option<PathBuf>,
+    ) -> Result<Self, HubError> {
+        let port = port
+            .map(|raw| {
+                raw.trim()
+                    .parse::<u16>()
+                    .map_err(|_| HubError::new("error", "MONOCODE_HUB_PORT is not a port number."))
+            })
+            .transpose()?;
+        let live_key = home.map(|home| home.join(TOKEN_SUBPATH));
+        if !live {
+            let (Some(port), Some(token_path)) = (port, token_file) else {
+                return Err(HubError::new("unreachable", DEV_OFF));
+            };
+            if port == DEFAULT_PORT {
+                return Err(HubError::new(
+                    "refused",
+                    "A dev copy never talks to the live Ash OS on port 18767.",
+                ));
+            }
+            if live_key.is_some_and(|key| same_file(&key, &token_path)) {
+                return Err(HubError::new(
+                    "refused",
+                    "A dev copy never reads the live Ash OS key.",
+                ));
+            }
+            return Ok(Self { port, token_path });
         }
-        let port = match std::env::var("MONOCODE_HUB_PORT") {
-            Ok(raw) => raw
-                .trim()
-                .parse::<u16>()
-                .map_err(|_| HubError::new("error", "MONOCODE_HUB_PORT is not a port number."))?,
-            Err(_) => DEFAULT_PORT,
-        };
-        let token_path = match std::env::var_os("MONOCODE_HUB_TOKEN_FILE") {
-            Some(path) => PathBuf::from(path),
+        let token_path = match token_file.or(live_key) {
+            Some(path) => path,
             None => {
-                let home = std::env::var_os("HOME")
-                    .or_else(|| std::env::var_os("USERPROFILE"))
-                    .ok_or_else(|| {
-                        HubError::new("unreachable", "Ash OS isn't set up on this Mac.")
-                    })?;
-                PathBuf::from(home).join(TOKEN_SUBPATH)
+                return Err(HubError::new(
+                    "unreachable",
+                    "Ash OS isn't set up on this Mac.",
+                ))
             }
         };
-        Ok(Self { port, token_path })
+        Ok(Self {
+            port: port.unwrap_or(DEFAULT_PORT),
+            token_path,
+        })
     }
 
     #[cfg(test)]
@@ -530,10 +569,18 @@ pub fn ash_os_server_from(config: &Value) -> Option<Value> {
     Some(out)
 }
 
-/// `hub_ash_os_mcp()`: Ash's ash-os MCP entry, or null when Claude Code has none.
+/// Two spellings of one file: the live key reached through a symlink or `..` is still the live key.
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// `hub_ash_os_mcp()`: Ash's ash-os MCP entry, or null when Claude Code has none. Always null in a dev copy.
 #[tauri::command]
 fn hub_ash_os_mcp() -> Option<Value> {
-    if cfg!(feature = "test-copy") {
+    if !crate::instance::policy().live_ash_os {
         return None;
     }
     let home = std::env::var_os("HOME")?;
@@ -668,6 +715,88 @@ mod tests {
             "200 OK",
             "{\"ok\":true,\"result\":{\"projects\":[],\"a\":1}}",
         )
+    }
+
+    #[test]
+    fn the_daily_app_uses_the_live_ash_os_unless_told_otherwise() {
+        let home = PathBuf::from("/Users/someone");
+        let live = Endpoint::resolve(true, None, None, Some(home.clone())).unwrap();
+        assert_eq!(live.port, DEFAULT_PORT);
+        assert_eq!(live.token_path, home.join(TOKEN_SUBPATH));
+        let stub = Endpoint::resolve(
+            true,
+            Some(" 18868 ".into()),
+            Some("/tmp/stub/token".into()),
+            Some(home),
+        )
+        .unwrap();
+        assert_eq!(
+            (stub.port, stub.token_path),
+            (18868, PathBuf::from("/tmp/stub/token"))
+        );
+        assert_eq!(
+            Endpoint::resolve(true, Some("x".into()), None, None)
+                .unwrap_err()
+                .kind,
+            "error"
+        );
+    }
+
+    #[test]
+    fn a_dev_copy_never_reaches_the_live_ash_os() {
+        let dir = tempfile_dir::Dir::new();
+        let home = dir.path().to_path_buf();
+        let live_key = home.join(TOKEN_SUBPATH);
+        std::fs::create_dir_all(live_key.parent().unwrap()).unwrap();
+        std::fs::write(&live_key, SECRET).unwrap();
+        let stub_key = dir.path().join("stub-token");
+        std::fs::write(&stub_key, "stub").unwrap();
+
+        // Off by default: no port, no key file, or only one of them.
+        for (port, key) in [
+            (None, None),
+            (Some("18868"), None),
+            (None, Some(stub_key.clone())),
+        ] {
+            let error = Endpoint::resolve(false, port.map(str::to_string), key, Some(home.clone()))
+                .expect_err("a dev copy without a stub is off");
+            assert_eq!(error.kind, "unreachable");
+            assert!(error.message.contains("dev copy"), "{}", error.message);
+        }
+        // Never the live port, even with a stub key.
+        let error = Endpoint::resolve(
+            false,
+            Some("18767".into()),
+            Some(stub_key.clone()),
+            Some(home.clone()),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind, "refused");
+        // Never the live key, however it is spelled.
+        for spelling in [
+            live_key.clone(),
+            home.join(".local/share/exo-cc-studio/../exo-cc-studio/token"),
+        ] {
+            let error = Endpoint::resolve(
+                false,
+                Some("18868".into()),
+                Some(spelling),
+                Some(home.clone()),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind, "refused");
+        }
+        // A stub or the read-only proxy on another port, with its own key: allowed.
+        let stub = Endpoint::resolve(
+            false,
+            Some("18868".into()),
+            Some(stub_key.clone()),
+            Some(home),
+        )
+        .unwrap();
+        assert_eq!((stub.port, stub.token_path), (18868, stub_key));
     }
 
     #[test]

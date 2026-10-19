@@ -124,6 +124,44 @@ function fixture() {
 }
 
 describe("agent app commands", () => {
+  it("reports which app this is and the build it runs", async () => {
+    const { source, host } = fixture();
+    const injected = {
+      product: "MonoCode Hub Dev",
+      version: "0.16.0",
+      identifier: "com.ash.monocode-hub.dev.wt-a",
+      kind: "dev",
+      slot: "wt-a",
+      stamp: {
+        sha: "09141d88a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        branch: "hub/1b-identity",
+        dirty: false,
+        builtAt: "2026-10-19T21:04:05Z",
+      },
+      schemaVersion: 19,
+      policy: { habits: false },
+    };
+    await expect(handleAgentApp(source, "v0", "app.version", {}, host)).rejects.toThrow(
+      "doesn't report its identity",
+    );
+    const global = globalThis as Record<string, unknown>;
+    global.__MONOCODE_APP__ = injected;
+    try {
+      expect(await handleAgentApp(source, "v1", "app.version", {}, host)).toMatchObject({
+        kind: "dev",
+        slot: "wt-a",
+        identifier: "com.ash.monocode-hub.dev.wt-a",
+        stamp: { branch: "hub/1b-identity", dirty: false },
+        policy: { habits: false, autoResume: false },
+      });
+    } finally {
+      delete global.__MONOCODE_APP__;
+    }
+    await expect(
+      handleAgentApp(source, "v2", "app.version", { verbose: true }, host),
+    ).rejects.toThrow("Unknown app.version fields: verbose");
+  });
+
   it.each([undefined, true, false])(
     "uses the Mono's sidebar preference for both submitted and draft sessions: %s",
     async (showStartedSessionsInSidebar) => {

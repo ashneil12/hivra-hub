@@ -5517,6 +5517,7 @@ pub fn read_file_preview(
     use std::io::{BufRead, BufReader};
 
     let path = expand_home(&path);
+    crate::instance::guard_lock_file(&path)?;
     let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err("Not a file".into());
@@ -5627,6 +5628,7 @@ pub async fn read_file_base64(path: String) -> Result<String, String> {
 
 fn read_file_base64_sync(path: &str) -> Result<String, String> {
     let path = expand_home(path);
+    crate::instance::guard_lock_file(&path)?;
     let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err("Not a file".into());
@@ -5689,6 +5691,7 @@ pub async fn read_binary_file(path: String) -> Result<tauri::ipc::Response, Stri
 
 fn read_binary_file_sync(path: &str) -> Result<Vec<u8>, String> {
     let path = expand_home(path);
+    crate::instance::guard_lock_file(&path)?;
     let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err("Not a file".into());
@@ -5937,6 +5940,7 @@ pub async fn read_text_file(path: String) -> Result<String, String> {
 
 fn read_text_file_sync(path: &str) -> Result<String, String> {
     let path = expand_home(path);
+    crate::instance::guard_lock_file(&path)?;
     let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err("Not a file".into());
@@ -6009,6 +6013,7 @@ fn write_text_file_sync(path: &str, content: &str) -> Result<(), String> {
     }
 
     let requested = expand_home(path);
+    crate::instance::guard_lock_file(&requested)?;
     let destination = if requested.exists() {
         std::fs::canonicalize(&requested).map_err(|e| format!("{}: {e}", requested.display()))?
     } else {
@@ -6147,6 +6152,7 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
 
 fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
     let from = expand_home(path);
+    crate::instance::guard_lock_file(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
@@ -6196,6 +6202,7 @@ pub async fn rename_path(path: String, name: String) -> Result<String, String> {
 
 fn delete_path_sync(path: &str) -> Result<(), String> {
     let path = expand_home(path);
+    crate::instance::guard_lock_file(&path)?;
     if !path.exists() {
         return Err(format!("{}: No such file or directory", path.display()));
     }
@@ -6222,6 +6229,7 @@ fn dir_contains(dir: &Path, dest_parent: &Path) -> bool {
 
 fn copy_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
+    crate::instance::guard_lock_file(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
@@ -6250,6 +6258,7 @@ pub async fn copy_path(from: String, dest_parent: String) -> Result<String, Stri
 
 fn move_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
+    crate::instance::guard_lock_file(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }

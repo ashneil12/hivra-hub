@@ -952,15 +952,19 @@ pub fn harness_spawn(
         terminate(prev.pid);
     }
 
-    let args = if cfg!(feature = "test-copy") && binary_provider.as_deref() == Some("claude") {
-        isolated_test_copy_args(args)
+    // A dev copy's Claude never sees Ash's MCP servers, hooks or ~/.claude (src/instance.rs).
+    let dev_claude =
+        binary_provider.as_deref() == Some("claude") && !crate::instance::policy().daily_claude;
+    let args = if dev_claude {
+        isolated_dev_claude_args(args)
     } else {
         args
     };
     let mut cmd = Command::new(&command);
-    if binary_provider.as_deref() == Some("claude") {
-        if let Some(config_dir) = test_copy_claude_config_dir(&app)? {
-            cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    if dev_claude {
+        if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
+            cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
+                .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &config_dir);
         }
     }
     cmd.args(&devin_config)
@@ -1120,6 +1124,11 @@ pub(crate) fn provider_account_dir(
     account_id: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     let Some(account_id) = account_id.filter(|id| *id != DEFAULT_PROVIDER_ACCOUNT_ID) else {
+        // A dev copy's default Claude account is the shared dev config folder, never ~/.claude: its sessions, usage,
+        // signed-in identity and carried chats all live there.
+        if provider == "claude" {
+            return crate::instance::dev_claude_config_dir();
+        }
         return Ok(None);
     };
     let dir = provider_account_path(app, provider, account_id)?;
@@ -4347,59 +4356,69 @@ mod reap_logic_tests {
     }
 }
 
-/// A test copy's own Claude Code config folder, in its app data. Its default account's
-/// sessions run there, and a conversation carried to or from that account is read and
-/// written there too, never in the daily `~/.claude`. `None` in the daily app.
-pub(crate) fn test_copy_claude_config_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    if !cfg!(feature = "test-copy") {
-        return Ok(None);
-    }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("claude-config");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(Some(dir))
-}
+/// MonoCode's own per-session Claude settings (`ClaudeCliSettings` in claudeProtocol.ts). A dev copy keeps these and
+/// drops anything else a `--settings` value carries: hooks, helpers that run commands, env.
+const DEV_CLAUDE_SETTINGS: [&str; 3] = ["alwaysThinkingEnabled", "fastMode", "ultracode"];
 
-/// A test copy never inherits user/project MCP servers or hooks from the daily app.
-fn isolated_test_copy_args(args: Vec<String>) -> Vec<String> {
+/// A dev copy's Claude session: no MCP servers and no hooks from any source, and only its own (shared dev) user
+/// settings, never the project's or local ones. The model, permission and thinking choices stay as asked.
+fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
+    let mut settings = serde_json::Map::new();
+    let mut keep = |raw: &str| {
+        if let Ok(serde_json::Value::Object(given)) = serde_json::from_str(raw) {
+            for (key, value) in given {
+                if DEV_CLAUDE_SETTINGS.contains(&key.as_str()) {
+                    settings.insert(key, value);
+                }
+            }
+        }
+    };
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
-        if matches!(
-            arg.as_str(),
-            "--mcp-config" | "--setting-sources" | "--settings"
-        ) {
-            iter.next();
-            continue;
+        match arg.as_str() {
+            "--mcp-config" | "--setting-sources" => {
+                iter.next();
+            }
+            "--settings" => {
+                if let Some(raw) = iter.next() {
+                    keep(&raw);
+                }
+            }
+            "--strict-mcp-config" => {}
+            _ => {
+                if let Some(raw) = arg.strip_prefix("--settings=") {
+                    keep(raw);
+                } else if !arg.starts_with("--mcp-config=")
+                    && !arg.starts_with("--setting-sources=")
+                {
+                    out.push(arg);
+                }
+            }
         }
-        if arg == "--strict-mcp-config"
-            || arg.starts_with("--mcp-config=")
-            || arg.starts_with("--setting-sources=")
-            || arg.starts_with("--settings=")
-        {
-            continue;
-        }
-        out.push(arg);
     }
+    settings.insert("disableAllHooks".into(), serde_json::Value::Bool(true));
     out.extend([
         "--strict-mcp-config".into(),
         "--mcp-config".into(),
         "{\"mcpServers\":{}}".into(),
-        "--setting-sources=".into(),
+        "--setting-sources=user".into(),
         "--settings".into(),
-        "{\"disableAllHooks\":true}".into(),
+        serde_json::Value::Object(settings).to_string(),
     ]);
     out
 }
 
 #[cfg(test)]
-mod test_copy_tests {
+mod dev_claude_tests {
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    /// Continuation-06's check, now for any dev copy: no live MCP config or hooks, model and permissions kept.
     #[test]
-    fn test_copy_drops_live_mcp_and_hooks_without_dropping_model_or_permission_controls() {
-        let args = vec![
+    fn a_dev_copy_drops_live_mcp_and_hooks_without_dropping_model_or_permission_controls() {
+        let isolated = super::isolated_dev_claude_args(args(&[
             "--model",
             "fake-model",
             "--mcp-config",
@@ -4409,16 +4428,63 @@ mod test_copy_tests {
             "--setting-sources=user,project",
             "--permission-prompt-tool",
             "stdio",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-        let isolated = super::isolated_test_copy_args(args);
+        ]));
         assert!(!isolated.iter().any(|a| a.contains("live-config")
             || a.contains("user,project")
             || a.contains("\"hooks\"")));
         assert!(isolated.contains(&"fake-model".into()));
         assert!(isolated.contains(&"--permission-prompt-tool".into()));
         assert!(isolated.contains(&"{\"mcpServers\":{}}".into()));
+        assert!(isolated.contains(&"--strict-mcp-config".into()));
+    }
+
+    #[test]
+    fn a_dev_copy_keeps_monocodes_own_settings_and_disables_every_hook() {
+        let isolated = super::isolated_dev_claude_args(args(&[
+            "--output-format",
+            "stream-json",
+            "--setting-sources=user,project,local",
+            "--settings",
+            "{\"alwaysThinkingEnabled\":true,\"fastMode\":false,\"statusLine\":{\"command\":\"x\"},\"apiKeyHelper\":\"y\"}",
+            "--settings={\"ultracode\":true,\"env\":{\"A\":\"1\"}}",
+            "--mcp-config={\"mcpServers\":{\"ash-os\":{}}}",
+            "--strict-mcp-config",
+            "--resume",
+            "abc",
+        ]));
+        assert_eq!(
+            &isolated[..4],
+            &args(&["--output-format", "stream-json", "--resume", "abc"])[..]
+        );
+        let at = |flag: &str| isolated.iter().position(|a| a == flag).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&isolated[at("--settings") + 1]).unwrap();
+        assert_eq!(
+            settings,
+            serde_json::json!({
+                "alwaysThinkingEnabled": true,
+                "fastMode": false,
+                "ultracode": true,
+                "disableAllHooks": true,
+            })
+        );
+        assert_eq!(
+            isolated
+                .iter()
+                .filter(|a| a.starts_with("--settings"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            isolated
+                .iter()
+                .filter(|a| *a == "--strict-mcp-config")
+                .count(),
+            1
+        );
+        assert!(!isolated
+            .iter()
+            .any(|a| a.contains("ash-os") || a.contains("project")));
+        assert!(isolated.contains(&"--setting-sources=user".into()));
     }
 }

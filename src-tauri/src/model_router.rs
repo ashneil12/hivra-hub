@@ -1,7 +1,8 @@
 //! "Other models" for Claude Code: keys, key checks and a tiny local router.
 //!
-//! * Keys live in the Keychain under `monocode-hub:model-key` (tests: `monocode-hub-test:model-key`), one item per
-//!   custom model. A key goes in from the webview and never comes back out; only the router reads it, in this process.
+//! * Keys live in the Keychain under `monocode-hub:model-key` (tests: `monocode-hub-test:model-key`; a dev copy:
+//!   `monocode-hub-dev:model-key`, see hub_keychain.rs), one item per custom model. A key goes in from the webview
+//!   and never comes back out; only the router reads it, in this process.
 //! * `model_key_test` makes one tiny real request to the provider and answers in plain words.
 //! * For a session on a custom model, Claude Code starts with `ANTHROPIC_BASE_URL` pointing at a router on
 //!   127.0.0.1 (random port) that turns Anthropic Messages (text, streaming, tools) into OpenAI chat completions for
@@ -16,10 +17,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[cfg(not(feature = "test-copy"))]
 pub const KEY_SERVICE: &str = "monocode-hub:model-key";
-#[cfg(feature = "test-copy")]
-pub const KEY_SERVICE: &str = "monocode-hub-sandbox:model-key";
 #[cfg(test)]
 pub const TEST_KEY_SERVICE: &str = "monocode-hub-test:model-key";
 
