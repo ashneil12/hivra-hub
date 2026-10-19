@@ -62,7 +62,8 @@ A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOC
 `MONOCODE_HUB_TOKEN_FILE` point at the stub or the read-only proxy (never port 18767 or the live key), Keychain
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
-made). The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
+only reaches that copy's own control port. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
@@ -257,6 +258,18 @@ codesign -d -r- "$HOME/Applications/MonoCode Hub.app"   # must NOT print a bare 
 Upstream CI passes its own `signingIdentity` through `tauri.release.conf.json`, so this does not change
 packaged release builds.
 
+
+## Restart-safe resume and the fake-Claude bench (Phase 1b WP5)
+
+- A turn cut by a quit, crash or ship resumes by itself with a note naming the background work that was cut (ids
+  included) and, for a ship, the receipt. It resumes at most 3 times in a row; then the chat shows a resume-stopped
+  note (Needs you) and a waiting Lead hears it failed. A chat whose Claude transcript is gone starts fresh from its
+  brief (a "recovered" note) instead of failing every message.
+- **`npm run hub:verify-live`** proves the delegation chain through real restarts with a fake Claude
+  (`scripts/fake-claude.mjs`): a throwaway dev slot under a temporary HOME, the stub, `SIGKILL` between phases,
+  `evidence/<run>/verdict.json`. `-- --fail-gate` is its negative control and must exit non-zero. It never touches the
+  daily app, its data, `~/.claude` or a real Claude login; it runs in the background (no focus) and closes the copy at
+  the end. Launch it for a final proof, not to iterate: the unit tests and `claudeFakeCli.test.ts` cover the parts.
 
 ## Improvement loop and isolated test copy
 

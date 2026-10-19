@@ -5,12 +5,12 @@
 // the logins live only in the Keychain. This module never holds a secret after handing it to Rust: a sign-in sends the
 // pasted value once, and nothing comes back but names, states and messages.
 //
-// A Mono's session gets `--mcp-config` entries that point at `<app> connector-run <id> --mono <id> --project <key>…`,
-// with no login in them. The launcher checks the same rules again at start and reads the login from the Keychain.
+// A Mono's chat gets entries in its one `--mcp-config` (hubMcp.ts) that point at `<app> connector-run <id> --mono <id>
+// --project <key>…`, with no login in them. The launcher checks the same rules again at start and reads the login from the Keychain.
 import { useEffect, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import catalogJson from "./connectorCatalog.json";
-import { listMonos, monoForSession, type Mono } from "../../monos/model/mono";
+import { findMono, listMonos, type Mono } from "../../monos/model/mono";
 import { projectKey } from "../../../shared/lib/paths";
 
 export type AuthMethod = "token" | "oauth" | "none";
@@ -270,13 +270,13 @@ export function mcpServersFor(v: ConnectorsView, monoId: string, projects: strin
   return servers;
 }
 
-/** The extra Claude Code arguments for a session: its Mono's connectors, or nothing (not a Mono, nothing allowed). */
-export function connectorArgsForSession(sessionId: string): string[] {
-  if (!view) return [];
-  const mono = monoForSession(sessionId);
-  if (!mono) return [];
-  const servers = mcpServersFor(view, mono.id, monoProjectKeys(mono));
-  return Object.keys(servers).length ? ["--mcp-config", JSON.stringify({ mcpServers: servers })] : [];
+/**
+ * A Mono's connector entries for its chat's one --mcp-config (hubMcp.ts adds them beside ash-os and the delegate tool):
+ * what its projects and its own choices allow right now, or nothing (state not read yet, no such Mono).
+ */
+export function connectorServersForMono(monoId: string): Record<string, { command: string; args: string[] }> {
+  const mono = view ? findMono(monoId) : undefined;
+  return view && mono ? mcpServersFor(view, mono.id, monoProjectKeys(mono)) : {};
 }
 
 /** For the page: which Monos get this connector right now, and which are kept off and why. */

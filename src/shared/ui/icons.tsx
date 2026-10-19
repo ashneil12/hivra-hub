@@ -110,6 +110,13 @@ import UngroupItemsIcon from "@hugeicons/core-free-icons/UngroupItemsIcon";
 import ViewIcon from "@hugeicons/core-free-icons/ViewIcon";
 import WholeWordIcon from "@hugeicons/core-free-icons/WholeWordIcon";
 import Wrench01Icon from "@hugeicons/core-free-icons/Wrench01Icon";
+import GameController01Icon from "@hugeicons/core-free-icons/GameController01Icon";
+import Rocket01Icon from "@hugeicons/core-free-icons/Rocket01Icon";
+import ChartBarLineIcon from "@hugeicons/core-free-icons/ChartBarLineIcon";
+import Briefcase01Icon from "@hugeicons/core-free-icons/Briefcase01Icon";
+import Megaphone01Icon from "@hugeicons/core-free-icons/Megaphone01Icon";
+import Book01Icon from "@hugeicons/core-free-icons/Book01Icon";
+import FavouriteIcon from "@hugeicons/core-free-icons/FavouriteIcon";
 import { forwardRef, type Ref } from "react";
 
 /** Props shared by every chrome icon. `icon` is filled in by the named wrappers. */
@@ -290,3 +297,11 @@ export const WholeWord = wrap(WholeWordIcon, "WholeWord");
 export const Wrench = wrap(Wrench01Icon, "Wrench");
 export const X = wrap(Cancel01Icon, "X");
 export const Zap = wrap(FlashIcon, "Zap");
+// Project shapes (Ash OS's iconShape set): grey outline glyphs, never coloured.
+export const Gamepad = wrap(GameController01Icon, "Gamepad");
+export const Rocket = wrap(Rocket01Icon, "Rocket");
+export const ChartBars = wrap(ChartBarLineIcon, "ChartBars");
+export const Briefcase = wrap(Briefcase01Icon, "Briefcase");
+export const Megaphone = wrap(Megaphone01Icon, "Megaphone");
+export const Book = wrap(Book01Icon, "Book");
+export const Heart = wrap(FavouriteIcon, "Heart");

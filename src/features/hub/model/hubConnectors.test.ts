@@ -113,8 +113,25 @@ describe("which connectors a Mono gets", () => {
   });
 });
 
-describe("a Mono's session", () => {
-  it("gets only its allowed connectors, pointing at the launcher with its id and projects, and no login", async () => {
+/** A chat's extra Claude Code arguments as the hub builds them: ONE --mcp-config (hubMcp.ts) with connectors inside. */
+async function chatArgs(sessionId: string): Promise<string[]> {
+  const { hubMcpArgs } = await import("./hubMcp");
+  const { connectorServersForMono } = await import("./hubConnectors");
+  const { monoForSession } = await import("../../monos/model/mono");
+  return hubMcpArgs(
+    sessionId,
+    { ashOs: { command: "ash-os-server" }, cli: "/app/monocode", connectors: connectorServersForMono },
+    { monoOf: monoForSession, habitRunMono: (id) => (id === "habit-run-maya" ? "maya" : undefined), isLead: () => false },
+  );
+}
+type Servers = Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+function servers(args: string[]): Servers {
+  expect(args.filter((a) => a === "--mcp-config")).toHaveLength(1);
+  return (JSON.parse(args[args.indexOf("--mcp-config") + 1]) as { mcpServers: Servers }).mcpServers;
+}
+
+describe("a Mono's chat", () => {
+  it("gets one --mcp-config: ash-os, the delegate tool and only its allowed connectors, with no login", async () => {
     const rust = fakeRust();
     roster([
       { id: "maya", name: "Maya", projects: [HIVRA], sessionId: "s-maya" },
@@ -124,47 +141,43 @@ describe("a Mono's session", () => {
     const c = await import("./hubConnectors");
     c.setConnectorsBackend(rust.backend);
     await c.loadConnectors();
-    expect(c.connectorArgsForSession("s-maya")).toEqual([]);
+    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["ash-os", "monocode"]);
     await c.saveConnectorLogin("github", { token: SECRET }, [HIVRA]);
     await c.turnOnConnector("context7", [c.EVERYWHERE]);
 
-    const args = c.connectorArgsForSession("s-maya");
-    expect(args[0]).toBe("--mcp-config");
-    const config = JSON.parse(args[1]) as { mcpServers: Record<string, { command: string; args: string[] }> };
-    expect(Object.keys(config.mcpServers).sort()).toEqual(["context7", "github"]);
-    expect(config.mcpServers.github).toEqual({
+    const maya = servers(await chatArgs("s-maya"));
+    expect(Object.keys(maya).sort()).toEqual(["ash-os", "context7", "github", "monocode"]);
+    expect(maya.github).toEqual({
       command: rust.view.launcher,
       args: ["connector-run", "github", "--mono", "maya", "--project", HIVRA],
     });
+    expect(maya["ash-os"].env).toMatchObject({ ASH_MONO_ID: "maya", ASH_CHAT: "s-maya" });
+    // Its habit runs work as Maya: her connectors, no delegate tool.
+    expect(Object.keys(servers(await chatArgs("habit-run-maya"))).sort()).toEqual(["ash-os", "context7", "github"]);
     // In Hivra and Nibbii: GitHub is off in Nibbii, so only what both allow.
-    const both = JSON.parse(c.connectorArgsForSession("s-both")[1]) as { mcpServers: object };
-    expect(Object.keys(both.mcpServers)).toEqual(["context7"]);
+    expect(Object.keys(servers(await chatArgs("s-both"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
     // Outside any project: only what is allowed outside projects.
-    const cos = JSON.parse(c.connectorArgsForSession("s-cos")[1]) as { mcpServers: object };
-    expect(Object.keys(cos.mcpServers)).toEqual(["context7"]);
-    // Not a Mono's conversation: nothing.
-    expect(c.connectorArgsForSession("some-other-session")).toEqual([]);
+    expect(Object.keys(servers(await chatArgs("s-cos"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
+    // A worker or a plain chat: no connectors.
+    expect(Object.keys(servers(await chatArgs("app-s-maya-r1"))).sort()).toEqual(["ash-os"]);
+    expect(Object.keys(servers(await chatArgs("some-other-chat"))).sort()).toEqual(["ash-os"]);
     // Maya turned off GitHub.
     await c.setMonoConnectors("maya", c.toggledChoice(undefined, "github", false));
-    expect(Object.keys((JSON.parse(c.connectorArgsForSession("s-maya")[1]) as { mcpServers: object }).mcpServers)).toEqual(["context7"]);
+    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
   });
 
-  it("merges with the Lead's ash-os entry into one --mcp-config", async () => {
-    const seam = await import("../../../integrations/harness/providers/claude/claudeExtraArgs");
-    const lead = ["--mcp-config", JSON.stringify({ mcpServers: { "ash-os": { command: "py" } } })];
-    const conn = ["--mcp-config", JSON.stringify({ mcpServers: { github: { command: "/app", args: ["connector-run", "github"] } } })];
-    seam.setClaudeExtraArgs(() => lead);
-    expect(seam.claudeExtraArgs("s")).toEqual(lead);
-    seam.setClaudeExtraArgs(() => conn, "connectors");
-    const merged = seam.claudeExtraArgs("s");
-    expect(merged.filter((a) => a === "--mcp-config")).toHaveLength(1);
-    expect(Object.keys((JSON.parse(merged[1]) as { mcpServers: object }).mcpServers).sort()).toEqual(["ash-os", "github"]);
-    seam.setClaudeExtraArgs(() => { throw new Error("broken provider"); }, "broken");
-    expect(seam.claudeExtraArgs("s")).toEqual(merged);
-    expect(seam.mergeMcpConfigs(["--mcp-config", "/tmp/file.json", "--x"])).toEqual(["--mcp-config", "/tmp/file.json", "--x"]);
-    seam.setClaudeExtraArgs(undefined);
-    seam.setClaudeExtraArgs(undefined, "connectors");
-    seam.setClaudeExtraArgs(undefined, "broken");
+  it("a connector can never take the hub's own entry names", async () => {
+    const { hubMcpArgs } = await import("./hubMcp");
+    roster([{ id: "maya", name: "Maya", projects: [], sessionId: "s-maya" }]);
+    const { monoForSession } = await import("../../monos/model/mono");
+    const args = hubMcpArgs(
+      "s-maya",
+      { ashOs: { command: "ash-os-server" }, cli: "/app/monocode", connectors: () => ({ "ash-os": { command: "evil" }, monocode: { command: "evil" } }) },
+      { monoOf: monoForSession, habitRunMono: () => undefined, isLead: () => false },
+    );
+    const s = servers(args);
+    expect(s["ash-os"].command).toBe("ash-os-server");
+    expect(s.monocode.command).toBe("/app/monocode");
   });
 });
 
@@ -200,14 +213,14 @@ describe("credential scan", () => {
     expect(JSON.stringify(c.connectorsView())).not.toContain(SECRET);
     const storage = Object.keys(localStorage).map((k) => localStorage.getItem(k)).join("\n");
     expect(storage).not.toContain(SECRET);
-    const args = c.connectorArgsForSession("s-maya");
-    expect(args.length).toBe(2);
+    const args = await chatArgs("s-maya");
+    expect(Object.keys(servers(args))).toContain("github");
     expect(args.join(" ")).not.toContain(SECRET);
     for (const spy of [log, warn, error]) expect(JSON.stringify(spy.mock.calls)).not.toContain(SECRET);
     // Signing out removes it from the "Keychain" and the session stops getting the connector.
     await c.signOutConnector("github");
     expect(rust.keychain.size).toBe(0);
-    expect(c.connectorArgsForSession("s-maya")).toEqual([]);
+    expect(Object.keys(servers(await chatArgs("s-maya")))).not.toContain("github");
   });
 
   it("the catalog never carries a literal secret and every local server gets its login by environment only", async () => {

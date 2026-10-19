@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 37] = [
+const APP_ACTIONS: [&str; 42] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -120,6 +120,11 @@ const APP_ACTIONS: [&str; 37] = [
     "habits.remove",
     "chat.card",
     "monos.propose",
+    "tasks.delegate",
+    "tasks.status",
+    "tasks.wait",
+    "tasks.cancel",
+    "tasks.answer",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -303,6 +308,23 @@ Actions:
                   Settings > Teams. projects are the hub's project names or
                   yours (default: yours). Workers stay subagents; propose a
                   Mono only for a lasting role the user will talk to.
+  tasks.delegate {"brief":"<the whole job, Ash's words quoted>","title":"Fix the save bug",
+                  "asks":["a_..."],"goal":"<done when>","isolation":"shared"}
+                  Mono only. Hand a job to a worker chat nested under yours, as a
+                  stored task (taskId) that reports back as a new turn once you
+                  are idle. asks are the Ash OS ask ids it covers; isolation
+                  "worktree" gives it its own git worktree. Optional project,
+                  model (an id or a family such as "sonnet") and effort. Reuse
+                  --request-id on retries. The monocode MCP tools (delegate_task,
+                  task_status, task_wait, task_cancel, task_answer) call these.
+  tasks.status   {"taskIds":["t-..."]}  Your tasks: status, activity, result and
+                  any question. Without taskIds, the ones still running or owed.
+                  Reading a finished result marks it read: no report follows.
+  tasks.wait     {"taskIds":["t-..."],"timeoutSeconds":25}  Block until one of
+                  them finishes or asks a question (0-25 s). Status only.
+  tasks.cancel   {"taskId":"t-...","reason":"..."}  Stop a task and drop its report.
+  tasks.answer   {"taskId":"t-...","requestId":7,"answers":{"<questionId>":["<optionId>"]}}
+                  Answer your worker's open question, or pass "skip":true.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.
@@ -414,10 +436,10 @@ fn with_retry_hint(mut value: Value, request_id: &str) -> Value {
     value
 }
 
-struct Failure {
-    error: String,
+pub(crate) struct Failure {
+    pub(crate) error: String,
     /// The request was already on the wire, so the run may have applied it.
-    sent: bool,
+    pub(crate) sent: bool,
 }
 fn unsent(error: impl Into<String>) -> Failure {
     Failure {
@@ -432,7 +454,12 @@ fn sent(error: impl Into<String>) -> Failure {
     }
 }
 
-fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result<Value, Failure> {
+pub(crate) fn send(
+    action: &str,
+    input: &Value,
+    request_id: &str,
+    app_mode: bool,
+) -> Result<Value, Failure> {
     let endpoint_key = if app_mode {
         "MONOCODE_APP_ENDPOINT"
     } else {
@@ -786,5 +813,24 @@ mod tests {
         assert!(app_help().contains("only when the user asks"));
         assert!(app_help().contains("expectedHash"));
         assert!(app_help().contains("Habit runs and other sessions cannot change"));
+    }
+
+    #[test]
+    fn app_mode_exposes_the_task_actions_the_delegate_tool_calls() {
+        for action in [
+            "tasks.delegate",
+            "tasks.status",
+            "tasks.wait",
+            "tasks.cancel",
+            "tasks.answer",
+        ] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", "{}"]), true),
+                Ok(Parsed::Call(parsed, _, _)) if parsed == action
+            ));
+            assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert!(app_help().contains(action), "help omits {action}");
+        }
+        assert!(app_help().contains("Mono only. Hand a job to a worker chat"));
     }
 }

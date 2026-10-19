@@ -32,12 +32,13 @@ import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
 import { defaultSoul } from "../../monos/model/monoFiles";
-import { ensureProjectLeads, leadFor, LEADS, leadMcpArgs, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
+import { ensureProjectLeads, leadFor, LEADS, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
+import { hubMcpArgs } from "./hubMcp";
 import type { HubProject } from "./types";
 
 // The four projects (what the live service returned on 15 Oct, with the harness now the project `hub`, 19 Oct).
 const PROJECTS: HubProject[] = [
-  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/Projects/boxin game?/vg-game" },
+  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/ash/Projects/boxin game?/vg-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/Projects/Hivra-public-canary" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/Projects/nibbii" },
   { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/Users/ash/Projects/monocode-hub" },
@@ -92,15 +93,26 @@ describe("the project Leads", () => {
     expect(listMonos().find((m) => m.id === "vg-game-lead")?.sessionId).toBe(session?.id);
   });
 
-  it("talk to Ash OS as themselves: Ash's own ash-os entry, with ASH_MONO_ID and ASH_ROLE=lead", () => {
+  it("talk to Ash OS as themselves: Ash's own ash-os entry, with ASH_MONO_ID, ASH_ROLE=lead and their chat", () => {
+    ensureProjectLeads(PROJECTS);
     const server = { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: {} };
-    const args = leadMcpArgs("hivra-lead", server);
+    const lookups = {
+      monoOf: (id: string) => (id === "chat-hivra" ? { id: "hivra-lead" } : undefined),
+      habitRunMono: () => undefined,
+      isLead: (id: string) => LEADS.some((lead) => lead.id === id),
+    };
+    const args = hubMcpArgs("chat-hivra", { ashOs: server, cli: null }, lookups);
     expect(args[0]).toBe("--mcp-config");
     expect(JSON.parse(args[1])).toEqual({
-      mcpServers: { "ash-os": { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: { ASH_MONO_ID: "hivra-lead", ASH_ROLE: "lead" } } },
+      mcpServers: {
+        "ash-os": {
+          command: "/opt/homebrew/bin/python3",
+          args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"],
+          env: { ASH_MONO_ID: "hivra-lead", ASH_ROLE: "lead", ASH_CHAT: "chat-hivra" },
+        },
+      },
     });
-    expect(leadMcpArgs("not-a-lead", server)).toEqual([]);
-    expect(leadMcpArgs("hivra-lead", null)).toEqual([]);
+    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual([]);
   });
 
   it("have a soul in Ash's words: orchestrator, full words to workers, sonnet workers, memory first, dumps verbatim, verify, Looks right only when critical, identity", () => {
@@ -175,7 +187,12 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
     expect(leadFor("ash-lead")?.projectId).toBe("hub");
     expect(leadWorkingFolder("ash-lead")).toBe("/Users/ash/Projects/monocode-hub");
     // it acts in Ash OS under the id Ash OS already knows
-    expect(JSON.parse(leadMcpArgs("ash-lead", { command: "x" })[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead" });
+    const adopted = hubMcpArgs("s-harness-chat", { ashOs: { command: "x" }, cli: null }, {
+      monoOf: (id) => listMonos().find((m) => m.sessionId === id),
+      habitRunMono: () => undefined,
+      isLead: (id) => !!leadFor(id),
+    });
+    expect(JSON.parse(adopted[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead", ASH_CHAT: "s-harness-chat" });
     // once: a second launch changes nothing and makes no second Lead
     expect(ensureProjectLeads(PROJECTS, register, unregister)).toEqual({ created: [], tied: [], adopted: [] });
     expect(unregister).toHaveBeenCalledTimes(1);

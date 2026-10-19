@@ -390,7 +390,13 @@ export type Block = {
    * A system row the reader must not miss — an error or an interruption —
    * rather than turn chrome like a status ping. Never folds into the trail.
    */
-  notice?: "error" | "interrupt";
+  notice?:
+    | "error"
+    | "interrupt"
+    /** The app restarted three times under this turn, so it stopped resuming it (`inFlight.ts`); Needs you. */
+    | "resume-stopped"
+    /** The provider's saved conversation was gone; a fresh one started from the chat's brief (`claude.ts`). */
+    | "recovered";
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */
   shipUpdate?: string;
   statusKey?: string;
@@ -442,6 +448,14 @@ export const RUNTIME_MODE_HINT: Record<RuntimeMode, string> = {
 
 export type WorkspaceMode = "current" | "worktree";
 
+/** One piece of background work a turn left running (a subagent, a backgrounded shell, a monitor, a task). */
+export type CutWork = {
+  kind: "subagent" | "shell" | "monitor" | "task";
+  /** What it was doing, with the id to resume or restart it by. */
+  label: string;
+  id: string;
+};
+
 export type Session = {
   /** Saved and accessible by id, but omitted from the normal session sidebar. */
   sidebarHidden?: boolean;
@@ -471,6 +485,17 @@ export type Session = {
    * running in the background. In-memory only.
    */
   backgroundTasks?: string[];
+  /**
+   * Everything the live turn has running in the background (subagents, backgrounded shells, monitors), with the ids
+   * to restart them by. Saved with the in-flight row, so a resume after a quit or crash says what was cut.
+   * In-memory only otherwise.
+   */
+  cutWork?: CutWork[];
+  /**
+   * How many times this turn has resumed itself after a restart without finishing (`inFlight.ts`). Saved with the
+   * in-flight row; any turn that isn't an automatic resume starts again from none. In-memory only otherwise.
+   */
+  autoResumes?: number;
   /** Follow-ups retained until they have been delivered. */
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */

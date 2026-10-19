@@ -3,6 +3,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { leadFor } from "../../hub/model/hubLeads";
+import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import {
@@ -24,7 +25,11 @@ function isMainWindow(): boolean {
   }
 }
 
-/** Who a Claude session is, for Ash OS: a Mono's chat (a Lead or not), a delegated worker, or a plain chat. */
+/**
+ * Who a Claude session is, for Ash OS: a Mono's chat (a Lead, the checker, or another), a worker, or a plain chat. A
+ * chat started through the app CLI (`app-<caller>-<request>`) stays a worker after its task finished, as its ash-os
+ * identity does (hub/model/hubMcp.ts), so a rebind at the next launch never drops the role.
+ */
 export function chatBinding(
   session: Pick<Session, "id" | "harness" | "providerSessionId">,
   openDelegation?: string,
@@ -32,10 +37,12 @@ export function chatBinding(
   if (session.harness !== "claude" || !session.providerSessionId) return;
   const mono = monoForSession(session.id);
   const role = mono
-    ? leadFor(mono.id)
-      ? "lead"
-      : "mono"
-    : openDelegation
+    ? mono.id === CHECKER_MONO_ID
+      ? "checker"
+      : leadFor(mono.id)
+        ? "lead"
+        : "mono"
+    : openDelegation || session.id.startsWith("app-")
       ? "worker"
       : undefined;
   return {

@@ -45,7 +45,7 @@ describe("first read", () => {
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     const snap = store.getSnapshot();
     expect(snap.projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "hub"]);
-    expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game" });
+    expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/example/Projects/vg-game" });
     expect(snap.projects[3].folder).toBe("/Users/example/Projects/monocode-hub");
     await waitFor(() => store.getSnapshot().since, "since");
     expect(store.getSnapshot().since?.overall.plainText).toContain("Example:");
@@ -506,5 +506,51 @@ describe("older questions, Looks right and jobs", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(noJobs.getSnapshot().jobs).toEqual([]);
     expect(noJobs.getSnapshot().status).toBe("ready");
+  });
+});
+
+describe("pages, the Today board and the change history", () => {
+  const call = (action: string, payload: Record<string, unknown>) => bridgeTransport(createStubBridge(stub.url, () => stub.token)).call(action, payload);
+
+  it("are read with everything else, as Ash OS sends them", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().today, "layout");
+    expect(store.getSnapshot().today?.map((s) => s.id)).toEqual(["since", "setup", "needs", "being-built"]);
+    await waitFor(() => store.getSnapshot().pages, "pages");
+    expect(store.getSnapshot().pages).toEqual([]);
+    await waitFor(() => store.getSnapshot().changes, "changes");
+    expect(store.getSnapshot().changes).toEqual([]);
+  });
+
+  it("follow the feed: a page kept and a change applied elsewhere are read again (only those slices)", async () => {
+    store.start();
+    await waitFor(() => store.getSnapshot().changes, "first read");
+    const built = (await call("ash-hub-build-page", { projectId: "hivra", monoId: "hivra-lead", prompt: "Sign-ups", wait: 5 })) as { pageId: string };
+    await call("ash-hub-page-update", { pageId: built.pageId, kept: true });
+    await waitFor(() => store.getSnapshot().pages?.length === 1, "kept page read from the feed");
+    const preview = (await call("ash-hub-change-preview", { flow: "today", projectId: "today", monoId: "projects-manager", prompt: "put my page on Today", wait: 5 })) as { previewId: string };
+    const needsBefore = needsCalls();
+    await call("ash-hub-change-apply", { previewId: preview.previewId });
+    await waitFor(() => store.getSnapshot().today?.some((s) => s.kind === "page"), "board read from the feed");
+    await waitFor(() => store.getSnapshot().changes?.[0]?.state === "applied", "history read from the feed");
+    expect(store.getSnapshot().changes?.[0]).toMatchObject({ previewId: preview.previewId, flow: "today", by: "Projects Manager", state: "applied" });
+    expect(needsCalls()).toBe(needsBefore);
+  });
+
+  it("an Ash OS without them leaves them unset, not an outage", async () => {
+    await stub.close();
+    stub = await startStub({ pingMs: 200 });
+    const real = bridgeTransport(createStubBridge(stub.url, () => stub.token));
+    const unknown = Object.assign(new Error("Unknown hub action"), { kind: "error", message: "Unknown hub action" });
+    const old = new HubStore({
+      ...FAST,
+      transport: { ...real, call: (a, p) => (["ash-hub-pages", "ash-hub-layout", "ash-hub-changes"].includes(a) ? Promise.reject(unknown) : real.call(a, p)) },
+    });
+    stores.push(old);
+    old.start();
+    await waitFor(() => old.getSnapshot().status === "ready", "ready");
+    await new Promise((r) => setTimeout(r, 80));
+    const snap = old.getSnapshot();
+    expect([snap.status, snap.pages, snap.today, snap.changes]).toEqual(["ready", undefined, undefined, undefined]);
   });
 });

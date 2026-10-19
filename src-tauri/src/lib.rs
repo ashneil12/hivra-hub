@@ -34,6 +34,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_background;
 mod mcp;
+pub mod mcp_server;
 mod menu;
 mod mobile_access;
 mod mobile_router;
@@ -68,6 +69,7 @@ mod tool_detail;
 mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
+mod verify_live;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -449,6 +451,7 @@ pub fn run() {
             delegations::delegations_refuse,
             delegations::delegations_list_open,
             delegations::delegations_tree,
+            delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
             automations::automations_list,
@@ -657,6 +660,7 @@ pub fn run() {
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
             session_store::session_take_in_flight,
+            session_store::session_drop_in_flight,
             session_store::workspace_set_snapshot,
             session_store::workspace_get_snapshot,
             notes::notes_list,

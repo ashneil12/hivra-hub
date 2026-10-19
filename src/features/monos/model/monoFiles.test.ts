@@ -167,6 +167,27 @@ it("says how to keep memory and update the soul only at the user's request", () 
   expect(alone).toContain("has not given you any projects yet");
 });
 
+it("teaches the delegate rules only to a chat that has the delegate tool, once, with the soul", () => {
+  const look = { name: "EXO lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
+  const plain = monoContext(look, files(), { soul: true, memory: true });
+  expect(plain).not.toContain("<delegate_rules>");
+  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true });
+  expect(taught).toContain("<delegate_rules>");
+  for (const step of [
+    "record his asks with ash_record, quoting his own words",
+    "the ask ids it covers in asks, and the finish line in goal",
+    "end your turn: don't poll, wait or do the delegated work yourself",
+    "Check its evidence yourself",
+    "mark each ask done with ash_update_ask and the evidence",
+    "Your workers' questions come to you first, never to Ash",
+    "with your recommendation (ash_ask_ash)",
+  ])
+    expect(taught).toContain(step);
+  expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(
+    "<delegate_rules>",
+  );
+});
+
 it("seeds SOUL.md once, moving the old instructions into it", async () => {
   const { id } = createMono(["/code/app"]);
   updateMono(id, (mono) => ({ ...mono, instructions: "Ship on Fridays" }));

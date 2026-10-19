@@ -2,9 +2,21 @@ import { describe, expect, it } from "vitest";
 import { newTab } from "../../workspace/model/layout";
 import {
   CONTINUE_PROMPT,
+  CUT_NOTE_MAX_ENTRIES,
+  CUT_NOTE_MAX_LABEL,
   INTERRUPT_MESSAGE,
+  MAX_AUTO_RESUMES,
+  RESUME_STOPPED_MESSAGE,
   UPDATE_INTERRUPT_MESSAGE,
   canAutoContinue,
+  cutWorkLabel,
+  cutWorkNote,
+  inFlightSnapshotKey,
+  markResumeStopped,
+  resumeBlocked,
+  resumePrompt,
+  resumeStopped,
+  withInFlightState,
   interruptingShip,
   shipResumePrompt,
   hasInFlightSessions,
@@ -15,7 +27,7 @@ import {
   shouldWriteInFlightSnapshot,
   workspaceFromResumed,
 } from "./inFlight";
-import { newSession, type Session } from "./session";
+import { newSession, type CutWork, type Session } from "./session";
 
 function chat(
   cwd: string,
@@ -340,5 +352,168 @@ describe("a turn cut by a quit for update (a ship)", () => {
     expect(shipResumePrompt("lead", null)).toBe(
       `MonoCode Hub restarted for an update. ${CONTINUE_PROMPT}`,
     );
+  });
+});
+
+describe("restart-safe resume (Phase 1b WP5)", () => {
+  const subagent: CutWork = {
+    kind: "subagent",
+    label: "Audit src/math.ts",
+    id: "a44c0ed810da9e4f3",
+  };
+  const shell: CutWork = { kind: "shell", label: "npm run dev", id: "bt3kw2qpn" };
+
+  it("saves a busy turn's background work and resume count in its in-flight row", () => {
+    const busy = chat("/tmp/a", {
+      busy: true,
+      cutWork: [subagent, shell],
+      autoResumes: 2,
+    });
+    const idle = chat("/tmp/b", { cutWork: [subagent] });
+    expect(inFlightRefs([busy, idle], [])).toEqual([
+      {
+        sessionId: busy.id,
+        cwd: "/tmp/a",
+        background: [subagent, shell],
+        resumes: 2,
+      },
+    ]);
+    // Nothing extra on a plain turn, so older rows read the same.
+    const plain = chat("/tmp/c", { busy: true });
+    expect(inFlightRefs([plain], [])).toEqual([{ sessionId: plain.id, cwd: "/tmp/c" }]);
+  });
+
+  it("rewrites the snapshot when the background work or the count changes", () => {
+    const base = { sessionId: "s1", cwd: "/tmp/a" };
+    const keys = [
+      inFlightSnapshotKey([base]),
+      inFlightSnapshotKey([{ ...base, resumes: 1 }]),
+      inFlightSnapshotKey([{ ...base, resumes: 1, background: [subagent] }]),
+      inFlightSnapshotKey([{ ...base, resumes: 1, background: [subagent, shell] }]),
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(inFlightSnapshotKey([base])).toBe(inFlightSnapshotKey([{ ...base }]));
+  });
+
+  it("brings a restored chat's work and count back from its row", () => {
+    const restored = withInFlightState(chat("/tmp/a"), {
+      sessionId: "x",
+      cwd: "/tmp/a",
+      background: [subagent],
+      resumes: 1,
+    });
+    expect(restored.cutWork).toEqual([subagent]);
+    expect(restored.autoResumes).toBe(1);
+    const untouched = chat("/tmp/a");
+    expect(withInFlightState(untouched, undefined)).toBe(untouched);
+  });
+
+  it("writes a bounded what-was-cut note with each piece of work's id", () => {
+    expect(cutWorkNote([])).toBeNull();
+    const note = cutWorkNote([subagent, shell, subagent])!;
+    expect(note.split("\n")).toEqual([
+      expect.stringContaining("background work was cut before it finished"),
+      "- subagent: Audit src/math.ts (id a44c0ed810da9e4f3)",
+      "- shell: npm run dev (id bt3kw2qpn)",
+    ]);
+
+    const many: CutWork[] = Array.from({ length: 14 }, (_, i) => ({
+      kind: "subagent",
+      label: `Task ${i} ${"x".repeat(400)}`,
+      id: `agent-${i}`,
+    }));
+    const lines = cutWorkNote(many)!.split("\n");
+    expect(lines).toHaveLength(1 + CUT_NOTE_MAX_ENTRIES + 1);
+    expect(lines.at(-1)).toBe("- and 4 more");
+    for (const line of lines.slice(1, -1)) {
+      const label = line.replace(/^- subagent: /, "");
+      expect(label.length).toBeLessThanOrEqual(CUT_NOTE_MAX_LABEL);
+      // The id survives the clipping.
+      expect(label).toMatch(/… \(id agent-\d+\)$/);
+    }
+    // An id too long for any label still yields a bounded entry.
+    expect(
+      cutWorkLabel({ kind: "task", label: "x", id: "y".repeat(500) }).length,
+    ).toBeLessThanOrEqual(CUT_NOTE_MAX_LABEL);
+    // Whitespace in a label collapses to one line.
+    expect(cutWorkLabel({ kind: "shell", label: "a\n\n  b", id: "1" })).toBe("a b (id 1)");
+  });
+
+  it("puts the note before the continue, or before a ship's receipt", () => {
+    const cut = chat("/tmp/a", { cutWork: [subagent] });
+    const plain = resumePrompt(cut);
+    expect(plain.startsWith("Note: MonoCode Hub restarted")).toBe(true);
+    expect(plain.endsWith(`\n\n${CONTINUE_PROMPT}`)).toBe(true);
+    expect(resumePrompt(chat("/tmp/a"))).toBe(CONTINUE_PROMPT);
+
+    const shipped = resumePrompt(
+      { ...cut, id: "lead" },
+      {
+        note: {
+          id: "s1",
+          phase: "committed",
+          from: { sha: "a".repeat(40), branch: "hub/next" },
+          to: { sha: "b".repeat(40), branch: "hub/1b-resume" },
+          requestedBy: { sessionId: "lead" },
+        },
+      },
+    );
+    expect(shipped).toContain("(id a44c0ed810da9e4f3)");
+    expect(shipped).toContain("Your ship s1 finished.");
+    expect(shipped.indexOf("Note:")).toBeLessThan(shipped.indexOf("Your ship"));
+    expect(resumePrompt(chat("/tmp/a"), { note: null })).toBe(
+      `MonoCode Hub restarted for an update. ${CONTINUE_PROMPT}`,
+    );
+  });
+
+  it(`stops after ${MAX_AUTO_RESUMES} automatic resumes and waits for Ash`, () => {
+    expect(MAX_AUTO_RESUMES).toBe(3);
+    // Each crash under a resumed turn leaves a row one higher; the cap is checked before resuming again.
+    let session = markTurnInterrupted(
+      chat("/tmp/a", { busy: true, providerSessionId: "p1", cutWork: [subagent] }),
+    );
+    const resumed: number[] = [];
+    for (let boot = 0; boot < 6; boot++) {
+      if (!canAutoContinue(session)) break;
+      if (resumeBlocked(session)) {
+        session = markResumeStopped(session);
+        break;
+      }
+      const next = (session.autoResumes ?? 0) + 1;
+      resumed.push(next);
+      // The resumed turn starts, then the app dies under it again.
+      session = markTurnInterrupted({
+        ...session,
+        autoResumes: next,
+        busy: true,
+        blocks: [...session.blocks, { id: `r${next}`, role: "user", text: CONTINUE_PROMPT }],
+      });
+    }
+    expect(resumed).toEqual([1, 2, 3]);
+    expect(resumeStopped(session)).toBe(true);
+    const last = session.blocks.at(-1)!;
+    expect(last).toMatchObject({ role: "system", notice: "resume-stopped" });
+    expect(last.text.startsWith(RESUME_STOPPED_MESSAGE)).toBe(true);
+    // It says what was still running, with the id.
+    expect(last.text).toContain("(id a44c0ed810da9e4f3)");
+    // Nothing continues it now, and marking it again adds nothing.
+    expect(canAutoContinue(session)).toBe(false);
+    expect(markResumeStopped(session).blocks).toHaveLength(session.blocks.length);
+    expect(session.autoResumes).toBeUndefined();
+    // A turn Ash sends himself starts over: below the cap again.
+    expect(resumeBlocked({ autoResumes: undefined })).toBe(false);
+    expect(resumeBlocked({ autoResumes: 2 })).toBe(false);
+    expect(resumeBlocked({ autoResumes: 3 })).toBe(true);
+  });
+
+  it("never resumes over a question still on screen", () => {
+    const cut = markTurnInterrupted(chat("/tmp/a", { busy: true, providerSessionId: "p1" }));
+    expect(canAutoContinue(cut)).toBe(true);
+    expect(
+      canAutoContinue({
+        ...cut,
+        pendingQuestion: { requestId: 1, questions: [] },
+      }),
+    ).toBe(false);
   });
 });

@@ -193,14 +193,14 @@ describe("ships clean and calm", () => {
     expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
   });
 
-  it("the strip shows EXO, Hivra, Nibbii, Hub in that order, each its own letter tile", async () => {
+  it("the strip shows EXO, Hivra, Nibbii, Hub in that order, each its own grey shape (never a ghost)", async () => {
     mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
     expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Hub"]);
-    // No ghost and no per-project shape by default: the first letter on a grey glass tile (Ash can pick an icon).
-    const tiles = [...container.querySelectorAll("[data-hub-strip] button:not([data-project-more])")].slice(1, 5).map((b) => b.textContent?.trim()[0]);
-    expect(tiles).toEqual(["E", "H", "N", "H"]);
+    // Each project wears its shape from Ash OS, grey (Ash picks another from the tile's menu): never the ghost.
+    const tiles = [...container.querySelectorAll("[data-hub-strip] [data-project-glyph]")].map((g) => g.getAttribute("data-project-shape"));
+    expect(tiles).toEqual(["gamepad", "sparkles", "palette", "gauge"]);
   });
 
   it("while Ash OS is still writing the summary it shows a quiet line, then swaps the paragraph in place", async () => {

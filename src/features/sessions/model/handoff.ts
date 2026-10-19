@@ -399,6 +399,18 @@ function formatHandoffBrief(brief: string, ciContext: string): string {
   )}`;
 }
 
+/**
+ * The first prompt of a fresh provider conversation after the saved one was lost (Claude Code said "No conversation
+ * found"): the chat so far, from MonoCode's own copy, then the turn's own text.
+ */
+export function wrapRecoveredPrompt(brief: string, text: string): string {
+  const body = stripGoalSections(brief).trim();
+  const lead =
+    "Your earlier conversation in this chat could not be resumed: its saved transcript is gone, so this is a fresh conversation. This is not a new task. Below is a brief of the chat so far, rebuilt from MonoCode's own copy; continue from it and do not say you have no prior context.";
+  if (!body) return `${lead}\n\n${text}`;
+  return `${lead}\n\n<chat_brief>\n${body}\n</chat_brief>\n\n${text}`;
+}
+
 export function wrapHandoffPrompt(
   brief: string,
   from: HarnessId,

@@ -396,6 +396,12 @@ test("the read-only proxy answers only the dev copy's token, adds the live key i
   assert.equal((await call("seen", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
   assert.equal((await call("activity", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
   assert.equal(seen.length, 1);
+  // Pages, the Today board and the change history are reads (Today draws the real board); building, keeping, applying
+  // and making a project are writes and stay refused.
+  for (const read of ["pages", "layout", "changes"]) assert.equal((await call(read, { Authorization: `Bearer ${token}` })).status, 200, read);
+  for (const write of ["build-page", "page-update", "page-remove", "change-preview", "change-apply", "change-undo", "project-create", "project-rename", "project-archive"])
+    assert.equal((await call(write, { Authorization: `Bearer ${token}` })).status, 403, `${write} is a write`);
+  assert.equal(seen.length, 4);
   await assert.rejects(startLiveProxy({ port: 0, keyFile, clientTokenFile: keyFile }), /can't be the live key/);
 });
 
