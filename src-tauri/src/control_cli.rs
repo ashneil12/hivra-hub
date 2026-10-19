@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 33] = [
+const APP_ACTIONS: [&str; 35] = [
     "app.version",
     "models.list",
     "sessions.list",
@@ -95,6 +95,8 @@ const APP_ACTIONS: [&str; 33] = [
     "sessions.delete",
     "worktrees.list",
     "worktrees.create",
+    "actions.list",
+    "actions.run",
     "folders.list",
     "folders.move",
     "notes.list",
@@ -203,7 +205,20 @@ Actions:
                   Create a worktree on a named new branch from base (a branch
                   or ref). Set existing:true and omit base to use an existing
                   local branch. Pass the returned path as sessions.start's
-                  worktreeCwd to start there.
+                  worktreeCwd to start there. The project's setup action (from
+                  its imported .monocode/project.json) starts right after; the
+                  result's setup.run says so, and actions.list shows when it
+                  ends. runSetup:false skips it.
+  actions.list   {}  The project's actions, as Ash imported them from the main
+                  checkout's .monocode/project.json (Setup, Run dev slot,
+                  Check, Ship ...), and their recent runs with status, exit
+                  code and the last lines of output. Nothing runs before Ash
+                  imports the file once in Settings > Worktrees.
+  actions.run    {"action":"check","worktreeCwd":"<path>","waitSeconds":20}
+                  Run one in your own checkout (or worktreeCwd, a path from
+                  worktrees.list). It returns at once with a run ID;
+                  waitSeconds (0-25) waits that long for it to end. Check how
+                  a longer run ended with actions.list.
   folders.list   {}  Folders in your current project.
   folders.move   {"sessionId":"...","folderId":"..."}
                   Or use "newFolderName":"Research" to create a folder.
@@ -664,6 +679,8 @@ mod tests {
         for action in [
             "worktrees.list",
             "worktrees.create",
+            "actions.list",
+            "actions.run",
             "artifacts.list",
             "artifacts.read",
             "artifacts.write",
