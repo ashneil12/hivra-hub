@@ -1,4 +1,4 @@
-import { newSession, type Session } from "../../sessions/model/session";
+import { HARNESSES, newSession, type HarnessId, type Session } from "../../sessions/model/session";
 import {
   closeLeaf,
   leafIds,
@@ -56,10 +56,20 @@ async function loadMonoSession(
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
-  const session: Session = { ...host.create(home), runtimeMode: "auto" };
+  const session: Session = { ...host.create(home), ...engineFields(mono.engine, home), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
+}
+
+/**
+ * A Mono with its own engine (set by a setup import) starts its conversation there instead of on the app's default;
+ * an engine this build doesn't know falls back to the default rather than failing.
+ */
+function engineFields(engine: { harness: string; model?: string } | undefined, cwd: string): Partial<Session> {
+  if (!engine || !HARNESSES.includes(engine.harness as HarnessId)) return {};
+  const fresh = newSession(engine.harness as HarnessId, cwd, engine.model, "auto");
+  return { harness: fresh.harness, model: fresh.model, modelSettings: fresh.modelSettings, title: fresh.title };
 }
 
 /** Reset only the Mono's chat, keeping its identity, habits and memory. */

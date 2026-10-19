@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { newSession } from "../../sessions/model/session";
 import { leafIds, newTab, splitPane } from "../../workspace/model/layout";
 import { planWorkspaceTabClose } from "../../workspace/model/workspaceTabGroups";
-import { createMono, findMono, saveMonoName, saveMonoSessionId } from "./mono";
+import { addMono, createMono, findMono, parseMonoEngine, saveMonoName, saveMonoSessionId } from "./mono";
 import { planAgentContext, recordAgentContext } from "./monoFiles";
 import { loadMonoRotation, saveMonoRotation } from "./monoRotation";
 import {
@@ -342,4 +342,18 @@ it("restores a blank tab for a background project without switching the active t
   expect(migration.agentViewId).toBeUndefined();
   expect(migration.tabs[0]).toBe(active);
   expect(migration.addedSessions[0].cwd).toBe(agent.cwd);
+});
+
+it("a Mono with its own engine starts its conversation there, not on the app's default", async () => {
+  addMono({ id: "codex-mono", name: "Builder", mascot: "robot", color: "x", projects: [], engine: { harness: "opencode", model: "big-model" } });
+  addMono({ id: "odd-mono", name: "Odd", mascot: "robot", color: "x", projects: [], engine: { harness: "nonexistent" } });
+  const host = { home: vi.fn().mockResolvedValue("/home"), load: vi.fn(), create: vi.fn((cwd: string) => newSession("claude", cwd)), add: vi.fn() };
+  const session = await ensureMonoSession("codex-mono", host);
+  // The model goes through the engine's own resolver (an unknown one becomes that engine's default).
+  expect(session).toMatchObject({ harness: "opencode", model: newSession("opencode", "/home", "big-model").model, runtimeMode: "auto", cwd: "/home" });
+  expect(findMono("codex-mono")!.engine).toEqual({ harness: "opencode", model: "big-model" });
+  // An engine this build doesn't know falls back to the default instead of failing.
+  expect(await ensureMonoSession("odd-mono", host)).toMatchObject({ harness: "claude" });
+  expect(parseMonoEngine({ harness: "Bad Id!" })).toBeUndefined();
+  expect(parseMonoEngine({ harness: "codex", model: " " })).toEqual({ harness: "codex" });
 });

@@ -56,7 +56,24 @@ export type Mono = {
    * it inherits. The folder moves under its id the first time it is read.
    */
   legacyProject?: string;
+  /**
+   * The coding engine its conversation runs on (Claude Code, Codex, OpenCode …) and, optionally, the model. Set by
+   * a setup import; a new conversation starts on it. Absent: the app's default engine.
+   */
+  engine?: MonoEngine;
 };
+
+/** A Mono's engine: a harness id ("claude", "codex", …) and, optionally, its model. */
+export type MonoEngine = { harness: string; model?: string };
+
+/** The engine stored on a Mono, if it is a well-formed one. */
+export function parseMonoEngine(value: unknown): MonoEngine | undefined {
+  const entry = record(value);
+  const harness = typeof entry.harness === "string" ? entry.harness.trim() : "";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(harness)) return undefined;
+  const model = typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : undefined;
+  return model ? { harness, model } : { harness };
+}
 
 const ROSTER_KEY = "monocode:mono-roster";
 const MONOS_CHANGED = "monocode:monos-changed";
@@ -160,6 +177,7 @@ function parseMono(value: unknown): Mono | undefined {
   const name = text("name");
   const instructions = text("instructions");
   const legacyProject = text("legacyProject");
+  const engine = parseMonoEngine(entry.engine);
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
@@ -178,6 +196,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
     ...(legacyProject ? { legacyProject } : {}),
+    ...(engine ? { engine } : {}),
   };
 }
 
