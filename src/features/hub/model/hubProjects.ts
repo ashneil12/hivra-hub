@@ -1,22 +1,29 @@
 // Which projects the strip shows, in what order, and how each is told apart.
 //
 // Ash (15 Oct): "i only need hivra, the game, the harness n nibbii". Ash OS is being changed to return just these,
-// each with its own shape; until it does, the app keeps to these four, in this order, and names the harness
-// project "Harness". When Ash OS returns its own list, this filter changes nothing and can go.
+// each with its own shape; until it does, the app keeps to these four, in this order. The harness is the project
+// `hub` ("MonoCode Hub", this app's own repo). `ash` is not a project: it is Ash's global memory (how he works,
+// whatever the project), so it never shows as a tile and never gets a Lead, whatever Ash OS sends.
 import type { HubProject, ProjectIconShape } from "./types";
+
+/** Ash's global memory layer. Never a project tile, never a Lead, never a team membership. */
+export const GLOBAL_PROJECT = "ash";
+export function isGlobalProject(id: string): boolean {
+  return id === GLOBAL_PROJECT;
+}
 
 export const STRIP_PROJECTS: readonly { id: string; name?: string; shortName?: string }[] = [
   { id: "vg-game" },
   { id: "hivra" },
   { id: "nibbii" },
-  { id: "ash", name: "Harness", shortName: "Harness" },
+  { id: "hub", name: "MonoCode Hub", shortName: "Hub" },
 ];
 
 /** The design's shape set. Projects are grey and told apart by shape only (DESIGN-RULES 3). */
 export const SHAPES: readonly ProjectIconShape[] = ["ghost", "sparkles", "palette", "gauge", "folder"];
 
 /** The shapes the design's mockups gave these projects. */
-const KNOWN: Record<string, ProjectIconShape> = { "vg-game": "ghost", hivra: "sparkles", nibbii: "palette", ash: "gauge" };
+const KNOWN: Record<string, ProjectIconShape> = { "vg-game": "ghost", hivra: "sparkles", nibbii: "palette", hub: "gauge" };
 
 function hash(id: string): number {
   let h = 0;
@@ -54,7 +61,7 @@ export function distinctShapes(projects: HubProject[]): HubProject[] {
 /** Ash OS's projects as the strip shows them: Ash's four, in his order, named and shaped. */
 export function stripProjects(live: HubProject[]): HubProject[] {
   const picked = STRIP_PROJECTS.flatMap((want) => {
-    const p = live.find((x) => x.id === want.id);
+    const p = isGlobalProject(want.id) ? undefined : live.find((x) => x.id === want.id);
     return p ? [{ ...p, ...(want.name ? { name: want.name } : {}), ...(want.shortName ? { shortName: want.shortName } : {}) }] : [];
   });
   return distinctShapes(picked);

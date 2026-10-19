@@ -26,6 +26,9 @@ import {
   simulateReplies,
   replyProblem,
   retryReply,
+  roomPaused,
+  roomPick,
+  roomRouting,
   typingIn,
   useHubChatsVersion,
 } from "../model/hubChats";
@@ -240,7 +243,6 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             members={members}
             phrase={chatPhrase(chat)}
             onPick={(text) => {
-              if (typingIn(chat.id)) return;
               const id = startConversation(chat.id, text);
               setDrafting(false);
               setConvId(id);
@@ -263,7 +265,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       data-hub-msg-quiet={msg.quiet || undefined}
                       className={`hub-fade-in -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
-                      <div className="pb-0.5 text-xs text-content/60">{nameOf(msg.from)}</div>
+                      <div className="pb-0.5 text-xs text-content/60" title={msg.pick?.why} data-hub-msg-pick={msg.pick?.by}>{nameOf(msg.from)}</div>
                       <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;
@@ -294,9 +296,16 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           </div>
         )}
         <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
-          {typingIn(chat.id) ? `${nameOf(typingIn(chat.id)!)} is typing…` : null}
+          {typingIn(chat.id)
+            ? `${nameOf(typingIn(chat.id)!)} is typing…`
+            : roomRouting(chat.id)
+              ? "Choosing who answers…"
+              : !drafting && roomPaused(chat.id, conv?.id)
+                ? "The team paused here and is waiting for you."
+                : null}
         </div>
         {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-content/70" data-hub-chat-error>
+          {roomPick(chat.id) ? <span data-hub-chat-error-pick={roomPick(chat.id)!.id}>{nameOf(roomPick(chat.id)!.id)} was picked to answer ({roomPick(chat.id)!.why}). </span> : null}
           {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>
         </div> : null}
         <div className="mx-auto w-full max-w-[760px] shrink-0 px-8 pb-3">
@@ -304,7 +313,8 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             sessionId={`hub-chat:${chat.id}`}
             name={chatPhrase(chat)}
             onSubmit={(text) => {
-              if (!text.trim() || typingIn(chat.id)) return false;
+              // Sending while the team is answering is fine: the room takes it up as soon as the current turn ends.
+              if (!text.trim()) return false;
               if (drafting) {
                 const id = startConversation(chat.id, text.trim());
                 setDrafting(false);

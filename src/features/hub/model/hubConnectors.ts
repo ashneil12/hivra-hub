@@ -109,7 +109,16 @@ function checked(next: unknown): ConnectorsView {
   const v = next as ConnectorsView | null | undefined;
   if (!v || typeof v !== "object" || !v.settings || typeof v.settings !== "object" || typeof v.launcher !== "string")
     throw new Error("This build doesn't have connectors.");
-  return { ...v, settings: { composio: false, googleClient: false, connectors: {}, monos: {}, ...v.settings } };
+  const settings: Partial<ConnectorSettings> = v.settings;
+  return {
+    ...v,
+    settings: {
+      composio: settings.composio ?? false,
+      googleClient: settings.googleClient ?? false,
+      connectors: settings.connectors ?? {},
+      monos: settings.monos ?? {},
+    },
+  };
 }
 
 export function connectorsView(): ConnectorsView | null {

@@ -6,6 +6,7 @@
 //   npm run hub:dev -- --hub live        # the real Ash OS, read-only (scripts/hub-live-proxy.mjs)
 //   npm run hub:dev -- --hub off         # no Ash OS at all
 //   npm run hub:dev -- --seed            # first copy a cleaned backup of the daily chats in (scripts/hub-seed-dev.mjs)
+//   npm run hub:dev -- --background      # never take focus (the default with no terminal, e.g. an agent); --foreground to override
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
@@ -329,7 +330,7 @@ export function tauriArgs(slotConfigFile, extra = [], root = ROOT) {
 }
 
 /** The environment `tauri dev` (and so cargo, vite and the app) runs with. */
-export function devEnvironment({ slot, hub, home = os.homedir(), env = process.env }) {
+export function devEnvironment({ slot, hub, background = false, home = os.homedir(), env = process.env }) {
   const next = { ...env };
   // Whatever an enclosing dev copy or shell set is not this slot's.
   for (const key of Object.keys(next))
@@ -342,6 +343,8 @@ export function devEnvironment({ slot, hub, home = os.homedir(), env = process.e
     next.MONOCODE_HUB_PORT = String(hub.port);
     next.MONOCODE_HUB_TOKEN_FILE = hub.tokenFile;
   }
+  // An accessory app that never takes focus (src-tauri/src/lib.rs), so an agent's test copy stays out of Ash's way.
+  if (background) next.MONOCODE_HUB_BACKGROUND = "1";
   return next;
 }
 
@@ -533,6 +536,8 @@ export function parseArgs(argv) {
       own.includes("--replace"),
     reseed: own.includes("--reseed") || own.includes("--replace"),
     print: own.includes("--print"),
+    // No terminal attached means an agent started it: keep the window from taking focus unless --foreground.
+    background: own.includes("--background") || (!own.includes("--foreground") && !process.stdout.isTTY),
     extra,
   };
   if (!HUB_MODES.includes(options.hub)) throw new Error(`--hub must be one of ${HUB_MODES.join(", ")}`);
@@ -577,7 +582,7 @@ async function main() {
   const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
     cwd: ROOT,
     stdio: "inherit",
-    env: devEnvironment({ slot: plan.slot, hub: bridge }),
+    env: devEnvironment({ slot: plan.slot, hub: bridge, background: options.background }),
   });
   const signalled = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])

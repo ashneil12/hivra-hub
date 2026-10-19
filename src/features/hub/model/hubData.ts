@@ -1,4 +1,4 @@
-import { DEFAULT_TEAM } from "./builtInMonos";
+import { DEFAULT_TEAM, ensureBuiltInMonos } from "./builtInMonos";
 import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
@@ -8,10 +8,11 @@ import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
-import { ensureProjectLeads, leadMcpArgs } from "./hubLeads";
+import { ensureProjectLeads, leadMcpArgs, reseedAdoptedLeadSoul } from "./hubLeads";
+import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
 import { stripProjects } from "./hubProjects";
-import { loadMonoFiles } from "../../monos/model/monoFiles";
-import { monoForSession } from "../../monos/model/mono";
+import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
+import { findMono, monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
@@ -52,10 +53,14 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 }
 
 /**
- * The Hub bundle's project Leads: once Ash OS has said which projects there are (and their folders), make the Leads
- * that are missing and write their souls; their Claude Code sessions carry their ash-os identity.
+ * The Hub bundle's project Leads and leadership team: once Ash OS has said which projects there are (and their
+ * folders), make the Leads that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead
+ * in place), give the team its souls, make it a member of every project and seat it in each Leadership team. The
+ * Leads' Claude Code sessions carry their ash-os identity.
  */
 function startHubBundleLeads(store: HubStore): void {
+  noteTeamEngines();
+  void seedTeamFiles();
   void tauriAshOsServer().then((server) =>
     setClaudeExtraArgs((sessionId) => {
       const mono = monoForSession(sessionId);
@@ -67,11 +72,23 @@ function startHubBundleLeads(store: HubStore): void {
     const projects = store.getSnapshot().projects;
     if (done || !projects.length) return;
     done = true;
-    const result = ensureProjectLeads(stripProjects(projects), (monoId, projectId) =>
-      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
+    const strip = stripProjects(projects);
+    const result = ensureProjectLeads(
+      strip,
+      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
+      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId }),
     );
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
+    for (const id of result.adopted)
+      void reseedAdoptedLeadSoul(id, findMono(id)?.projects[0] ?? null, defaultSoul, readAgentFile, writeAgentFile).catch(() => undefined);
+    // The team is normally on the roster already (the rail repairs it on render); make sure before tying and seating.
+    ensureBuiltInMonos();
+    tieTeamToProjects(strip, (monoId, projectId) =>
+      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
+    );
+    seatLeadershipTeams(strip);
+    void seedTeamFiles();
   };
   store.subscribe(tryLeads);
 }

@@ -1,4 +1,4 @@
-import { newSession, type Session } from "../../sessions/model/session";
+import { HARNESS_LABEL, newSession, type HarnessId, type Session } from "../../sessions/model/session";
 import {
   closeLeaf,
   leafIds,
@@ -16,7 +16,6 @@ import {
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
 import { leadWorkingFolder } from "../../hub/model/hubLeads";
-import { monoEngine } from "../../hub/model/hubTeams";
 
 const openingMonos = new Map<string, Promise<Session | undefined>>();
 
@@ -57,13 +56,10 @@ async function loadMonoSession(
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
-  // A named Mono made on Settings > Teams starts on the engine it was made with (Claude Code, Codex, …).
-  const engine = monoEngine(monoId);
+  // A Mono with its own engine (the hub's team is noted as Claude Code) starts there; any other uses the app's default.
+  const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
-  const session: Session = {
-    ...(engine && engine !== created.harness ? newSession(engine, home) : created),
-    runtimeMode: "auto",
-  };
+  const session: Session = { ...(engine && engine !== created.harness ? newSession(engine, home) : created), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;

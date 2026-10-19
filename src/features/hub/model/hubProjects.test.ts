@@ -4,17 +4,24 @@ import { calmSummary } from "./hubData";
 import type { HubProject } from "./types";
 
 const p = (id: string, extra: Partial<HubProject> = {}): HubProject => ({ id, name: id, shortName: id, iconShape: "folder", folder: null, ...extra });
-// What the live service returned on 15 Oct: every project "folder", parked ones included, registry order.
-const LIVE = ["ash", "atlas", "bible", "clearweb", "hivra", "ideas", "img2threejs", "nibbii", "trading-sim", "vg-game"].map((id) =>
-  p(id, { ash: { name: "Harness & how I work", shortName: "Harness" }, "vg-game": { name: "EXO", shortName: "EXO" }, hivra: { name: "Hivra", shortName: "Hivra" }, nibbii: { name: "Nibbii", shortName: "Nibbii" } }[id] ?? {}),
+// The live registry's projects (every one "folder", parked ones included, registry order). Since 19 Oct the harness
+// work is the project `hub`; `ash` is Ash's global memory ("How Ash works"), which Ash OS may still send.
+const LIVE = ["ash", "atlas", "bible", "clearweb", "hivra", "hub", "ideas", "img2threejs", "nibbii", "trading-sim", "vg-game"].map((id) =>
+  p(id, { ash: { name: "How Ash works", shortName: "Harness" }, hub: { name: "MonoCode Hub", shortName: "MonoCode", folder: "/Users/ash/Projects/monocode-hub" }, "vg-game": { name: "EXO", shortName: "EXO" }, hivra: { name: "Hivra", shortName: "Hivra" }, nibbii: { name: "Nibbii", shortName: "Nibbii" } }[id] ?? {}),
 );
 
 describe("the strip's projects", () => {
-  it("are Ash's four, in his order: EXO, Hivra, Nibbii, Harness", () => {
+  it("are Ash's four, in his order: EXO, Hivra, Nibbii, MonoCode Hub", () => {
     const out = stripProjects(LIVE);
-    expect(out.map((x) => x.id)).toEqual(["vg-game", "hivra", "nibbii", "ash"]);
-    expect(out.map((x) => x.shortName)).toEqual(["EXO", "Hivra", "Nibbii", "Harness"]);
-    expect(out.find((x) => x.id === "ash")?.name).toBe("Harness");
+    expect(out.map((x) => x.id)).toEqual(["vg-game", "hivra", "nibbii", "hub"]);
+    expect(out.map((x) => x.shortName)).toEqual(["EXO", "Hivra", "Nibbii", "Hub"]);
+    expect(out.find((x) => x.id === "hub")).toMatchObject({ name: "MonoCode Hub", folder: "/Users/ash/Projects/monocode-hub" });
+  });
+
+  it("never show the global `ash` memory as a project, even when Ash OS sends it in its old strip slot", () => {
+    const oldStrip = [p("vg-game"), p("hivra"), p("nibbii"), p("ash", { name: "Harness", shortName: "Harness", iconShape: "gauge" })];
+    expect(stripProjects(oldStrip).map((x) => x.id)).toEqual(["vg-game", "hivra", "nibbii"]);
+    expect(stripProjects(LIVE).some((x) => x.id === "ash")).toBe(false);
   });
 
   it("are told apart by shape even when Ash OS says 'folder' for all of them, the same shape every time", () => {
@@ -37,7 +44,7 @@ describe("the strip's projects", () => {
   });
 
   it("leave out a project Ash OS doesn't list", () => {
-    expect(stripProjects([p("hivra"), p("ash")]).map((x) => x.id)).toEqual(["hivra", "ash"]);
+    expect(stripProjects([p("hivra"), p("hub")]).map((x) => x.id)).toEqual(["hivra", "hub"]);
   });
 });
 

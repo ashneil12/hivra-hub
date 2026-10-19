@@ -35,6 +35,7 @@ function fakeDeps(mono: typeof import("../../monos/model/mono")) {
     deps: {
       createMono: (projects: string[]) => mono.createMono(projects),
       name: mono.saveMonoName,
+      engine: (id: string, engine: string) => void mono.updateMono(id, (m) => ({ ...m, engine })),
       writeSoul: async (id: string, soul: string) => void souls.set(id, soul),
       setConnectors: async (id: string, ids: string[]) => void connectorChoices.set(id, ids),
       addToRoom: (chat: string, id: string) => void rooms.push([chat, id]),

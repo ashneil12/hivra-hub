@@ -11,7 +11,7 @@
 import { useSyncExternalStore } from "react";
 import { addMember, createChat } from "./hubChats";
 import { catalogEntry, setMonoConnectors } from "./hubConnectors";
-import { createMono, listMonos, monoLook, saveMonoName, type Mono } from "../../monos/model/mono";
+import { createMono, findMono, listMonos, monoLook, saveMonoName, updateMono, type Mono } from "../../monos/model/mono";
 import { loadMonoFiles, saveMonoFile } from "../../monos/model/monoFiles";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { projectKey } from "../../../shared/lib/paths";
@@ -59,7 +59,7 @@ export type MonoProposal = {
   monoId?: string;
 };
 
-type Stored = { teams: Team[]; proposals: MonoProposal[]; engines: Record<string, HarnessId> };
+type Stored = { teams: Team[]; proposals: MonoProposal[] };
 
 const KEY = "monocode:hub-teams";
 const EVENT = "monocode:hub-teams-changed";
@@ -72,10 +72,9 @@ function load(): Stored {
     return {
       teams: Array.isArray(raw?.teams) ? raw.teams : [],
       proposals: Array.isArray(raw?.proposals) ? raw.proposals : [],
-      engines: raw?.engines && typeof raw.engines === "object" ? raw.engines : {},
     };
   } catch {
-    return { teams: [], proposals: [], engines: {} };
+    return { teams: [], proposals: [] };
   }
 }
 
@@ -118,9 +117,10 @@ export function teamOf(monoId: string): Team | undefined {
 export function pendingMonoProposals(): MonoProposal[] {
   return state.proposals.filter((p) => p.status === "pending");
 }
-/** The engine a named Mono was made with; its first chat starts on it (monoWorkspace.ts). */
+/** The engine a Mono's conversation starts on (`Mono.engine`, read by monoWorkspace.ts); absent is the app default. */
 export function monoEngine(monoId: string): HarnessId | undefined {
-  return state.engines[monoId];
+  const engine = findMono(monoId)?.engine;
+  return engine && (HARNESSES as string[]).includes(engine) ? (engine as HarnessId) : undefined;
 }
 
 function slug(name: string): string {
@@ -197,6 +197,7 @@ function checkSpec(spec: MonoSpec): MonoSpec {
 export type MakeDeps = {
   createMono(projects: string[]): Mono;
   name(monoId: string, name: string): void;
+  engine(monoId: string, engine: HarnessId): void;
   writeSoul(monoId: string, soul: string): Promise<void>;
   setConnectors(monoId: string, ids: string[]): Promise<unknown>;
   addToRoom(chatId: string, monoId: string): void;
@@ -205,6 +206,7 @@ export type MakeDeps = {
 export const appDeps: MakeDeps = {
   createMono: (projects) => createMono(projects),
   name: saveMonoName,
+  engine: (monoId, engine) => void updateMono(monoId, (mono) => ({ ...mono, engine })),
   writeSoul: async (monoId, soul) => {
     const files = await loadMonoFiles(monoId);
     await saveMonoFile(monoId, "soul", soul, files.soulHash);
@@ -224,7 +226,7 @@ export async function addNamedMono(teamId: string | undefined, input: MonoSpec, 
   if (teamId && !team) throw new Error("That team is gone.");
   const mono = deps.createMono(spec.projects);
   deps.name(mono.id, spec.name);
-  save({ ...state, engines: { ...state.engines, [mono.id]: spec.engine } });
+  deps.engine(mono.id, spec.engine);
   await deps.writeSoul(mono.id, spec.soul?.trim() ? spec.soul : soulFromBrief(spec, team?.name));
   await deps.setConnectors(mono.id, spec.connectors);
   if (team) {
