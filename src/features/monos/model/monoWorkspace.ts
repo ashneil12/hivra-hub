@@ -1,4 +1,4 @@
-import { HARNESSES, newSession, type HarnessId, type Session } from "../../sessions/model/session";
+import { HARNESS_LABEL, newSession, type HarnessId, type Session } from "../../sessions/model/session";
 import {
   closeLeaf,
   leafIds,
@@ -56,20 +56,15 @@ async function loadMonoSession(
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
-  const session: Session = { ...host.create(home), ...engineFields(mono.engine, home), runtimeMode: "auto" };
+  // A Mono with its own engine (the hub's team is noted as Claude Code; a setup import may bring another engine and a
+  // model) starts there; any other, or an engine this build doesn't know, uses the app's default.
+  const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
+  const created = host.create(home);
+  const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
+  const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
-}
-
-/**
- * A Mono with its own engine (set by a setup import) starts its conversation there instead of on the app's default;
- * an engine this build doesn't know falls back to the default rather than failing.
- */
-function engineFields(engine: { harness: string; model?: string } | undefined, cwd: string): Partial<Session> {
-  if (!engine || !HARNESSES.includes(engine.harness as HarnessId)) return {};
-  const fresh = newSession(engine.harness as HarnessId, cwd, engine.model, "auto");
-  return { harness: fresh.harness, model: fresh.model, modelSettings: fresh.modelSettings, title: fresh.title };
 }
 
 /** Reset only the Mono's chat, keeping its identity, habits and memory. */

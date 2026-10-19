@@ -5,8 +5,8 @@
 //   VITE_PORTABLE_PROOF="export|<file.tar.gz>|<memory folder>,<memory folder>" node scripts/hub-dev.mjs --seed --memory <dir>
 //   VITE_PORTABLE_PROOF="import|<file.tar.gz>" node scripts/hub-dev.mjs            (from a second, fresh worktree)
 //
-// Each step brings the window forward and titles it "PROOF <n> <step>" for a few seconds, so a window capture can be
-// taken of each one (`screencapture -l <window id>`). The native file dialogs are the only thing it skips.
+// Each step titles the window "PROOF <n> <step>" for a few seconds, so a window capture can be taken of each one
+// (`screencapture -l <window id>`); it never brings the window forward. The native file dialogs are all it skips.
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appIdentity } from "../app/model/appIdentity";
@@ -28,9 +28,8 @@ const $ = (selector: string) => document.querySelector<HTMLElement>(selector);
 const button = (text: string) => [...document.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent?.trim() === text);
 
 async function step(n: number, label: string): Promise<void> {
-  const window = getCurrentWindow();
-  await window.setFocus().catch(() => undefined);
-  await window.setTitle(`PROOF ${n} ${label}`).catch(() => undefined);
+  // Never takes focus: a dev copy stays out of Ash's way (hub:dev runs it as a background app).
+  await getCurrentWindow().setTitle(`PROOF ${n} ${label}`).catch(() => undefined);
   console.info(`[portable proof] ${n} ${label}`);
   await wait(4_000);
 }
@@ -52,7 +51,7 @@ async function prepare(): Promise<void> {
   const { createChat, listChats, startConversation } = await import("../features/hub/model/hubChats");
   const { addConnectors } = await import("../features/hub/model/connectors");
   if (!findMono("proof-marketing")) {
-    addMono({ id: "proof-marketing", name: "Marketing", mascot: "robot", color: "hsl(30 60% 60%)", projects: [], engine: { harness: "codex" } });
+    addMono({ id: "proof-marketing", name: "Marketing", mascot: "robot", color: "hsl(30 60% 60%)", projects: [], engine: "codex" });
     await writeAgentFile("proof-marketing", "SOUL.md", "# Marketing\n\n## Role\nWrites the launch posts\n\n## Skills\n- ash-copywriting\n- human-writing\n");
     await writeAgentFile("proof-marketing", "MEMORY.md", "- The launch is on Friday (proof data)\n");
   }

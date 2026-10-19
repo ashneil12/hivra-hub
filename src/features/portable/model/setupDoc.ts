@@ -4,7 +4,7 @@
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
-import { defaultMonoName, listMonos, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
+import { defaultMonoName, listMonos, monoEngine, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
 import { allKeptPages, type Page } from "../../pages/model/pages";
 import { DEFAULT_TEAM, isDefaultTeamMono } from "../../hub/model/builtInMonos";
 import { allConnectors, keychainService, loginLivesOn, type Connector } from "../../hub/model/connectors";
@@ -232,7 +232,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       projects: [...m.projects],
       projectIds: projectIdsFor(m, projects, teams),
       team: teamOf({ id: m.id, name }, teams),
-      engine: m.engine ?? input.engines?.[m.id] ?? null,
+      engine: monoEngine(m) ?? input.engines?.[m.id] ?? null,
       skills,
       skillRefs: skills.map((s) => input.skillRefs?.[s] ?? { name: s, path: null, source: null }),
       files,

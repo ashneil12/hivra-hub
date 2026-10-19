@@ -510,3 +510,13 @@ test("--replace (what the seed's refusal says to pass) reseeds, like --reseed", 
   assert.equal(parseArgs([]).memory, undefined);
   assert.throws(() => parseArgs(["--memory"]), /--memory needs a value/);
 });
+
+test("an agent's dev copy never takes focus: --background, or no terminal; --foreground overrides", async () => {
+  const { parseArgs, devEnvironment } = await load("hub-dev.mjs");
+  assert.equal(parseArgs(["--background"]).background, true);
+  assert.equal(parseArgs(["--foreground"]).background, false);
+  assert.equal(devEnvironment({ slot: "x", hub: null, background: true, env: {} }).MONOCODE_HUB_BACKGROUND, "1");
+  assert.equal(devEnvironment({ slot: "x", hub: null, background: false, env: {} }).MONOCODE_HUB_BACKGROUND, undefined);
+  // a leftover from an enclosing shell never leaks in
+  assert.equal(devEnvironment({ slot: "x", hub: null, background: false, env: { MONOCODE_HUB_BACKGROUND: "1" } }).MONOCODE_HUB_BACKGROUND, undefined);
+});

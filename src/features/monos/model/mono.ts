@@ -51,28 +51,38 @@ export type Mono = {
   useSidebarFolders?: boolean;
   /** Superseded by SOUL.md; only read once, to seed it. */
   instructions?: string;
+  /** The coding engine (harness id) its conversation starts on; absent means the app's default. */
+  engine?: string;
   /**
    * From when each project had its own Mono: the project whose agent folder
    * it inherits. The folder moves under its id the first time it is read.
    */
   legacyProject?: string;
-  /**
-   * The coding engine its conversation runs on (Claude Code, Codex, OpenCode …) and, optionally, the model. Set by
-   * a setup import; a new conversation starts on it. Absent: the app's default engine.
-   */
-  engine?: MonoEngine;
+  /** With `engine`: the model its conversation starts on (a setup import carries it). Absent: the engine's default. */
+  engineModel?: string;
 };
 
-/** A Mono's engine: a harness id ("claude", "codex", …) and, optionally, its model. */
+/** A Mono's engine as an export carries it: a harness id ("claude", "codex", …) and, optionally, its model. */
 export type MonoEngine = { harness: string; model?: string };
 
-/** The engine stored on a Mono, if it is a well-formed one. */
+/** An engine from an export (`{harness, model}`, or a bare harness id), if it is a well-formed one. */
 export function parseMonoEngine(value: unknown): MonoEngine | undefined {
-  const entry = record(value);
+  const entry = typeof value === "string" ? { harness: value } : record(value);
   const harness = typeof entry.harness === "string" ? entry.harness.trim() : "";
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(harness)) return undefined;
   const model = typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : undefined;
   return model ? { harness, model } : { harness };
+}
+
+/** The engine a Mono runs on, as an export carries it. */
+export function monoEngine(mono: Pick<Mono, "engine" | "engineModel">): MonoEngine | undefined {
+  return mono.engine ? parseMonoEngine({ harness: mono.engine, model: mono.engineModel }) : undefined;
+}
+
+/** A Mono's fields for an engine from an export. */
+export function engineFieldsOf(engine: MonoEngine | null | undefined): Pick<Mono, "engine" | "engineModel"> {
+  const parsed = parseMonoEngine(engine);
+  return parsed ? { engine: parsed.harness, ...(parsed.model ? { engineModel: parsed.model } : {}) } : {};
 }
 
 const ROSTER_KEY = "monocode:mono-roster";
@@ -176,8 +186,9 @@ function parseMono(value: unknown): Mono | undefined {
   const sessionId = text("sessionId");
   const name = text("name");
   const instructions = text("instructions");
+  const engine = text("engine");
+  const engineModel = text("engineModel");
   const legacyProject = text("legacyProject");
-  const engine = parseMonoEngine(entry.engine);
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
@@ -195,8 +206,9 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
-    ...(legacyProject ? { legacyProject } : {}),
     ...(engine ? { engine } : {}),
+    ...(engine && engineModel ? { engineModel } : {}),
+    ...(legacyProject ? { legacyProject } : {}),
   };
 }
 

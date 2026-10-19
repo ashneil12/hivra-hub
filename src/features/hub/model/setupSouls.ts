@@ -2,7 +2,7 @@
 // skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { addMono, findMono, listMonos, parseMonoEngine, updateMono, type MonoEngine } from "../../monos/model/mono";
+import { addMono, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
 import { ROLE_NAMES } from "./roleNames";
 
 export type SetupSoul = {
@@ -148,7 +148,6 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
   const soul = readWaiting().find((s) => s.monoId === monoId);
   if (!soul) return;
   if (!isSeated(monoId)) {
-    const engine = parseMonoEngine(soul.engine);
     addMono({
       id: soul.monoId,
       name: soul.name,
@@ -156,7 +155,7 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       ...(soul.mascotPicked ? { mascotPicked: true } : {}),
       color: soul.color ?? "hsl(210 8% 58%)",
       projects: folders ?? soul.projects ?? [],
-      ...(engine ? { engine } : {}),
+      ...engineFieldsOf(soul.engine),
     });
   }
   await writeSoulFiles(monoId, soulFiles(soul), { write, read });
@@ -173,11 +172,11 @@ export async function mergeIntoSeated(
 ): Promise<{ written: AgentFilePath[]; kept: AgentFilePath[] }> {
   const mono = findMono(soul.monoId);
   if (!mono) return { written: [], kept: [] };
-  const engine = parseMonoEngine(soul.engine);
+  const engine = engineFieldsOf(soul.engine);
   updateMono(mono.id, (m) => ({
     ...m,
     projects: [...m.projects, ...(soul.projects ?? [])],
-    ...(!m.engine && engine ? { engine } : replace && engine ? { engine } : {}),
+    ...(engine.engine && (!m.engine || replace) ? engine : {}),
   }));
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}) });
 }

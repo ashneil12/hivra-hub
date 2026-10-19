@@ -47,8 +47,8 @@ const SOUL = "# Chief of Staff\n\n## Role\nRuns the day\n\n## Skills\n- ash-os\n
 
 /** This Mac: projects, Monos (one on Codex), teams with conversations, connectors, Pages, models, settings. */
 async function seed(a: Awaited<ReturnType<typeof app>>) {
-  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: { harness: "claude", model: "opus" } });
-  a.mono.addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "crab", mascotPicked: true, color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"], engine: { harness: "codex" } });
+  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: "claude", engineModel: "opus" });
+  a.mono.addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "crab", mascotPicked: true, color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"], engine: "codex" });
   const team = a.chats.ensureLeadership("hivra");
   a.chats.addMember(team.id, "chief-of-staff");
   const conv = a.chats.startConversation(team.id, `what's left? (pasted ${GITHUB})`);
@@ -204,7 +204,7 @@ it("the preview shows each conflict, and the restore keeps what is already here"
   expect(disk.files.get("chief-of-staff/SOUL.md")).toBe("# my own soul");
   expect(disk.files.get("chief-of-staff/MEMORY.md")).toBe("- from the file");
   expect(b.mono.findMono("chief-of-staff")!.projects).toEqual(["/Users/ash/Projects/hivra"]);
-  expect(b.mono.findMono("chief-of-staff")!.engine).toEqual({ harness: "claude", model: "opus" });
+  expect(b.mono.monoEngine(b.mono.findMono("chief-of-staff")!)).toEqual({ harness: "claude", model: "opus" });
   expect(b.mono.findMono("someone-else")!.name).toBe("Hivra lead");
   expect(b.chats.getChat("hivra:leadership")!.conversations).toHaveLength(1);
   expect(b.connectors.allConnectors()).toHaveLength(1);

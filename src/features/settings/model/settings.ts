@@ -251,6 +251,20 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "git branch working copy create delete manage",
   },
   {
+    id: "project-actions",
+    section: "worktrees",
+    label: "Project actions",
+    keywords:
+      "project file .monocode project.json setup run dev slot check ship import trust buttons",
+  },
+  {
+    id: "worktree-cleanup",
+    section: "worktrees",
+    label: "Clean up worktrees",
+    keywords:
+      "janitor disk space size merged stale idle build output target node_modules remove free report",
+  },
+  {
     id: "update",
     section: "general",
     label: "Version",

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { newSession } from "../../sessions/model/session";
 import { leafIds, newTab, splitPane } from "../../workspace/model/layout";
 import { planWorkspaceTabClose } from "../../workspace/model/workspaceTabGroups";
-import { addMono, createMono, findMono, parseMonoEngine, saveMonoName, saveMonoSessionId } from "./mono";
+import { addMono, createMono, engineFieldsOf, findMono, monoEngine, parseMonoEngine, saveMonoName, saveMonoSessionId } from "./mono";
 import { planAgentContext, recordAgentContext } from "./monoFiles";
 import { loadMonoRotation, saveMonoRotation } from "./monoRotation";
 import {
@@ -344,16 +344,34 @@ it("restores a blank tab for a background project without switching the active t
   expect(migration.addedSessions[0].cwd).toBe(agent.cwd);
 });
 
-it("a Mono with its own engine starts its conversation there, not on the app's default", async () => {
-  addMono({ id: "codex-mono", name: "Builder", mascot: "robot", color: "x", projects: [], engine: { harness: "opencode", model: "big-model" } });
-  addMono({ id: "odd-mono", name: "Odd", mascot: "robot", color: "x", projects: [], engine: { harness: "nonexistent" } });
+it("a setup import's engine and model are where a Mono's new conversation starts", async () => {
+  addMono({ id: "builder", name: "Builder", mascot: "robot", color: "x", projects: [], ...engineFieldsOf({ harness: "opencode", model: "big-model" }) });
   const host = { home: vi.fn().mockResolvedValue("/home"), load: vi.fn(), create: vi.fn((cwd: string) => newSession("claude", cwd)), add: vi.fn() };
-  const session = await ensureMonoSession("codex-mono", host);
+  const session = await ensureMonoSession("builder", host);
   // The model goes through the engine's own resolver (an unknown one becomes that engine's default).
   expect(session).toMatchObject({ harness: "opencode", model: newSession("opencode", "/home", "big-model").model, runtimeMode: "auto", cwd: "/home" });
-  expect(findMono("codex-mono")!.engine).toEqual({ harness: "opencode", model: "big-model" });
-  // An engine this build doesn't know falls back to the default instead of failing.
-  expect(await ensureMonoSession("odd-mono", host)).toMatchObject({ harness: "claude" });
+  expect(monoEngine(findMono("builder")!)).toEqual({ harness: "opencode", model: "big-model" });
   expect(parseMonoEngine({ harness: "Bad Id!" })).toBeUndefined();
   expect(parseMonoEngine({ harness: "codex", model: " " })).toEqual({ harness: "codex" });
+  expect(parseMonoEngine("codex")).toEqual({ harness: "codex" });
+});
+
+it("a Mono with its own engine starts its chat there; an unknown engine or none uses the app's default", async () => {
+  const host = (added: string[]) => ({
+    home: async () => "/home",
+    load: async () => undefined,
+    create: createSession, // the app's default here is Codex
+    add: (session: { harness: string }) => added.push(session.harness),
+  });
+  const { addMono } = await import("./mono");
+  addMono({ id: "cos", name: "Chief of Staff", mascot: "robot", color: "x", projects: [], engine: "claude" });
+  addMono({ id: "odd", name: "Odd", mascot: "robot", color: "x", projects: [], engine: "toString" });
+  addMono({ id: "plain", name: "Plain", mascot: "robot", color: "x", projects: [] });
+  const added: string[] = [];
+  const cos = await ensureMonoSession("cos", host(added));
+  expect(cos).toMatchObject({ harness: "claude", cwd: "/home", runtimeMode: "auto" });
+  expect(findMono("cos")).toMatchObject({ engine: "claude", sessionId: cos?.id });
+  expect((await ensureMonoSession("odd", host(added)))?.harness).toBe("codex");
+  expect((await ensureMonoSession("plain", host(added)))?.harness).toBe("codex");
+  expect(added).toEqual(["claude", "codex", "codex"]);
 });

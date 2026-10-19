@@ -99,7 +99,7 @@ describe("Today, live", () => {
     await until(() => text().includes("Since"), "since label");
     expect(text()).toMatch(/Since (yesterday|\d|[A-Z][a-z]+)/);
     expect(text()).toContain("Example: the game's new level is in and working");
-    for (const name of ["EXO", "Hivra", "Harness"]) expect(text()).toContain(name);
+    for (const name of ["EXO", "Hivra", "Hub"]) expect(text()).toContain(name);
     expect(container.querySelector("[data-hub-home-projects]")?.textContent).toContain("Nibbii"); // quiet projects remain accessible
     const org = container.querySelectorAll('[data-hub-need]');
     for (const row of org) expect(row.querySelectorAll("button").length).toBe(1);
@@ -113,7 +113,7 @@ describe("Today, live", () => {
     const badge = (name: string) => container.querySelector(`button[aria-label^="${name}"] span.hub-count-badge`)?.textContent;
     expect(badge("EXO")).toBe("2");
     expect(badge("Hivra")).toBe("1");
-    expect(badge("Harness")).toBe("5"); // the five rows shown; the one under Later has its own line
+    expect(badge("MonoCode Hub")).toBe("5"); // the five rows shown; the one under Later has its own line
     expect(badge("Nibbii")).toBeUndefined();
     expect(container.querySelectorAll("[data-hub-strip] .hub-count-badge").length).toBe(3);
   });
@@ -173,7 +173,9 @@ describe("Today, live", () => {
     mount(createElement("div"));
     await act(async () => store.start());
     await until(() => store.getSnapshot().status === "ready", "ready");
-    const items = createLiveHubData(store).listProjectItems("ash").map((i) => i.id);
+    stub.addProject({ id: "side", name: "Side thing" }); // the stub makes it without a folder
+    await until(() => store.getSnapshot().projects.some((p) => p.id === "side"), "foldless project");
+    const items = createLiveHubData(store).listProjectItems("side").map((i) => i.id);
     expect(items).not.toContain("coding-team");
     expect(createLiveHubData(store).listProjectItems("hivra").map((i) => i.id)).toContain("coding-team");
   });
@@ -184,18 +186,18 @@ describe("ships clean and calm", () => {
     await act(async () => store.start());
     await until(() => store.getSnapshot().status === "ready", "ready");
     const data = createLiveHubData(store);
-    for (const id of ["vg-game", "hivra", "nibbii", "ash"]) {
+    for (const id of ["vg-game", "hivra", "nibbii", "hub"]) {
       const kinds = data.listProjectItems(id).map((i) => i.kind);
       expect(kinds).not.toContain("section");
     }
     expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
   });
 
-  it("the strip shows EXO, Hivra, Nibbii, Harness in that order, each its own letter tile", async () => {
+  it("the strip shows EXO, Hivra, Nibbii, Hub in that order, each its own letter tile", async () => {
     mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
-    expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Harness"]);
+    expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Hub"]);
     // No ghost and no per-project shape by default: the first letter on a grey glass tile (Ash can pick an icon).
     const tiles = [...container.querySelectorAll("[data-hub-strip] button:not([data-project-more])")].slice(1, 5).map((b) => b.textContent?.trim()[0]);
     expect(tiles).toEqual(["E", "H", "N", "H"]);
