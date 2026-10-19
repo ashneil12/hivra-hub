@@ -526,8 +526,12 @@ export function parseArgs(argv) {
   const options = {
     slot: value("slot"),
     hub: value("hub") ?? "stub",
-    seed: own.includes("--seed") || own.includes("--reseed"),
-    reseed: own.includes("--reseed"),
+    // --replace is what the seed's own refusal tells you to pass, so it works here too
+    seed:
+      own.includes("--seed") ||
+      own.includes("--reseed") ||
+      own.includes("--replace"),
+    reseed: own.includes("--reseed") || own.includes("--replace"),
     print: own.includes("--print"),
     extra,
   };

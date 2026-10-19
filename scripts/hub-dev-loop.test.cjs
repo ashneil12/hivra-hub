@@ -492,3 +492,13 @@ test("stopping a run reaches the grandchildren tauri dev would leave behind (car
   assert.equal(alive(grandchild), false, "cargo run's stand-in is gone too");
   assert.equal(alive(bystander.pid), true, "nothing outside the tree is signalled");
 });
+
+test("--replace (what the seed's refusal says to pass) reseeds, like --reseed", async () => {
+  const { parseArgs } = await load("hub-dev.mjs");
+  for (const flag of ["--replace", "--reseed"]) {
+    const o = parseArgs(["--seed", flag]);
+    assert.equal(o.seed, true, flag);
+    assert.equal(o.reseed, true, flag);
+  }
+  assert.equal(parseArgs(["--seed"]).reseed, false);
+});
