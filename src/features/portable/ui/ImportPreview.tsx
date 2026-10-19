@@ -143,7 +143,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
                 sub={[
                   m.engineLabel,
                   m.mono.skills.length ? count(m.mono.skills.length, "skill") : null,
-                  m.mono.files["MEMORY.md"] !== undefined ? "memory" : null,
+                  m.mono.files["MEMORY.md"]?.trim() ? "memory" : null,
                   m.skillsMissing.length ? `not on this Mac: ${m.skillsMissing.join(", ")}` : null,
                   m.missingFolders.length ? `folder not here: ${m.missingFolders.map(folderName).join(", ")}` : null,
                   m.nameClash ? `another Mono here is called ${m.nameClash}` : null,

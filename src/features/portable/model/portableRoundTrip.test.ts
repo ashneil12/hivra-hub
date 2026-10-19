@@ -89,6 +89,9 @@ it("the setup goes out as files and comes back as the same document", async () =
   expect(files["setup/monos/hivra-lead/sheet.md"]).toContain("Engine: Codex");
   expect(doc.monos.find((m) => m.id === "chief-of-staff")).toMatchObject({ role: "Runs the day", skills: ["ash-os", "dump-triage"], team: "leadership", projectIds: ["hivra"] });
   expect(doc.monos.find((m) => m.id === "hivra-lead")!.team).toBe("lead");
+  // Every Mono folder has a MEMORY.md; an empty one isn't memory and doesn't travel.
+  const empty = a.doc.buildSetupDoc({ monoFiles: { "hivra-lead": { "SOUL.md": "# s", "MEMORY.md": "  \n" } }, workspace: false });
+  expect(empty.monos.find((m) => m.id === "hivra-lead")!.files).toEqual({ "SOUL.md": "# s" });
 });
 
 it("no secret is in the setup files: logins, keys and secret-looking settings stay home", async () => {

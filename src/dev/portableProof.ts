@@ -46,7 +46,7 @@ async function openPage(): Promise<void> {
 
 /** Proof data in the source slot: a Mono on another engine with its own soul and memory, its team, a connector. */
 async function prepare(): Promise<void> {
-  const { addMono, findMono } = await import("../features/monos/model/mono");
+  const { addMono, findMono, updateMono } = await import("../features/monos/model/mono");
   const { writeAgentFile } = await import("../features/monos/model/monoFiles");
   const { createChat, listChats, startConversation } = await import("../features/hub/model/hubChats");
   const { addConnectors } = await import("../features/hub/model/connectors");
@@ -55,6 +55,7 @@ async function prepare(): Promise<void> {
     await writeAgentFile("proof-marketing", "SOUL.md", "# Marketing\n\n## Role\nWrites the launch posts\n\n## Skills\n- ash-copywriting\n- human-writing\n");
     await writeAgentFile("proof-marketing", "MEMORY.md", "- The launch is on Friday (proof data)\n");
   }
+  updateMono("proof-marketing", (m) => ({ ...m, engine: "codex" }));
   if (!listChats("hivra").some((c) => c.name === "Marketing")) {
     const team = createChat("hivra", "Marketing", ["proof-marketing"]);
     startConversation(team.id, "Draft the launch post (proof data)");

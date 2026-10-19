@@ -224,7 +224,7 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
       return { model, state: local ? "here" : "new", ...(clash ? { nameClash: clash.name } : {}) };
     }),
     settings: { add, differ, same: keys.length - add.length - differ.length },
-    monoMemory: doc.monos.filter((m) => m.files["MEMORY.md"] !== undefined).length,
+    monoMemory: doc.monos.filter((m) => !!m.files["MEMORY.md"]?.trim()).length,
     memory: p.inspection?.memory ?? [],
     workspace: p.inspection?.workspace ?? null,
   };
@@ -527,8 +527,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     if (r.automationsAdded) lines.push(`${plural(r.automationsAdded, "automation")} added, paused until you turn each on.`);
     if (r.remindersAdded) lines.push(`${plural(r.remindersAdded, "reminder")} added.`);
     if (r.delegationsAdded) lines.push(`${plural(r.delegationsAdded, "delegation")} added to the history.`);
+    if (r.memoryHistory.length) lines.push(`Memory restored with its history for ${r.memoryHistory.join(", ")}.`);
     if (r.memoryFilesAdded || r.memoryFilesBeside) lines.push(`${plural(r.memoryFilesAdded, "memory file")} added${r.memoryFilesBeside ? `, ${r.memoryFilesBeside} beside your own as .imported.md` : ""}.`);
-    if (r.memoryHistory.length) lines.push(`Memory history restored for ${r.memoryHistory.join(", ")}.`);
     if (r.kept) lines.push(`${plural(r.kept, "thing")} already here kept as they were.`);
     problems.push(...r.notes);
   }

@@ -218,7 +218,8 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
   const teams: PortableTeam[] = chats.map(({ id, projectId, name, isDefault, memberIds }) => ({ id, projectId, name, isDefault, memberIds: [...memberIds] }));
   const seated = listMonos();
   const monos: PortableMono[] = seated.map((m) => {
-    const files = input.monoFiles[m.id] ?? {};
+    // An empty MEMORY.md (every Mono folder has one) is not memory worth carrying.
+    const files = Object.fromEntries(Object.entries(input.monoFiles[m.id] ?? {}).filter(([path, text]) => path !== "MEMORY.md" || text.trim()));
     const name = m.name?.trim() || defaultMonoName(m.mascot);
     const rules = files["SOUL.md"] ?? "";
     const skills = skillsOf(rules);
@@ -300,7 +301,7 @@ export function sheetOf(mono: PortableMono, projects: PortableProject[]): string
     `- Engine: ${engineLabel(mono.engine)}`,
     `- Projects: ${projectNames.length ? projectNames.join(", ") : "none"}`,
     `- Skills: ${mono.skills.length ? mono.skills.join(", ") : "none listed"}`,
-    `- Memory in this export: ${mono.files["MEMORY.md"] !== undefined ? "yes" : "no"}`,
+    `- Memory in this export: ${mono.files["MEMORY.md"]?.trim() ? "yes" : "no"}`,
   ];
   if (mono.waiting) lines.push("- Still waiting for Ash's OK where this export was made");
   return `${lines.join("\n")}\n`;
