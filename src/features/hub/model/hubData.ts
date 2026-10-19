@@ -83,17 +83,20 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 function startHubBundleLeads(store: HubStore): void {
   noteTeamEngines();
   void seedTeamFiles();
-  let done = false;
+  // Every project on the strip gets its Lead (and the team's membership and seat), including one Ash just made with
+  // New project: checked again whenever the strip's projects change (each step is idempotent; Leads register once).
+  let seen = "";
+  const register = (monoId: string, projectId: string) =>
+    tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" });
+  const unregister = (monoId: string, projectId: string) =>
+    tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId });
   const tryLeads = () => {
     const projects = store.getSnapshot().projects;
-    if (done || !projects.length) return;
-    done = true;
     const strip = stripProjects(projects);
-    const result = ensureProjectLeads(
-      strip,
-      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
-      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId }),
-    );
+    const key = strip.map((p) => `${p.id}:${p.folder ?? ""}`).join("|");
+    if (!strip.length || key === seen) return;
+    seen = key;
+    const result = ensureProjectLeads(strip, register, unregister);
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
@@ -120,6 +123,15 @@ export function hubProjectIdFor(folder: string): string | undefined {
 
 export function hubProjectFolder(id: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
+}
+
+/**
+ * The live store when the hub reads Ash OS (the app, a dev copy, the dev page with a stub or the live proxy); undefined
+ * with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
+ * through it, so the slices they move are read again at once.
+ */
+export function liveHubStore(): HubStore | undefined {
+  return (override ?? choose()).store;
 }
 
 /** The one place the frontend gets hub data from. */

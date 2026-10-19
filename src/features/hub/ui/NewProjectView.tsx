@@ -2,12 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
+import { liveHubStore } from "../model/hubData";
+import { leadSpecFor } from "../model/hubLeads";
 import { setHubSelection } from "../model/hubNav";
-import { clearProjectDraft, projectDraft, saveProjectDraft } from "../model/projectDraft";
+import { createProject, defaultProjectFolder, projectSlug } from "../model/projectActions";
+import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
+import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
 import { plainName } from "../model/roleNames";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { addTeamAddon } from "../model/hubTeam";
+import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES, StripButton } from "./ProjectStrip";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
@@ -30,9 +35,25 @@ function guessTemplate(text: string): TemplateId {
   return "product-saas";
 }
 
+/** A first shape from the template (Ash changes it on the card): never the ghost. */
+const SHAPE_FOR: Record<TemplateId, ProjectIconShape> = { "game-studio": "gamepad", "product-saas": "rocket", "org-ops": "briefcase" };
+
+/** Ask for a folder Ash already has (the native folder dialog). Null when he cancels or there is no dialog. */
+async function pickFolder(): Promise<string | null> {
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false, title: "Choose the project's folder" });
+    return typeof picked === "string" ? picked : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * New project is chat-first: Ash types a name, then Chief of Staff asks a few
- * questions in chat. It ends on a preview card; nothing exists until Create.
+ * questions in chat. It ends on a preview card that says exactly what Create makes; nothing exists until Create.
+ * Create goes to Ash OS (`ash-hub-project-create`): the project, its own memory, and (by default) its code folder at
+ * ~/Projects/<id> as a local git repo with a README. Then its Lead Mono is seeded and it joins the strip.
  */
 export function NewProjectView() {
   // Picks up where Ash left off: the sidebar draft keeps the interview.
@@ -45,10 +66,15 @@ export function NewProjectView() {
   const [answers, setAnswers] = useState<string[]>(saved?.answers ?? []);
   const [tpl, setTpl] = useState<TemplateId | null>(saved?.tpl ?? null);
   const [addon, setAddon] = useState(saved?.addon ?? false);
+  const [shape, setShape] = useState<ProjectIconShape | undefined>(saved?.shape);
+  const [code, setCode] = useState<DraftCode>(saved?.code ?? "new");
+  const [folder, setFolder] = useState<string | undefined>(saved?.folder);
+  const [creating, setCreating] = useState(false);
+  const [problem, setProblem] = useState<string>();
   const ended = useRef(false);
   useEffect(() => {
-    if (!ended.current && started) saveProjectDraft({ name, started, lines, answers, tpl, addon });
-  }, [name, started, lines, answers, tpl, addon]);
+    if (!ended.current && started) saveProjectDraft({ name, started, lines, answers, tpl, addon, shape, code, folder });
+  }, [name, started, lines, answers, tpl, addon, shape, code, folder]);
   const end = useRef<HTMLDivElement>(null);
   const n = name.trim();
   const done = answers.length >= QUESTIONS.length;
@@ -88,18 +114,31 @@ export function NewProjectView() {
     else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(next.join(" "))));
   };
 
+  const id = projectSlug(n);
+  const pickedShape: ProjectIconShape = shape ?? (tpl ? SHAPE_FOR[tpl] : "folder");
   const create = () => {
-    if (!tpl) return;
-    const t = TEMPLATES.find((x) => x.id === tpl)!;
-    const id = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
-    const project = { id, name: n, shortName: n.split(" ")[0], iconShape: t.icon, folder: `/Users/ash/harness/${id}` };
-    addMockProject(project);
-    setTemplate(id, tpl);
-    // Ticking the add-on is Ash's yes: Critiquito joins with its soul and sits in this project's Leadership team.
-    if (addon) addTeamAddon(ADDON_OFFER.id, [project]);
-    ended.current = true;
-    clearProjectDraft();
-    setHubSelection({ project: id, item: "inbox" });
+    if (!tpl || creating) return;
+    if (code === "existing" && !folder) return setProblem("Choose the folder first, or pick another option.");
+    const finish = (project: HubProject) => {
+      setTemplate(project.id, tpl);
+      // Ticking the add-on is Ash's yes: Critiquito joins with its soul and sits in this project's Leadership team.
+      if (addon) addTeamAddon(ADDON_OFFER.id, [project]);
+      ended.current = true;
+      clearProjectDraft();
+      setHubSelection({ project: project.id, item: "inbox" });
+    };
+    if (!liveHubStore()) {
+      // The example data: no Ash OS to make it, so it is kept on this Mac only.
+      const project = { id, name: n, shortName: n.split(" ")[0], iconShape: pickedShape, folder: code === "none" ? null : code === "existing" ? folder ?? null : defaultProjectFolder(id) };
+      addMockProject(project);
+      return finish(project);
+    }
+    setCreating(true);
+    setProblem(undefined);
+    void createProject({ name: n, oneLine: answers[0] ?? n, code: code !== "none", folder: code === "existing" ? folder : undefined, shape: pickedShape }).then(
+      (made) => finish(made.project),
+      (e: Error) => { setCreating(false); setProblem(e.message); },
+    );
   };
   const cancel = () => {
     ended.current = true;
@@ -143,11 +182,53 @@ export function NewProjectView() {
               {t ? (
                 <div className="hub-fade-in flex flex-col gap-4 rounded-xl bg-content/5 p-5" data-hub-new-project-preview>
                   <div className="flex items-center gap-3">
-                    <StripButton label={n.split(" ")[0]} title={n} selected onClick={() => {}} Icon={SHAPES[t.icon]} />
-                    <div>
+                    <StripButton label={n.split(" ")[0]} title={n} selected onClick={() => {}} Icon={SHAPES[pickedShape]} />
+                    <div className="min-w-0">
                       <div className="text-[13px] font-medium text-content">{n}</div>
                       <div className="text-xs text-content/60">{answers[0]}</div>
                     </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5" data-hub-new-project-shapes>
+                    <span className="text-xs text-content/60">Icon</span>
+                    <div className="flex flex-wrap gap-1">
+                      {PROJECT_SHAPES.map((sh) => {
+                        const Icon = SHAPES[sh];
+                        const on = sh === pickedShape;
+                        return (
+                          <button key={sh} type="button" aria-label={`Icon ${SHAPE_LABEL[sh]}`} aria-pressed={on} title={SHAPE_LABEL[sh]} data-hub-new-project-shape={sh}
+                            onClick={() => setShape(sh)}
+                            className={`grid size-8 place-items-center rounded-md ${on ? "bg-content/12 text-content" : "text-content/60 hover:bg-content/8 hover:text-content"}`}>
+                            <Icon className="size-4" strokeWidth={1.75} />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Code folder" data-hub-new-project-code={code}>
+                    <span className="text-xs text-content/60">Code</span>
+                    {([
+                      ["new", `A new folder at ${defaultProjectFolder(id)}: a git repo with a README, never pushed`],
+                      ["existing", folder ? `My folder: ${folder}` : "A folder I already have…"],
+                      ["none", "No code, just the project and its memory"],
+                    ] as const).map(([value, label]) => (
+                      <label key={value} className="flex cursor-default items-center gap-2 text-[13px] text-content/85">
+                        <input type="radio" name="code" checked={code === value} data-hub-new-project-code-choice={value}
+                          onChange={() => {
+                            setCode(value);
+                            setProblem(undefined);
+                            if (value === "existing" && !folder) void pickFolder().then((f) => f && setFolder(f));
+                          }} />
+                        <span className="min-w-0 break-all">{label}</span>
+                        {value === "existing" && code === "existing" ? (
+                          <button type="button" className="shrink-0 rounded-md px-2 py-0.5 text-xs text-content/70 hover:bg-content/8 hover:text-content" data-hub-new-project-pick-folder
+                            onClick={() => void pickFolder().then((f) => f && setFolder(f))}>{folder ? "Change…" : "Choose…"}</button>
+                        ) : null}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-content/60">Memory</span>
+                    <div className="text-[13px] text-content">Its own memory. Nothing from your other projects comes with it.</div>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <span className="text-xs text-content/60">Starts as</span>
@@ -155,7 +236,9 @@ export function NewProjectView() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-xs text-content/60">Team</span>
-                    <div className="text-[13px] text-content">{[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].map((m) => plainName(m).primary).join(", ")}</div>
+                    <div className="text-[13px] text-content" data-hub-new-project-team>
+                      {[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].map((m) => plainName(m).primary).join(", ")}, and {leadSpecFor({ id, name: n, shortName: n.split(" ")[0] }).name}, its own Lead
+                    </div>
                   </div>
                   <label className="flex cursor-default items-center gap-2 text-[13px] text-content/85" data-hub-addon>
                     <button type="button" role="checkbox" aria-checked={addon} onClick={() => setAddon(!addon)}
@@ -164,10 +247,11 @@ export function NewProjectView() {
                     </button>
                     Also add {plainName(ADDON_OFFER.name).primary}: {ADDON_OFFER.what}
                   </label>
-                  <div className="flex gap-2">
-                    <button type="button" className={PRIMARY} onClick={create} data-hub-create-project>Create project</button>
-                    <button type="button" className={QUIET} onClick={cancel}>Cancel</button>
+                  <div className="flex items-center gap-2">
+                    <button type="button" className={PRIMARY} onClick={create} disabled={creating} data-hub-create-project>{creating ? "Creating…" : "Create project"}</button>
+                    <button type="button" className={QUIET} onClick={cancel} disabled={creating}>Cancel</button>
                   </div>
+                  {problem ? <p className="text-[13px] leading-5 text-content/70" role="alert" data-hub-new-project-problem>{problem}</p> : null}
                 </div>
               ) : null}
               <div className="h-5 text-xs text-content/60" aria-live="polite">{typing ? `${COS} is typing…` : null}</div>

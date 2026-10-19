@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -8,7 +8,7 @@ import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { allPages, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
+import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, type BuildPageResult } from "../model/buildPage";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { handleBridgeCall, type BridgeCall } from "../model/bridge";
@@ -45,12 +45,16 @@ function Limits() {
 function Dot({ state }: { state: keyof typeof STATE_DOT }) {
   return <span aria-hidden className={`inline-block size-1.5 shrink-0 rounded-full ${STATE_DOT[state]}`} />;
 }
-function BlockFrame({ title, children, wide }: { title: string; children: ReactNode; wide?: boolean }) {
+/** A block the Mono filled with made-up data says so (the contract: made-up data is labelled "Example:"). */
+export function isExampleBlock(block: PageBlock): boolean {
+  return JSON.stringify(block).includes("Example:");
+}
+function BlockFrame({ title, children, wide, example }: { title: string; children: ReactNode; wide?: boolean; example?: boolean }) {
   return (
     <section className={`${card} p-4 ${wide ? "col-span-2" : ""}`} data-page-block>
       <div className="mb-2.5 flex items-center gap-2 text-[11px] uppercase tracking-wide text-content/60">
         <span className="flex-1">{title}</span>
-        <span className="normal-case tracking-normal" data-example-data>Example data</span>
+        {example ? <span className="normal-case tracking-normal" data-example-data>Example data</span> : null}
       </div>
       {children}
     </section>
@@ -58,10 +62,11 @@ function BlockFrame({ title, children, wide }: { title: string; children: ReactN
 }
 
 export function Block({ block }: { block: PageBlock }) {
+  const example = isExampleBlock(block);
   switch (block.kind) {
     case "status":
       return (
-        <BlockFrame title={block.title}>
+        <BlockFrame title={block.title} example={example}>
           <div className="flex items-center gap-3">
             <Dot state={block.state} />
             <div className="min-w-0">
@@ -73,7 +78,7 @@ export function Block({ block }: { block: PageBlock }) {
       );
     case "list":
       return (
-        <BlockFrame title={block.title}>
+        <BlockFrame title={block.title} example={example}>
           {block.rows.map((r) => (
             <div key={r.text} className="flex items-center gap-2 border-t border-stroke py-2 text-[13px] first:border-0">
               <span className="min-w-0 flex-1 truncate text-content/90">{r.text}</span>
@@ -85,7 +90,7 @@ export function Block({ block }: { block: PageBlock }) {
     case "chart": {
       const max = Math.max(...block.bars.map((b) => b.value), 1);
       return (
-        <BlockFrame title={block.title}>
+        <BlockFrame title={block.title} example={example}>
           <div className="flex h-28 items-end gap-3" role="img" aria-label={`${block.title}: ${block.bars.map((b) => `${b.label} ${b.value}`).join(", ")}`}>
             {block.bars.map((b) => (
               <div key={b.label} className="flex flex-1 flex-col items-center gap-1.5">
@@ -102,7 +107,7 @@ export function Block({ block }: { block: PageBlock }) {
       // value at the end. Theme tokens only: the accent tints the bars, content draws the text.
       const max = Math.max(...block.rows.map((r) => r.value), 1);
       return (
-        <BlockFrame title={block.title}>
+        <BlockFrame title={block.title} example={example}>
           <div className="flex flex-col gap-1.5" data-block-barlist>
             {block.rows.map((r) => (
               <div key={r.label} className="flex items-center gap-3 text-[13px]">
@@ -119,14 +124,14 @@ export function Block({ block }: { block: PageBlock }) {
     }
     case "note":
       return (
-        <BlockFrame title={block.title}>
+        <BlockFrame title={block.title} example={example}>
           <p className="text-[13px] leading-6 text-content/85">{block.text}</p>
         </BlockFrame>
       );
     case "calendar": {
       const cells = [...Array(block.firstWeekday).fill(null), ...Array.from({ length: block.days }, (_, i) => i + 1)];
       return (
-        <BlockFrame title={`${block.title} · ${block.month}`}>
+        <BlockFrame title={`${block.title} · ${block.month}`} example={example}>
           <div className="grid grid-cols-7 gap-1 text-center text-[11px]">
             {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => <span key={i} className="pb-1 text-content/60">{d}</span>)}
             {cells.map((d, i) => {
@@ -147,7 +152,7 @@ export function Block({ block }: { block: PageBlock }) {
   }
 }
 
-function PageBody({ page, live }: { page: Page; live?: boolean }) {
+export function PageBody({ page, live }: { page: Page; live?: boolean }) {
   if (page.spec.kind === "bespoke") return <BespokeFrame pageId={page.id} spec={page.spec} live={live} />;
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -277,6 +282,27 @@ function AskBox({ onAsk, monos, monoId, onPick }: { onAsk: (text: string) => voi
 
 type Build = { prompt: string } & ({ state: "building" } | BuildPageResult);
 
+/** Ash OS refused or couldn't take the last page tap: one quiet line with OK. */
+function PagesProblem() {
+  usePagesVersion();
+  const problem = pagesProblem();
+  if (!problem) return null;
+  return (
+    <div className={`${card} mb-3 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="alert" data-pages-problem>
+      <span className="min-w-0 flex-1">{problem}</span>
+      <button type="button" className={quietBtn} onClick={clearPagesProblem}>OK</button>
+    </div>
+  );
+}
+
+/** The preview Page for a ready build: one object per build (its id is the record's pageId when Ash OS built it). */
+function usePreview(ready: ({ prompt: string } & Extract<BuildPageResult, { status: "ready" }>) | undefined, by: string, monoId: string, projectId: string): Page | undefined {
+  return useMemo(
+    () => (ready ? pageFromSpec(ready.spec, ready.prompt, by, projectId, ready.warnings, Date.now(), ready.pageId, monoId) : undefined),
+    [ready, by, monoId, projectId],
+  );
+}
+
 export function PagesContent() {
   usePagesVersion();
   useHubDataVersion();
@@ -310,7 +336,8 @@ export function PagesContent() {
     setSentBack(undefined);
     void buildPage({ projectId, monoId: askerId, prompt }).then((result) => setBuild({ prompt, ...result }));
   };
-  const preview = build && "status" in build && build.status === "ready" ? pageFromSpec(build.spec, build.prompt, asker, projectId, build.warnings) : undefined;
+  const ready = build && "status" in build && build.status === "ready" ? build : undefined;
+  const preview = usePreview(ready, asker, askerId, projectId);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
 
@@ -319,10 +346,15 @@ export function PagesContent() {
       <div className="mx-auto w-full max-w-2xl px-8 py-10" data-pages-build-state={"status" in build ? build.status : "building"}>
         <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {asker}</div>
         {"status" in build ? (
-          build.status === "not-connected" ? (
+          build.status === "building" ? (
+            <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status" data-pages-still-building>
+              <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
+              <span className="min-w-0 flex-1 leading-5">{build.reason}</span>
+            </div>
+          ) : build.status === "not-connected" ? (
             <div className={`${card} p-5`} data-pages-not-connected>
               <div className="text-[14px] text-content">Not connected yet</div>
-              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} Once it's wired, {asker} builds the page here and you see a preview first.</p>
+              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} When it's back, {asker} builds the page here and you see a preview first.</p>
             </div>
           ) : (
             <div className="rounded-lg px-3 py-2.5" data-pages-turned-down>
@@ -338,7 +370,7 @@ export function PagesContent() {
         )}
         <div className="mt-4 flex gap-2">
           <button type="button" className={quietBtn} onClick={() => { setBuild(undefined); setNewPage(false); }}>Back to Pages</button>
-          {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} onClick={() => ask(build.prompt)}>Try again</button> : null}
+          {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} data-pages-try-again onClick={() => ask(build.prompt)}>Try again</button> : null}
         </div>
       </div>
     );
@@ -357,7 +389,7 @@ export function PagesContent() {
             {preview.warnings.map((w) => (
               <div key={w.rule} className="flex items-start gap-3 text-[13px]">
                 <span className="min-w-0 flex-1 leading-5 text-content/85">{w.plain}</span>
-                <button type="button" className={quietBtn} onClick={() => setSentBack(w.plain)}>Fix it</button>
+                <button type="button" className={quietBtn} onClick={() => { setSentBack(w.plain); ask(`${preview.request}\n\nFix this in the page: ${w.plain}`); }}>Fix it</button>
               </div>
             ))}
             {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {asker}: “{sentBack}”</div> : null}
@@ -373,7 +405,11 @@ export function PagesContent() {
           <span className="text-[12px] text-content/70">This is a preview. Nothing is saved until you keep it.</span>
           <span className="ml-auto" />
           <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Throw away</button>
-          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => { keepPage(preview); if (build && "pin" in build && build.pin) setPinned(preview.id, true, preview.by); setKept(preview.title); setOpen(preview.id); setBuild(undefined); }}>{keepLabel}</button>
+          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => {
+            const pin = !!ready?.pin;
+            void keepPage(preview).then((ok) => { if (ok && pin) setPinned(preview.id, true, preview.by); });
+            setKept(preview.title); setOpen(preview.id); setBuild(undefined);
+          }}>{keepLabel}</button>
         </div>
       </div>
     );
@@ -383,6 +419,7 @@ export function PagesContent() {
     return (
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-open>
+          <PagesProblem />
           <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
@@ -427,6 +464,7 @@ export function PagesContent() {
   return (
     <div className="min-h-0 flex-1 overflow-auto">
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-list>
+        <PagesProblem />
         <div className="flex items-center gap-2">
           <h1 className="min-w-0 flex-1 text-[17px] font-medium text-content">Pages</h1>
           <button type="button" data-pages-new-button className={primaryBtn} onClick={() => setNewPage(true)}>New page</button>

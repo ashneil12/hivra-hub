@@ -1,3 +1,30 @@
+# Update: 20 October 2026, Phase 4 (branch hub/4-pages-newproject)
+
+Pages, Change the hub, Today's board and New project now go through Ash OS (exo-cc-studio `docs/HUB-BACKEND.md`):
+- **Pages** (`pages/model/pages.ts`): kept pages are Ash OS's record (`ash-hub-pages` incl. removed, read by the
+  hub store and its `pages` feed topic). Keep / Keep and allow / pin / Allow / Bot changes Undo-Redo call
+  `ash-hub-page-update` and `ash-hub-page-remove`; a tap shows at once and a refusal puts it back with the reason
+  (`pagesProblem`). Pages kept on this Mac before are sent once (copy in `monocode:pages.before-record`). Only the
+  example data keeps pages locally. `buildPage` sends `wait: 30` (hub.rs then allows 45 s) and maps "<Mono> is still
+  building..." to a still-building card; Try again collects the same build. The in-app runner path is gone.
+- **Change the hub / Edit Today** (`hubChange/`): previews send `wait: 30` (still building + Try again); Apply,
+  Undo, Redo go through the live store (re-reading changes, layout, projects). History from `ash-hub-changes` under
+  the ask box, the last change on Today, and Bot changes (`setHubChangeSource`) all read the same record rows.
+- **Today** draws `ash-hub-layout` (`snap.today`): since, setup, needs, being-built (quiet list, hidden when idle),
+  and kept pages placed by a change. A project's Inbox keeps its fixed order.
+- **Projects** (`model/projectActions.ts`): the strip is Ash OS's list in its order (the hard-coded four are gone).
+  Shapes are Ash OS's 14 (`projectShapes.ts`; "ghost" reads as gamepad), grey glyphs on the tile; the tile menu
+  (right-click, long-press, the hover dots) picks a shape (`ash-hub-project-rename {icon_shape}`), renames
+  (`name`), and Remove from hub archives (`ash-hub-project-archive`, counts first, Undo unarchives). Emoji / image
+  stay this Mac's own overrides. Local names are moved to Ash OS once. Move up / down is still local only (the
+  studio has no direct reorder call; an applied `strip.order` change clears the local order).
+- **New project**: the Chief of Staff questions are still scripted; the preview card shows what Create makes (code
+  folder `~/Projects/<id>` / an existing folder / none, own memory, team + "<Project> lead", icon). Create calls
+  `ash-hub-project-create`, seeds the Lead (`hubLeads.ensureProjectLeads` now covers every strip project) and
+  registers it (`ash-hub-mono-project-add`).
+- Stub: `scripts/hub-stub-studio.mjs` (HUB_STUB_BUILD_MS sets build time). The read-only live proxy allows
+  `pages`, `layout`, `changes`.
+
 # Update: 16 October 2026, continuation 06 branch
 
 See `docs/CONTINUATION-06.md` for the current change scope and acceptance boundaries. The historical notes below predate this batch. In particular, group chats and Pages now have a normal Mono session runner path, group history/membership persist, custom models support configured reasoning levels, and the test copy has its own identity. Live provider and daily-app acceptance are still separate checks; do not infer those from this handoff.
@@ -65,8 +92,7 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
   projects yet." doesn't flash), and the tick on a Need answered elsewhere.
 - A project with no code folder (`folder: null`, e.g. the harness) has no Coding
   team: its strip button opens its Inbox and the sidebar skips Coding team.
-- Projects made on this Mac through the New project flow (not wired yet) stay on
-  the strip next to Ash OS's list (`userProjects()`), as before.
+- Projects made with New project are made in Ash OS and join its strip (20 Oct update at the top).
 
 **The strip: Ash's four projects.** Ash (15 Oct): "i only need hivra, the game,
 the harness n nibbii". `hubProjects.ts` keeps the strip to `vg-game`, `hivra`,
@@ -262,8 +288,8 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   shown read-only (no Sign in button yet).
 - **Sections, templates, proposals, Changes, Bot changes** (`templates.ts`,
   `proposals.ts`): local mock stores.
-- **New project, Create, setup export/import**: still local (`addMockProject`);
-  `ash-hub-project-create` exists in Ash OS but the preview step does not.
+- **Setup export/import**: still local (`addMockProject` for restored projects). New project creates through
+  Ash OS (see the 20 Oct update at the top).
 - **Question and gate Needs buttons** (See options on a question, Open, Start)
   still do nothing: Ash OS has no `need-act`, `gate-done` or question options.
   **Show details** is not rendered (`details` is read into the store, not shown).

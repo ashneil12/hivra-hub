@@ -11,6 +11,15 @@ export type StubOptions = {
   answerDelayMs?: number;
   seq?: number;
   now?: () => number;
+  /** How long a page or change preview takes to build (default HUB_STUB_BUILD_MS or 1500 ms). */
+  buildMs?: number;
+};
+
+export type StubStudio = {
+  pages: Array<Record<string, unknown> & { id: string; projectId: string; state: string; title: string }>;
+  changes: Array<Record<string, unknown> & { id: string; flow: string; state: string; title: string }>;
+  today: Array<{ id: string; kind: string; title: string; pageId?: string }>;
+  builds: Map<string, Record<string, unknown>>;
 };
 
 export type StubNeed = {
@@ -37,6 +46,8 @@ export type Stub = {
     memberships: Array<Record<string, unknown>>;
     jobs: Array<Record<string, unknown>>;
   };
+  /** Pages, Change the hub and the Today layout (scripts/hub-stub-studio.mjs). */
+  studio: StubStudio;
   calls: Array<{ method: string; path: string; query: Record<string, string>; headers: Record<string, string | undefined> }>;
   /** The app's delegation copies (ash-hub-delegation), by id: the newest version each sent. */
   delegations: Map<string, Record<string, unknown> & { id: string; version: number; state: string }>;
