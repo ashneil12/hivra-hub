@@ -956,7 +956,8 @@ pub fn harness_spawn(
     let dev_claude =
         binary_provider.as_deref() == Some("claude") && !crate::instance::policy().daily_claude;
     let args = if dev_claude {
-        isolated_dev_claude_args(args)
+        let own = std::env::current_exe().ok();
+        isolated_dev_claude_args(args, own.as_deref().and_then(|path| path.to_str()))
     } else {
         args
     };
@@ -4360,11 +4361,37 @@ mod reap_logic_tests {
 /// drops anything else a `--settings` value carries: hooks, helpers that run commands, env.
 const DEV_CLAUDE_SETTINGS: [&str; 3] = ["alwaysThinkingEnabled", "fastMode", "ultracode"];
 
-/// A dev copy's Claude session: no MCP servers and no hooks from any source, and only its own (shared dev) user
-/// settings, never the project's or local ones. The model, permission and thinking choices stay as asked.
-fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
+/// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
+/// only ever reaches this copy's own control port. It is kept only exactly as the app writes it
+/// (src/features/hub/model/hubMcp.ts): this executable, `mcp`, and the app connection as unexpanded `${VAR}`s.
+fn own_delegate_server(raw: &str, own_exe: Option<&str>) -> Option<serde_json::Value> {
+    let own_exe = own_exe?;
+    let config: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let entry = config.get("mcpServers")?.get("monocode")?;
+    let env = serde_json::json!({
+        "MONOCODE_APP_ENDPOINT": "${MONOCODE_APP_ENDPOINT}",
+        "MONOCODE_APP_TOKEN": "${MONOCODE_APP_TOKEN}",
+    });
+    if entry.get("command")?.as_str()? != own_exe
+        || entry.get("args")? != &serde_json::json!(["mcp"])
+        || entry.get("env")? != &env
+    {
+        return None;
+    }
+    let mut kept = serde_json::json!({ "command": own_exe, "args": ["mcp"], "env": env });
+    if let Some(timeout) = entry.get("timeout").and_then(serde_json::Value::as_u64) {
+        kept["timeout"] = serde_json::json!(timeout);
+    }
+    Some(kept)
+}
+
+/// A dev copy's Claude session: no MCP servers but the app's own delegate tool, no hooks from any source, and only its
+/// own (shared dev) user settings, never the project's or local ones. The model, permission and thinking choices stay
+/// as asked.
+fn isolated_dev_claude_args(args: Vec<String>, own_exe: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     let mut settings = serde_json::Map::new();
+    let mut delegate = None;
     let mut keep = |raw: &str| {
         if let Ok(serde_json::Value::Object(given)) = serde_json::from_str(raw) {
             for (key, value) in given {
@@ -4377,7 +4404,12 @@ fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--mcp-config" | "--setting-sources" => {
+            "--mcp-config" => {
+                if let Some(raw) = iter.next() {
+                    delegate = own_delegate_server(&raw, own_exe).or(delegate);
+                }
+            }
+            "--setting-sources" => {
                 iter.next();
             }
             "--settings" => {
@@ -4389,6 +4421,8 @@ fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
             _ => {
                 if let Some(raw) = arg.strip_prefix("--settings=") {
                     keep(raw);
+                } else if let Some(raw) = arg.strip_prefix("--mcp-config=") {
+                    delegate = own_delegate_server(raw, own_exe).or(delegate);
                 } else if !arg.starts_with("--mcp-config=")
                     && !arg.starts_with("--setting-sources=")
                 {
@@ -4398,10 +4432,14 @@ fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
         }
     }
     settings.insert("disableAllHooks".into(), serde_json::Value::Bool(true));
+    let servers = match delegate {
+        Some(entry) => serde_json::json!({ "mcpServers": { "monocode": entry } }).to_string(),
+        None => "{\"mcpServers\":{}}".into(),
+    };
     out.extend([
         "--strict-mcp-config".into(),
         "--mcp-config".into(),
-        "{\"mcpServers\":{}}".into(),
+        servers,
         "--setting-sources=user".into(),
         "--settings".into(),
         serde_json::Value::Object(settings).to_string(),
@@ -4411,24 +4449,83 @@ fn isolated_dev_claude_args(args: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod dev_claude_tests {
+    const OWN_EXE: &str = "/Users/ash/Worktrees/x/target/debug/monocode";
+
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    fn monocode(command: &str, token: &str) -> serde_json::Value {
+        serde_json::json!({
+            "command": command,
+            "args": ["mcp"],
+            "env": { "MONOCODE_APP_ENDPOINT": "${MONOCODE_APP_ENDPOINT}", "MONOCODE_APP_TOKEN": token },
+            "timeout": 3_900_000,
+        })
+    }
+
+    /// The delegate tool is this copy itself (it only reaches its own control port), so a dev copy keeps it, exactly as
+    /// the app writes it, and nothing else from the same config.
+    #[test]
+    fn a_dev_copy_keeps_only_its_own_delegate_tool() {
+        let config = serde_json::json!({ "mcpServers": {
+            "ash-os": { "command": "python3", "args": ["ash-os-mcp"], "env": { "ASH_ROLE": "lead" } },
+            "monocode": monocode(OWN_EXE, "${MONOCODE_APP_TOKEN}"),
+        }})
+        .to_string();
+        let isolated = super::isolated_dev_claude_args(
+            args(&[
+                "--allowedTools",
+                "mcp__monocode__*",
+                "--mcp-config",
+                &config,
+            ]),
+            Some(OWN_EXE),
+        );
+        let at = isolated.iter().position(|a| a == "--mcp-config").unwrap();
+        let kept: serde_json::Value = serde_json::from_str(&isolated[at + 1]).unwrap();
+        assert_eq!(
+            kept,
+            serde_json::json!({ "mcpServers": { "monocode": monocode(OWN_EXE, "${MONOCODE_APP_TOKEN}") } })
+        );
+        assert!(isolated.contains(&"mcp__monocode__*".into()));
+        assert!(!isolated.iter().any(|a| a.contains("ash-os")));
+        assert_eq!(isolated.iter().filter(|a| *a == "--mcp-config").count(), 1);
+        for wrong in [
+            monocode("/usr/local/bin/other", "${MONOCODE_APP_TOKEN}"),
+            monocode(OWN_EXE, "a-literal-token"),
+        ] {
+            let config = serde_json::json!({ "mcpServers": { "monocode": wrong } }).to_string();
+            let isolated = super::isolated_dev_claude_args(
+                args(&[&format!("--mcp-config={config}")]),
+                Some(OWN_EXE),
+            );
+            assert!(
+                isolated.contains(&"{\"mcpServers\":{}}".into()),
+                "{isolated:?}"
+            );
+        }
+        let isolated = super::isolated_dev_claude_args(args(&["--mcp-config", &config]), None);
+        assert!(isolated.contains(&"{\"mcpServers\":{}}".into()));
     }
 
     /// Continuation-06's check, now for any dev copy: no live MCP config or hooks, model and permissions kept.
     #[test]
     fn a_dev_copy_drops_live_mcp_and_hooks_without_dropping_model_or_permission_controls() {
-        let isolated = super::isolated_dev_claude_args(args(&[
-            "--model",
-            "fake-model",
-            "--mcp-config",
-            "live-config.json",
-            "--settings",
-            "{\"hooks\":{}}",
-            "--setting-sources=user,project",
-            "--permission-prompt-tool",
-            "stdio",
-        ]));
+        let isolated = super::isolated_dev_claude_args(
+            args(&[
+                "--model",
+                "fake-model",
+                "--mcp-config",
+                "live-config.json",
+                "--settings",
+                "{\"hooks\":{}}",
+                "--setting-sources=user,project",
+                "--permission-prompt-tool",
+                "stdio",
+            ]),
+            Some(OWN_EXE),
+        );
         assert!(!isolated.iter().any(|a| a.contains("live-config")
             || a.contains("user,project")
             || a.contains("\"hooks\"")));
@@ -4440,7 +4537,8 @@ mod dev_claude_tests {
 
     #[test]
     fn a_dev_copy_keeps_monocodes_own_settings_and_disables_every_hook() {
-        let isolated = super::isolated_dev_claude_args(args(&[
+        let isolated = super::isolated_dev_claude_args(
+            args(&[
             "--output-format",
             "stream-json",
             "--setting-sources=user,project,local",
@@ -4451,7 +4549,9 @@ mod dev_claude_tests {
             "--strict-mcp-config",
             "--resume",
             "abc",
-        ]));
+            ]),
+            Some(OWN_EXE),
+        );
         assert_eq!(
             &isolated[..4],
             &args(&["--output-format", "stream-json", "--resume", "abc"])[..]

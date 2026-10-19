@@ -33,6 +33,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_background;
 mod mcp;
+pub mod mcp_server;
 mod menu;
 mod mobile_access;
 mod mobile_router;
@@ -437,6 +438,7 @@ pub fn run() {
             delegations::delegations_refuse,
             delegations::delegations_list_open,
             delegations::delegations_tree,
+            delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
             automations::automations_list,
