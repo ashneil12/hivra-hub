@@ -69,6 +69,7 @@ mod window;
 mod window_transfer;
 #[cfg(windows)]
 mod windows;
+pub mod worktree_janitor;
 mod worktree_lifecycle;
 mod worktrees;
 
@@ -520,6 +521,8 @@ pub fn run() {
             project_actions::project_action_run,
             project_actions::project_action_stop,
             project_actions::project_action_wait,
+            worktree_janitor::worktree_janitor_report,
+            worktree_janitor::worktree_janitor_clean,
             fs::create_path,
             fs::rename_path,
             fs::delete_path,
