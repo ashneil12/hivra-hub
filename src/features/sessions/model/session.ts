@@ -294,6 +294,10 @@ export type UsageLimit = {
   resetsAt?: number;
   /** Send a continue turn once the window resets. */
   resumeAtReset?: boolean;
+  /** When to send it, when later than the reset (auto-resume spreads chats out; features/autopilot/model/limitResume). */
+  resumeAt?: number;
+  /** Armed by auto-resume rather than by the user's own toggle. */
+  auto?: boolean;
 };
 
 /** Provider/model provenance captured when a user turn is submitted. */

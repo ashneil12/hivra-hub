@@ -1,4 +1,5 @@
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
+import { pausedLabel } from "../../autopilot/model/limitResume";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import {
   loadTabGroupColors,
@@ -482,7 +483,8 @@ function plainLine(text: string): string {
 }
 
 /** What the agent is doing right now, as the Monos roster shows it. */
-export type MonoStatus = "working" | "needs-you" | "idle";
+/** "paused": stopped at a usage limit and resuming by itself at its reset (features/autopilot/model/limitResume). */
+export type MonoStatus = "working" | "needs-you" | "paused" | "idle";
 
 export type MonoState = {
   status: MonoStatus;
@@ -493,6 +495,7 @@ export type MonoState = {
 export const MONO_STATUS_LABEL: Record<MonoStatus, string> = {
   working: "Working",
   "needs-you": "Needs you",
+  paused: "Paused",
   idle: "Idle",
 };
 
@@ -523,6 +526,9 @@ export function monoState(
     };
   }
   if (!session.worktreeRemoved && session.usageLimit) {
+    // Armed to resume at the reset: "Paused until 14:10", not Needs you.
+    const paused = pausedLabel(session.usageLimit, Date.now());
+    if (paused) return { status: "paused", activity: paused };
     return { status: "needs-you", activity: "Usage limit reached" };
   }
   if (!session.busy) return { status: "idle" };

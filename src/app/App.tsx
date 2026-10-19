@@ -29,6 +29,7 @@ import {
 } from "../features/monos/model/monoSessionCompletion";
 import type { DelegationTracker } from "../features/monos/model/delegations";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
+import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -563,6 +564,7 @@ import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
+  usageLimitResumeAt,
   usageLimitResumeDue,
   withUsageLimitAccount,
 } from "../features/sessions/model/usageLimit";
@@ -9872,7 +9874,8 @@ function Workspace({
       if (!usageLimitResumeDue(session, now)) {
         nextCheck = Math.min(
           nextCheck,
-          limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS - now,
+          (usageLimitResumeAt(limit) ??
+            limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS) - now,
         );
         continue;
       }
@@ -10930,6 +10933,26 @@ function Workspace({
     },
     [],
   );
+
+  // Autopilot: covered chats take their own recommendation (red list waits for Ash), agents resume at a limit's
+  // reset, and armed resumes come back after a restart (features/autopilot).
+  useAutopilot({
+    sessions,
+    sessionsRef,
+    updateSession: (id, change) =>
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) => (entry.id === id ? change(entry) : entry)),
+      ),
+    answerQuestion: onQuestionReply,
+    approve: onApproval,
+    openSession: ensureOpenSession,
+    isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
+    openChat: (id) => {
+      const mono = monoForSession(id);
+      if (mono) void onOpenMono(mono.id);
+      else if (!focusOpenSession(id)) void onSelectHistorySession(id);
+    },
+  });
 
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
