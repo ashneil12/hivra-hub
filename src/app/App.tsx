@@ -653,6 +653,7 @@ import {
   monosSnapshot,
   monoState,
   removeMono,
+  saveMonoName,
   saveOpenMono,
   subscribeMonos,
   type MonoState,
@@ -669,6 +670,7 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
+import { claimVerifyKickoff, pendingVerifyKickoff } from "./model/verifyKickoff";
 import {
   loadShipNote,
   reportShipReady,
@@ -8755,6 +8757,23 @@ function Workspace({
     },
     [submitSession],
   );
+
+  // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
+  // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
+  const verifyKickoffStarted = useRef(false);
+  useEffect(() => {
+    if (verifyKickoffStarted.current || windowTransfer) return;
+    const kickoff = pendingVerifyKickoff();
+    if (!kickoff) return;
+    verifyKickoffStarted.current = true;
+    claimVerifyKickoff(kickoff.runId);
+    const mono = createMono([kickoff.project]);
+    saveMonoName(mono.id, kickoff.monoName);
+    void onOpenMono(mono.id).then(() => {
+      const sessionId = monoViewIdRef.current;
+      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+    });
+  }, [onOpenMono, onSubmit, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<

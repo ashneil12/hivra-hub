@@ -67,6 +67,7 @@ mod tool_detail;
 mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
+mod verify_live;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
