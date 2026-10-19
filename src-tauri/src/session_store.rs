@@ -704,11 +704,63 @@ pub fn session_set_linked_work_item(
     set_linked_work_item(&conn, &session_id, linked_work_item.as_ref()).map_err(|e| e.to_string())
 }
 
+/// Work a running turn left going in the background (a subagent, a backgrounded shell, a monitor), saved with its
+/// in-flight row so a resume after a quit or crash can say what was cut, with the id to restart it by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutWork {
+    /// subagent, shell, monitor or task.
+    pub kind: String,
+    pub label: String,
+    pub id: String,
+}
+
+/// At most this many background entries are kept per row; the resume note shows fewer still.
+pub const IN_FLIGHT_WORK_MAX: usize = 50;
+const IN_FLIGHT_WORK_LABEL_MAX: usize = 400;
+const IN_FLIGHT_WORK_ID_MAX: usize = 256;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InFlightSession {
     pub session_id: String,
     pub cwd: String,
+    /// The turn's background work when it was last saved.
+    #[serde(default)]
+    pub background: Vec<CutWork>,
+    /// How many times this turn has already been resumed by itself after a restart (none yet: 0). The app stops
+    /// resuming at three, so a turn that keeps taking the app down ends in Needs you instead of a loop.
+    #[serde(default)]
+    pub resumes: u32,
+}
+
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(max.saturating_sub(1)).collect();
+    clipped.push('…');
+    clipped
+}
+
+/// Bounded and well-formed: unknown kinds become "task", blank entries go, labels and ids are clipped, and only the
+/// first [`IN_FLIGHT_WORK_MAX`] entries stay.
+fn sanitize_cut_work(work: &[CutWork]) -> Vec<CutWork> {
+    work.iter()
+        .filter(|entry| !entry.id.trim().is_empty() || !entry.label.trim().is_empty())
+        .take(IN_FLIGHT_WORK_MAX)
+        .map(|entry| CutWork {
+            kind: match entry.kind.as_str() {
+                "subagent" | "shell" | "monitor" | "task" => entry.kind.clone(),
+                _ => "task".into(),
+            },
+            label: clip(
+                &entry.label.split_whitespace().collect::<Vec<_>>().join(" "),
+                IN_FLIGHT_WORK_LABEL_MAX,
+            ),
+            id: clip(entry.id.trim(), IN_FLIGHT_WORK_ID_MAX),
+        })
+        .collect()
 }
 
 #[tauri::command(async)]
@@ -724,6 +776,18 @@ pub fn session_set_in_flight(
     }
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     replace_in_flight(&mut conn, &sessions).map_err(|e| e.to_string())
+}
+
+/// Drop one chat from the quit snapshot: a turn that stopped resuming (three restarts) must not be marked
+/// interrupted again at the next boot.
+#[tauri::command(async)]
+pub fn session_drop_in_flight(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    drop_in_flight(&conn, &session_id).map_err(|e| e.to_string())
 }
 
 /// Read the quit snapshot without clearing it. Vite/dev reloads must not
@@ -775,6 +839,26 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
 
 /// Add a `sessions` column when it is absent, so a half-applied history cannot
 /// leave the schema short of what the queries select.
+fn ensure_table_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> rusqlite::Result<()> {
+    let present: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    if present == 0 {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_session_column(conn: &Connection, column: &str, decl: &str) -> rusqlite::Result<()> {
     let present: i64 = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
@@ -1109,6 +1193,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            path TEXT PRIMARY KEY,
            sessions_json TEXT NOT NULL
          );",
+    )?;
+    // Restart-safe resume (Phase 1b WP5): what each cut turn left running and how often it has resumed itself.
+    // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database;
+    // its own inserts name their columns and leave these at their defaults.
+    ensure_table_column(conn, "in_flight_sessions", "background_json", "TEXT")?;
+    ensure_table_column(
+        conn,
+        "in_flight_sessions",
+        "resumes",
+        "INTEGER NOT NULL DEFAULT 0",
     )?;
     // Compatibility only: earlier Inbox Ask builds saved temporary chats here.
     // Keep those records off normal surfaces without deleting their transcripts.
@@ -2138,16 +2232,28 @@ fn get_session_record(
     .optional()
 }
 
+const IN_FLIGHT_COLUMNS: &str = "session_id, cwd, background_json, resumes";
+
+fn in_flight_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InFlightSession> {
+    let background: Option<String> = row.get(2)?;
+    let resumes: Option<i64> = row.get(3)?;
+    Ok(InFlightSession {
+        session_id: row.get(0)?,
+        cwd: row.get(1)?,
+        // A row an older build wrote, or one that no longer parses, simply has no background list.
+        background: background
+            .and_then(|json| serde_json::from_str::<Vec<CutWork>>(&json).ok())
+            .map(|work| sanitize_cut_work(&work))
+            .unwrap_or_default(),
+        resumes: resumes.unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
+    })
+}
+
 fn list_in_flight(conn: &Connection) -> rusqlite::Result<Vec<InFlightSession>> {
-    let mut statement = conn.prepare(
-        "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok(InFlightSession {
-            session_id: row.get(0)?,
-            cwd: row.get(1)?,
-        })
-    })?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT {IN_FLIGHT_COLUMNS} FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC"
+    ))?;
+    let rows = statement.query_map([], in_flight_row)?;
     rows.collect()
 }
 
@@ -2156,29 +2262,44 @@ fn replace_in_flight(conn: &mut Connection, sessions: &[InFlightSession]) -> rus
     tx.execute("DELETE FROM in_flight_sessions", [])?;
     {
         let mut insert = tx.prepare(
-            "INSERT INTO in_flight_sessions (session_id, cwd, sort_index)
-             VALUES (?1, ?2, ?3)",
+            "INSERT INTO in_flight_sessions (session_id, cwd, sort_index, background_json, resumes)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for (index, session) in sessions.iter().enumerate() {
-            insert.execute(params![session.session_id, session.cwd, index as i64])?;
+            let background = sanitize_cut_work(&session.background);
+            let background = if background.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&background).ok()
+            };
+            insert.execute(params![
+                session.session_id,
+                session.cwd,
+                index as i64,
+                background,
+                session.resumes as i64
+            ])?;
         }
     }
     tx.commit()?;
     Ok(())
 }
 
+fn drop_in_flight(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM in_flight_sessions WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    Ok(())
+}
+
 fn take_in_flight(conn: &mut Connection) -> rusqlite::Result<Vec<InFlightSession>> {
     let tx = conn.transaction()?;
     let sessions = {
-        let mut statement = tx.prepare(
-            "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(InFlightSession {
-                session_id: row.get(0)?,
-                cwd: row.get(1)?,
-            })
-        })?;
+        let mut statement = tx.prepare(&format!(
+            "SELECT {IN_FLIGHT_COLUMNS} FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC"
+        ))?;
+        let rows = statement.query_map([], in_flight_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     tx.execute("DELETE FROM in_flight_sessions", [])?;
@@ -3413,10 +3534,14 @@ mod tests {
                 InFlightSession {
                     session_id: "s2".into(),
                     cwd: "/tmp/b".into(),
+                    background: vec![],
+                    resumes: 0,
                 },
                 InFlightSession {
                     session_id: "s1".into(),
                     cwd: "/tmp/a".into(),
+                    background: vec![],
+                    resumes: 0,
                 },
             ],
         )
@@ -3439,6 +3564,8 @@ mod tests {
             &[InFlightSession {
                 session_id: "s1".into(),
                 cwd: "/tmp/a".into(),
+                background: vec![],
+                resumes: 0,
             }],
         )
         .unwrap();
@@ -3458,11 +3585,161 @@ mod tests {
             &[InFlightSession {
                 session_id: "old".into(),
                 cwd: "/tmp/old".into(),
+                background: vec![],
+                resumes: 0,
             }],
         )
         .unwrap();
         replace_in_flight(&mut conn, &[]).unwrap();
         assert!(take_in_flight(&mut conn).unwrap().is_empty());
+    }
+
+    fn work(kind: &str, label: &str, id: &str) -> CutWork {
+        CutWork {
+            kind: kind.into(),
+            label: label.into(),
+            id: id.into(),
+        }
+    }
+
+    #[test]
+    fn in_flight_rows_keep_their_background_work_and_resume_count() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut conn = store.conn.lock().unwrap();
+        replace_in_flight(
+            &mut conn,
+            &[
+                InFlightSession {
+                    session_id: "lead".into(),
+                    cwd: "/tmp/a".into(),
+                    background: vec![
+                        work("subagent", "Audit src/math.ts", "a44c0ed810da9e4f3"),
+                        work("shell", "npm run dev", "b7"),
+                    ],
+                    resumes: 2,
+                },
+                InFlightSession {
+                    session_id: "plain".into(),
+                    cwd: "/tmp/b".into(),
+                    background: vec![],
+                    resumes: 0,
+                },
+            ],
+        )
+        .unwrap();
+        let rows = list_in_flight(&conn).unwrap();
+        assert_eq!(rows[0].resumes, 2);
+        assert_eq!(
+            rows[0].background,
+            vec![
+                work("subagent", "Audit src/math.ts", "a44c0ed810da9e4f3"),
+                work("shell", "npm run dev", "b7"),
+            ]
+        );
+        assert_eq!((rows[1].resumes, rows[1].background.len()), (0, 0));
+        // An empty list is stored as nothing at all.
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT background_json FROM in_flight_sessions WHERE session_id = 'plain'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, None);
+        drop_in_flight(&conn, "lead").unwrap();
+        let rest = take_in_flight(&mut conn).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].session_id, "plain");
+    }
+
+    #[test]
+    fn in_flight_background_work_is_bounded() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut conn = store.conn.lock().unwrap();
+        let mut background: Vec<CutWork> = (0..80)
+            .map(|i| work("subagent", &format!("task {i}"), &format!("id{i}")))
+            .collect();
+        background[0] = work("weird", &"x".repeat(5_000), &" id0 ".repeat(1));
+        background[1] = work("shell", "   ", "  ");
+        replace_in_flight(
+            &mut conn,
+            &[InFlightSession {
+                session_id: "s".into(),
+                cwd: "/tmp/a".into(),
+                background,
+                resumes: 1,
+            }],
+        )
+        .unwrap();
+        let row = list_in_flight(&conn).unwrap().remove(0);
+        assert_eq!(row.background.len(), IN_FLIGHT_WORK_MAX);
+        assert_eq!(row.background[0].kind, "task", "unknown kinds become tasks");
+        assert_eq!(row.background[0].id, "id0");
+        assert_eq!(
+            row.background[0].label.chars().count(),
+            IN_FLIGHT_WORK_LABEL_MAX
+        );
+        assert!(row.background[0].label.ends_with('…'));
+        assert_eq!(
+            row.background[1].label, "task 2",
+            "blank entries are dropped"
+        );
+    }
+
+    #[test]
+    fn an_older_in_flight_table_gains_the_resume_columns_and_reads_as_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE in_flight_sessions (
+               session_id TEXT PRIMARY KEY,
+               cwd TEXT NOT NULL,
+               sort_index INTEGER NOT NULL
+             );
+             INSERT INTO in_flight_sessions VALUES ('old', '/tmp/a', 0);",
+        )
+        .unwrap();
+        ensure_table_column(&conn, "in_flight_sessions", "background_json", "TEXT").unwrap();
+        ensure_table_column(
+            &conn,
+            "in_flight_sessions",
+            "resumes",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .unwrap();
+        // Twice is harmless.
+        ensure_table_column(&conn, "in_flight_sessions", "resumes", "INTEGER").unwrap();
+        let rows = list_in_flight(&conn).unwrap();
+        assert_eq!(rows[0].session_id, "old");
+        assert_eq!((rows[0].resumes, rows[0].background.len()), (0, 0));
+        // An older build's insert, naming only its own columns, still works.
+        conn.execute(
+            "INSERT INTO in_flight_sessions (session_id, cwd, sort_index) VALUES ('older', '/tmp/b', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(list_in_flight(&conn).unwrap().len(), 2);
+        // Junk in the JSON column reads as no background work rather than an error.
+        conn.execute(
+            "UPDATE in_flight_sessions SET background_json = 'not json' WHERE session_id = 'old'",
+            [],
+        )
+        .unwrap();
+        assert!(list_in_flight(&conn).unwrap()[0].background.is_empty());
+    }
+
+    #[test]
+    fn a_fresh_store_has_the_resume_columns() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('in_flight_sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns.contains(&"background_json".to_string()));
+        assert!(columns.contains(&"resumes".to_string()));
     }
 
     #[test]
