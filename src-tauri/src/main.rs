@@ -25,6 +25,8 @@ fn main() {
         Some("worktrees-report") => {
             std::process::exit(monocode_lib::worktree_janitor::report_main(&rest()))
         }
+        // The autopilot LaunchAgent's check: reopen the app after a crash (src/autopilot.rs).
+        Some("autopilot-watch") => std::process::exit(monocode_lib::autopilot::watch_main(&rest())),
         _ => monocode_lib::run(),
     }
 }

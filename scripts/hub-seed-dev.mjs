@@ -16,7 +16,8 @@
 //    is ever written back to it.
 // 4. In the copy only, clear what would make a dev copy act on Ash's behalf or resume his real Claude transcripts:
 //    in-flight turns, queued messages, the open-tab snapshot, pending worktree removals, automations and their runs,
-//    reminders, orchestration rows, delegation rows and chat bindings, and every provider_session_id.
+//    reminders, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, and every
+//    provider_session_id.
 // 5. Check the copy's integrity, move it into place, and record what was done in seeded.json beside it.
 //
 // Only monocode.db is copied: not monos/ (habits), not checkpoints, not the Keychain (a dev copy uses its own names).
@@ -134,6 +135,10 @@ export function scrub(db) {
     // copies of his Mono chats, and its outbox would replay them (to the stub, never the live studio).
     wipe("delegations", "delegations");
     wipe("delegationChatBinds", "delegation_chat_binds");
+    // Autopilot (src-tauri/src/autopilot.rs): a copy of Ash's switch would keep the Mac awake and auto-decide in the
+    // dev copy, and his armed resumes would resume its copies of his chats. The log is history and stays.
+    wipe("autopilotSwitches", "autopilot_switches");
+    wipe("autopilotResumes", "autopilot_resumes");
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");

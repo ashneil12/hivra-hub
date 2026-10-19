@@ -599,7 +599,7 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn process_start_ms(pid: u32) -> Option<u64> {
+pub(crate) fn process_start_ms(pid: u32) -> Option<u64> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let read = unsafe {
@@ -615,7 +615,7 @@ fn process_start_ms(pid: u32) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn process_start_ms(_pid: u32) -> Option<u64> {
+pub(crate) fn process_start_ms(_pid: u32) -> Option<u64> {
     None
 }
 

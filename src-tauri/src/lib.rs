@@ -3,6 +3,7 @@ use tauri::Manager;
 mod account_identity;
 mod artifacts;
 mod automations;
+pub mod autopilot;
 mod azure_devops;
 mod background_work;
 mod chat_background;
@@ -351,6 +352,7 @@ pub fn run() {
             session_store::init(app.handle())?;
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             delegations::init(app.handle());
+            autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             control::init(app.handle())?;
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
@@ -450,6 +452,16 @@ pub fn run() {
             delegations::delegations_tree,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            autopilot::autopilot_status,
+            autopilot::autopilot_set,
+            autopilot::autopilot_off,
+            autopilot::autopilot_log_add,
+            autopilot::autopilot_log_list,
+            autopilot::autopilot_log_seen,
+            autopilot::autopilot_auto_resume_set,
+            autopilot::autopilot_resume_arm,
+            autopilot::autopilot_resume_settle,
+            autopilot::autopilot_resumes,
             automations::automations_list,
             automations::automations_upsert,
             automations::automations_delete,
@@ -818,6 +830,8 @@ pub fn run() {
             window::request_quit(handle);
         }
         tauri::RunEvent::Exit => {
+            // A normal quit: the autopilot watcher never reopens it (src/autopilot.rs).
+            autopilot::on_exit(handle);
             handle.state::<remote::RemoteConnections>().shutdown();
             reap_harness_children(handle);
         }
