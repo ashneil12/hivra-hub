@@ -185,7 +185,7 @@ it("a chime-in that can't run (the Mono is busy in its own chat) is skipped quie
   chat.setGroupChatRunner(async () => { throw new chat.MonoBusyError("This Mono is already working. Wait for it to finish before trying again."); });
   const next = chat.startConversation(id, "@frank what did I just say");
   await chat.requestReply(id, next);
-  expect(chat.replyProblem(id, next)).toContain("already working");
+  expect(chat.replyProblem(id, next)).toBe("frank is busy in its own chat right now. Your message is saved. Try again when it's free.");
   expect(chat.roomPick(id)).toMatchObject({ id: "frank", by: "mention" });
   chat.setGroupChatRunner(async (mono) => (mono === "frank" ? "Never ship on Fridays." : "NO_REPLY"));
   await chat.retryReply(id);
@@ -220,4 +220,26 @@ it("a chime-in still waiting is replaced by its answer when another Mono address
   await chat.requestReply(id, conv);
   expect(runner.calls.map((c) => c.mono)).toEqual(["chief-of-staff", "projects-manager", "frank"]);
   expect(runner.calls[2].prompt).toContain("Projects Manager addressed you. Reply once");
+});
+
+it("regression: the picked Mono's turn failing on a null inside the app reads as a plain status, and Try again still works", async () => {
+  const { chat, id, said } = await room();
+  // What the browser preview did: app_cli_path answered null and the turn failed inside shellPath.
+  chat.setGroupChatRunner(async () => { throw new Error("Cannot read properties of null (reading 'startsWith')"); });
+  const conv = chat.startConversation(id, "what's left on the board this week?");
+  await chat.requestReply(id, conv);
+  expect(chat.roomPick(id)).toMatchObject({ id: "projects-manager", by: "lanes" });
+  const shown = chat.replyProblem(id, conv)!;
+  expect(shown).not.toMatch(/Cannot read|startsWith/);
+  expect(shown).toContain("Projects Manager couldn't start its turn");
+  expect(said(conv)).toHaveLength(1);
+  // Once the null is said plainly at its source, the room names the Mono's engine (the team runs on Claude Code).
+  const { APP_CLI_MISSING } = await import("../../orchestration/model/orchestration");
+  chat.setGroupChatRunner(async () => { throw new Error(APP_CLI_MISSING); });
+  await chat.retryReply(id);
+  expect(chat.replyProblem(id, conv)).toBe("Projects Manager isn't connected to Claude in this copy. Your message is saved.");
+  chat.setGroupChatRunner(async (mono) => (mono === "projects-manager" ? "Two cards left." : "NO_REPLY"));
+  await chat.retryReply(id);
+  expect(chat.replyProblem(id, conv)).toBeUndefined();
+  expect(said(conv).at(-1)).toMatchObject({ from: "projects-manager", text: "Two cards left." });
 });

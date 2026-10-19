@@ -16,6 +16,7 @@ import {
   parseChimes,
   parsePick,
   pickPrompt,
+  plainFailure,
   roomTranscript,
   ruledPick,
   turnPrompt,
@@ -443,6 +444,7 @@ function seatsOf(chat: GroupChat): Seat[] {
     return {
       id,
       name,
+      ...(mono?.engine ? { engine: mono.engine } : {}),
       ...(lead ? { aliases: [lead.projectName, `${lead.projectName} lead`], card: `${name}: runs ${lead.projectName}'s work and its workers; answers about ${lead.projectName} itself. Not: other projects.` } : {}),
     };
   });
@@ -530,7 +532,7 @@ async function runExchange(chatId: string, convId: string, r: RoomState): Promis
     } catch (error) {
       setTyping(chatId, undefined);
       // A chime-in or reply that couldn't run (busy, failed) is dropped quietly; the answer's failure is shown.
-      if (turn.kind === "answer") { fail(error instanceof Error ? error.message : "The Mono couldn't reply. Your message is saved."); return; }
+      if (turn.kind === "answer") { fail(error instanceof Error ? plainFailure(me.name, error.message, me.engine) : `${me.name} couldn't reply. Your message is saved.`); return; }
       continue;
     }
     setTyping(chatId, undefined);

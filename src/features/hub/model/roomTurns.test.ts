@@ -12,12 +12,14 @@ import {
   parseChimes,
   parsePick,
   pickPrompt,
+  plainFailure,
   roomTranscript,
   ruledPick,
   turnPrompt,
   type Seat,
 } from "./roomTurns";
 import { ROOM_RULES } from "./teamSouls";
+import { APP_CLI_MISSING } from "../../orchestration/model/orchestration";
 
 const COS: Seat = { id: "chief-of-staff", name: "Chief of Staff" };
 const PM: Seat = { id: "projects-manager", name: "Projects Manager" };
@@ -170,5 +172,24 @@ describe("the router and the prompts", () => {
 
   it("an exchange is capped at 8 Mono turns", () => {
     expect(BOT_TURN_CAP).toBe(8);
+  });
+});
+
+describe("what the room says when the answer can't run", () => {
+  it("never a raw JavaScript error: the null that reached the room from the preview reads as a plain status", () => {
+    const shown = plainFailure("Projects Manager", "Cannot read properties of null (reading 'startsWith')");
+    expect(shown).not.toMatch(/Cannot read|null|startsWith/);
+    expect(shown).toBe("Projects Manager couldn't start its turn because something in this copy of the app failed. Your message is saved. The details are in Projects Manager's own chat.");
+  });
+  it("a copy that can't run Claude, a missing login and a busy Mono each say so", () => {
+    expect(plainFailure("Projects Manager", APP_CLI_MISSING, "claude")).toBe("Projects Manager isn't connected to Claude in this copy. Your message is saved.");
+    expect(plainFailure("frank", "Harness is not connected", "claude")).toBe("frank isn't connected to Claude in this copy. Your message is saved.");
+    expect(plainFailure("frank", "Not logged in · Please run /login", "claude")).toBe("frank isn't signed in to Claude in this copy. Your message is saved.");
+    expect(plainFailure("Hivra lead", APP_CLI_MISSING)).toBe("Hivra lead isn't connected to its coding engine in this copy. Your message is saved.");
+    expect(plainFailure("Alfred", "This Mono is already working. Wait for it to finish before trying again.")).toBe("Alfred is busy in its own chat right now. Your message is saved. Try again when it's free.");
+  });
+  it("a real provider message is shown as it is", () => {
+    expect(plainFailure("frank", "Provider is unavailable")).toBe("Provider is unavailable");
+    expect(plainFailure("frank", "You've hit your usage limit. Resets at 4pm.")).toBe("You've hit your usage limit. Resets at 4pm.");
   });
 });

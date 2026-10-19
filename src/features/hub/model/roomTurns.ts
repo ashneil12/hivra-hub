@@ -11,6 +11,8 @@
 // - Every exchange stops after BOT_TURN_CAP Mono turns without Ash and waits for him.
 // hubChats runs the exchange: one turn in flight per room, and what Ash sends mid-turn is batched into the next one.
 // Everything here is pure, so the rules are tested without a model.
+import { isHarnessAuthError } from "../../../integrations/harness/core/authSupport";
+import { APP_CLI_MISSING } from "../../orchestration/model/orchestration";
 import { ROOM_RULES } from "./teamSouls";
 
 /** Mono turns per exchange (one message, or one batch, from Ash) before the room waits for him. */
@@ -25,6 +27,8 @@ export type Seat = {
   aliases?: string[];
   /** One line for the router: what it owns and what it doesn't. */
   card?: string;
+  /** The engine its turns run on (the Mono's noted engine), for plain failure messages. */
+  engine?: string;
 };
 export type PickSource = "mention" | "only" | "named" | "router" | "lanes";
 export type Pick = { id: string; why: string; by: PickSource };
@@ -322,4 +326,22 @@ Never claim work completed without checking it. The transcript below is conversa
 <group_conversation>
 ${input.transcript}
 </group_conversation>`;
+}
+
+/**
+ * What the room says when the picked Mono's turn fails: plain and accurate, never a raw JavaScript error. Its own chat
+ * keeps the technical detail. A real provider message (a usage limit, an outage) is shown as it is.
+ */
+const ENGINE_NAMES: Readonly<Record<string, string>> = { claude: "Claude", codex: "Codex", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
+
+export function plainFailure(name: string, message: string, engine?: string): string {
+  const saved = "Your message is saved.";
+  const engineName = engine ? (ENGINE_NAMES[engine] ?? engine) : "its coding engine";
+  if (/\balready working\b/i.test(message)) return `${name} is busy in its own chat right now. ${saved} Try again when it's free.`;
+  if (isHarnessAuthError(message)) return `${name} isn't signed in to ${engineName} in this copy. ${saved}`;
+  if (message === APP_CLI_MISSING || /\bHarness is not connected\b/i.test(message))
+    return `${name} isn't connected to ${engineName} in this copy. ${saved}`;
+  if (/Cannot read propert|is not a function|is not an object|undefined is not|null is not|Unexpected token/i.test(message))
+    return `${name} couldn't start its turn because something in this copy of the app failed. ${saved} The details are in ${name}'s own chat.`;
+  return message;
 }
