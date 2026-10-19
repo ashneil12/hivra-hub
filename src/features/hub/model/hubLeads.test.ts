@@ -31,7 +31,8 @@ import { listMonos, saveMonoName, removeMono } from "../../monos/model/mono";
 import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
-import { ensureProjectLeads, LEADS, leadMcpArgs, leadSoul, leadWorkingFolder } from "./hubLeads";
+import { ensureProjectLeads, LEADS, leadSoul, leadWorkingFolder } from "./hubLeads";
+import { hubMcpArgs } from "./hubMcp";
 import type { HubProject } from "./types";
 
 // What the live service returned for the four projects on 15 Oct.
@@ -89,15 +90,26 @@ describe("the project Leads", () => {
     expect(listMonos().find((m) => m.id === "vg-game-lead")?.sessionId).toBe(session?.id);
   });
 
-  it("talk to Ash OS as themselves: Ash's own ash-os entry, with ASH_MONO_ID and ASH_ROLE=lead", () => {
+  it("talk to Ash OS as themselves: Ash's own ash-os entry, with ASH_MONO_ID, ASH_ROLE=lead and their chat", () => {
+    ensureProjectLeads(PROJECTS);
     const server = { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: {} };
-    const args = leadMcpArgs("hivra-lead", server);
+    const lookups = {
+      monoOf: (id: string) => (id === "chat-hivra" ? { id: "hivra-lead" } : undefined),
+      habitRunMono: () => undefined,
+      isLead: (id: string) => LEADS.some((lead) => lead.id === id),
+    };
+    const args = hubMcpArgs("chat-hivra", { ashOs: server, cli: null }, lookups);
     expect(args[0]).toBe("--mcp-config");
     expect(JSON.parse(args[1])).toEqual({
-      mcpServers: { "ash-os": { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: { ASH_MONO_ID: "hivra-lead", ASH_ROLE: "lead" } } },
+      mcpServers: {
+        "ash-os": {
+          command: "/opt/homebrew/bin/python3",
+          args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"],
+          env: { ASH_MONO_ID: "hivra-lead", ASH_ROLE: "lead", ASH_CHAT: "chat-hivra" },
+        },
+      },
     });
-    expect(leadMcpArgs("not-a-lead", server)).toEqual([]);
-    expect(leadMcpArgs("hivra-lead", null)).toEqual([]);
+    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual([]);
   });
 
   it("have a soul in Ash's words: orchestrator, full words to workers, sonnet workers, memory first, dumps verbatim, verify, Looks right only when critical, identity", () => {

@@ -550,7 +550,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   await spawnChild(
     input.sessionId,
     path,
-    [...buildClaudeSpawnArgs(launch), ...claudeExtraArgs(input.sessionId)],
+    [...buildClaudeSpawnArgs(launch), ...(await claudeExtraArgs(input.sessionId))],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",

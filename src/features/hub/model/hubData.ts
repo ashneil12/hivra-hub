@@ -8,19 +8,50 @@ import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
-import { ensureProjectLeads, leadMcpArgs } from "./hubLeads";
+import { ensureProjectLeads } from "./hubLeads";
+import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { invoke } from "@tauri-apps/api/core";
+import { habitRunMono } from "../../monos/model/monoHabits";
 import { stripProjects } from "./hubProjects";
 import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
+import { pathKey } from "../../../shared/lib/paths";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
-import { seedHubBundleDefaults } from "./hubBundle";
+import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
 seedHubBundleDefaults();
+
+/**
+ * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): Ash's ash-os entry with the chat's identity,
+ * and for a Mono's own chat the delegate tool. A session that starts before the entries are read waits for them (at
+ * most a few seconds; then it starts without them).
+ */
+function startHubMcp(): void {
+  const ashOs = tauriAshOsServer();
+  const cli = invoke<string>("app_cli_path").catch(() => null);
+  const read = Promise.all([ashOs, cli]).then(([ashOs, cli]): HubMcpServers => ({ ashOs, cli }));
+  const ready = Promise.race([
+    read.then((servers) => {
+      setHubMcpServers(servers, {
+        monoOf: monoForSession,
+        habitRunMono,
+        isLead: (id) => !!leadFor(id),
+      });
+      return true;
+    }),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]).catch(() => false);
+  setClaudeExtraArgs(async (sessionId) => {
+    await ready;
+    return registeredHubMcpArgs(sessionId);
+  });
+}
+if (IS_HUB_BUNDLE) startHubMcp();
 
 // The app ships clean: it reads Ash OS. The example data answers only behind the dev flag
 // (`monocode:hub-examples`, set by hub-dev.html), or when a source is swapped in with `setHubDataSource`.
@@ -44,15 +75,9 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 
 /**
  * The Hub bundle's project Leads: once Ash OS has said which projects there are (and their folders), make the Leads
- * that are missing and write their souls; their Claude Code sessions carry their ash-os identity.
+ * that are missing and write their souls; their Claude Code sessions carry their ash-os identity (startHubMcp).
  */
 function startHubBundleLeads(store: HubStore): void {
-  void tauriAshOsServer().then((server) =>
-    setClaudeExtraArgs((sessionId) => {
-      const mono = monoForSession(sessionId);
-      return mono ? leadMcpArgs(mono.id, server) : [];
-    }),
-  );
   let done = false;
   const tryLeads = () => {
     const projects = store.getSnapshot().projects;
@@ -65,6 +90,19 @@ function startHubBundleLeads(store: HubStore): void {
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
   };
   store.subscribe(tryLeads);
+}
+
+/**
+ * The hub project a folder belongs to (its Ash OS id), and the folder of a hub project id. A delegation records the hub
+ * project id for Ash OS, which resolves it directly (docs/PHASE-2-DESIGN.md, H2/H3); a Mono may name one by its id.
+ */
+export function hubProjectIdFor(folder: string): string | undefined {
+  const key = pathKey(folder);
+  return (override ?? choose()).source.listProjects().find((project) => project.folder && pathKey(project.folder) === key)?.id;
+}
+
+export function hubProjectFolder(id: string): string | undefined {
+  return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
 }
 
 /** The one place the frontend gets hub data from. */

@@ -2,7 +2,7 @@ import { isMonoRemovedByUser } from "./builtInMonos";
 // Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes the four on
 // its first run and again whenever one is missing, never twice and never over Ash's edits: EXO lead, Hivra lead,
 // Nibbii lead, Harness lead. Each is tied to its project's folder (from Ash OS), starts its chats there, talks to Ash
-// OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools) and has a soul that makes it the orchestrator Ash asked for.
+// OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools, hubMcp.ts) and has a soul that makes it the orchestrator Ash asked for.
 import { addMono, addMonoProject, findMono, listMonos, monoWorksOn, nextMonoLook } from "../../monos/model/mono";
 import type { HubProject } from "./types";
 
@@ -90,16 +90,6 @@ export function leadWorkingFolder(monoId: string): string | undefined {
   return findMono(monoId)?.projects[0];
 }
 
-/**
- * The ash-os MCP entry for a Lead's Claude Code session: Ash's own ash-os server, the same command, with the Lead's
- * identity in its environment. Claude Code does not pass its own environment to MCP servers (checked 15 Oct: an
- * ash-os server it starts sees only HOME, LOGNAME, PATH, SHELL and USER), so the identity has to be in the entry.
- */
-export function leadMcpArgs(monoId: string, server: AshOsServer | null): string[] {
-  const lead = leadFor(monoId);
-  if (!lead || !server) return [];
-  const entry = { ...server, env: { ...(server.env ?? {}), ASH_MONO_ID: lead.id, ASH_ROLE: "lead" } };
-  return ["--mcp-config", JSON.stringify({ mcpServers: { "ash-os": entry } })];
-}
-
+/** Ash's own ash-os MCP entry, as Rust reads it from ~/.claude.json (`hub_ash_os_mcp`). Each hub chat gets it with its
+ * identity added (hubMcp.ts). */
 export type AshOsServer = { command: string; args?: string[]; env?: Record<string, string> };
