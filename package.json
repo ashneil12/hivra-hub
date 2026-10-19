@@ -18,7 +18,7 @@
     "test:host": "vitest run --config host/vitest.config.ts",
     "check": "npm run check:web && npm run check:scripts && npm run check:rust",
     "check:web": "vitest run && tsc --noEmit",
-    "check:scripts": "node --test scripts/*.test.cjs",
+    "check:scripts": "node --disable-warning=ExperimentalWarning --test scripts/*.test.cjs scripts/*.test.mjs",
     "check:rust": "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test",
     "set-version": "node scripts/bump-version.mjs",
     "tauri": "tauri",
@@ -32,7 +32,10 @@
     "hub:dev": "tauri dev --config src-tauri/tauri.hub.conf.json --config '{\"identifier\":\"com.ash.monocode-hub.dev.default\",\"productName\":\"MonoCode Hub Dev\"}'",
     "hub:build": "tauri build --config src-tauri/tauri.hub.conf.json --bundles app",
     "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
-    "hub:install": "npm run hub:verify && rm -rf \"$HOME/Applications/MonoCode Hub.app\" && cp -R \"target/release/bundle/macos/MonoCode Hub.app\" \"$HOME/Applications/\" && echo \"installed: ~/Applications/MonoCode Hub.app\"",
+    "hub:install": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs --legacy",
+    "hub:check-all": "node scripts/hub-check-all.mjs",
+    "hub:ship": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs",
+    "hub:rollback": "node --disable-warning=ExperimentalWarning scripts/hub-rollback.mjs",
     "hub:recover": "bash scripts/recover-sessions.sh"
   },
   "dependencies": {

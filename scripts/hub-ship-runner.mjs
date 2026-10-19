@@ -1,0 +1,730 @@
+#!/usr/bin/env node
+// The ship runner: swaps a staged build into the daily app's place, watches its trial and rolls back on its own
+// (Phase 1b, WP3: docs/PHASE-1B-DEV-SETUP.md, "Ship"; the app's side is src-tauri/src/ship.rs).
+//
+//   node --disable-warning=ExperimentalWarning <ship folder>/runner.mjs <ship folder>
+//
+// scripts/hub-ship.mjs copies this file into the ship folder and starts it as a one-shot LaunchAgent, so it runs
+// outside the app's process group (the app's quit kills its agents' groups, never this). Plain Node with no packages,
+// absolute paths only, and everything it needs is in the ship folder's state.json:
+//
+//   staged    -> waiting       the runner has started
+//   waiting   -> swapping      the app quit (its data folder's lock came free); or -> cancelled (refused, too long)
+//   swapping  -> trial         database files and monos/ backed up, old app renamed to previous.app.off, the staged
+//                              build moved into place and opened
+//   trial     -> committed     the new build wrote committed.json (window, database and hub bridge up)
+//   trial     -> rolling-back  it didn't show up in running.json within 30 s, didn't commit within 120 s, or exited
+//   rolling-back -> rolled-back  stopped the verified new process, put the old app and the database copy back, reopened
+//
+// Every step is recorded as it completes, so a runner that dies (launchd starts it again) or an app that starts while
+// it is gone (ship.rs `startup`) carries on from the last one. Only whoever holds runner.lock writes state.json.
+// The runner never kills anything but the new build's own process, verified by pid and start time.
+
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+
+export const STATE = "state.json";
+export const RUNNER_LOCK = "runner.lock";
+export const INSTANCE_LOCK = "instance-owner.sqlite";
+export const RUNNING = "running.json";
+export const ACCEPTED = "accepted.json";
+export const REFUSED = "refused.json";
+export const COMMITTED = "committed.json";
+export const TRIAL_CHECKS = "trial-checks.json";
+export const RECEIPT = "receipt.json";
+export const RUNNER_LOG = "runner.log";
+export const STAGED_DIR = "staged";
+export const BACKUP_DIR = "backup";
+export const PREVIOUS_APP = "previous.app.off";
+export const REJECTED_APP = "rejected.app.off";
+export const REJECTED_MONOS = "rejected-monos";
+export const DB_FILES = ["monocode.db", "monocode.db-wal", "monocode.db-shm"];
+export const MONOS = "monos";
+export const FINAL = new Set(["committed", "rolled-back", "cancelled", "failed"]);
+export const KEEP_SHIPS = 3;
+export const DEFAULT_TIMEOUTS = { startMs: 30_000, commitMs: 120_000, quitMs: 12 * 60 * 60_000 };
+/// launchd starts a crashed runner again; past this many starts it stops trying and says so.
+const MAX_RUNNER_STARTS = 12;
+const STAMP_MARKER = Buffer.from("MONOCODE-STAMP:{");
+/// Set once the ship is final: the SIGTERM from unloading the LaunchAgent then ends the runner cleanly.
+let finished = false;
+
+// ---- small helpers, shared with hub-ship.mjs and hub-rollback.mjs ------------------------------------------------------
+
+export const nowIso = () => new Date().toISOString();
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const exists = (file) => fs.existsSync(file);
+
+export function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Written whole and renamed into place: a reader never sees half a file. */
+export function writeJson(file, value) {
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}`);
+  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(temporary, file);
+}
+
+export function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+/** The build stamp embedded in a binary (src-tauri/build.rs), or null. Same reader as scripts/hub-bundle.mjs. */
+export function findStamp(bytes) {
+  let from = 0;
+  for (;;) {
+    const at = bytes.indexOf(STAMP_MARKER, from);
+    if (at === -1) return null;
+    const start = at + STAMP_MARKER.length - 1;
+    for (let end = bytes.indexOf(0x7d, start); end !== -1 && end - start < 4096; end = bytes.indexOf(0x7d, end + 1)) {
+      try {
+        const stamp = JSON.parse(bytes.subarray(start, end + 1).toString("utf8"));
+        if (stamp && typeof stamp.sha === "string" && typeof stamp.branch === "string") return stamp;
+      } catch {
+        // not the end of the JSON yet
+      }
+    }
+    from = at + STAMP_MARKER.length;
+  }
+}
+
+export function stampOf(app) {
+  const binary = path.join(app, "Contents/MacOS/monocode");
+  try {
+    return findStamp(fs.readFileSync(binary));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An exclusive SQLite transaction on `file`, the same lock the app takes on its data folder (src-tauri/src/instance.rs):
+ * the open handle, or null when someone else holds it. Never a busy wait.
+ */
+export function tryLock(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA busy_timeout = 0");
+    db.exec("BEGIN EXCLUSIVE");
+    return db;
+  } catch (error) {
+    db.close();
+    if (/locked|busy/i.test(String(error?.message))) return null;
+    throw error;
+  }
+}
+
+export function releaseLock(db) {
+  if (!db) return;
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // nothing to roll back
+  }
+  db.close();
+}
+
+/** When `pid` started, in ms (from ps, to the second), or null when there is no such process. */
+export function processStart(pid) {
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  const out = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  const text = out.status === 0 ? out.stdout.trim() : "";
+  const match = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(text);
+  if (!match) return null;
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
+  if (month < 0) return null;
+  return new Date(+match[6], month, +match[2], +match[3], +match[4], +match[5]).getTime();
+}
+
+/** Whether exactly that process (pid and start time) is still running. */
+export function isRunning(pid, startTime) {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+  }
+  if (startTime == null) return true;
+  const started = processStart(pid);
+  return started != null && Math.abs(Math.floor(started / 1000) - Math.floor(startTime / 1000)) <= 1;
+}
+
+export function dirSize(target) {
+  let total = 0;
+  let stat;
+  try {
+    stat = fs.lstatSync(target);
+  } catch {
+    return 0;
+  }
+  if (!stat.isDirectory()) return stat.size;
+  for (const entry of fs.readdirSync(target)) total += dirSize(path.join(target, entry));
+  return total;
+}
+
+/** Rename, or copy and remove when the two sides are on different volumes. */
+export function moveDir(from, to) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    if (error.code !== "EXDEV") throw error;
+    execFileSync("/usr/bin/ditto", [from, to]);
+    fs.rmSync(from, { recursive: true, force: true });
+  }
+}
+
+export function appendLog(dir, line) {
+  try {
+    fs.appendFileSync(path.join(dir, RUNNER_LOG), `${nowIso()} [runner ${process.pid}] ${line}\n`);
+  } catch {
+    // the log is best effort
+  }
+}
+
+// ---- the record --------------------------------------------------------------------------------------------------------
+
+export function loadShip(dir) {
+  const doc = readJson(path.join(dir, STATE));
+  if (!doc || typeof doc !== "object") throw new Error(`no ship record in ${dir}`);
+  return doc;
+}
+
+export function saveShip(dir, ship) {
+  ship.updatedAt = nowIso();
+  writeJson(path.join(dir, STATE), ship);
+}
+
+export function setPhase(ship, phase, note) {
+  ship.phase = phase;
+  (ship.history ??= []).push({ at: nowIso(), phase, note, by: "runner" });
+}
+
+const step = (ship, name) => Boolean(ship.steps?.[name]);
+const markStep = (ship, name) => {
+  (ship.steps ??= {})[name] = nowIso();
+};
+
+/** What receipt.json says. The app writes the same shape (ship.rs `receipt`). */
+export function receiptFor(ship, dir, by) {
+  return {
+    id: ship.id,
+    kind: ship.kind ?? "ship",
+    outcome: ship.phase,
+    reason: ship.reason ?? null,
+    from: ship.from ?? null,
+    to: ship.to ?? null,
+    running: (ship.phase === "committed" ? ship.to : ship.from) ?? null,
+    requestedBy: ship.requestedBy ?? null,
+    drill: ship.drill ?? null,
+    startedAt: ship.createdAt ?? null,
+    finishedAt: nowIso(),
+    finishedBy: by,
+    steps: ship.steps ?? {},
+    db: ship.db ?? {},
+    reopened: ship.reopened ?? null,
+    shipDir: dir,
+    log: path.join(dir, RUNNER_LOG),
+  };
+}
+
+/** Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. */
+export function retainShips(shipRoot, archive, currentId, keep = KEEP_SHIPS) {
+  let names;
+  try {
+    names = fs
+      .readdirSync(shipRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+  const moved = [];
+  for (const name of names.slice(0, Math.max(0, names.length - keep))) {
+    if (name === currentId) continue;
+    const doc = readJson(path.join(shipRoot, name, STATE));
+    if (doc && !FINAL.has(doc.phase)) continue;
+    moveDir(path.join(shipRoot, name), path.join(archive, name));
+    moved.push(name);
+  }
+  return moved;
+}
+
+// ---- the database copy -------------------------------------------------------------------------------------------------
+
+/** Copy the database files and monos/ into `backup`, checking each copy against the original. */
+export function backupData(data, backup) {
+  fs.mkdirSync(backup, { recursive: true });
+  const hashes = {};
+  for (const name of DB_FILES) {
+    const live = path.join(data, name);
+    if (!exists(live)) continue;
+    fs.copyFileSync(live, path.join(backup, name));
+    const copy = sha256File(path.join(backup, name));
+    if (copy !== sha256File(live)) throw new Error(`the copy of ${name} doesn't match it`);
+    hashes[name] = copy;
+  }
+  const monos = path.join(data, MONOS);
+  if (exists(monos)) {
+    fs.rmSync(path.join(backup, MONOS), { recursive: true, force: true });
+    fs.cpSync(monos, path.join(backup, MONOS), { recursive: true, verbatimSymlinks: true });
+  }
+  return hashes;
+}
+
+/**
+ * Put `backup`'s database files back byte for byte (a file it doesn't have is removed), check them against `expected`,
+ * and swap monos/ back (the live one goes to `aside`). Same steps as ship.rs `restore_db`.
+ */
+export function restoreData(backup, data, expected, aside) {
+  const restored = {};
+  for (const name of DB_FILES) {
+    const saved = path.join(backup, name);
+    const live = path.join(data, name);
+    if (exists(saved)) {
+      const temporary = path.join(data, `.${name}.restoring`);
+      fs.copyFileSync(saved, temporary);
+      fs.renameSync(temporary, live);
+      const sum = sha256File(live);
+      if (expected?.[name] && expected[name] !== sum)
+        throw new Error(`${name} doesn't match its backup after the copy (${sum} vs ${expected[name]})`);
+      restored[name] = sum;
+    } else if (exists(live)) {
+      fs.rmSync(live);
+    }
+  }
+  const savedMonos = path.join(backup, MONOS);
+  const liveMonos = path.join(data, MONOS);
+  const staging = path.join(data, ".monos.restoring");
+  fs.rmSync(staging, { recursive: true, force: true });
+  if (exists(savedMonos)) fs.cpSync(savedMonos, staging, { recursive: true, verbatimSymlinks: true });
+  if (exists(liveMonos)) {
+    fs.rmSync(aside, { recursive: true, force: true });
+    fs.renameSync(liveMonos, aside);
+  }
+  if (exists(savedMonos)) fs.renameSync(staging, liveMonos);
+  return restored;
+}
+
+// ---- the runner --------------------------------------------------------------------------------------------------------
+
+/** Run one ship to the end. Returns the exit code: 0 once the ship is final (launchd then leaves it alone). */
+export async function runShip(dir) {
+  const log = (line) => appendLog(dir, line);
+  const lock = tryLock(path.join(dir, RUNNER_LOCK));
+  if (!lock) {
+    log("another runner (or the app) holds this ship; leaving it");
+    return 0;
+  }
+  const ctx = { dir, log, instance: null, child: null };
+  try {
+    let ship = loadShip(dir);
+    ship.runner = { ...(ship.runner ?? {}), pid: process.pid, starts: (ship.runner?.starts ?? 0) + 1, startedAt: nowIso() };
+    log(`start ${ship.runner.starts}: ship ${ship.id} is ${ship.phase}`);
+    if (ship.runner.starts > MAX_RUNNER_STARTS && !FINAL.has(ship.phase)) {
+      ship.reason = `The runner kept stopping (${ship.runner.starts} starts) during ${ship.phase}.`;
+      setPhase(ship, step(ship, "oldMoved") && !step(ship, "dbRestored") ? "failed" : "cancelled", ship.reason);
+    }
+    saveShip(dir, ship);
+    for (;;) {
+      testCrash(ship);
+      const before = ship.phase;
+      switch (ship.phase) {
+        case "staged":
+          setPhase(ship, "waiting", "waiting for the app to quit for the update");
+          ship.waitingSince ??= nowIso();
+          break;
+        case "waiting":
+          await waitForQuit(ctx, ship);
+          break;
+        case "swapping":
+          await swap(ctx, ship);
+          break;
+        case "trial":
+          await watchTrial(ctx, ship);
+          break;
+        case "rolling-back":
+          await rollBack(ctx, ship);
+          break;
+        default:
+          finish(ctx, ship);
+          return 0;
+      }
+      saveShip(dir, ship);
+      if (ship.phase !== before) log(`${before} -> ${ship.phase}${ship.reason ? ` (${ship.reason})` : ""}`);
+    }
+  } catch (error) {
+    log(`stopped: ${error?.stack ?? error}`);
+    return 1;
+  } finally {
+    releaseLock(ctx.instance);
+    releaseLock(lock);
+  }
+}
+
+/** Tests only: stop dead right after a step, the way a crash or a reboot would. */
+function testCrash(ship) {
+  const at = process.env.MONOCODE_SHIP_TEST_CRASH_AT;
+  if (at && (step(ship, at) || ship.phase === at)) {
+    appendLog(ship.shipDir ?? ".", `test crash at ${at}`);
+    process.exit(70);
+  }
+}
+
+const timeouts = (ship) => ({ ...DEFAULT_TIMEOUTS, ...(ship.timeouts ?? {}) });
+const dataDir = (ship) => ship.dataDir;
+const appPath = (ship) => ship.appPath;
+const stagedApp = (ctx, ship) => path.join(ctx.dir, STAGED_DIR, path.basename(appPath(ship)));
+
+function cancel(ship, reason) {
+  ship.reason = reason;
+  setPhase(ship, "cancelled", reason);
+}
+
+function toRollback(ship, reason) {
+  ship.reason = reason;
+  setPhase(ship, "rolling-back", reason);
+}
+
+async function waitForQuit(ctx, ship) {
+  const { quitMs } = timeouts(ship);
+  const since = Date.parse(ship.waitingSince ?? nowIso());
+  let said = 0;
+  for (;;) {
+    const refused = readJson(path.join(ctx.dir, REFUSED));
+    if (refused) return cancel(ship, `The running app refused the build: ${refused.reason ?? "no reason given"}`);
+    if (Date.now() - since > quitMs)
+      return cancel(ship, `The app didn't quit for the update within ${Math.round(quitMs / 60_000)} min.`);
+    const held = tryLock(path.join(dataDir(ship), INSTANCE_LOCK));
+    if (held) {
+      // The data folder is free: the app has quit (or wasn't running). Keep it until the new build opens.
+      ctx.instance = held;
+      setPhase(ship, "swapping", "the app quit; swapping");
+      return;
+    }
+    if (Date.now() - said > 60_000) {
+      const owner = readJson(path.join(dataDir(ship), RUNNING));
+      ctx.log(`waiting for the app to quit (pid ${owner?.pid ?? "?"}, ${owner?.sha?.slice(0, 7) ?? "?"})`);
+      said = Date.now();
+    }
+    await sleep(1000);
+  }
+}
+
+async function holdInstance(ctx, ship, waitMs) {
+  const deadline = Date.now() + waitMs;
+  while (!ctx.instance) {
+    ctx.instance = tryLock(path.join(dataDir(ship), INSTANCE_LOCK));
+    if (ctx.instance) break;
+    if (Date.now() > deadline) return false;
+    await sleep(500);
+  }
+  return true;
+}
+
+async function swap(ctx, ship) {
+  // A runner started again mid-swap takes the data folder back first.
+  if (!(await holdInstance(ctx, ship, 60_000))) {
+    if (!step(ship, "oldMoved")) return cancel(ship, "Something else opened the data folder during the swap.");
+    return toRollback(ship, "Something else holds the data folder during the swap.");
+  }
+  const data = dataDir(ship);
+  const app = appPath(ship);
+  try {
+    if (!step(ship, "backup")) {
+      (ship.db ??= {}).backup = backupData(data, path.join(ctx.dir, BACKUP_DIR));
+      markStep(ship, "backup");
+      saveShip(ctx.dir, ship);
+      testCrash(ship);
+    }
+    if (ship.restoreDb && !step(ship, "dbReplaced")) {
+      // hub:rollback: the older build comes back with the database from before its replacement.
+      ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS));
+      markStep(ship, "dbReplaced");
+      saveShip(ctx.dir, ship);
+    }
+  } catch (error) {
+    return cancel(ship, `Backing up the database failed, so nothing changed: ${error.message}`);
+  }
+  try {
+    if (!step(ship, "oldMoved")) {
+      const previous = path.join(ctx.dir, PREVIOUS_APP);
+      if (exists(app)) {
+        if (exists(previous)) throw new Error(`${previous} is in the way`);
+        fs.renameSync(app, previous);
+      }
+      markStep(ship, "oldMoved");
+      saveShip(ctx.dir, ship);
+      testCrash(ship);
+    }
+  } catch (error) {
+    if (ship.restoreDb && step(ship, "dbReplaced")) return toRollback(ship, `Moving the old app aside failed: ${error.message}`);
+    return cancel(ship, `Moving the old app aside failed, so nothing changed: ${error.message}`);
+  }
+  try {
+    if (!step(ship, "newMoved")) {
+      fs.mkdirSync(path.dirname(app), { recursive: true });
+      fs.renameSync(stagedApp(ctx, ship), app);
+      markStep(ship, "newMoved");
+      saveShip(ctx.dir, ship);
+      testCrash(ship);
+    }
+  } catch (error) {
+    return toRollback(ship, `Moving the new build into place failed: ${error.message}`);
+  }
+  setPhase(ship, "trial", "the new build is in place");
+  saveShip(ctx.dir, ship);
+  releaseLock(ctx.instance);
+  ctx.instance = null;
+  launch(ctx, ship, "trial");
+  markStep(ship, "launched");
+}
+
+/** Open the app at its place: Launch Services, or the binary itself with the ship's environment (a drill). */
+function launch(ctx, ship, purpose) {
+  const app = appPath(ship);
+  if (ship.launch?.mode === "direct") {
+    const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
+    const child = spawn(path.join(app, "Contents/MacOS/monocode"), [], {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: { ...process.env, ...(ship.launch.env ?? {}) },
+    });
+    child.unref();
+    fs.closeSync(out);
+    ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
+    (ship.launched ??= {})[purpose] = { ...ctx.child, at: nowIso() };
+    ctx.log(`opened ${app} directly (pid ${child.pid})`);
+    return;
+  }
+  execFileSync("/usr/bin/open", ["-n", app]);
+  (ship.launched ??= {})[purpose] = { at: nowIso() };
+  ctx.log(`opened ${app}`);
+}
+
+async function watchTrial(ctx, ship) {
+  const { startMs, commitMs } = timeouts(ship);
+  if (!step(ship, "launched")) {
+    launch(ctx, ship, "trial");
+    markStep(ship, "launched");
+    saveShip(ctx.dir, ship);
+  }
+  const started = Date.now();
+  // A runner started again (or an app that took the trial over) finds the build afresh in running.json.
+  let seen =
+    ship.trial?.pid && isRunning(ship.trial.pid, ship.trial.startTime)
+      ? { pid: ship.trial.pid, startTime: ship.trial.startTime }
+      : null;
+  for (;;) {
+    if (exists(path.join(ctx.dir, COMMITTED))) {
+      if (ship.drill === "rollback") {
+        ship.trial = { ...(ship.trial ?? {}), committedInDrill: true };
+        return toRollback(ship, "Rollback drill: the new build came up and committed; putting the old one back as asked.");
+      }
+      ship.reason = null;
+      setPhase(ship, "committed", "the new build committed");
+      return;
+    }
+    const running = readJson(path.join(dataDir(ship), RUNNING));
+    if (!seen && running?.sha === ship.to?.sha && isRunning(running.pid, running.startTime)) {
+      seen = { pid: running.pid, startTime: running.startTime };
+      ship.trial = { ...(ship.trial ?? {}), ...seen, seenAt: nowIso() };
+      saveShip(ctx.dir, ship);
+      ctx.log(`the new build is up (pid ${seen.pid})`);
+    }
+    const elapsed = Date.now() - started;
+    if (seen && !isRunning(seen.pid, seen.startTime))
+      return toRollback(ship, "The new build exited before it committed.");
+    if (!seen && ctx.child && !isRunning(ctx.child.pid, ctx.child.startTime))
+      return toRollback(ship, "The new build exited as it started.");
+    if (!seen && elapsed > startMs)
+      return toRollback(ship, `The new build didn't start within ${Math.round(startMs / 1000)} s.`);
+    if (elapsed > commitMs) {
+      const checks = readJson(path.join(ctx.dir, TRIAL_CHECKS));
+      const failed = checks
+        ? Object.entries(checks)
+            .filter(([, value]) => value && value.ok === false)
+            .map(([name, value]) => `${name}: ${value.error}`)
+        : [];
+      return toRollback(
+        ship,
+        `The new build didn't commit within ${Math.round(commitMs / 1000)} s.${failed.length ? ` ${failed.join("; ")}` : ""}`,
+      );
+    }
+    await sleep(500);
+  }
+}
+
+/** The new build's processes, verified: the trial pid, the child the runner started, or the app's binary by path. */
+function newBuildProcesses(ctx, ship) {
+  const found = new Map();
+  const add = (pid, startTime) => {
+    if (isRunning(pid, startTime)) found.set(pid, startTime);
+  };
+  if (ship.trial?.pid && ship.trial.startTime) add(ship.trial.pid, ship.trial.startTime);
+  for (const opened of Object.values(ship.launched ?? {})) if (opened?.pid && opened.startTime) add(opened.pid, opened.startTime);
+  const running = readJson(path.join(dataDir(ship), RUNNING));
+  if (running?.sha === ship.to?.sha && running.startTime) add(running.pid, running.startTime);
+  // Opened through Launch Services: find it by its binary, started after the trial began.
+  const binary = path.join(appPath(ship), "Contents/MacOS/monocode");
+  const since = Date.parse(ship.steps?.launched ?? ship.steps?.newMoved ?? "") - 2000;
+  const ps = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  for (const line of ps.stdout?.split("\n") ?? []) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match || !match[2].startsWith(binary)) continue;
+    const pid = Number(match[1]);
+    const startTime = processStart(pid);
+    if (startTime != null && Number.isFinite(since) && startTime >= since) add(pid, startTime);
+  }
+  return [...found.entries()];
+}
+
+async function stopNewBuild(ctx, ship) {
+  const targets = newBuildProcesses(ctx, ship);
+  for (const [pid] of targets) {
+    ctx.log(`stopping the new build (pid ${pid})`);
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  const deadline = Date.now() + 10_000;
+  while (targets.some(([pid, startTime]) => isRunning(pid, startTime)) && Date.now() < deadline) await sleep(250);
+  for (const [pid, startTime] of targets) {
+    if (!isRunning(pid, startTime)) continue;
+    ctx.log(`pid ${pid} didn't stop; killing it`);
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+async function rollBack(ctx, ship) {
+  const app = appPath(ship);
+  const fail = (why) => {
+    ship.reason = `${ship.reason ?? "Rolling back"} Restoring failed: ${why}`;
+    setPhase(ship, "failed", why);
+  };
+  if (!step(ship, "stopped")) {
+    await stopNewBuild(ctx, ship);
+    markStep(ship, "stopped");
+    saveShip(ctx.dir, ship);
+  }
+  if (!(await holdInstance(ctx, ship, 60_000))) return fail("something still holds the data folder after stopping the new build");
+  try {
+    if (!step(ship, "newRemoved")) {
+      if (exists(app) && stampOf(app)?.sha === ship.to?.sha) {
+        const aside = path.join(ctx.dir, REJECTED_APP);
+        fs.rmSync(aside, { recursive: true, force: true });
+        fs.renameSync(app, aside);
+      }
+      markStep(ship, "newRemoved");
+      saveShip(ctx.dir, ship);
+      testCrash(ship);
+    }
+    if (!step(ship, "oldRestored")) {
+      const previous = path.join(ctx.dir, PREVIOUS_APP);
+      if (exists(previous)) {
+        if (exists(app)) throw new Error(`something else is at ${app}`);
+        fs.renameSync(previous, app);
+      } else if (!(exists(app) && stampOf(app)?.sha === ship.from?.sha) && ship.from) {
+        throw new Error(`the previous build isn't at ${previous}`);
+      }
+      markStep(ship, "oldRestored");
+      saveShip(ctx.dir, ship);
+      testCrash(ship);
+    }
+    if (!step(ship, "dbRestored")) {
+      if (step(ship, "backup")) {
+        ship.db.restored = restoreData(
+          path.join(ctx.dir, BACKUP_DIR),
+          dataDir(ship),
+          ship.db?.backup,
+          path.join(ctx.dir, REJECTED_MONOS),
+        );
+      }
+      markStep(ship, "dbRestored");
+      saveShip(ctx.dir, ship);
+    }
+  } catch (error) {
+    return fail(error.message);
+  }
+  setPhase(ship, "rolled-back", "the old build and its database are back");
+  // The receipt first: whichever build opens next reads it for the resume note.
+  writeJson(path.join(ctx.dir, RECEIPT), receiptFor(ship, ctx.dir, "runner"));
+  saveShip(ctx.dir, ship);
+  releaseLock(ctx.instance);
+  ctx.instance = null;
+  if (!exists(app)) return;
+  launch(ctx, ship, "reopen");
+  markStep(ship, "reopened");
+  saveShip(ctx.dir, ship);
+  const deadline = Date.now() + timeouts(ship).startMs;
+  while (Date.now() < deadline) {
+    const running = readJson(path.join(dataDir(ship), RUNNING));
+    if (running?.sha === ship.from?.sha && isRunning(running.pid, running.startTime)) {
+      ship.reopened = { pid: running.pid, sha: running.sha, at: nowIso() };
+      ctx.log(`the old build is back (pid ${running.pid})`);
+      return;
+    }
+    await sleep(500);
+  }
+  ship.reopened = { ok: false, note: "the old build didn't show up in running.json in time" };
+}
+
+function finish(ctx, ship) {
+  const receiptFile = path.join(ctx.dir, RECEIPT);
+  const existing = readJson(receiptFile);
+  if (!existing || existing.outcome !== ship.phase || ship.reopened) writeJson(receiptFile, receiptFor(ship, ctx.dir, "runner"));
+  try {
+    const moved = retainShips(path.dirname(ctx.dir), path.join(ship.home, "Archive/monocode/ships"), ship.id);
+    if (moved.length) ctx.log(`archived ${moved.join(", ")}`);
+  } catch (error) {
+    ctx.log(`couldn't archive old ships: ${error.message}`);
+  }
+  ctx.log(`done: ${ship.phase}${ship.reason ? ` (${ship.reason})` : ""}`);
+  finished = true;
+  unloadLaunchAgent(ship);
+}
+
+/** The LaunchAgent goes once the ship is final: its plist first, then the job itself (which ends this process). */
+function unloadLaunchAgent(ship) {
+  const agent = ship.launchd;
+  if (!agent?.label) return;
+  try {
+    fs.rmSync(agent.plist, { force: true });
+  } catch {
+    // already gone
+  }
+  spawn("/bin/launchctl", ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
+}
+
+// Run as a program (launchd, or a test), not when imported by hub-ship.mjs.
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+  const dir = process.argv[2];
+  if (!dir || !path.isAbsolute(dir)) {
+    console.error("usage: node runner.mjs <absolute ship folder>");
+    process.exit(2);
+  }
+  // Unloading the finished LaunchAgent ends this process: a clean exit. Any other SIGTERM mid-ship isn't one, so
+  // launchd starts the runner again and it carries on from the last step.
+  process.on("SIGTERM", () => process.exit(finished ? 0 : 143));
+  runShip(dir).then((code) => process.exit(code));
+}
