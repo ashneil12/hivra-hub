@@ -82,8 +82,9 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 33] = [
+const APP_ACTIONS: [&str; 34] = [
     "app.version",
+    "app.ship",
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -128,7 +129,18 @@ left out when the Mono has a single project.
 Actions:
   app.version    {}  Which app this is and the build it runs: the daily app or a
                   dev copy (and its slot), version, branch, commit, whether the
-                  build had uncommitted changes, and when it was built.
+                  build had uncommitted changes, and when it was built, plus
+                  the newest ship and its receipt.
+  app.ship       {"worktree":"<path>","whenBusy":"wait"}
+                  Daily app only. Install the build in your checkout (or the
+                  worktree named) into the daily app. First commit, then run
+                  npm run hub:check-all and npm run hub:build there. It checks
+                  the build, stages it and returns "scheduled" within seconds.
+                  The app restarts for it once no other chat is running
+                  (whenBusy "restart" doesn't wait). That restart cuts your turn;
+                  it resumes once, in whichever build ends up running, with the
+                  receipt. A build that doesn't come up is rolled back by
+                  itself. Never quit, kill or copy the app yourself.
   models.list    {}  Available providers, models, settings and permission modes.
   sessions.list  {}  Project sessions with IDs, busy status, hasDraft and archived.
   sessions.read  {"sessionId":"...","before":"<turnId>","limit":3,"maxChars":1200}
@@ -719,6 +731,11 @@ mod tests {
         assert!(parse_args_for(&args(&["app.version"]), false).is_err());
         assert!(app_help().contains("app.version"));
         assert!(app_help().contains("dev copy"));
+        assert!(matches!(
+            parse_args_for(&args(&["app.ship", "--json", "{}"]), true),
+            Ok(Parsed::Call(action, _, _)) if action == "app.ship"
+        ));
+        assert!(app_help().contains("app.ship"));
     }
 
     #[test]

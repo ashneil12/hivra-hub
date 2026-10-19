@@ -287,6 +287,13 @@ pub fn call_blocking(endpoint: &Endpoint, action: &str, payload: Value) -> Resul
     }
 }
 
+/// Whether Ash OS answers this copy right now: one cheap read. Ship's trial uses it to tell a build that broke the
+/// bridge from one that didn't (`ship.rs`).
+pub fn probe() -> Result<(), HubError> {
+    let endpoint = Endpoint::from_env()?;
+    call_blocking(&endpoint, "ash-hub-projects", json!({})).map(|_| ())
+}
+
 // ---- the change feed -----------------------------------------------------------------------------------------------
 
 /// What the feed said, ready to emit.

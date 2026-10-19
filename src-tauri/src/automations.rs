@@ -744,6 +744,11 @@ pub fn automation_runs_recover(
     if !crate::instance::policy().automations {
         return Ok(Vec::new());
     }
+    // A build on trial runs none until it commits (src/ship.rs). An error, not an empty list: the window retries
+    // recovery later instead of remembering that there was nothing to recover.
+    if crate::ship::holding() {
+        return Err("This build is on trial; automations wait until it commits.".into());
+    }
     let mut conn = store.lock_conn()?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut statement = tx
@@ -853,7 +858,8 @@ pub fn automations_claim_due(
         return Err("The following automation occurrence must advance the schedule.".into());
     }
     // A dev copy never runs a scheduled automation (src/instance.rs). "Run now" is the user's own action and stays.
-    if !crate::instance::policy().automations {
+    // A build on trial holds them until it commits (src/ship.rs); the occurrence stays due.
+    if !crate::instance::policy().automations || crate::ship::holding() {
         return Ok(None);
     }
     let mut conn = store.lock_conn()?;
@@ -926,8 +932,8 @@ pub fn automations_claim_event(
     if claim.prompt.trim().is_empty() || claim.prompt.len() > MAX_PROMPT + 10_000 {
         return Err("Invalid automation run prompt.".into());
     }
-    // A dev copy never runs an automation from an Inbox event (src/instance.rs).
-    if !crate::instance::policy().automations {
+    // A dev copy never runs an automation from an Inbox event (src/instance.rs), and a build on trial holds them.
+    if !crate::instance::policy().automations || crate::ship::holding() {
         return Ok(None);
     }
     let scheduled_for = if claim.scheduled_for > 0 {

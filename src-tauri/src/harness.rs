@@ -3096,7 +3096,7 @@ const LOGIN_SHELL_KEYS: [&str; 6] = [
     "GROK_CODE_XAI_API_KEY",
 ];
 
-fn login_shell_path() -> Option<String> {
+pub(crate) fn login_shell_path() -> Option<String> {
     login_shell_env("PATH")
 }
 

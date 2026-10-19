@@ -56,6 +56,7 @@ mod remote_ssh;
 mod resources;
 mod search;
 mod session_store;
+mod ship;
 mod skills;
 pub mod ssh_askpass;
 mod tool_detail;
@@ -280,11 +281,15 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
+    // (src/ship.rs). May exit.
+    let boot = ship::startup(&identity, &claim.data_dir);
     if let Err(error) = instance::apply_dev_environment(&identity) {
         instance::refuse(&instance::Refusal::DevSetup { error });
     }
     let policy = instance::effective_policy(&identity);
-    let app_info = instance::app_info(&identity, &product, &version);
+    let mut app_info = instance::app_info(&identity, &product, &version);
+    app_info["ship"] = boot.for_window();
     #[cfg(target_os = "macos")]
     macos::register_spellcheck_default();
     #[cfg(windows)]
@@ -339,6 +344,7 @@ pub fn run() {
                 harness::reap_orphaned_harness_processes();
             }
             session_store::init(app.handle())?;
+            ship::init(app.handle(), claim.data_dir.clone(), boot);
             control::init(app.handle())?;
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
@@ -390,6 +396,12 @@ pub fn run() {
             remote::remote_ssh_poll,
             remote::remote_ssh_answer,
             remote::remote_ssh_cancel,
+            ship::ship_status,
+            ship::ship_ready,
+            ship::ship_restart_now,
+            ship::ship_seen,
+            ship::ship_receipt,
+            ship::ship_start,
             control::control_enable,
             control::control_disable,
             control::control_reply,
