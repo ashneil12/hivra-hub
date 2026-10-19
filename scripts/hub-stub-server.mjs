@@ -15,6 +15,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createStudio } from "./hub-stub-studio.mjs";
 
 const IDLE_SECONDS = 1800;
 const NEEDS_SHOWN = 5;
@@ -32,6 +33,9 @@ const TOPICS = [
   [/^hub\.lead\./, ["lead"]],
   [/^hub\.job\./, ["jobs"]],
   [/^hub\.code\./, ["service"]],
+  [/^hub\.page\./, ["pages"]],
+  [/^hub\.change\./, ["changes"]],
+  [/^hub\.layout\./, ["layout"]],
 ];
 const topicsOf = (kind) => (TOPICS.find(([re]) => re.test(kind)) || [null, []])[1];
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -135,6 +139,8 @@ export async function startStub({
   answerDelayMs = 0,
   seq = 100,
   now = () => Date.now(),
+  /** How long a page or change preview takes to "build" (HUB_STUB_BUILD_MS, default 1.5 s): longer than the app's wait shows "still building". */
+  buildMs = Number(process.env.HUB_STUB_BUILD_MS ?? 1500),
 } = {}) {
   const state = seedState(now());
   state.jobs = [];
@@ -194,6 +200,9 @@ export async function startStub({
       waiters.add(check);
     });
   }
+
+  // Pages, Change the hub and the project calls (scripts/hub-stub-studio.mjs).
+  const { studio, calls: studioCalls } = createStudio({ state, emit, now, iso, buildMs, latest: () => latest });
 
   // ---- the calls ---------------------------------------------------------------------------------------------------
   const openNeeds = () => state.needs.filter((n) => n.state === "open" && !n.older);
@@ -470,7 +479,9 @@ export async function startStub({
       case "since": return sinceCall(v);
       case "events": return waitEvents(Number(v.after || 0), Number(v.timeout || 0), v.topics);
       case "mono-projects": return monoProjectsCall(v);
-      default: throw new Error("Unknown hub action");
+      default:
+        if (Object.hasOwn(studioCalls, name)) return studioCalls[name](v);
+        throw new Error("Unknown hub action");
     }
   }
 
@@ -640,6 +651,7 @@ export async function startStub({
       return currentToken;
     },
     state,
+    studio,
     calls,
     events,
     delegations,
