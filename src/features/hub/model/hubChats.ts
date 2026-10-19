@@ -541,6 +541,8 @@ async function runExchange(chatId: string, convId: string, r: RoomState): Promis
     // Round 3: a Mono this reply addresses may answer once, next.
     const named = addressedIn(reply, seats, turn.seat).filter((id) => !replied.has(id));
     named.forEach((id) => replied.add(id));
+    // Its answer to being addressed takes the place of a chime-in still waiting, so it doesn't speak twice in a row.
+    for (let i = queue.length - 1; i >= 0; i--) if (queue[i].kind === "chime" && named.includes(queue[i].seat)) queue.splice(i, 1);
     queue.unshift(...named.map((id): Turn => ({ seat: id, kind: "reply", why: `${me.name} addressed ${nameOf(id)}`, other: me.name })));
     // Round 2: after the answer, who else may have something new (each at most once).
     if (turn.kind === "answer") {

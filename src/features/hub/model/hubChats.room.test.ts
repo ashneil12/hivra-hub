@@ -204,3 +204,20 @@ it("each project's Leadership team seats the default team once; a Mono Ash takes
   expect(chat.seatDefaultTeam("hivra").memberIds).toEqual(["chief-of-staff", "projects-manager", "alfred", "hivra-lead"]);
   expect(chat.seatDefaultTeam("nibbii").memberIds).toEqual(TEAM);
 });
+
+it("a chime-in still waiting is replaced by its answer when another Mono addresses it, so nobody speaks twice in a row", async () => {
+  const { chat, id } = await room();
+  chat.setRoomRouter(async (prompt) =>
+    prompt.includes('"answerer"') ? '{"answerer":"chief-of-staff"}' : '{"chime":[{"id":"projects-manager"},{"id":"frank"}]}',
+  );
+  const runner = scripted({
+    "chief-of-staff": "Heard you.",
+    "projects-manager": "frank, is the Friday rule saved?",
+    frank: "Saved on 14 Oct.",
+  });
+  chat.setGroupChatRunner(runner.run);
+  const conv = chat.startConversation(id, "morning");
+  await chat.requestReply(id, conv);
+  expect(runner.calls.map((c) => c.mono)).toEqual(["chief-of-staff", "projects-manager", "frank"]);
+  expect(runner.calls[2].prompt).toContain("Projects Manager addressed you. Reply once");
+});
