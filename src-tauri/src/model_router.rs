@@ -460,11 +460,8 @@ pub async fn model_context_window(
         let key = if route.provider == "ollama" {
             None
         } else {
-            match read_key_in(KEY_SERVICE, &route.custom_model_id) {
-                Ok(found) => found,
-                // No key is not an error for a window lookup: the answer is simply unknown.
-                Err(_) => None,
-            }
+            // No key is not an error for a window lookup: the answer is simply unknown.
+            read_key_in(KEY_SERVICE, &route.custom_model_id).unwrap_or_default()
         };
         Ok(remembered_window(&route, key.as_deref()))
     })
