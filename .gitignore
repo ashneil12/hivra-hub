@@ -14,7 +14,8 @@
 id_rsa*
 id_ed25519*
 .tauri/
-node_modules/
+# A worktree links node_modules (a symlink, which "node_modules/" would miss).
+node_modules
 dist/
 dist-ssr/
 build/

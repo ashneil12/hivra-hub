@@ -331,6 +331,60 @@ describe("coordinated quit", () => {
     }
   });
 
+  it("leaves the session that asked for a ship out of the count", async () => {
+    const lead = newSession("cursor", "C:/test");
+    lead.busy = true;
+    lead.blocks = [{ id: "user", role: "user", text: "ship it" }];
+    const other = { ...newSession("cursor", "C:/test"), busy: true };
+    other.blocks = [{ id: "user", role: "user", text: "working" }];
+    const tabs = [newTab(lead.id), newTab(other.id)];
+    const release = setQuitWorkspace(
+      () => [lead, other],
+      () => tabs,
+      () => tabs[0].id,
+      () => lead.cwd,
+      () => [],
+      () => new Map(),
+      vi.fn(),
+    );
+    try {
+      await reportQuitPoll(11, lead.id);
+      expect(invokedWith("quit_poll_reply")).toEqual({ id: 11, inFlight: 1 });
+    } finally {
+      release();
+    }
+  });
+
+  it("marks the turns a quit for update cuts with the ship", async () => {
+    const lead = newSession("cursor", "C:/test");
+    lead.busy = true;
+    lead.blocks = [{ id: "user", role: "user", text: "ship it" }];
+    const tab = newTab(lead.id);
+    const release = setQuitWorkspace(
+      () => [lead],
+      () => [tab],
+      () => tab.id,
+      () => lead.cwd,
+      () => [],
+      () => new Map(),
+      vi.fn(),
+    );
+    try {
+      await commitQuit(12, "20261019-210405-bbbbbbb");
+      const saved = vi
+        .mocked(invoke)
+        .mock.calls.find(([command]) => command === "session_upsert")?.[1] as
+        | { session: { blocks: { text: string; notice?: string; shipUpdate?: string }[] } }
+        | undefined;
+      const last = saved?.session.blocks.at(-1);
+      expect(last).toMatchObject({ notice: "interrupt", shipUpdate: "20261019-210405-bbbbbbb" });
+      expect(last?.text).toContain("restarted for an update");
+      expect(invokedWith("quit_ready")).toEqual({ id: 12, persisted: true });
+    } finally {
+      release();
+    }
+  });
+
   it("reports nothing from a window with no workspace yet", async () => {
     await reportQuitPoll(2);
     expect(invokedWith("quit_poll_reply")).toEqual({ id: 2, inFlight: 0 });

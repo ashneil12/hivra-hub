@@ -47,7 +47,14 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
-    let service = scoped_service(crate::instance::kind(), service);
+    // A daily copy under a temporary HOME (a test, a ship drill) keeps to dev names too: the login keychain is the
+    // user's whatever HOME says (`instance::Policy::in_isolated_home`).
+    let kind = if crate::instance::policy().daily_keychain {
+        Kind::Daily
+    } else {
+        Kind::Dev
+    };
+    let service = scoped_service(kind, service);
     keyring::Entry::new(&service, account).map_err(|_| "Couldn't reach the Keychain.".to_string())
 }
 

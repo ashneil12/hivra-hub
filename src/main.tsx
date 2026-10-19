@@ -80,8 +80,8 @@ function BootGate({ children }: { children: React.ReactNode }) {
   return children;
 }
 
-void listen<number>("quit_poll", (event) => {
-  void reportQuitPoll(event.payload);
+void listen<{ id: number; exempt: string | null }>("quit_poll", (event) => {
+  void reportQuitPoll(event.payload.id, event.payload.exempt);
 });
 // Scoped to this window on purpose: a global `listen` is registered as `Any`,
 // which Tauri matches for every event regardless of the emitter's target, so
@@ -92,8 +92,8 @@ void getCurrentWebviewWindow().listen<{ id: number; inFlight: number }>(
     void askQuitConfirmation(event.payload.id, event.payload.inFlight);
   },
 );
-void listen<number>("quit_commit", (event) => {
-  void commitQuit(event.payload);
+void listen<{ id: number; update: string | null }>("quit_commit", (event) => {
+  void commitQuit(event.payload.id, event.payload.update);
 });
 void listen("quit_aborted", () => {
   abortQuit();

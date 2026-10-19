@@ -169,10 +169,22 @@ export type AgentAppHost = {
   now?(): Date;
   /** This app's identity and build stamp; defaults to what the app injected into the window. */
   identity?(): AppIdentity | null;
+  /**
+   * `app.ship` (src-tauri/src/ship.rs): check, stage and schedule the build in `repo` for the daily app, on behalf of
+   * `requestedBy`. Resolves within seconds with the ship's id; rejects with why it was refused.
+   */
+  ship?(input: {
+    repo: string;
+    requestedBy: string;
+    whenBusy?: "wait" | "restart";
+  }): Promise<unknown>;
+  /** The newest ship and its receipt, reported by app.version. */
+  shipStatus?(): unknown;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
   ["app.version", []],
+  ["app.ship", ["worktree", "whenBusy", "project"]],
   ["models.list", []],
   ["sessions.list", ["project"]],
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
@@ -983,7 +995,42 @@ export async function handleAgentApp(
         : appIdentity();
       if (!identity)
         throw new Error("This build doesn't report its identity");
-      return identity;
+      const ship = host.shipStatus?.();
+      return ship === undefined ? identity : { ...identity, ship };
+    }
+    case "app.ship": {
+      // The daily app replaces itself with the build in this checkout, safely (src-tauri/src/ship.rs). This turn is
+      // cut by the restart and resumes once, with the receipt.
+      const identity = host.identity ? host.identity() : appIdentity();
+      if (identity?.kind === "dev")
+        throw new Error(
+          "Only the daily app takes a ship; this dev copy runs from its worktree (npm run hub:dev).",
+        );
+      if (!host.ship) throw new Error("This build can't ship");
+      const whenBusy = input.whenBusy;
+      if (whenBusy !== undefined && whenBusy !== "wait" && whenBusy !== "restart")
+        throw new Error('whenBusy must be "wait" or "restart"');
+      const cwd = requireProject(source, input, host);
+      const named = optionalString(input.worktree, "worktree", 4096);
+      const own = source.worktreeCwd || source.cwd;
+      const checkouts = [
+        cwd,
+        ...(await host.worktrees(cwd)).worktrees.map((tree) => tree.path),
+      ];
+      const repo = named ?? (checkouts.some((path) => pathKey(path) === pathKey(own)) ? own : cwd);
+      if (!checkouts.some((path) => pathKey(path) === pathKey(repo)))
+        throw new Error(
+          `Not a checkout of this project. Ship from: ${checkouts.join(", ")}`,
+        );
+      const result = await host.ship({
+        repo,
+        requestedBy: source.id,
+        ...(whenBusy ? { whenBusy } : {}),
+      });
+      return {
+        ...(typeof result === "object" && result ? result : {}),
+        note: "Scheduled. MonoCode Hub restarts for it when it's quiet; that cuts this turn, and it resumes once, with the receipt. Don't quit, kill or copy the app yourself.",
+      };
     }
     case "models.list":
       return {

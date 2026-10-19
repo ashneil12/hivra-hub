@@ -43,12 +43,27 @@ enum Stage {
     Committing,
 }
 
+/// A quit for a staged update (`ship.rs`). It never asks: it goes ahead when no
+/// turn but `exempt`'s is running, or straight away when `force` (Ash tapped
+/// "Restart now", or the ship said not to wait), and otherwise backs off so the
+/// ship can try again later. Cut turns are saved for resume, marked with
+/// `ship_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateQuit {
+    pub ship_id: String,
+    /// The session that asked for the ship: its own running turn doesn't count.
+    pub exempt: Option<String>,
+    pub force: bool,
+}
+
 /// One quit at a time, decided in one place. Quit events reach every window, so
 /// letting each answer for itself let an idle window exit the app while a busy
 /// one was still asking - killing agents nobody agreed to stop.
 struct QuitRun {
     id: u32,
     stage: Stage,
+    /// Set for a quit for update; `None` for the user's own quit.
+    update: Option<UpdateQuit>,
     /// Windows still owing a reply for the current stage.
     pending: HashSet<String>,
     /// Windows that answered the poll, so their listeners are known to be live.
@@ -66,6 +81,22 @@ static QUIT_COUNTER: AtomicU32 = AtomicU32::new(1);
 struct QuitConfirm {
     id: u32,
     in_flight: u32,
+}
+
+/// `quit_poll`: count your running turns, leaving out `exempt`'s.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitPoll {
+    id: u32,
+    exempt: Option<String>,
+}
+
+/// `quit_commit`: save for the quit; `update` names the ship a quit for update is for.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitCommit {
+    id: u32,
+    update: Option<String>,
 }
 
 pub fn open_new_window(app: &AppHandle) -> Result<(), String> {
@@ -282,13 +313,19 @@ enum Next {
 
 /// A quit already under way owns the decision. Starting a second one would
 /// orphan the open dialog: its answer arrives for a run that no longer exists.
-fn begin_run(slot: &mut Option<QuitRun>, id: u32, labels: Vec<String>) -> bool {
+fn begin_run(
+    slot: &mut Option<QuitRun>,
+    id: u32,
+    labels: Vec<String>,
+    update: Option<UpdateQuit>,
+) -> bool {
     if slot.is_some() {
         return false;
     }
     *slot = Some(QuitRun {
         id,
         stage: Stage::Polling,
+        update,
         pending: labels.into_iter().collect(),
         replied: HashSet::new(),
         in_flight: 0,
@@ -383,15 +420,42 @@ pub fn request_quit(app: &AppHandle) {
         return;
     }
     let id = QUIT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    if !begin_run(&mut QUIT_RUN.lock().unwrap(), id, labels) {
+    if !begin_run(&mut QUIT_RUN.lock().unwrap(), id, labels, None) {
         resurface_prompt(app);
         return;
     }
     // One webview tearing down fails the whole emit, and exiting on that would
     // kill every other window's work without asking. Let the poll time out
     // instead: silence counts as busy, so the user is still asked.
-    let _ = app.emit(QUIT_POLL, id);
+    let _ = app.emit(QUIT_POLL, QuitPoll { id, exempt: None });
     watch_stage(app, id, Stage::Polling, POLL_TIMEOUT);
+}
+
+/// The normal quit path for a staged update, without the "chats still running"
+/// dialog: the same poll and save, deciding by [`update_go_ahead`]. False when
+/// another quit is already under way (the ship tries again later).
+pub fn request_update_quit(app: &AppHandle, update: UpdateQuit) -> bool {
+    let labels = workspace_labels(app);
+    if labels.is_empty() {
+        if QUIT_RUN.lock().unwrap().is_some() {
+            return false;
+        }
+        confirm_quit(app.clone());
+        return true;
+    }
+    let id = QUIT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let exempt = update.exempt.clone();
+    if !begin_run(&mut QUIT_RUN.lock().unwrap(), id, labels, Some(update)) {
+        return false;
+    }
+    let _ = app.emit(QUIT_POLL, QuitPoll { id, exempt });
+    watch_stage(app, id, Stage::Polling, POLL_TIMEOUT);
+    true
+}
+
+/// A quit for update goes ahead when nothing else runs, or when forced; never a dialog.
+fn update_go_ahead(update: &UpdateQuit, in_flight: u32) -> bool {
+    update.force || in_flight == 0
 }
 
 /// One window's live turn count, counted before anything is killed.
@@ -482,6 +546,21 @@ fn start_confirm(app: &AppHandle, id: u32) {
     let Some(in_flight) = close_poll(&mut QUIT_RUN.lock().unwrap(), id) else {
         return;
     };
+    let update = QUIT_RUN
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|run| run.id == id)
+        .and_then(|run| run.update.clone());
+    if let Some(update) = update {
+        if update_go_ahead(&update, in_flight) {
+            start_commit(app, id);
+        } else {
+            clear_run(id);
+            crate::ship::update_deferred(&update.ship_id, in_flight);
+        }
+        return;
+    }
     if in_flight == 0 {
         start_commit(app, id);
         return;
@@ -526,6 +605,12 @@ fn start_confirm(app: &AppHandle, id: u32) {
 fn start_commit(app: &AppHandle, id: u32) {
     let labels = workspace_labels(app);
     let empty = labels.is_empty();
+    let update = QUIT_RUN
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|run| run.id == id)
+        .and_then(|run| run.update.as_ref().map(|update| update.ship_id.clone()));
     if !open_commit(&mut QUIT_RUN.lock().unwrap(), id, labels) {
         return;
     }
@@ -535,7 +620,7 @@ fn start_commit(app: &AppHandle, id: u32) {
     }
     // Same here: the windows that did receive it still deserve their save, so
     // the commit timeout is the backstop rather than exiting on the spot.
-    let _ = app.emit(QUIT_COMMIT, id);
+    let _ = app.emit(QUIT_COMMIT, QuitCommit { id, update });
     watch_stage(app, id, Stage::Committing, COMMIT_TIMEOUT);
 }
 
@@ -664,7 +749,7 @@ mod tests {
     fn polling(labels: &[&str]) -> Option<QuitRun> {
         let mut slot = None;
         let owned = labels.iter().map(|label| label.to_string()).collect();
-        assert!(begin_run(&mut slot, 1, owned));
+        assert!(begin_run(&mut slot, 1, owned, None));
         slot
     }
 
@@ -698,7 +783,7 @@ mod tests {
     #[test]
     fn a_second_quit_while_polling_is_ignored() {
         let mut slot = polling(&["main"]);
-        assert!(!begin_run(&mut slot, 2, vec!["main".to_string()]));
+        assert!(!begin_run(&mut slot, 2, vec!["main".to_string()], None));
         assert_eq!(slot.as_ref().map(|run| run.id), Some(1));
     }
 
@@ -707,7 +792,7 @@ mod tests {
         let mut slot = polling(&["main"]);
         record_reply(&mut slot, 1, "main", 1);
         close_poll(&mut slot, 1);
-        assert!(!begin_run(&mut slot, 2, vec!["main".to_string()]));
+        assert!(!begin_run(&mut slot, 2, vec!["main".to_string()], None));
         assert_eq!(slot.as_ref().map(|run| run.id), Some(1));
     }
 
@@ -757,6 +842,50 @@ mod tests {
             run.prompt = Some("main".to_string());
         }
         assert_eq!(drop_window(&mut slot, "main"), Next::Abort);
+    }
+
+    fn update(force: bool) -> UpdateQuit {
+        UpdateQuit {
+            ship_id: "20261019-210405-abc1234".into(),
+            exempt: Some("lead".into()),
+            force,
+        }
+    }
+
+    #[test]
+    fn a_quit_for_update_never_asks_and_waits_for_other_turns() {
+        // Idle apart from the exempt session (counted out in the window): go.
+        assert!(update_go_ahead(&update(false), 0));
+        // Someone else is busy: back off, no dialog.
+        assert!(!update_go_ahead(&update(false), 2));
+        // Restart now: go, and the cut turns are saved for resume.
+        assert!(update_go_ahead(&update(true), 2));
+    }
+
+    #[test]
+    fn a_quit_for_update_is_one_run_like_any_other() {
+        let mut slot = None;
+        assert!(begin_run(
+            &mut slot,
+            7,
+            vec!["main".to_string()],
+            Some(update(false))
+        ));
+        assert_eq!(
+            slot.as_ref().and_then(|run| run.update.clone()),
+            Some(update(false))
+        );
+        // A user quit can't start over it, and it can't start over a user quit.
+        assert!(!begin_run(&mut slot, 8, vec!["main".to_string()], None));
+        let mut user = polling(&["main"]);
+        assert!(!begin_run(
+            &mut user,
+            9,
+            vec!["main".to_string()],
+            Some(update(true))
+        ));
+        // Silence still counts as busy for an update.
+        assert_eq!(close_poll(&mut slot, 7), Some(1));
     }
 
     #[test]

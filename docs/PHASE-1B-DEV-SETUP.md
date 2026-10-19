@@ -102,6 +102,20 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
 - **Verify:**
   - From a Lead inside the daily app: commit a visible change, then `npm run hub:check-all && npm run hub:build && npm run hub:ship`. The app comes back on the new commit and the Lead resumes with the receipt.
   - Then `npm run hub:ship -- --drill-rollback` → the old commit is back and `shasum` of `monocode.db` equals the copy.
+  - *As built (WP3):*
+    - One lock rule everywhere: `<id>/runner.lock` is the same exclusive SQLite lock as the instance lock, and only its
+      holder writes `state.json` (the runner, or the app at startup when the runner is gone). The apps leave their own
+      notes beside it: `accepted.json`/`refused.json` (old app), `committed.json` (new build). The runner "waits for
+      the app to exit" by taking the data folder's instance lock, which it holds through the swap and the restore.
+    - The LaunchAgent restarts a crashed runner (`KeepAlive.SuccessfulExit = false`) and every step is recorded, so
+      it carries on; `ship.rs::plan` is the startup side of the same table (unit-tested, with a restart mid-restore).
+    - Under a temporary HOME the app sets `CFFIXED_USER_HOME` (Cocoa ignores HOME) and keeps off system-wide things;
+      the runner opens the app directly with that HOME (Launch Services would use the real one) and the LaunchAgent
+      label is `test.monocode-hub-ship.<id>`. That is how the drill runs without touching the daily app.
+    - `whenBusy: "restart"` (and Restart now) quit even with turns running. Hub autopilot doesn't exist yet; when it
+      does, it passes that.
+    - `hub:rollback <id> --confirm` is itself a ship (kind `rollback`): it backs up the current database first, so it
+      can be rolled back too.
 
 **WP4: project file and worktree janitor**
 - **Files:**

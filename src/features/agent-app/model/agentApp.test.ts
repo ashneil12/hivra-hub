@@ -36,6 +36,20 @@ const artifact: Artifact = {
   createdAt: 1,
   updatedAt: 2,
 };
+const appPolicyForTest = {
+  liveAshOs: true,
+  dailyKeychain: true,
+  dailyClaude: true,
+  reapOrphans: true,
+  phoneAccess: true,
+  habits: true,
+  automations: true,
+  reminders: true,
+  autoResume: true,
+  notificationPrompt: true,
+  globalShortcut: true,
+};
+
 const featureWorktree: Worktree = {
   path: "/tmp/project-worktrees/feature",
   branch: "feature",
@@ -160,6 +174,66 @@ describe("agent app commands", () => {
     await expect(
       handleAgentApp(source, "v2", "app.version", { verbose: true }, host),
     ).rejects.toThrow("Unknown app.version fields: verbose");
+  });
+
+  it("ships the asking session's checkout on its behalf, and only the daily app ships", async () => {
+    const { source, host } = fixture();
+    source.worktreeCwd = featureWorktree.path;
+    const ship = vi.fn(async () => ({ ok: true, scheduled: true, id: "20261019-210405-bbbbbbb" }));
+    host.ship = ship;
+    await expect(handleAgentApp(source, "s1", "app.ship", {}, host)).resolves.toMatchObject({
+      scheduled: true,
+      id: "20261019-210405-bbbbbbb",
+      note: expect.stringContaining("resumes once, with the receipt"),
+    });
+    expect(ship).toHaveBeenLastCalledWith({ repo: featureWorktree.path, requestedBy: "lead" });
+
+    await handleAgentApp(source, "s2", "app.ship", { worktree: source.cwd, whenBusy: "restart" }, host);
+    expect(ship).toHaveBeenLastCalledWith({ repo: source.cwd, requestedBy: "lead", whenBusy: "restart" });
+
+    await expect(
+      handleAgentApp(source, "s3", "app.ship", { worktree: "/tmp/elsewhere" }, host),
+    ).rejects.toThrow("Not a checkout of this project");
+    await expect(
+      handleAgentApp(source, "s4", "app.ship", { whenBusy: "now" }, host),
+    ).rejects.toThrow('whenBusy must be "wait" or "restart"');
+    await expect(
+      handleAgentApp(source, "s5", "app.ship", { force: true }, host),
+    ).rejects.toThrow("Unknown app.ship fields: force");
+
+    host.identity = () => ({
+      product: "MonoCode Hub Dev",
+      version: "0.16.0",
+      identifier: "com.ash.monocode-hub.dev.wt-a",
+      kind: "dev",
+      slot: "wt-a",
+      stamp: { sha: "b".repeat(40), branch: "hub/1b-ship", dirty: false, builtAt: "" },
+      schemaVersion: 19,
+      policy: { ...appPolicyForTest, habits: false },
+    });
+    await expect(handleAgentApp(source, "s6", "app.ship", {}, host)).rejects.toThrow(
+      "Only the daily app takes a ship",
+    );
+    expect(ship).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the newest ship with the version when the app knows it", async () => {
+    const { source, host } = fixture();
+    host.identity = () => ({
+      product: "MonoCode Hub",
+      version: "0.16.0",
+      identifier: "com.ash.monocode-hub",
+      kind: "daily",
+      slot: null,
+      stamp: { sha: "b".repeat(40), branch: "hub/1b-ship", dirty: false, builtAt: "" },
+      schemaVersion: 19,
+      policy: appPolicyForTest,
+    });
+    host.shipStatus = () => ({ id: "20261019-210405-bbbbbbb", phase: "committed" });
+    expect(await handleAgentApp(source, "v9", "app.version", {}, host)).toMatchObject({
+      kind: "daily",
+      ship: { phase: "committed" },
+    });
   });
 
   it.each([undefined, true, false])(

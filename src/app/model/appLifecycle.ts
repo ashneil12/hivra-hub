@@ -109,8 +109,10 @@ export function setQuitWorkspace(
 /**
  * Persist this window for a quit the coordinator has already confirmed.
  * Exiting is `confirm_quit`'s job, once every window has reported ready.
+ * `shipUpdate` names the ship when the quit is for an update: cut turns are
+ * marked with it, so they resume with its receipt.
  */
-export async function handleQuitRequested(): Promise<boolean> {
+export async function handleQuitRequested(shipUpdate?: string): Promise<boolean> {
   if (liveWorkspace) {
     liveWorkspace.flush();
     quitting = true;
@@ -125,6 +127,7 @@ export async function handleQuitRequested(): Promise<boolean> {
         liveWorkspace.projectTerminals(),
         liveWorkspace.lastDockSide() ?? undefined,
         liveWorkspace.keepTab,
+        shipUpdate,
       );
       return true;
     } catch {
@@ -145,14 +148,23 @@ export async function handleQuitRequested(): Promise<boolean> {
   }
 }
 
-/** Each window counts its own live turns; Rust sums them into one decision. */
-export async function reportQuitPoll(id: number): Promise<void> {
+/**
+ * Each window counts its own live turns; Rust sums them into one decision.
+ * A quit for update leaves out `exempt`, the session that asked for the ship:
+ * its own turn is expected to be cut, and resumes with the receipt.
+ */
+export async function reportQuitPoll(
+  id: number,
+  exempt?: string | null,
+): Promise<void> {
   let inFlight = 0;
   if (liveWorkspace) {
     liveWorkspace.flush();
     // Every running turn, not just the resumable ones `inFlightRefs` keeps:
     // an Inbox Ask still counts as work nobody agreed to throw away.
-    inFlight = liveWorkspace.sessions().filter(isInFlightSession).length;
+    inFlight = liveWorkspace
+      .sessions()
+      .filter((session) => isInFlightSession(session) && session.id !== exempt).length;
   }
   await invoke("quit_poll_reply", { id, inFlight }).catch(() => undefined);
 }
@@ -180,8 +192,11 @@ export async function askQuitConfirmation(
   await invoke("quit_decision", { id, confirmed }).catch(() => undefined);
 }
 
-export async function commitQuit(id: number): Promise<void> {
-  const persisted = await handleQuitRequested();
+export async function commitQuit(
+  id: number,
+  shipUpdate?: string | null,
+): Promise<void> {
+  const persisted = await handleQuitRequested(shipUpdate ?? undefined);
   await invoke("quit_ready", { id, persisted }).catch(() => undefined);
 }
 
@@ -386,6 +401,7 @@ export async function persistQuitState(
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
   keepTab?: (tab: WorkspaceTab) => boolean,
+  shipUpdate?: string,
 ): Promise<void> {
   const refs = inFlightRefs(sessions, tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
@@ -399,7 +415,7 @@ export async function persistQuitState(
     sessions.map(async (session) => {
       if (!shouldPersistSession(session)) return;
       const payload = interrupted.has(session.id)
-        ? markTurnInterrupted(session)
+        ? markTurnInterrupted(session, shipUpdate)
         : session;
       await write(upsertSession(payload));
     }),

@@ -1092,6 +1092,14 @@ function sanitizeBlock(
     if (block.notice === "error" || block.notice === "interrupt") {
       next.notice = block.notice;
     }
+    // The ship whose restart cut the turn: the resume carries its receipt (src-tauri/src/ship.rs).
+    if (
+      block.notice === "interrupt" &&
+      typeof block.shipUpdate === "string" &&
+      /^[A-Za-z0-9._-]{1,96}$/.test(block.shipUpdate)
+    ) {
+      next.shipUpdate = block.shipUpdate;
+    }
   }
   return next;
 }
