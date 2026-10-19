@@ -262,3 +262,11 @@ use a test worktree and avoid real external actions. The old MonoCode Test copy 
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
+
+## Export and import (Phase 5, docs/PORTABLE.md)
+
+Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
+`.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
+connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
+its own data folder (`MONOCODE_HUB_MEMORY_ROOT` overrides) and never writes `~/agent-memory`.

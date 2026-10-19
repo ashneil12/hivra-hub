@@ -1,0 +1,75 @@
+# Phase 5: export and import (portable)
+
+Ash, 19 Oct: "I can import and export my entire setup, plus memories, etc. I can just basically use whatever coding
+engine I want" and "the overall workspace should also be able to be imported and exported".
+
+Settings → **Export and import**. Export writes one `.tar.gz` or a folder; Import reads either (or a v1 `.json`), shows a
+preview, and restores only what is ticked.
+
+## The export (format `monocode-hub-export`, version 2)
+
+```
+manifest.json            format, version, createdAt, the build that made it, what was ticked (parts), counts,
+                         secretsRemoved, notes (what was left out and why), every file with its bytes and SHA-256
+setup/                   always. Written by the webview (src/features/portable/model/setupDoc.ts)
+  setup.json             format monocode-hub-setup, version 2: projects (registry fields + template), Ash's project
+                         names/icons/order, custom models (metadata, no key), settings and themes, the Mono ids
+  projects/<id>.json     per project (and "today"): its teams (group chats: name, members), Monos, Lead, connectors, Pages
+  connectors.json        [{id, name, projectId, where: mac|composio|none, loginLivesIn}]  never a login
+  monos/<id>/            mono.json (look, projects + project ids, team, engine {harness, model}), SOUL.md, habits.json,
+                         sheet.md (for people), skills.json (each skill and where it lived), and only with memory
+                         ticked MEMORY.md + memory/<note>.md
+memory/                  only if ticked. Ash OS project memory: <project>/**.md for each folder with a MEMORY.md (the
+                         global layer `ash` among them; the dump ledger `inbox` is not memory), and with "history"
+                         <project>.git.bundle
+workspace/               only if ticked. Written by Rust (src-tauri/src/portable.rs)
+  sessions/<id>.json     one chat: title, folder, dates, flags, engine {harness, model, modelSettings, runtimeMode},
+                         providerTranscript {harness, providerSessionId, path on the Mac that made it}, blocks
+  notes.json             notes and artifacts (every column), note-assets/<id>/ their pictures
+  automations.json       definitions; reminders.json; delegations.json (no mirror fields)
+  hub/group-chats.json   the group chats with their conversations (webview)
+```
+
+The archive is the same tree under one top folder. Nothing in it is a secret:
+- Keychain items are never read. Connectors say where the login lived; custom models carry no key.
+- One pattern list (`src/features/portable/model/secretPatterns.json`) is used by the webview and Rust. The webview
+  scrubs the setup files before they cross; Rust scrubs everything it writes, then scans the finished export again and
+  refuses (leaving nothing behind) on any hit. A memory folder whose git history has a secret in any commit goes without
+  its history (the manifest notes say so). Settings whose name or value looks like a secret stay home.
+- A file without secrets goes byte for byte as it was.
+
+## Import
+
+1. **Read** (`portable_inspect`): a folder, `.tar.gz` (unpacked to a scratch folder: links, devices and paths that climb
+   out are refused) or v1 `.json`. Every listed file must match its SHA-256; a newer format is refused in plain words.
+2. **Preview** (`importPlan.ts`): for every item, New / Already here / Differs, and clashes by id and by name (a project
+   or Mono or model called the same). New things are ticked; things already here are left alone; Differs keeps Ash's.
+3. **Restore** only adds:
+   - Projects: a new one is registered with Ash OS (`ash-hub-project-create`, adopting its folder if it is on this Mac,
+     never making one), else kept on this Mac's list. Templates and project names/icons only where Ash has none.
+   - Monos never seat themselves: a new one waits for Ash's OK (Monos list), and OK seats it with its look, projects
+     (mapped to this Mac's folders by project id) and engine, writing only files that aren't there. A Mono already here
+     gains missing files and projects; its own soul is replaced only if Ash ticks "use the file's".
+   - Teams, connectors (sign in again), Pages (no permissions), models (enter the key again), settings (missing ones;
+     the differing ones only if ticked).
+   - Memory: missing files are written, identical ones skipped, differing ones kept (or the file's added beside as
+     `<name>.imported.md` if ticked). A folder that isn't here yet comes back with its history from the bundle.
+   - Workspace: new chats, notes, automations (**paused**), reminders (an overdue one comes back done), delegations
+     (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
+     note already here and different is kept; ticked, the file's comes in as a copy with a new id.
+   - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
+
+**Engine-agnostic.** Every Mono and every chat names its engine. A Mono with an engine starts new conversations on it
+(`monoWorkspace.ts`); an engine this build doesn't know falls back to the default.
+
+**Dev copies.** Memory lives in the slot's own `<data>/agent-memory` (override with `MONOCODE_HUB_MEMORY_ROOT`). A dev
+copy never writes into `~/agent-memory`, `~/.claude` or the daily data folder, and never keeps a provider session id.
+
+## Tests
+
+- Rust (`src-tauri/src/portable/tests.rs`): round trip into an empty data folder for both forms (same chats incl. a
+  Mono's indexed transcript, notes and pictures, automations, reminders, delegations, memory files and history, minus
+  secrets), planted-secret scan of every file, conflicts previewed and never overwritten, ticks respected, dev-copy
+  rules, a secret in old history, newer/damaged/escaping exports refused, v1 recognised.
+- Webview (`src/features/portable/**`): setup round trip into fresh stores, no secret in the setup files, conflicts and
+  "use the file's", ticks, v1 import, the Settings page sends exactly what is ticked.
