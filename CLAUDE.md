@@ -68,7 +68,10 @@ the quick composer's global shortcut are off. The app's own file commands won't 
 
 **Never launch a build of this app with the real HOME to prove something.** To exercise a refusal or the lock, run
 the binary with `HOME` set to a fresh temporary folder and `MONOCODE_NO_ALERT=1` (refusal on stderr only, same
-exit code), and check that it used that folder.
+exit code), and check that it used that folder. Under a temporary HOME the app sets `CFFIXED_USER_HOME` to it (Cocoa
+ignores HOME, so the webview's storage, caches and preferences would otherwise land in the real home beside the daily
+app's) and refuses to start if that didn't take; it also keeps off the Keychain's daily names, the orphan reaper,
+phone access, the notification prompt and the global shortcut.
 
 ## Before you build or launch — the checklist
 
@@ -78,8 +81,41 @@ exit code), and check that it used that folder.
    Never run a bare `tauri build` here.
 3. **`npm run hub:verify`** — asserts the built bundle's `CFBundleIdentifier` is `com.ash.monocode-hub` and that
    it carries a build stamp before anything installs it.
-4. **`npm run hub:install`** — verifies, then installs to `~/Applications/MonoCode Hub.app`. It refuses to
-   install a bundle that is not the Hub.
+4. **`npm run hub:check-all`** then **`npm run hub:ship`** — installs into `~/Applications/MonoCode Hub.app`
+   with a safety net (see "Ship" below). `npm run hub:install` is now only the one-time `--legacy` install of the
+   first build that can ship (it keeps the old app under `~/Archive/monocode/ships/legacy-*`, never deletes it).
+
+## Ship (Phase 1b WP3: `scripts/hub-ship.mjs`, `scripts/hub-ship-runner.mjs`, `src-tauri/src/ship.rs`)
+
+From a clean commit: `npm run hub:check-all && npm run hub:build && npm run hub:ship`. A Lead inside the daily app
+uses `app app.ship` instead (same code; its own running turn doesn't block the restart, and it resumes with the
+receipt).
+
+1. **Checks, before anything changes:** clean tree; the bundle's stamp is HEAD; a `hub:check-all` pass record
+   (`target/hub-checks/<sha>.json`) for that commit; daily identity; a real signature (not ad hoc) matching the
+   installed app's; the installed app can take a ship; disk space; `monocode healthcheck` on a copy of the live
+   database. Any refusal leaves everything as it was.
+2. **Stage:** `ditto` into `<data>/ship/<id>/staged/`, `state.json`, and the runner as a one-shot LaunchAgent
+   (`com.ash.monocode-hub.ship.<id>`, outside the app's process group). Returns "scheduled" within seconds.
+3. **The app** accepts the staged build only if its signature matches its own, then quits for the update when no
+   other turn is running (or on **Restart now** in Today; `whenBusy: "restart"` doesn't wait). Cut turns are saved
+   for resume, marked with the ship.
+4. **The runner** waits for the app's data-folder lock, backs up `monocode.db*` and `monos/`, renames the old app
+   to `ship/<id>/previous.app.off`, moves the new one in and opens it ("trial").
+5. **Trial:** the new build holds auto-resume, habits and automations until its window, database and hub bridge
+   are up, then writes `committed.json`. Not in `running.json` within 30 s, no commit within 120 s, or an early
+   exit: the runner stops that verified process, puts the old app and database copy back, and reopens it.
+6. `receipt.json` and `runner.log` in the ship folder say what happened; Today shows it; the shipping Lead's
+   resume note carries it. At startup the app finishes a trial or a restore a dead runner left.
+
+After a commit, rollback is manual: `npm run hub:rollback -- <id> --confirm` (the database goes back to that
+ship's copy, so newer chats leave the live database; the rollback keeps a copy of them). The last 3 ship folders
+stay; older ones move to `~/Archive/monocode/ships/`. `npm run hub:ship -- --drill-rollback` runs the whole path
+and then rolls back on purpose.
+
+**Never** quit, kill (`pkill`, `killall`, `osascript ... quit`) or copy the daily app by hand, and never ship from
+a dev slot's data: ship is the only way a build reaches `~/Applications`. Prove ship changes with a temporary HOME
+(the tests in `scripts/hub-ship.test.mjs` do), never against the real app.
 
 Prove any bundle's identity and build at any time, without launching it:
 
@@ -145,8 +181,9 @@ Until per-worktree dev slots land (Phase 1b WP2), `hub:dev` runs one shared dev 
 - **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
 - **Rust change** (`src-tauri/**`): `tauri dev` recompiles and relaunches the app by itself; the window
   comes back with the change. Nothing to do by hand.
-- **Anything Ash should keep using / that must survive a reboot:** that is a release build —
-  `npm run hub:build && npm run hub:install`. Reserve it for a change that is finished, tested and landed.
+- **Anything Ash should keep using / that must survive a reboot:** that is a release build, shipped —
+  `npm run hub:check-all && npm run hub:build && npm run hub:ship`. Reserve it for a change that is finished,
+  tested and landed.
 
 Use `npm run dev` + a `hub-dev.html` page only for a browse-only look at the Hub's screens (stub or live
 proxy). It has no Rust side, so `hub_call` needs the stub or the live proxy to answer.
