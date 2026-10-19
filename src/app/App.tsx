@@ -1,4 +1,4 @@
-import { setGroupChatRunner } from "../features/hub/model/hubChats";
+import { MonoBusyError, setGroupChatRunner, setRoomRouter } from "../features/hub/model/hubChats";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
@@ -366,6 +366,7 @@ import {
   respondHarnessQuestion,
   keepHarnessQuestionOpen,
   runHarnessTextPrompt,
+  canRunHarnessTextPrompt,
   sendHarnessTurn,
   steerHarnessTurn,
   startHarnessBridge,
@@ -9241,7 +9242,7 @@ function Workspace({
       },
     });
     if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
-    if (session.busy) throw new Error("This Mono is already working. Wait for it to finish before trying again.");
+    if (session.busy) throw new MonoBusyError("This Mono is already working. Wait for it to finish before trying again.");
     return new Promise<string>((resolve, reject) => {
       const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
       void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
@@ -9256,6 +9257,13 @@ function Workspace({
         if (!accepted) { window.clearTimeout(timer); reject(new Error("The Mono could not accept this message. Your message is saved.")); }
       }).catch((error: unknown) => { window.clearTimeout(timer); reject(error); });
     });
+  }), []);
+
+  // The room's cheap router (who answers, who may chime in): one isolated, read-only prompt to the smallest model (the
+  // Claude text child picks Haiku). When Claude can't run one, the room falls back to its lane rules.
+  useEffect(() => setRoomRouter(async (prompt) => {
+    if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
+    return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: 20_000 });
   }), []);
 
   const appReceipts = useRef(
