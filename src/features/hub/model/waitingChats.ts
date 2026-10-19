@@ -106,6 +106,17 @@ function lastAshMessageAt(blocks: ChatInput["blocks"]): number | undefined {
   return undefined;
 }
 
+// The app calls noteChats on every change to any chat (each streamed word): a chat whose transcript, turn and live
+// question are the same objects as last time is not read again.
+const reads = new WeakMap<object, { busy: boolean; pending: unknown; q: ChatQuestion | null }>();
+function readChat(chat: ChatInput): ChatQuestion | null {
+  const seen = reads.get(chat.blocks);
+  if (seen && seen.busy === !!chat.busy && seen.pending === chat.pendingQuestion) return seen.q;
+  const q = chatQuestion(chat);
+  reads.set(chat.blocks, { busy: !!chat.busy, pending: chat.pendingQuestion, q });
+  return q;
+}
+
 /** Inbox discussions, habit runs and orchestration workers have their own places; they never wait here. */
 function counts(chat: ChatInput): boolean {
   return !chat.inboxAsk && !chat.ephemeral && !chat.orchestrationLeadId;
@@ -123,7 +134,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
   for (const chat of chats) {
     if (!counts(chat)) continue;
     const old = prev[chat.id];
-    const q = chatQuestion(chat);
+    const q = readChat(chat);
     if (q) {
       if (q.source === "ask") seenLive.add(liveKey(chat.id, q.requestId));
       if (old && sameQuestion(old, q)) continue;
