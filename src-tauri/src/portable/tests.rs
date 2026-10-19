@@ -1108,8 +1108,20 @@ fn each_chat_says_which_engine_it_runs_on() {
     let dir = TestDir::new("engines");
     let env = env_for(&dir.0);
     seed(&env);
-    let engines = session_engines(&env, &["chat-2".into(), "mono-chat".into(), "nope".into(), "../x".into()]).unwrap();
+    let engines = session_engines(
+        &env,
+        &[
+            "chat-2".into(),
+            "mono-chat".into(),
+            "nope".into(),
+            "../x".into(),
+        ],
+    )
+    .unwrap();
     assert_eq!(engines.len(), 2);
-    assert_eq!(engines["chat-2"], json!({"harness": "codex", "model": "codex-model"}));
+    assert_eq!(
+        engines["chat-2"],
+        json!({"harness": "codex", "model": "codex-model"})
+    );
     assert_eq!(engines["mono-chat"]["harness"], "claude");
 }

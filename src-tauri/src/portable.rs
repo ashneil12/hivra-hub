@@ -2336,10 +2336,16 @@ pub fn find_skills(env: &Env, names: &[String]) -> Vec<SkillRef> {
 /// The engine each of these chats runs on: `{id: {harness, model}}`, for the chats that exist.
 pub fn session_engines(env: &Env, ids: &[String]) -> Result<BTreeMap<String, Value>, String> {
     let mut out = BTreeMap::new();
-    let Some(conn) = env.read_db()? else { return Ok(out) };
+    let Some(conn) = env.read_db()? else {
+        return Ok(out);
+    };
     for id in ids.iter().filter(|id| session_file_id(id)) {
         let row: Option<(String, String)> = conn
-            .query_row("SELECT harness, model FROM sessions WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row(
+                "SELECT harness, model FROM sessions WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some((harness, model)) = row {
@@ -2403,7 +2409,10 @@ pub async fn portable_find_skills(
 }
 
 #[tauri::command]
-pub async fn portable_session_engines(app: AppHandle, ids: Vec<String>) -> Result<BTreeMap<String, Value>, String> {
+pub async fn portable_session_engines(
+    app: AppHandle,
+    ids: Vec<String>,
+) -> Result<BTreeMap<String, Value>, String> {
     let env = Env::for_app(&app)?;
     tauri::async_runtime::spawn_blocking(move || session_engines(&env, &ids))
         .await
