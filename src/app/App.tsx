@@ -33,6 +33,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
@@ -8436,12 +8437,14 @@ function Workspace({
             : undefined;
           // Who it is counts as part of its soul: a rename or a change to its
           // projects is handed over too, and so is a change to the fixed rules.
+          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again.
+          const delegateTool = mono && hasDelegateTool(sessionId, current.harness);
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -8468,7 +8471,11 @@ function Workspace({
             agentPlan &&
             (agentPlan.soul || agentPlan.memory)
           ) {
-            appContext.push(monoContext(agentLook, agentFiles, agentPlan));
+            appContext.push(
+              monoContext(agentLook, agentFiles, agentPlan, {
+                delegate: delegateTool,
+              }),
+            );
           }
           if (operatorCommand.matched || handAgent) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
