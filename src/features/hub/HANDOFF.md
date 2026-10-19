@@ -270,7 +270,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 - Not verified: the plugin inside a running Tauri window (see the report).
 
 ## Connectors and teams (phase 4, 19 Oct)
-- **One catalog** (`model/connectorCatalog.json`, 30 connectors) is read by the page and compiled into Rust
+- **One catalog** (`model/connectorCatalog.json`: 28 direct connectors plus Composio) is read by the page and compiled into Rust
   (`src-tauri/src/connectors/`). Direct ones are official or well-known MCP servers: hosted ones (GitHub, Linear,
   Notion, Supabase, Vercel, Stripe, Google's Workspace servers, …) are bridged to stdio by the app's own binary; local
   ones (Slack, Airtable, Brave, …) run as a child; Telegram is built in. Composio is one switch-gated entry.
@@ -282,7 +282,8 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 - **Sessions**: a Mono's Claude Code session gets `--mcp-config` entries pointing at `<app> connector-run <id> --mono
   <id> --project <key>…` (`hubConnectors.connectorArgsForSession`, merged with the Lead's ash-os entry in
   `claudeExtraArgs.ts`). The launcher re-checks the rules and reads the Keychain at start. A Mono in two projects only
-  gets what both allow; nothing is allowed until Ash ticks a project.
+  gets what both allow; nothing is allowed until Ash ticks a project. (The leadership team now sits in every project, so
+  it only gets connectors allowed in all of them or "Every project".) Codex and other engines get no connectors yet.
 - **Teams** (`model/hubTeams.ts`, Settings → Teams): a team has a brief, projects, named Monos and a room (a normal
   group chat in its first project). Ash makes Monos there (name, lane → SOUL, engine, projects, connectors); agents
   can only `app monos.propose`, which waits on Today's Setup and Settings → Teams until Ash approves.
