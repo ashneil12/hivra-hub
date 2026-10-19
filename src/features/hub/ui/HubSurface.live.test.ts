@@ -193,13 +193,13 @@ describe("ships clean and calm", () => {
     expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
   });
 
-  it("the strip shows EXO, Hivra, Nibbii, Hub in that order, each its own letter tile", async () => {
+  it("the strip shows Today, Autopilot, then EXO, Hivra, Nibbii, Hub in that order, each its own letter tile", async () => {
     mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
-    expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Hub"]);
+    expect(labels).toEqual(["Today", "Autopilot", "EXO", "Hivra", "Nibbii", "Hub"]);
     // No ghost and no per-project shape by default: the first letter on a grey glass tile (Ash can pick an icon).
-    const tiles = [...container.querySelectorAll("[data-hub-strip] button:not([data-project-more])")].slice(1, 5).map((b) => b.textContent?.trim()[0]);
+    const tiles = [...container.querySelectorAll("[data-hub-strip] button:not([data-project-more])")].slice(2, 6).map((b) => b.textContent?.trim()[0]);
     expect(tiles).toEqual(["E", "H", "N", "H"]);
   });
 

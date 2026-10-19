@@ -8,6 +8,7 @@ import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, 
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
 import { foldParts, partsDone } from "../model/jobParts";
+import { PausedNote } from "../../autopilot/ui/PausedNote";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -67,7 +68,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
               <div className="flex flex-col gap-4">
                 {byMono(active).map(([mono, jobs]) => (
                   <div key={mono} className="flex flex-col gap-0.5" data-hub-mono-jobs={mono}>
-                    <div className="px-3 text-xs text-content/60">{mono}</div>
+                    <div className="px-3 text-xs text-content/60">{mono}<PausedNote who={mono} /></div>
                     {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} />)}
                   </div>
                 ))}

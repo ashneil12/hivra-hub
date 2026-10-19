@@ -11,6 +11,7 @@ import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject, ProjectIconShape } from "../model/types";
+import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
 
 /** Ash OS's shape names. "ghost" is no longer drawn: a project shows its letter tile unless Ash picks an icon. */
 export const SHAPES: Record<ProjectIconShape, IconComponent> = {
@@ -51,6 +52,7 @@ export function ProjectStrip({
   useProjectDraftVersion();
   const draftProject = projectDraft();
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
+  const autopilot = useAutopilotStrip();
   return (
     <nav
       aria-label="Projects"
@@ -63,9 +65,16 @@ export function ProjectStrip({
       <StripButton
         label="Today"
         title="Today, all projects"
-        selected={selection.project === "today"}
+        selected={selection.project === "today" && selection.item !== "autopilot"}
         onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "inbox" }); }}
         Icon={Clock}
+      />
+      <StripButton
+        label="Autopilot"
+        title={autopilot.title}
+        selected={selection.item === "autopilot"}
+        onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "autopilot" }); }}
+        glyph={autopilot.glyph}
       />
       <div className="h-2 shrink-0" />
       {projects.map((project) => {
