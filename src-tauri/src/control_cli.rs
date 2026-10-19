@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 36] = [
+const APP_ACTIONS: [&str; 40] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -119,6 +119,10 @@ const APP_ACTIONS: [&str; 36] = [
     "habits.run",
     "habits.remove",
     "chat.card",
+    "autopilot.status",
+    "autopilot.decide",
+    "autopilot.set",
+    "autopilot.off",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -293,6 +297,21 @@ Actions:
                    "schedule":{"kind":"daily","time":"09:00"}}
                   choices accepts 1–4 options. A habit card is a suggestion;
                   the user must start it before it is scheduled.
+  autopilot.status {"project":"hivra"}  Is autopilot on (for this chat, or
+                  the project named), for what and until when.
+  autopilot.decide {"question":"...","recommendation":"...","why":"...",
+                  "options":["..."],"red":"money"}
+                  Before you put any choice to Ash. "act":"proceed" means
+                  autopilot took your recommendation (it's logged): act on it
+                  and don't ask him. "act":"ask" means ask him as usual: it is
+                  off, or the call is on his red list (money, delete, prod-host,
+                  mass-destructive, send-as-ash, credentials; mark such a call
+                  with "red").
+  autopilot.set  {"until":"Monday 9:00","projects":["hivra"],"ashSaid":"..."}
+                  A Lead or the leadership team, from its own chat, only when
+                  Ash asks: ashSaid is his exact words from this chat. Leave
+                  projects out for your own scope (a Lead: its project).
+  autopilot.off  {"projects":["hivra"]}  End it early.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.

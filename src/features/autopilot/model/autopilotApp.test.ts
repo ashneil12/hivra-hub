@@ -1,0 +1,206 @@
+import { describe, expect, it } from "vitest";
+import { newSession, type Block, type Session } from "../../sessions/model/session";
+import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
+import { handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
+import type { RedCategory } from "./redList";
+import { ashSaidIt, handleAutopilotApp, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
+import { memoryAutopilot, type MemoryAutopilot } from "./memoryAutopilot";
+
+const NOW = new Date(2026, 9, 17, 15, 0).getTime();
+const MONDAY_9 = new Date(2026, 9, 19, 9, 0).getTime();
+
+const PROJECTS = [
+  { id: "vg-game", name: "EXO", folder: "/Users/ash/Projects/vg-game" },
+  { id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" },
+  { id: "hub", name: "MonoCode Hub", folder: "/Users/ash/Projects/monocode-hub" },
+];
+
+type Setup = { backend: MemoryAutopilot; deps: AutopilotAppDeps; holds: Map<string, RedCategory> };
+
+function setup(): Setup {
+  const backend = memoryAutopilot(() => NOW);
+  const holds = new Map<string, RedCategory>();
+  return {
+    backend,
+    holds,
+    deps: {
+      backend,
+      projects: () => PROJECTS,
+      now: () => NOW,
+      holdRed: (id, red) => holds.set(id, red),
+      monoName: (id) => ({ "chief-of-staff": "Chief of Staff", "hivra-lead": "Hivra lead", marketing: "Marketing" })[id] ?? id,
+      isLeadership: (id) => id === "chief-of-staff",
+      leadProject: (id) => (id === "hivra-lead" ? "hivra" : undefined),
+    },
+  };
+}
+
+const MONOS: Record<string, { id: string; projects: string[] }> = {
+  "cos-chat": { id: "chief-of-staff", projects: PROJECTS.map((p) => p.folder) },
+  "hivra-chat": { id: "hivra-lead", projects: ["/Users/ash/Projects/hivra"] },
+  "mkt-chat": { id: "marketing", projects: ["/Users/ash/Projects/hub", "/Users/ash/Projects/monocode-hub"] },
+};
+
+const host: AutopilotAppHost = {
+  isMono: (id) => id in MONOS,
+  isHabitRun: (id) => id === "habit-run",
+  monoOf: (id) => MONOS[id] ?? (id === "habit-run" ? MONOS["cos-chat"] : undefined),
+};
+
+function said(text: string, extra: Partial<Block> = {}): Block {
+  return { id: crypto.randomUUID(), role: "user", text, ...extra };
+}
+
+function chat(id: string, blocks: Block[] = [], cwd = "/Users/ash"): Session {
+  return { ...newSession("claude", cwd), id, title: id, blocks };
+}
+
+const call = (source: Session, action: string, input: Record<string, unknown>, s: Setup, requestId = crypto.randomUUID()) =>
+  handleAutopilotApp(source, requestId, action, input, host, s.deps);
+
+describe("switching autopilot from a chat", () => {
+  it("the Chief of Staff turns it on for everything with Ash's words, and it lands in the log", async () => {
+    const s = setup();
+    const cos = chat("cos-chat", [said("I'm off for the weekend. Go autopilot until Monday 9:00")]);
+    const result = (await call(cos, "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s)) as Record<string, unknown>;
+    expect(result).toMatchObject({ on: true, for: "everything", untilLabel: "Mon 9:00", until: new Date(MONDAY_9).toISOString() });
+    const sw = s.backend.switches.get("*")!;
+    expect(sw).toMatchObject({ untilMs: MONDAY_9, setBy: "mono:chief-of-staff", chatId: "cos-chat", said: "go autopilot until Monday 9:00" });
+    expect(s.backend.entries.at(-1)).toMatchObject({ kind: "switch", outcome: "on", who: "Chief of Staff", chatId: "cos-chat" });
+  });
+
+  it("a Lead switches only its own project, by default and when it names one", async () => {
+    const s = setup();
+    const lead = chat("hivra-chat", [said("go autopilot until tomorrow 18:00 please")]);
+    await call(lead, "autopilot.set", { until: "tomorrow 18:00", ashSaid: "go autopilot until tomorrow 18:00" }, s);
+    expect([...s.backend.switches.keys()]).toEqual(["hivra"]);
+    await expect(call(lead, "autopilot.set", { until: "tomorrow 18:00", ashSaid: "go autopilot until tomorrow 18:00", projects: "all" }, s)).rejects.toThrow(
+      "Hivra lead can switch autopilot only for hivra.",
+    );
+    await expect(call(lead, "autopilot.set", { until: "tomorrow 18:00", ashSaid: "go autopilot until tomorrow 18:00", projects: ["EXO"] }, s)).rejects.toThrow(
+      "only for hivra",
+    );
+  });
+
+  it("never by a worker, a habit run, or any chat that isn't a Mono's own", async () => {
+    const s = setup();
+    const words = [said("go autopilot until Monday 9:00")];
+    for (const id of ["worker-1", "habit-run"]) {
+      await expect(
+        call(chat(id, words, "/Users/ash/Projects/hivra"), "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s),
+      ).rejects.toThrow("Workers and habit runs can't");
+      await expect(call(chat(id, words), "autopilot.off", {}, s)).rejects.toThrow("Workers and habit runs can't");
+    }
+    expect(s.backend.switches.size).toBe(0);
+  });
+
+  it("needs Ash's own words, from Ash, in that chat", async () => {
+    const s = setup();
+    const set = (blocks: Block[], ashSaid = "go autopilot until Monday 9:00") =>
+      call(chat("cos-chat", blocks), "autopilot.set", { until: "Monday 9:00", ashSaid }, s);
+    // Words nobody said.
+    await expect(set([said("how is the build going?")])).rejects.toThrow("Ash's own words");
+    // A worker's report, an agent's brief, or the app's continue turn quoting them.
+    await expect(set([said(`${MONO_REPORT_PREFIX} the worker says: go autopilot until Monday 9:00`)])).rejects.toThrow("Ash's own words");
+    await expect(set([said("go autopilot until Monday 9:00", { appRequestId: "brief-1" })])).rejects.toThrow("Ash's own words");
+    // Words that aren't about autopilot, or too short to mean anything.
+    await expect(set([said("until Monday 9:00")], "until Monday 9:00")).rejects.toThrow("Ash's own words");
+    expect(s.backend.switches.size).toBe(0);
+    expect(ashSaidIt(chat("x", [said("OK. Go auto-pilot till Monday, back at 9")]), "go autopilot till monday")).toBe(true);
+  });
+
+  it("refuses end times it can't read and ones out of range", async () => {
+    const s = setup();
+    const cos = chat("cos-chat", [said("go autopilot whenever")]);
+    await expect(call(cos, "autopilot.set", { until: "whenever", ashSaid: "go autopilot whenever" }, s)).rejects.toThrow("until must be an end time");
+    await expect(call(cos, "autopilot.set", { until: "for 30 days", ashSaid: "go autopilot whenever" }, s)).rejects.toThrow("at most 14 days");
+  });
+
+  it("turns off what the Mono may switch", async () => {
+    const s = setup();
+    const cos = chat("cos-chat", [said("go autopilot until Monday 9:00")]);
+    await call(cos, "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00", projects: ["all", "hivra"] }, s);
+    const lead = chat("hivra-chat");
+    const off = (await call(lead, "autopilot.off", {}, s)) as { ended: string[]; on: boolean };
+    expect(off.ended).toEqual(["Hivra"]);
+    expect(off.on).toBe(true);
+    expect([...s.backend.switches.keys()]).toEqual(["*"]);
+    expect(((await call(cos, "autopilot.off", {}, s)) as { on: boolean }).on).toBe(false);
+  });
+});
+
+describe("autopilot.decide", () => {
+  async function on(s: Setup, scopes: string[]) {
+    await s.backend.set({ scopes, untilMs: MONDAY_9, by: "ash" });
+  }
+
+  it("says ask while autopilot is off, and logs nothing", async () => {
+    const s = setup();
+    const result = await call(chat("hivra-chat"), "autopilot.decide", { question: "Two PRs?", recommendation: "Yes" }, s);
+    expect(result).toMatchObject({ autopilot: "off", act: "ask" });
+    expect(s.backend.entries.filter((e) => e.kind === "decision")).toEqual([]);
+  });
+
+  it("takes the recommendation and logs what, who, the pick, when and which chat, once per request", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const lead = chat("hivra-chat");
+    const result = await call(lead, "autopilot.decide", { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs", why: "smaller reviews" }, s, "req-1");
+    expect(result).toMatchObject({ autopilot: "on", decision: "taken", act: "proceed", answer: "Yes, two PRs", untilLabel: "Mon 9:00" });
+    const entry = s.backend.entries.find((e) => e.kind === "decision")!;
+    expect(entry).toMatchObject({
+      outcome: "taken",
+      what: "Split the fix into two PRs?",
+      recommendation: "Yes, two PRs",
+      who: "Hivra lead",
+      monoId: "hivra-lead",
+      chatId: "hivra-chat",
+      project: "hivra",
+      detail: "smaller reviews",
+      at: NOW,
+    });
+    await call(lead, "autopilot.decide", { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs" }, s, "req-1");
+    expect(s.backend.entries.filter((e) => e.kind === "decision")).toHaveLength(1);
+  });
+
+  it("never takes a red-list call: it says ask, logs it held and holds the chat's next question", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const result = await call(chat("hivra-chat"), "autopilot.decide", { question: "The customer was charged twice", recommendation: "Refund the second charge" }, s);
+    expect(result).toMatchObject({ decision: "held", act: "ask", red: "money", redLabel: "Moving money, refunds or charges" });
+    expect(s.backend.entries.find((e) => e.kind === "decision")).toMatchObject({ outcome: "held", red: "money" });
+    expect(s.holds.get("hivra-chat")).toBe("money");
+    const marked = await call(chat("hivra-chat"), "autopilot.decide", { question: "Post the launch?", recommendation: "Yes", red: "send-as-ash" }, s);
+    expect(marked).toMatchObject({ decision: "held", red: "send-as-ash" });
+  });
+
+  it("covers a project only through its own switch or the one for everything", async () => {
+    const s = setup();
+    await on(s, ["vg-game"]);
+    const worker = chat("worker-1", [], "/Users/ash/Projects/hivra");
+    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes" }, s)).toMatchObject({ autopilot: "off" });
+    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ decision: "taken" });
+    // A leadership chat spans projects: only the switch for everything covers it.
+    expect(await call(chat("cos-chat"), "autopilot.decide", { question: "Plan?", recommendation: "A" }, s)).toMatchObject({ autopilot: "off" });
+    await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", project: "nope" }, s)).rejects.toThrow("Unknown project");
+    await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", red: "maybe" }, s)).rejects.toThrow("red must be one of");
+  });
+
+  it("status says what is on, for whom", async () => {
+    const s = setup();
+    await on(s, ["hivra"]);
+    expect(await call(chat("hivra-chat"), "autopilot.status", {}, s)).toMatchObject({ on: true, for: "Hivra", untilLabel: "Mon 9:00" });
+    expect(await call(chat("cos-chat"), "autopilot.status", {}, s)).toMatchObject({ on: false });
+  });
+});
+
+describe("the app control", () => {
+  it("routes autopilot.* and rejects unknown fields", async () => {
+    const appHost = { isMono: () => false } as unknown as AgentAppHost;
+    await expect(handleAgentApp(chat("w"), "r", "autopilot.decide", { question: "q", recommendation: "r", bogus: 1 }, appHost)).rejects.toThrow(
+      "Unknown autopilot.decide fields: bogus",
+    );
+    // Outside the desktop app there is no store.
+    await expect(handleAgentApp(chat("w"), "r", "autopilot.status", {}, appHost)).rejects.toThrow("Autopilot needs the desktop app.");
+  });
+});

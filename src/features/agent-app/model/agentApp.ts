@@ -80,6 +80,10 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
+import {
+  AUTOPILOT_FIELDS,
+  handleAutopilotApp,
+} from "../../autopilot/model/autopilotApp";
 
 export type AppSessionListing = {
   id: string;
@@ -248,6 +252,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
+  ...AUTOPILOT_FIELDS,
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -1040,6 +1045,8 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
+  if (action.startsWith("autopilot."))
+    return handleAutopilotApp(source, requestId, action, input, host);
   if (action === "chat.card") {
     if (
       !host.postCard ||
