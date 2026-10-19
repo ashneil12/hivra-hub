@@ -38,6 +38,7 @@
     "hub:check-all": "node scripts/hub-check-all.mjs",
     "hub:ship": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs",
     "hub:rollback": "node --disable-warning=ExperimentalWarning scripts/hub-rollback.mjs",
+    "hub:verify-live": "node --disable-warning=ExperimentalWarning scripts/hub-verify-live.mjs",
     "hub:recover": "bash scripts/recover-sessions.sh"
   },
   "dependencies": {

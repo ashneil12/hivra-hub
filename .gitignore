@@ -62,3 +62,6 @@ Desktop.ini
 
 # identity-guard.sh run state (see CLAUDE.md)
 .identity-baseline.json
+
+# hub:verify-live evidence folders (scripts/hub-verify-live.mjs)
+/evidence/
