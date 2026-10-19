@@ -34,6 +34,7 @@ import {
   updateHabits,
   type Habit,
 } from "../../features/monos/model/monoHabits";
+import { appPolicy } from "../model/appIdentity";
 
 const TICK_MS = 60_000;
 
@@ -144,9 +145,13 @@ async function watchRun(
  * Runs each Mono's habits on schedule while the app is open: in a hidden
  * session of its own, posting to the Mono's chat only when the run has
  * something to say. One run at a time across all Monos keeps a wake from
- * sleep from starting several agents at once.
+ * sleep from starting several agents at once. A dev copy never runs them
+ * (src-tauri/src/instance.rs).
  */
-export function useMonoHabits(host: MonoHabitHost, enabled = true) {
+export function useMonoHabits(
+  host: MonoHabitHost,
+  enabled = appPolicy().habits,
+) {
   const hostRef = useRef(host);
   hostRef.current = host;
 

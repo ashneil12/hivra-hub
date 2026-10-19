@@ -656,6 +656,7 @@ import {
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
+import { appPolicy } from "./model/appIdentity";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
   dropRelays,
@@ -10546,7 +10547,8 @@ function Workspace({
     .join("\n");
 
   useEffect(() => {
-    if (!autoContinueKey) return;
+    // A dev copy shows a cut-off chat as interrupted but never continues it on its own.
+    if (!autoContinueKey || !appPolicy().autoResume) return;
     const ids = autoContinueKey.split("\n");
     // Delay past React StrictMode's dev remount so Continue is not claimed
     // against a discarded tree (sessionStorage also survives Vite reloads).

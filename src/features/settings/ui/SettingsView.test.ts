@@ -126,6 +126,36 @@ afterEach(async () => {
 });
 
 describe("settings pages", () => {
+  it("shows which build this is in the footer of every page, only inside the app", async () => {
+    await render("general");
+    expect(container.querySelector("[data-build-stamp]")).toBeNull();
+
+    vi.stubGlobal("__MONOCODE_APP__", {
+      product: "MonoCode Hub Dev",
+      version: "0.16.0",
+      identifier: "com.ash.monocode-hub.dev.wt-a",
+      kind: "dev",
+      slot: "wt-a",
+      stamp: {
+        sha: "09141d88a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        branch: "hub/1b-identity",
+        dirty: true,
+        builtAt: "2026-10-19T21:04:05Z",
+      },
+      schemaVersion: 19,
+      policy: {},
+    });
+    for (const section of ["general", "appearance", "skills"] as const) {
+      await render(section);
+      const footer = container.querySelector<HTMLElement>("[data-build-stamp]");
+      expect(footer?.textContent).toContain(
+        "MonoCode Hub Dev 0.16.0 · hub/1b-identity @ 09141d8-dirty · built ",
+      );
+      expect(footer?.textContent).toContain("dev copy wt-a");
+      expect(footer?.title).toContain("com.ash.monocode-hub.dev.wt-a");
+    }
+  });
+
   it("saves each Mono's session visibility and restores it when settings reopen", async () => {
     const mono = createMono();
     const other = createMono();

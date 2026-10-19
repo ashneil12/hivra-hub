@@ -2,6 +2,7 @@ import { allSchemes, applySchemeAccent, loadActiveSchemeId, saveActiveSchemeId, 
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
   loadStripBackdrop,
@@ -704,6 +705,24 @@ export function SettingsView({
           </div>
         </RevealedSetting.Provider>
       )}
+      <BuildStampFooter />
+    </div>
+  );
+}
+
+/**
+ * Which build this is, on every Settings page: product, version, branch @ commit, when it was built, and whether it
+ * is the daily app or a dev copy (src-tauri/src/instance.rs). Nothing outside the app.
+ */
+export function BuildStampFooter({ identity = appIdentity() }) {
+  if (!identity) return null;
+  return (
+    <div
+      data-build-stamp
+      className="shrink-0 select-text truncate border-t border-stroke px-5 py-1.5 font-mono text-[11px] text-content/40"
+      title={`${identity.identifier} · ${identity.stamp.sha}`}
+    >
+      {buildLine(identity)}
     </div>
   );
 }

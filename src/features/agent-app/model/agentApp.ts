@@ -75,6 +75,7 @@ import {
   supersedeMemoryEntry,
   topicName,
 } from "../../monos/model/monoMemory";
+import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
 
 export type AppSessionListing = {
   id: string;
@@ -166,9 +167,12 @@ export type AgentAppHost = {
   ): Promise<string>;
   /** The clock entries are dated by; tests pin it. */
   now?(): Date;
+  /** This app's identity and build stamp; defaults to what the app injected into the window. */
+  identity?(): AppIdentity | null;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
+  ["app.version", []],
   ["models.list", []],
   ["sessions.list", ["project"]],
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
@@ -972,6 +976,15 @@ export async function handleAgentApp(
     };
   }
   switch (action) {
+    case "app.version": {
+      // Which app this is and the build it runs (src-tauri/src/instance.rs).
+      const identity: AppIdentity | null = host.identity
+        ? host.identity()
+        : appIdentity();
+      if (!identity)
+        throw new Error("This build doesn't report its identity");
+      return identity;
+    }
     case "models.list":
       return {
         runtimeModes: RUNTIME_MODES.map((id) => ({

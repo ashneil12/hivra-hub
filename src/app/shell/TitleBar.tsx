@@ -67,6 +67,7 @@ import {
   APP_VIEW_LABELS,
   type AppView,
 } from "../../features/workspace/model/appViewTabs";
+import { windowTitleSuffix } from "../model/appIdentity";
 
 const APP_VIEW_ICONS = {
   search: Search,
@@ -908,13 +909,15 @@ function TitleBarComponent({
             : activeTab.project
       : "";
     const project = cwd ? basename(cwd) : "";
+    // A dev copy's windows end in "MonoCode Hub Dev - <branch> @ <sha>".
+    const app = windowTitleSuffix();
     if (activeName && project && activeName !== project) {
-      return `${activeName} — ${project} — MonoCode`;
+      return `${activeName} — ${project} — ${app}`;
     }
     if (project) {
-      return `${project} — MonoCode`;
+      return `${project} — ${app}`;
     }
-    return "MonoCode";
+    return app;
   }, [activeTab, cwd]);
 
   useEffect(() => {
