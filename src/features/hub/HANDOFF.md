@@ -229,10 +229,11 @@ pressed them on Ash's real data.
 1. Ash OS must be running a build with the hub calls (branch `ash-os-hub-core`
    landed). Until then the running service answers "Unknown hub action" and the
    app shows the "isn't running" panel.
-2. `npm run hub:dev` for the live-reloading dev app, or the built app. Nothing to configure: the plugin finds
-   the key itself. To aim the plugin at another local port or key file (for
-   example the stub started with `--token-file`): `MONOCODE_HUB_PORT` and
-   `MONOCODE_HUB_TOKEN_FILE`. The host is always 127.0.0.1.
+2. The daily app finds the key itself. A dev copy never gets it (src-tauri/src/hub.rs):
+   `npm run hub:dev -- --hub live` starts the read-only proxy in-process on a free port with a throwaway
+   token for the dev copy, and `npm run hub:dev` (`--hub stub`) the stub. To aim the plugin at another
+   local port or key file yourself: `MONOCODE_HUB_PORT` and `MONOCODE_HUB_TOKEN_FILE`. The host is always
+   127.0.0.1.
 
 ### Tests
 `npm test` (vitest): `model/hubStore.test.ts` (store against the stub over real

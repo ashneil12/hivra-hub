@@ -136,11 +136,33 @@ Never hand-build and re-install the app just to look at a frontend change. On th
 is served from vite, so HMR applies it where it stands:
 
 ```bash
-npm run hub:dev      # a dev copy (tauri dev): vite on :1420 + HMR, the app in a real window, its own data
+npm run hub:dev                   # this worktree's dev copy (tauri dev + HMR) in its own slot, invented Ash OS data
+npm run hub:dev -- --hub live     # the same, reading the real Ash OS through the read-only proxy
+npm run hub:dev -- --seed         # first copy a cleaned backup of the daily chats into the slot (opt-in)
+npm run hub:dev -- --print        # which slot, port and config it would use; changes nothing
+npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
 ```
 
-Until per-worktree dev slots land (Phase 1b WP2), `hub:dev` runs one shared dev copy,
-`com.ash.monocode-hub.dev.default`, so only one worktree can run it at a time. It never opens the daily data.
+**Dev slots (`scripts/hub-dev.mjs`).** Every worktree runs its own dev copy, side by side with the others and with the
+daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a DEV ribbon.
+- **Slot:** the worktree folder's name (`~/Worktrees/hub-x` → `hub-x`; `--slot hub/x` → `hub-x`). If a different
+  worktree that still exists already has that name, a 4-character hash of this worktree's path is added. Remembered in
+  `~/.monocode-hub-dev/slots.json`. The identifier is `com.ash.monocode-hub.dev.<slot>`, so the slot has its own data
+  folder, WebKit storage and Dock entry (`MonoCode Hub Dev <slot>`); the daily identifier is never generated.
+- **Port:** 1430 + 10 × (hash of the slot mod 50), the next free one in that grid if taken; never 1420. The generated
+  `target/hub-dev/<slot>.conf.json` sets `devUrl` and `devCsp` (the base devCsp only allows 1420) and hands vite the
+  port through `MONOCODE_VITE_PORT` in its own command.
+- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
+  by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
+- **Ash OS:** the dev copy only talks to a server hub:dev starts on a free port: the stub (`--hub stub`, the default,
+  invented data), the read-only live proxy (`--hub live`), or nothing (`--hub off`). Its token is a throwaway in
+  `~/.monocode-hub-dev/slots/<slot>/`, never the live key.
+- **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
+  read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
+  automations, reminders, orchestration rows and every `provider_session_id` are cleared. It refuses the daily folder,
+  a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
+  newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
+- One copy per slot: starting a slot that is already running says so and exits 75.
 
 - **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
 - **Rust change** (`src-tauri/**`): `tauri dev` recompiles and relaunches the app by itself; the window
