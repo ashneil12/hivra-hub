@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The four project Leads, made on the Hub bundle's first run: roster entries, souls and files, identity, folder.
+// The four project Leads (EXO, Hivra, Nibbii, MonoCode Hub), made on the Hub bundle's first run: roster entries, souls and files, identity, folder.
 // No agent session is started and no model is called: the Mono files are written by a stand-in for the Rust
 // `mono_load` / `mono_save` commands into a real temporary app-data folder, with the same layout (monos/<id>/...).
 import fs from "node:fs";
@@ -27,20 +27,23 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
-import { listMonos, saveMonoName, removeMono } from "../../monos/model/mono";
+import { addMono, listMonos, saveMonoName, removeMono } from "../../monos/model/mono";
 import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
-import { ensureProjectLeads, LEADS, leadMcpArgs, leadSoul, leadWorkingFolder } from "./hubLeads";
+import { defaultSoul } from "../../monos/model/monoFiles";
+import { ensureProjectLeads, leadFor, LEADS, leadMcpArgs, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
 import type { HubProject } from "./types";
 
-// What the live service returned for the four projects on 15 Oct.
+// The four projects (what the live service returned on 15 Oct, with the harness now the project `hub`, 19 Oct).
 const PROJECTS: HubProject[] = [
   { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/Projects/boxin game?/vg-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/Projects/Hivra-public-canary" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/Projects/nibbii" },
-  { id: "ash", name: "Harness", shortName: "Harness", iconShape: "gauge", folder: "/Users/ash/Projects/exo-cc-studio" },
+  { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/Users/ash/Projects/monocode-hub" },
 ];
+/** The old harness project, now Ash's global memory: it must never get a Lead even if Ash OS still sends it. */
+const GLOBAL_ASH: HubProject = { id: "ash", name: "Harness", shortName: "Harness", iconShape: "gauge", folder: "/Users/ash/Projects/exo-cc-studio" };
 
 beforeEach(() => localStorage.clear());
 
@@ -48,16 +51,16 @@ describe("the project Leads", () => {
   it("are made once each, named '<Project> lead', tied to their project's folder, and registered as the Lead in Ash OS", () => {
     const register = vi.fn(async () => undefined);
     const first = ensureProjectLeads(PROJECTS, register);
-    expect(first.created).toEqual(["vg-game-lead", "hivra-lead", "nibbii-lead", "ash-lead"]);
+    expect(first.created).toEqual(["vg-game-lead", "hivra-lead", "nibbii-lead", "hub-lead"]);
     const roster = listMonos();
     expect(roster.map((m) => [m.id, m.name, m.projects])).toEqual([
       ["vg-game-lead", "EXO lead", ["/Users/ash/Projects/boxin game?/vg-game"]],
       ["hivra-lead", "Hivra lead", ["/Users/ash/Projects/Hivra-public-canary"]],
       ["nibbii-lead", "Nibbii lead", ["/Users/ash/Projects/nibbii"]],
-      ["ash-lead", "Harness lead", ["/Users/ash/Projects/exo-cc-studio"]],
+      ["hub-lead", "MonoCode Hub lead", ["/Users/ash/Projects/monocode-hub"]],
     ]);
     expect(new Set(roster.map((m) => m.mascot)).size).toBe(4);
-    expect(register.mock.calls).toEqual([["vg-game-lead", "vg-game"], ["hivra-lead", "hivra"], ["nibbii-lead", "nibbii"], ["ash-lead", "ash"]]);
+    expect(register.mock.calls).toEqual([["vg-game-lead", "vg-game"], ["hivra-lead", "hivra"], ["nibbii-lead", "nibbii"], ["hub-lead", "hub"]]);
     // idempotent: nothing is made twice
     expect(ensureProjectLeads(PROJECTS).created).toEqual([]);
     expect(listMonos()).toHaveLength(4);
@@ -68,7 +71,7 @@ describe("the project Leads", () => {
     saveMonoName("hivra-lead", "Hivra boss");
     const moved = PROJECTS.map((p) => (p.id === "nibbii" ? { ...p, folder: "/Users/ash/Projects/nibbii-2" } : p));
     const again = ensureProjectLeads(moved);
-    expect(again).toEqual({ created: [], tied: ["nibbii-lead"] });
+    expect(again).toEqual({ created: [], tied: ["nibbii-lead"], adopted: [] });
     expect(listMonos().find((m) => m.id === "hivra-lead")?.name).toBe("Hivra boss");
     expect(listMonos().find((m) => m.id === "nibbii-lead")?.projects).toEqual(["/Users/ash/Projects/nibbii", "/Users/ash/Projects/nibbii-2"]);
   });
@@ -115,7 +118,7 @@ describe("the project Leads", () => {
       "working in /Users/ash/Projects/boxin game?/vg-game",
     ])
       expect(soul).toContain(phrase);
-    expect(leadSoul(LEADS[3], "/x")).toMatch(/^You are Harness lead, the lead for the harness \(Ash OS project `ash`\), working in \/x\./);
+    expect(leadSoul(LEADS[3], "/x")).toMatch(/^You are MonoCode Hub lead, the lead for MonoCode Hub \(Ash OS project `hub`\), working in \/x\./);
   });
 
   it("get their SOUL.md and MEMORY.md written into the app-data folder (monos/<id>/)", async () => {
@@ -143,4 +146,75 @@ it("does not recreate a project Lead that Ash deleted", () => {
   const result = ensureProjectLeads(PROJECTS);
   expect(result.created).not.toContain("hivra-lead");
   expect(listMonos().some((m) => m.id === "hivra-lead")).toBe(false);
+});
+
+describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)", () => {
+  const HARNESS_LEAD = { id: "ash-lead", name: "Harness lead", mascot: "robot", color: "x", projects: ["/Users/ash/Projects/exo-cc-studio"], sessionId: "s-harness-chat" };
+
+  it("the global `ash` memory never gets a Lead, whatever Ash OS sends", () => {
+    const result = ensureProjectLeads([GLOBAL_ASH]);
+    expect(result).toEqual({ created: [], tied: [], adopted: [] });
+    expect(listMonos()).toEqual([]);
+    ensureProjectLeads([...PROJECTS, GLOBAL_ASH]);
+    expect(listMonos().map((m) => m.id)).toEqual(["vg-game-lead", "hivra-lead", "nibbii-lead", "hub-lead"]);
+  });
+
+  it("an existing Harness lead becomes it in place: same id and chat, new name, the hub's folder first, old binding dropped in Ash OS", () => {
+    addMono(HARNESS_LEAD);
+    const register = vi.fn(async () => undefined);
+    const unregister = vi.fn(async () => undefined);
+    const result = ensureProjectLeads(PROJECTS, register, unregister);
+    expect(result.adopted).toEqual(["ash-lead"]);
+    expect(result.created).not.toContain("hub-lead");
+    const lead = listMonos().find((m) => m.id === "ash-lead")!;
+    expect(lead).toMatchObject({ name: "MonoCode Hub lead", sessionId: "s-harness-chat" });
+    expect(lead.projects).toEqual(["/Users/ash/Projects/monocode-hub", "/Users/ash/Projects/exo-cc-studio"]);
+    expect(listMonos().some((m) => m.id === "hub-lead")).toBe(false);
+    expect(register).toHaveBeenCalledWith("ash-lead", "hub");
+    expect(unregister.mock.calls).toEqual([["ash-lead", "ash"]]);
+    expect(leadFor("ash-lead")?.projectId).toBe("hub");
+    expect(leadWorkingFolder("ash-lead")).toBe("/Users/ash/Projects/monocode-hub");
+    // it acts in Ash OS under the id Ash OS already knows
+    expect(JSON.parse(leadMcpArgs("ash-lead", { command: "x" })[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead" });
+    // once: a second launch changes nothing and makes no second Lead
+    expect(ensureProjectLeads(PROJECTS, register, unregister)).toEqual({ created: [], tied: [], adopted: [] });
+    expect(unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a name Ash gave the old seat", () => {
+    addMono({ ...HARNESS_LEAD, name: "Harness boss" });
+    ensureProjectLeads(PROJECTS);
+    expect(listMonos().find((m) => m.id === "ash-lead")?.name).toBe("Harness boss");
+  });
+
+  it("is not made when Ash removed the Harness lead", () => {
+    addMono(HARNESS_LEAD);
+    removeMono("ash-lead");
+    expect(ensureProjectLeads(PROJECTS).created).not.toContain("hub-lead");
+    expect(listMonos().some((m) => m.id === "hub-lead" || m.id === "ash-lead")).toBe(false);
+  });
+
+  it("gets the new soul over the generated Harness-lead one, keeping the old text as a note; a soul Ash rewrote stays", async () => {
+    const files = new Map<string, string>([["ash-lead/SOUL.md", defaultSoul("You are Harness lead, the lead for the harness (Ash OS project `ash`), working in /x.")]]);
+    const read = async (id: string, p: string) => ({ text: files.get(`${id}/${p}`) ?? null, hash: files.get(`${id}/${p}`) ?? "" });
+    const write = async (id: string, p: string, text: string) => void files.set(`${id}/${p}`, text);
+    addMono(HARNESS_LEAD);
+    ensureProjectLeads(PROJECTS);
+    expect(await reseedAdoptedLeadSoul("ash-lead", "/Users/ash/Projects/monocode-hub", defaultSoul, read, write)).toBe(true);
+    const soul = files.get("ash-lead/SOUL.md")!;
+    expect(soul).toContain("You are MonoCode Hub lead, the lead for MonoCode Hub (Ash OS project `hub`), working in /Users/ash/Projects/monocode-hub.");
+    for (const rule of ["Never edit the main checkout directly", "`npm run hub:dev`", "`npm run hub:check-all && npm run hub:build && npm run hub:ship`", "Start-ack", "ASH_MONO_ID=ash-lead"])
+      expect(soul).toContain(rule);
+    expect(files.get("ash-lead/memory/harness-lead-soul.md")).toContain("You are Harness lead");
+    files.set("ash-lead/SOUL.md", "# Soul\n\nAsh's own words.\n");
+    expect(await reseedAdoptedLeadSoul("ash-lead", "/x", defaultSoul, read, write)).toBe(false);
+    expect(files.get("ash-lead/SOUL.md")).toBe("# Soul\n\nAsh's own words.\n");
+    expect(await reseedAdoptedLeadSoul("hivra-lead", "/x", defaultSoul, read, write)).toBe(false);
+  });
+
+  it("only the hub Lead's soul carries the hub-from-inside-the-hub rules", () => {
+    expect(leadSoul(LEADS[3], "/r")).toContain("Developing the hub from inside the hub");
+    expect(leadSoul(LEADS[1], "/r")).not.toContain("Developing the hub from inside the hub");
+    expect(leadSoul(LEADS[1], "/r")).toContain("Hold the line on RED");
+  });
 });
