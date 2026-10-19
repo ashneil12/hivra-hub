@@ -72,20 +72,24 @@ const ship = () => {
   const dir = path.join(data, "ship", current.id);
   return { dir, state: read(path.join(dir, "state.json")) };
 };
-if (["commit", "no-commit", "crash"].includes(fake.behavior))
-  fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
-if (fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
+// On its own trial, the new build migrates the database (so a rollback has something to undo).
+const first = ship();
+const onTrial = first?.state?.phase === "trial" && first.state.to.sha === fake.sha;
+if (onTrial) fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
+if (onTrial && fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
 setInterval(() => {
   const now = ship();
   if (!now?.state) return;
   const { dir, state } = now;
-  if (fake.behavior === "old" && ["staged", "waiting"].includes(state.phase) && state.to.sha !== fake.sha) {
+  const staged = ["staged", "waiting"].includes(state.phase) && state.to.sha !== fake.sha;
+  // Like the app: refuse a build it can't vouch for, or accept it and quit for it.
+  if (staged && fake.behavior === "refuse" && !fs.existsSync(path.join(dir, "refused.json")))
+    fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
+  else if (staged && fake.behavior !== "refuse") {
     fs.writeFileSync(path.join(dir, "accepted.json"), JSON.stringify({ pid: process.pid, bridge: "down" }));
     process.exit(0);
   }
-  if (fake.behavior === "refuse" && ["staged", "waiting"].includes(state.phase) && !fs.existsSync(path.join(dir, "refused.json")))
-    fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
-  if (fake.behavior === "commit" && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
+  if (["commit", "old"].includes(fake.behavior) && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
     fs.writeFileSync(path.join(dir, "committed.json"), JSON.stringify({ sha: fake.sha, pid: process.pid }));
 }, 100);
 `;
@@ -390,6 +394,40 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
   }
+});
+
+test("hub:rollback puts back the build a committed ship replaced, with that ship's database copy", async () => {
+  const w = world();
+  const shipped = ship(w);
+  await until("the commit", settled(shipped.answer.shipDir, "committed"));
+  remember(shipped.answer.shipDir);
+  // The new build has run for a while: the live database moved on since the ship's copy.
+  fs.appendFileSync(path.join(w.data, "monocode.db"), "a newer chat");
+  const newer = sha256File(path.join(w.data, "monocode.db"));
+  const rollback = (args) =>
+    spawnSync(
+      NODE,
+      ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-rollback.mjs"), shipped.answer.id, "--json", "--launcher", "spawn", ...args],
+      { env: w.env, encoding: "utf8" },
+    );
+  const asked = rollback([]);
+  assert.equal(asked.status, 1);
+  assert.match(JSON.parse(asked.stdout.trim()).summary, /Chats since then leave the live database/);
+  const done = rollback(["--confirm"]);
+  assert.equal(done.status, 0, done.stderr);
+  const answer = JSON.parse(done.stdout.trim());
+  const state = await until("the rollback's commit", settled(answer.shipDir, "committed"));
+  remember(answer.shipDir);
+  assert.equal(state.kind, "rollback");
+  assert.equal(stampOf(w.app).sha, SHA_A, "the replaced build is back");
+  assert.equal(stampOf(path.join(answer.shipDir, "previous.app.off")).sha, w.sha);
+  // The ship's copy went back in byte for byte (the old build has opened it since).
+  assert.equal(state.db.replacedWith["monocode.db"], w.before.db, "the database is the ship's copy again");
+  assert.equal(state.db.replacedWith["monocode.db-wal"], w.before.wal);
+  assert.equal(sha256File(path.join(answer.shipDir, "backup/monocode.db")), newer, "and the newer one is kept");
+  assert.equal(state.launch.env.HOME, w.home, "opened the same way as the ship it undoes");
+  // A committed ship can't be rolled back twice.
+  assert.equal(rollback(["--confirm"]).status, 1);
 });
 
 test("hub:install (--legacy) keeps the old app instead of deleting it", () => {

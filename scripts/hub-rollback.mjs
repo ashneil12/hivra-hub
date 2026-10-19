@@ -84,6 +84,9 @@ export async function main(argv = process.argv.slice(2)) {
     requestedBy: { via: "hub:rollback", sessionId: null, rollsBack: id },
     restoreDb: plan.backup,
     restoreDbHashes: plan.ship.db?.backup ?? null,
+    // The same way of opening the app as the ship it undoes (a drill's temporary HOME and stub bridge).
+    launchMode: plan.ship.launch?.mode,
+    launchEnv: plan.ship.launch?.env ?? {},
     launcher,
     idSuffix: "-rollback",
   });
