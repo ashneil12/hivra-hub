@@ -1,14 +1,30 @@
 // A clean first launch (and every new project) starts with the default team:
 // Chief of Staff, Projects Manager, frank, Alfred. Critiquito is only an
 // add-on offer. Everything else comes via a setup file.
+import { TEAM_SOULS } from "./teamSouls";
+
 const ROSTER_KEY = "monocode:mono-roster";
 
-const BUILT_IN = [
-  { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] as string[] },
-  { id: "projects-manager", name: "Projects Manager", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] as string[] },
-  { id: "frank", name: "frank", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] as string[] },
-  { id: "alfred", name: "Alfred", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] as string[] },
+/**
+ * One leadership-team Mono. `engine` is the coding engine its chat starts on (Ash, 19 Oct: the team runs on Claude
+ * Code; noted per Mono so one can move to another engine later). Its soul is seeded once (teamSouls.ts).
+ */
+export type TeamSpec = { id: string; name: string; engine: "claude"; addon?: true };
+
+const LOOK = { mascot: "robot", color: "hsl(210 8% 58%)" };
+const BUILT_IN: readonly TeamSpec[] = [
+  { id: "chief-of-staff", name: "Chief of Staff", engine: "claude" },
+  { id: "projects-manager", name: "Projects Manager", engine: "claude" },
+  { id: "frank", name: "frank", engine: "claude" },
+  { id: "alfred", name: "Alfred", engine: "claude" },
 ];
+/** Add-ons: offered, never added unless Ash says yes. */
+export const TEAM_ADDONS: readonly TeamSpec[] = [{ id: "critiquito", name: "Critiquito", engine: "claude", addon: true }];
+
+/** The roster entry a team Mono starts as: its soul rides in `instructions` until SOUL.md is first written. */
+export function teamRosterEntry(spec: TeamSpec, projects: string[] = []) {
+  return { id: spec.id, name: spec.name, ...LOOK, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
+}
 
 /** Set by the first version of this step, which only seeded an empty roster. */
 const SEEDED_KEY = "monocode:mono-team-seeded";
@@ -35,6 +51,11 @@ function writeRemoved(set: Set<string>): void {
 /** The default-team id a Mono stands for (matched by id or name), or undefined for anyone else. */
 export function teamIdOf(m: { id?: unknown; name?: unknown }): string | undefined {
   return BUILT_IN.find((b) => norm(m.id) === b.id || norm(m.name) === norm(b.name))?.id;
+}
+
+/** The team spec (default four or an add-on) a Mono stands for, by id or name. */
+export function teamSpecOf(m: { id?: unknown; name?: unknown }): TeamSpec | undefined {
+  return [...BUILT_IN, ...TEAM_ADDONS].find((b) => norm(m.id) === b.id || norm(m.name) === norm(b.name));
 }
 
 /** Call when Ash removes or retires a Mono. Team Monos are recorded so the repair never brings them back. */
@@ -86,7 +107,7 @@ export function ensureBuiltInMonos(): number {
     const present = new Set(list.map(teamIdOf).filter(Boolean));
     const missing = BUILT_IN.filter((m) => !present.has(m.id) && !removed.has(m.id));
     if (!missing.length) return 0;
-    localStorage.setItem(ROSTER_KEY, JSON.stringify([...missing.map((m) => ({ ...m, projects: [] as string[] })), ...list]));
+    localStorage.setItem(ROSTER_KEY, JSON.stringify([...missing.map((m) => teamRosterEntry(m)), ...list]));
     window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
     return missing.length;
   } catch {
@@ -99,6 +120,7 @@ export function isDefaultTeamMono(m: { id?: unknown; name?: unknown }): boolean 
   return BUILT_IN.some((b) => norm(m.id) === b.id || norm(m.name) === norm(b.name));
 }
 
-export const DEFAULT_TEAM = ["Chief of Staff", "Projects Manager", "frank", "Alfred"];
-/** Offered once in New project; never added unless Ash says yes. */
-export const ADDON_OFFER = { name: "Critiquito", what: "reviews plans and work before they ship" };
+export const DEFAULT_TEAM = BUILT_IN.map((m) => m.name);
+export const DEFAULT_TEAM_IDS = BUILT_IN.map((m) => m.id);
+/** Offered once in New project; never added unless Ash says yes. Its lane is ranked design critique of screens. */
+export const ADDON_OFFER = { id: "critiquito", name: "Critiquito", what: "reviews how each screen looks and reads, and ranks the fixes" };

@@ -1,4 +1,4 @@
-import { setGroupChatRunner } from "../features/hub/model/hubChats";
+import { MonoBusyError, setGroupChatRunner, setRoomRouter } from "../features/hub/model/hubChats";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
@@ -63,7 +63,7 @@ import {
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
   orchestrator,
-  shellPath,
+  appCliCommand,
   workspaceIdentity,
   type ControlOutcome,
 } from "../features/orchestration/model/orchestration";
@@ -372,6 +372,7 @@ import {
   respondHarnessQuestion,
   keepHarnessQuestionOpen,
   runHarnessTextPrompt,
+  canRunHarnessTextPrompt,
   sendHarnessTurn,
   steerHarnessTurn,
   startHarnessBridge,
@@ -8513,7 +8514,7 @@ function Workspace({
             appContext.push(monoContext(agentLook, agentFiles, agentPlan));
           }
           if (operatorCommand.matched || handAgent) {
-            const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
+            const cli = appCliCommand(await invoke<string | null>("app_cli_path"));
             appContext.push(
               `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start sessions, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. Sessions you start appear in the user's sidebar under this session without opening; the user opens them when they want. Only set placement right or down, or reveal:true, when the user asks to see a session open or side by side. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`,
             );
@@ -9296,7 +9297,7 @@ function Workspace({
       },
     });
     if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
-    if (session.busy) throw new Error("This Mono is already working. Wait for it to finish before trying again.");
+    if (session.busy) throw new MonoBusyError("This Mono is already working. Wait for it to finish before trying again.");
     return new Promise<string>((resolve, reject) => {
       const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
       void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
@@ -9311,6 +9312,13 @@ function Workspace({
         if (!accepted) { window.clearTimeout(timer); reject(new Error("The Mono could not accept this message. Your message is saved.")); }
       }).catch((error: unknown) => { window.clearTimeout(timer); reject(error); });
     });
+  }), []);
+
+  // The room's cheap router (who answers, who may chime in): one isolated, read-only prompt to the smallest model (the
+  // Claude text child picks Haiku). When Claude can't run one, the room falls back to its lane rules.
+  useEffect(() => setRoomRouter(async (prompt) => {
+    if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
+    return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: 20_000 });
   }), []);
 
   const appReceipts = useRef(

@@ -378,6 +378,13 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&instance::dev_window_title(&instance::stamp()));
                 }
+                // An agent testing a dev copy must not pull a window in front of Ash (19 Oct: "this spams a lot"):
+                // `hub:dev --background` (the default when no terminal is attached) runs it as an accessory app, which
+                // never activates itself or takes focus. Screenshots by window id still work.
+                #[cfg(target_os = "macos")]
+                if std::env::var("MONOCODE_HUB_BACKGROUND").as_deref() == Ok("1") {
+                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
             }
             Ok(())
         })

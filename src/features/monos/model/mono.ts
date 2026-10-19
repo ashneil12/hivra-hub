@@ -51,6 +51,8 @@ export type Mono = {
   useSidebarFolders?: boolean;
   /** Superseded by SOUL.md; only read once, to seed it. */
   instructions?: string;
+  /** The coding engine (harness id) its conversation starts on; absent means the app's default. */
+  engine?: string;
   /**
    * From when each project had its own Mono: the project whose agent folder
    * it inherits. The folder moves under its id the first time it is read.
@@ -159,6 +161,7 @@ function parseMono(value: unknown): Mono | undefined {
   const sessionId = text("sessionId");
   const name = text("name");
   const instructions = text("instructions");
+  const engine = text("engine");
   const legacyProject = text("legacyProject");
   return {
     id: entry.id,
@@ -177,6 +180,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
+    ...(engine ? { engine } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
 }
