@@ -1,3 +1,5 @@
+import { ContextMeter } from "../../sessions/ui/ContextMeter";
+import type { ContextUsage } from "../../sessions/model/contextUsage";
 import {
   lazy,
   Suspense,
@@ -52,6 +54,9 @@ type Props = {
   sessionId: string;
   name: string;
   enabled?: boolean;
+  showContext?: boolean;
+  context?: ContextUsage;
+  contextEmpty?: boolean;
   focusToken?: number;
   quoteRequest?: QuoteRequest;
   onQuoteRequestConsumed?: (id: number) => void;
@@ -91,6 +96,9 @@ export function MonoComposer({
   onFocus,
   controls,
   tools,
+  showContext = false,
+  context,
+  contextEmpty = false,
 }: Props) {
   const [text, setText] = useState(() => getComposerDraft(sessionId) ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -444,6 +452,7 @@ export function MonoComposer({
           </div>
         )}
       </div>
+      {inline && showContext ? <div className="flex justify-end px-1.5 pt-1"><ContextMeter usage={context} empty={contextEmpty} /></div> : null}
       {inline ? null : (
         // The right inset matches the box's border and padding, so the last
         // control lines up under send. A container, so the tools and controls
@@ -477,6 +486,7 @@ export function MonoComposer({
           {tools}
           <div className="ml-auto flex min-w-0 items-center gap-1">
             {controls}
+            {showContext ? <ContextMeter usage={context} empty={contextEmpty} /> : null}
           </div>
         </div>
       )}

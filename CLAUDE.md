@@ -147,3 +147,22 @@ codesign -d -r- "$HOME/Applications/MonoCode Hub.app"   # must NOT print a bare 
 
 Upstream CI passes its own `signingIdentity` through `tauri.release.conf.json`, so this does not change
 packaged release builds.
+
+
+## Improvement loop and isolated test copy
+
+For a reported bug, record the failure before changing it and keep every ask in a checklist. Work through:
+**Reproduced → Changed → Checks passed → Delivered → Verified in app**.
+A successful agent turn is not verification. Give exact check results and the app/revision exercised. If the native
+window, provider or service cannot be exercised, report that gap and keep that acceptance step open.
+
+`npm run hub:test-copy:build` creates **MonoCode Test.app**, identifier `com.ash.monocode-hub.sandbox`, compiled with
+`test-copy`. `npm run hub:test-copy:verify` checks the bundle identity. It has its own app-data directory, Mono files,
+webview storage and model-key service. Its live harness bridge is disabled and it never reaps daily-app processes.
+The test feature and identity must match or startup refuses before touching app data. This is a **release build**;
+its debug relaunch is intentionally refused because that path belongs to the daily app. Do not copy the daily database
+or keys into it. Do not use `hub:install` for it. Open the verified bundle directly, or copy it beside the daily app
+under its own name. Test sessions still use the installed agent CLIs; use a test worktree and avoid real external actions.
+
+The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
+and controlled integration paths only; they do not prove a live provider, authentication or native release.

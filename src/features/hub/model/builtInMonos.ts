@@ -41,9 +41,8 @@ export function teamIdOf(m: { id?: unknown; name?: unknown }): string | undefine
 export function markMonoRemovedByUser(id: string, name?: string): void {
   try {
     const team = teamIdOf({ id, name });
-    if (!team) return;
     const set = readRemoved();
-    set.add(team);
+    set.add(team ?? norm(id));
     writeRemoved(set);
   } catch {
     /* storage unavailable: nothing to record */
@@ -54,9 +53,8 @@ export function markMonoRemovedByUser(id: string, name?: string): void {
 export function clearMonoRemovedByUser(id: string, name?: string): void {
   try {
     const team = teamIdOf({ id, name });
-    if (!team) return;
     const set = readRemoved();
-    if (set.delete(team)) writeRemoved(set);
+    if (set.delete(team ?? norm(id))) writeRemoved(set);
   } catch {
     /* storage unavailable */
   }

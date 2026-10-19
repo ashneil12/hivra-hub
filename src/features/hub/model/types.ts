@@ -231,6 +231,10 @@ export type GroupChat = {
   isDefault: boolean;
   memberIds: string[];
   conversations: ChatConversation[];
+  replyPending?: string;
+  replyError?: string;
+  replyConversationId?: string;
+  replyMessageId?: string;
 };
 
 export type BuildStatus = "ready" | "building" | "failed";

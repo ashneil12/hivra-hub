@@ -19,6 +19,10 @@ import {
   CLAUDE_KEY_ERROR,
   CLAUDE_KEY_MESSAGE,
   KEY_FAILED,
+  REASONING_EFFORTS,
+  setCustomModelEfforts,
+  reasoningEfforts,
+  type ReasoningEffort,
   type CustomModel,
   type CustomModelForm,
   type KeyTestResult,
@@ -45,6 +49,7 @@ export function OtherModelsSection({
   const all = useCustomModels();
   // Removing is a big deal (it also deletes the key), so it asks first.
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [editingEffort, setEditingEffort] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const needle = query.trim().toLowerCase();
   const models = needle
@@ -98,6 +103,9 @@ export function OtherModelsSection({
           ×
         </button>
         </div>
+        <button type="button" data-model-reasoning={m.id} onClick={() => setEditingEffort(editingEffort === m.id ? null : m.id)}
+          className="px-2.5 py-0.5 text-[11px] text-content/50 hover:text-content">Reasoning settings</button>
+        {editingEffort === m.id ? <EffortChoices levels={reasoningEfforts(m.reasoningEfforts)} onChange={(levels) => setCustomModelEfforts(m.id, levels)} /> : null}
         {confirming === m.id ? (
           // The title wraps onto as many lines as it needs (never cut off), with the buttons on their own row below.
           <div data-remove-confirm={m.id} className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-content/80">
@@ -183,13 +191,12 @@ export function AddModelForm({
   const [touched, setTouched] = useState(false);
   const [test, setTest] = useState<KeyTestResult | "testing" | null>(null);
   const [saving, setSaving] = useState(false);
-  const [auth, setAuth] = useState<AuthMode>("key");
   const [providerOpen, setProviderOpen] = useState(false);
   const errors = validateCustomModel(form);
   const valid = Object.keys(errors).length === 0;
   const passed = test !== null && test !== "testing" && test.ok;
   const keyed = needsKey(form.provider);
-  const oauth = keyed && auth === "oauth";
+  const oauth = false;
   const set = (patch: Partial<CustomModelForm>) => {
     setForm((f) => ({ ...f, ...patch }));
     setTest(null);
@@ -215,8 +222,6 @@ export function AddModelForm({
     setTest(r);
     return r.ok;
   };
-  const chip = (on: boolean) =>
-    `rounded-md px-2 py-1 text-[12px] ${on ? "bg-selection text-content" : "bg-content/5 text-content/65 hover:bg-content/10"}`;
   return (
     <div
       className="flex flex-col gap-2.5 p-2"
@@ -279,15 +284,10 @@ export function AddModelForm({
         <input className={input} value={form.modelId} placeholder={defaultModelId(form.provider) || "model-name"} aria-label="Model id" onChange={(e) => set({ modelId: e.target.value })} />
         {field("modelId")}
       </label>
-      {keyed ? (
-        <div className="flex flex-col gap-1 text-[11px] text-content/55" role="radiogroup" aria-label="Sign in with">
-          Sign in with
-          <div className="flex gap-1.5">
-            <button type="button" role="radio" aria-checked={auth === "key"} data-auth="key" className={chip(auth === "key")} onClick={() => setAuth("key")}>API key</button>
-            <button type="button" role="radio" aria-checked={auth === "oauth"} data-auth="oauth" className={chip(auth === "oauth")} onClick={() => setAuth("oauth")}>Sign in (OAuth)</button>
-          </div>
-        </div>
-      ) : null}
+      <details className="text-[11px] text-content/60" data-model-efforts>
+        <summary className="cursor-pointer">Reasoning effort (optional)</summary>
+        <EffortChoices levels={reasoningEfforts(form.reasoningEfforts)} onChange={(levels) => set({ reasoningEfforts: levels })} />
+      </details>
       {oauth ? (
         <div data-oauth-not-connected className="rounded-md bg-content/5 px-2.5 py-2 text-[12px] text-content/70">{OAUTH_NOT_CONNECTED}</div>
       ) : keyed ? (
@@ -338,4 +338,13 @@ export function AddModelForm({
       </div>
     </div>
   );
+}
+
+function EffortChoices({ levels, onChange }: { levels: ReasoningEffort[]; onChange: (levels: ReasoningEffort[]) => void }) {
+  return <fieldset className="px-2 py-1 text-[11px] text-content/65" aria-label="Supported reasoning effort levels">
+    <p className="mb-1 leading-4">Enable only levels your model supports. Leave all off for the provider default.</p>
+    <div className="flex flex-wrap gap-x-3 gap-y-1">{REASONING_EFFORTS.map((level) => <label key={level} className="flex items-center gap-1">
+      <input type="checkbox" checked={levels.includes(level)} onChange={(e) => onChange(e.target.checked ? [...levels, level] : levels.filter((v) => v !== level))} />{level}
+    </label>)}</div>
+  </fieldset>;
 }

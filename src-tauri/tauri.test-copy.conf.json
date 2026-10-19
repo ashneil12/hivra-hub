@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MonoCode Test",
+  "identifier": "com.ash.monocode-hub.sandbox",
+  "app": { "windows": [{ "label": "main", "title": "MonoCode Test — isolated" }] },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "targets": ["app"],
+    "macOS": { "signingIdentity": "A25A87DCD13757A0276D5ED0F14BEF07BA89F2E5" }
+  },
+  "plugins": { "updater": { "endpoints": [] } }
+}

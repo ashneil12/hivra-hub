@@ -1,3 +1,4 @@
+import { setGroupChatRunner } from "../features/hub/model/hubChats";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
@@ -864,6 +865,7 @@ type SubmitOptions = ComposerTurnOptions & {
   planBlockId?: string;
   buildTarget?: PlanBuildTarget;
   managed?: boolean;
+  controlTextLimit?: number;
   orchestrationRetry?: OrchestrationProposal;
   appRequestId?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
@@ -7775,7 +7777,7 @@ function Workspace({
         const applyTurnEvent = (event: HarnessEvent) => {
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
-            controlText = (controlText + event.text).slice(-20_000);
+            controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
           if (options?.onSettled && event.type === "message.completed")
             controlText += "\n";
           if (event.type === "session.error")
@@ -8689,6 +8691,36 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+
+  // Group chat uses the same Mono sessions, selected model, tools and settlement signal as a direct conversation.
+  useEffect(() => setGroupChatRunner(async (monoId, prompt, runnerOptions) => {
+    const session = await ensureMonoSession(monoId, {
+      home: homeDir,
+      load: (id) => ensureOpenSessionRef.current(id),
+      create: (path) => newDefaultSession(path),
+      add: (created) => {
+        sessionsRef.current = [...sessionsRef.current, created];
+        setSessions(sessionsRef.current);
+      },
+    });
+    if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
+    if (session.busy) throw new Error("This Mono is already working. Wait for it to finish before trying again.");
+    return new Promise<string>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
+      void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
+        managed: true,
+        controlTextLimit: runnerOptions?.maxReplyChars,
+        onSettled: (outcome) => {
+          window.clearTimeout(timer);
+          if (outcome.status === "completed") resolve(outcome.text);
+          else reject(new Error(outcome.error || "The Mono's turn did not complete. Your group message is saved."));
+        },
+      })).then((accepted) => {
+        if (!accepted) { window.clearTimeout(timer); reject(new Error("The Mono could not accept this message. Your message is saved.")); }
+      }).catch((error: unknown) => { window.clearTimeout(timer); reject(error); });
+    });
+  }), []);
+
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -11704,6 +11736,18 @@ function Workspace({
     });
   }, []);
 
+  useEffect(() => {
+    const open = (event: Event) => {
+      switch ((event as CustomEvent<string>).detail) {
+        case "pages": onOpenPages(); break;
+        case "notes": onOpenNotes(); break;
+        case "automations": onOpenAutomations(); break;
+      }
+    };
+    window.addEventListener("monocode:home-open", open);
+    return () => window.removeEventListener("monocode:home-open", open);
+  }, [onOpenPages, onOpenNotes, onOpenAutomations]);
+
   const onLeaveAutomations = useCallback(() => {
     setAutomationsViewOpen(false);
   }, []);
@@ -12841,7 +12885,7 @@ function Workspace({
     setHubSelection({ project: hubSel.project, item: "inbox" });
   };
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, rank: hubMonoRank } // one global list on every project, not filtered by the selected one
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === "today" ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =

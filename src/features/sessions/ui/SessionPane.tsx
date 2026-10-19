@@ -71,7 +71,6 @@ import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
-import { ContextMeter } from "./ContextMeter";
 import { UsageChips } from "../../../app/shell/UsageFooter";
 import type { RateLimitProvider } from "../../providers/model/rateLimits";
 import { MonoUsageLimitNotice } from "../../monos/ui/MonoUsageLimitNotice";
@@ -1177,6 +1176,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     key={session.id}
                     sessionId={session.id}
                     name={agent.name}
+                    showContext
+                    context={session.context}
+                    contextEmpty={session.blocks.length === 0}
                     enabled={visible}
                     quoteRequest={quoteRequest}
                     onQuoteRequestConsumed={acknowledgeQuote}
@@ -1241,12 +1243,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                             onModelSettingsChange(session.id, settings)
                           }
                         />
-                        {/* A Mono is one long conversation; this is how full
-                            its current thread is. It rotates threads itself,
-                            so there is nothing to compact here. */}
-                        <div className="grid size-6.5 place-items-center rounded-md transition-colors hover:bg-content/8">
-                          <ContextMeter usage={session.context} empty={isEmpty} />
-                        </div>
+
                       </>
                     }
                   />

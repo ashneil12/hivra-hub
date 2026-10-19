@@ -9,15 +9,11 @@ import {
   saveThemeSaturation,
 } from "../../settings/model/appearance";
 import { setStripBackdrop } from "./stripBackdrop";
-import { IS_HUB_BUNDLE } from "./hubBundle";
 
 const KEY = "monocode:hub-onboarded";
 
 export function needsOnboarding(): boolean {
   if (new URLSearchParams(window.location.search).has("onboarding")) return true;
-  // The MonoCode Hub bundle (VITE_MONOCODE_HUB=1, see src-tauri/tauri.hub.conf.json) opens straight on the hub: Ash's
-  // projects come from Ash OS, so there is no setup file to restore and no first project to make.
-  if (IS_HUB_BUNDLE) return false;
   try {
     return localStorage.getItem(KEY) !== "1";
   } catch {

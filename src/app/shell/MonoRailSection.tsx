@@ -8,7 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { ChevronDown, ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
@@ -75,8 +75,9 @@ export function railMonos<M extends { id: string; name?: string; projects: strin
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
-  if (!rank) return list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
-  return list.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
+  const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  if (!rank) return eligible;
+  return eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
 }
 
 /**
@@ -109,6 +110,11 @@ export function MonoRailSection({
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
+  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("monocode:mono-rail-collapsed") === "1"; } catch { return false; } });
+  const toggleCollapsed = () => setCollapsed((value) => {
+    try { localStorage.setItem("monocode:mono-rail-collapsed", value ? "0" : "1"); } catch { /* optional preference */ }
+    return !value;
+  });
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
@@ -136,9 +142,11 @@ export function MonoRailSection({
   return (
     <div className="mb-2 shrink-0" data-mono-rail>
       <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
-        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/50">
-          Monos
-        </span>
+        <button type="button" onClick={toggleCollapsed} aria-expanded={!collapsed} aria-label={collapsed ? "Expand Monos" : "Collapse Monos"}
+          className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-xs leading-5 text-content/50 hover:text-content">
+          <ChevronDown className={`size-3 transition-transform ${collapsed ? "-rotate-90" : ""}`} /> Monos
+          {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
+        </button>
         <button
           type="button"
           title="New mono"
@@ -149,7 +157,7 @@ export function MonoRailSection({
           <Plus className="size-3.5" strokeWidth={1.75} />
         </button>
       </div>
-      {rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
+      {!collapsed && rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
         <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
           <span className="w-full">Monos now go by what they do.</span>
           <button type="button" onClick={() => setRoleNames(false)} className="-ml-1 shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
@@ -160,7 +168,7 @@ export function MonoRailSection({
           </button>
         </div>
       ) : null}
-      {waiting.length ? (
+      {!collapsed && waiting.length ? (
         <div className="mx-2 mb-1.5 flex flex-col gap-px" data-souls-waiting>
           {waiting.map((w) => (
             <div key={w.monoId} className="rounded-md border border-dashed border-content/25 px-2 py-1 text-[13px] leading-tight">
@@ -174,7 +182,7 @@ export function MonoRailSection({
           ))}
         </div>
       ) : null}
-      <div className="flex flex-col gap-px px-2">
+      <div hidden={collapsed} data-mono-rail-list className="max-h-[40vh] overflow-y-auto px-2">
         {monos.map((mono) => {
           const look = monoLook(mono);
           const state = states.get(mono.id) ?? IDLE;

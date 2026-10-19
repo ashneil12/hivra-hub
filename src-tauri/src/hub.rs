@@ -66,6 +66,12 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn from_env() -> Result<Self, HubError> {
+        if cfg!(feature = "test-copy") {
+            return Err(HubError::new(
+                "unreachable",
+                "This test copy is isolated from the live harness service.",
+            ));
+        }
         let port = match std::env::var("MONOCODE_HUB_PORT") {
             Ok(raw) => raw
                 .trim()
@@ -527,6 +533,9 @@ pub fn ash_os_server_from(config: &Value) -> Option<Value> {
 /// `hub_ash_os_mcp()`: Ash's ash-os MCP entry, or null when Claude Code has none.
 #[tauri::command]
 fn hub_ash_os_mcp() -> Option<Value> {
+    if cfg!(feature = "test-copy") {
+        return None;
+    }
     let home = std::env::var_os("HOME")?;
     let raw = std::fs::read_to_string(PathBuf::from(home).join(".claude.json")).ok()?;
     let config: Value = serde_json::from_str(&raw).ok()?;

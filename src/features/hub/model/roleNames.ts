@@ -22,7 +22,7 @@ function choice(): Choice {
 }
 /** Role names are the default; "Keep current names" turns them off. */
 export function roleNamesOn(): boolean {
-  return choice() !== "names";
+  return choice() === "roles";
 }
 /** True until Ash picks, so the list can offer "Keep current names" once. */
 export function roleNamesUndecided(): boolean {

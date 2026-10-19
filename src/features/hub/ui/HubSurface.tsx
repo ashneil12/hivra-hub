@@ -87,6 +87,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   const [sheet, setSheet] = useState<SheetFor | null>(null);
+  const [query, setQuery] = useState("");
+  const [shown, setShown] = useState(25);
   const data = hubData();
   const connection = data.connection();
   if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
@@ -99,6 +101,17 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
+      {!projectId ? <HomeTools /> : null}
+      {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
+        {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
+          <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="hover:text-content">{data.listNeeds(p.id).filter((n) => n.state !== "done").length} {data.listNeeds(p.id).filter((n) => n.state !== "done").length === 1 ? "need" : "needs"}</button>
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
+          </div>
+        </div>)}
+      </section> : null}
       <section>
         {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{sinceLabel(sinceAt)}</h2> : null}
         {since.pending ? (
@@ -119,11 +132,24 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </div>
         </section>
       ) : null}
-      {projects.map((p) => {
+      <label className="flex flex-col gap-1 text-[12px] text-content/60">
+        Find an ask, including Later and Older
+        <input type="search" aria-label="Search asks" value={query} onChange={(e) => { setQuery(e.target.value); setShown(25); }} placeholder="Search by words or project…" className="rounded-md border border-stroke bg-content/3 px-3 py-2 text-[13px] text-content outline-none focus:border-content/30" />
+      </label>
+      {query.trim() ? <section data-hub-search-results className="flex flex-col">
+        {(() => {
+          const needle = query.trim().toLowerCase();
+          const matches = [...data.listNeeds(projectId), ...(data.listOlder?.(projectId) ?? [])].filter((n) =>
+            `${n.title} ${n.why} ${n.detail ?? ""} ${projects.find((p) => p.id === n.projectId)?.name ?? ""}`.toLowerCase().includes(needle));
+          return <><p className="mb-2 text-xs text-content/50">{matches.length} matching asks</p>
+            {matches.slice(0, shown).map((n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />)}
+            {matches.length > shown ? <button type="button" onClick={() => setShown((n) => n + 25)} className="mt-2 self-start rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/70">Show 25 more</button> : null}</>;
+        })()}
+      </section> : projects.map((p) => {
         const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
         const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
         const pOther = waiting.filter((w) => w.projectId === p.id && !w.state && !w.need);
-        if (!pNeeds.length && !pStuck.length && !pOther.length) return null;
+        if (!pNeeds.length && !pStuck.length && !pOther.length && !laterItems(p.id).length) return null;
         return (
           <section key={p.id}>
             {projectId ? null : <h2 className="mb-1 text-xs text-content/60">{p.name}</h2>}
@@ -142,7 +168,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </section>
         );
       })}
-      <OlderGroup projectId={projectId} onSheet={setSheet} />
+      {!query.trim() ? <OlderGroup projectId={projectId} onSheet={setSheet} /> : null}
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
@@ -316,13 +342,14 @@ function Pending({ what, unit }: { what: string; unit: number }) {
 
 /** Ash OS can't be reached: one calm sentence and one button. Never example data. */
 function AshOsDown({ message, retrying, onRetry }: { message?: string; retrying?: boolean; onRetry: () => void }) {
-  const heading = "Ash OS isn't running.";
-  const help = message && message !== heading ? message : "Start it, then try again. Your projects and Needs come back on their own.";
+  const heading = "The harness service is unavailable.";
+  const help = message && message !== heading && !message.includes("Ash OS") ? message : "Start it, then try again. Your projects and Needs come back on their own.";
   return (
     <div className="grid h-full place-items-center px-8" data-hub-down>
       <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">
         <p className="text-[13px] text-content">{heading}</p>
         <p className="text-[13px] leading-5 text-content/60">{help}</p>
+        <HomeTools />
         <button
           type="button"
           data-hub-down-retry
@@ -378,4 +405,12 @@ function FirstTodayEmpty() {
       </div>
     </div>
   );
+}
+
+/** Local views remain accessible even while the shared service is unavailable. */
+function HomeTools() {
+  return <nav aria-label="Workspace shortcuts" className="flex flex-wrap gap-2" data-hub-home-tools>
+    {(["Pages", "Notes", "Automations"] as const).map((name) => <button key={name} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: name.toLowerCase() }))}
+      className="rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/10">{name}</button>)}
+  </nav>;
 }

@@ -236,6 +236,15 @@ fn should_request_quit(code: Option<i32>) -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
+    // Fail before the dev relaunch, plugin setup or any app-data access.
+    let test_identity = context.config().identifier == "com.ash.monocode-hub.sandbox";
+    assert_eq!(
+        cfg!(feature = "test-copy"),
+        test_identity,
+        "The test-copy feature and isolated bundle identity must be used together"
+    );
+    #[cfg(all(feature = "test-copy", debug_assertions))]
+    panic!("Build the isolated copy with hub:test-copy:build; its debug relaunch uses the daily app identity");
     #[cfg(all(debug_assertions, target_os = "macos"))]
     {
         let version = context.package_info().version.to_string();
@@ -279,7 +288,9 @@ pub fn run() {
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
-            harness::reap_orphaned_harness_processes();
+            if !cfg!(feature = "test-copy") {
+                harness::reap_orphaned_harness_processes();
+            }
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());

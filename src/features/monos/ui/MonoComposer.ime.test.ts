@@ -59,3 +59,12 @@ it("doesn't send on the Enter that picks an IME candidate", async () => {
     vi.unstubAllGlobals();
   }
 });
+
+it("renders the context meter in a Mono's messaging composer", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(MonoComposer, { sessionId: "mono-context", name: "Mono", onSubmit: () => {}, showContext: true, context: { used: 275765, window: 1048576 } })));
+    expect(container.querySelector('[role="img"][aria-label="26% context used, 276K / 1M tokens"]')).not.toBeNull();
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});

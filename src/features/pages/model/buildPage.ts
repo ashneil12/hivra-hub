@@ -1,7 +1,8 @@
+import { monoTaskRunnerConnected, runMonoTask } from "../../hub/model/hubChats";
 import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "../../hub/model/hubTransport";
 import { listMonos } from "../../monos/model/mono";
 import { checkBespokePage, type DesignIssue } from "./designCheck";
-import { validatePageSpec, type PageSpec } from "./pageSpec";
+import { PAGE_SPEC_SCHEMA, validatePageSpec, type PageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 
 /**
@@ -40,6 +41,12 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the page should show." };
   let raw: unknown;
   if (deps.stub ?? devStubOn()) raw = stubPageSpec(req.prompt);
+  else if (!deps.transport && monoTaskRunnerConnected()) {
+    try {
+      const text = await runMonoTask(req.monoId, `Build a page for project ${JSON.stringify(req.projectId)} from this user request: ${JSON.stringify(req.prompt)}. Return ONLY a JSON PageSpec matching this schema: ${JSON.stringify(PAGE_SPEC_SCHEMA)}. Use real data if available; label unknown values. Do not claim to publish or save the page: the app validates and previews your JSON first. Never include credentials or remote scripts. Use permissions only if the page needs them.`, { maxReplyChars: 500_000 });
+      raw = JSON.parse(text.trim().replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, ""));
+    } catch (e) { return { status: "error", reason: e instanceof Error ? e.message : "The Mono couldn't build the page." }; }
+  }
   else {
     try {
       raw = await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, { projectId: req.projectId, monoId: req.monoId, prompt: req.prompt });

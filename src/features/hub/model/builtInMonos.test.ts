@@ -81,10 +81,10 @@ describe("the default team, added once", () => {
       expect(roster().filter((m) => m.name === "frank")).toHaveLength(1);
     });
 
-  it("marking by a renamed copy's name records the team id; other Monos are never recorded", () => {
+  it("marking by a renamed copy's name records the team id; other Monos also stay deleted", () => {
     markMonoRemovedByUser("cos-old", "Chief of Staff");
     markMonoRemovedByUser("my-mono", "Scout");
-    expect(JSON.parse(localStorage.getItem("monocode:mono-team-removed-by-user") ?? "[]")).toEqual(["chief-of-staff"]);
+    expect(JSON.parse(localStorage.getItem("monocode:mono-team-removed-by-user") ?? "[]")).toEqual(["chief-of-staff", "my-mono"]);
     expect(ensureBuiltInMonos()).toBe(3);
     expect(roster().map((m) => m.name)).not.toContain("Chief of Staff");
   });
