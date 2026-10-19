@@ -370,6 +370,10 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
             report.counts["projects"], 4,
             "the webview's counts are kept"
         );
+        assert!(
+            !report.counts.contains_key("noteIds"),
+            "only counts in the manifest"
+        );
         assert_no_secrets(&dest);
         let files = export_texts(&dest);
         let prefix = if form == Form::Archive { "export/" } else { "" };

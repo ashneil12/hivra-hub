@@ -699,6 +699,7 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
             export_workspace(env, &conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
         }
         export_note_assets(env, &mut writer, &counts)?;
+        counts.remove("noteIds");
     }
 
     // The last net: nothing written may still look like a secret.

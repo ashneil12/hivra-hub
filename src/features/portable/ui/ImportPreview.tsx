@@ -218,7 +218,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
             <Row key={value} testId={`settings-${value}`} tick={<Tick on={choices.settings === value} onClick={() => set((c) => ({ ...c, settings: value }))} label={label} />} title={label} />
           ))}
           {plan.settings.differ.length ? (
-            <button type="button" onClick={() => setOpen(toggle(open, "settings"))} className="px-2 text-left text-[12px] text-content/60 hover:text-content">
+            <button type="button" onClick={() => setOpen((o) => toggle(o, "settings"))} className="px-2 text-left text-[12px] text-content/60 hover:text-content">
               {open.has("settings") ? "Hide" : "Show"} which differ
             </button>
           ) : null}
@@ -270,7 +270,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
                   <div key={cwd} className="flex flex-col">
                     <Row testId={`chats-${folderName(cwd)}`}
                       tick={<Tick on={on === ids.length} partial={on > 0 && on < ids.length} onClick={() => set((c) => ({ ...c, workspace: { ...c.workspace, sessions: ids.reduce((s, id) => toggle(s, id, on !== ids.length), c.workspace.sessions) } }))} label={folderName(cwd)} />}
-                      title={<>{folderName(cwd)} · {count(list.length, "chat")} <button type="button" onClick={() => setOpen(toggle(open, key))} className="ml-1 text-xs text-content/60 hover:text-content">{open.has(key) ? "Hide" : "Show"}</button></>}
+                      title={<>{folderName(cwd)} · {count(list.length, "chat")} <button type="button" onClick={() => setOpen((o) => toggle(o, key))} className="ml-1 text-xs text-content/60 hover:text-content">{open.has(key) ? "Hide" : "Show"}</button></>}
                       right={on < ids.length ? `${on} of ${ids.length}` : "New"} />
                     {open.has(key) ? list.slice(0, 200).map((s) => (
                       <div key={s.id} className="flex items-center gap-3 py-1 pl-9 pr-2 text-[13px]">

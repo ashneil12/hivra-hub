@@ -56,8 +56,16 @@ function joinPath(dir: string, name: string): string {
   return `${dir.replace(/[\\/]+$/, "")}/${name}`;
 }
 
+/** Dev only (src/dev/portableProof.ts, a scripted round trip in a dev slot): answers the pickers instead of the dialogs. */
+type ProofPicker = { export?: (form: ExportForm) => string; import?: (kind: "file" | "folder") => string };
+let proofPicker: ProofPicker | null = null;
+export function setProofPicker(next: ProofPicker | null): void {
+  proofPicker = import.meta.env.DEV ? next : null;
+}
+
 /** Where the export goes: a file for the archive, a new folder (picked parent + a free name) for the folder form. */
 export async function pickExportDestination(form: ExportForm): Promise<string | null> {
+  if (proofPicker?.export) return proofPicker.export(form);
   const name = defaultExportName();
   if (form === "archive") {
     const path = await save({ title: "Save the export", defaultPath: `${name}.tar.gz`, filters: [{ name: "MonoCode Hub export", extensions: ["gz", "tgz"] }] });
@@ -100,6 +108,7 @@ export async function exportEverything(options: ExportOptions): Promise<ExportRe
 
 /** Picks an export to import: a .tar.gz (or a v1 .json) or a folder. */
 export async function pickImportSource(kind: "file" | "folder"): Promise<string | null> {
+  if (proofPicker?.import) return proofPicker.import(kind);
   const path =
     kind === "folder"
       ? await open({ directory: true, multiple: false, title: "Choose an export folder" })

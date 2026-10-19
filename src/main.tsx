@@ -2,6 +2,8 @@ import React, { useLayoutEffect } from "react";
 import ReactDOM from "react-dom/client";
 // TEMPORARY: remove with src/debugMonoScroll.ts.
 if (import.meta.env.DEV) void import("./debugMonoScroll");
+// A scripted Export / Import round trip in a dev slot (docs/PORTABLE.md); never in a build.
+if (import.meta.env.DEV && import.meta.env.VITE_PORTABLE_PROOF) void import("./dev/portableProof");
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {

@@ -120,20 +120,20 @@ export function PortablePage() {
           Your whole setup in one file or a folder: use it on another Mac or with another coding engine, or keep it as a backup. Passwords, keys and logins never go in; anything that looks like one is scrubbed.
         </p>
         <Choice testId="setup" on disabled title="Setup" sub="Projects, Monos with their souls, habits, skills and engines, teams, connectors (only where each login lives), Pages, settings and themes." />
-        <Choice testId="memory" on={memory} onClick={() => setMemory(!memory)} title="Memory"
+        <Choice testId="memory" on={memory} onClick={() => setMemory((v) => !v)} title="Memory"
           sub={info?.memory.length ? `Ash OS project memory from ${info.memoryRoot}, and each Mono's own memory.` : info ? `No project memory found in ${info.memoryRoot || "this copy"}; each Mono's own memory still can go.` : "Ash OS project memory, and each Mono's own memory."} />
         {memory ? (
           <div className="flex flex-col gap-0.5 pl-7" data-portable-memory-folders>
             {info?.memory.map((m) => (
               <Choice key={m.name} testId={`memory-${m.name}`} on={memoryFolders.has(m.name)}
-                onClick={() => { const n = new Set(memoryFolders); (n.has(m.name) ? n.delete(m.name) : n.add(m.name)); setMemoryFolders(n); }}
+                onClick={() => setMemoryFolders((prev) => { const n = new Set(prev); (n.has(m.name) ? n.delete(m.name) : n.add(m.name)); return n; })}
                 title={m.global ? `${m.name} (every project reads it)` : m.name} sub={`${m.files} files · ${size(m.bytes)}`} />
             ))}
-            {info?.memory.some((m) => m.history) ? <Choice testId="history" on={history} onClick={() => setHistory(!history)} title="With each folder's history" sub="Left out for a folder whose history holds something that looks like a secret." /> : null}
-            <Choice testId="mono-memory" on={monoMemory} onClick={() => setMonoMemory(!monoMemory)} title="Each Mono's own memory" />
+            {info?.memory.some((m) => m.history) ? <Choice testId="history" on={history} onClick={() => setHistory((v) => !v)} title="With each folder's history" sub="Left out for a folder whose history holds something that looks like a secret." /> : null}
+            <Choice testId="mono-memory" on={monoMemory} onClick={() => setMonoMemory((v) => !v)} title="Each Mono's own memory" />
           </div>
         ) : null}
-        <Choice testId="workspace" on={workspace} onClick={() => setWorkspace(!workspace)} title="Workspace"
+        <Choice testId="workspace" on={workspace} onClick={() => setWorkspace((v) => !v)} title="Workspace"
           sub="Chats (with which engine each ran on), notes, automations, reminders, delegation history and group chats." />
         <div className="flex items-center gap-4 px-3 pt-3 text-[13px] text-content/75">
           <span className="text-content/60">Save as</span>
