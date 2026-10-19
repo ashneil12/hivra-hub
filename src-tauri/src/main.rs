@@ -21,6 +21,9 @@ fn main() {
         Some("healthcheck") => {
             std::process::exit(monocode_lib::instance::healthcheck_main(&rest()))
         }
+        // A connector for a Claude Code session: checks it is allowed, reads its login from the Keychain and serves it
+        // over stdio (src/connectors/launch.rs). No window, no database.
+        Some("connector-run") => std::process::exit(monocode_lib::connectors::run_main(&rest())),
         // The worktree clean-up report: reads only, no window, no app data (src/worktree_janitor.rs).
         Some("worktrees-report") => {
             std::process::exit(monocode_lib::worktree_janitor::report_main(&rest()))
