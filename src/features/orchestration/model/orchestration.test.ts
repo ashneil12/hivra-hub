@@ -9,6 +9,8 @@ import {
   type OrchestrationHost,
   type OrchestrationRun,
   shellPath,
+  appCliCommand,
+  APP_CLI_MISSING,
 } from "./orchestration";
 import { newSession } from "../../sessions/model/session";
 import type { OrchestrationProposal } from "./orchestrationPlan";
@@ -1212,6 +1214,11 @@ describe("local orchestration", () => {
       "constructor",
     );
     expect(first).toHaveProperty("taskId");
+  });
+  it("hands agents the app command, and says plainly when a copy has none (app_cli_path answered null)", () => {
+    expect(appCliCommand("/Users/a b/MonoCode")).toBe("'/Users/a b/MonoCode' app");
+    // The browser preview's IPC answers null here; shellPath used to throw "reading 'startsWith'" on it.
+    for (const missing of [null, undefined, "", 42]) expect(() => appCliCommand(missing)).toThrow(APP_CLI_MISSING);
   });
   it("quotes the control path only when the shell needs it", () => {
     expect(

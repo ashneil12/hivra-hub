@@ -11,7 +11,8 @@ import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
 import { plainName } from "../model/roleNames";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
-import type { ProjectIconShape } from "../model/types";
+import { addTeamAddon } from "../model/hubTeam";
+import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES, StripButton } from "./ProjectStrip";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
@@ -118,21 +119,24 @@ export function NewProjectView() {
   const create = () => {
     if (!tpl || creating) return;
     if (code === "existing" && !folder) return setProblem("Choose the folder first, or pick another option.");
-    const finish = (projectId: string) => {
-      setTemplate(projectId, tpl);
+    const finish = (project: HubProject) => {
+      setTemplate(project.id, tpl);
+      // Ticking the add-on is Ash's yes: Critiquito joins with its soul and sits in this project's Leadership team.
+      if (addon) addTeamAddon(ADDON_OFFER.id, [project]);
       ended.current = true;
       clearProjectDraft();
-      setHubSelection({ project: projectId, item: "inbox" });
+      setHubSelection({ project: project.id, item: "inbox" });
     };
     if (!liveHubStore()) {
       // The example data: no Ash OS to make it, so it is kept on this Mac only.
-      addMockProject({ id, name: n, shortName: n.split(" ")[0], iconShape: pickedShape, folder: code === "none" ? null : code === "existing" ? folder ?? null : defaultProjectFolder(id) });
-      return finish(id);
+      const project = { id, name: n, shortName: n.split(" ")[0], iconShape: pickedShape, folder: code === "none" ? null : code === "existing" ? folder ?? null : defaultProjectFolder(id) };
+      addMockProject(project);
+      return finish(project);
     }
     setCreating(true);
     setProblem(undefined);
     void createProject({ name: n, oneLine: answers[0] ?? n, code: code !== "none", folder: code === "existing" ? folder : undefined, shape: pickedShape }).then(
-      (made) => finish(made.project.id),
+      (made) => finish(made.project),
       (e: Error) => { setCreating(false); setProblem(e.message); },
     );
   };

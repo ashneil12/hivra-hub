@@ -16,13 +16,18 @@ describe("the strip's projects", () => {
     expect(stripProjects([...live].reverse()).map((x) => x.id)).toEqual(["moonrise", "hub", "nibbii", "hivra", "vg-game"]);
   });
 
+  it("never show the global `ash` memory as a project, even when Ash OS sends it in its old strip slot", () => {
+    const oldStrip = [p("vg-game"), p("hivra"), p("nibbii"), p("ash", { name: "Harness", shortName: "Harness", iconShape: "gauge" })];
+    expect(stripProjects(oldStrip).map((x) => x.id)).toEqual(["vg-game", "hivra", "nibbii"]);
+  });
+
   it("keep Ash's own shapes even when two projects share one", () => {
     const theirs = [p("vg-game", { iconShape: "gauge" }), p("hivra", { iconShape: "gauge" }), p("nibbii", { iconShape: "folder" })];
     expect(distinctShapes(theirs).map((x) => x.iconShape)).toEqual(["gauge", "gauge", "folder"]);
   });
 
   it("an older service that says 'folder' for every project gets stand-in shapes, the same every time, never a ghost", () => {
-    const all = [p("vg-game"), p("hivra"), p("nibbii"), p("ash"), p("side-thing")];
+    const all = [p("vg-game"), p("hivra"), p("nibbii"), p("hub"), p("side-thing")];
     const a = distinctShapes(all);
     expect(a.slice(0, 4).map((x) => x.iconShape)).toEqual(["gamepad", "sparkles", "palette", "gauge"]);
     expect(distinctShapes([...all]).map((x) => x.iconShape)).toEqual(a.map((x) => x.iconShape));
