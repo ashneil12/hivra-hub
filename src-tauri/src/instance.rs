@@ -103,6 +103,23 @@ pub struct Policy {
     pub global_shortcut: bool,
 }
 
+impl Policy {
+    /// A copy under a temporary HOME (a test, a ship drill) keeps to that folder. Its data, Claude config and Ash OS
+    /// key all come from HOME already; these are the things that don't, so they go: Keychain items (the login keychain
+    /// is the user's, whatever HOME says), the orphan reaper (it would see the real app's agents), phone access, the
+    /// notification prompt and the system-wide shortcut.
+    pub fn in_isolated_home(self) -> Self {
+        Self {
+            daily_keychain: false,
+            reap_orphans: false,
+            phone_access: false,
+            notification_prompt: false,
+            global_shortcut: false,
+            ..self
+        }
+    }
+}
+
 impl Kind {
     pub fn policy(self) -> Policy {
         let daily = self == Kind::Daily;
@@ -185,8 +202,19 @@ pub fn kind() -> Kind {
     current().kind
 }
 
+/// What this copy may do: its kind's policy, minus everything system-wide when it runs under a temporary HOME
+/// ([`isolated_home`]).
 pub fn policy() -> Policy {
-    current().policy()
+    effective_policy(current())
+}
+
+pub fn effective_policy(identity: &Identity) -> Policy {
+    let policy = identity.policy();
+    if isolated_home().is_some() {
+        policy.in_isolated_home()
+    } else {
+        policy
+    }
 }
 
 /// Rules 1 and 2, first thing in `run()`. Shows an alert and exits when this copy must not start.
@@ -389,6 +417,79 @@ fn dev_claude_config_dir_in(kind: Kind, home: Option<PathBuf>) -> Result<Option<
     Ok(Some(dir))
 }
 
+// ---- a temporary HOME ------------------------------------------------------------------------------------------------
+
+static ISOLATED_HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// The temporary HOME this process runs under when HOME isn't the user's own home folder (a test, a ship drill), or
+/// `None` for a normal launch.
+pub fn isolated_home() -> Option<&'static Path> {
+    ISOLATED_HOME
+        .get_or_init(|| {
+            detect_isolated_home(std::env::var_os("HOME").map(PathBuf::from), real_home())
+        })
+        .as_deref()
+}
+
+fn detect_isolated_home(home: Option<PathBuf>, real: Option<PathBuf>) -> Option<PathBuf> {
+    let home = home.filter(|home| !home.as_os_str().is_empty())?;
+    let real = real?;
+    let same = match (home.canonicalize(), real.canonicalize()) {
+        (Ok(home), Ok(real)) => home == real,
+        _ => home == real,
+    };
+    (!same).then_some(home)
+}
+
+/// The user's home folder from the user database: what Cocoa uses, whatever HOME says.
+#[cfg(unix)]
+pub fn real_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut record: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut record,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if status != 0 || found.is_null() || record.pw_dir.is_null() {
+        return None;
+    }
+    let dir = unsafe { std::ffi::CStr::from_ptr(record.pw_dir) };
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+}
+
+#[cfg(not(unix))]
+pub fn real_home() -> Option<PathBuf> {
+    None
+}
+
+/// First thing in `run()`. Cocoa ignores HOME: the webview's storage, caches, saved window state and preferences live
+/// under the home folder from the user database. A copy under a temporary HOME would put them in the real home,
+/// beside the daily app's own (same identifier), so `CFFIXED_USER_HOME` points Cocoa at HOME as well. The copy
+/// refuses to start (exit 78) if Cocoa still names another folder.
+pub fn isolate_home() {
+    let Some(home) = isolated_home() else {
+        return;
+    };
+    std::env::set_var("CFFIXED_USER_HOME", home);
+    #[cfg(target_os = "macos")]
+    {
+        let cocoa = PathBuf::from(objc2_foundation::NSHomeDirectory().to_string());
+        if cocoa.canonicalize().ok() != home.canonicalize().ok() {
+            refuse(&Refusal::HomeNotIsolated {
+                home: home.to_path_buf(),
+                cocoa,
+            });
+        }
+    }
+}
+
 // ---- the lock --------------------------------------------------------------------------------------------------------
 
 /// An exclusive SQLite transaction on `<data>/instance-owner.sqlite`, held while this value lives (for the app: the
@@ -406,9 +507,14 @@ pub enum LockError {
 impl InstanceLock {
     /// Take the lock, retrying a busy one every 100 ms until `wait` has passed. Never a SQLite busy wait.
     pub fn acquire(dir: &Path, wait: Duration) -> Result<Self, LockError> {
+        std::fs::create_dir_all(dir).map_err(|e| LockError::Failed(e.to_string()))?;
+        Self::acquire_file(&dir.join(LOCK_FILE), wait)
+    }
+
+    /// The same lock on any file: Ship's `runner.lock` uses it too (`ship.rs`, `scripts/hub-ship-runner.mjs`).
+    pub fn acquire_file(path: &Path, wait: Duration) -> Result<Self, LockError> {
         let failed = |error: &dyn std::fmt::Display| LockError::Failed(error.to_string());
-        std::fs::create_dir_all(dir).map_err(|e| failed(&e))?;
-        let conn = Connection::open(dir.join(LOCK_FILE)).map_err(|e| failed(&e))?;
+        let conn = Connection::open(path).map_err(|e| failed(&e))?;
         conn.busy_timeout(Duration::ZERO).map_err(|e| failed(&e))?;
         let deadline = Instant::now() + wait;
         loop {
@@ -543,6 +649,11 @@ pub enum Refusal {
     DevSetup {
         error: String,
     },
+    /// Under a temporary HOME, Cocoa still names the real home: the webview would share the daily app's storage.
+    HomeNotIsolated {
+        home: PathBuf,
+        cocoa: PathBuf,
+    },
 }
 
 impl Refusal {
@@ -550,7 +661,8 @@ impl Refusal {
         match self {
             Self::UnknownIdentity { .. }
             | Self::DebugDaily
-            | Self::DailyOutsideApplications { .. } => EXIT_WRONG_COPY,
+            | Self::DailyOutsideApplications { .. }
+            | Self::HomeNotIsolated { .. } => EXIT_WRONG_COPY,
             Self::InUse { .. } => EXIT_IN_USE,
             Self::NoLock { .. } | Self::DevSetup { .. } => EXIT_NO_LOCK,
             Self::NewerDatabase { .. } => EXIT_NEWER_DATA,
@@ -566,6 +678,7 @@ impl Refusal {
             Self::NoLock { .. } => "MonoCode Hub couldn't claim its data folder",
             Self::NewerDatabase { .. } => "This build is older than its data",
             Self::DevSetup { .. } => "This dev copy couldn't set up its own Claude folder",
+            Self::HomeNotIsolated { .. } => "This copy couldn't keep to its temporary home folder",
         }
     }
 
@@ -585,7 +698,7 @@ impl Refusal {
                 expected,
             } => format!(
                 "This build carries the daily identity ({DAILY_IDENTIFIER}) but is running from {}. The daily app \
-                 only runs from {}. Ship it there (npm run hub:install) instead of opening it here.",
+                 only runs from {}. Ship it there (npm run hub:ship) instead of opening it here.",
                 running_from.display(),
                 expected.display()
             ),
@@ -614,6 +727,13 @@ impl Refusal {
             Self::DevSetup { error } => format!(
                 "{error}. A dev copy doesn't run without it: its Claude sessions, terminals and file lookups would \
                  use ~/.claude instead."
+            ),
+            Self::HomeNotIsolated { home, cocoa } => format!(
+                "HOME is {}, but macOS still names {} as the home folder, so the window's storage, caches and \
+                 preferences would be shared with the app that lives there. Start it with CFFIXED_USER_HOME set to \
+                 HOME as well.",
+                home.display(),
+                cocoa.display()
             ),
         }
     }
@@ -741,7 +861,8 @@ pub fn app_info(identity: &Identity, product: &str, version: &str) -> Value {
         "slot": identity.slot,
         "stamp": stamp(),
         "schemaVersion": crate::session_store::SCHEMA_VERSION,
-        "policy": identity.policy(),
+        "policy": effective_policy(identity),
+        "isolatedHome": isolated_home(),
     })
 }
 
@@ -1257,6 +1378,59 @@ mod tests {
         // `cargo test` builds with src-tauri/tauri.conf.json alone: the daily identity.
         assert_eq!(current().identifier, DAILY_IDENTIFIER);
         assert_eq!(kind(), Kind::Daily);
+    }
+
+    #[test]
+    fn a_temporary_home_is_told_apart_from_the_real_one() {
+        let temp = TempDir::new("home-a");
+        let real = TempDir::new("home-b");
+        assert_eq!(
+            detect_isolated_home(Some(temp.0.clone()), Some(real.0.clone())),
+            Some(temp.0.clone())
+        );
+        assert_eq!(
+            detect_isolated_home(Some(real.0.clone()), Some(real.0.clone())),
+            None
+        );
+        // The same folder by another spelling (a symlink, /tmp vs /private/tmp) is still the real home.
+        #[cfg(unix)]
+        {
+            let link = temp.0.join("link-to-real");
+            std::os::unix::fs::symlink(&real.0, &link).unwrap();
+            assert_eq!(detect_isolated_home(Some(link), Some(real.0.clone())), None);
+        }
+        assert_eq!(detect_isolated_home(None, Some(real.0.clone())), None);
+        assert_eq!(
+            detect_isolated_home(Some(PathBuf::new()), Some(real.0.clone())),
+            None
+        );
+        // This test process runs with the real HOME.
+        assert_eq!(isolated_home(), None);
+        assert!(real_home().is_some_and(|home| home.is_absolute()));
+    }
+
+    #[test]
+    fn a_daily_copy_under_a_temporary_home_keeps_off_system_wide_things() {
+        let isolated = Kind::Daily.policy().in_isolated_home();
+        for off in [
+            isolated.daily_keychain,
+            isolated.reap_orphans,
+            isolated.phone_access,
+            isolated.notification_prompt,
+            isolated.global_shortcut,
+        ] {
+            assert!(!off);
+        }
+        // Its own data under that HOME still behaves like the daily app's.
+        assert!(
+            isolated.habits && isolated.automations && isolated.auto_resume && isolated.live_ash_os
+        );
+        let dev = Kind::Dev.policy();
+        assert_eq!(
+            dev.in_isolated_home(),
+            dev,
+            "a dev copy has all of it off already"
+        );
     }
 
     #[test]

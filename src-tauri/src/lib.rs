@@ -248,6 +248,9 @@ pub(crate) fn context() -> tauri::Context<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Under a temporary HOME (a test, a ship drill), keep Cocoa's home folder there too, before anything asks for it
+    // (src/instance.rs).
+    instance::isolate_home();
     let context = context();
     // Which copy this is, before the dev relaunch, plugin setup or any app-data access (src/instance.rs). Refusals
     // show an alert and exit here.
@@ -280,7 +283,7 @@ pub fn run() {
     if let Err(error) = instance::apply_dev_environment(&identity) {
         instance::refuse(&instance::Refusal::DevSetup { error });
     }
-    let policy = identity.policy();
+    let policy = instance::effective_policy(&identity);
     let app_info = instance::app_info(&identity, &product, &version);
     #[cfg(target_os = "macos")]
     macos::register_spellcheck_default();
