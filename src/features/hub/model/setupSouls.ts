@@ -1,6 +1,5 @@
-// Each Mono's soul in the setup file: its role, rules (SOUL.md), memory
-// (MEMORY.md), workflows (habits.json) and skills. On import, a Mono that
-// isn't seated waits for Ash's OK and is never seated automatically.
+// Each Mono's soul in a setup import: its role, rules (SOUL.md), memory (MEMORY.md), workflows (habits.json), notes,
+// skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { addMono, findMono, listMonos, parseMonoEngine, updateMono, type MonoEngine } from "../../monos/model/mono";
@@ -31,7 +30,6 @@ export type SetupSoul = {
   topics?: Record<string, string>;
 };
 
-type Reader = (monoId: string, path: AgentFilePath) => Promise<{ text: string | null }>;
 function roster(): { id: string; name?: string; mascot?: string }[] {
   return listMonos();
 }
@@ -47,22 +45,6 @@ export function roleOf(name: string, rules: string): string {
 export function skillsOf(rules: string): string[] {
   const m = /^## Skills\s*\n((?:[-*] .+\n?)+)/m.exec(rules);
   return m ? m[1].split("\n").map((l) => l.replace(/^[-*]\s+/, "").trim()).filter(Boolean) : [];
-}
-
-/** Reads every seated Mono's soul. A Mono whose files can't be read is skipped, not faked. */
-export async function collectSouls(read: Reader = readAgentFile): Promise<SetupSoul[]> {
-  const out: SetupSoul[] = [];
-  for (const m of roster()) {
-    try {
-      const [soul, memory, habits] = await Promise.all([read(m.id, "SOUL.md"), read(m.id, "MEMORY.md"), read(m.id, "habits.json")]);
-      const rules = soul.text ?? "";
-      const name = m.name ?? m.id;
-      out.push({ monoId: m.id, name, role: roleOf(name, rules), rules, memory: memory.text ?? "", workflows: habits.text ?? "", skills: skillsOf(rules), mascot: m.mascot });
-    } catch {
-      /* files not reachable (no backend): leave this soul out */
-    }
-  }
-  return out;
 }
 
 // ---- Waiting for your OK -----------------------------------------------------------------------------------------------

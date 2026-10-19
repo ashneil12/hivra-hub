@@ -1,7 +1,7 @@
 // Export… and Import… (Phase 5, docs/PORTABLE.md): the webview builds the setup files, Rust reads what lives on disk
 // (each Mono's files, the project memory, the database's chats, notes, automations, reminders and delegations), writes
 // the folder or archive, and on import reads one back for the preview and restores what Ash ticked.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSyncExternalStore } from "react";
 import { appIdentity } from "../../../app/model/appIdentity";
@@ -124,6 +124,16 @@ export async function readImport(path: string): Promise<PendingImport> {
   const doc = fromV1 ? migrateV1(parseSetup(inspection.v1 ?? "")) : setupDocFromFiles(inspection.files);
   const name = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? path;
   return { name, path, doc, inspection, fromV1, ...(await withLocalFacts(doc)) };
+}
+
+/**
+ * For the hub's Restore page (onboarding, the empty Today): the desktop app's picker and reader. "browser" means
+ * there is no desktop app here: the caller opens its own file input and uses `readImportText`.
+ */
+export async function pickExportForRestore(): Promise<PendingImport | null | "browser"> {
+  if (!isTauri()) return "browser";
+  const path = await pickImportSource("file");
+  return path ? readImport(path) : null;
 }
 
 /** Without the desktop app (a browser preview): a v1 setup file read as text. */
