@@ -13,7 +13,7 @@ fs.mkdirSync(out, { recursive: true });
 const URL = "http://localhost:1420/hub-dev.html?live=http://127.0.0.1:18869";
 const PROJECTS = [
   ["vg-game", "EXO", "exo"],
-  ["ash", "Harness", "org-harness"],
+  ["hub", "MonoCode Hub", "hub"],
   ["hivra", "Hivra", "hivra"],
   ["nibbii", "Nibbii", "nibbii"],
 ];

@@ -44,9 +44,9 @@ describe("first read", () => {
     expect(store.getSnapshot().status).toBe("loading");
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     const snap = store.getSnapshot();
-    expect(snap.projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "ash"]);
+    expect(snap.projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "hub"]);
     expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game" });
-    expect(snap.projects[3].folder).toBeNull();
+    expect(snap.projects[3].folder).toBe("/Users/example/Projects/monocode-hub");
     await waitFor(() => store.getSnapshot().since, "since");
     expect(store.getSnapshot().since?.overall.plainText).toContain("Example:");
   });
@@ -75,7 +75,7 @@ describe("first read", () => {
   it("shows at most 5 Needs per project and files the rest under Later, so counts match the rows", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    const org = store.getSnapshot().needs.ash;
+    const org = store.getSnapshot().needs.hub;
     expect(org.shown).toHaveLength(5);
     expect(org.later.map((n) => n.id)).toEqual(["q9"]);
     expect(org.later[0].later).toBe(true);
@@ -107,17 +107,17 @@ describe("live changes land in place", () => {
   it("a Need answered somewhere else ticks itself off where it stands, and stops counting", async () => {
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    stub.addNeed({ id: "q10", projectId: "ash", title: "Example: sixth thing", rank: 9 });
-    await waitFor(() => store.getSnapshot().needs.ash.later.some((n) => n.id === "q10"), "sixth need under Later");
-    const order = needIds(store, "ash");
+    stub.addNeed({ id: "q10", projectId: "hub", title: "Example: sixth thing", rank: 9 });
+    await waitFor(() => store.getSnapshot().needs.hub.later.some((n) => n.id === "q10"), "sixth need under Later");
+    const order = needIds(store, "hub");
     expect(order).toEqual(["q4", "q5", "q6", "q7", "q8"]);
     stub.doneNeed("q5", "answered");
-    const ticked = await waitFor(() => store.getSnapshot().needs.ash.shown.find((n) => n.id === "q5" && n.state === "done"), "tick");
+    const ticked = await waitFor(() => store.getSnapshot().needs.hub.shown.find((n) => n.id === "q5" && n.state === "done"), "tick");
     expect(ticked.doneReason).toBe("answered");
     // the Need waiting under Later moves up to the bottom of the list; the ticked row and the rest did not move
-    await waitFor(() => needIds(store, "ash").includes("q10"), "promotion");
-    expect(needIds(store, "ash")).toEqual([...order, "q10"]);
-    expect(store.getSnapshot().needs.ash.later.map((n) => n.id)).toEqual(["q9"]);
+    await waitFor(() => needIds(store, "hub").includes("q10"), "promotion");
+    expect(needIds(store, "hub")).toEqual([...order, "q10"]);
+    expect(store.getSnapshot().needs.hub.later.map((n) => n.id)).toEqual(["q9"]);
   });
 
   it("ticked rows stay until Ash leaves the page, then go and stay gone while Ash OS still lists them", async () => {
@@ -166,7 +166,7 @@ describe("live changes land in place", () => {
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     stub.addProject({ id: "side", name: "Side thing" });
     await waitFor(() => store.getSnapshot().projects.some((p) => p.id === "side"), "project");
-    expect(store.getSnapshot().projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "ash", "side"]);
+    expect(store.getSnapshot().projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "hub", "side"]);
     expect(store.getSnapshot().projects.at(-1)?.iconShape).toBe("folder");
   });
 
@@ -179,7 +179,7 @@ describe("live changes land in place", () => {
     expect(store.getSnapshot().since?.overall.plainText).toMatch(/on their way/);
     stub.finishPendingSince();
     await waitFor(() => store.getSnapshot().since?.pending === false, "finished since");
-    expect(store.getSnapshot().since?.overall.plainText).toContain("the harness has five decisions");
+    expect(store.getSnapshot().since?.overall.plainText).toContain("the hub has five decisions");
   });
 
   it("Since for one project and for all of them come from the same read", async () => {
@@ -410,10 +410,10 @@ describe("older questions, Looks right and jobs", () => {
     const data = (await import("./liveHubData")).createLiveHubData(store);
     store.start();
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
-    expect(data.needsCount!("ash")).toBe(6);
+    expect(data.needsCount!("hub")).toBe(6);
     expect(data.needsCount!("hivra")).toBe(2);
     stub.doneNeed("q4");
-    await waitFor(() => data.needsCount!("ash") === 5, "count after tick");
+    await waitFor(() => data.needsCount!("hub") === 5, "count after tick");
   });
 
   it("refuses to mark anything but a Looks-right row seen, in plain words", async () => {
