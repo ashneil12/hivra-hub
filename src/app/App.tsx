@@ -658,6 +658,13 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
+import {
+  loadShipNote,
+  reportShipReady,
+  shipStatus,
+  startShip,
+  useShipStatus,
+} from "./model/ship";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
   dropRelays,
@@ -832,6 +839,8 @@ import {
 import {
   CONTINUE_PROMPT,
   canAutoContinue,
+  interruptingShip,
+  shipResumePrompt,
   inFlightRefs,
   inFlightSnapshotKey,
   shouldWriteInFlightSnapshot,
@@ -1331,6 +1340,14 @@ function Workspace({
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
+  // Ship (src-tauri/src/ship.rs): a build on trial holds auto-resume, habits and automations until it commits.
+  const shipHold = useShipStatus().holding;
+  const shipHoldRef = useRef(shipHold);
+  shipHoldRef.current = shipHold;
+  useEffect(() => {
+    // The workspace is drawn: a build on trial now checks its database and hub bridge, then commits.
+    void reportShipReady();
+  }, []);
   /** Pages rides on the Automations view slot, so every place that closes Automations also closes Pages. */
   const [pagesMode, setPagesMode] = useState(false);
   const [openAppViews, setOpenAppViews] = useState<AppView[]>([]);
@@ -8784,7 +8801,7 @@ function Workspace({
       for (const relay of dropRelays(runId))
         decideMonoBlock(relay.monoId, relay.blockId, "cancelled");
     },
-  });
+  }, appPolicy().habits && !shipHold);
 
   const automationSessionReservations = useRef(new Set<string>());
   const automationRecoveryRef = useRef<Promise<void> | null>(null);
@@ -9234,7 +9251,8 @@ function Workspace({
     let disposed = false;
     let evaluating = false;
     const evaluate = async () => {
-      if (disposed || evaluating) return;
+      // A build on trial runs no automations until it commits (src-tauri/src/ship.rs).
+      if (disposed || evaluating || shipHoldRef.current) return;
       evaluating = true;
       try {
         await ensureAutomationRecovery();
@@ -9263,10 +9281,11 @@ function Workspace({
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [ensureAutomationRecovery, launchAutomation]);
+  }, [ensureAutomationRecovery, launchAutomation, shipHold]);
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
+      if (shipHoldRef.current) return;
       void ensureAutomationRecovery()
         .then(() => claimInboxAutomationRuns(items))
         .then((due) => {
@@ -10540,6 +10559,7 @@ function Workspace({
     [openSessionBeside],
   );
 
+  const shipResumes = useRef(new Set<string>());
   const autoContinueKey = sessions
     .filter(
       (session) => canAutoContinue(session) && isLiveHarness(session.harness),
@@ -10548,26 +10568,38 @@ function Workspace({
     .join("\n");
 
   useEffect(() => {
-    // A dev copy shows a cut-off chat as interrupted but never continues it on its own.
-    if (!autoContinueKey || !appPolicy().autoResume) return;
+    // A dev copy shows a cut-off chat as interrupted but never continues it on its own, and a build on trial waits
+    // until it has committed (src-tauri/src/ship.rs): if it is rolled back, the old build resumes them instead.
+    if (!autoContinueKey || !appPolicy().autoResume || shipHold) return;
     const ids = autoContinueKey.split("\n");
+    const stillDue = (id: string) => {
+      const session = sessionsRef.current.find((entry) => entry.id === id);
+      return session && canAutoContinue(session) && isLiveHarness(session.harness)
+        ? session
+        : null;
+    };
     // Delay past React StrictMode's dev remount so Continue is not claimed
     // against a discarded tree (sessionStorage also survives Vite reloads).
     const timer = window.setTimeout(() => {
       for (const id of ids) {
-        const session = sessionsRef.current.find((entry) => entry.id === id);
-        if (
-          !session ||
-          !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
-        ) {
+        const session = stillDue(id);
+        if (!session) continue;
+        const ship = interruptingShip(session);
+        if (!ship) {
+          onSubmit(id, CONTINUE_PROMPT);
           continue;
         }
-        onSubmit(id, CONTINUE_PROMPT);
+        // Cut by a ship's restart: resume once, with what the ship did.
+        if (shipResumes.current.has(id)) continue;
+        shipResumes.current.add(id);
+        void loadShipNote(ship).then((note) => {
+          if (stillDue(id)) onSubmit(id, shipResumePrompt(id, note));
+          shipResumes.current.delete(id);
+        });
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoContinueKey, onSubmit]);
+  }, [autoContinueKey, onSubmit, shipHold]);
 
   const onCompactContext = useCallback(
     (sessionId: string) => {
@@ -11628,6 +11660,8 @@ function Workspace({
               dismissCompletion(id);
             },
             worktrees: (cwd) => listWorktrees(cwd),
+            ship: (input) => startShip(input),
+            shipStatus: () => shipStatus().current,
             createWorktree: (cwd, branch, base, existing) =>
               createWorktree(cwd, branch, base, existing),
             notes: () => invoke("notes_list"),

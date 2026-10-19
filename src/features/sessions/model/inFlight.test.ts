@@ -3,7 +3,10 @@ import { newTab } from "../../workspace/model/layout";
 import {
   CONTINUE_PROMPT,
   INTERRUPT_MESSAGE,
+  UPDATE_INTERRUPT_MESSAGE,
   canAutoContinue,
+  interruptingShip,
+  shipResumePrompt,
   hasInFlightSessions,
   inFlightRefs,
   isInFlightSession,
@@ -275,5 +278,67 @@ describe("shouldWriteInFlightSnapshot", () => {
     expect(
       shouldWriteInFlightSnapshot("a", [{ sessionId: "a", cwd: "/tmp" }], "a", true),
     ).toBe(false);
+  });
+});
+
+describe("a turn cut by a quit for update (a ship)", () => {
+  const ship = "20261019-210405-bbbbbbb";
+  const note = {
+    id: ship,
+    phase: "committed",
+    reason: null,
+    from: { sha: "a".repeat(40), branch: "hub/next" },
+    to: { sha: "b".repeat(40), branch: "hub/1b-ship" },
+    requestedBy: { sessionId: "lead" },
+    receiptPath: "/data/ship/x/receipt.json",
+    log: "/data/ship/x/runner.log",
+  };
+
+  it("is marked with the ship and still continues once", () => {
+    const cut = markTurnInterrupted(
+      chat("/tmp/a", { busy: true, providerSessionId: "p1" }),
+      ship,
+    );
+    const last = cut.blocks[cut.blocks.length - 1];
+    expect(last).toMatchObject({ role: "system", text: UPDATE_INTERRUPT_MESSAGE, notice: "interrupt", shipUpdate: ship });
+    expect(canAutoContinue(cut)).toBe(true);
+    expect(interruptingShip(cut)).toBe(ship);
+    // Marking again for the same turn adds nothing.
+    expect(markTurnInterrupted(cut, ship).blocks).toHaveLength(cut.blocks.length);
+    // A plain quit carries no ship.
+    const quit = markTurnInterrupted(chat("/tmp/a", { busy: true, providerSessionId: "p1" }));
+    expect(quit.blocks[quit.blocks.length - 1].text).toBe(INTERRUPT_MESSAGE);
+    expect(interruptingShip(quit)).toBeNull();
+    // Once the user (or the resume) has spoken, it's no longer the cut that matters.
+    const resumed = { ...cut, blocks: [...cut.blocks, { id: "u2", role: "user" as const, text: "go on" }] };
+    expect(interruptingShip(resumed)).toBeNull();
+    expect(canAutoContinue(resumed)).toBe(false);
+  });
+
+  it("gives the session that shipped its receipt, and any other just what runs now", () => {
+    const own = shipResumePrompt("lead", note);
+    expect(own).toContain(`Your ship ${ship} finished.`);
+    expect(own).toContain("now runs hub/1b-ship @ bbbbbbb (was hub/next @ aaaaaaa)");
+    expect(own).toContain("receipt /data/ship/x/receipt.json");
+    expect(own).toContain("log /data/ship/x/runner.log");
+    expect(own).toMatch(/continue from where you left off\.$/);
+
+    const other = shipResumePrompt("someone-else", note);
+    expect(other).not.toContain("Your ship");
+    expect(other).not.toContain("receipt.json");
+    expect(other).toContain("restarted for an update");
+    expect(other.endsWith(CONTINUE_PROMPT)).toBe(true);
+
+    const rolled = shipResumePrompt("lead", {
+      ...note,
+      phase: "rolled-back",
+      reason: "The new build didn't commit within 120 s.",
+    });
+    expect(rolled).toContain("rolled back (The new build didn't commit within 120 s.)");
+    expect(rolled).toContain("runs hub/next @ aaaaaaa again");
+
+    expect(shipResumePrompt("lead", null)).toBe(
+      `MonoCode Hub restarted for an update. ${CONTINUE_PROMPT}`,
+    );
   });
 });

@@ -7,6 +7,10 @@ import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 export const INTERRUPT_MESSAGE =
   "Turn interrupted when MonoCode quit.";
 
+/** The note on a turn cut by a quit for update (a ship, src-tauri/src/ship.rs). */
+export const UPDATE_INTERRUPT_MESSAGE =
+  "Turn interrupted when MonoCode Hub restarted for an update.";
+
 export const CONTINUE_PROMPT = "Continue from where you left off.";
 
 export type InFlightRef = {
@@ -73,8 +77,14 @@ export function quitWhileBusyMessage(count: number): string {
  * Idempotent for the current turn only — a later turn after Continue still
  * gets a fresh note. Matching any interrupt in the transcript would skip
  * resume on the second quit.
+ *
+ * `shipUpdate` names the ship when the quit was for an update: the note says
+ * so, and the resume carries that ship's receipt.
  */
-export function markTurnInterrupted(session: Session): Session {
+export function markTurnInterrupted(
+  session: Session,
+  shipUpdate?: string,
+): Session {
   const sealed = { ...sealOpenWork(stopStreaming(session)), busy: false };
   if (lastBlockIsInterrupt(sealed)) return sealed;
   return {
@@ -84,11 +94,57 @@ export function markTurnInterrupted(session: Session): Session {
       {
         id: crypto.randomUUID(),
         role: "system",
-        text: INTERRUPT_MESSAGE,
+        text: shipUpdate ? UPDATE_INTERRUPT_MESSAGE : INTERRUPT_MESSAGE,
         notice: "interrupt",
+        ...(shipUpdate ? { shipUpdate } : {}),
       },
     ],
   };
+}
+
+/** The ship whose restart cut this session's last turn, if that's what cut it. */
+export function interruptingShip(session: Session): string | null {
+  const last = session.blocks[session.blocks.length - 1];
+  return lastBlockIsInterrupt(session) ? (last?.shipUpdate ?? null) : null;
+}
+
+/** What a ship's receipt says, as the app reports it (`ship_receipt`, src-tauri/src/ship.rs). */
+export type ShipNote = {
+  id: string;
+  phase: string;
+  reason?: string | null;
+  from?: { sha?: string; branch?: string } | null;
+  to?: { sha?: string; branch?: string } | null;
+  requestedBy?: { sessionId?: string | null } | null;
+  receiptPath?: string;
+  log?: string;
+};
+
+const buildLabel = (build?: { sha?: string; branch?: string } | null) =>
+  build?.sha ? `${build.branch ?? "?"} @ ${build.sha.slice(0, 7)}` : "an unknown build";
+
+/**
+ * The resume prompt for a turn a ship's restart cut. The session that asked
+ * for the ship gets its receipt; any other just hears what's running now.
+ */
+export function shipResumePrompt(sessionId: string, note: ShipNote | null): string {
+  if (!note) return `MonoCode Hub restarted for an update. ${CONTINUE_PROMPT}`;
+  const committed = note.phase === "committed";
+  const running = committed ? note.to : note.from;
+  const outcome = committed
+    ? `It committed: MonoCode Hub now runs ${buildLabel(note.to)} (was ${buildLabel(note.from)}).`
+    : note.phase === "rolled-back"
+      ? `It was rolled back${note.reason ? ` (${note.reason})` : ""}: MonoCode Hub runs ${buildLabel(running)} again.`
+      : `It ended ${note.phase}${note.reason ? ` (${note.reason})` : ""}; MonoCode Hub runs ${buildLabel(running)}.`;
+  if (note.requestedBy?.sessionId !== sessionId)
+    return `MonoCode Hub restarted for an update. ${outcome} ${CONTINUE_PROMPT}`;
+  const files = [
+    note.receiptPath ? `receipt ${note.receiptPath}` : null,
+    note.log ? `log ${note.log}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `Your ship ${note.id} finished. ${outcome}${files ? ` Check the ${files}.` : ""} Then ${CONTINUE_PROMPT.charAt(0).toLowerCase()}${CONTINUE_PROMPT.slice(1)}`;
 }
 
 export function workspaceFromResumed(
@@ -124,7 +180,10 @@ export function canAutoContinue(session: Session): boolean {
 
 function lastBlockIsInterrupt(session: Session): boolean {
   const last = session.blocks[session.blocks.length - 1];
-  return last?.role === "system" && last.text === INTERRUPT_MESSAGE;
+  return (
+    last?.role === "system" &&
+    (last.text === INTERRUPT_MESSAGE || last.text === UPDATE_INTERRUPT_MESSAGE)
+  );
 }
 
 export function inFlightSnapshotKey(refs: InFlightRef[]): string {
