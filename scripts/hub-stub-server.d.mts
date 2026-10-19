@@ -38,6 +38,8 @@ export type Stub = {
     jobs: Array<Record<string, unknown>>;
   };
   calls: Array<{ method: string; path: string; query: Record<string, string>; headers: Record<string, string | undefined> }>;
+  /** The app's delegation copies (ash-hub-delegation), by id: the newest version each sent. */
+  delegations: Map<string, Record<string, unknown> & { id: string; version: number; state: string }>;
   events: Array<Record<string, unknown>>;
   readonly latest: number;
   emit(kind: string, ref?: string | null, project?: string): Record<string, unknown>;

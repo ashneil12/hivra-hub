@@ -1,0 +1,687 @@
+// Delegations that survive restarts (docs/PHASE-2-DESIGN.md, H2).
+//
+// Every monitored sessions.start / sessions.send from a Mono is a stored row (src-tauri/src/delegations.rs). The row is
+// the truth and MonoSessionCompletionBatches is a cache of it for the running app, so the Mono still gets exactly one
+// report per generation of the work after a restart, a crash, an install or a usage-limit resume:
+// - live: record before the child starts, settle when its turn ends, mark queued (before the report enters the
+//   Mono's queue) and delivered (when the report goes to the Mono as a turn);
+// - boot: a finished row whose report never arrived is queued once; one still running waits for its resumed turn;
+//   one whose child is gone is reported cancelled; one whose owner is gone is dropped;
+// - a resumed turn (auto-continue, a usage-limit resume, a later message in a cut-off child) re-attaches to the
+//   child's row and bumps its generation, so its report has its own receipt (`mono-completion-<request>-g<n>`).
+import { invoke } from "@tauri-apps/api/core";
+import {
+  failedReason,
+  isProviderErrorClass,
+} from "../../../integrations/harness/core/providerFailure";
+import type { ControlOutcome } from "../../orchestration/model/orchestration";
+import {
+  CONTINUE_PROMPT,
+  wasTurnInterrupted,
+} from "../../sessions/model/inFlight";
+import type { QueuedMessage, Session } from "../../sessions/model/session";
+import {
+  completionMessage,
+  completionReceipt,
+  monoSessionCompletionResult,
+  type MonoSessionCompletionResult,
+} from "./monoSessionCompletion";
+
+export type DelegationState =
+  | "running"
+  | "question"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type DeliveryState =
+  | "pending"
+  | "queued"
+  | "delivered"
+  | "acknowledged"
+  | "disposed";
+
+/** One row, as delegations.rs serializes it. */
+export type Delegation = {
+  id: string;
+  ownerSession: string;
+  ownerMono: string | null;
+  batchId: string | null;
+  parentId: string | null;
+  rootId: string;
+  childSession: string;
+  requestId: string;
+  generation: number;
+  project: string | null;
+  title: string | null;
+  brief: string | null;
+  goal: string | null;
+  askIds: string[];
+  state: DelegationState;
+  errorClass: string | null;
+  error: string | null;
+  retryable: boolean | null;
+  resetsAt: number | null;
+  result: string | null;
+  pendingQuestion: string | null;
+  delivery: DeliveryState;
+  deliveryMessage: string | null;
+  createdAt: number;
+  updatedAt: number;
+  settledAt: number | null;
+  log: Record<string, unknown>[];
+  version: number;
+  mirroredVersion: number;
+  mirrorError: string | null;
+};
+
+export type RecordInput = {
+  ownerSession: string;
+  ownerMono?: string;
+  batchId?: string;
+  requestId: string;
+  childSession: string;
+  project?: string;
+  title?: string;
+  brief?: string;
+  goal?: string;
+  askIds?: string[];
+  by?: string;
+};
+
+export type SettleInput = {
+  id: string;
+  generation: number;
+  state: "completed" | "failed" | "cancelled";
+  result?: string;
+  error?: string;
+  errorClass?: string;
+  retryable?: boolean;
+  resetsAt?: number;
+  by?: string;
+};
+
+export type DeliveryInput = {
+  ids?: string[];
+  /** Every row a report message carries. */
+  messageId?: string;
+  delivery: DeliveryState;
+  /** The report message a queued row now waits in. */
+  queuedMessage?: string;
+  by?: string;
+};
+
+export type ChatBindInput = {
+  providerSession: string;
+  chatId: string;
+  monoId?: string;
+  role?: "lead" | "mono" | "worker";
+  delegationId?: string;
+};
+
+export type Change = { applied: boolean; row: Delegation | null };
+
+/** The store's commands (delegations.rs); tests pass an in-memory one. */
+export type DelegationsBackend = {
+  record(input: RecordInput): Promise<Delegation>;
+  settle(input: SettleInput): Promise<Change>;
+  reattach(
+    childSession: string,
+    resume: boolean,
+    by?: string,
+  ): Promise<Delegation | null>;
+  setQuestion(id: string, question: string | null, by?: string): Promise<Change>;
+  setDelivery(input: DeliveryInput): Promise<Delegation[]>;
+  cancel(ids: string[], reason?: string, by?: string): Promise<Delegation[]>;
+  refuse(id: string, by?: string): Promise<Change>;
+  listOpen(): Promise<Delegation[]>;
+  tree(id: string): Promise<Delegation[]>;
+  reportsSeen(ownerSession: string, messageIds: string[]): Promise<string[]>;
+  bindChat(input: ChatBindInput): Promise<boolean>;
+};
+
+export const tauriDelegations: DelegationsBackend = {
+  record: (input) => invoke("delegations_record", { input }),
+  settle: (input) => invoke("delegations_settle", { input }),
+  reattach: (childSession, resume, by) =>
+    invoke("delegations_reattach", { childSession, resume, by }),
+  setQuestion: (id, question, by) =>
+    invoke("delegations_set_question", { id, question, by }),
+  setDelivery: (input) => invoke("delegations_set_delivery", { input }),
+  cancel: (ids, reason, by) => invoke("delegations_cancel", { ids, reason, by }),
+  refuse: (id, by) => invoke("delegations_refuse", { id, by }),
+  listOpen: () => invoke("delegations_list_open"),
+  tree: (id) => invoke("delegations_tree", { id }),
+  reportsSeen: (ownerSession, messageIds) =>
+    invoke("delegations_reports_seen", { ownerSession, messageIds }),
+  bindChat: (input) => invoke("delegations_bind_chat", { input }),
+};
+
+export function isOpenDelegation(row: Pick<Delegation, "state">): boolean {
+  return row.state === "running" || row.state === "question";
+}
+
+/** A report is still owed: the work runs, or it finished and its report hasn't reached the owner. */
+export function isOwed(row: Pick<Delegation, "state" | "delivery">): boolean {
+  return (
+    isOpenDelegation(row) ||
+    row.delivery === "pending" ||
+    row.delivery === "queued"
+  );
+}
+
+/** What the row's settle stores: the report's status, text and the provider's reason for a failure. */
+export function settleInput(
+  row: Pick<Delegation, "id" | "generation">,
+  result: MonoSessionCompletionResult,
+  by?: string,
+): SettleInput {
+  const resetsAt = result.resetsAt ? Date.parse(result.resetsAt) : NaN;
+  return {
+    id: row.id,
+    generation: row.generation,
+    state: result.status,
+    result: result.result,
+    ...(result.reason || result.error
+      ? { error: result.reason ?? result.error }
+      : {}),
+    ...(result.errorClass ? { errorClass: result.errorClass } : {}),
+    ...(result.retryable !== undefined ? { retryable: result.retryable } : {}),
+    ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+    ...(by ? { by } : {}),
+  };
+}
+
+/** A finished row's report, rebuilt from what the row stored (its in-memory batch is gone). */
+export function storedResult(
+  row: Delegation,
+  child?: Session | null,
+): MonoSessionCompletionResult {
+  const status = isOpenDelegation(row)
+    ? "cancelled"
+    : (row.state as MonoSessionCompletionResult["status"]);
+  const prompt = row.brief ?? "";
+  const result = row.result ?? "";
+  const errorClass = isProviderErrorClass(row.errorClass)
+    ? row.errorClass
+    : undefined;
+  const resetsAt =
+    row.resetsAt != null && Math.abs(row.resetsAt) <= 8.64e15
+      ? new Date(row.resetsAt).toISOString()
+      : undefined;
+  return {
+    sessionId: row.childSession,
+    project: row.project ?? child?.cwd ?? "",
+    title: child?.title || row.title || "Agent session",
+    status,
+    originalPrompt: prompt.slice(0, 12_000),
+    result: result.slice(0, 12_000),
+    truncated: result.length >= 12_000,
+    ...(row.error ? { error: row.error } : {}),
+    ...(status === "failed" && errorClass
+      ? {
+          errorClass,
+          reason: failedReason(errorClass),
+          ...(row.retryable != null ? { retryable: row.retryable } : {}),
+          ...(resetsAt ? { resetsAt } : {}),
+        }
+      : {}),
+  };
+}
+
+/** The report of a child that finished while nobody was listening: its last reply, or the error that ended it. */
+export function transcriptResult(
+  row: Delegation,
+  child: Session,
+): MonoSessionCompletionResult {
+  const last = child.blocks[child.blocks.length - 1];
+  const failed = last?.role === "system" && last.notice === "error";
+  const outcome: ControlOutcome = failed
+    ? { status: "failed", text: "", error: last.text }
+    : { status: "completed", text: "" };
+  return monoSessionCompletionResult({
+    requestId: row.requestId,
+    sessionId: child.id,
+    project: row.project ?? child.cwd,
+    prompt: row.brief ?? "",
+    outcome,
+    session: child,
+    latestTurn: row.generation > 1,
+  });
+}
+
+/** The ids a row's report may have gone out under: the message it was queued in, then its own receipt. */
+export function reportIds(row: Delegation): string[] {
+  const receipt = completionReceipt(row.requestId, row.generation);
+  return [
+    ...(row.deliveryMessage && row.deliveryMessage !== receipt
+      ? [row.deliveryMessage]
+      : []),
+    receipt,
+  ];
+}
+
+export type BootStep =
+  /** Still running: its resumed turn re-attaches and reports. */
+  | { kind: "wait" }
+  /** Its owner is gone: nobody to report to. */
+  | { kind: "drop"; reason: string }
+  /** It finished (or its child vanished) while nobody listened: settle it, then report it. */
+  | { kind: "settle"; result: MonoSessionCompletionResult }
+  /** Its report already reached the owner. */
+  | { kind: "delivered"; messageId: string }
+  /** Its report waits in the owner's queue already. */
+  | { kind: "queued"; messageId: string }
+  /** Owed and nowhere: queue it, once. */
+  | { kind: "queue"; messageId: string };
+
+/**
+ * What boot recovery does with one row. `owner` is the owner's chat (null when it is gone), `child` the child session
+ * (null when it no longer exists), `seen` the report ids already in the owner's transcript.
+ */
+export function bootStep(
+  row: Delegation,
+  look: {
+    owner: Session | null;
+    child: Session | null;
+    seen: ReadonlySet<string>;
+  },
+): BootStep {
+  if (!look.owner) return { kind: "drop", reason: "Its owner is gone." };
+  if (isOpenDelegation(row)) {
+    if (!look.child)
+      return {
+        kind: "settle",
+        result: {
+          ...storedResult(row),
+          status: "cancelled",
+          error: "The session it was working in is gone.",
+        },
+      };
+    if (look.child.busy || wasTurnInterrupted(look.child))
+      return { kind: "wait" };
+    return { kind: "settle", result: transcriptResult(row, look.child) };
+  }
+  const ids = reportIds(row);
+  const seen = ids.find((id) => look.seen.has(id));
+  if (seen) return { kind: "delivered", messageId: seen };
+  const waiting = look.owner.queuedMessages?.find((message) =>
+    ids.includes(message.id),
+  );
+  if (waiting) return { kind: "queued", messageId: waiting.id };
+  return {
+    kind: "queue",
+    messageId: completionReceipt(row.requestId, row.generation),
+  };
+}
+
+/** What the tracker needs from the app. */
+export type DelegationHost = {
+  /** A session as this window has it. */
+  session(id: string): Session | undefined;
+  /** A session as this window has it, else as stored; null when it no longer exists. */
+  load(id: string): Promise<Session | null>;
+  /** The owner's chat opened here to take a report; null when it is gone. */
+  openOwner(id: string): Promise<Session | null>;
+  isMono(id: string): boolean;
+  /** Put a report in the owner's queue (it is deduplicated by its id). */
+  queueReport(ownerId: string, message: QueuedMessage): Promise<void>;
+  /** A quit cuts turns short: their rows stay running and their resumed turns report. */
+  quitting(): boolean;
+};
+
+/** One monitored launch or follow-up. */
+export type DelegationLaunch = {
+  /** The stored row (null when the store refused it; the in-memory batch still reports). */
+  row: Promise<Delegation | null>;
+  /** The child's turn ended. The batch cache queues the report; this keeps the row in step. */
+  settle(result: MonoSessionCompletionResult): void;
+  /** The CLI refused the launch and the calling turn already heard why: nothing is owed. */
+  refuse(): void;
+};
+
+/** Watches a turn that may resume delegated work. */
+export type ResumeMonitor = {
+  started(): void;
+  settled(outcome: ControlOutcome): void;
+};
+
+export type BootSummary = Record<BootStep["kind"], number>;
+
+const key = (owner: string, request: string) => `${owner}\u0000${request}`;
+
+/** The app's side of the delegation rows: one instance per window, every store call in order. */
+export class DelegationTracker {
+  private tail: Promise<unknown> = Promise.resolve();
+  private rows = new Map<string, Delegation>();
+  private requests = new Map<string, string>();
+  private openChildren = new Map<string, string>();
+  private binds = new Map<string, string>();
+  private loaded = false;
+
+  constructor(
+    private backend: DelegationsBackend,
+    private host: DelegationHost,
+  ) {}
+
+  /** Store calls run one at a time, in the order they were asked for, so a settle never overtakes its record. */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(work, work);
+    this.tail = next.catch(() => undefined);
+    return next;
+  }
+
+  private remember(row: Delegation | null | undefined) {
+    if (!row) return;
+    this.rows.set(row.id, row);
+    this.requests.set(key(row.ownerSession, row.requestId), row.id);
+    if (isOpenDelegation(row)) this.openChildren.set(row.childSession, row.id);
+    else if (this.openChildren.get(row.childSession) === row.id)
+      this.openChildren.delete(row.childSession);
+  }
+
+  /** The rows still running or owed are loaded (boot), so `openRowFor` is complete. */
+  isLoaded(): boolean {
+    return this.loaded;
+  }
+
+  /** A row this window knows, by id. */
+  row(id: string): Delegation | undefined {
+    return this.rows.get(id);
+  }
+
+  /** The open delegation a session is working for, if any. */
+  openRowFor(childSession: string): Delegation | undefined {
+    const id = this.openChildren.get(childSession);
+    return id ? this.rows.get(id) : undefined;
+  }
+
+  /** Record a monitored launch or follow-up before its child starts. */
+  launch(input: RecordInput): DelegationLaunch {
+    const row = this.serial(async () => {
+      const recorded = await this.backend.record(input);
+      this.remember(recorded);
+      return recorded;
+    }).catch((error: unknown) => {
+      console.error("Could not record the delegation", error);
+      return null;
+    });
+    return {
+      row,
+      settle: (result) => {
+        void this.serial(async () => {
+          const recorded = await row;
+          if (!recorded || this.host.quitting()) return;
+          const change = await this.backend.settle(
+            settleInput(recorded, result),
+          );
+          this.remember(change.row);
+        }).catch((error: unknown) =>
+          console.error("Could not settle the delegation", error),
+        );
+      },
+      refuse: () => {
+        void this.serial(async () => {
+          const recorded = await row;
+          if (!recorded) return;
+          this.remember((await this.backend.refuse(recorded.id)).row);
+        }).catch(() => undefined);
+      },
+    };
+  }
+
+  /**
+   * The batch cache is about to queue one message with these requests' reports. Recording where they wait comes
+   * first: if the app dies before the queue is saved, boot finds the message missing and queues the report again.
+   */
+  queued(
+    ownerId: string,
+    requestIds: string[],
+    messageId: string,
+  ): Promise<void> {
+    return this.serial(async () => {
+      const ids = requestIds.flatMap((request) => {
+        const id = this.requests.get(key(ownerId, request));
+        return id ? [id] : [];
+      });
+      if (!ids.length) return;
+      for (const row of await this.backend.setDelivery({
+        ids,
+        delivery: "queued",
+        queuedMessage: messageId,
+      }))
+        this.remember(row);
+    }).catch((error: unknown) =>
+      console.error("Could not mark the report queued", error),
+    );
+  }
+
+  /** A report went to its owner as a turn. */
+  delivered(messageId: string): void {
+    if (!messageId.startsWith("mono-completion-")) return;
+    void this.serial(async () => {
+      for (const row of await this.backend.setDelivery({
+        messageId,
+        delivery: "delivered",
+      }))
+        this.remember(row);
+    }).catch(() => undefined);
+  }
+
+  /** Ash removed a report from the owner's queue himself: it is not owed any more. */
+  discarded(messageId: string): void {
+    if (!messageId.startsWith("mono-completion-")) return;
+    void this.serial(async () => {
+      for (const row of await this.backend.setDelivery({
+        messageId,
+        delivery: "disposed",
+        by: "user",
+      }))
+        this.remember(row);
+    }).catch(() => undefined);
+  }
+
+  /** The owner stopped, archived or deleted its child: the work is cancelled and no report follows. */
+  stopOwned(ownerId: string, childSession: string): void {
+    void this.serial(async () => {
+      const ids = [...this.rows.values()]
+        .filter(
+          (row) =>
+            row.ownerSession === ownerId &&
+            row.childSession === childSession &&
+            isOwed(row),
+        )
+        .map((row) => row.id);
+      if (!ids.length) return;
+      for (const row of await this.backend.cancel(
+        ids,
+        "Stopped by its owner.",
+        `owner:${ownerId}`,
+      ))
+        this.remember(row);
+    }).catch(() => undefined);
+  }
+
+  /**
+   * A turn is about to start in `sessionId`. When it may pick delegated work back up (it resumes a cut-off turn, or
+   * the session is the child of an open row), watch it: it re-attaches when it starts and reports when it ends.
+   */
+  resumeMonitor(
+    sessionId: string,
+    text: string,
+    busy: boolean,
+  ): ResumeMonitor | undefined {
+    if (busy) return undefined;
+    const resume = text.trim() === CONTINUE_PROMPT;
+    if (!resume && this.loaded && !this.openChildren.has(sessionId))
+      return undefined;
+    let attached: Promise<Delegation | null> | undefined;
+    return {
+      started: () => {
+        if (attached) return;
+        attached = this.serial(async () => {
+          // Before the open rows are loaded the store decides (a plain turn only picks up an open row).
+          if (!resume && this.loaded && !this.openChildren.has(sessionId))
+            return null;
+          const row = await this.backend.reattach(
+            sessionId,
+            resume,
+            resume ? "resume" : "user",
+          );
+          this.remember(row);
+          return row;
+        }).catch(() => null);
+      },
+      settled: (outcome) => {
+        const pending = attached;
+        if (!pending) return;
+        void this.serial(async () => {
+          const row = await pending;
+          if (!row || this.host.quitting()) return;
+          const result = monoSessionCompletionResult({
+            requestId: row.requestId,
+            sessionId: row.childSession,
+            project: row.project ?? "",
+            prompt: row.brief ?? "",
+            outcome,
+            session: this.host.session(row.childSession),
+            latestTurn: true,
+          });
+          const change = await this.backend.settle(settleInput(row, result));
+          this.remember(change.row);
+          if (change.applied && change.row)
+            await this.report(change.row, result);
+        }).catch((error: unknown) =>
+          console.error("Could not report the resumed delegation", error),
+        );
+      },
+    };
+  }
+
+  /** Queue one row's report under its receipt. Only inside a serial job. */
+  private async report(row: Delegation, result: MonoSessionCompletionResult) {
+    const message = completionMessage(
+      completionReceipt(row.requestId, row.generation),
+      [result],
+    );
+    const already =
+      row.delivery === "queued" && row.deliveryMessage === message.id;
+    const changed = await this.backend.setDelivery({
+      ids: [row.id],
+      delivery: "queued",
+      queuedMessage: message.id,
+    });
+    changed.forEach((entry) => this.remember(entry));
+    if (!changed.length && !already) return;
+    await this.host.queueReport(row.ownerSession, message);
+  }
+
+  /**
+   * Load the rows still running or owed. In the one window that recovers (`recover`), act on each: queue a finished
+   * report once, settle a child that finished or vanished, drop rows whose owner is gone, and leave running ones to
+   * their resumed turns.
+   */
+  async boot(recover: boolean): Promise<BootSummary> {
+    const summary: BootSummary = {
+      wait: 0,
+      drop: 0,
+      settle: 0,
+      delivered: 0,
+      queued: 0,
+      queue: 0,
+    };
+    let rows: Delegation[] = [];
+    try {
+      rows = await this.serial(() => this.backend.listOpen());
+      rows.forEach((row) => this.remember(row));
+    } finally {
+      this.loaded = true;
+    }
+    if (!recover) return summary;
+    for (const listed of rows) {
+      await this.serial(async () => {
+        const row = this.rows.get(listed.id) ?? listed;
+        if (!isOwed(row)) return;
+        const mono = this.host.isMono(row.ownerSession);
+        const owner = mono ? await this.host.openOwner(row.ownerSession) : null;
+        // A Mono whose chat can't be opened right now keeps its rows for the next boot.
+        if (mono && !owner) return;
+        const child = owner ? await this.host.load(row.childSession) : null;
+        const seen = owner
+          ? new Set(
+              await this.backend.reportsSeen(row.ownerSession, reportIds(row)),
+            )
+          : new Set<string>();
+        const step = bootStep(row, { owner, child, seen });
+        summary[step.kind]++;
+        await this.apply(row, step);
+      }).catch((error: unknown) =>
+        console.error("Could not recover a delegation", error),
+      );
+    }
+    return summary;
+  }
+
+  /** Carry out one boot step. Only inside a serial job. */
+  private async apply(row: Delegation, step: BootStep) {
+    switch (step.kind) {
+      case "wait":
+        return;
+      case "drop":
+        for (const entry of await this.backend.cancel(
+          [row.id],
+          step.reason,
+          "boot",
+        ))
+          this.remember(entry);
+        return;
+      case "settle": {
+        const change = await this.backend.settle(
+          settleInput(row, step.result, "boot"),
+        );
+        this.remember(change.row);
+        if (change.applied && change.row)
+          await this.report(change.row, step.result);
+        return;
+      }
+      case "delivered":
+        for (const entry of await this.backend.setDelivery({
+          ids: [row.id],
+          delivery: "delivered",
+          by: "boot",
+        }))
+          this.remember(entry);
+        return;
+      case "queued":
+        if (row.delivery === "queued" && row.deliveryMessage === step.messageId)
+          return;
+        for (const entry of await this.backend.setDelivery({
+          ids: [row.id],
+          delivery: "queued",
+          queuedMessage: step.messageId,
+          by: "boot",
+        }))
+          this.remember(entry);
+        return;
+      case "queue":
+        await this.report(
+          row,
+          storedResult(row, await this.host.load(row.childSession)),
+        );
+    }
+  }
+
+  /** Tell Ash OS which chat a Claude session is (only when that changed). */
+  bindChat(input: ChatBindInput): void {
+    const signature = JSON.stringify([
+      input.chatId,
+      input.monoId ?? null,
+      input.role ?? null,
+      input.delegationId ?? null,
+    ]);
+    if (this.binds.get(input.providerSession) === signature) return;
+    this.binds.set(input.providerSession, signature);
+    void this.backend.bindChat(input).catch(() => {
+      this.binds.delete(input.providerSession);
+    });
+  }
+}

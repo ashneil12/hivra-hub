@@ -148,8 +148,12 @@ describe("Mono completion batches", () => {
     done(snapshot);
     expect(ready).not.toHaveBeenCalled();
     batches.closeInactive(() => false);
+    expect(ready.mock.calls[0][3]).toEqual(["request"]);
+    expect(ready.mock.calls[0][1].text.startsWith("[MonoCode report] ")).toBe(
+      true,
+    );
     expect(ready.mock.calls[0][1]).toMatchObject({
-      id: "mono-completion-request",
+      id: "mono-completion-request-g1",
       monoSessionCompletion: {
         sessionId: "worker",
         title: "Agent session",
@@ -159,6 +163,16 @@ describe("Mono completion batches", () => {
     expect(ready.mock.calls[0][1].monoSessionCompletion).not.toHaveProperty(
       "sessionCount",
     );
+  });
+
+  it("gives a resumed generation's report its own receipt", () => {
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready);
+    batches.watch(origin, "request", "worker", { generation: 3 })(
+      result("worker"),
+    );
+    batches.closeInactive(() => false);
+    expect(ready.mock.calls[0][1].id).toBe("mono-completion-request-g3");
   });
 
   it("waits for a retry of a rejected launch and ignores its old settlement callback", () => {
