@@ -15,6 +15,7 @@ import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
 import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
+import { RailAction } from "./RailAction";
 import { saveMonosEnabled } from "../../features/settings/model/settings";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
@@ -31,6 +32,7 @@ import {
   monoLook,
   monoProjectsPhrase,
   monosSnapshot,
+  monoWorksOn,
   reorderMonos,
   saveMonoMascot,
   saveMonoName,
@@ -47,7 +49,8 @@ export type MonoRailProps = {
   /** Replies each Mono has that the user has not looked at yet, by Mono id. */
   unseenCounts?: ReadonlyMap<string, number>;
   onOpen: (monoId: string) => void;
-  onCreate: () => void;
+  /** Creates a Mono, given these projects to start with. */
+  onCreate: (projects?: readonly string[]) => void;
   onDelete: (monoId: string) => void;
   /** Hub mode: list only the Monos that work on this project folder. */
   projectFilter?: string;
@@ -93,7 +96,15 @@ export function MonoRailSection({
   onDelete,
   projectFilter,
   rank,
-}: MonoRailProps) {
+  project,
+}: MonoRailProps & {
+  /**
+   * Lists only the Monos working on this project, as the inset sidebar does;
+   * a Mono on several projects shows in each of them. The hub (`rank` set)
+   * keeps its one global list here too.
+   */
+  project?: string;
+}) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
   useRoleNamesVersion();
   useWaitingSoulsVersion();
@@ -102,10 +113,10 @@ export function MonoRailSection({
   const shown = (name: string) => (rank ? plainName(name) : { primary: name });
   const monos = useMemo(
     () =>
-      {
-        return railMonos(listMonos(), projectFilter, rank);
-      },
-    [snapshot, projectFilter, rank],
+      railMonos(listMonos(), projectFilter, rank).filter(
+        (mono) => !!rank || !project || monoWorksOn(mono, project),
+      ),
+    [snapshot, projectFilter, rank, project],
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
@@ -121,33 +132,54 @@ export function MonoRailSection({
   // Hub: a project with no Monos shows nothing here; its empty Leadership
   // team offers "Add a Mono" instead, so the intro card isn't doubled up.
   if (monos.length === 0 && projectFilter) return null;
-  // With no Mono yet, the card stands in for the section (plain Monocode only; the hub has its default team).
-  if (monos.length === 0 && !rank)
+  // With no Mono yet, the card stands in for the rail's section (plain
+  // Monocode only; the hub has its default team). A project with none of its
+  // own offers one under the label instead.
+  if (monos.length === 0 && !rank && !project)
     return (
       <div className="mb-2 shrink-0" data-mono-rail>
         <MonoIntroCard
           look={nextMonoLook(monos)}
-          onCreate={onCreate}
+          onCreate={() => onCreate()}
           onHide={() => saveMonosEnabled(false)}
         />
       </div>
     );
 
   return (
-    <div className="mb-2 shrink-0" data-mono-rail>
-      <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
-        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/50">
+    <div
+      className={`shrink-0 ${project ? "px-2 pb-3" : "mb-2"}`}
+      data-mono-rail
+      data-mono-project={project}
+    >
+      <div
+        className={
+          // The inset sidebar's section labels.
+          project
+            ? "flex h-7 items-center gap-1 px-2 text-[12px] font-medium text-content/50"
+            : "flex items-center gap-1 px-3 pb-1.5 pt-1"
+        }
+      >
+        <span
+          className={`min-w-0 flex-1 truncate${
+            project ? "" : " px-1 text-xs leading-5 text-content/50"
+          }`}
+        >
           Monos
         </span>
-        <button
-          type="button"
-          title="New mono"
-          aria-label="New mono"
-          onClick={onCreate}
-          className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content"
-        >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-        </button>
+        {monos.length ? (
+          <button
+            type="button"
+            title="New mono"
+            aria-label="New mono"
+            onClick={() => onCreate(project ? [project] : undefined)}
+            className={`grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content${
+              project ? " -mr-0.5" : ""
+            }`}
+          >
+            <Plus className="size-3.5" strokeWidth={1.75} />
+          </button>
+        ) : null}
       </div>
       {rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
         <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
@@ -174,7 +206,14 @@ export function MonoRailSection({
           ))}
         </div>
       ) : null}
-      <div className="flex flex-col gap-px px-2">
+      <div className={`flex flex-col gap-px${project ? "" : " px-2"}`}>
+        {monos.length === 0 ? (
+          <RailAction
+            label="New mono"
+            icon={Plus}
+            onClick={() => onCreate(project ? [project] : undefined)}
+          />
+        ) : null}
         {monos.map((mono) => {
           const look = monoLook(mono);
           const state = states.get(mono.id) ?? IDLE;
