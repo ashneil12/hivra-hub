@@ -3,7 +3,11 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
+const env: Record<string, string | undefined> = process.env;
+const host = env.TAURI_DEV_HOST;
+// A dev slot's own port (scripts/hub-dev.mjs puts it in the slot's beforeDevCommand). 1420 otherwise: plain
+// `npm run dev` and upstream's devUrl. strictPort stays on, so a clash fails loudly instead of moving the page.
+const port = Number(env.MONOCODE_VITE_PORT) || 1420;
 
 export default defineConfig(async ({ mode }) => {
   const stable = mode === "stable";
@@ -45,7 +49,7 @@ export default defineConfig(async ({ mode }) => {
       },
     },
     server: {
-      port: 1420,
+      port,
       strictPort: true,
       host: host || false,
       hmr: stable
@@ -54,11 +58,12 @@ export default defineConfig(async ({ mode }) => {
           ? {
               protocol: "ws",
               host,
-              port: 1421,
+              port: port + 1,
             }
           : undefined,
       watch: {
-        ignored: stable ? ["**/*"] : ["**/src-tauri/**"],
+        // target/ holds every slot's generated config and Rust build output; none of it is page source.
+        ignored: stable ? ["**/*"] : ["**/src-tauri/**", "**/target/**"],
       },
     },
   };
