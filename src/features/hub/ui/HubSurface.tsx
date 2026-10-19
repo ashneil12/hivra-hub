@@ -14,6 +14,9 @@ import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
+import { WaitingOnYou } from "./WaitingOnYou";
+import { OlderQuestions } from "./OlderQuestions";
+import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { ProposalView } from "./ProposalView";
@@ -91,6 +94,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 }
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
+  useWaitingChatsVersion();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(25);
@@ -104,6 +108,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const sinceAt = data.sinceAt();
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
+  // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
+  const chatsWaiting = waitingChats(projectId).length > 0;
+  const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
       {!projectId ? <HomeTools /> : null}
@@ -137,6 +144,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </div>
         </section>
       ) : null}
+      <WaitingOnYou projectId={projectId} />
       <label className="flex flex-col gap-1 text-[12px] text-content/60">
         Find an ask, including Later and Older
         <input type="search" aria-label="Search asks" value={query} onChange={(e) => { setQuery(e.target.value); setShown(25); }} placeholder="Search by words or project…" className="rounded-md border border-stroke bg-content/3 px-3 py-2 text-[13px] text-content outline-none focus:border-content/30" />
@@ -150,7 +158,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
             {matches.slice(0, shown).map((n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />)}
             {matches.length > shown ? <button type="button" onClick={() => setShown((n) => n + 25)} className="mt-2 self-start rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/70">Show 25 more</button> : null}</>;
         })()}
-      </section> : projects.map((p) => {
+      </section> : <>{chatsWaiting && needsShown ? <h2 className="-mb-4 text-xs text-content/60" data-hub-needs-heading>Needs you</h2> : null}{projects.map((p) => {
         const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
         const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
         const pOther = waiting.filter((w) => w.projectId === p.id && !w.state && !w.need);
@@ -172,8 +180,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
             </div>
           </section>
         );
-      })}
-      {!query.trim() ? <OlderGroup projectId={projectId} onSheet={setSheet} /> : null}
+      })}</>}
+      {!query.trim() ? <OlderQuestions projectId={projectId} renderRow={(n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />} /> : null}
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
@@ -205,38 +213,6 @@ function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet:
       </div>
       {toggle("Hide Later")}
     </div>
-  );
-}
-
-/**
- * Older questions (recovered from past chats and the like). They are not Needs: in no badge and no count, and shut
- * until Ash opens them. On Today they sit once at the bottom, under their project's name; in a project, its own.
- */
-function OlderGroup({ projectId, onSheet }: { projectId: string | undefined; onSheet: (sheet: SheetFor) => void }) {
-  const [open, setOpen] = useState(false);
-  const data = hubData();
-  const older = data.listOlder(projectId);
-  if (!older.length) return null;
-  const names = new Map(data.listProjects().map((p) => [p.id, p.name]));
-  const groups = [...new Set(older.map((n) => n.projectId))];
-  return (
-    <section data-hub-older>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 text-xs text-content/60 hover:text-content">
-        Older ({older.length})
-      </button>
-      {open ? (
-        <div className="mt-1 flex flex-col">
-          {groups.map((pid) => (
-            <div key={pid} className="flex flex-col">
-              {projectId ? null : <h2 className="mb-1 mt-2 px-2 text-xs text-content/60">{names.get(pid) ?? pid}</h2>}
-              {older.filter((n) => n.projectId === pid).map((n) => (
-                <NeedRow key={n.id} need={n} onSheet={onSheet} />
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </section>
   );
 }
 
