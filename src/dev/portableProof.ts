@@ -88,6 +88,8 @@ async function importRun(): Promise<void> {
   $("[data-portable-import-file]")?.click();
   await until(() => $("[data-portable-preview]") ?? $("[data-portable-problem]"), "the preview");
   await step(4, $("[data-portable-preview]") ? "preview" : "read failed");
+  $("[data-portable-section=monos]")?.scrollIntoView({ block: "start" });
+  await step(41, "preview monos and teams");
   $("[data-portable-section=memory]")?.scrollIntoView({ block: "start" });
   await step(5, "preview memory and workspace");
   $("[data-portable-restore]")?.click();
@@ -96,10 +98,11 @@ async function importRun(): Promise<void> {
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
   await until(() => $("[data-souls-waiting]"), "Monos waiting for an OK", 20_000).catch(() => null);
   await step(7, "waiting for your OK");
-  const ok = [...document.querySelectorAll<HTMLElement>("[data-souls-waiting] button")].find((b) => b.textContent === "OK");
-  ok?.click();
+  // OK on the proof's own Mono (another engine, its own soul and memory): it is seated only now.
+  const row = [...document.querySelectorAll<HTMLElement>("[data-souls-waiting] > div")].find((r) => r.textContent?.includes("Marketing"));
+  [...(row?.querySelectorAll<HTMLElement>("button") ?? [])].find((b) => b.textContent === "OK")?.click();
   await wait(2_000);
-  await step(8, "one seated");
+  await step(8, "Marketing seated");
 }
 
 async function run(): Promise<void> {
