@@ -5,6 +5,7 @@
 //   npm run hub:dev                      # this worktree's slot, invented Ash OS data (the stub)
 //   npm run hub:dev -- --hub live        # the real Ash OS, read-only (scripts/hub-live-proxy.mjs)
 //   npm run hub:dev -- --hub off         # no Ash OS at all
+//   npm run hub:dev -- --seed            # first copy a cleaned backup of the daily chats in (scripts/hub-seed-dev.mjs)
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
@@ -452,6 +453,8 @@ export function parseArgs(argv) {
   const options = {
     slot: value("slot"),
     hub: value("hub") ?? "stub",
+    seed: own.includes("--seed") || own.includes("--reseed"),
+    reseed: own.includes("--reseed"),
     print: own.includes("--print"),
     extra,
   };
@@ -475,6 +478,11 @@ async function main() {
         "Switch to that window, or quit it first.",
     );
     return 75;
+  }
+  if (options.seed) {
+    const { seedDev } = await import("./hub-seed-dev.mjs");
+    const report = await seedDev({ to: plan.dataDir, replace: options.reseed });
+    console.log(`hub:dev: seeded ${report.sessions} chats into ${tilde(plan.dataDir)} (cleared ${JSON.stringify(report.cleared)})`);
   }
   registerSlot(plan);
   writeSlotConfig(plan);

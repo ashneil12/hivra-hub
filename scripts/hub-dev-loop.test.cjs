@@ -72,6 +72,7 @@ test("both build paths set the Hub flag, so no path can open MonoCode under the 
 
 test("hub:dev runs scripts/hub-dev.mjs, which passes the overlay and then the slot's config to tauri dev", async () => {
   assert.equal(scripts["hub:dev"], "node scripts/hub-dev.mjs");
+  assert.equal(scripts["hub:seed-dev"], "node scripts/hub-seed-dev.mjs");
   const { tauriArgs } = await load("hub-dev.mjs");
   const args = tauriArgs("/x/target/hub-dev/s.conf.json", ["--release"], root);
   assert.deepEqual(args, [

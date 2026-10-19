@@ -30,6 +30,7 @@
     "build:windows": "set \"RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc\" && tauri build --bundles nsis",
     "hub:check": "bash scripts/identity-guard.sh",
     "hub:dev": "node scripts/hub-dev.mjs",
+    "hub:seed-dev": "node scripts/hub-seed-dev.mjs",
     "hub:build": "CARGO_BUILD_BUILD_DIR=\"$HOME/Library/Caches/monocode-hub/cargo-build\" tauri build --config src-tauri/tauri.hub.conf.json --bundles app",
     "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
     "hub:install": "npm run hub:verify && rm -rf \"$HOME/Applications/MonoCode Hub.app\" && cp -R \"target/release/bundle/macos/MonoCode Hub.app\" \"$HOME/Applications/\" && echo \"installed: ~/Applications/MonoCode Hub.app\"",
