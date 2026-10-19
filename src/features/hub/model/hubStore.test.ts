@@ -45,7 +45,7 @@ describe("first read", () => {
     await waitFor(() => store.getSnapshot().status === "ready", "ready");
     const snap = store.getSnapshot();
     expect(snap.projects.map((p) => p.id)).toEqual(["vg-game", "hivra", "nibbii", "hub"]);
-    expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game" });
+    expect(snap.projects[0]).toEqual({ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/example/Projects/vg-game" });
     expect(snap.projects[3].folder).toBe("/Users/example/Projects/monocode-hub");
     await waitFor(() => store.getSnapshot().since, "since");
     expect(store.getSnapshot().since?.overall.plainText).toContain("Example:");

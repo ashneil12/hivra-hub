@@ -53,10 +53,10 @@ export function seedState(now = Date.now()) {
   const h = 3600_000;
   return {
     projects: [
-      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game", workOwner: "ash_os", status: "active" },
-      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
-      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "folder", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
-      { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "folder", folder: "/Users/example/Projects/monocode-hub", workOwner: "ash_os", status: "active" },
+      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/example/Projects/vg-game", workOwner: "ash_os", status: "active" },
+      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
+      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
+      { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/Users/example/Projects/monocode-hub", workOwner: "ash_os", status: "active" },
     ],
     needs: [
       { id: "q1", projectId: "vg-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionTarget: "gate:project:playtests", rank: 1, since: now - 5 * h },

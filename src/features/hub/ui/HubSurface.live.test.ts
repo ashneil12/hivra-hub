@@ -198,8 +198,7 @@ describe("ships clean and calm", () => {
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
     expect(labels).toEqual(["Today", "EXO", "Hivra", "Nibbii", "Hub"]);
-    // Each project wears its shape from Ash OS, grey (Ash picks another from the tile's menu). This stub says "folder"
-    // for all four, like the older service, so the app's stand-ins show: never the ghost.
+    // Each project wears its shape from Ash OS, grey (Ash picks another from the tile's menu): never the ghost.
     const tiles = [...container.querySelectorAll("[data-hub-strip] [data-project-glyph]")].map((g) => g.getAttribute("data-project-shape"));
     expect(tiles).toEqual(["gamepad", "sparkles", "palette", "gauge"]);
   });
