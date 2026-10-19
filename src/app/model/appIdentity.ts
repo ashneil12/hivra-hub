@@ -25,6 +25,7 @@ export type AppPolicy = {
   reminders: boolean;
   autoResume: boolean;
   notificationPrompt: boolean;
+  globalShortcut: boolean;
 };
 
 export type AppIdentity = {
@@ -51,6 +52,7 @@ const DAILY_POLICY: AppPolicy = {
   reminders: true,
   autoResume: true,
   notificationPrompt: true,
+  globalShortcut: true,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

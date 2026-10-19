@@ -194,6 +194,8 @@ pub fn quick_composer_set_enabled(
     enabled: bool,
     shortcut: Option<String>,
 ) -> Result<(), String> {
+    // A dev copy never claims the system-wide shortcut: the daily app keeps it (src/instance.rs).
+    let enabled = enabled && crate::instance::policy().global_shortcut;
     let next = parse_shortcut(shortcut.as_deref().unwrap_or(DEFAULT_SHORTCUT))?;
     let shortcuts = app.global_shortcut();
     let state = app.state::<QuickComposerState>();

@@ -38,8 +38,10 @@ fn main() {
 /// any bundle without launching it.
 ///
 /// `dirty` means tracked files differed from the commit when this ran; untracked files don't count. The script reruns
-/// when HEAD or the branch moves and when a Rust source changes; a release build also reruns it whenever the frontend
-/// build changes (tauri-build watches `dist`).
+/// when HEAD moves (its reflog, and the branch ref when it is a loose file), when a Rust source or manifest changes,
+/// and when the frontend build in `../dist` changes, which every `tauri build` rewrites. Tauri itself doesn't watch
+/// `dist` here (the context comes from the `generate_context!` macro), so this script must. A frontend-only edit
+/// between builds without `tauri build` (e.g. `cargo test`) keeps the last stamp; Ship checks the tree itself.
 fn build_stamp() {
     let git = |args: &[&str]| -> Option<String> {
         let output = Command::new("git").args(args).output().ok()?;
@@ -67,6 +69,8 @@ fn build_stamp() {
     };
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         watch(format!("{git_dir}/HEAD"));
+        // Every commit, checkout or reset appends here, even when the branch ref is packed.
+        watch(format!("{git_dir}/logs/HEAD"));
     }
     if let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
         watch(format!("{common}/packed-refs"));
@@ -74,7 +78,16 @@ fn build_stamp() {
             watch(format!("{common}/refs/heads/{branch}"));
         }
     }
-    println!("cargo:rerun-if-changed=src");
+    for path in [
+        "src",
+        "Cargo.toml",
+        "../Cargo.toml",
+        "../Cargo.lock",
+        "../crates",
+        "../dist",
+    ] {
+        watch(path.to_string());
+    }
 
     let stamp = serde_json::json!({
         "sha": sha.unwrap_or_else(|| "unknown".into()),

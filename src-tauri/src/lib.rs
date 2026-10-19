@@ -278,7 +278,7 @@ pub fn run() {
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
     if let Err(error) = instance::apply_dev_environment(&identity) {
-        eprintln!("monocode: dev copy: {error}");
+        instance::refuse(&instance::Refusal::DevSetup { error });
     }
     let policy = identity.policy();
     let app_info = instance::app_info(&identity, &product, &version);
@@ -316,10 +316,7 @@ pub fn run() {
         .setup(move |app| {
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
-                instance::refuse(&instance::Refusal::InUse {
-                    owner: instance::read_running(&claim.data_dir),
-                    data_dir: claim.data_dir.clone(),
-                });
+                instance::claim_after_handoff(&identity, &version, &claim.data_dir);
             }
             // The lock must guard the folder this app really uses.
             let app_data = app.path().app_data_dir().ok();
@@ -328,6 +325,12 @@ pub fn run() {
                     data_dir: claim.data_dir.clone(),
                     error: format!("the app's data folder is {app_data:?}"),
                 });
+            }
+            // Never served to a page: reading the lock file in this process would release the lock.
+            for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
+                let _ = app
+                    .asset_protocol_scope()
+                    .forbid_file(claim.data_dir.join(name));
             }
             if policy.reap_orphans {
                 harness::reap_orphaned_harness_processes();

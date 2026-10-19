@@ -26,7 +26,7 @@
 //! proxy, never port 18767 or the live key), use the daily Keychain names (`hub_keychain.rs`: `monocode-hub-dev:*`
 //! only), give Claude Ash's MCP servers, hooks or `~/.claude` (`harness.rs`: one shared
 //! `~/.monocode-hub-dev/claude-config`), or run the orphan reaper, phone access, habits, automations, reminders,
-//! auto-resume or the notification prompt.
+//! auto-resume, the notification prompt or the quick composer's system-wide shortcut.
 //!
 //! The build stamp (`build.rs`) is embedded as one `MONOCODE-STAMP:{…}` string, so scripts read it from any bundle
 //! without launching it. `monocode version --json` and the `app.version` action return it too.
@@ -99,6 +99,8 @@ pub struct Policy {
     /// Continue chats a quit or crash cut off.
     pub auto_resume: bool,
     pub notification_prompt: bool,
+    /// The quick composer's system-wide shortcut. Only one app can hold it, and the daily app keeps it.
+    pub global_shortcut: bool,
 }
 
 impl Kind {
@@ -115,6 +117,7 @@ impl Kind {
             reminders: daily,
             auto_resume: daily,
             notification_prompt: daily,
+            global_shortcut: daily,
         }
     }
 }
@@ -251,13 +254,21 @@ pub struct Claim {
     pub owner: bool,
 }
 
+/// This binary's path with symlinks and `.` resolved, so `./monocode` or a linked folder still names its bundle.
+fn this_exe() -> PathBuf {
+    std::env::current_exe()
+        .map(|exe| exe.canonicalize().unwrap_or(exe))
+        .unwrap_or_default()
+}
+
 /// Rule 3, then the data folder: take the lock, then record this process in `running.json`. Shows an alert and exits
 /// when this copy must not run or another copy owns the folder.
 ///
-/// On Windows a second launch goes on without the lock: tauri-plugin-single-instance, registered first in `run()`,
-/// reopens the running copy's window and exits this process before setup. Setup refuses if that didn't happen.
+/// On Windows a busy lock is tried once, without waiting: tauri-plugin-single-instance, registered first in `run()`,
+/// reopens the running copy's window and exits this process before setup. If setup is reached anyway, it waits for
+/// the lock there ([`claim_after_handoff`]).
 pub fn claim(identity: &Identity, version: &str) -> Claim {
-    let exe = std::env::current_exe().unwrap_or_default();
+    let exe = this_exe();
     if cfg!(target_os = "macos") {
         let home = dirs::home_dir().unwrap_or_default();
         if let Err(refusal) = check_location(identity, cfg!(debug_assertions), &exe, &home) {
@@ -270,31 +281,79 @@ pub fn claim(identity: &Identity, version: &str) -> Claim {
             error: "there is no home folder".into(),
         });
     };
-    let lock = match InstanceLock::acquire(&data, LOCK_WAIT) {
-        Ok(lock) => lock,
-        Err(LockError::Busy) if cfg!(windows) => {
-            return Claim {
-                data_dir: data,
-                owner: false,
-            }
-        }
-        Err(LockError::Busy) => refuse(&Refusal::InUse {
+    let wait = if cfg!(windows) {
+        Duration::ZERO
+    } else {
+        LOCK_WAIT
+    };
+    match take(identity, version, &exe, &data, wait) {
+        Ok(()) => Claim {
+            data_dir: data,
+            owner: true,
+        },
+        Err(LockError::Busy) if cfg!(windows) => Claim {
+            data_dir: data,
+            owner: false,
+        },
+        Err(error) => refuse(&lock_refusal(error, data)),
+    }
+}
+
+/// Windows, in setup: no running copy took over this launch, so wait for the lock like any other platform.
+pub fn claim_after_handoff(identity: &Identity, version: &str, data: &Path) {
+    if let Err(error) = take(identity, version, &this_exe(), data, LOCK_WAIT) {
+        refuse(&lock_refusal(error, data.to_path_buf()));
+    }
+}
+
+fn lock_refusal(error: LockError, data: PathBuf) -> Refusal {
+    match error {
+        LockError::Busy => Refusal::InUse {
             owner: read_running(&data),
             data_dir: data,
-        }),
-        Err(LockError::Failed(error)) => refuse(&Refusal::NoLock {
+        },
+        LockError::Failed(error) => Refusal::NoLock {
             data_dir: data,
             error,
-        }),
-    };
-    let record = RunningRecord::for_this_process(identity, version, &exe);
-    if let Err(error) = write_running(&data, &record) {
+        },
+    }
+}
+
+/// Take the lock, record this process beside it and keep the lock for the rest of the process.
+fn take(
+    identity: &Identity,
+    version: &str,
+    exe: &Path,
+    data: &Path,
+    wait: Duration,
+) -> Result<(), LockError> {
+    let lock = InstanceLock::acquire(data, wait)?;
+    let record = RunningRecord::for_this_process(identity, version, exe);
+    if let Err(error) = write_running(data, &record) {
         eprintln!("monocode: couldn't write {RUNNING_FILE}: {error}");
     }
-    let _ = LOCK.set(Mutex::new(lock));
-    Claim {
-        data_dir: data,
-        owner: true,
+    if let Err(unused) = LOCK.set(Mutex::new(lock)) {
+        // Never released early, even if this ran twice.
+        std::mem::forget(unused);
+    }
+    Ok(())
+}
+
+/// The app's own file commands refuse the lock file. Closing any handle to a file drops this process's POSIX locks
+/// on it, and SQLite's lock is one, so opening, copying or replacing the file from inside the app would let a second
+/// copy in. Deleting or renaming it would do the same from any process.
+pub fn guard_lock_file(path: &Path) -> Result<(), String> {
+    let is_lock = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == LOCK_FILE || name == format!("{LOCK_FILE}-journal"));
+    if is_lock {
+        Err(format!(
+            "{} is MonoCode Hub's instance lock. The app won't open, copy, move or remove it.",
+            path.display()
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -480,6 +539,10 @@ pub enum Refusal {
         found: i64,
         supported: i64,
     },
+    /// A dev copy that can't set up its own Claude folder would fall back to `~/.claude`.
+    DevSetup {
+        error: String,
+    },
 }
 
 impl Refusal {
@@ -489,7 +552,7 @@ impl Refusal {
             | Self::DebugDaily
             | Self::DailyOutsideApplications { .. } => EXIT_WRONG_COPY,
             Self::InUse { .. } => EXIT_IN_USE,
-            Self::NoLock { .. } => EXIT_NO_LOCK,
+            Self::NoLock { .. } | Self::DevSetup { .. } => EXIT_NO_LOCK,
             Self::NewerDatabase { .. } => EXIT_NEWER_DATA,
         }
     }
@@ -502,6 +565,7 @@ impl Refusal {
             Self::InUse { .. } => "MonoCode Hub is already open",
             Self::NoLock { .. } => "MonoCode Hub couldn't claim its data folder",
             Self::NewerDatabase { .. } => "This build is older than its data",
+            Self::DevSetup { .. } => "This dev copy couldn't set up its own Claude folder",
         }
     }
 
@@ -546,6 +610,10 @@ impl Refusal {
                 "The database in {} was written by a newer build (schema {found}; this build knows up to \
                  {supported}). Open the newer app instead: this one would misread it.",
                 data_dir.display()
+            ),
+            Self::DevSetup { error } => format!(
+                "{error}. A dev copy doesn't run without it: its Claude sessions, terminals and file lookups would \
+                 use ~/.claude instead."
             ),
         }
     }
@@ -1078,7 +1146,34 @@ mod tests {
     }
 
     #[test]
+    fn the_apps_own_file_commands_refuse_the_lock_file() {
+        for lock in [
+            "/Users/a/Library/Application Support/com.ash.monocode-hub/instance-owner.sqlite",
+            "/x/instance-owner.sqlite-journal",
+        ] {
+            let error = guard_lock_file(Path::new(lock)).unwrap_err();
+            assert!(error.contains("instance lock"), "{error}");
+        }
+        for fine in [
+            "/x/running.json",
+            "/x/monocode.db",
+            "/x/instance-owner.sqlite.txt",
+            "/x/instance-owner.sqlite/inside",
+            "/",
+        ] {
+            assert!(guard_lock_file(Path::new(fine)).is_ok(), "{fine}");
+        }
+    }
+
+    #[test]
     fn each_refusal_has_its_exit_code() {
+        assert_eq!(
+            Refusal::DevSetup {
+                error: "no home".into()
+            }
+            .exit_code(),
+            EXIT_NO_LOCK
+        );
         let dir = PathBuf::from("/tmp/x");
         assert_eq!(
             Refusal::NewerDatabase {
