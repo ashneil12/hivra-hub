@@ -1,4 +1,5 @@
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
+import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
@@ -14043,6 +14044,8 @@ function Workspace({
       }}
       onCreateProject={pickProject}
       onLeaveCovers={closeChromeViews}
+      // The inset layout's title bar spans the window above the strip.
+      titleBarAbove={insetLayout}
     />
   );
 
@@ -14823,14 +14826,18 @@ function Workspace({
             // On the hub's views it sits over the sidebar instead of over Today's content.
             placement={hubShown ? "bottom-left" : "top-right"}
           />
-          <NewLayoutNotice
-            topOffset={
-              12 +
-              (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0) +
-              (harnessUpdateHeight ? harnessUpdateHeight + 8 : 0)
-            }
-            onHeightChange={setNewLayoutNoticeHeight}
-          />
+          {/* The Hub's shell is built on the classic layout, so the Hub does
+              not prompt for the new one; it stays in Settings → Appearance. */}
+          {IS_HUB_BUNDLE ? null : (
+            <NewLayoutNotice
+              topOffset={
+                12 +
+                (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0) +
+                (harnessUpdateHeight ? harnessUpdateHeight + 8 : 0)
+              }
+              onHeightChange={setNewLayoutNoticeHeight}
+            />
+          )}
           <ResourcePressureNotice
             sessions={sessionsRef}
             onStopAgent={(id) => onStop(id, true)}

@@ -2481,6 +2481,12 @@ function SidebarComponent({
           active: automationsActive,
           onClick: onOpenAutomations,
         },
+        onOpenPages && {
+          label: "Pages",
+          icon: DashboardSquare,
+          active: pagesActive,
+          onClick: onOpenPages,
+        },
       ]}
     />
   ) : null;
@@ -2689,6 +2695,9 @@ function SidebarComponent({
           {inset && railMonos && inProject ? (
             <MonoRailSection {...railMonos} project={cwd} />
           ) : null}
+          {/* Hub mode: the project's items, which the classic rail lists in
+              place of Projects. */}
+          {inset ? hubItems : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>

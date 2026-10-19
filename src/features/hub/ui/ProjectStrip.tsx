@@ -30,12 +30,15 @@ export function ProjectStrip({
   onPickProject,
   onCreateProject,
   onLeaveCovers,
+  titleBarAbove = false,
 }: {
   selection: HubSelection;
   onPickProject: (project: HubProject) => void;
   onCreateProject: () => void;
   /** Today and New project leave whatever covers the hub (Pages, Automations, Notes, Inbox, Search) first. */
   onLeaveCovers?: () => void;
+  /** A title bar spans the window above the strip (MonoCode's inset layout), so the traffic lights sit there. */
+  titleBarAbove?: boolean;
 }) {
   useHubDataVersion();
   useProposalsVersion();
@@ -56,7 +59,7 @@ export function ProjectStrip({
       data-tauri-drag-region="deep"
     >
       {/* Room for the macOS traffic lights. */}
-      <div className="h-10 w-full shrink-0" data-tauri-drag-region />
+      {titleBarAbove ? <div className="h-1.5 w-full shrink-0" /> : <div className="h-10 w-full shrink-0" data-tauri-drag-region />}
       <StripButton
         label="Today"
         title="Today, all projects"
