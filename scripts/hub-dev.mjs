@@ -427,6 +427,79 @@ export async function startHubBridge(mode, tokenFile) {
   throw new Error(`--hub must be one of ${HUB_MODES.join(", ")}`);
 }
 
+// ---- stopping ----------------------------------------------------------------------------------------------------------------
+
+/** Every process: [{pid, ppid, command}], from one `ps` listing. */
+export function psListing() {
+  const out = execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  return out
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line))
+    .filter(Boolean)
+    .map(([, pid, ppid, command]) => ({ pid: Number(pid), ppid: Number(ppid), command }));
+}
+
+/** The processes under `pid` (children, their children ...), from a `ps` listing. */
+export function descendants(pid, listing = psListing()) {
+  const children = new Map();
+  for (const entry of listing) {
+    if (!children.has(entry.ppid)) children.set(entry.ppid, []);
+    children.get(entry.ppid).push(entry);
+  }
+  const found = [];
+  const queue = [pid];
+  while (queue.length) {
+    for (const child of children.get(queue.shift()) ?? []) {
+      found.push(child);
+      queue.push(child.pid);
+    }
+  }
+  return found;
+}
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
+
+/**
+ * Stop what this run started the way a terminal's Ctrl+C does: `signal` to tauri and every process under it (cargo,
+ * vite, the app), not just tauri. `tauri dev` leaves `cargo run` running when only it is signalled, and that build
+ * would then start the app with no dev server. Returns the processes signalled, for `sweep`.
+ */
+export function signalTree(rootPid, signal, listing = psListing()) {
+  const root = listing.find((entry) => entry.pid === rootPid) ?? { pid: rootPid, command: null };
+  const tree = [root, ...descendants(rootPid, listing)];
+  for (const { pid } of tree) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // already gone
+    }
+  }
+  return tree;
+}
+
+/** After `grace` ms, SIGTERM whatever of `tree` is still running as the same command. Returns what was still there. */
+export async function sweep(tree, { grace = 3000 } = {}) {
+  const deadline = Date.now() + grace;
+  while (Date.now() < deadline && tree.some(({ pid }) => alive(pid))) await new Promise((resolve) => setTimeout(resolve, 100));
+  const now = new Map(psListing().map((entry) => [entry.pid, entry.command]));
+  const left = tree.filter(({ pid, command }) => alive(pid) && command && now.get(pid) === command);
+  for (const { pid } of left) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // gone meanwhile
+    }
+  }
+  return left;
+}
+
 // ---- command line ------------------------------------------------------------------------------------------------------------
 
 /** Whether this module is the script node was started with, however it was reached (a symlink, a relative path). */
@@ -502,7 +575,11 @@ async function main() {
     stdio: "inherit",
     env: devEnvironment({ slot: plan.slot, hub: bridge }),
   });
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+  const signalled = new Map();
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+    process.on(signal, () => {
+      for (const entry of signalTree(child.pid, signal)) signalled.set(entry.pid, entry);
+    });
   const code = await new Promise((resolve) => {
     child.on("exit", (exitCode, signal) => resolve(exitCode ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
     child.on("error", (error) => {
@@ -510,6 +587,10 @@ async function main() {
       resolve(1);
     });
   });
+  if (signalled.size) {
+    const left = await sweep([...signalled.values()]);
+    if (left.length) console.error(`hub:dev: stopped what was still running: ${left.map(({ pid }) => pid).join(", ")}`);
+  }
   await bridge?.close();
   return code;
 }

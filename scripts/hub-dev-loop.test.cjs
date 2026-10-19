@@ -430,3 +430,65 @@ test("the stub bridge hub:dev starts writes a throwaway token for MONOCODE_HUB_T
   assert.equal(answer.status, 200);
   assert.equal(await startHubBridge("off", tokenFile), null);
 });
+
+// ---- stopping -----------------------------------------------------------------------------------------------------------------
+
+test("descendants walks the whole tree under a pid, and nothing else", async () => {
+  const { descendants } = await load("hub-dev.mjs");
+  const listing = [
+    { pid: 10, ppid: 1, command: "node scripts/hub-dev.mjs" },
+    { pid: 11, ppid: 10, command: "tauri dev" },
+    { pid: 12, ppid: 11, command: "cargo run" },
+    { pid: 13, ppid: 12, command: "rustc" },
+    { pid: 14, ppid: 11, command: "npm run dev" },
+    { pid: 15, ppid: 14, command: "vite" },
+    { pid: 20, ppid: 1, command: "MonoCode Hub (daily)" },
+    { pid: 21, ppid: 20, command: "claude" },
+  ];
+  assert.deepEqual(descendants(11, listing).map((e) => e.pid).sort(), [12, 13, 14, 15]);
+  assert.deepEqual(descendants(99, listing), []);
+});
+
+test("stopping a run reaches the grandchildren tauri dev would leave behind (cargo run), and only them", { skip: process.platform === "win32" }, async (t) => {
+  const { signalTree, sweep } = await load("hub-dev.mjs");
+  const { spawn } = require("node:child_process");
+  // A stand-in for tauri dev: it ignores SIGINT for its child, which keeps running when only the parent is signalled.
+  const parent = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const { spawn } = require("node:child_process");
+       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+       console.log(child.pid);
+       process.on("SIGINT", () => process.exit(130));
+       setInterval(() => {}, 1000);`,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const grandchild = Number(await new Promise((resolve) => parent.stdout.once("data", (d) => resolve(String(d).trim()))));
+  const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => {
+    for (const pid of [parent.pid, grandchild, bystander.pid]) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  });
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const exited = new Promise((resolve) => parent.once("exit", resolve));
+  const tree = signalTree(parent.pid, "SIGINT");
+  assert.deepEqual(tree.map((e) => e.pid).sort(), [parent.pid, grandchild].sort());
+  await exited;
+  const left = await sweep(tree, { grace: 2000 });
+  assert.ok(left.length <= 1, "at most the grandchild needed a SIGTERM");
+  for (let i = 0; i < 40 && alive(grandchild); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(alive(grandchild), false, "cargo run's stand-in is gone too");
+  assert.equal(alive(bystander.pid), true, "nothing outside the tree is signalled");
+});
