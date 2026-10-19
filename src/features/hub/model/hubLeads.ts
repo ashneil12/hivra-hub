@@ -1,3 +1,4 @@
+import { isMonoRemovedByUser } from "./builtInMonos";
 // Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes the four on
 // its first run and again whenever one is missing, never twice and never over Ash's edits: EXO lead, Hivra lead,
 // Nibbii lead, Harness lead. Each is tied to its project's folder (from Ash OS), starts its chats there, talks to Ash
@@ -60,7 +61,7 @@ export function ensureProjectLeads(
   const tied: string[] = [];
   for (const lead of LEADS) {
     const project = projects.find((p) => p.id === lead.projectId);
-    if (!project) continue;
+    if (!project || isMonoRemovedByUser(lead.id)) continue;
     const existing = findMono(lead.id);
     if (!existing) {
       const look = nextMonoLook(listMonos());

@@ -43,11 +43,12 @@ export function ContextMeter({
   const root = useRef<HTMLDivElement>(null);
   const ratio = contextRatio(usage);
   if (!usage || ratio === null) {
-    return empty ? (
-      <span title="No context used yet" className="grid shrink-0">
-        <MeterRing ratio={0} label="No context used yet" />
-      </span>
-    ) : null;
+    const label = empty ? "No context used yet" : usage
+      ? `${contextTooltip(usage).detail}; context window not reported`
+      : "Context usage has not been reported by this provider";
+    return <span title={label} className="grid shrink-0" data-context-unknown={!empty || undefined}>
+      {empty ? <MeterRing ratio={0} label={label} /> : <span role="img" aria-label={label} className="grid size-3.5 place-items-center rounded-full border border-content/25 text-[9px] leading-none text-content/50">?</span>}
+    </span>;
   }
 
   const { headline, detail, note } = contextTooltip(usage);
@@ -84,6 +85,7 @@ export function ContextMeter({
         >
           <div className="text-[12px] leading-4 text-content">{headline}</div>
           <div className="text-[11px] leading-4 text-content/50">{detail}</div>
+          <div className="text-[11px] leading-4 text-content/50">Last reported by the provider</div>
           {note ? (
             <div className="max-w-[15rem] text-[11px] leading-4 text-content/50">
               {note}

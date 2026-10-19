@@ -16,7 +16,10 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(not(feature = "test-copy"))]
 pub const KEY_SERVICE: &str = "monocode-hub:model-key";
+#[cfg(feature = "test-copy")]
+pub const KEY_SERVICE: &str = "monocode-hub-sandbox:model-key";
 #[cfg(test)]
 pub const TEST_KEY_SERVICE: &str = "monocode-hub-test:model-key";
 
@@ -35,6 +38,8 @@ pub struct CustomRoute {
     pub base_url: String,
     pub model_id: String,
     pub custom_model_id: String,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Variables to set, then variables to remove, for a routed Claude Code session.
@@ -453,6 +458,7 @@ pub async fn model_context_window(
             base_url,
             model_id,
             custom_model_id,
+            reasoning_effort: None,
         };
         if !may_route(&route) {
             return Ok(None);
@@ -983,7 +989,12 @@ fn forward(
     body: &Value,
 ) -> std::io::Result<()> {
     let model = route.model_id.trim();
-    let upstream_body = to_openai(body, model);
+    let mut upstream_body = to_openai(body, model);
+    if let Some(effort) = &route.reasoning_effort {
+        if ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort.as_str()) {
+            upstream_body["reasoning_effort"] = json!(effort);
+        }
+    }
     let streaming = body["stream"] == true;
     let mut request = agent(600)
         .post(&chat_url(&route.provider, &route.base_url))
@@ -1072,6 +1083,7 @@ mod tests {
             base_url: base.into(),
             model_id: model.into(),
             custom_model_id: "xai-test1".into(),
+            reasoning_effort: None,
         }
     }
 
@@ -1403,11 +1415,12 @@ mod tests {
             let body = "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
             write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
         });
-        let r = route(
+        let mut r = route(
             "custom",
             &format!("http://127.0.0.1:{up_port}/v1"),
             "fake-model",
         );
+        r.reasoning_effort = Some("high".into());
         let port = start_router(r, "fake-key-123".into()).unwrap();
         let resp = agent(10)
             .post(&format!("http://127.0.0.1:{port}/v1/messages?beta=true"))
@@ -1420,6 +1433,7 @@ mod tests {
         let seen = seen.lock().unwrap().clone();
         assert!(seen.starts_with("Bearer fake-key-123|"));
         assert!(seen.contains("\"model\":\"fake-model\"") && seen.contains("\"stream\":true"));
+        assert!(seen.contains("\"reasoning_effort\":\"high\""), "{seen}");
         // a Claude login is refused before anything goes upstream
         let refused = agent(5)
             .post(&format!("http://127.0.0.1:{port}/v1/messages"))

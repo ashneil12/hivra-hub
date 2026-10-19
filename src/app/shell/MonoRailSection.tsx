@@ -8,7 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { ChevronDown, ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
@@ -70,16 +70,18 @@ export function unreadLabel(count: number): string {
 }
 
 /**
- * Which Monos the rail lists, in order. The hub (`rank` set) shows one global list, the same on every project:
- * the default four, then every project's Lead (hubMonoRank). Plain Monocode can still filter by project folder.
+ * Which Monos the rail lists, in order. With `projectFilter`, only the Monos explicitly assigned to that project folder
+ * (the hub passes its selected project; Today passes none and keeps the whole roster). The hub (`rank` set) sorts the
+ * list: the default four, then every project's Lead (hubMonoRank).
  */
 export function railMonos<M extends { id: string; name?: string; projects: string[] }>(
   list: M[],
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
-  if (!rank) return list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
-  return list.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
+  const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  if (!rank) return eligible;
+  return eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
 }
 
 /**
@@ -101,7 +103,7 @@ export function MonoRailSection({
   /**
    * Lists only the Monos working on this project, as the inset sidebar does;
    * a Mono on several projects shows in each of them. The hub (`rank` set)
-   * keeps its one global list here too.
+   * filters by its own `projectFilter` (the selected hub project) instead.
    */
   project?: string;
 }) {
@@ -120,6 +122,11 @@ export function MonoRailSection({
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
+  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("monocode:mono-rail-collapsed") === "1"; } catch { return false; } });
+  const toggleCollapsed = () => setCollapsed((value) => {
+    try { localStorage.setItem("monocode:mono-rail-collapsed", value ? "0" : "1"); } catch { /* optional preference */ }
+    return !value;
+  });
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
@@ -160,13 +167,22 @@ export function MonoRailSection({
             : "flex items-center gap-1 px-3 pb-1.5 pt-1"
         }
       >
-        <span
-          className={`min-w-0 flex-1 truncate${
+        {/* The label folds the list away (remembered); folded, it shows how many Monos it hides. */}
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand Monos" : "Collapse Monos"}
+          className={`flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-content${
             project ? "" : " px-1 text-xs leading-5 text-content/50"
           }`}
         >
-          Monos
-        </span>
+          <ChevronDown
+            className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+          />
+          <span className="truncate">Monos</span>
+          {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
+        </button>
         {monos.length ? (
           <button
             type="button"
@@ -181,7 +197,7 @@ export function MonoRailSection({
           </button>
         ) : null}
       </div>
-      {rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
+      {!collapsed && rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
         <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
           <span className="w-full">Monos now go by what they do.</span>
           <button type="button" onClick={() => setRoleNames(false)} className="-ml-1 shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
@@ -192,7 +208,7 @@ export function MonoRailSection({
           </button>
         </div>
       ) : null}
-      {waiting.length ? (
+      {!collapsed && waiting.length ? (
         <div className="mx-2 mb-1.5 flex flex-col gap-px" data-souls-waiting>
           {waiting.map((w) => (
             <div key={w.monoId} className="rounded-md border border-dashed border-content/25 px-2 py-1 text-[13px] leading-tight">
@@ -206,7 +222,14 @@ export function MonoRailSection({
           ))}
         </div>
       ) : null}
-      <div className={`flex flex-col gap-px${project ? "" : " px-2"}`}>
+      {/* A long roster scrolls inside a bounded height instead of pushing the rest of the rail away. */}
+      <div
+        hidden={collapsed}
+        data-mono-rail-list
+        className={`${collapsed ? "hidden" : "flex"} max-h-[40vh] flex-col gap-px overflow-y-auto${
+          project ? "" : " px-2"
+        }`}
+      >
         {monos.length === 0 ? (
           <RailAction
             label="New mono"

@@ -1,3 +1,7 @@
+# Update: 16 October 2026, continuation 06 branch
+
+See `docs/CONTINUATION-06.md` for the current change scope and acceptance boundaries. The historical notes below predate this batch. In particular, group chats and Pages now have a normal Mono session runner path, group history/membership persist, custom models support configured reasoning levels, and the test copy has its own identity. Live provider and daily-app acceptance are still separate checks; do not infer those from this handoff.
+
 # Hub frontend: handoff notes for Claude Code
 
 All hub data comes through `model/hubData.ts` (`hubData()`, `setHubDataSource`).

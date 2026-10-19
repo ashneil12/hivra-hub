@@ -487,6 +487,9 @@ function FloatingConversation({
         <MonoComposer
           sessionId={`floating:${session.id}`}
           name={mono.name}
+          showContext
+          context={session.context}
+          contextEmpty={session.blocks.length === 0}
           enabled={!session.worktreeRemoved}
           focusToken={focus}
           onSubmit={async (text, attachments) => {

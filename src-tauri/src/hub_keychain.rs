@@ -19,12 +19,21 @@ fn check_service(service: &str) -> Result<(), String> {
     }
 }
 
+fn scoped_service(service: &str) -> String {
+    if cfg!(feature = "test-copy") {
+        format!("monocode-hub-sandbox:{service}")
+    } else {
+        service.to_string()
+    }
+}
+
 fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     check_service(service)?;
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
-    keyring::Entry::new(service, account).map_err(|_| "Couldn't reach the Keychain.".to_string())
+    let service = scoped_service(service);
+    keyring::Entry::new(&service, account).map_err(|_| "Couldn't reach the Keychain.".to_string())
 }
 
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {

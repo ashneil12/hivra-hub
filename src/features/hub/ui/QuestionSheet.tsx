@@ -44,7 +44,7 @@ export function QuestionSheet({ needId, onClose }: { needId: string; onClose: ()
       (e: unknown) => {
         const said = e instanceof Error ? e.message : "";
         // An Ash OS from before the answer calls: say so plainly instead of its error.
-        if (alive) setProblem(/unknown hub action/i.test(said) ? "Ash OS needs its update before it can show this question here." : said || "Couldn't load the question.");
+        if (alive) setProblem(/unknown hub action/i.test(said) ? "The harness needs its update before it can show this question here." : said || "Couldn't load the question.");
       },
     );
     return () => {

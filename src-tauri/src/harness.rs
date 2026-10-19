@@ -952,7 +952,21 @@ pub fn harness_spawn(
         terminate(prev.pid);
     }
 
+    let args = if cfg!(feature = "test-copy") && binary_provider.as_deref() == Some("claude") {
+        isolated_test_copy_args(args)
+    } else {
+        args
+    };
     let mut cmd = Command::new(&command);
+    if cfg!(feature = "test-copy") && binary_provider.as_deref() == Some("claude") {
+        let config_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("claude-config");
+        std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+        cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
     cmd.args(&devin_config)
         .args(&args)
         .current_dir(&workdir)
@@ -4334,5 +4348,65 @@ mod reap_logic_tests {
         assert!(!is_legacy_orphaned_cursor_acp(
             "node /usr/local/bin/typescript-language-server --stdio"
         ));
+    }
+}
+
+/// A test copy never inherits user/project MCP servers or hooks from the daily app.
+fn isolated_test_copy_args(args: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        if matches!(
+            arg.as_str(),
+            "--mcp-config" | "--setting-sources" | "--settings"
+        ) {
+            iter.next();
+            continue;
+        }
+        if arg == "--strict-mcp-config"
+            || arg.starts_with("--mcp-config=")
+            || arg.starts_with("--setting-sources=")
+            || arg.starts_with("--settings=")
+        {
+            continue;
+        }
+        out.push(arg);
+    }
+    out.extend([
+        "--strict-mcp-config".into(),
+        "--mcp-config".into(),
+        "{\"mcpServers\":{}}".into(),
+        "--setting-sources=".into(),
+        "--settings".into(),
+        "{\"disableAllHooks\":true}".into(),
+    ]);
+    out
+}
+
+#[cfg(test)]
+mod test_copy_tests {
+    #[test]
+    fn test_copy_drops_live_mcp_and_hooks_without_dropping_model_or_permission_controls() {
+        let args = vec![
+            "--model",
+            "fake-model",
+            "--mcp-config",
+            "live-config.json",
+            "--settings",
+            "{\"hooks\":{}}",
+            "--setting-sources=user,project",
+            "--permission-prompt-tool",
+            "stdio",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let isolated = super::isolated_test_copy_args(args);
+        assert!(!isolated.iter().any(|a| a.contains("live-config")
+            || a.contains("user,project")
+            || a.contains("\"hooks\"")));
+        assert!(isolated.contains(&"fake-model".into()));
+        assert!(isolated.contains(&"--permission-prompt-tool".into()));
+        assert!(isolated.contains(&"{\"mcpServers\":{}}".into()));
     }
 }

@@ -1,7 +1,7 @@
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
-import { findCustomModel, isCustomModelId } from "./customModels";
+import { findCustomModel, isCustomModelId, reasoningEfforts } from "./customModels";
 import {
   hasProbedHarnessAvailability,
   isHarnessAvailable,
@@ -363,7 +363,12 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
   // A custom model ("Other models" in the picker) keeps its own id; CoS's router reads its route.
   if (id && isCustomModelId(id)) {
     const custom = findCustomModel(id);
-    return { id, harness, name: custom?.name ?? "Custom model", nativeId: custom?.modelId };
+    const levels = reasoningEfforts(custom?.reasoningEfforts);
+    return { id, harness, name: custom?.name ?? "Custom model", nativeId: custom?.modelId,
+      ...(levels.length ? { settings: [{ id: "effort", label: "Reasoning", kind: "select" as const,
+        value: levels.includes("medium") ? "medium" : levels[0],
+        options: levels.map((value) => ({ value, label: value === "xhigh" ? "Extra high" : value[0].toUpperCase() + value.slice(1) })) }] } : {}) };
+
   }
   const available = modelsFor(harness);
   if (id) {

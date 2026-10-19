@@ -46,7 +46,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-2">
             <h1 className="text-[18px] text-content">Welcome</h1>
             <p className="text-[13px] leading-5 text-content/75">
-              This is where your projects, your Monos and the coding team live. Each morning, Today shows what changed and what's waiting on you. Nothing more.
+              This is where your projects, your Monos and the coding team live. Today gives you access to your projects, Pages and work that needs your attention.
             </p>
             <p className="text-[13px] leading-5 text-content/60">Two quick choices. You can change all of it later in Settings.</p>
           </div>

@@ -5,8 +5,8 @@ import { hubData } from "./hubData";
 import { setTemplate, templateOf, TEMPLATES, type TemplateId } from "./templates";
 import { addConnectors, allConnectors } from "./connectors";
 import { allKeptPages, importPages, type Page } from "../../pages/model/pages";
-import { ensureLeadership, getChat, leadershipChatId } from "./hubChats";
-import type { HubProject } from "./types";
+import { ensureLeadership, getChat, leadershipChatId, exportChats, importChats, validGroupChats } from "./hubChats";
+import type { GroupChat, HubProject } from "./types";
 import { collectSouls, importSouls, type SetupSoul } from "./setupSouls";
 
 export type SetupBot = {
@@ -26,6 +26,7 @@ export type SetupFile = {
   version: 1;
   projects: (HubProject & { template: TemplateId })[];
   bots?: SetupBot[];
+  chats?: GroupChat[];
   /** Which services the bots use. Never carries passwords or keys. */
   connectors?: SetupConnector[];
   /** Kept Pages. They come back with no permissions; Ash allows their asks again. */
@@ -60,6 +61,7 @@ export function exportSetup(): string {
     version: 1,
     projects,
     bots: exportBots(projects),
+    chats: exportChats(),
     // Which services, never the account or anything signed in.
     connectors: allConnectors().map(({ id, name, projectId }) => ({ id, name, projectId })),
     pages: allKeptPages().map((p) => ({ ...p, permissions: [] })),
@@ -70,7 +72,7 @@ export function exportSetup(): string {
 export function parseSetup(text: string): SetupFile {
   const data = JSON.parse(text) as Partial<SetupFile>;
   if (data.format !== "monocode-hub-setup" || !Array.isArray(data.projects)) throw new Error("That file isn't a Monocode setup export.");
-  return { format: "monocode-hub-setup", version: 1, projects: data.projects, bots: data.bots ?? [], connectors: data.connectors ?? [], pages: Array.isArray(data.pages) ? data.pages : [], souls: Array.isArray(data.souls) ? data.souls : [] };
+  return { format: "monocode-hub-setup", version: 1, projects: data.projects, bots: data.bots ?? [], connectors: data.connectors ?? [], pages: Array.isArray(data.pages) ? data.pages : [], souls: Array.isArray(data.souls) ? data.souls : [], chats: validGroupChats(data.chats) };
 }
 
 /** Adds the projects, the ticked bots and the connectors (as sign-in Needs). */
@@ -89,6 +91,7 @@ export function applySetup(file: SetupFile, botIds?: ReadonlySet<string>): numbe
     ...souls.filter((x) => !botIds || botIds.has(x.monoId) || !(file.bots ?? []).some((b) => b.id === x.monoId)),
     ...bots.filter((b) => !soulFor.has(b.id)).map((b) => ({ monoId: b.id, name: b.name, role: b.role, rules: "", memory: "", workflows: "", skills: [], mascot: b.mascot })),
   ]);
+  importChats(validGroupChats(file.chats).map((c) => ({ ...c, memberIds: c.memberIds.filter((id) => !botIds || botIds.has(id)) })));
   for (const b of bots.filter((x) => x.team === "leadership")) ensureLeadership(b.projectId);
   addConnectors(file.connectors ?? []);
   importPages(file.pages ?? []);

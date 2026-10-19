@@ -50,7 +50,13 @@ export function showsBaseUrl(_id: CustomProvider): boolean {
 }
 
 /** What settings keep for a custom model. Never a key. */
-export type CustomModel = { id: string; name: string; provider: CustomProvider; baseUrl: string; modelId: string };
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+export function reasoningEfforts(value: unknown): ReasoningEffort[] {
+  return Array.isArray(value) ? REASONING_EFFORTS.filter((level) => value.includes(level)) : [];
+}
+/** Only levels explicitly enabled for this model are offered or sent. */
+export type CustomModel = { id: string; name: string; provider: CustomProvider; baseUrl: string; modelId: string; reasoningEfforts?: ReasoningEffort[] };
 
 const KEY = "monocode:custom-models";
 const CHANGED = "monocode:custom-models-change";
@@ -90,7 +96,7 @@ export function subscribeCustomModels(onChange: () => void): () => void {
 
 /** Metadata only: whatever is passed, a key-like field is dropped before anything is written. */
 function writeModels(list: CustomModel[]): void {
-  const clean = list.map(({ id, name, provider, baseUrl, modelId }) => ({ id, name, provider, baseUrl, modelId }));
+  const clean = list.map(({ id, name, provider, baseUrl, modelId, reasoningEfforts: levels }) => ({ id, name, provider, baseUrl, modelId, ...(reasoningEfforts(levels).length ? { reasoningEfforts: reasoningEfforts(levels) } : {}) }));
   localStorage.setItem(KEY, JSON.stringify(clean));
   version++;
   window.dispatchEvent(new CustomEvent(CHANGED));
@@ -98,7 +104,7 @@ function writeModels(list: CustomModel[]): void {
 
 // ---- the form -------------------------------------------------------------------------------------------------------
 
-export type CustomModelForm = { name: string; provider: CustomProvider; baseUrl: string; modelId: string; key: string };
+export type CustomModelForm = { name: string; provider: CustomProvider; baseUrl: string; modelId: string; key: string; reasoningEfforts?: ReasoningEffort[] };
 
 export function emptyForm(provider: CustomProvider = "xai"): CustomModelForm {
   return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: "" };
@@ -232,6 +238,7 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
     provider: form.provider,
     baseUrl: form.baseUrl.trim() || defaultBaseUrl(form.provider),
     modelId: form.modelId.trim(),
+    ...(reasoningEfforts(form.reasoningEfforts).length ? { reasoningEfforts: reasoningEfforts(form.reasoningEfforts) } : {}),
   };
   writeModels([...listCustomModels(), model]);
   return model;
@@ -247,12 +254,17 @@ export async function removeCustomModel(id: string): Promise<void> {
   writeModels(listCustomModels().filter((m) => m.id !== id));
 }
 
+/** Change reasoning support on an existing model without touching its saved key. */
+export function setCustomModelEfforts(id: string, levels: ReasoningEffort[]): void {
+  writeModels(listCustomModels().map((m) => m.id === id ? { ...m, reasoningEfforts: reasoningEfforts(levels) } : m));
+}
+
 // ---- for CoS's router -------------------------------------------------------------------------------------------------
 
 /** The four fields CoS's router reads off a session's modelSettings when its model is a custom one. */
-export type CustomModelRoute = { provider: CustomProvider; baseUrl: string; modelId: string; customModelId: string };
+export type CustomModelRoute = { provider: CustomProvider; baseUrl: string; modelId: string; customModelId: string; reasoningEffort?: ReasoningEffort };
 
-export function customModelSettings(model: CustomModel): Record<keyof CustomModelRoute, string> {
+export function customModelSettings(model: CustomModel): Record<string, string> {
   return { provider: model.provider, baseUrl: model.baseUrl, modelId: model.modelId, customModelId: model.id };
 }
 
@@ -260,7 +272,11 @@ export function customModelSettings(model: CustomModel): Record<keyof CustomMode
 export function customModelRoute(target: Pick<ModelTarget, "model" | "modelSettings">): CustomModelRoute | undefined {
   if (!isCustomModelId(target.model)) return undefined;
   const saved = findCustomModel(target.model);
-  if (saved) return customModelSettings(saved) as CustomModelRoute;
+  if (saved) {
+    const levels = reasoningEfforts(saved.reasoningEfforts);
+    const effort = target.modelSettings.effort ?? (levels.includes("medium") ? "medium" : levels[0]);
+    return { ...customModelSettings(saved), ...(reasoningEfforts(saved.reasoningEfforts).includes(effort as ReasoningEffort) ? { reasoningEffort: effort as ReasoningEffort } : {}) } as CustomModelRoute;
+  }
   const s = target.modelSettings;
   return s.customModelId ? { provider: s.provider as CustomProvider, baseUrl: s.baseUrl, modelId: s.modelId, customModelId: s.customModelId } : undefined;
 }

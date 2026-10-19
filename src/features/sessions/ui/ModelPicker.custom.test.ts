@@ -298,17 +298,12 @@ describe("getting out of Add model", () => {
     expect(q("[data-add-model]")).toBeTruthy();
   });
 
-  it("Sign in (OAuth) shows Not connected yet and turns Test and Save off; API key brings the key back", () => {
-    render();
-    open();
+  it("does not offer an OAuth flow with no working provider integration", () => {
+    render(); open();
     act(() => q("[data-add-model]")!.click());
-    act(() => q<HTMLButtonElement>('[data-auth="oauth"]')!.click());
-    expect(q("[data-oauth-not-connected]")!.textContent).toMatch(/^Not connected yet/);
-    expect(q('[aria-label="Key"]')).toBeNull();
-    expect(q<HTMLButtonElement>("[data-test-key]")!.disabled).toBe(true);
-    expect(q<HTMLButtonElement>("[data-save-model]")!.disabled).toBe(true);
-    act(() => q<HTMLButtonElement>('[data-auth="key"]')!.click());
+    expect(q('[data-auth="oauth"]')).toBeNull();
     expect(q('[aria-label="Key"]')).toBeTruthy();
+    expect(q("[data-oauth-not-connected]")).toBeNull();
   });
 });
 

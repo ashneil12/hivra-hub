@@ -24,6 +24,8 @@ import {
   startConversation,
   sendMessage,
   simulateReplies,
+  replyProblem,
+  retryReply,
   typingIn,
   useHubChatsVersion,
 } from "../model/hubChats";
@@ -238,6 +240,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             members={members}
             phrase={chatPhrase(chat)}
             onPick={(text) => {
+              if (typingIn(chat.id)) return;
               const id = startConversation(chat.id, text);
               setDrafting(false);
               setConvId(id);
@@ -293,12 +296,15 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
         <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
           {typingIn(chat.id) ? `${nameOf(typingIn(chat.id)!)} is typing…` : null}
         </div>
+        {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-content/70" data-hub-chat-error>
+          {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>
+        </div> : null}
         <div className="mx-auto w-full max-w-[760px] shrink-0 px-8 pb-3">
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
             name={chatPhrase(chat)}
             onSubmit={(text) => {
-              if (!text.trim()) return false;
+              if (!text.trim() || typingIn(chat.id)) return false;
               if (drafting) {
                 const id = startConversation(chat.id, text.trim());
                 setDrafting(false);

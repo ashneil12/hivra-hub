@@ -382,3 +382,16 @@ it.each([
     expect(content.style.transform).toBe("");
   },
 );
+
+it("passes the current session context reading to the Mono composer", () => {
+  const pane = props();
+  pane.session.harness = "claude";
+  pane.session.context = { used: 275765, window: 1048576 };
+  act(() => root.render(createElement(SessionPane, pane)));
+  const last = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
+  expect(last[0]).toMatchObject({ showContext: true, context: { used: 275765, window: 1048576 }, contextEmpty: false });
+  pane.session = { ...pane.session, context: { used: 120000, window: 1048576 } };
+  act(() => root.render(createElement(SessionPane, pane)));
+  const updated = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
+  expect(updated[0]).toMatchObject({ context: { used: 120000, window: 1048576 } });
+});

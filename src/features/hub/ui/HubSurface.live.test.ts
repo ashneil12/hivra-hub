@@ -100,7 +100,7 @@ describe("Today, live", () => {
     expect(text()).toMatch(/Since (yesterday|\d|[A-Z][a-z]+)/);
     expect(text()).toContain("Example: the game's new level is in and working");
     for (const name of ["EXO", "Hivra", "Harness"]) expect(text()).toContain(name);
-    expect(text()).not.toContain("Nibbii"); // nothing waiting: no heading, no zero
+    expect(container.querySelector("[data-hub-home-projects]")?.textContent).toContain("Nibbii"); // quiet projects remain accessible
     const org = container.querySelectorAll('[data-hub-need]');
     for (const row of org) expect(row.querySelectorAll("button").length).toBe(1);
     expect(text()).toContain("1 more under Later");
@@ -148,9 +148,10 @@ describe("Today, live", () => {
     await stub.close();
     mount(surface());
     await until(() => container.querySelector("[data-hub-down]"), "down state");
-    expect(text()).toContain("Ash OS isn't running.");
+    expect(text()).toContain("The harness service is unavailable.");
     expect(text()).not.toMatch(/Example|EXO|Hivra/);
-    expect(container.querySelectorAll("button").length).toBe(1);
+    expect(container.querySelectorAll("[data-hub-down-retry]").length).toBe(1);
+    expect(container.querySelector("[data-hub-home-tools]")).not.toBeNull();
     expect(container.querySelector("[data-hub-down-retry]")?.textContent).toBe("Try again");
     stub = await startStub();
     url = stub.url;

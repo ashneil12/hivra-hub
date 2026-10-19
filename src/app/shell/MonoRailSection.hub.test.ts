@@ -28,9 +28,9 @@ describe("hub Monos section: one global list", () => {
     expect(railMonos(roster(), undefined, hubMonoRank).map((m) => m.name)).toEqual(EXPECTED);
   });
 
-  it("is exactly the same on EXO, Hivra, Nibbii and Harness", () => {
+  it("shows only explicitly assigned Monos on each project while keeping everyone available on Today", () => {
     ensureBuiltInMonos();
     for (const folder of Object.values(FOLDERS))
-      expect(railMonos(roster(), folder, hubMonoRank).map((m) => m.name)).toEqual(EXPECTED);
+      expect(railMonos(roster(), folder, hubMonoRank).map((m) => m.name)).toEqual(LEADS.filter((m) => m.projects.includes(folder)).map((m) => m.name));
   });
 });

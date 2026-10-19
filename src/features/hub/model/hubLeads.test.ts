@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
-import { listMonos, saveMonoName } from "../../monos/model/mono";
+import { listMonos, saveMonoName, removeMono } from "../../monos/model/mono";
 import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
@@ -135,4 +135,12 @@ describe("the project Leads", () => {
       console.log(`LEADS PROOF IN ${appData}`);
     }
   });
+});
+
+it("does not recreate a project Lead that Ash deleted", () => {
+  ensureProjectLeads(PROJECTS);
+  removeMono("hivra-lead");
+  const result = ensureProjectLeads(PROJECTS);
+  expect(result.created).not.toContain("hivra-lead");
+  expect(listMonos().some((m) => m.id === "hivra-lead")).toBe(false);
 });
