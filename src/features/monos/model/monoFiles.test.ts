@@ -261,3 +261,11 @@ it("puts what the app adds ahead of the user's message, marked as its own", () =
   );
   expect(turn.endsWith("</monocode_context>\n\nwhat is this")).toBe(true);
 });
+
+it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {
+  const soul = "# Soul\n\n## Role\nI run the plan.\n";
+  expect(defaultSoul(soul)).toBe(soul);
+  expect(defaultSoul(`  ${soul}  `)).toBe(soul);
+  expect(defaultSoul("Ship on Fridays")).toBe("# Soul\n\n## Standing instructions\nShip on Fridays\n");
+  expect(defaultSoul("# Soulful notes")).toContain("## Standing instructions\n# Soulful notes");
+});

@@ -46,6 +46,8 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod project_actions;
+mod project_file;
 mod project_logo;
 mod provider_session_transfer;
 mod pty;
@@ -70,6 +72,7 @@ mod window;
 mod window_transfer;
 #[cfg(windows)]
 mod windows;
+pub mod worktree_janitor;
 mod worktree_lifecycle;
 mod worktrees;
 
@@ -321,6 +324,7 @@ pub fn run() {
         })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
+        .manage(project_actions::ActionRuns::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(move |app| {
@@ -374,6 +378,13 @@ pub fn run() {
             if identity.kind == instance::Kind::Dev {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&instance::dev_window_title(&instance::stamp()));
+                }
+                // An agent testing a dev copy must not pull a window in front of Ash (19 Oct: "this spams a lot"):
+                // `hub:dev --background` (the default when no terminal is attached) runs it as an accessory app, which
+                // never activates itself or takes focus. Screenshots by window id still work.
+                #[cfg(target_os = "macos")]
+                if std::env::var("MONOCODE_HUB_BACKGROUND").as_deref() == Ok("1") {
+                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
             Ok(())
@@ -540,6 +551,15 @@ pub fn run() {
             worktrees::git_worktree_remove,
             worktrees::git_orchestration_worktree_remove,
             worktrees::git_orchestration_branch_remove,
+            project_file::project_file_status,
+            project_file::project_file_import,
+            project_file::project_file_forget,
+            project_actions::project_actions_list,
+            project_actions::project_action_run,
+            project_actions::project_action_stop,
+            project_actions::project_action_wait,
+            worktree_janitor::worktree_janitor_report,
+            worktree_janitor::worktree_janitor_clean,
             fs::create_path,
             fs::rename_path,
             fs::delete_path,
@@ -813,6 +833,9 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+    }
+    if let Some(runs) = handle.try_state::<project_actions::ActionRuns>() {
+        runs.stop_all();
     }
 }
 

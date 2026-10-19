@@ -9,6 +9,10 @@ import { isFilesystemTab, type FilePaneTab } from "../../workspace/model/layout"
 import { isEqualOrInside, parentPath, pathKey } from "../../../shared/lib/paths";
 import { isBlankSession } from "../../projects/model/projectReturn";
 import { newSession, sessionWorkCwd, type Session } from "../../sessions/model/session";
+import {
+  waitForRun,
+  type WorktreeSetup,
+} from "../../projects/model/projectActions";
 
 export type Worktree = {
   path: string;
@@ -21,28 +25,37 @@ export type Worktree = {
   dirty: boolean | null;
   unpushed: number | null;
   sessionIds: string[];
+  /** The project's setup, started right after `git worktree add` (.monocode/project.json). */
+  setup?: WorktreeSetup;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
 export const listWorktrees = (cwd: string) =>
   invokeWorkspace<Worktrees>("git_worktrees", { cwd });
 
+/**
+ * Create a worktree. Its project's setup action starts right after `git worktree add` unless `runSetup` is false; the
+ * returned tree's `setup` says what started, and callers that hold a turn wait on `setup.run`.
+ */
 export async function createWorktree(
   cwd: string,
   branch: string,
   base: string,
   existing: boolean,
+  options: { runSetup?: boolean } = {},
 ) {
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
     branch,
     base,
     existing,
+    ...(options.runSetup === false ? { runSetup: false } : {}),
   });
   notifyGitChanged();
   return tree;
 }
 
+/** A worker's checkout: ready, including its project's setup when that holds the agent, before it is returned. */
 export async function createOrchestrationWorktree(
   cwd: string,
   branch: string,
@@ -52,6 +65,10 @@ export async function createOrchestrationWorktree(
     branch,
   });
   notifyGitChanged();
+  if (tree.setup?.hold && tree.setup.run) {
+    const run = await waitForRun(tree.setup.run).catch(() => tree.setup!.run!);
+    return { ...tree, setup: { ...tree.setup, run } };
+  }
   return tree;
 }
 

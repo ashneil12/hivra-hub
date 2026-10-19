@@ -343,3 +343,23 @@ it("restores a blank tab for a background project without switching the active t
   expect(migration.tabs[0]).toBe(active);
   expect(migration.addedSessions[0].cwd).toBe(agent.cwd);
 });
+
+it("a Mono with its own engine starts its chat there; an unknown engine or none uses the app's default", async () => {
+  const host = (added: string[]) => ({
+    home: async () => "/home",
+    load: async () => undefined,
+    create: createSession, // the app's default here is Codex
+    add: (session: { harness: string }) => added.push(session.harness),
+  });
+  const { addMono } = await import("./mono");
+  addMono({ id: "cos", name: "Chief of Staff", mascot: "robot", color: "x", projects: [], engine: "claude" });
+  addMono({ id: "odd", name: "Odd", mascot: "robot", color: "x", projects: [], engine: "toString" });
+  addMono({ id: "plain", name: "Plain", mascot: "robot", color: "x", projects: [] });
+  const added: string[] = [];
+  const cos = await ensureMonoSession("cos", host(added));
+  expect(cos).toMatchObject({ harness: "claude", cwd: "/home", runtimeMode: "auto" });
+  expect(findMono("cos")).toMatchObject({ engine: "claude", sessionId: cos?.id });
+  expect((await ensureMonoSession("odd", host(added)))?.harness).toBe("codex");
+  expect((await ensureMonoSession("plain", host(added)))?.harness).toBe("codex");
+  expect(added).toEqual(["claude", "codex", "codex"]);
+});

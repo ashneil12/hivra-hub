@@ -241,6 +241,17 @@ export function shellPath(path: string): string {
       : `'${path.replace(/'/g, `'\\''`)}'`;
   return /[\s"]/.test(path) ? `"${path.replace(/"/g, "")}"` : path;
 }
+/** Said when this copy of the app can't hand an agent its `app` command (no native side, as in a browser preview). */
+export const APP_CLI_MISSING = "This copy of MonoCode can't run agents: its app command isn't available here.";
+
+/**
+ * The `app` command an agent is told to use. `app_cli_path` answers a path in the app; a copy without the native side
+ * answers nothing, which is said plainly instead of failing inside shellPath.
+ */
+export function appCliCommand(path: unknown): string {
+  if (typeof path !== "string" || !path.trim()) throw new Error(APP_CLI_MISSING);
+  return `${shellPath(path)} app`;
+}
 /** Map the lead's chosen option IDs onto the worker's own question shape. */
 function questionAnswers(
   value: unknown,

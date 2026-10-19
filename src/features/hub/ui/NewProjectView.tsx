@@ -7,6 +7,7 @@ import { clearProjectDraft, projectDraft, saveProjectDraft } from "../model/proj
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
 import { plainName } from "../model/roleNames";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
+import { addTeamAddon } from "../model/hubTeam";
 import { SHAPES, StripButton } from "./ProjectStrip";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
@@ -91,8 +92,11 @@ export function NewProjectView() {
     if (!tpl) return;
     const t = TEMPLATES.find((x) => x.id === tpl)!;
     const id = n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
-    addMockProject({ id, name: n, shortName: n.split(" ")[0], iconShape: t.icon, folder: `/Users/ash/harness/${id}` });
+    const project = { id, name: n, shortName: n.split(" ")[0], iconShape: t.icon, folder: `/Users/ash/harness/${id}` };
+    addMockProject(project);
     setTemplate(id, tpl);
+    // Ticking the add-on is Ash's yes: Critiquito joins with its soul and sits in this project's Leadership team.
+    if (addon) addTeamAddon(ADDON_OFFER.id, [project]);
     ended.current = true;
     clearProjectDraft();
     setHubSelection({ project: id, item: "inbox" });

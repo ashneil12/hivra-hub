@@ -213,6 +213,17 @@ proxy). It has no Rust side, so `hub_call` needs the stub or the live proxy to a
   identifier before trusting one — at least one was built before the identity fix and carries
   `com.monocode.desktop`.
 
+## Project file and worktree clean-up (Phase 1b WP4)
+
+- `.monocode/project.json` holds this repo's actions: **Setup** (`node scripts/setup-worktree.mjs`, runs after every
+  `git worktree add`), **Run dev slot** (`npm run hub:dev`), **Check** (`npm run check`), **Ship** (`npm run hub:ship`).
+  The app reads it only from the main checkout and runs nothing until Ash imports it in Settings > Worktrees; editing
+  the file in a branch changes nothing. Agents use `app actions.list` / `app actions.run`.
+- `scripts/setup-worktree.mjs` links `node_modules` from the main checkout when the lockfiles match (else `npm ci`) and
+  links missing env files; it never replaces a real file and never writes through a link.
+- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees`; nothing is removed without Ash's tap.
+  `monocode worktrees-report` prints the same report read-only. Never delete a worktree or its `target/` by hand.
+
 ## Signing (why the app kept asking for your password)
 
 The hub was built **ad-hoc signed** (`signingIdentity: "-"`). An ad-hoc signature's designated

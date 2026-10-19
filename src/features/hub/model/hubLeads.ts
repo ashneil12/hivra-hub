@@ -1,24 +1,79 @@
 import { isMonoRemovedByUser } from "./builtInMonos";
-// Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes the four on
+import { isGlobalProject } from "./hubProjects";
+// Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes them on
 // its first run and again whenever one is missing, never twice and never over Ash's edits: EXO lead, Hivra lead,
-// Nibbii lead, Harness lead. Each is tied to its project's folder (from Ash OS), starts its chats there, talks to Ash
-// OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools, hubMcp.ts) and has a soul that makes it the orchestrator Ash asked for.
-import { addMono, addMonoProject, findMono, listMonos, monoWorksOn, nextMonoLook } from "../../monos/model/mono";
+// Nibbii lead, MonoCode Hub lead. Each is tied to its project's folder (from Ash OS), starts its chats there, talks to
+// Ash OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools, hubMcp.ts) and has a soul that makes it the orchestrator Ash asked
+// for. `ash` is Ash's global memory, not a project, so it never gets a Lead (hubProjects.ts).
+import { projectKey } from "../../../shared/lib/paths";
+import {
+  addMono,
+  addMonoProject,
+  findMono,
+  listMonos,
+  monoWorksOn,
+  nextMonoLook,
+  updateMono,
+  type Mono,
+} from "../../monos/model/mono";
 import type { HubProject } from "./types";
 
-export type LeadSpec = { projectId: string; id: string; name: string; projectName: string };
+export type LeadSpec = {
+  projectId: string;
+  id: string;
+  name: string;
+  projectName: string;
+  /** The seat this Lead replaces: an existing Mono with this id becomes this Lead, keeping its chat and files. */
+  legacy?: { id: string; name: string; projectId: string };
+};
 
 /** The four Leads. Ids are `<project id>-lead` (Ash OS's own convention for a Lead's Mono id). */
 export const LEADS: readonly LeadSpec[] = [
   { projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO" },
   { projectId: "hivra", id: "hivra-lead", name: "Hivra lead", projectName: "Hivra" },
   { projectId: "nibbii", id: "nibbii-lead", name: "Nibbii lead", projectName: "Nibbii" },
-  { projectId: "ash", id: "ash-lead", name: "Harness lead", projectName: "the harness" },
+  // The harness work moved from `ash` (now Ash's global memory) to the project `hub` (19 Oct). The old "Harness lead"
+  // (`ash-lead`) is adopted in place, so its conversation, memory, habits and delegations stay with it.
+  {
+    projectId: "hub",
+    id: "hub-lead",
+    name: "MonoCode Hub lead",
+    projectName: "MonoCode Hub",
+    legacy: { id: "ash-lead", name: "Harness lead", projectId: "ash" },
+  },
 ];
 
 export function leadFor(monoId: string): LeadSpec | undefined {
-  return LEADS.find((lead) => lead.id === monoId);
+  return LEADS.find((lead) => lead.id === monoId || lead.legacy?.id === monoId);
 }
+
+/** The Mono that is this Lead today: its own id, or the legacy seat it adopted. */
+export function leadMono(lead: LeadSpec): Mono | undefined {
+  return findMono(lead.id) ?? (lead.legacy ? findMono(lead.legacy.id) : undefined);
+}
+
+/** How every Lead runs its project (docs/leadership/project-lead-seed.md: what worked for the Grok-era Leads). */
+const LEAD_RULES = `## How you run the project
+- Start-ack: when a brief arrives, your first reply cites it and says what actually started. "Ready" is not started.
+- One outcome per brief at a time; the fresh brief is the source of truth, not old chat scroll.
+- Workers are subagents with a goal, success checks and what to report. A worker returns a short self-review and never edits the board, shared memory or another Mono's files. You turn those reviews into better skills and a better soul; those changes apply automatically and are logged with Undo.
+- Mark whether each job needs the running product (gameplay, visuals, HUD and loading do; unsure counts as yes). Every job is checked by someone other than its builder.
+- The board shows jobs ("Fixing the save bug"), grouped under you, never the helper.
+- Hold the line on RED (customer emails, money and billing, public launches, token marketing, anything irreversible): say no first, then ask upward to Chief of Staff with the exact question and what yes and no would each mean.
+- If you give up on something it stays Stuck with the reason on a second line, and you keep retrying. It becomes a Need only when it cannot go on without Ash.
+- Report to the Mono that briefed you (usually Chief of Staff): landed, not fixed, waiting on Ash, with evidence. Counts match the board. Quiet when nothing changed.
+- Style: next action first, numbered, no fluff, no em dashes.
+`;
+
+/** What the MonoCode Hub lead adds: it develops the hub from inside the hub (the repo's CLAUDE.md has the detail). */
+const HUB_RULES = `## Developing the hub from inside the hub
+- Read the repo's CLAUDE.md before building, installing or launching anything.
+- Never edit the main checkout directly. Every change starts in its own worktree off the mainline, on its own branch.
+- See a change in a dev slot: \`npm run hub:dev\` from that worktree (its own data folder, port and DEV ribbon, invented Ash OS data by default). Never launch a build with the daily identity to prove something, and never touch the daily app's data folder.
+- \`npm run check\` passes before anything is called done.
+- Ship only with \`npm run hub:check-all && npm run hub:build && npm run hub:ship\` from a clean, landed commit. Ship is the only way a build reaches the daily app; never quit, kill or copy the daily app by hand.
+- Ash OS (the studio) has its own rules in its AGENTS.md: its own worktree branch, its tests, and its lander merges. Never edit its live checkout.
+`;
 
 /** The Lead's standing instructions (they seed its SOUL.md once; Ash edits it from there). Ash's own words quoted. */
 export function leadSoul(lead: LeadSpec, folder: string | null): string {
@@ -29,11 +84,13 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 - When you hand work to a worker (a subagent), pass Ash's own words and the full context, never a short brief. Start workers on the \`sonnet\` model unless the job really needs more. Every worker returns a short self-review; use those reviews to improve your skills and this file.
 - Only you change the project's main board. Workers never do, and are never shown to Ash: he sees the job.
 - Parallel work is fine. The one rule is that two systems never work the same job at once.
+- You talk to Chief of Staff, and to Ash only when Chief of Staff or Ash routes it. Ash talks to orchestrators, not workers.
 
 ## Before you act
 - Read the project's memory first: \`ash_recall ${lead.projectId}\`. Ash's latest words beat project memory, which beats the code, which beats docs and plans.
 - A message with several asks, ideas or decisions: capture it first with \`ash_dump\`, in Ash's words verbatim, then work.
 
+${LEAD_RULES}
 ## Finishing
 - Verify your own work: tests, an independent check, proof (the check run, a commit, a screenshot, a served URL). That is what finishes it; record it with \`ash_update_ask\`.
 - Ask Ash for "Looks right" only on very critical work (Ash, 14 Oct).
@@ -43,26 +100,44 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 ## Who you are to Ash OS
 - You use the \`ash-os\` tools as yourself (ASH_MONO_ID=${lead.id}, ASH_ROLE=lead), so the hub shows what you did under your name. You never answer Ash's questions or accept work for him.
 - Codex is for image generation only; development is done by Claude Code (Ash, 15 Oct).
-`;
+${lead.projectId === "hub" ? `\n${HUB_RULES}` : ""}`;
 }
 
-export type EnsureResult = { created: string[]; tied: string[] };
+export type EnsureResult = { created: string[]; tied: string[]; adopted: string[] };
+
+const ADOPTED_KEY = "monocode:hub-lead-adopted";
+function adoptedOnce(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(ADOPTED_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
 /**
  * Make the Leads that are missing (with their project folder and soul) and tie an existing Lead to its project's
- * folder if it lost it. Never renames, re-souls or removes a Lead Ash has already. `register` tells Ash OS which Mono
- * leads which project (`ash-hub-mono-project-add`, role lead); its failures are ignored.
+ * folder if it lost it. Never renames, re-souls or removes a Lead Ash has already, with one exception made once: a
+ * legacy seat (the old "Harness lead") becomes the new Lead in place, keeping its id, conversation and files. It takes
+ * the new name only if it still has the old default one, and its new project's folder goes first so its chats start
+ * there. `register` tells Ash OS which Mono leads which project (`ash-hub-mono-project-add`, role lead) and
+ * `unregister` drops the legacy seat's old project (`ash-hub-mono-project-remove`); their failures are ignored.
  */
 export function ensureProjectLeads(
   projects: readonly HubProject[],
   register?: (monoId: string, projectId: string) => Promise<unknown>,
+  unregister?: (monoId: string, projectId: string) => Promise<unknown>,
 ): EnsureResult {
   const created: string[] = [];
   const tied: string[] = [];
+  const adopted: string[] = [];
   for (const lead of LEADS) {
+    if (isGlobalProject(lead.projectId)) continue;
     const project = projects.find((p) => p.id === lead.projectId);
     if (!project || isMonoRemovedByUser(lead.id)) continue;
-    const existing = findMono(lead.id);
+    const existing = leadMono(lead);
+    // Ash removed the seat this Lead replaces: it stays gone.
+    if (!existing && lead.legacy && isMonoRemovedByUser(lead.legacy.id)) continue;
     if (!existing) {
       const look = nextMonoLook(listMonos());
       if (
@@ -75,13 +150,58 @@ export function ensureProjectLeads(
         })
       )
         created.push(lead.id);
+    } else if (lead.legacy && existing.id === lead.legacy.id && !adoptedOnce().has(existing.id)) {
+      const legacy = lead.legacy;
+      const folder = project.folder;
+      updateMono(existing.id, (mono) => ({
+        ...mono,
+        name: !mono.name || mono.name === legacy.name ? lead.name : mono.name,
+        projects: folder ? [folder, ...mono.projects.filter((p) => projectKey(p) !== projectKey(folder))] : mono.projects,
+      }));
+      try {
+        localStorage.setItem(ADOPTED_KEY, JSON.stringify([...adoptedOnce(), existing.id]));
+      } catch {
+        /* storage unavailable: adopting again changes nothing */
+      }
+      void unregister?.(existing.id, legacy.projectId)?.catch(() => undefined);
+      adopted.push(existing.id);
     } else if (project.folder && !monoWorksOn(existing, project.folder)) {
-      addMonoProject(lead.id, project.folder);
-      tied.push(lead.id);
+      addMonoProject(existing.id, project.folder);
+      tied.push(existing.id);
     }
-    void register?.(lead.id, lead.projectId)?.catch(() => undefined);
+    void register?.(existing?.id ?? lead.id, lead.projectId)?.catch(() => undefined);
   }
-  return { created, tied };
+  return { created, tied, adopted };
+}
+
+/** The generated opening of the old Harness lead's soul: a SOUL.md that still has it was never rewritten by Ash. */
+const LEGACY_SOUL_MARK = "You are Harness lead, the lead for the harness";
+
+type SoulPath = "SOUL.md" | `memory/${string}.md`;
+type FileReader = (monoId: string, path: SoulPath) => Promise<{ text: string | null; hash: string }>;
+type FileWriter = (monoId: string, path: SoulPath, text: string, expectedHash?: string) => Promise<unknown>;
+
+/**
+ * An adopted Lead's soul: the generated Harness-lead soul (or none) is replaced with the new Lead's, and the old text is
+ * kept first as a topic note (memory/harness-lead-soul.md). A soul Ash rewrote is left alone. Returns whether it wrote.
+ */
+export async function reseedAdoptedLeadSoul(
+  monoId: string,
+  folder: string | null,
+  wrap: (instructions: string) => string,
+  read: FileReader,
+  write: FileWriter,
+): Promise<boolean> {
+  const lead = leadFor(monoId);
+  if (!lead?.legacy || lead.legacy.id !== monoId) return false;
+  const current = await read(monoId, "SOUL.md");
+  if (current.text != null && !current.text.includes(LEGACY_SOUL_MARK)) return false;
+  if (current.text != null) {
+    const note = await read(monoId, "memory/harness-lead-soul.md");
+    if (note.text == null) await write(monoId, "memory/harness-lead-soul.md", current.text, note.hash);
+  }
+  await write(monoId, "SOUL.md", wrap(leadSoul({ ...lead, id: monoId }, folder)), current.hash);
+  return true;
 }
 
 /** Where a Lead's chats start: its project's folder (the first one it was given). Other Monos start at home. */
@@ -91,5 +211,5 @@ export function leadWorkingFolder(monoId: string): string | undefined {
 }
 
 /** Ash's own ash-os MCP entry, as Rust reads it from ~/.claude.json (`hub_ash_os_mcp`). Each hub chat gets it with its
- * identity added (hubMcp.ts). */
+ * identity added (hubMcp.ts); a Lead's identity is its Mono's own id, so an adopted seat keeps the id Ash OS knows. */
 export type AshOsServer = { command: string; args?: string[]; env?: Record<string, string> };

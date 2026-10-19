@@ -52,9 +52,13 @@ const FILES_CHANGED = "monocode:mono-files-changed";
 
 const NO_INSTRUCTIONS = "- (Add anything it should always keep in mind.)";
 
-/** What a new agent starts with; the user shapes it from there. */
+/**
+ * What a new agent starts with; the user shapes it from there. Instructions that are already a whole soul (they open
+ * with "# Soul", as the hub's leadership team does) are kept as they are.
+ */
 export function defaultSoul(instructions?: string): string {
   const own = instructions?.trim();
+  if (own && /^# Soul\s*\n/.test(own)) return `${own}\n`;
   return `# Soul
 
 ## Standing instructions

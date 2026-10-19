@@ -23,6 +23,10 @@ fn main() {
         Some("healthcheck") => {
             std::process::exit(monocode_lib::instance::healthcheck_main(&rest()))
         }
+        // The worktree clean-up report: reads only, no window, no app data (src/worktree_janitor.rs).
+        Some("worktrees-report") => {
+            std::process::exit(monocode_lib::worktree_janitor::report_main(&rest()))
+        }
         _ => monocode_lib::run(),
     }
 }

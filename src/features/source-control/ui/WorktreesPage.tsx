@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
+import { ProjectActionsPanel } from "./ProjectActionsPanel";
+import { WorktreeCleanup } from "./WorktreeCleanup";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
 import {
   FolderOpen,
@@ -231,6 +233,10 @@ export function WorktreesPage({
           New worktrees are created in {prettyCwd(data.defaultRoot)}.
         </p>
       )}
+      {project && (
+        <ProjectActionsPanel project={project} worktrees={data?.worktrees ?? []} />
+      )}
+      <WorktreeCleanup project={project} onRemove={onRemove} onChanged={refresh} />
       {creating && (
         <CreateWorktreeDialog
           cwd={project}
