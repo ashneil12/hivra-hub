@@ -269,4 +269,4 @@ Settings → Export and import writes the whole setup (and, if ticked, the Ash O
 `.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
 connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
 never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
-its own data folder (`MONOCODE_HUB_MEMORY_ROOT` overrides) and never writes `~/agent-memory`.
+its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.

@@ -62,8 +62,9 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
 **Engine-agnostic.** Every Mono and every chat names its engine. A Mono with an engine starts new conversations on it
 (`monoWorkspace.ts`); an engine this build doesn't know falls back to the default.
 
-**Dev copies.** Memory lives in the slot's own `<data>/agent-memory` (override with `MONOCODE_HUB_MEMORY_ROOT`). A dev
-copy never writes into `~/agent-memory`, `~/.claude` or the daily data folder, and never keeps a provider session id.
+**Dev copies.** Memory lives in the slot's own `<data>/agent-memory`; `npm run hub:dev -- --memory <dir>` points Export at
+another folder (it sets `MONOCODE_HUB_MEMORY_ROOT`, which hub:dev otherwise strips). A dev copy never writes into
+`~/agent-memory`, `~/.claude` or the daily data folder, and never keeps a provider session id.
 
 ## Tests
 

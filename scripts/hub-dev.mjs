@@ -7,6 +7,8 @@
 //   npm run hub:dev -- --hub off         # no Ash OS at all
 //   npm run hub:dev -- --seed            # first copy a cleaned backup of the daily chats in (scripts/hub-seed-dev.mjs)
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
+//   npm run hub:dev -- --memory <dir>    # read Ash OS project memory from <dir> for Export (default: the slot's own
+//                                        # <data>/agent-memory; the app never writes the real ~/agent-memory from a dev copy)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
 //
@@ -329,7 +331,7 @@ export function tauriArgs(slotConfigFile, extra = [], root = ROOT) {
 }
 
 /** The environment `tauri dev` (and so cargo, vite and the app) runs with. */
-export function devEnvironment({ slot, hub, home = os.homedir(), env = process.env }) {
+export function devEnvironment({ slot, hub, memory, home = os.homedir(), env = process.env }) {
   const next = { ...env };
   // Whatever an enclosing dev copy or shell set is not this slot's.
   for (const key of Object.keys(next))
@@ -342,6 +344,8 @@ export function devEnvironment({ slot, hub, home = os.homedir(), env = process.e
     next.MONOCODE_HUB_PORT = String(hub.port);
     next.MONOCODE_HUB_TOKEN_FILE = hub.tokenFile;
   }
+  // Only on request (--memory): where Export reads the project memory (src-tauri/src/portable.rs).
+  if (memory) next.MONOCODE_HUB_MEMORY_ROOT = path.resolve(memory);
   return next;
 }
 
@@ -533,6 +537,7 @@ export function parseArgs(argv) {
       own.includes("--replace"),
     reseed: own.includes("--reseed") || own.includes("--replace"),
     print: own.includes("--print"),
+    memory: value("memory"),
     extra,
   };
   if (!HUB_MODES.includes(options.hub)) throw new Error(`--hub must be one of ${HUB_MODES.join(", ")}`);
@@ -571,13 +576,14 @@ async function main() {
   console.log(`  vite        http://localhost:${plan.port}`);
   console.log(`  ash os      ${bridge ? bridge.label : "off"}`);
   console.log(`  rust cache  ${tilde(plan.buildDir)}`);
+  if (options.memory) console.log(`  memory      ${tilde(path.resolve(options.memory))} (read for Export)`);
   console.log(`  config      ${path.relative(ROOT, plan.configFile)}`);
 
   const tauri = path.join(ROOT, "node_modules/.bin/tauri");
   const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
     cwd: ROOT,
     stdio: "inherit",
-    env: devEnvironment({ slot: plan.slot, hub: bridge }),
+    env: devEnvironment({ slot: plan.slot, hub: bridge, memory: options.memory }),
   });
   const signalled = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
