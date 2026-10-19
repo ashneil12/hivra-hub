@@ -103,6 +103,19 @@ describe("the stub only says what the real service says", () => {
     });
   }
 
+  it("ash-hub-delegation: keeps the newest version of the app's copy, as ashos/hub.py delegation does", async () => {
+    const row = { id: "t-1", version: 2, state: "running", owner_mono: "vg-game-lead", owner_session: "mono-exo", ask_ids: [] };
+    const first = await transport.call<Json>("ash-hub-delegation", row);
+    expect(first).toEqual({ id: "t-1", applied: true, version: 2, state: "running", owner: "mono:vg-game-lead", linked: [], moved: [], refused: [] });
+    const late = await transport.call<Json>("ash-hub-delegation", { ...row, version: 1, state: "completed" });
+    expect(late).toMatchObject({ applied: false, version: 2, state: "running" });
+    await transport.call("ash-hub-delegation", { ...row, version: 3, state: "completed" });
+    expect(stub.delegations.get("t-1")).toMatchObject({ version: 3, state: "completed" });
+    await expect(transport.call("ash-hub-delegation", { ...row, state: "lost" })).rejects.toThrow(/state/);
+    // Not built in the studio yet: the app's outbox has to live with this answer.
+    await expect(transport.call("ash-hub-chat-bind", { provider_session: "p", chat_id: "c" })).rejects.toThrow(/Unknown hub action/);
+  });
+
   it("the feed's events carry the real service's fields", async () => {
     stub.addNeed({ id: "z", projectId: "hivra", title: "Example: z" });
     const got = await transport.call<Json>("ash-hub-events", { after: 0 });

@@ -434,8 +434,28 @@ export async function startStub({
     return { ...base, outcome: v.quick ?? "answered", receipt, rowDone: true };
   }
 
+  // ---- the app's delegation copies (ash-hub-delegation; the shapes of branch ash-os-delegation-mirror, docs "Delegations
+  // and who owns an ask"): a write lands only if its version is newer. No ask ledger here, so nothing is linked or moved.
+  // `ash-hub-chat-bind` is not answered: the real service doesn't have it yet, and the app's outbox must cope with that.
+  const delegations = new Map();
+  const DELEGATION_STATES = ["running", "question", "completed", "failed", "cancelled"];
+  function delegationCall(v) {
+    const id = String(v.id ?? "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)) throw new Error("id: the delegation's task id (letters, digits, dots, colons, dashes; up to 128).");
+    if (!Number.isInteger(v.version) || v.version < 0) throw new Error("version: a whole number; a write lands only if it is newer than the copy's.");
+    if (!DELEGATION_STATES.includes(v.state)) throw new Error(`state: ${DELEGATION_STATES.join(", ")}`);
+    if (!v.owner_mono && !v.owner_session) throw new Error("A delegation names who delegated it: owner_mono (the Mono), or owner_session (its hub chat).");
+    const owner = v.owner_mono ? `mono:${v.owner_mono}` : `chat:${v.owner_session}`;
+    const old = delegations.get(id);
+    if (old && v.version <= old.version) return { id, applied: false, version: old.version, state: old.state, owner, linked: [], moved: [], refused: [] };
+    // The real service records `hub.delegation.changed` off the feed, so nothing is emitted here.
+    delegations.set(id, { ...v, mirrored_at: now() });
+    return { id, applied: true, version: v.version, state: v.state, owner, linked: [], moved: [], refused: [] };
+  }
+
   async function action(name, v) {
     switch (name) {
+      case "delegation": return delegationCall(v);
       case "jobs": return jobsCall(v);
       case "job-options": return jobOptionsCall(v);
       case "job-act": return jobActCall(v);
@@ -622,6 +642,7 @@ export async function startStub({
     state,
     calls,
     events,
+    delegations,
     get latest() {
       return latest;
     },
