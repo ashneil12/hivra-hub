@@ -28,6 +28,11 @@ import {
 } from "../../core/preview";
 import { streamTextDelta } from "../../core/streamText";
 import type { ApprovalDecision, HarnessEvent } from "../../core/types";
+import {
+  claudeFailureFromResult,
+  type ClaudeFailure,
+  type ClaudeFailureContext,
+} from "./claudeFailure";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -477,27 +482,69 @@ export function statusTextFromSystem(
   return compact ? "Compacted context" : undefined;
 }
 
-export function turnStatusFromResult(rec: Record<string, unknown>): {
+const NOTICE_SUBTYPES = new Set([
+  "informational",
+  "model_refusal_fallback",
+  "model_refusal_no_fallback",
+  "model_fallback",
+]);
+
+/**
+ * A line the CLI shows its own user that is not part of the reply: a warning,
+ * a hook's note, a model refusing and another answering. The CLI keeps `info`
+ * lines to its transcript view, so they stay out of the chat too.
+ */
+export function noticeFromSystem(rec: Record<string, unknown>): {
+  text: string;
+  level: "notice" | "suggestion" | "warning";
+  key?: string;
+} | null {
+  if (stringField(rec, "type") !== "system") return null;
+  const subtype = stringField(rec, "subtype") ?? "";
+  if (!NOTICE_SUBTYPES.has(subtype)) return null;
+  const text = stringField(rec, "content")?.trim();
+  if (!text) return null;
+  if (subtype !== "informational") return { text, level: "warning" };
+  const level = stringField(rec, "level") ?? "notice";
+  if (level === "info") return null;
+  // Progress lines for one tool call replace each other.
+  const toolUseId = stringField(rec, "tool_use_id");
+  return {
+    text,
+    level: level === "warning" || level === "suggestion" ? level : "notice",
+    ...(toolUseId ? { key: `notice:${toolUseId}` } : {}),
+  };
+}
+
+/**
+ * How a turn ended. Claude Code reports a failed API request as subtype
+ * "success" with `is_error`, so success alone never means completed; see
+ * `claudeFailure.ts` for the failure classes.
+ */
+export function turnStatusFromResult(
+  rec: Record<string, unknown>,
+  context?: ClaudeFailureContext,
+): {
   status: "completed" | "failed" | "interrupted" | "cancelled";
   error?: string;
+  failure?: ClaudeFailure;
 } {
-  const subtype = stringField(rec, "subtype") ?? "";
-  if (subtype === "success") return { status: "completed" };
-  const errors = Array.isArray(rec.errors)
-    ? rec.errors.filter((item): item is string => typeof item === "string")
-    : [];
-  const joined = errors.join(" ").toLowerCase();
   const terminal = stringField(rec, "terminal_reason") ?? "";
-  if (
-    terminal === "aborted_tools" ||
-    terminal === "aborted_streaming" ||
-    joined.includes("interrupt")
-  ) {
+  // The CLI can label an abort "success"; its terminal reason wins.
+  if (terminal === "aborted_tools" || terminal === "aborted_streaming") {
     return { status: "interrupted" };
   }
-  if (joined.includes("cancel")) return { status: "cancelled" };
-  const error = errors.find((item) => !item.startsWith("[ede_diagnostic]"));
-  return { status: "failed", error: error ?? "Claude turn failed." };
+  if ((stringField(rec, "subtype") ?? "") !== "success") {
+    const errors = Array.isArray(rec.errors)
+      ? rec.errors.filter((item): item is string => typeof item === "string")
+      : [];
+    const joined = errors.join(" ").toLowerCase();
+    if (joined.includes("interrupt")) return { status: "interrupted" };
+    if (joined.includes("cancel")) return { status: "cancelled" };
+  }
+  const failure = claudeFailureFromResult(rec, context);
+  if (!failure) return { status: "completed" };
+  return { status: "failed", error: failure.message, failure };
 }
 
 /**
@@ -516,19 +563,6 @@ export function usageLimitFromRateLimitEvent(
   if (stringField(info, "rateLimitType") === "overage") return null;
   const resetsAt = parseResetTimestamp(info?.resetsAt);
   return resetsAt != null ? { resetsAt } : {};
-}
-
-const USAGE_LIMIT_TEXT = /hit your (?:usage )?limit|usage limit reached/i;
-
-/** Claude also ends a limited turn with the limit as its error text. */
-export function isUsageLimitResult(rec: Record<string, unknown>): boolean {
-  if (rec.is_error !== true) return false;
-  const errors = Array.isArray(rec.errors)
-    ? rec.errors.filter((item): item is string => typeof item === "string")
-    : [];
-  return [stringField(rec, "result") ?? "", ...errors].some((text) =>
-    USAGE_LIMIT_TEXT.test(text),
-  );
 }
 
 export function streamDeltaFromEvent(

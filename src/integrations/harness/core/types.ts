@@ -10,10 +10,31 @@ import type {
 } from "../../../features/sessions/model/session";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
 
+/**
+ * Why a provider refused or failed a turn. It travels with the error into the
+ * turn's outcome and a Lead's report, so "completed" is never claimed for a
+ * turn the provider refused. Auth and billing are never worth retrying as-is.
+ */
+export type ProviderErrorClass =
+  | "usage_limit"
+  | "billing"
+  | "auth"
+  | "overloaded"
+  | "provider_error";
+
 export type HarnessEvent =
   | { type: "session.started" }
   | { type: "session.ended"; code?: number | null }
-  | { type: "session.error"; message: string }
+  | {
+      type: "session.error";
+      message: string;
+      /** Why the provider failed the turn, when the adapter can tell. */
+      errorClass?: ProviderErrorClass;
+      /** Sending the turn again later can work with nothing fixed first. */
+      retryable?: boolean;
+      /** Epoch ms when a refused usage window resets, when known. */
+      resetsAt?: number;
+    }
   | { type: "session.providerBound"; providerSessionId: string }
   | { type: "turn.started"; providerTurnId: string }
   | { type: "turn.ready" }
@@ -23,6 +44,31 @@ export type HarnessEvent =
       modelSettings?: Record<string, string>;
     }
   | { type: "status"; text: string; key?: string }
+  /**
+   * The provider is retrying a failed API request by itself; the turn goes on
+   * unless the last attempt fails too.
+   */
+  | {
+      type: "provider.retry";
+      attempt: number;
+      maxAttempts: number;
+      errorClass: ProviderErrorClass;
+      /** HTTP status of the failed request; absent for a connection error. */
+      errorStatus?: number;
+      /** How long the provider waits before this attempt, in ms. */
+      retryDelayMs?: number;
+    }
+  /**
+   * Something the provider tells the user that is not part of the reply, such
+   * as a CLI warning or a model fallback. Shown as a quiet line.
+   */
+  | {
+      type: "notice";
+      text: string;
+      level?: "notice" | "suggestion" | "warning";
+      /** Later notices with the same key replace this one in the turn. */
+      key?: string;
+    }
   /** The provider refused the turn until its usage window resets (epoch ms). */
   | { type: "usage.limited"; resetsAt?: number }
   /**

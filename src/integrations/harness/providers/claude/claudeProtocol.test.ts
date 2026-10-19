@@ -38,10 +38,10 @@ import {
   toolTitle,
   turnStatusFromResult,
   turnMetricsFromResult,
-  isUsageLimitResult,
   usageLimitFromRateLimitEvent,
   isReplayedTaskNotificationResult,
 } from "./claudeProtocol";
+import { claudeFailureFromResult } from "./claudeFailure";
 
 describe("runtimeModeToPermission", () => {
   it("maps runtime modes onto Claude permission flags", () => {
@@ -324,21 +324,21 @@ describe("usage limits", () => {
 
   it("recognizes a limit in an errored result", () => {
     expect(
-      isUsageLimitResult({
+      claudeFailureFromResult({
         type: "result",
         subtype: "success",
         is_error: true,
         result: "You've hit your limit · resets 3am (Europe/Sofia)",
-      }),
-    ).toBe(true);
+      })?.errorClass,
+    ).toBe("usage_limit");
     expect(
-      isUsageLimitResult({
+      claudeFailureFromResult({
         type: "result",
         subtype: "success",
         is_error: false,
         result: "You've hit your limit",
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 });
 

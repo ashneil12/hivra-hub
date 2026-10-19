@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { HARNESSES, type HarnessId, type Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
-import type { ApprovalDecision, HarnessEvent } from "../../../integrations/harness/core/types";
+import type { ApprovalDecision, HarnessEvent, ProviderErrorClass } from "../../../integrations/harness/core/types";
 import { pendingApprovalForSession } from "../../notifications/model/approvalToast";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import {
@@ -41,6 +41,12 @@ export type ControlOutcome = {
   status: "completed" | "failed" | "cancelled";
   text: string;
   error?: string;
+  /** Why the provider failed the turn, when it said; see ProviderErrorClass. */
+  errorClass?: ProviderErrorClass;
+  /** Sending the turn again later can work with nothing fixed first. */
+  retryable?: boolean;
+  /** Epoch ms when a refused usage window resets. */
+  resetsAt?: number;
 };
 export type WorkerPreparation = {
   scratchDir?: string;

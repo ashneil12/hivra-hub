@@ -23,6 +23,10 @@ import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { providerRetryText } from "./providerFailure";
+
+/** One retry line per turn, counting up in place. */
+const PROVIDER_RETRY_KEY = "provider-retry";
 
 /** Apply one delivery batch without copying the transcript for every token. */
 export function applyHarnessEvents(
@@ -159,7 +163,15 @@ export function applyHarnessEvent(
       return appendBlock(
         failStreaming({
           ...session,
-          usageLimit: session.usageLimit ?? usageLimitFromError(event.message),
+          usageLimit:
+            session.usageLimit ??
+            // A classified failure says itself whether it is a usage limit:
+            // a billing or sign-in refusal is not one, however it is worded.
+            (event.errorClass
+              ? event.errorClass === "usage_limit"
+                ? {}
+                : undefined
+              : usageLimitFromError(event.message)),
           // Do not drain remaining messages into the same failed connection.
           queueStatus: session.queuedMessages?.length
             ? "paused"
@@ -206,6 +218,16 @@ export function applyHarnessEvent(
           : {}),
       };
     case "status":
+      return event.key
+        ? upsertKeyedStatus(session, event.key, event.text)
+        : appendStatus(session, event.text);
+    case "provider.retry":
+      return upsertKeyedStatus(
+        session,
+        PROVIDER_RETRY_KEY,
+        providerRetryText(event),
+      );
+    case "notice":
       return event.key
         ? upsertKeyedStatus(session, event.key, event.text)
         : appendStatus(session, event.text);

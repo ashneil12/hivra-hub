@@ -42,7 +42,7 @@ import {
   isTerminalAgentTaskStatus,
   isTodoTool,
   applyClaudeTaskTool,
-  isUsageLimitResult,
+  noticeFromSystem,
   normalizeClaudeCliEffort,
   parseBackgroundTasks,
   parseControlCancelId,
@@ -74,6 +74,7 @@ import {
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
+import { claudeRetryFromMessage } from "./claudeFailure";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -164,6 +165,11 @@ type Live = {
   turnResultSeen: boolean;
   /** Latest `rate_limit_event` refused requests; reported when the turn ends. */
   usageLimit: { resetsAt?: number } | null;
+  /**
+   * `error` on the latest main-thread assistant message: the CLI's own label
+   * ("authentication_failed", "billing_error", …) for a request that failed.
+   */
+  assistantError?: string;
   cancelled: boolean;
   muteUpdates: boolean;
   turns: Promise<void>;
@@ -607,6 +613,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.backgroundKey = "";
   live.taskNotes = [];
   live.turnResultSeen = false;
+  live.assistantError = undefined;
 
   const turnPromise = new Promise<void>((resolve, reject) => {
     live.turnDone = resolve;
@@ -743,6 +750,16 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     return;
   }
   if (type === "system") {
+    const retry = claudeRetryFromMessage(rec);
+    if (retry) {
+      live.onEvent(retry);
+      return;
+    }
+    const notice = noticeFromSystem(rec);
+    if (notice) {
+      live.onEvent({ type: "notice", ...notice });
+      return;
+    }
     const text = statusTextFromSystem(rec);
     if (text) {
       if ((stringField(rec, "subtype") ?? "").startsWith("compact")) {
@@ -864,6 +881,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
     return;
   }
 
+  live.assistantError = stringField(rec, "error");
   const used = contextUsedFromAssistant(rec);
   if (used !== undefined) live.onEvent({ type: "context", used });
 
@@ -1014,6 +1032,7 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   if (isReplayedTaskNotificationResult(rec)) {
     // A limit reported for the replay must not carry over to the real turn.
     live.usageLimit = null;
+    live.assistantError = undefined;
     return;
   }
   // A /compact result reports the summarizer call's usage, not the rebuilt
@@ -1025,17 +1044,36 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   const metrics = turnMetricsFromResult(rec);
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
 
-  const result = turnStatusFromResult(rec);
-  if (result.status === "failed" && result.error && !live.cancelled) {
-    live.onEvent({ type: "session.error", message: result.error });
-  }
-  // A refused window can still fall back to another model, so only a turn
-  // that ended in error was stopped by it.
-  const turnErrored = rec.is_error === true || result.status === "failed";
-  const usageLimit = live.usageLimit ?? (isUsageLimitResult(rec) ? {} : null);
+  // Claude Code reports a refused API request as a "success" with is_error:
+  // the class says why, so a worker refused for billing is never "completed".
+  const result = turnStatusFromResult(rec, {
+    usageLimit: live.usageLimit,
+    assistantError: live.assistantError,
+  });
   live.usageLimit = null;
-  if (usageLimit && turnErrored && !live.cancelled) {
-    live.onEvent({ type: "usage.limited", ...usageLimit });
+  live.assistantError = undefined;
+  const failure = result.failure;
+  if (result.status === "failed" && !live.cancelled) {
+    live.onEvent({
+      type: "session.error",
+      message: result.error ?? "Claude turn failed.",
+      ...(failure
+        ? {
+            errorClass: failure.errorClass,
+            retryable: failure.retryable,
+            ...(failure.resetsAt != null ? { resetsAt: failure.resetsAt } : {}),
+          }
+        : {}),
+    });
+    // A refused window can still fall back to another model, so only a turn
+    // that failed on it was stopped by it. Only a usage limit lifts by
+    // itself: a 401 or a 402 must never arm a resume at reset.
+    if (failure?.errorClass === "usage_limit") {
+      live.onEvent({
+        type: "usage.limited",
+        ...(failure.resetsAt != null ? { resetsAt: failure.resetsAt } : {}),
+      });
+    }
   }
   live.turnResultSeen = true;
   maybeFinishTurn(live);

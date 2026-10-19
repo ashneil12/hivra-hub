@@ -45,6 +45,7 @@ import {
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
 import { submitWithSettlement } from "./model/managedSubmission";
+import { providerFailureOf, withProviderFailure } from "./model/turnFailure";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -8164,7 +8165,7 @@ function Workspace({
           if (options?.onSettled && event.type === "message.completed")
             controlText += "\n";
           if (event.type === "session.error")
-            controlOutcome.error = event.message;
+            controlOutcome = withProviderFailure(controlOutcome, event);
           if (
             wrap &&
             (event.type === "session.started" ||
@@ -8510,7 +8511,7 @@ function Workspace({
                 ? "failed"
                 : "completed",
             text: controlText.trim(),
-            ...(providerFailureSeen ? { error: controlOutcome.error } : {}),
+            ...(providerFailureSeen ? providerFailureOf(controlOutcome) : {}),
           };
           await flushSessionCheckpoint(sessionId);
           setSessions((prev) =>
