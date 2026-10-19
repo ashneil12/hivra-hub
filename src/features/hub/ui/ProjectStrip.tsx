@@ -5,6 +5,7 @@ import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
+import { useWaitingChatsVersion } from "../model/waitingChats";
 import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
@@ -46,6 +47,7 @@ export function ProjectStrip({
   useConnectorsVersion();
   void onCreateProject;
   useHubBuildsVersion();
+  useWaitingChatsVersion();
   const data = hubData();
   const projects = data.listProjects();
   useProjectDraftVersion();
