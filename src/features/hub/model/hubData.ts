@@ -1,4 +1,4 @@
-import { DEFAULT_TEAM } from "./builtInMonos";
+import { DEFAULT_TEAM, ensureBuiltInMonos } from "./builtInMonos";
 import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
@@ -73,6 +73,8 @@ function startHubBundleLeads(store: HubStore): void {
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
       void reseedAdoptedLeadSoul(id, findMono(id)?.projects[0] ?? null, defaultSoul, readAgentFile, writeAgentFile).catch(() => undefined);
+    // The team is normally on the roster already (the rail repairs it on render); make sure before tying and seating.
+    ensureBuiltInMonos();
     tieTeamToProjects(strip, (monoId, projectId) =>
       tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
     );
