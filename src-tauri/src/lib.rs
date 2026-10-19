@@ -21,6 +21,7 @@ mod harness_updates;
 mod hub;
 mod hub_keychain;
 mod inbox_media;
+pub mod instance;
 mod jira;
 mod jsonc;
 mod launch_guard;
@@ -239,30 +240,48 @@ fn should_request_quit(code: Option<i32>) -> bool {
     code.is_some() || cfg!(any(target_os = "linux", target_os = "windows"))
 }
 
+/// The Tauri context: the config compiled into this binary, `--config` overlays included. One expansion, shared by
+/// `run()` and `instance` (identity, `monocode version`), so the binary embeds its assets once.
+pub(crate) fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let context = tauri::generate_context!();
-    // Fail before the dev relaunch, plugin setup or any app-data access.
-    let test_identity = context.config().identifier == "com.ash.monocode-hub.sandbox";
-    assert_eq!(
-        cfg!(feature = "test-copy"),
-        test_identity,
-        "The test-copy feature and isolated bundle identity must be used together"
-    );
-    #[cfg(all(feature = "test-copy", debug_assertions))]
-    panic!("Build the isolated copy with hub:test-copy:build; its debug relaunch uses the daily app identity");
+    let context = context();
+    // Which copy this is, before the dev relaunch, plugin setup or any app-data access (src/instance.rs). Refusals
+    // show an alert and exit here.
+    let identity = instance::startup(&context.config().identifier);
+    let version = context.package_info().version.to_string();
+    let product = context
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "MonoCode Hub".into());
     #[cfg(all(debug_assertions, target_os = "macos"))]
     {
-        let version = context.package_info().version.to_string();
-        let bundle_version = context
-            .config()
+        let config = context.config();
+        let bundle_version = config
             .bundle
             .macos
             .bundle_version
             .as_deref()
             .unwrap_or(&version);
-        macos::ensure_dev_bundle(&version, bundle_version);
+        macos::ensure_dev_bundle(&macos::DevBundle {
+            name: &product,
+            identifier: &identity.identifier,
+            version: &version,
+            bundle_version,
+            signing_identity: config.bundle.macos.signing_identity.as_deref(),
+        });
     }
+    // Rule 3, then one app per data folder: the lock is held until this process ends.
+    let claim = instance::claim(&identity, &version);
+    if let Err(error) = instance::apply_dev_environment(&identity) {
+        eprintln!("monocode: dev copy: {error}");
+    }
+    let policy = identity.policy();
+    let app_info = instance::app_info(&identity, &product, &version);
     #[cfg(target_os = "macos")]
     macos::register_spellcheck_default();
     #[cfg(windows)]
@@ -281,6 +300,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(hub::init())
+        .plugin(instance::plugin(&app_info))
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_filter(window::is_workspace_window)
@@ -293,8 +313,23 @@ pub fn run() {
         .manage(pty::PtyHost::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
-        .setup(|app| {
-            if !cfg!(feature = "test-copy") {
+        .setup(move |app| {
+            // Windows: still here, so no running copy took over this launch (instance::claim).
+            if !claim.owner {
+                instance::refuse(&instance::Refusal::InUse {
+                    owner: instance::read_running(&claim.data_dir),
+                    data_dir: claim.data_dir.clone(),
+                });
+            }
+            // The lock must guard the folder this app really uses.
+            let app_data = app.path().app_data_dir().ok();
+            if app_data.as_deref() != Some(claim.data_dir.as_path()) {
+                instance::refuse(&instance::Refusal::NoLock {
+                    data_dir: claim.data_dir.clone(),
+                    error: format!("the app's data folder is {app_data:?}"),
+                });
+            }
+            if policy.reap_orphans {
                 harness::reap_orphaned_harness_processes();
             }
             session_store::init(app.handle())?;
@@ -319,6 +354,11 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
                     let _ = window.set_shadow(true);
+                }
+            }
+            if identity.kind == instance::Kind::Dev {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&instance::dev_window_title(&instance::stamp()));
                 }
             }
             Ok(())
@@ -673,7 +713,7 @@ pub fn run() {
         .build(context)
         .expect("error while building MonoCode");
 
-    app.run(|handle, event| match event {
+    app.run(move |handle, event| match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
             // A visible floating panel must not make a hidden workspace
@@ -688,7 +728,9 @@ pub fn run() {
         tauri::RunEvent::Ready => {
             #[cfg(target_os = "macos")]
             {
-                macos::request_badge_authorization();
+                if policy.notification_prompt {
+                    macos::request_badge_authorization();
+                }
                 notifications::install_delegate(handle);
                 #[cfg(debug_assertions)]
                 macos::prefer_bundle_dock_icon();

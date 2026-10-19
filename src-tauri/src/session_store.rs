@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -29,20 +29,98 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
   ON sessions (cwd, updated_at DESC);
 "#;
 
+/// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
+/// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
+/// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
+pub const SCHEMA_VERSION: i64 = 19;
+
+/// A database newer than this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewerSchema {
+    pub found: i64,
+    pub supported: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenError {
+    Newer(NewerSchema),
+    Other(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Newer(newer) => write!(
+                f,
+                "this database was written by a newer build (schema {}; this build knows up to {})",
+                newer.found, newer.supported
+            ),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Other(error.to_string())
+    }
+}
+
+impl From<String> for OpenError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// The schema version a database was last migrated to: 0 for a new one.
+pub(crate) fn schema_version(conn: &Connection) -> rusqlite::Result<i64> {
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(0);
+    }
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// The schema guard: the version found, or a refusal when it is newer than this build.
+fn guard_schema(conn: &Connection) -> Result<i64, OpenError> {
+    let found = schema_version(conn)?;
+    if found > SCHEMA_VERSION {
+        return Err(OpenError::Newer(NewerSchema {
+            found,
+            supported: SCHEMA_VERSION,
+        }));
+    }
+    Ok(found)
+}
+
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
 }
 
 impl SessionStore {
+    #[cfg(test)]
     pub fn open(path: PathBuf) -> Result<Self, String> {
+        Self::open_guarded(path).map_err(|error| error.to_string())
+    }
+
+    /// Open, refuse a database from a newer build before touching it, then migrate.
+    pub(crate) fn open_guarded(path: PathBuf) -> Result<Self, OpenError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
-            .map_err(|e| e.to_string())?;
-        migrate(&conn).map_err(|e| e.to_string())?;
+        let conn = Connection::open(&path)?;
+        guard_schema(&conn)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        migrate(&conn)?;
         crate::worktrees::reconcile_removals(&conn)?;
         let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
         read_conn
@@ -76,11 +154,58 @@ impl SessionStore {
 pub fn init(app: &AppHandle) -> Result<(), String> {
     init_with(
         || app.path().app_data_dir().map_err(|e| e.to_string()),
-        SessionStore::open,
+        |path| match SessionStore::open_guarded(path.clone()) {
+            Ok(store) => Ok(store),
+            // An alert and exit 65, not a crash: an older build must never open a newer database.
+            Err(OpenError::Newer(newer)) => {
+                crate::instance::refuse(&crate::instance::Refusal::NewerDatabase {
+                    data_dir: path.parent().map(Path::to_path_buf).unwrap_or(path),
+                    found: newer.found,
+                    supported: newer.supported,
+                })
+            }
+            Err(OpenError::Other(error)) => Err(error),
+        },
         |store| {
             app.manage(store);
         },
     )
+}
+
+/// What `monocode healthcheck` found in its copy of the live database.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthReport {
+    pub schema_before: i64,
+    pub schema_after: i64,
+    pub build_schema: i64,
+    pub sessions: i64,
+    pub integrity: String,
+}
+
+/// Migrate-only, for `monocode healthcheck`: copy `live` to `copy` with VACUUM INTO (the live file is only opened
+/// read-only), then run this build's migrations on the copy and check it. Nothing else of `open` runs: no worktree
+/// reconcile, no second connection.
+pub fn healthcheck(live: &Path, copy: &Path) -> Result<HealthReport, OpenError> {
+    {
+        let source = Connection::open_with_flags(
+            live,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        source.busy_timeout(Duration::from_secs(5))?;
+        source.execute("VACUUM INTO ?1", [copy.to_string_lossy()])?;
+    }
+    let conn = Connection::open(copy)?;
+    let schema_before = guard_schema(&conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    migrate(&conn)?;
+    Ok(HealthReport {
+        schema_before,
+        schema_after: schema_version(&conn)?,
+        build_schema: SCHEMA_VERSION,
+        sessions: conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?,
+        integrity: conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?,
+    })
 }
 
 // Keep the complete startup path here so the transcript-read test covers it.
@@ -2446,6 +2571,137 @@ mod tests {
             )
             .unwrap();
         assert_eq!(branch, 1);
+    }
+
+    fn temp_db_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-schema-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn schema_version_matches_the_migrations() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        assert_eq!(
+            schema_version(&conn).unwrap(),
+            SCHEMA_VERSION,
+            "a new numbered migration must raise SCHEMA_VERSION, or the schema guard lets an older build open it"
+        );
+        let fresh = Connection::open_in_memory().unwrap();
+        assert_eq!(schema_version(&fresh).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_schema_guard_refuses_a_database_from_a_newer_build_without_touching_it() {
+        let dir = temp_db_dir("guard");
+        let path = dir.join("monocode.db");
+        drop(SessionStore::open(path.clone()).unwrap());
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 1)",
+                params![SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                 VALUES ('kept', '/tmp', 'claude', 'm', 'supervised', 'Kept', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        match SessionStore::open_guarded(path.clone()) {
+            Err(OpenError::Newer(newer)) => {
+                assert_eq!(newer.found, SCHEMA_VERSION + 1);
+                assert_eq!(newer.supported, SCHEMA_VERSION);
+            }
+            Err(other) => panic!("expected the schema guard, got {other}"),
+            Ok(_) => panic!("a newer database must be refused"),
+        }
+        assert!(SessionStore::open(path.clone())
+            .err()
+            .unwrap()
+            .contains("newer build"));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused database is left as it was"
+        );
+
+        // The same version is this build's own: it opens.
+        let same = dir.join("same.db");
+        drop(SessionStore::open(same.clone()).unwrap());
+        assert!(SessionStore::open(same).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn healthcheck_migrates_a_copy_and_never_writes_the_live_database() {
+        let dir = temp_db_dir("health");
+        let live = dir.join("monocode.db");
+        {
+            // An older database: only the first three migrations, one chat.
+            let conn = Connection::open(&live).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+            conn.execute_batch(MIGRATION_V1).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN branch TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_used INTEGER;
+                 ALTER TABLE sessions ADD COLUMN context_window INTEGER;
+                 INSERT INTO schema_migrations VALUES (1, 1), (2, 1), (3, 1);
+                 INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                 VALUES ('old', '/tmp', 'claude', 'm', 'supervised', 'Old chat', 1, 1);",
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&live).unwrap();
+        let copy = dir.join("copy.db");
+        let report = healthcheck(&live, &copy).unwrap();
+        assert_eq!(report.schema_before, 3);
+        assert_eq!(report.schema_after, SCHEMA_VERSION);
+        assert_eq!(report.build_schema, SCHEMA_VERSION);
+        assert_eq!(report.sessions, 1);
+        assert_eq!(report.integrity, "ok");
+        assert_eq!(
+            std::fs::read(&live).unwrap(),
+            before,
+            "the live database is only read"
+        );
+        let live_conn = Connection::open(&live).unwrap();
+        assert_eq!(schema_version(&live_conn).unwrap(), 3);
+        drop(live_conn);
+
+        // A database from a newer build is refused, copy and all.
+        {
+            let conn = Connection::open(&live).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?1, 1)",
+                params![SCHEMA_VERSION + 5],
+            )
+            .unwrap();
+        }
+        let newer = healthcheck(&live, &dir.join("copy2.db")).unwrap_err();
+        assert_eq!(
+            newer,
+            OpenError::Newer(NewerSchema {
+                found: SCHEMA_VERSION + 5,
+                supported: SCHEMA_VERSION
+            })
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
