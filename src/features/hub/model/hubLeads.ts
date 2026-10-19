@@ -16,8 +16,45 @@ export const LEADS: readonly LeadSpec[] = [
   { projectId: "ash", id: "ash-lead", name: "Harness lead", projectName: "the harness" },
 ];
 
+/** Leads of projects beyond the four (one Ash made with New project, or a project Ash OS added to the strip). */
+const MORE_KEY = "monocode:hub-project-leads";
+function moreLeads(): LeadSpec[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(MORE_KEY) ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is LeadSpec => !!x && typeof x.id === "string" && typeof x.projectId === "string" && typeof x.name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function rememberLead(spec: LeadSpec): void {
+  if (LEADS.some((l) => l.id === spec.id)) return;
+  const list = moreLeads();
+  if (list.some((l) => l.id === spec.id)) return;
+  try {
+    localStorage.setItem(MORE_KEY, JSON.stringify([...list, spec]));
+  } catch {
+    /* storage unavailable: the Lead still works this session as a Mono, only its rank and identity wait */
+  }
+}
+
+/**
+ * The Lead a project has: one of the four, else `<project id>-lead` named "<Project> lead" (Ash OS's own convention for
+ * a Lead's Mono id).
+ */
+export function leadSpecFor(project: Pick<HubProject, "id" | "name" | "shortName">): LeadSpec {
+  return (
+    LEADS.find((l) => l.projectId === project.id) ??
+    moreLeads().find((l) => l.projectId === project.id) ?? {
+      projectId: project.id,
+      id: `${project.id}-lead`,
+      name: `${(project.shortName || project.name).trim()} lead`,
+      projectName: project.name,
+    }
+  );
+}
+
 export function leadFor(monoId: string): LeadSpec | undefined {
-  return LEADS.find((lead) => lead.id === monoId);
+  return LEADS.find((lead) => lead.id === monoId) ?? moreLeads().find((lead) => lead.id === monoId);
 }
 
 /** The Lead's standing instructions (they seed its SOUL.md once; Ash edits it from there). Ash's own words quoted. */
@@ -48,20 +85,23 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 
 export type EnsureResult = { created: string[]; tied: string[] };
 
+type Register = (monoId: string, projectId: string) => Promise<unknown>;
+/** Which Leads each `register` already told Ash OS about, so a list that changes doesn't send them all again. */
+const registered = new WeakMap<Register, Set<string>>();
+
 /**
- * Make the Leads that are missing (with their project folder and soul) and tie an existing Lead to its project's
- * folder if it lost it. Never renames, re-souls or removes a Lead Ash has already. `register` tells Ash OS which Mono
- * leads which project (`ash-hub-mono-project-add`, role lead); its failures are ignored.
+ * Every project on the strip has its own Lead Mono. Make the ones that are missing (with their project folder and
+ * soul) and tie an existing Lead to its project's folder if it lost it. Never renames, re-souls or removes a Lead Ash
+ * has already, and never brings back one he removed. `register` tells Ash OS which Mono leads which project
+ * (`ash-hub-mono-project-add`, role lead), once per Lead; its failures are ignored.
  */
-export function ensureProjectLeads(
-  projects: readonly HubProject[],
-  register?: (monoId: string, projectId: string) => Promise<unknown>,
-): EnsureResult {
+export function ensureProjectLeads(projects: readonly HubProject[], register?: Register): EnsureResult {
   const created: string[] = [];
   const tied: string[] = [];
-  for (const lead of LEADS) {
-    const project = projects.find((p) => p.id === lead.projectId);
-    if (!project || isMonoRemovedByUser(lead.id)) continue;
+  for (const project of projects) {
+    const lead = leadSpecFor(project);
+    if (isMonoRemovedByUser(lead.id)) continue;
+    rememberLead(lead);
     const existing = findMono(lead.id);
     if (!existing) {
       const look = nextMonoLook(listMonos());
@@ -79,7 +119,14 @@ export function ensureProjectLeads(
       addMonoProject(lead.id, project.folder);
       tied.push(lead.id);
     }
-    void register?.(lead.id, lead.projectId)?.catch(() => undefined);
+    if (register) {
+      const told = registered.get(register) ?? new Set<string>();
+      registered.set(register, told);
+      if (!told.has(lead.id)) {
+        told.add(lead.id);
+        void register(lead.id, lead.projectId)?.catch(() => told.delete(lead.id));
+      }
+    }
   }
   return { created, tied };
 }

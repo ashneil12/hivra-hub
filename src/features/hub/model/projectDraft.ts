@@ -2,6 +2,10 @@
 // leave and come back with the chat as it was. Nothing is a project until Create.
 import { useSyncExternalStore } from "react";
 import type { TemplateId } from "./templates";
+import type { ProjectIconShape } from "./types";
+
+/** Where the new project's code goes: a new folder at ~/Projects/<id>, a folder Ash already has, or none. */
+export type DraftCode = "new" | "existing" | "none";
 
 export type ProjectDraft = {
   name: string;
@@ -10,6 +14,10 @@ export type ProjectDraft = {
   answers: string[];
   tpl: TemplateId | null;
   addon: boolean;
+  /** Choices on the preview card (absent in drafts saved before they existed). */
+  shape?: ProjectIconShape;
+  code?: DraftCode;
+  folder?: string;
 };
 const KEY = "monocode:hub-project-draft";
 const EVENT = "monocode:hub-project-draft-changed";

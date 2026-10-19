@@ -69,5 +69,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     markJobsSeen: (jobIds: string[]) => store.markJobsSeen(jobIds),
     connection: store.connection,
     retry: () => store.retry(),
+    todayLayout: () => snap().today,
+    listChanges: () => snap().changes ?? [],
   };
 }

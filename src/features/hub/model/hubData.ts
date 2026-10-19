@@ -53,18 +53,29 @@ function startHubBundleLeads(store: HubStore): void {
       return mono ? leadMcpArgs(mono.id, server) : [];
     }),
   );
-  let done = false;
+  // Every project on the strip gets its Lead, including one Ash just made with New project: checked again whenever
+  // Ash OS's list changes (making them is idempotent, and each is registered once).
+  let seen: HubProject[] | undefined;
+  const register = (monoId: string, projectId: string) =>
+    tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" });
   const tryLeads = () => {
     const projects = store.getSnapshot().projects;
-    if (done || !projects.length) return;
-    done = true;
-    const result = ensureProjectLeads(stripProjects(projects), (monoId, projectId) =>
-      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
-    );
+    if (projects === seen || !projects.length) return;
+    seen = projects;
+    const result = ensureProjectLeads(stripProjects(projects), register);
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
   };
   store.subscribe(tryLeads);
+}
+
+/**
+ * The live store when the hub reads Ash OS (the app, a dev copy, the dev page with a stub or the live proxy); undefined
+ * with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
+ * through it, so the slices they move are read again at once.
+ */
+export function liveHubStore(): HubStore | undefined {
+  return (override ?? choose()).store;
 }
 
 /** The one place the frontend gets hub data from. */
