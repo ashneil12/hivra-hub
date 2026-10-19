@@ -77,6 +77,7 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
   - Rust unit tests: kind table, debug build refused, second lock is busy and freed on drop, dev never forms a daily Keychain name, continuation-06's MCP/hooks test, schema guard, stamp parse.
   - Script test: `scripts/identity-guard.test.cjs` on fixture bundles.
 - **Verify:** `npm run check && npm run hub:build && npm run hub:verify`, then open the `target/release` bundle → alert and exit 75. `"…/MacOS/monocode" version --json` prints the stamp.
+  - *As built (WP1):* the location rule runs before the lock, so the `target/release` bundle itself refuses with exit 78 ("ship it"); exit 75 comes from a copy at `~/Applications/MonoCode Hub.app` while another copy holds the lock. Prove both with `HOME` set to a temporary folder and `MONOCODE_NO_ALERT=1`, never the real HOME.
 
 **WP2: dev slots, seed copy, doctor**
 - **Files:**

@@ -43,16 +43,30 @@ q() { sqlite3 "file:$1?mode=ro" "$2" 2>/dev/null || echo ""; }
 
 plist_id() { /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$1/Contents/Info.plist" 2>/dev/null || echo "MISSING"; }
 
-# The build stamp as "branch @ sha7[-dirty], built <time>", or nothing for a build without one.
+# The build stamp as "branch @ sha7[-dirty], built <time>", or nothing for a build without one. The binary may hold
+# the bare prefix elsewhere, and a branch may contain "}", so every candidate is parsed until one is a real stamp
+# (the same reader as scripts/hub-bundle.mjs).
 stamp_of() {
-  local bin="$1/Contents/MacOS/monocode" raw
+  local bin="$1/Contents/MacOS/monocode"
   [ -f "$bin" ] || return 0
-  raw=$(LC_ALL=C grep -a -o -m1 'MONOCODE-STAMP:{[^}]*}' "$bin" 2>/dev/null | head -n1)
-  [ -n "$raw" ] || return 0
-  python3 - "${raw#MONOCODE-STAMP:}" <<'PY' 2>/dev/null || echo "${raw#MONOCODE-STAMP:}"
+  python3 - "$bin" <<'PY' 2>/dev/null || true
 import json, sys
-s = json.loads(sys.argv[1])
-print("%s @ %s%s, built %s" % (s.get("branch", "?"), str(s.get("sha", "?"))[:7], "-dirty" if s.get("dirty") else "", s.get("builtAt", "?")))
+data = open(sys.argv[1], "rb").read()
+marker = b"MONOCODE-STAMP:{"
+at = data.find(marker)
+while at != -1:
+    start = at + len(marker) - 1
+    end = data.find(b"}", start)
+    while end != -1 and end - start < 4096:
+        try:
+            s = json.loads(data[start:end + 1].decode("utf-8"))
+            if isinstance(s, dict) and isinstance(s.get("sha"), str) and isinstance(s.get("branch"), str):
+                print("%s @ %s%s, built %s" % (s["branch"], s["sha"][:7], "-dirty" if s.get("dirty") else "", s.get("builtAt", "?")))
+                sys.exit(0)
+        except Exception:
+            pass
+        end = data.find(b"}", end + 1)
+    at = data.find(marker, at + len(marker))
 PY
 }
 

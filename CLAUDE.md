@@ -49,7 +49,8 @@ The kind of copy comes from the identifier compiled into it:
 | `com.ash.monocode-hub` | **daily** (Ash's real chats) | `…/Application Support/com.ash.monocode-hub` | only `~/Applications/MonoCode Hub.app` |
 | `com.ash.monocode-hub.dev.<slot>` | **dev copy** | `…/Application Support/com.ash.monocode-hub.dev.<slot>` | anywhere (`npm run hub:dev`) |
 
-Checked at the top of `run()`, before any plugin or data access. Each refusal shows an alert and exits:
+Checked at the top of `run()`, before any plugin or data access (the schema guard when the database opens). Each
+refusal shows an alert and exits:
 - any other identifier refuses to start (exit 78);
 - a **debug build with the daily identifier refuses** ("use npm run hub:dev", exit 78);
 - a daily build anywhere but `~/Applications/MonoCode Hub.app` refuses ("ship it", exit 78);
@@ -60,8 +61,9 @@ Checked at the top of `run()`, before any plugin or data access. Each refusal sh
 A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOCODE_HUB_PORT` and
 `MONOCODE_HUB_TOKEN_FILE` point at the stub or the read-only proxy (never port 18767 or the live key), Keychain
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
-`~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy). The orphan reaper, phone access, habits,
-automations, reminders, auto-resume and the notification prompt are off. A DEV ribbon, the window title
+`~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
+made). The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
 **Never launch a build of this app with the real HOME to prove something.** To exercise a refusal or the lock, run
@@ -85,8 +87,8 @@ Prove any bundle's identity and build at any time, without launching it:
 /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
   "$HOME/Applications/MonoCode Hub.app/Contents/Info.plist"
 # must print: com.ash.monocode-hub
-LC_ALL=C grep -a -o -m1 'MONOCODE-STAMP:{[^}]*}' "$HOME/Applications/MonoCode Hub.app/Contents/MacOS/monocode"
-# the build stamp: {"sha","branch","dirty","builtAt"}, written by src-tauri/build.rs
+node scripts/verify-hub-bundle.mjs --stamp "$HOME/Applications/MonoCode Hub.app"
+# the build stamp: {"sha","branch","dirty","builtAt"}, written by src-tauri/build.rs (readers: scripts/hub-bundle.mjs)
 ```
 
 `…/Contents/MacOS/monocode version --json` prints the same stamp with the identity (no window, no data access), and

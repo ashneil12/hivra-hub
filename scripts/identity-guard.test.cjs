@@ -14,6 +14,9 @@ const path = require("node:path");
 
 const GUARD = path.join(__dirname, "identity-guard.sh");
 const VERIFY = path.join(__dirname, "verify-hub-bundle.mjs");
+const READERS = path.join(__dirname, "hub-bundle.mjs");
+// macOS's own bash 3.2, the oldest shell the guard has to run in.
+const BASH = fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
 const skip = process.platform !== "darwin" && "the guard reads bundles with macOS PlistBuddy";
 
 const DAILY = "com.ash.monocode-hub";
@@ -44,12 +47,13 @@ function bundle(root, relative, identifier, stamp = STAMP) {
 </dict></plist>
 `,
   );
-  // Binary noise around the stamp, and the prefix on its own first, as a real binary may hold it.
+  // Binary noise around the stamp, and the prefix on its own first, right before another JSON literal, as a real
+  // binary may hold it.
   fs.writeFileSync(
     path.join(app, "Contents/MacOS/monocode"),
     Buffer.concat([
       Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 1]),
-      Buffer.from("MONOCODE-STAMP:"),
+      Buffer.from('MONOCODE-STAMP:{"mcpServers":{}}'),
       Buffer.from([0, 7, 0x7d]),
       stamp ? Buffer.from(`MONOCODE-STAMP:${JSON.stringify(stamp)}`) : Buffer.from("no stamp"),
       Buffer.from([0x7d, 0, 0xff]),
@@ -71,7 +75,7 @@ function database(root, identifier, sessions) {
 }
 
 function guard(root) {
-  const result = spawnSync("bash", [GUARD], {
+  const result = spawnSync(BASH, [GUARD], {
     env: { ...process.env, HOME: root, HUB_GUARD_BASELINE: path.join(root, "baseline.json") },
     encoding: "utf8",
   });
@@ -89,7 +93,7 @@ function healthyHome(t) {
   bundle(root, "Projects/monocode-hub/target/release/bundle/macos/MonoCode Hub.app", DAILY);
   bundle(root, "Worktrees/wt-a/target/debug/MonoCode Hub Dev.app", "com.ash.monocode-hub.dev.wt-a", {
     ...STAMP,
-    branch: "hub/wt-a",
+    branch: "hub/wt-a}b",
     dirty: true,
   });
   database(root, UPSTREAM, 6);
@@ -106,7 +110,7 @@ test("a healthy Mac passes and every bundle shows its build stamp", { skip }, (t
   assert.match(out, /GUARD OK/);
   assert.match(out, /ok {4}installed: MonoCode Hub\.app: com\.ash\.monocode-hub, hub\/next @ 09141d8, built 2026-10-19T21:04:05Z/);
   assert.match(out, /ok {4}daily build: .*Projects\/monocode-hub\/target\/release.*runs only once shipped/);
-  assert.match(out, /ok {4}dev slot wt-a: .*hub\/wt-a @ 09141d8-dirty/);
+  assert.match(out, /ok {4}dev slot wt-a: .*hub\/wt-a\}b @ 09141d8-dirty/);
   assert.match(out, /hub database sessions: {6}40/);
 });
 
@@ -203,7 +207,19 @@ test("only a stamped daily build passes the install check", { skip }, async (t) 
   }
   assert.equal(verify(path.join(root, "missing.app")).code, 1);
 
-  const { findStamp, kindOf } = await import(VERIFY);
+  // The command line runs however it is reached, here through a symlinked folder.
+  const linked = path.join(root, "linked-scripts");
+  fs.symlinkSync(__dirname, linked);
+  const viaLink = spawnSync(process.execPath, [path.join(linked, "verify-hub-bundle.mjs"), path.join(root, "unstamped/MonoCode Hub.app")], {
+    encoding: "utf8",
+  });
+  assert.equal(viaLink.status, 1, viaLink.stdout + viaLink.stderr);
+  assert.match(viaLink.stderr, /REFUSE/);
+  const stampOut = spawnSync(process.execPath, [VERIFY, "--stamp", path.join(root, "a/MonoCode Hub.app")], { encoding: "utf8" });
+  assert.equal(stampOut.status, 0, stampOut.stderr);
+  assert.deepEqual(JSON.parse(stampOut.stdout), STAMP);
+
+  const { findStamp, kindOf } = await import(READERS);
   assert.deepEqual(findStamp(Buffer.from(`xx MONOCODE-STAMP:{"sha":"a","branch":"x}y","dirty":true,"builtAt":"t"} yy`)), {
     sha: "a",
     branch: "x}y",
