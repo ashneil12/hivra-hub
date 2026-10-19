@@ -423,8 +423,12 @@ fn initialize_runtime_binary_paths(
 #[tauri::command]
 pub fn harness_runtime_binary_paths(
     host: State<'_, HarnessHost>,
-    paths: HashMap<String, String>,
+    mut paths: HashMap<String, String>,
 ) -> HashMap<String, String> {
+    // The fake-Claude test bench's dev copy runs its fake CLI (src/verify_live.rs); still checked like any override.
+    if let Some(binary) = crate::verify_live::plan().and_then(|plan| plan.claude_binary.clone()) {
+        paths.insert("claude".into(), binary);
+    }
     initialize_runtime_binary_paths(&host.runtime_binary_paths, paths)
 }
 

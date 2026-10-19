@@ -525,6 +525,15 @@ export function monoState(
   if (!session.worktreeRemoved && session.usageLimit) {
     return { status: "needs-you", activity: "Usage limit reached" };
   }
+  // The app restarted under its turn too often, so it stopped resuming it (sessions/model/inFlight.ts).
+  const lastBlock = blocks[blocks.length - 1];
+  if (
+    !session.busy &&
+    lastBlock?.role === "system" &&
+    lastBlock.notice === "resume-stopped"
+  ) {
+    return { status: "needs-you", activity: "Stopped after restarts" };
+  }
   if (!session.busy) return { status: "idle" };
   const last = blocks[blocks.length - 1];
   if (last?.role === "assistant" && !last.tool && last.streaming) {

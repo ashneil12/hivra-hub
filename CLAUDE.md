@@ -259,6 +259,18 @@ Upstream CI passes its own `signingIdentity` through `tauri.release.conf.json`, 
 packaged release builds.
 
 
+## Restart-safe resume and the fake-Claude bench (Phase 1b WP5)
+
+- A turn cut by a quit, crash or ship resumes by itself with a note naming the background work that was cut (ids
+  included) and, for a ship, the receipt. It resumes at most 3 times in a row; then the chat shows a resume-stopped
+  note (Needs you) and a waiting Lead hears it failed. A chat whose Claude transcript is gone starts fresh from its
+  brief (a "recovered" note) instead of failing every message.
+- **`npm run hub:verify-live`** proves the delegation chain through real restarts with a fake Claude
+  (`scripts/fake-claude.mjs`): a throwaway dev slot under a temporary HOME, the stub, `SIGKILL` between phases,
+  `evidence/<run>/verdict.json`. `-- --fail-gate` is its negative control and must exit non-zero. It never touches the
+  daily app, its data, `~/.claude` or a real Claude login; it runs in the background (no focus) and closes the copy at
+  the end. Launch it for a final proof, not to iterate: the unit tests and `claudeFakeCli.test.ts` cover the parts.
+
 ## Improvement loop and isolated test copy
 
 For a reported bug, record the failure before changing it and keep every ask in a checklist. Work through:
