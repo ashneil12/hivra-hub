@@ -7,6 +7,8 @@ export type StubOptions = {
   pendingSinceOnce?: boolean;
   /** Add the jobs scenario: leads and jobs in every state, a given-up job's Needs row, Looks right, older questions. */
   jobs?: boolean;
+  /** The retired question queue: ordinary questions are older questions (with a backlog); Needs keep gates and failures. */
+  questions?: boolean;
   /** How long an option or typed answer takes (the real one is read by the model). */
   answerDelayMs?: number;
   seq?: number;
@@ -57,6 +59,7 @@ export type Stub = {
   close(): Promise<void>;
 };
 
+export function retiredQueueScenario(needs: Array<Record<string, unknown>>, now?: number): Array<Record<string, unknown>>;
 export function jobsScenario(now?: number): { jobs: Array<Record<string, unknown>>; needs: Array<Record<string, unknown>> };
 export function seedState(now?: number): Stub["state"];
 export function startStub(options?: StubOptions): Promise<Stub>;

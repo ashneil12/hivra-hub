@@ -10,7 +10,7 @@
 //   short pause that folds a burst of events into one read.
 import { toHubError, type HubFeedEvent, type HubFeedState, type HubTransport } from "./hubTransport";
 import type {
-  AnswerState, HubAnswer, HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, ProjectIconShape, SinceSummary,
+  AnswerState, HubAnswer, HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, OlderDismissed, ProjectIconShape, SinceSummary,
 } from "./types";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
@@ -486,6 +486,17 @@ export class HubStore {
         if (r.rowDone === true) await this.loadNeeds();
       })
       .catch((error) => set({ sending: false, problem: toHubError(error).message }));
+  }
+
+  /**
+   * Sweep the old question queue (`ash-hub-older-dismiss`): Ash closes every older question asked more than N days ago.
+   * Ash OS parks their asks (saying one again brings it back) and the rows tick off; the list is read again at once.
+   */
+  async dismissOlder(olderThanDays: number, projectId?: string): Promise<OlderDismissed> {
+    const raw = obj(await this.t.call("ash-hub-older-dismiss", { older_than_days: olderThanDays, ...(projectId ? { project: projectId } : {}) }));
+    await this.loadNeeds();
+    const dismissed = Number(raw.dismissed) || 0;
+    return { dismissed, receipt: str(raw.receipt, dismissed ? `Closed ${dismissed} older questions.` : "Nothing that old was waiting.") };
   }
 
   /** "Looks right": Ash accepts finished critical work. Ash OS ticks the row off; the answer is read at once. */

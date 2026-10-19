@@ -111,6 +111,9 @@ export type HubQuestion = {
   heldAnswer?: string;
 };
 
+/** What a sweep of the older questions closed, and one plain line saying so. */
+export type OlderDismissed = { dismissed: number; receipt: string };
+
 /** Ash's answer: an option's index and/or his words, or one quick answer alone. */
 export type HubAnswer = { choice?: number; text?: string; quick?: "agree" | "drop" | "park" };
 
@@ -178,6 +181,11 @@ export interface HubDataSource {
   retry(): void;
   /** Older questions (recovered from past chats and the like): not Needs, in no count, shown collapsed. */
   listOlder(projectId?: string): Need[];
+  /**
+   * Sweep the old question queue: close every open older question asked more than `olderThanDays` ago (one project's
+   * when given). Their asks are parked, never dropped. Live source only (`ash-hub-older-dismiss`).
+   */
+  dismissOlder?(olderThanDays: number, projectId?: string): Promise<OlderDismissed>;
   /** Mark a Looks-right row seen. Live source only. */
   markNeedSeen?(id: string): Promise<void>;
   /** A question's options sheet, and Ash's answer (an option's index and/or his own words); the answer's receipt line. */
