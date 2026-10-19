@@ -118,6 +118,28 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
 **1. Catch up with MonoCode v0.16.** Merge upstream, then `hub:check`, `hub:build`, `hub:verify` and
 `hub:install`. Ash's conversations must still be intact.
 
+**1b. One app, one clean way to develop it** (Ash 19 Oct: "there's multiple versions of the app ... i'd like a
+way to make it easy"; the rest comes from T3 Code's self-hosting setup):
+- **Dev slots.** Running the hub from any worktree opens "MonoCode Hub Dev - <branch>". It has its own data folder,
+  its own port and a DEV ribbon, so it can never touch the daily app's chats, Keychain or Ash OS. Today `hub:dev` runs
+  as `com.ash.monocode-hub` on the live data folder.
+- **One app per data folder.** A second copy says which build owns the data and exits. Every window and bundle shows
+  its commit and branch. One command lists every hub bundle, data folder, dev slot and worktree on the Mac.
+- **Ship with a safety net.** One Ship command or button installs a verified build into the daily app. It keeps the
+  previous app and a database snapshot, rolls back by itself if the new build doesn't boot, and tells the Lead that
+  shipped it what happened. Today `hub:install` is `rm -rf` then `cp -R`.
+- **Project file** (`.monocode/project.json`):
+  - It sets up each new worktree before the first turn (dependencies, a shared Rust cache).
+  - It adds one-click actions: Run dev slot, Check, Ship.
+- **Worktree janitor.** A dry-run report of every worktree (size, merged or dirty). Nothing is removed without
+  Ash's OK.
+- **Restart-safe resume.**
+  - A Lead cut off by an install or crash resumes with a note of what was cut.
+  - A turn that keeps crashing stops after three tries.
+- **Fake-Claude test bench.** It proves the whole delegation chain end to end with no tokens spent.
+- Then the hub itself is the place to develop the hub: its own project, its own Lead, dev slots to see changes,
+  Ship to land them.
+
 **2. The chat owns its asks + the checker.**
 - Ledger additions:
   - an owner (session or Mono id) on each ask
@@ -127,6 +149,18 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
 - "Being built" reads from those records, replacing the runner feeds.
 - The `delegate` tool, following T3 Code's design, on MonoCode's `app` control.
 - The checker Mono on Haiku.
+- From T3 Code:
+  - **Delegations survive restarts.** Owed reports are stored and recovered when the app starts, so a Lead always
+    gets exactly one report. Today they live only in memory (`App.tsx:8586`).
+  - **Workers ask their Lead, not Ash.** A worker's question wakes the chat that delegated it. Only real choices go up
+    to Ash, with the Lead's recommendation.
+  - **A delegation tree you can see and stop.**
+    - One Stop on a Lead stops everything under it.
+    - Lead chats show one counted line per batch, e.g. "Delegated 3: 2 working, 1 failed".
+    - A waiting Lead shows "Waiting on 3".
+  - **Honest turn results.** A worker that died on a 402, 502 or overload is reported as failed with the reason, not
+    as completed (`claudeProtocol.ts:480`).
+  - **`/goal`.** A brief can carry a done condition that the worker keeps going until it meets.
 
 **3. Real leadership team + double delegation.**
 - SOULs for the team, with their personas brought over from Grok Bot.
@@ -136,6 +170,14 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
   targets are refused today.
 - Questions move into the owning chats, Today lists who is waiting, and the question queue is retired.
 - The autopilot switch and its log.
+- From T3 Code:
+  - **Briefs to a busy chat** queue or steer instead of failing.
+  - **Autopilot survives limits, crashes and sleep.**
+    - Agents resume by themselves when a usage limit resets.
+    - The app relaunches after a crash.
+    - The Mac stays awake until autopilot ends.
+  - **Claude Code workflow runs** show their phases and agents, not a spinner.
+  - **Long-running chats** compact at a sensible size, and model or permission changes apply live.
 
 **4. Run the business from the app.**
 - Pages and dashboards backend.
@@ -149,6 +191,11 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
   - Keep the per-project worker limit (game work throttled) and the verification gates.
   - The controller, the EXO lead loop, the runners and the merge queue are replaced by the EXO Lead
     delegating.
+- From T3 Code: **PR and CI watch.** A Lead registers its PR and is woken only when checks fail or pass, someone
+  comments, or the branch conflicts.
+
+T3 Code ideas we skip, with reasons, are in the 19 Oct harvest. Among them: usage-cost pages, the cloud relay,
+webhook triggers (a prompt-injection door into the Mac) and line-by-line PR review tools.
 
 **5. Portable.**
 - Setup export/import v2: Monos, skills, chats, memory if ticked, connectors without secrets.
