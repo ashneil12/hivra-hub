@@ -27,6 +27,8 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
+import type { DelegationTracker } from "../features/monos/model/delegations";
+import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -934,6 +936,8 @@ type SubmitOptions = ComposerTurnOptions & {
   followsUp?: boolean;
   monoSessionCompletion?: Block["monoSessionCompletion"];
   onSettled?: (outcome: ControlOutcome) => void;
+  /** The turn was committed to the session (its user block is in). */
+  onStarted?: () => void;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
@@ -1798,6 +1802,8 @@ function Workspace({
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
+  // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
+  const delegationsRef = useRef<DelegationTracker | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -7195,6 +7201,25 @@ function Workspace({
           attachments,
           options,
         );
+      // A turn that may pick delegated work back up (a resumed cut-off turn, or the next turn of a child whose row is
+      // still open) re-attaches to its row and reports to the owner when it ends.
+      const delegation =
+        options?.onSettled ||
+        options?.managed ||
+        options?.monoSessionCompletion ||
+        options?.resendEdited
+          ? undefined
+          : delegationsRef.current?.resumeMonitor(
+              sessionId,
+              text,
+              !!remote?.busy,
+            );
+      if (delegation)
+        options = {
+          ...options,
+          onSettled: delegation.settled,
+          onStarted: delegation.started,
+        };
       if (editedResends.isActive(sessionId)) return false;
       // Output already received belongs before the submitted user message.
       // Flush before reading the session too, since pending errors can settle it.
@@ -7908,6 +7933,7 @@ function Workspace({
       };
       if (!options?.resendEdited) {
         flushSync(commitSubmittedTurn);
+        options?.onStarted?.();
       }
 
       const launchTitleGeneration = (workCwd: string) => {
@@ -8975,10 +9001,22 @@ function Workspace({
   );
   if (!monoCompletionBatches.current) {
     monoCompletionBatches.current = new MonoSessionCompletionBatches(
-      (monoId, message, current) =>
-        queueMonoSessionCompletionRef.current(monoId, message, current),
+      async (monoId, message, current, requestIds) => {
+        // The rows learn which message carries their reports before it enters the queue.
+        await delegationsRef.current?.queued(monoId, requestIds, message.id);
+        return queueMonoSessionCompletionRef.current(monoId, message, current);
+      },
     );
   }
+  const delegations = useDelegations({
+    sessions,
+    sessionsRef,
+    openSession: ensureOpenSession,
+    queueReport: (monoId, message) =>
+      queueMonoSessionCompletionRef.current(monoId, message),
+    quitting: isAppQuitting,
+  });
+  delegationsRef.current = delegations;
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
       const mono = sessionsRef.current.find((session) => session.id === monoId);
@@ -9440,6 +9478,8 @@ function Workspace({
                   : {}),
               },
             );
+            if (accepted && head.monoSessionCompletion)
+              delegationsRef.current?.delivered(head.id);
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
@@ -9520,6 +9560,7 @@ function Workspace({
 
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
+      delegationsRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -11308,38 +11349,60 @@ function Workspace({
           sessionsRef.current = next;
           setSessions(next);
         };
-        const monitorCompletion = (
+        const monitorCompletion = async (
           monoId: string,
           sessionId: string,
           requestId: string,
           project: string,
           prompt: string,
+          title: string,
         ) => {
+          // The stored row comes first: it is what survives a restart. The batch below is its cache for this run.
+          const launch = delegationsRef.current?.launch({
+            ownerSession: monoId,
+            ownerMono: monoForSession(monoId)?.id,
+            batchId: sourceTurnId ?? `turn-${sourceTurn}`,
+            requestId,
+            childSession: sessionId,
+            project,
+            title,
+            brief: prompt,
+            by: `owner:${monoId}`,
+          });
+          const row = await launch?.row;
           const settle = monoCompletionBatches.current!.watch(
             { monoId, turn: sourceTurn },
             requestId,
             sessionId,
-            { awaitAcceptance: true },
+            { awaitAcceptance: true, generation: row?.generation ?? 1 },
           );
           return Object.assign(
-            (outcome: ControlOutcome) =>
-              settle(
-                monoSessionCompletionResult({
-                  requestId,
-                  sessionId,
-                  project,
-                  prompt,
-                  outcome,
-                  session: sessionsRef.current.find(
-                    (session) => session.id === sessionId,
-                  ),
-                }),
-              ),
-            { accept: settle.accept, discard: settle.discard },
+            (outcome: ControlOutcome) => {
+              const result = monoSessionCompletionResult({
+                requestId,
+                sessionId,
+                project,
+                prompt,
+                outcome,
+                session: sessionsRef.current.find(
+                  (session) => session.id === sessionId,
+                ),
+              });
+              launch?.settle(result);
+              settle(result);
+            },
+            {
+              accept: settle.accept,
+              discard: () => {
+                launch?.refuse();
+                settle.discard();
+              },
+            },
           );
         };
         const dismissCompletion = (sessionId: string) => {
           if (!isMonoSession(source.id)) return;
+          delegationsRef.current?.stopOwned(source.id, sessionId);
           monoCompletionBatches.current!.dismissSession(source.id, sessionId);
           flushSync(() =>
             setSessions((previous) =>
@@ -11402,12 +11465,13 @@ function Workspace({
               if (existing && sessionDraftBlock(existing))
                 throw new Error("Session ID already has a different draft");
               const onSettled = notifyMonoId
-                ? monitorCompletion(
+                ? await monitorCompletion(
                     notifyMonoId,
                     id,
                     id,
                     launch.cwd,
                     launch.prompt,
+                    launch.prompt.trim().split("\n")[0].slice(0, 200),
                   )
                 : undefined;
               try {
@@ -11518,12 +11582,13 @@ function Workspace({
                   "Session already has a draft; send or remove it first",
                 );
               const onSettled = notifyMonoId
-                ? monitorCompletion(
+                ? await monitorCompletion(
                     notifyMonoId,
                     id,
                     requestId,
                     target.cwd,
                     prompt,
+                    target.title,
                   )
                 : undefined;
               const accepted = onSettled

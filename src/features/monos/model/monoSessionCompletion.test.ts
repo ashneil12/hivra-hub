@@ -88,12 +88,12 @@ describe("Mono session completion notifications", () => {
     settle(options.outcome);
     expect(mono.queuedMessages?.map((message) => message.id)).toEqual([
       "chat",
-      "mono-completion-app-mono-request",
+      "mono-completion-app-mono-request-g1",
     ]);
     const next = dequeueQueuedMessage(mono, "chat");
     expect(canSteerQueuedHead(next)).toBe(false);
     expect(
-      queuedMessageForSubmit(next, "mono-completion-app-mono-request", "steer"),
+      queuedMessageForSubmit(next, "mono-completion-app-mono-request-g1", "steer"),
     ).toBeUndefined();
     expect(canDispatchQueuedHead(next)).toBe(false);
     expect(canDispatchQueuedHead({ ...next, busy: false })).toBe(true);
