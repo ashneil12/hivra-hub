@@ -8,16 +8,22 @@ import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, 
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
 import { foldParts, partsDone } from "../model/jobParts";
+import { workflowWorkers } from "../model/workflowJobs";
+import { useWorkflowActivityVersion } from "../../sessions/model/workflowActivity";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
   useWorkVersion();
   useHubDataVersion();
+  useWorkflowActivityVersion();
   const data = hubData();
   // Live: Ash OS's jobs (done ones stay, with a dot, until Ash has seen them and left). Examples: the mock store.
   const live = !!data.listJobs;
   const now = useNow(30_000);
   const liveWorkers = live ? workersFromJobs(data.listJobs?.(projectId) ?? [], now) : [];
+  // Leads running a Claude Code workflow in this app, with where the run is.
+  const folder = data.listProjects().find((p) => p.id === projectId)?.folder;
+  const workflowRows = workflowWorkers(projectId, folder, Date.now());
   const [openId, setOpenIdRaw] = useState<string | null>(null);
   const setOpenId = (id: string | null) => {
     if (openId) archiveIfSeen(openId);
@@ -25,8 +31,10 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
     setOpenIdRaw(id);
   };
   const [showDone, setShowDone] = useState(false);
-  const open = openId ? (live ? liveWorkers.find((w) => w.id === openId) : getWorker(openId)) : undefined;
-  const active = foldParts(live ? liveWorkers : activeWorkers(projectId));
+  const open = openId
+    ? (workflowRows.find((w) => w.id === openId) ?? (live ? liveWorkers.find((w) => w.id === openId) : getWorker(openId)))
+    : undefined;
+  const active = foldParts([...workflowRows, ...(live ? liveWorkers : activeWorkers(projectId))]);
   const done = live ? [] : finishedToday(projectId);
   // Finished jobs Ash has had in front of him: when he leaves the page they have been seen and go.
   const shownDone = useRef<string[]>([]);

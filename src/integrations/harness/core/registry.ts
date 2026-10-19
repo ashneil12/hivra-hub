@@ -11,6 +11,10 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import {
+  clearWorkflowRuns,
+  noteWorkflowRun,
+} from "../../../features/sessions/model/workflowActivity";
 import type {
   ApprovalDecision,
   CompactContextInput,
@@ -290,12 +294,20 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     try {
       await adapter.sendTurn({
         ...input,
+        // Workflow runs also feed views outside the chat (Being built).
+        onEvent: (event) => {
+          if (event.type === "workflow.progress") {
+            noteWorkflowRun(input.sessionId, event.run);
+          }
+          input.onEvent(event);
+        },
         onAccepted: () => {
           input.onEvent({ type: "turn.ready" });
           input.onAccepted?.();
         },
       });
     } finally {
+      clearWorkflowRuns(input.sessionId);
       activeTurnSessions.delete(input.sessionId);
       if (controlled)
         await invoke("control_turn_finished", { sessionId: input.sessionId });
