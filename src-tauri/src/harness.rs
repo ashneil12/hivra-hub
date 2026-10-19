@@ -958,14 +958,10 @@ pub fn harness_spawn(
         args
     };
     let mut cmd = Command::new(&command);
-    if cfg!(feature = "test-copy") && binary_provider.as_deref() == Some("claude") {
-        let config_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| e.to_string())?
-            .join("claude-config");
-        std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-        cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    if binary_provider.as_deref() == Some("claude") {
+        if let Some(config_dir) = test_copy_claude_config_dir(&app)? {
+            cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+        }
     }
     cmd.args(&devin_config)
         .args(&args)
@@ -4349,6 +4345,22 @@ mod reap_logic_tests {
             "node /usr/local/bin/typescript-language-server --stdio"
         ));
     }
+}
+
+/// A test copy's own Claude Code config folder, in its app data. Its default account's
+/// sessions run there, and a conversation carried to or from that account is read and
+/// written there too, never in the daily `~/.claude`. `None` in the daily app.
+pub(crate) fn test_copy_claude_config_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if !cfg!(feature = "test-copy") {
+        return Ok(None);
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("claude-config");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(Some(dir))
 }
 
 /// A test copy never inherits user/project MCP servers or hooks from the daily app.
