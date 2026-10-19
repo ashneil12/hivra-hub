@@ -1,4 +1,17 @@
-import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import {
+  hasProbedHarnessAvailability,
+  isHarnessAvailable,
+  probeHarnessAvailability,
+} from "../../../integrations/harness/core/availability";
+
+/**
+ * Which CLIs are installed is unknown until the first probe ends, and every harness reads as missing before it. A
+ * Lead that resumes right after a restart can call sessions.start in that window; it waits for the probe instead of
+ * being told its own harness "is not available".
+ */
+async function harnessesProbed(): Promise<void> {
+  if (!hasProbedHarnessAvailability()) await probeHarnessAvailability();
+}
 import { looksLikeProject } from "../../projects/model/recents";
 import {
   mergeModelSettings,
@@ -1101,6 +1114,7 @@ export async function handleAgentApp(
       };
     }
     case "models.list":
+      await harnessesProbed();
       return {
         runtimeModes: RUNTIME_MODES.map((id) => ({
           id,
@@ -1202,6 +1216,7 @@ export async function handleAgentApp(
         throw new Error(
           "request ID must use letters, digits, underscores or hyphens",
         );
+      await harnessesProbed();
       const launch = startLaunch(source, input, host);
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (input.worktreeCwd !== undefined) {

@@ -3659,7 +3659,7 @@ mod tests {
         let mut background: Vec<CutWork> = (0..80)
             .map(|i| work("subagent", &format!("task {i}"), &format!("id{i}")))
             .collect();
-        background[0] = work("weird", &"x".repeat(5_000), &" id0 ".repeat(1));
+        background[0] = work("weird", &"x".repeat(5_000), " id0 ");
         background[1] = work("shell", "   ", "  ");
         replace_in_flight(
             &mut conn,
