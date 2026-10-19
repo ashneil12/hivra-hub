@@ -4,6 +4,7 @@ import { nativeModelId } from "../../../../features/sessions/model/models";
 import { customModelRoute, modelKeyStore } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
+  CutWork,
   RuntimeMode,
   TaskListItem,
   TaskListMeta,
@@ -32,6 +33,8 @@ import {
   buildControlRequest,
   buildControlResponse,
   claudeSettingsKey,
+  cutWorkKind,
+  deadConversationFromResult,
   extractAskUserQuestionTitle,
   extractExitPlanModePlan,
   inputJsonDeltaFromEvent,
@@ -128,6 +131,7 @@ type LiveAgentTask = {
 type BackgroundTask = {
   description: string;
   toolUseId?: string;
+  kind: CutWork["kind"];
 };
 
 type Live = {
@@ -158,6 +162,13 @@ type Live = {
   awaitingResume: ReturnType<typeof setTimeout> | null;
   /** Last background list sent to the UI, to skip repeats. */
   backgroundKey: string;
+  /** Last background work (with ids) sent to the UI, to skip repeats. */
+  cutWorkKey: string;
+  /**
+   * The conversation `--resume` named has no transcript any more ("No conversation found"). The process is about to
+   * exit; the turn starts over in a fresh conversation from the chat's brief.
+   */
+  deadConversation?: string;
   /** Finished-subagent notes held until Claude picks the thread back up. */
   taskNotes: string[];
   /** TaskCreate/TaskUpdate items, keyed by Claude's task id. */
@@ -193,6 +204,24 @@ type Resume = {
 };
 
 const INIT_TIMEOUT_MS = 8_000;
+
+/** The note a chat shows when its Claude conversation was gone and a fresh one started from its brief. */
+export const RECOVERED_FROM_BRIEF =
+  "Claude's saved conversation for this chat was gone, so this turn started a fresh one from the chat's brief.";
+
+/**
+ * `--resume` named a conversation Claude Code has no transcript for. Recovered once per turn: the id is dropped and
+ * the turn runs in a fresh conversation, told the chat so far through its brief.
+ */
+class DeadConversationError extends Error {
+  constructor(
+    readonly providerSessionId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DeadConversationError";
+  }
+}
 /**
  * How long a finished background task may take to wake Claude before the turn
  * is let go anyway. The follow-up turn normally starts within a second or two.
@@ -213,6 +242,8 @@ const tasksByThread = new Map<
 /** Task-list block key for TaskCreate/TaskUpdate items. */
 const CLAUDE_TASKS_KEY = "claude-tasks";
 const cancelledThreads = new Set<string>();
+/** Threads whose dead conversation was dropped: their next fresh turn carries the chat's brief, once. */
+const briefOwed = new Set<string>();
 
 let resolveClaudeBinaryImpl: () => Promise<{ path: string }> =
   resolveClaudeBinary;
@@ -225,6 +256,40 @@ export function setClaudeBinaryResolver(
 }
 
 export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
+  try {
+    await sendClaudeTurnOnce(input);
+  } catch (error) {
+    if (!(error instanceof DeadConversationError)) throw error;
+    forgetDeadConversation(input, error);
+    // The process that said so is on its way out; never hand the retry to it.
+    await stopClaudeSession(input.sessionId);
+    // Once: a fresh conversation can't be missing, so whatever fails now is a real failure.
+    try {
+      await sendClaudeTurnOnce(input);
+    } catch (retry) {
+      if (retry instanceof DeadConversationError) throw new Error(retry.message);
+      throw retry;
+    }
+  }
+}
+
+/** Drop a dead conversation's id everywhere, tell the chat, and owe the next fresh turn the chat's brief. */
+function forgetDeadConversation(
+  input: Pick<SendTurnInput, "sessionId" | "onEvent">,
+  error: DeadConversationError,
+): void {
+  if (resumeByThread.get(input.sessionId)?.sessionId === error.providerSessionId)
+    resumeByThread.delete(input.sessionId);
+  tasksByThread.delete(input.sessionId);
+  briefOwed.add(input.sessionId);
+  input.onEvent({
+    type: "session.providerLost",
+    providerSessionId: error.providerSessionId,
+    text: RECOVERED_FROM_BRIEF,
+  });
+}
+
+async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -233,6 +298,10 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
     throw error;
   }
   if (cancelledThreads.delete(input.sessionId)) return;
+  // The first turn of a fresh conversation after a dead one: the chat so far comes with it.
+  if (briefOwed.delete(input.sessionId) && input.resumeFallback) {
+    input = { ...input, text: input.resumeFallback(input.text) };
+  }
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -257,7 +326,14 @@ export async function compactClaudeContext(
   const settingsKey = settingsKeyFor(input);
   let live = liveByThread.get(input.sessionId);
   if (!live || live.cwd !== input.cwd || live.settingsKey !== settingsKey) {
-    live = await ensureLive(input);
+    try {
+      live = await ensureLive(input);
+    } catch (error) {
+      // Nothing to compact in a conversation that is gone; the next turn starts fresh from the brief.
+      if (!(error instanceof DeadConversationError)) throw error;
+      forgetDeadConversation(input, error);
+      return;
+    }
   }
   if (cancelledThreads.delete(input.sessionId)) return;
 
@@ -386,6 +462,7 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
 export async function forgetClaudeSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   tasksByThread.delete(sessionId);
+  briefOwed.delete(sessionId);
   await stopClaudeSession(sessionId);
 }
 
@@ -503,6 +580,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     backgroundRows: new Map(),
     awaitingResume: null,
     backgroundKey: "",
+    cutWorkKey: "",
     taskNotes: [],
     claudeTasks,
     turnResultSeen: false,
@@ -579,6 +657,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       buildControlRequest(nextControlId(live), { subtype: "initialize" }),
     );
     await waitForInit(live, INIT_TIMEOUT_MS);
+    if (live.deadConversation) {
+      throw new DeadConversationError(
+        live.deadConversation,
+        `Claude Code has no saved conversation ${live.deadConversation}.`,
+      );
+    }
     live.onEvent({
       type: "session.providerBound",
       providerSessionId: live.claudeSessionId,
@@ -611,6 +695,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.backgroundRows.clear();
   clearAwaitingResume(live);
   live.backgroundKey = "";
+  syncCutWork(live);
   live.taskNotes = [];
   live.turnResultSeen = false;
   live.assistantError = undefined;
@@ -625,10 +710,16 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   try {
     await writeJson(input.sessionId, message);
     input.onAccepted?.();
+    // Claude has this prompt now, and with it any note about work a restart cut: from here the chat's background
+    // work is this turn's own (none yet), not what a resumed turn carried forward.
+    live.cutWorkKey = "\u0000";
+    syncCutWork(live);
     settlePendingTurn(live);
     await turnPromise;
   } catch (error) {
     if (live.cancelled) return;
+    // Not a failure of the turn: sendClaudeTurn starts it again in a fresh conversation.
+    if (error instanceof DeadConversationError) throw error;
     live.onEvent({
       type: "session.error",
       message: error instanceof Error ? error.message : String(error),
@@ -638,6 +729,20 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     live.turnDone = null;
     live.turnFailed = null;
   }
+}
+
+/**
+ * Claude Code answered `--resume` with "No conversation found": the transcript is gone. Nothing else from this
+ * process matters (it exits next), so the chat hears none of it; the turn is started again fresh.
+ */
+function noteDeadConversation(live: Live, text: string): void {
+  live.deadConversation = live.claudeSessionId;
+  live.muteUpdates = true;
+  const failed = live.turnFailed;
+  live.turnDone = null;
+  live.turnFailed = null;
+  failed?.(new DeadConversationError(live.claudeSessionId, text));
+  markInitialized(live);
 }
 
 function handleLine(sessionId: string, live: Live, line: string): void {
@@ -683,6 +788,14 @@ function handleLine(sessionId: string, live: Live, line: string): void {
   }
 
   if (live.muteUpdates) return;
+
+  if (type === "result" && !isSubagentMessage(rec)) {
+    const dead = deadConversationFromResult(rec);
+    if (dead) {
+      noteDeadConversation(live, dead);
+      return;
+    }
+  }
 
   const sessionIdFromLine = sessionIdFromMessage(rec);
   if (sessionIdFromLine && sessionIdFromLine !== live.claudeSessionId) {
@@ -1286,6 +1399,7 @@ function handleAgentLifecycle(
     live.backgroundTasks.set(started.taskId, {
       description: started.description,
       toolUseId: started.toolUseId,
+      kind: cutWorkKind(started.taskType),
     });
     syncBackgroundWait(live);
     if (!isAgentTaskType(started.taskType)) return true;
@@ -1378,7 +1492,10 @@ function handleAgentLifecycle(
   }
   for (const row of allTasks) {
     if (!live.backgroundTasks.has(row.taskId)) {
-      live.backgroundTasks.set(row.taskId, { description: row.description });
+      live.backgroundTasks.set(row.taskId, {
+        description: row.description,
+        kind: cutWorkKind(row.taskType),
+      });
     }
   }
   const liveTasks = allTasks.filter((task) => isAgentTaskType(task.taskType));
@@ -1763,6 +1880,7 @@ function clearAwaitingResume(live: Live): void {
  * still running, and clears it when Claude picks the thread back up.
  */
 function syncBackgroundWait(live: Live): void {
+  syncCutWork(live);
   const waiting =
     live.activeTurn && live.turnResultSeen && !live.cancelled
       ? [...live.backgroundTasks.values()].map((task) => task.description)
@@ -1772,6 +1890,27 @@ function syncBackgroundWait(live: Live): void {
   live.backgroundKey = key;
   if (live.muteUpdates) return;
   live.onEvent({ type: "background.updated", tasks: waiting });
+}
+
+/**
+ * Tells the UI everything still running in the background with its id, whether or not Claude has yielded: if the
+ * app quits or crashes now, this is what the resumed turn hears was cut.
+ */
+function syncCutWork(live: Live): void {
+  const work: CutWork[] =
+    live.activeTurn && !live.cancelled
+      ? [...live.backgroundTasks].map(([id, task]) => ({
+          kind: task.kind,
+          label: task.description,
+          id,
+        }))
+      : [];
+  const key = work.map((entry) => `${entry.kind}:${entry.id}:${entry.label}`).join("\n");
+  if (key === live.cutWorkKey) return;
+  live.cutWorkKey = key;
+  // A stopped turn still clears its list: what Stop ended was not cut by a restart.
+  if (live.muteUpdates && work.length) return;
+  live.onEvent({ type: "background.work", work });
 }
 
 function maybeFinishTurn(live: Live): void {
@@ -1789,6 +1928,7 @@ function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
   clearAwaitingResume(live);
   live.turnEndPending = false;
   live.activeTurn = false;
+  syncCutWork(live);
   for (const event of extraEvents) live.onEvent(event);
   const done = live.turnDone;
   const failed = live.turnFailed;
@@ -1899,4 +2039,5 @@ export function __claudeTestReset(): void {
   resumeByThread.clear();
   tasksByThread.clear();
   cancelledThreads.clear();
+  briefOwed.clear();
 }

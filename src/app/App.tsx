@@ -404,6 +404,7 @@ import {
   type HandoffComposerCard,
   userMessagesAfterHandoff,
   wrapHandoffPrompt,
+  wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
@@ -582,6 +583,7 @@ import {
   listSessionsByProject,
   persistFingerprint,
   rebaseProjectSessions,
+  dropInFlightSession,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
   setSessionArchived,
@@ -846,11 +848,14 @@ import {
 } from "../features/sessions/data/sessionHistory";
 import {
   CONTINUE_PROMPT,
+  RESUME_STOPPED_MESSAGE,
   canAutoContinue,
   interruptingShip,
-  shipResumePrompt,
   inFlightRefs,
   inFlightSnapshotKey,
+  markResumeStopped,
+  resumeBlocked,
+  resumePrompt,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -953,6 +958,11 @@ type SubmitOptions = ComposerTurnOptions & {
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
+  /**
+   * An automatic resume after a restart, and which one (1 = the first). Kept on the session (`autoResumes`) and in
+   * its in-flight row; any other turn starts the count again from none.
+   */
+  autoResume?: number;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
@@ -7236,6 +7246,8 @@ function Workspace({
               sessionId,
               text,
               !!remote?.busy,
+              // An automatic resume carries a note or a ship's receipt, so its text isn't the bare continue.
+              !!options?.autoResume || text.trim() === CONTINUE_PROMPT,
             );
       if (delegation)
         options = {
@@ -7851,6 +7863,9 @@ function Workspace({
               ...selected,
               providerAccountId,
               usageLimit: undefined,
+              autoResumes: options?.autoResume,
+              // A resume carries what was cut forward until Claude has the prompt (claude.ts clears it then).
+              cutWork: options?.autoResume ? selected.cutWork : undefined,
               worktreePreparing: createDraftWorktree
                 ? true
                 : selected.worktreePreparing,
@@ -8197,6 +8212,8 @@ function Workspace({
         const planEventKey = planTurnKey(gen);
         let nativePlanSeen = false;
         let providerFailureSeen = false;
+        // The provider's saved conversation was gone and this turn went on in a fresh one (claude.ts).
+        let providerLost = false;
         const routePlanEvent = (event: HarnessEvent): HarnessEvent | null => {
           if (event.type === "session.error") providerFailureSeen = true;
           if (proposalDraft) {
@@ -8228,6 +8245,7 @@ function Workspace({
 
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
+          if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
             controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
@@ -8402,6 +8420,16 @@ function Workspace({
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
+              // A conversation whose saved transcript is gone starts again from the chat's own brief.
+              resumeFallback: (prompt) =>
+                wrapRecoveredPrompt(
+                  buildDeterministicHandoff(
+                    sessionsRef.current.find((s) => s.id === sessionId) ??
+                      current,
+                    submittedText,
+                  ),
+                  prompt,
+                ),
               onEvent: routeTurnEvent,
             });
           let sendText = orchestrator.prompt(
@@ -8496,7 +8524,9 @@ function Workspace({
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
           await sendTurn(sendText);
-          if (agentFiles) {
+          // A fresh conversation after a lost one never got the soul and memory: leave them unrecorded so the next
+          // turn hands them over again.
+          if (agentFiles && !providerLost) {
             recordAgentContext(
               sessionId,
               sessionsRef.current.find((session) => session.id === sessionId)
@@ -10633,6 +10663,32 @@ function Workspace({
     .map((session) => session.id)
     .join("\n");
 
+  /**
+   * A turn the app has restarted under too often (`MAX_AUTO_RESUMES`) stops resuming itself: its chat says so and
+   * reads Needs you, it leaves the quit snapshot so the next boot doesn't mark it interrupted again, and a Lead
+   * waiting on it (a delegated worker's row) hears it failed, with why.
+   */
+  const stopResuming = useCallback(
+    (session: Session) => {
+      const stopped = markResumeStopped(session);
+      sessionsRef.current = sessionsRef.current.map((entry) =>
+        entry.id === session.id ? stopped : entry,
+      );
+      setSessions(sessionsRef.current);
+      persistSession(stopped);
+      void dropInFlightSession(session.id).catch(() => undefined);
+      const owed = delegationsRef.current?.resumeMonitor(
+        session.id,
+        CONTINUE_PROMPT,
+        false,
+        true,
+      );
+      owed?.started();
+      owed?.settled({ status: "failed", text: "", error: RESUME_STOPPED_MESSAGE });
+    },
+    [persistSession],
+  );
+
   useEffect(() => {
     // A dev copy shows a cut-off chat as interrupted but never continues it on its own, and a build on trial waits
     // until it has committed (src-tauri/src/ship.rs): if it is rolled back, the old build resumes them instead.
@@ -10650,22 +10706,30 @@ function Workspace({
       for (const id of ids) {
         const session = stillDue(id);
         if (!session) continue;
+        // Cut by restart after restart: stop and wait for Ash instead of looping.
+        if (resumeBlocked(session)) {
+          stopResuming(session);
+          continue;
+        }
+        const autoResume = (session.autoResumes ?? 0) + 1;
         const ship = interruptingShip(session);
         if (!ship) {
-          onSubmit(id, CONTINUE_PROMPT);
+          // With what the restart cut, if anything was running in the background.
+          onSubmit(id, resumePrompt(session), [], { autoResume });
           continue;
         }
         // Cut by a ship's restart: resume once, with what the ship did.
         if (shipResumes.current.has(id)) continue;
         shipResumes.current.add(id);
         void loadShipNote(ship).then((note) => {
-          if (stillDue(id)) onSubmit(id, shipResumePrompt(id, note));
+          const due = stillDue(id);
+          if (due) onSubmit(id, resumePrompt(due, { note }), [], { autoResume });
           shipResumes.current.delete(id);
         });
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoContinueKey, onSubmit, shipHold]);
+  }, [autoContinueKey, onSubmit, shipHold, stopResuming]);
 
   const onCompactContext = useCallback(
     (sessionId: string) => {
