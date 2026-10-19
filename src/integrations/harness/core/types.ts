@@ -242,6 +242,24 @@ export type SendTurnInput = HarnessSessionInput & {
 
 export type CompactContextInput = HarnessSessionInput;
 
+/**
+ * Launch settings a running session can take without a restart, where its
+ * CLI supports it: model, effort, fast mode, permission mode.
+ */
+export type LiveSettingsInput = {
+  sessionId: string;
+  model: string;
+  modelSettings?: Record<string, string>;
+  runtimeMode: RuntimeMode;
+};
+
+/**
+ * `applied`: the running CLI took it. `next-turn`: it needs a restart, which
+ * happens on the next message (the adapter says so in the chat). `unchanged`:
+ * nothing differed. `idle`: no running CLI; the next message starts with it.
+ */
+export type LiveSettingsOutcome = "applied" | "next-turn" | "unchanged" | "idle";
+
 export type SteerTurnInput = {
   sessionId: string;
   cwd: string;

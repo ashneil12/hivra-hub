@@ -78,6 +78,8 @@ export type ClaudeCliSettings = {
   fastMode?: boolean;
   ultracode?: boolean;
   disableAllHooks?: boolean;
+  /** Tokens at which Claude Code compacts (100K-1M); it uses the smaller of this and the model window. */
+  autoCompactWindow?: number;
 };
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
@@ -255,6 +257,8 @@ export function buildClaudeSpawnArgs(input: {
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
+  /** Accept a later live switch to bypassPermissions over the control channel. */
+  allowBypass?: boolean;
 }): string[] {
   const args = [
     "--output-format",
@@ -290,7 +294,10 @@ export function buildClaudeSpawnArgs(input: {
   if (input.permissionMode) {
     args.push("--permission-mode", input.permissionMode);
   }
-  if (input.permissionMode === "bypassPermissions") {
+  if (
+    input.permissionMode === "bypassPermissions" ||
+    (input.allowBypass && !input.isolated)
+  ) {
     args.push("--allow-dangerously-skip-permissions");
   }
   if (input.resume) args.push("--resume", input.resume);
@@ -1131,26 +1138,6 @@ export function summarizeToolRequest(
   } catch {
     return toolName;
   }
-}
-
-export function claudeSettingsKey(input: {
-  model: string;
-  effort?: string;
-  fast?: string;
-  thinking?: string;
-  context?: string;
-  runtimeMode: RuntimeMode;
-  hooks?: boolean;
-}): string {
-  return [
-    input.model,
-    input.effort ?? "",
-    input.fast ?? "",
-    input.thinking ?? "",
-    input.context ?? "",
-    input.runtimeMode,
-    input.hooks === false ? "nohooks" : "hooks",
-  ].join("|");
 }
 
 function numberField(

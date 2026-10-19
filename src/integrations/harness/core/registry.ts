@@ -19,6 +19,8 @@ import type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
+  LiveSettingsInput,
+  LiveSettingsOutcome,
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
@@ -66,6 +68,8 @@ export type HarnessAdapter = {
   compactContext?(input: CompactContextInput): Promise<void>;
   /** Stop one background task (a whole workflow run) and leave the turn going. */
   stopTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /** Apply model, effort or permission changes to the running session now. */
+  applySettings?(input: LiveSettingsInput): Promise<LiveSettingsOutcome>;
   /** Rewind provider state so the last user turn can be replaced. */
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
   steerTurn(input: SteerTurnInput): Promise<void>;
@@ -325,6 +329,19 @@ export async function stopHarnessTask(
   const adapter = getHarness(harness);
   if (!adapter?.live || !adapter.stopTask) return false;
   return adapter.stopTask(sessionId, taskId);
+}
+
+/**
+ * Hand a running session its new model, effort or permission mode now rather
+ * than at the next message. Not queued behind the running turn: that is the
+ * point. Harnesses without live changes pick them up on the next message.
+ */
+export async function applyHarnessSettings(
+  input: LiveSettingsInput & { harness: HarnessId },
+): Promise<LiveSettingsOutcome> {
+  const adapter = getHarness(input.harness);
+  if (!adapter?.live || !adapter.applySettings) return "idle";
+  return adapter.applySettings(input);
 }
 
 export function canCompactHarnessContext(id: HarnessId): boolean {

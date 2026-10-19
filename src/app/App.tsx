@@ -604,6 +604,7 @@ import { hiddenApprovalNotices } from "../features/notifications/model/approvalT
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
 import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenFinishedSessions";
+import { useLiveHarnessSettings } from "../features/sessions/hooks/useLiveHarnessSettings";
 import { useUnseenReplyCounts } from "../features/sessions/hooks/useUnseenReplyCounts";
 import {
   loadNotificationsEnabled,
@@ -2401,6 +2402,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // Model, effort and permission changes reach a running turn's CLI now.
+  useLiveHarnessSettings(sessions);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
