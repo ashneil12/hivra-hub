@@ -16,11 +16,20 @@ import { setClaudeExtraArgs } from "../../../integrations/harness/providers/clau
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
-import { seedHubBundleDefaults } from "./hubBundle";
+import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
+import { connectorArgsForSession, loadConnectors } from "./hubConnectors";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
 seedHubBundleDefaults();
+
+// Every Mono's Claude Code session starts with the connectors its projects allow (hubConnectors.ts). The state is read
+// now and again whenever a window comes back to the front; the launcher re-checks it at every start anyway.
+if (IS_HUB_BUNDLE) {
+  setClaudeExtraArgs(connectorArgsForSession, "connectors");
+  void loadConnectors();
+  window.addEventListener("focus", () => void loadConnectors());
+}
 
 // The app ships clean: it reads Ash OS. The example data answers only behind the dev flag
 // (`monocode:hub-examples`, set by hub-dev.html), or when a source is swapped in with `setHubDataSource`.
