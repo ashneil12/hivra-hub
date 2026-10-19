@@ -139,6 +139,11 @@ export function hubData(): HubDataSource {
   return withProjectPrefs((override ?? choose()).source);
 }
 
+/** The projects as Ash OS has them, before Ash's own names, order and "Remove from hub": what a setup export carries. */
+export function registryProjects(): HubProject[] {
+  return (override ?? choose()).source.listProjects();
+}
+
 /** Every screen reads projects with Ash's own name, order and "Remove from hub" applied (projectPrefs.ts). */
 const wrapped = new WeakMap<HubDataSource, HubDataSource>();
 function withProjectPrefs(source: HubDataSource): HubDataSource {

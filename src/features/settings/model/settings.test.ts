@@ -625,6 +625,7 @@ describe("settings navigation", () => {
       "appearance",
       "changes",
       "dashboards",
+      "portable",
       "connectors",
       "keybindings",
       "chat",

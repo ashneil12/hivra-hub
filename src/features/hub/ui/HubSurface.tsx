@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { parseSetup, setPendingSetup } from "../model/setupFile";
+import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
 import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
@@ -501,10 +501,21 @@ function FirstTodayEmpty() {
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     try {
-      setPendingSetup(parseSetup(await f.text()), f.name);
+      setPendingImport(readImportText(f.name, await f.text()));
       setHubSelection({ project: "today", item: "restore" });
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Couldn't read that file.");
+    }
+  };
+  const pick = async () => {
+    try {
+      const p = await pickExportForRestore();
+      if (p === "browser") return fileRef.current?.click();
+      if (!p) return;
+      setPendingImport(p);
+      setHubSelection({ project: "today", item: "restore" });
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Couldn't read that export.");
     }
   };
   return (
@@ -523,10 +534,10 @@ function FirstTodayEmpty() {
           <button
             type="button"
             data-hub-today-restore
-            onClick={() => fileRef.current?.click()}
+            onClick={() => void pick()}
             className="rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content"
           >
-            Restore a setup file
+            Restore from an export
           </button>
           <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-today-file
             onChange={(e) => void onFile(e.target.files?.[0])} />

@@ -102,6 +102,11 @@ export function isCustomised(projectId: string): boolean {
 /** Example: Hivra's dashboard was changed by an applied proposal ('Users & emails'). */
 const CUSTOMISED_EXAMPLE = new Set(["hivra"]);
 
+/** True when this Mac has its own template choice for the project (an import then leaves it alone). */
+export function hasSavedTemplate(projectId: string): boolean {
+  return !!saved[projectId];
+}
+
 export function setTemplate(projectId: string, template: TemplateId): void {
   store({ ...saved, [projectId]: { template } });
 }
