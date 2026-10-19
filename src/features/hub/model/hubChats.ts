@@ -3,6 +3,8 @@ import { examplesOn, examples } from "./examples";
 // Claude Code swaps in the backend (create chat, add/remove member, send,
 // stream replies). Every made-up row is labelled "Example:".
 import { useSyncExternalStore } from "react";
+import { listMonos } from "../../monos/model/mono";
+import { DEFAULT_TEAM_IDS } from "./builtInMonos";
 import type { ChatMessage, GroupChat } from "./types";
 
 const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
@@ -121,7 +123,7 @@ export function getChat(id: string): GroupChat | undefined {
   return chats.find((c) => c.id === id);
 }
 
-/** Every project has a Leadership team; a new project starts with nobody in it. */
+/** Every project has a Leadership team. It is made empty here; seatDefaultTeam seats the default team once. */
 export function ensureLeadership(projectId: string): GroupChat {
   const id = leadershipChatId(projectId);
   let chat = getChat(id);
@@ -131,6 +133,40 @@ export function ensureLeadership(projectId: string): GroupChat {
     changed();
   }
   return chat;
+}
+
+const SEATED_KEY = "monocode:hub-leadership-seated";
+function seatedChats(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEATED_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * A project's Leadership team gets the default team (Chief of Staff, Projects Manager, frank, Alfred, as far as they
+ * are on the roster) once, ahead of anyone already in it (Ash 14 Oct: every first project ships with them). Once per
+ * chat: a Mono Ash takes out of the chat stays out, and one he removed from the roster is never added. Returns the chat.
+ */
+export function seatDefaultTeam(projectId: string): GroupChat {
+  const chat = ensureLeadership(projectId);
+  if (examplesOn()) return chat;
+  const seated = seatedChats();
+  if (seated.has(chat.id)) return chat;
+  const roster = new Set(listMonos().map((m) => m.id));
+  const team = DEFAULT_TEAM_IDS.filter((id) => roster.has(id));
+  if (!team.length) return chat; // the roster isn't ready yet: try again next time
+  const add = team.filter((id) => !chat.memberIds.includes(id));
+  if (add.length) chats = chats.map((c) => (c.id === chat.id ? { ...c, memberIds: [...add, ...c.memberIds] } : c));
+  try {
+    localStorage.setItem(SEATED_KEY, JSON.stringify([...seated, chat.id]));
+  } catch {
+    /* storage unavailable: seating again adds nobody twice */
+  }
+  changed();
+  return getChat(chat.id)!;
 }
 
 export function createChat(projectId: string, name: string, memberIds: string[]): GroupChat {

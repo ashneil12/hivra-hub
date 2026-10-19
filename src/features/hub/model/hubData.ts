@@ -9,6 +9,7 @@ import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { ensureProjectLeads, leadMcpArgs, reseedAdoptedLeadSoul } from "./hubLeads";
+import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
 import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
@@ -43,11 +44,14 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 }
 
 /**
- * The Hub bundle's project Leads: once Ash OS has said which projects there are (and their folders), make the Leads
- * that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead in place); their Claude
- * Code sessions carry their ash-os identity.
+ * The Hub bundle's project Leads and leadership team: once Ash OS has said which projects there are (and their
+ * folders), make the Leads that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead
+ * in place), give the team its souls, make it a member of every project and seat it in each Leadership team. The
+ * Leads' Claude Code sessions carry their ash-os identity.
  */
 function startHubBundleLeads(store: HubStore): void {
+  noteTeamEngines();
+  void seedTeamFiles();
   void tauriAshOsServer().then((server) =>
     setClaudeExtraArgs((sessionId) => {
       const mono = monoForSession(sessionId);
@@ -69,6 +73,11 @@ function startHubBundleLeads(store: HubStore): void {
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
       void reseedAdoptedLeadSoul(id, findMono(id)?.projects[0] ?? null, defaultSoul, readAgentFile, writeAgentFile).catch(() => undefined);
+    tieTeamToProjects(strip, (monoId, projectId) =>
+      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
+    );
+    seatLeadershipTeams(strip);
+    void seedTeamFiles();
   };
   store.subscribe(tryLeads);
 }
