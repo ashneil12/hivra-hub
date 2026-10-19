@@ -27,7 +27,12 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
-import type { DelegationTracker } from "../features/monos/model/delegations";
+import {
+  tauriDelegations,
+  type DelegationTracker,
+} from "../features/monos/model/delegations";
+import { delegationTasksHost } from "../features/monos/model/delegationTasks";
+import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
@@ -109,7 +114,13 @@ import {
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
-import { hubData, nameHubProject, useHubDataVersion } from "../features/hub/model/hubData";
+import {
+  hubData,
+  hubProjectFolder,
+  hubProjectIdFor,
+  nameHubProject,
+  useHubDataVersion,
+} from "../features/hub/model/hubData";
 import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
@@ -11388,17 +11399,21 @@ function Workspace({
           project: string,
           prompt: string,
           title: string,
+          delegation?: DelegationMeta,
         ) => {
           // The stored row comes first: it is what survives a restart. The batch below is its cache for this run.
+          // Ash OS gets the hub project id, which it resolves directly; a folder outside the hub's projects stays a path.
           const launch = delegationsRef.current?.launch({
             ownerSession: monoId,
             ownerMono: monoForSession(monoId)?.id,
             batchId: sourceTurnId ?? `turn-${sourceTurn}`,
             requestId,
             childSession: sessionId,
-            project,
-            title,
+            project: delegation?.project ?? hubProjectIdFor(project) ?? project,
+            title: delegation?.title ?? title,
             brief: prompt,
+            ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
+            ...(delegation?.goal ? { goal: delegation.goal } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
@@ -11432,19 +11447,23 @@ function Workspace({
             },
           );
         };
-        const dismissCompletion = (sessionId: string) => {
-          if (!isMonoSession(source.id)) return;
-          delegationsRef.current?.stopOwned(source.id, sessionId);
-          monoCompletionBatches.current!.dismissSession(source.id, sessionId);
+        // The Mono doesn't need this child's report any more: out of the batch cache and its queue.
+        const dropReport = (monoId: string, sessionId: string) => {
+          monoCompletionBatches.current!.dismissSession(monoId, sessionId);
           flushSync(() =>
             setSessions((previous) =>
               previous.map((session) =>
-                session.id === source.id
+                session.id === monoId
                   ? dismissQueuedMonoSessionCompletion(session, sessionId)
                   : session,
               ),
             ),
           );
+        };
+        const dismissCompletion = (sessionId: string) => {
+          if (!isMonoSession(source.id)) return;
+          void delegationsRef.current?.stopOwned(source.id, sessionId);
+          dropReport(source.id, sessionId);
         };
         const promise = handleAgentApp(
           source,
@@ -11452,7 +11471,7 @@ function Workspace({
           payload.action,
           payload.input,
           {
-            start: async (launch, id, placement, notifyMonoId) => {
+            start: async (launch, id, placement, notifyMonoId, delegation) => {
               const rememberLaunch = () => {
                 const created =
                   sessionsRef.current.find((session) => session.id === id) ??
@@ -11504,6 +11523,7 @@ function Workspace({
                     launch.cwd,
                     launch.prompt,
                     launch.prompt.trim().split("\n")[0].slice(0, 200),
+                    delegation,
                   )
                 : undefined;
               try {
@@ -11772,6 +11792,7 @@ function Workspace({
               return (
                 mono && {
                   id: mono.id,
+                  name: monoLook(mono).name,
                   projects: mono.projects,
                   showStartedSessionsInSidebar:
                     mono.showStartedSessionsInSidebar,
@@ -11787,6 +11808,21 @@ function Workspace({
               );
             },
             habits: { load: loadHabits, update: updateHabits },
+            tasks: delegationTasksHost({
+              backend: tauriDelegations,
+              tracker: () => delegationsRef.current,
+              session: (id) =>
+                sessionsRef.current.find((session) => session.id === id),
+              stop: async (id) => {
+                await flushSync(() => stopSessionRef.current(id));
+                flushHarnessEvents();
+              },
+              dropReport,
+              respond: (child, requestId, reply) =>
+                respondHarnessQuestion(child.harness, child.id, requestId, reply),
+              hubProjectId: hubProjectIdFor,
+              hubProjectFolder,
+            }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>

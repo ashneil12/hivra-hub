@@ -1,0 +1,88 @@
+// The app's side of the delegate tool's task actions (agent-app/model/agentAppTasks.ts) on the delegation rows (H2):
+// reads go to the store by owner, moves go through the tracker so this window's cache stays in step, and the report a
+// Mono no longer needs (a result it read, a task it cancelled) leaves its in-memory batch and its queue.
+import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import type { Session } from "../../sessions/model/session";
+import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import {
+  isOpenDelegation,
+  nextDelegationChange,
+  type DelegationTracker,
+  type DelegationsBackend,
+} from "./delegations";
+
+export type DelegationTasksDeps = {
+  backend: DelegationsBackend;
+  tracker(): DelegationTracker | null;
+  /** A session as this window has it. */
+  session(id: string): Session | undefined;
+  /** Stop a running child's turn (the user's own Stop). */
+  stop(id: string): Promise<void>;
+  /** The owner doesn't need this child's report any more: drop it from the batch cache and the owner's queue. */
+  dropReport(ownerId: string, childSession: string): void;
+  /** Hand a worker's question its answer (respondHarnessQuestion). */
+  respond?(child: Session, requestId: number, reply: UserQuestionReply): void;
+  hubProjectId?(folder: string): string | undefined;
+  hubProjectFolder?(id: string): string | undefined;
+  nextChange?(ms: number): Promise<void>;
+  now?(): number;
+};
+
+export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
+  const tracker = () => {
+    const current = deps.tracker();
+    if (!current) throw new Error("Delegations are still loading; try again in a moment");
+    return current;
+  };
+  return {
+    owned: (owner, query) => deps.backend.owned({ ownerSession: owner, ...query }),
+    tree: (id) => deps.backend.tree(id),
+    acknowledge: async (owner, rows) => {
+      await tracker().acknowledge(
+        owner,
+        rows.map((row) => row.id),
+      );
+      for (const row of rows) deps.dropReport(owner, row.childSession);
+    },
+    nextChange: deps.nextChange ?? nextDelegationChange,
+    cancel: async (owner, row, reason) => {
+      // The row first, so it keeps this reason rather than the one a plain Stop gives.
+      await tracker().cancelOwned(owner, [row], reason);
+      const stopFailed: string[] = [];
+      const child = deps.session(row.childSession);
+      if (isOpenDelegation(row) && child?.busy) {
+        try {
+          await deps.stop(row.childSession);
+        } catch {
+          stopFailed.push(row.childSession);
+        }
+      }
+      deps.dropReport(owner, row.childSession);
+      return { stopFailed };
+    },
+    ...(deps.respond
+      ? {
+          answer: async (owner, row, requestId, reply) => {
+            const child = deps.session(row.childSession);
+            if (!child || child.pendingQuestion?.requestId !== requestId)
+              throw new Error("That question is no longer open; read the task again with task_status.");
+            deps.respond!(child, requestId, reply);
+            // The first answer wins and is logged on the row, with who gave it.
+            await deps.backend.setQuestion(row.id, null, `owner:${owner}`);
+          },
+        }
+      : {}),
+    child: (id) => {
+      const session = deps.session(id);
+      if (!session) return undefined;
+      return {
+        busy: session.busy,
+        pendingQuestion: session.pendingQuestion,
+        ...(session.busy ? { lastActiveAt: (deps.now ?? Date.now)() } : {}),
+      };
+    },
+    ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
+    ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
+    ...(deps.now ? { now: deps.now } : {}),
+  };
+}

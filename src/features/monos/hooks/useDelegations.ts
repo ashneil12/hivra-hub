@@ -3,6 +3,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { leadFor } from "../../hub/model/hubLeads";
+import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import {
@@ -24,7 +25,7 @@ function isMainWindow(): boolean {
   }
 }
 
-/** Who a Claude session is, for Ash OS: a Mono's chat (a Lead or not), a delegated worker, or a plain chat. */
+/** Who a Claude session is, for Ash OS: a Mono's chat (a Lead, the checker, or another), a delegated worker, or a plain chat. */
 export function chatBinding(
   session: Pick<Session, "id" | "harness" | "providerSessionId">,
   openDelegation?: string,
@@ -32,9 +33,11 @@ export function chatBinding(
   if (session.harness !== "claude" || !session.providerSessionId) return;
   const mono = monoForSession(session.id);
   const role = mono
-    ? leadFor(mono.id)
-      ? "lead"
-      : "mono"
+    ? mono.id === CHECKER_MONO_ID
+      ? "checker"
+      : leadFor(mono.id)
+        ? "lead"
+        : "mono"
     : openDelegation
       ? "worker"
       : undefined;
