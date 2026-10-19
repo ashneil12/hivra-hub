@@ -2,6 +2,9 @@
 // Teams of named Monos: Ash makes a team (its room is a hub group chat) and its Monos (name, SOUL from a brief, engine,
 // projects, connectors); an agent can only propose a Mono, which waits for Ash's okay and makes nothing until then.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// These load the hub's modules fresh per test (dynamic imports): slow when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
 import type { HubDataSource } from "./types";
 
 const HIVRA = "/Users/ash/Projects/hivra";

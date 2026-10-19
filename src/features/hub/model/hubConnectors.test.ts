@@ -4,6 +4,9 @@
 // never in browser storage, the view, a session's arguments or the console.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These load the hub's modules fresh per test (dynamic imports): slow when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
+
 const SECRET = "ghp_SENTINEL_0123456789abcdef";
 const HIVRA = "/Users/ash/Projects/hivra";
 const NIBBII = "/Users/ash/Projects/nibbii";

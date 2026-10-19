@@ -45,6 +45,17 @@ fn entry(id: &str) -> Result<&'static catalog::Entry, String> {
     catalog::entry(id).ok_or_else(|| format!("No connector called {id}."))
 }
 
+/// A server URL: https, or plain http only to this Mac (a server you run yourself).
+fn secure_or_local(value: &str) -> bool {
+    match url::Url::parse(value) {
+        Ok(url) if url.scheme() == "https" => url.host_str().is_some(),
+        Ok(url) if url.scheme() == "http" => {
+            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+        }
+        _ => false,
+    }
+}
+
 fn check_allow(allow: &[String]) -> Result<(), String> {
     if allow.len() > 200 || !allow.iter().all(|scope| settings::valid_scope(scope)) {
         return Err("Those projects aren't valid.".into());
@@ -126,8 +137,10 @@ impl Service {
             if value.len() > 8192 || value.chars().any(char::is_control) {
                 return Err("That value isn't valid.".into());
             }
-            if key.ends_with("url") && !value.is_empty() && !value.starts_with("https://") {
-                return Err("The address must start with https://".into());
+            if key.ends_with("url") && !value.is_empty() && !secure_or_local(&value) {
+                return Err(
+                    "The address must start with https:// (or be a server on this Mac).".into(),
+                );
             }
             if !value.is_empty() || !field.optional {
                 clean.insert(key, value);
@@ -533,11 +546,20 @@ mod tests {
         assert!(svc
             .save_login(
                 "zapier",
-                BTreeMap::from([("mcp_url".into(), "http://insecure".into())]),
+                BTreeMap::from([("mcp_url".into(), "http://insecure.example.com/mcp".into())]),
                 None
             )
             .unwrap_err()
             .contains("https://"));
+        assert!(svc
+            .save_login(
+                "zapier",
+                BTreeMap::from([("mcp_url".into(), "http://127.0.0.1:8123/mcp".into())]),
+                None
+            )
+            .is_ok());
+        assert!(!secure_or_local("http://127.0.0.1.evil.com/x"));
+        assert!(!secure_or_local("ftp://127.0.0.1/x"));
         assert!(svc.save_login("github", token("a\nb"), None).is_err());
         assert!(svc
             .turn_on("github", None)

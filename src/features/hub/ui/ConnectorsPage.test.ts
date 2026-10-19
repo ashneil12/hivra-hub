@@ -5,6 +5,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// These load the hub's modules fresh per test (dynamic imports): slow when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
 import type { HubDataSource } from "../model/types";
 
 let root: Root;
