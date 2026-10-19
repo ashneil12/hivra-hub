@@ -323,6 +323,10 @@ fn queue_open(app: &AppHandle, session_id: String, due_at: i64) -> Result<(), St
 
 pub(crate) fn init(app: &AppHandle) {
     app.manage(ReminderService::default());
+    // A dev copy keeps its reminders but never fires them (src/instance.rs).
+    if !crate::instance::policy().reminders {
+        return;
+    }
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(5));

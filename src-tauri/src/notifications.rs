@@ -49,8 +49,12 @@ pub async fn notification_permission(app: AppHandle) -> Permission {
     platform::permission(&app).await
 }
 
+/// A dev copy never shows the system prompt (src/instance.rs); it reports where things stand.
 #[tauri::command]
 pub async fn request_notification_permission(app: AppHandle) -> Permission {
+    if !crate::instance::policy().notification_prompt {
+        return platform::permission(&app).await;
+    }
     platform::request_permission(&app).await
 }
 

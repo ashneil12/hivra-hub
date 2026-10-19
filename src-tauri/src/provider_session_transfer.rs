@@ -40,15 +40,10 @@ fn provider_home(
     provider: &str,
     account_id: Option<&str>,
 ) -> Result<PathBuf, String> {
+    // A dev copy's default Claude account is its shared dev config folder (harness::provider_account_dir), so
+    // carrying a conversation never reads from or writes into the daily app's `~/.claude`.
     if let Some(dir) = crate::harness::provider_account_dir(app, provider, account_id)? {
         return Ok(dir);
-    }
-    // A test copy's default Claude account lives in its own config folder, so carrying a
-    // conversation never reads from or writes into the daily app's `~/.claude`.
-    if provider == "claude" {
-        if let Some(dir) = crate::harness::test_copy_claude_config_dir(app)? {
-            return Ok(dir);
-        }
     }
     let (var, name) = match provider {
         "claude" => ("CLAUDE_CONFIG_DIR", ".claude"),
