@@ -632,6 +632,7 @@ describe("settings navigation", () => {
       "mcp",
       "skills",
       "monos",
+      "teams",
       "inbox",
       "archive",
       "worktrees",

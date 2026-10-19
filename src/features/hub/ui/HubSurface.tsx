@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { parseSetup, setPendingSetup } from "../model/setupFile";
-import { signIn, useConnectorsVersion } from "../model/connectors";
+import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
 import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -319,11 +319,17 @@ function StuckRow({ item }: { item: WaitingItem }) {
         <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="waiting" role="status">Waiting for your Mac…</span>
       ) : item.signIn === "on-this-mac" ? (
         <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="on-this-mac" role="status">On this Mac</span>
-      ) : item.target || item.connectorId ? (
+      ) : item.target || item.connectorId || item.act ? (
         <button
           type="button"
           data-hub-take-look={item.id}
-          onClick={() => (item.connectorId ? void signIn(item.connectorId) : item.target && setHubSelection(item.target))}
+          onClick={() => {
+            if (item.act) return item.act();
+            if (!item.connectorId) return item.target && setHubSelection(item.target);
+            // A connector the catalog has signs in on Settings > Connectors; any other keeps the setup file's flow.
+            const name = allConnectors().find((c) => c.id === item.connectorId)?.name ?? "";
+            if (!openConnectorSettings(name)) void signIn(item.connectorId);
+          }}
           className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
         >
           {item.actionLabel ?? "Take a look"}

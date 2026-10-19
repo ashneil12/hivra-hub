@@ -254,8 +254,8 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   Lead's session could not start) are not called.
 - **Group chats** and the chat engine (`hubChats.ts`), Today's chat box.
 - **Builds & playtests** (`hubBuilds.ts`, "only Ash marks played").
-- **Connectors** and the Keychain (`connectors.ts`): Ash OS's `setup` list is
-  shown read-only (no Sign in button yet).
+- **Connectors** are wired (phase 4, below). Ash OS's own `setup` list is still
+  shown read-only.
 - **Sections, templates, proposals, Changes, Bot changes** (`templates.ts`,
   `proposals.ts`): local mock stores.
 - **New project, Create, setup export/import**: still local (`addMockProject`);
@@ -268,6 +268,24 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   identity: Monos still come from MonoCode's own roster.
 - Capture hook, heartbeat for the doctor banner, keep-alive and launch at login.
 - Not verified: the plugin inside a running Tauri window (see the report).
+
+## Connectors and teams (phase 4, 19 Oct)
+- **One catalog** (`model/connectorCatalog.json`, 30 connectors) is read by the page and compiled into Rust
+  (`src-tauri/src/connectors/`). Direct ones are official or well-known MCP servers: hosted ones (GitHub, Linear,
+  Notion, Supabase, Vercel, Stripe, Google's Workspace servers, …) are bridged to stdio by the app's own binary; local
+  ones (Slack, Airtable, Brave, …) run as a child; Telegram is built in. Composio is one switch-gated entry.
+- **Logins**: Keychain only (`monocode-hub:connector:<id>`, dev copies `monocode-hub-dev:…`). `<data>/connectors.json`
+  holds which are signed in, which projects allow each (`*` everywhere, `~` Monos outside a project, else project
+  keys), per-Mono choices and the Composio switch, never a secret. Pasted keys go to `connector_save_login` once;
+  browser sign-in (`connector_oauth`) is MCP authorization (discovery, dynamic registration, PKCE) or Google with Ash's
+  own OAuth client; Ash finishes every sign-in on the provider's page.
+- **Sessions**: a Mono's Claude Code session gets `--mcp-config` entries pointing at `<app> connector-run <id> --mono
+  <id> --project <key>…` (`hubConnectors.connectorArgsForSession`, merged with the Lead's ash-os entry in
+  `claudeExtraArgs.ts`). The launcher re-checks the rules and reads the Keychain at start. A Mono in two projects only
+  gets what both allow; nothing is allowed until Ash ticks a project.
+- **Teams** (`model/hubTeams.ts`, Settings → Teams): a team has a brief, projects, named Monos and a room (a normal
+  group chat in its first project). Ash makes Monos there (name, lane → SOUL, engine, projects, connectors); agents
+  can only `app monos.propose`, which waits on Today's Setup and Settings → Teams until Ash approves.
 
 ## One "waiting on Ash" list
 - `model/waiting.ts` is the only list of things waiting on Ash. Each page adds

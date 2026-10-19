@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 36] = [
+const APP_ACTIONS: [&str; 37] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -119,6 +119,7 @@ const APP_ACTIONS: [&str; 36] = [
     "habits.run",
     "habits.remove",
     "chat.card",
+    "monos.propose",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -293,6 +294,15 @@ Actions:
                    "schedule":{"kind":"daily","time":"09:00"}}
                   choices accepts 1–4 options. A habit card is a suggestion;
                   the user must start it before it is scheduled.
+  monos.propose  Mono only. Propose a new named Mono (e.g. for a team):
+                  {"name":"Maya","brief":"Writes and schedules our posts",
+                   "team":"Marketing","engine":"claude",
+                   "projects":["hivra"],"connectors":["notion","slack"],
+                   "soul":"(optional) a full SOUL.md you drafted"}
+                  Nothing is created: it waits for the user's okay on
+                  Settings > Teams. projects are the hub's project names or
+                  yours (default: yours). Workers stay subagents; propose a
+                  Mono only for a lasting role the user will talk to.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.

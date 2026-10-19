@@ -1,4 +1,7 @@
 import { setGroupChatRunner } from "../features/hub/model/hubChats";
+import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
+import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
+import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
@@ -12583,6 +12586,31 @@ function Workspace({
     window.addEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
     return () => window.removeEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
   }, []);
+
+  // Hub: a Sign in on Today opens that connector on Settings > Connectors; a Mono proposal opens Settings > Teams.
+  useEffect(() => {
+    const onConnector = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) focusConnector(id);
+      openSettings("connectors", id ? `connector-${id}` : undefined);
+    };
+    const onTeams = () => openSettings("teams");
+    // A team's room (a hub group chat) opened from Settings > Teams: leave Settings for the hub view.
+    const onOpenHub = (event: Event) => {
+      const target = (event as CustomEvent<{ project: string; item: string }>).detail;
+      if (!target) return;
+      setSettingsOpen(false);
+      setHubSelection(target);
+    };
+    window.addEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+    window.addEventListener(OPEN_TEAMS_EVENT, onTeams);
+    window.addEventListener(OPEN_HUB_EVENT, onOpenHub);
+    return () => {
+      window.removeEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+      window.removeEventListener(OPEN_TEAMS_EVENT, onTeams);
+      window.removeEventListener(OPEN_HUB_EVENT, onOpenHub);
+    };
+  }, [openSettings]);
 
   useEffect(() => {
     const onOpenMcp = () => openSettings("mcp");

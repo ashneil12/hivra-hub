@@ -16,6 +16,7 @@ import {
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
 import { leadWorkingFolder } from "../../hub/model/hubLeads";
+import { monoEngine } from "../../hub/model/hubTeams";
 
 const openingMonos = new Map<string, Promise<Session | undefined>>();
 
@@ -56,7 +57,13 @@ async function loadMonoSession(
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
-  const session: Session = { ...host.create(home), runtimeMode: "auto" };
+  // A named Mono made on Settings > Teams starts on the engine it was made with (Claude Code, Codex, …).
+  const engine = monoEngine(monoId);
+  const created = host.create(home);
+  const session: Session = {
+    ...(engine && engine !== created.harness ? newSession(engine, home) : created),
+    runtimeMode: "auto",
+  };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
