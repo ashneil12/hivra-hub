@@ -1,0 +1,2325 @@
+//! Delegations: the hub's durable record of work a Mono handed to another session (docs/PHASE-2-DESIGN.md, H2).
+//!
+//! Every monitored `sessions.start` / `sessions.send` from a Mono writes one row here before the child starts. The row
+//! is the truth; the webview's in-memory completion batches are only a cache. So the report the Mono is owed survives a
+//! restart, a crash, an install from inside the app or a usage-limit resume, and the Mono gets exactly one report for
+//! each generation of the work.
+//!
+//! - **State**: `running`, `question` (the worker asked its owner something; H4), then `completed`, `failed` or
+//!   `cancelled`. `settle` finishes a row atomically, only from running or question, and only for its current
+//!   generation, so a late or repeated settle changes nothing.
+//! - **Delivery** of the report: `pending` → `queued` (it waits in the owner's queue) → `delivered` (it went to the owner
+//!   as a turn) → `acknowledged` (the owner read the result; H3's task_status). `disposed` (Stop, the owner gone) is
+//!   final. A repeated or backwards move changes nothing.
+//! - **Resumed turns** (auto-continue, a usage-limit resume, a later message in an interrupted child) re-attach to the
+//!   child's row and bump its generation, so their report has a new receipt (`mono-completion-<requestId>-g<n>`).
+//! - **The tree**: `parent_id` is the open delegation the owner itself is working for, `root_id` the top of that chain.
+//! - **Outbox**: every change bumps `version`. One thread copies rows newer than `mirrored_version` to Ash OS
+//!   (`ash-hub-delegation`), and each chat's Claude session binding (`ash-hub-chat-bind`), and replays whatever is left
+//!   at boot. It goes through `hub::Endpoint`, so a dev copy only ever reaches the stub or the read-only proxy.
+//!
+//! Own tables, made by `ensure_tables` (no numbered migration, so upstream's migration numbers can't collide).
+
+use std::collections::HashSet;
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Duration;
+
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::hub::{self, HubError};
+use crate::session_store::{now_millis, SessionStore};
+
+/// Tauri event after any change: `{ids}`.
+pub const CHANGED: &str = "monocode:delegations-changed";
+
+pub const RUNNING: &str = "running";
+pub const QUESTION: &str = "question";
+pub const COMPLETED: &str = "completed";
+pub const FAILED: &str = "failed";
+pub const CANCELLED: &str = "cancelled";
+
+pub const PENDING: &str = "pending";
+pub const QUEUED: &str = "queued";
+pub const DELIVERED: &str = "delivered";
+pub const ACKNOWLEDGED: &str = "acknowledged";
+pub const DISPOSED: &str = "disposed";
+
+const RESULT_MAX: usize = 12_000;
+const BRIEF_MAX: usize = 12_000;
+const TITLE_MAX: usize = 300;
+const GOAL_MAX: usize = 1_000;
+const ERROR_MAX: usize = 2_000;
+const QUESTION_MAX: usize = 2_000;
+const LOG_MAX: usize = 50;
+const ASKS_MAX: usize = 50;
+/// What the studio's copy keeps (ashos/hub.py DELEGATION_TEXT); sending more only costs bytes.
+const MIRROR_BRIEF_MAX: usize = 4_000;
+const MIRROR_RESULT_MAX: usize = 2_000;
+const OUTBOX_BATCH: usize = 50;
+
+pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delegations (
+           id TEXT PRIMARY KEY,
+           owner_session TEXT NOT NULL,
+           owner_mono TEXT,
+           batch_id TEXT,
+           parent_id TEXT,
+           root_id TEXT NOT NULL,
+           child_session TEXT NOT NULL,
+           request_id TEXT NOT NULL,
+           generation INTEGER NOT NULL DEFAULT 1,
+           project TEXT,
+           title TEXT,
+           brief TEXT,
+           goal TEXT,
+           ask_ids TEXT NOT NULL DEFAULT '[]',
+           state TEXT NOT NULL,
+           error_class TEXT,
+           error TEXT,
+           retryable INTEGER,
+           resets_at INTEGER,
+           result TEXT,
+           pending_question TEXT,
+           delivery TEXT NOT NULL,
+           delivery_message TEXT,
+           created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL,
+           settled_at INTEGER,
+           log TEXT NOT NULL DEFAULT '[]',
+           version INTEGER NOT NULL DEFAULT 1,
+           mirrored_version INTEGER NOT NULL DEFAULT 0,
+           mirror_error TEXT,
+           UNIQUE (owner_session, request_id)
+         );
+         CREATE INDEX IF NOT EXISTS delegations_child ON delegations(child_session, created_at);
+         CREATE INDEX IF NOT EXISTS delegations_open ON delegations(state, delivery);
+         CREATE INDEX IF NOT EXISTS delegations_root ON delegations(root_id, created_at);
+         CREATE INDEX IF NOT EXISTS delegations_message ON delegations(delivery_message)
+           WHERE delivery_message IS NOT NULL;
+         CREATE TABLE IF NOT EXISTS delegation_chat_binds (
+           provider_session TEXT PRIMARY KEY,
+           chat_id TEXT NOT NULL,
+           mono_id TEXT,
+           role TEXT,
+           delegation_id TEXT,
+           bound_at INTEGER NOT NULL,
+           version INTEGER NOT NULL DEFAULT 1,
+           mirrored_version INTEGER NOT NULL DEFAULT 0,
+           mirror_error TEXT
+         );",
+    )
+}
+
+/// One delegation, as the webview and the tests see it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Delegation {
+    pub id: String,
+    pub owner_session: String,
+    pub owner_mono: Option<String>,
+    pub batch_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub root_id: String,
+    pub child_session: String,
+    pub request_id: String,
+    pub generation: i64,
+    pub project: Option<String>,
+    pub title: Option<String>,
+    pub brief: Option<String>,
+    pub goal: Option<String>,
+    pub ask_ids: Vec<String>,
+    pub state: String,
+    pub error_class: Option<String>,
+    pub error: Option<String>,
+    pub retryable: Option<bool>,
+    pub resets_at: Option<i64>,
+    pub result: Option<String>,
+    pub pending_question: Option<String>,
+    pub delivery: String,
+    pub delivery_message: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub settled_at: Option<i64>,
+    pub log: Vec<Value>,
+    pub version: i64,
+    pub mirrored_version: i64,
+    pub mirror_error: Option<String>,
+}
+
+impl Delegation {
+    fn is_open(&self) -> bool {
+        self.state == RUNNING || self.state == QUESTION
+    }
+
+    /// One line of the row's history, stamped with who acted. The newest 50 are kept.
+    fn note(&mut self, now: i64, by: &str, event: &str, extra: Value) {
+        let mut entry = json!({ "at": now, "by": by, "event": event });
+        if let (Some(entry), Value::Object(extra)) = (entry.as_object_mut(), extra) {
+            entry.extend(extra);
+        }
+        self.log.push(entry);
+        if self.log.len() > LOG_MAX {
+            let extra = self.log.len() - LOG_MAX;
+            self.log.drain(..extra);
+        }
+    }
+
+    /// A change worth copying: a new version for the outbox.
+    fn touch(&mut self, now: i64) {
+        self.updated_at = now;
+        self.version += 1;
+    }
+}
+
+const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
+     generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
+     pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
+     mirrored_version, mirror_error";
+
+fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
+    let asks: String = row.get(13)?;
+    let log: String = row.get(26)?;
+    Ok(Delegation {
+        id: row.get(0)?,
+        owner_session: row.get(1)?,
+        owner_mono: row.get(2)?,
+        batch_id: row.get(3)?,
+        parent_id: row.get(4)?,
+        root_id: row.get(5)?,
+        child_session: row.get(6)?,
+        request_id: row.get(7)?,
+        generation: row.get(8)?,
+        project: row.get(9)?,
+        title: row.get(10)?,
+        brief: row.get(11)?,
+        goal: row.get(12)?,
+        ask_ids: serde_json::from_str(&asks).unwrap_or_default(),
+        state: row.get(14)?,
+        error_class: row.get(15)?,
+        error: row.get(16)?,
+        retryable: row.get::<_, Option<i64>>(17)?.map(|v| v != 0),
+        resets_at: row.get(18)?,
+        result: row.get(19)?,
+        pending_question: row.get(20)?,
+        delivery: row.get(21)?,
+        delivery_message: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
+        settled_at: row.get(25)?,
+        log: serde_json::from_str(&log).unwrap_or_default(),
+        version: row.get(27)?,
+        mirrored_version: row.get(28)?,
+        mirror_error: row.get(29)?,
+    })
+}
+
+fn query(
+    conn: &Connection,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<Delegation>, String> {
+    let sql = format!("SELECT {COLUMNS} FROM delegations {filter}");
+    let mut statement = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(args, from_row)
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
+    Ok(query(conn, "WHERE id = ?1", &[&id])?.into_iter().next())
+}
+
+fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)"
+        ),
+        params![
+            d.id,
+            d.owner_session,
+            d.owner_mono,
+            d.batch_id,
+            d.parent_id,
+            d.root_id,
+            d.child_session,
+            d.request_id,
+            d.generation,
+            d.project,
+            d.title,
+            d.brief,
+            d.goal,
+            serde_json::to_string(&d.ask_ids).unwrap_or_else(|_| "[]".into()),
+            d.state,
+            d.error_class,
+            d.error,
+            d.retryable.map(i64::from),
+            d.resets_at,
+            d.result,
+            d.pending_question,
+            d.delivery,
+            d.delivery_message,
+            d.created_at,
+            d.updated_at,
+            d.settled_at,
+            serde_json::to_string(&d.log).unwrap_or_else(|_| "[]".into()),
+            d.version,
+            d.mirrored_version,
+            d.mirror_error,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Writes back everything a move can change. The outbox's own columns are left alone.
+fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
+    conn.execute(
+        "UPDATE delegations SET generation = ?2, state = ?3, error_class = ?4, error = ?5, retryable = ?6,
+           resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
+           updated_at = ?12, settled_at = ?13, log = ?14, version = ?15
+         WHERE id = ?1",
+        params![
+            d.id,
+            d.generation,
+            d.state,
+            d.error_class,
+            d.error,
+            d.retryable.map(i64::from),
+            d.resets_at,
+            d.result,
+            d.pending_question,
+            d.delivery,
+            d.delivery_message,
+            d.updated_at,
+            d.settled_at,
+            serde_json::to_string(&d.log).unwrap_or_else(|_| "[]".into()),
+            d.version,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---- input checks ------------------------------------------------------------------------------------------------------
+
+fn cap(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
+
+fn text(value: Option<String>, max: usize) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(|v| cap(&v, max))
+}
+
+fn id_like(value: &str, label: &str, max: usize) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > max
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return Err(format!("Invalid {label}"));
+    }
+    Ok(value.to_string())
+}
+
+fn session_id(value: &str, label: &str) -> Result<String, String> {
+    id_like(value, label, 256)
+}
+
+/// Who acted, for the row's log: `app` unless the caller says (`owner:<session>`, `boot`, `user`).
+fn actor(by: Option<String>) -> String {
+    text(by, 120).unwrap_or_else(|| "app".into())
+}
+
+fn error_class(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| {
+            v.to_ascii_lowercase()
+                .chars()
+                .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .take(40)
+                .collect::<String>()
+        })
+        .filter(|v| !v.is_empty())
+}
+
+/// MonoCode's own Mono id rule, the one the studio checks (ashos/hub.py MONO_ID).
+fn mono_id_ok(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The studio's ask id rule (ashos/hub.py ASK_ID): one bad id refuses the whole copy, so it is refused here first.
+fn ask_id_ok(value: &str) -> bool {
+    value.strip_prefix("a_").is_some_and(|rest| {
+        !rest.is_empty() && rest.len() <= 40 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+    })
+}
+
+// ---- the commands' logic, on a plain connection ------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordInput {
+    pub owner_session: String,
+    #[serde(default)]
+    pub owner_mono: Option<String>,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    pub request_id: String,
+    pub child_session: String,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub brief: Option<String>,
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub ask_ids: Vec<String>,
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+fn by_request(conn: &Connection, owner: &str, request: &str) -> Result<Option<Delegation>, String> {
+    Ok(query(
+        conn,
+        "WHERE owner_session = ?1 AND request_id = ?2",
+        &[&owner, &request],
+    )?
+    .into_iter()
+    .next())
+}
+
+fn open_for_child(conn: &Connection, child: &str) -> Result<Vec<Delegation>, String> {
+    query(
+        conn,
+        "WHERE child_session = ?1 AND state IN ('running', 'question') ORDER BY created_at DESC, rowid DESC",
+        &[&child],
+    )
+}
+
+/// Record a delegation before its child starts. The same owner and request id return the row already there (a launch
+/// retried with its receipt revives a refused one). An older open row for the same child is cancelled: the new request
+/// takes the session over, and its owner already knows.
+pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Delegation, String> {
+    let owner = session_id(&input.owner_session, "owner session")?;
+    let child = session_id(&input.child_session, "child session")?;
+    let request = id_like(&input.request_id, "request id", 400)?;
+    let asks: Vec<String> = input
+        .ask_ids
+        .iter()
+        .map(|a| a.trim().to_string())
+        .collect::<Vec<_>>();
+    if asks.len() > ASKS_MAX || !asks.iter().all(|a| ask_id_ok(a)) {
+        return Err("ask ids must be up to 50 ask ids (a_...)".into());
+    }
+    let by = actor(input.by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    if let Some(mut existing) = by_request(&tx, &owner, &request)? {
+        let refused = existing
+            .log
+            .last()
+            .and_then(|e| e.get("event"))
+            .and_then(Value::as_str)
+            == Some("refused");
+        if refused && existing.state == CANCELLED {
+            existing.state = RUNNING.into();
+            existing.delivery = PENDING.into();
+            existing.delivery_message = None;
+            existing.error = None;
+            existing.settled_at = None;
+            existing.note(now, &by, "retried", json!({}));
+            existing.touch(now);
+            save(&tx, &existing)?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        nudge();
+        return Ok(existing);
+    }
+    for mut older in open_for_child(&tx, &child)? {
+        older.state = CANCELLED.into();
+        older.error = Some("A later request to that session took it over.".into());
+        older.settled_at = Some(now);
+        if older.owner_session == owner && older.delivery != DISPOSED {
+            older.delivery = DISPOSED.into();
+        }
+        older.note(now, &by, "superseded", json!({ "by_request": request }));
+        older.touch(now);
+        save(&tx, &older)?;
+    }
+    // The owner is itself a worker when an open delegation names it as the child: that one is the parent.
+    let parent = open_for_child(&tx, &owner)?.into_iter().next();
+    let id = format!("t-{}", uuid::Uuid::new_v4());
+    let mut row = Delegation {
+        root_id: parent
+            .as_ref()
+            .map(|p| p.root_id.clone())
+            .unwrap_or_else(|| id.clone()),
+        parent_id: parent.map(|p| p.id),
+        id,
+        owner_session: owner,
+        owner_mono: text(input.owner_mono, 64).filter(|m| mono_id_ok(m)),
+        batch_id: text(input.batch_id, 200),
+        child_session: child,
+        request_id: request,
+        generation: 1,
+        project: text(input.project, 1_000),
+        title: text(input.title, TITLE_MAX),
+        brief: text(input.brief, BRIEF_MAX),
+        goal: text(input.goal, GOAL_MAX),
+        ask_ids: asks,
+        state: RUNNING.into(),
+        error_class: None,
+        error: None,
+        retryable: None,
+        resets_at: None,
+        result: None,
+        pending_question: None,
+        delivery: PENDING.into(),
+        delivery_message: None,
+        created_at: now,
+        updated_at: now,
+        settled_at: None,
+        log: Vec::new(),
+        version: 1,
+        mirrored_version: 0,
+        mirror_error: None,
+    };
+    row.note(now, &by, "recorded", json!({}));
+    insert(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(row)
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettleInput {
+    pub id: String,
+    pub generation: i64,
+    pub state: String,
+    #[serde(default)]
+    pub result: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub error_class: Option<String>,
+    #[serde(default)]
+    pub retryable: Option<bool>,
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    pub applied: bool,
+    pub row: Option<Delegation>,
+}
+
+/// Finish a row: only from running or question, only for its current generation, in one step. Anything else (a
+/// repeated settle, a stale generation, an unknown row) changes nothing and says so.
+pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Change, String> {
+    if ![COMPLETED, FAILED, CANCELLED].contains(&input.state.as_str()) {
+        return Err("state must be completed, failed or cancelled".into());
+    }
+    let by = actor(input.by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, &input.id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    if !row.is_open() || row.generation != input.generation {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    row.state = input.state.clone();
+    row.result = text(input.result, RESULT_MAX);
+    row.error = text(input.error, ERROR_MAX);
+    row.error_class = error_class(input.error_class);
+    row.retryable = input.retryable;
+    row.resets_at = input.resets_at;
+    row.pending_question = None;
+    row.settled_at = Some(now);
+    let mut detail = json!({ "state": row.state, "generation": row.generation });
+    if let Some(class) = &row.error_class {
+        detail["error_class"] = json!(class);
+    }
+    row.note(now, &by, "settled", detail);
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
+/// A new turn in a delegated child picks its row back up. An open row (its turn was cut off by a quit or crash) always
+/// does; a failed or cancelled one only for a resumed turn (`resume`: auto-continue, a usage-limit resume), and never
+/// one whose report was thrown away. The generation goes up, so the next report has its own receipt.
+pub fn reattach(
+    conn: &mut Connection,
+    child_session: &str,
+    resume: bool,
+    by: Option<String>,
+    now: i64,
+) -> Result<Option<Delegation>, String> {
+    let child = session_id(child_session, "child session")?;
+    let by = actor(by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let latest = query(
+        &tx,
+        "WHERE child_session = ?1 AND delivery != 'disposed' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        &[&child],
+    )?
+    .into_iter()
+    .next();
+    let Some(mut row) = latest else {
+        return Ok(None);
+    };
+    let reopen = resume && (row.state == FAILED || row.state == CANCELLED);
+    if !row.is_open() && !reopen {
+        return Ok(None);
+    }
+    let was = row.state.clone();
+    row.generation += 1;
+    if reopen {
+        row.state = RUNNING.into();
+        row.result = None;
+        row.error = None;
+        row.error_class = None;
+        row.retryable = None;
+        row.resets_at = None;
+        row.settled_at = None;
+        row.delivery = PENDING.into();
+        row.delivery_message = None;
+    }
+    row.note(
+        now,
+        &by,
+        "resumed",
+        json!({ "generation": row.generation, "was": was }),
+    );
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Some(row))
+}
+
+/// A worker's question to its owner (H4): running → question with the question, or back to running once answered
+/// (`question` empty). Only an open row moves.
+pub fn set_question(
+    conn: &mut Connection,
+    id: &str,
+    question: Option<String>,
+    by: Option<String>,
+    now: i64,
+) -> Result<Change, String> {
+    let by = actor(by);
+    let question = text(question, QUESTION_MAX);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    let next = if question.is_some() {
+        QUESTION
+    } else {
+        RUNNING
+    };
+    if !row.is_open() || (row.state == next && row.pending_question == question) {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    row.state = next.into();
+    let event = if question.is_some() {
+        "asked"
+    } else {
+        "answered"
+    };
+    row.pending_question = question;
+    row.note(now, &by, event, json!({}));
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
+fn delivery_rank(delivery: &str) -> Option<u8> {
+    match delivery {
+        PENDING => Some(0),
+        QUEUED => Some(1),
+        DELIVERED => Some(2),
+        ACKNOWLEDGED => Some(3),
+        _ => None,
+    }
+}
+
+/// Whether `row` may move to `wanted` (with `message` for queued): forward only, never out of disposed, and a report
+/// only moves once the work has finished. Re-queuing under a new message id (boot recovery) is the one same-state move.
+fn delivery_move(row: &Delegation, wanted: &str, message: Option<&str>) -> bool {
+    if row.delivery == DISPOSED {
+        return false;
+    }
+    if wanted == DISPOSED {
+        return true;
+    }
+    if row.is_open() {
+        return false;
+    }
+    if wanted == QUEUED && row.delivery == QUEUED {
+        return message.is_some() && row.delivery_message.as_deref() != message;
+    }
+    match (delivery_rank(&row.delivery), delivery_rank(wanted)) {
+        (Some(now), Some(next)) => next > now,
+        _ => false,
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryInput {
+    /// Rows by id...
+    #[serde(default)]
+    pub ids: Vec<String>,
+    /// ...and/or every row a report message carries (`delivery_message`).
+    #[serde(default)]
+    pub message_id: Option<String>,
+    pub delivery: String,
+    /// The report message a queued row now waits in.
+    #[serde(default)]
+    pub queued_message: Option<String>,
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+/// Move the report's delivery. Returns the rows that changed; a repeated, backwards or post-dispose move is a no-op.
+pub fn set_delivery(
+    conn: &mut Connection,
+    input: DeliveryInput,
+    now: i64,
+) -> Result<Vec<Delegation>, String> {
+    let wanted = input.delivery.as_str();
+    if delivery_rank(wanted).is_none() && wanted != DISPOSED {
+        return Err("delivery must be pending, queued, delivered, acknowledged or disposed".into());
+    }
+    let message = text(input.queued_message, 300);
+    if wanted == QUEUED && message.is_none() {
+        return Err("a queued report names the message it waits in".into());
+    }
+    let by = actor(input.by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut rows = Vec::new();
+    let mut seen = HashSet::new();
+    for id in &input.ids {
+        if let Some(row) = get(&tx, id)? {
+            if seen.insert(row.id.clone()) {
+                rows.push(row);
+            }
+        }
+    }
+    if let Some(message_id) = text(input.message_id, 300) {
+        for row in query(&tx, "WHERE delivery_message = ?1", &[&message_id])? {
+            if seen.insert(row.id.clone()) {
+                rows.push(row);
+            }
+        }
+    }
+    let mut changed = Vec::new();
+    for mut row in rows {
+        if !delivery_move(&row, wanted, message.as_deref()) {
+            continue;
+        }
+        let was = row.delivery.clone();
+        row.delivery = wanted.into();
+        if wanted == QUEUED {
+            row.delivery_message = message.clone();
+        }
+        row.note(
+            now,
+            &by,
+            "delivery",
+            json!({ "delivery": wanted, "was": was, "generation": row.generation }),
+        );
+        row.touch(now);
+        save(&tx, &row)?;
+        changed.push(row);
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if !changed.is_empty() {
+        nudge();
+    }
+    Ok(changed)
+}
+
+/// Stop what is still owed: an open row becomes cancelled (with the reason) and the report is thrown away. A finished
+/// row only has its report thrown away. Used for the owner's Stop on a child and, later, `task_cancel` (H4).
+pub fn cancel(
+    conn: &mut Connection,
+    ids: &[String],
+    reason: Option<String>,
+    by: Option<String>,
+    now: i64,
+) -> Result<Vec<Delegation>, String> {
+    let by = actor(by);
+    let reason = text(reason, ERROR_MAX);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut changed = Vec::new();
+    for id in ids {
+        let Some(mut row) = get(&tx, id)? else {
+            continue;
+        };
+        let open = row.is_open();
+        // Only what is still owed: a report already delivered (or read) stays on the record as it was.
+        if !open && row.delivery != PENDING && row.delivery != QUEUED {
+            continue;
+        }
+        if open {
+            row.state = CANCELLED.into();
+            row.error = reason
+                .clone()
+                .or_else(|| Some("Stopped by its owner.".into()));
+            row.pending_question = None;
+            row.settled_at = Some(now);
+        }
+        row.delivery = DISPOSED.into();
+        row.note(now, &by, "cancelled", json!({ "was_open": open }));
+        row.touch(now);
+        save(&tx, &row)?;
+        changed.push(row);
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if !changed.is_empty() {
+        nudge();
+    }
+    Ok(changed)
+}
+
+/// A launch the CLI refused: nothing ran and the calling turn already heard why, so no report is owed. A retry with
+/// the same receipt revives it (`record`).
+pub fn refuse(
+    conn: &mut Connection,
+    id: &str,
+    by: Option<String>,
+    now: i64,
+) -> Result<Change, String> {
+    let by = actor(by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    if row.state != RUNNING || row.generation != 1 {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    row.state = CANCELLED.into();
+    row.error = Some("The launch was refused.".into());
+    row.settled_at = Some(now);
+    row.delivery = DISPOSED.into();
+    row.note(now, &by, "refused", json!({}));
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
+/// Which of these report messages already reached the owner's transcript (a Mono's own transcript or a plain
+/// session's blocks). Boot recovery asks before it queues a report again, whatever part of the chat is loaded.
+pub fn reports_seen(
+    conn: &Connection,
+    owner_session: &str,
+    message_ids: &[String],
+) -> Result<Vec<String>, String> {
+    let owner = session_id(owner_session, "owner session")?;
+    let mut seen = Vec::new();
+    for id in message_ids.iter().take(20) {
+        let found: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM mono_blocks
+                                 WHERE session_id = ?1 AND is_user = 1
+                                   AND json_extract(block_json, '$.appRequestId') = ?2)
+                     OR EXISTS (SELECT 1 FROM sessions, json_each(sessions.blocks_json)
+                                 WHERE sessions.id = ?1
+                                   AND json_extract(json_each.value, '$.appRequestId') = ?2)",
+                params![owner, id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if found {
+            seen.push(id.clone());
+        }
+    }
+    Ok(seen)
+}
+
+/// What boot recovery looks at: work still running, and reports still owed.
+pub fn list_open(conn: &Connection) -> Result<Vec<Delegation>, String> {
+    query(
+        conn,
+        "WHERE state IN ('running', 'question') OR delivery IN ('pending', 'queued')
+         ORDER BY created_at, rowid",
+        &[],
+    )
+}
+
+/// The whole delegation tree a row belongs to, oldest first.
+pub fn tree(conn: &Connection, id: &str) -> Result<Vec<Delegation>, String> {
+    let Some(row) = get(conn, id)? else {
+        return Ok(Vec::new());
+    };
+    query(
+        conn,
+        "WHERE root_id = ?1 ORDER BY created_at, rowid",
+        &[&row.root_id],
+    )
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBindInput {
+    pub provider_session: String,
+    pub chat_id: String,
+    #[serde(default)]
+    pub mono_id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub delegation_id: Option<String>,
+}
+
+/// Which hub chat (and Mono, role, delegation) a Claude Code session belongs to, for the studio's `hub_chats`. Written
+/// on every provider bind; only a real change gets a new version.
+pub fn bind_chat(conn: &mut Connection, input: ChatBindInput, now: i64) -> Result<bool, String> {
+    let provider = input.provider_session.trim().to_string();
+    if provider.is_empty()
+        || provider.len() > 128
+        || !provider
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err("Invalid provider session".into());
+    }
+    let chat = session_id(&input.chat_id, "chat id")?;
+    let mono = text(input.mono_id, 64).filter(|m| mono_id_ok(m));
+    let role = text(input.role, 20).filter(|r| ["lead", "mono", "worker"].contains(&r.as_str()));
+    let delegation = text(input.delegation_id, 128);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let current = tx
+        .query_row(
+            "SELECT chat_id, mono_id, role, delegation_id FROM delegation_chat_binds WHERE provider_session = ?1",
+            [&provider],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if current.as_ref() == Some(&(chat.clone(), mono.clone(), role.clone(), delegation.clone())) {
+        return Ok(false);
+    }
+    tx.execute(
+        "INSERT INTO delegation_chat_binds (provider_session, chat_id, mono_id, role, delegation_id, bound_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(provider_session) DO UPDATE SET chat_id = excluded.chat_id, mono_id = excluded.mono_id,
+           role = excluded.role, delegation_id = excluded.delegation_id, bound_at = excluded.bound_at,
+           version = delegation_chat_binds.version + 1, mirror_error = NULL",
+        params![provider, chat, mono, role, delegation, now],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(true)
+}
+
+// ---- the outbox --------------------------------------------------------------------------------------------------------
+
+const ACTION_DELEGATION: &str = "ash-hub-delegation";
+const ACTION_CHAT_BIND: &str = "ash-hub-chat-bind";
+
+/// One thing to copy to Ash OS.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OutboxItem {
+    pub action: &'static str,
+    pub key: String,
+    pub version: i64,
+    pub payload: Value,
+}
+
+/// What this run has given up on until the next boot: a version the studio refused (malformed, not allowed) and an
+/// action it doesn't know or refuses outright (an older studio, the read-only proxy).
+#[derive(Default)]
+pub(crate) struct Skip {
+    versions: HashSet<(&'static str, String, i64)>,
+    actions: HashSet<&'static str>,
+}
+
+/// The project as a word the studio can resolve: the folder's name.
+fn project_word(path: &str) -> Option<String> {
+    let name = path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    (!name.is_empty()).then(|| cap(name, 60))
+}
+
+/// The row as ashos/hub.py `delegation` reads it (docs/HUB-BACKEND.md, "Delegations and who owns an ask").
+pub(crate) fn delegation_payload(d: &Delegation) -> Value {
+    let mut payload = json!({
+        "id": d.id,
+        "version": d.version,
+        "state": d.state,
+        "owner_session": d.owner_session,
+        "ask_ids": d.ask_ids,
+        "project": d.project.as_deref().and_then(project_word),
+        "title": d.title,
+        "brief": d.brief.as_deref().map(|b| cap(b, MIRROR_BRIEF_MAX)),
+        "goal": d.goal,
+        "error_class": d.error_class,
+        "error": d.error,
+        "retryable": d.retryable,
+        "resets_at": d.resets_at,
+        "result": d.result.as_deref().map(|r| cap(r, MIRROR_RESULT_MAX)),
+        "pending_question": d.pending_question,
+        "delivery": d.delivery,
+        "log": d.log,
+        "batch_id": d.batch_id,
+        "parent_id": d.parent_id,
+        "root_id": d.root_id,
+        "child_session": d.child_session,
+        "request_id": d.request_id,
+        "generation": d.generation,
+        "created_at": d.created_at,
+        "updated_at": d.updated_at,
+    });
+    if let Some(mono) = d.owner_mono.as_deref().filter(|m| mono_id_ok(m)) {
+        payload["owner_mono"] = json!(mono);
+    }
+    payload
+}
+
+/// Everything newer than its copy, oldest change first, minus what this run gave up on.
+pub(crate) fn outbox_due(
+    conn: &Connection,
+    skip: &Skip,
+    limit: usize,
+) -> Result<Vec<OutboxItem>, String> {
+    let mut items = Vec::new();
+    if !skip.actions.contains(ACTION_DELEGATION) {
+        for d in query(
+            conn,
+            "WHERE version > mirrored_version ORDER BY updated_at, rowid",
+            &[],
+        )? {
+            if !skip
+                .versions
+                .contains(&(ACTION_DELEGATION, d.id.clone(), d.version))
+            {
+                items.push(OutboxItem {
+                    action: ACTION_DELEGATION,
+                    key: d.id.clone(),
+                    version: d.version,
+                    payload: delegation_payload(&d),
+                });
+            }
+        }
+    }
+    if !skip.actions.contains(ACTION_CHAT_BIND) {
+        let mut statement = conn
+            .prepare(
+                "SELECT provider_session, chat_id, mono_id, role, delegation_id, bound_at, version
+                 FROM delegation_chat_binds WHERE version > mirrored_version ORDER BY bound_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let binds = statement
+            .query_map([], |row| {
+                let provider: String = row.get(0)?;
+                let version: i64 = row.get(6)?;
+                let mut payload = json!({
+                    "provider_session": provider,
+                    "chat_id": row.get::<_, String>(1)?,
+                    "bound_at": row.get::<_, i64>(5)?,
+                });
+                for (index, key) in [(2, "mono_id"), (3, "role"), (4, "delegation_id")] {
+                    if let Some(value) = row.get::<_, Option<String>>(index)? {
+                        payload[key] = json!(value);
+                    }
+                }
+                Ok((provider, version, payload))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        for (provider, version, payload) in binds {
+            if !skip
+                .versions
+                .contains(&(ACTION_CHAT_BIND, provider.clone(), version))
+            {
+                items.push(OutboxItem {
+                    action: ACTION_CHAT_BIND,
+                    key: provider,
+                    version,
+                    payload,
+                });
+            }
+        }
+    }
+    items.truncate(limit);
+    Ok(items)
+}
+
+/// Record what the studio said: the version it has (sent) or why it refused it.
+pub(crate) fn outbox_mark(
+    conn: &Connection,
+    item: &OutboxItem,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let table_key = match item.action {
+        ACTION_DELEGATION => ("delegations", "id"),
+        _ => ("delegation_chat_binds", "provider_session"),
+    };
+    let (table, key) = table_key;
+    match error {
+        None => conn.execute(
+            &format!(
+                "UPDATE {table} SET mirrored_version = MAX(mirrored_version, ?2), mirror_error = NULL
+                 WHERE {key} = ?1"
+            ),
+            params![item.key, item.version],
+        ),
+        Some(error) => conn.execute(
+            &format!("UPDATE {table} SET mirror_error = ?2 WHERE {key} = ?1"),
+            params![item.key, cap(error, 500)],
+        ),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// One pass of the outbox.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Pump {
+    /// Nothing left to send.
+    Idle,
+    /// Sent (or gave up on) this many; there may be more.
+    Progress(usize),
+    /// Ash OS can't be reached right now: try again later, from where it stopped.
+    Down(HubError),
+}
+
+/// Send what is due, holding the database only between calls. A send that cannot reach Ash OS stops the pass (it is
+/// tried again later); one the studio refuses is given up for this run (and tried again at the next boot).
+pub(crate) fn pump(
+    store: &SessionStore,
+    send: &mut dyn FnMut(&'static str, Value) -> Result<Value, HubError>,
+    skip: &mut Skip,
+) -> Result<Pump, String> {
+    let items = {
+        let conn = store.lock_conn()?;
+        outbox_due(&conn, skip, OUTBOX_BATCH)?
+    };
+    if items.is_empty() {
+        return Ok(Pump::Idle);
+    }
+    let mut done = 0;
+    for item in items {
+        if skip.actions.contains(item.action) {
+            continue;
+        }
+        match send(item.action, item.payload.clone()) {
+            Ok(_) => {
+                // `applied: false` too: the copy already has this version or a newer one.
+                outbox_mark(&*store.lock_conn()?, &item, None)?;
+            }
+            Err(error) if matches!(error.kind, "unreachable" | "timeout" | "unauthorized") => {
+                return Ok(Pump::Down(error));
+            }
+            Err(error) => {
+                // A whole action refused (403) or unknown to this studio: no other row of it will fare better.
+                if error.kind == "refused" || error.message.contains("Unknown hub action") {
+                    skip.actions.insert(item.action);
+                }
+                skip.versions
+                    .insert((item.action, item.key.clone(), item.version));
+                outbox_mark(&*store.lock_conn()?, &item, Some(&error.message))?;
+            }
+        }
+        done += 1;
+    }
+    Ok(Pump::Progress(done))
+}
+
+fn wake() -> &'static (Mutex<bool>, Condvar) {
+    static WAKE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
+    WAKE.get_or_init(|| (Mutex::new(false), Condvar::new()))
+}
+
+/// Something changed: let the outbox look now rather than at its next timer.
+pub(crate) fn nudge() {
+    let (flag, signal) = wake();
+    if let Ok(mut flag) = flag.lock() {
+        *flag = true;
+        signal.notify_all();
+    }
+}
+
+fn rest(timeout: Duration) {
+    let (flag, signal) = wake();
+    let Ok(guard) = flag.lock() else {
+        std::thread::sleep(timeout);
+        return;
+    };
+    if let Ok((mut guard, _)) = signal.wait_timeout_while(guard, timeout, |nudged| !*nudged) {
+        *guard = false;
+    }
+}
+
+/// The outbox thread: replays everything not yet copied at boot, then sends each change as it happens.
+pub(crate) fn init(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("delegation-outbox".into())
+        .spawn(move || {
+            let mut skip = Skip::default();
+            let mut down = 0u32;
+            loop {
+                // Read every time: Ash OS may start later, and a dev copy has only the stub or proxy hub:dev gave it.
+                let endpoint = match hub::Endpoint::from_env() {
+                    Ok(endpoint) => endpoint,
+                    Err(_) => {
+                        rest(Duration::from_secs(300));
+                        continue;
+                    }
+                };
+                let store = app.state::<SessionStore>();
+                let mut send = |action: &'static str, payload: Value| {
+                    hub::call_blocking(&endpoint, action, payload)
+                };
+                match pump(store.inner(), &mut send, &mut skip) {
+                    Ok(Pump::Progress(_)) => down = 0,
+                    Ok(Pump::Idle) => {
+                        down = 0;
+                        rest(Duration::from_secs(120));
+                    }
+                    Ok(Pump::Down(_)) => {
+                        down = down.saturating_add(1);
+                        rest(hub::backoff(down).max(Duration::from_secs(5)) * 4);
+                    }
+                    Err(error) => {
+                        eprintln!("Delegation outbox: {error}");
+                        rest(Duration::from_secs(60));
+                    }
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("Could not start the delegation outbox: {error}");
+    }
+}
+
+// ---- Tauri commands ----------------------------------------------------------------------------------------------------
+
+fn changed(app: &AppHandle, rows: &[&Delegation]) {
+    if rows.is_empty() {
+        return;
+    }
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    let _ = app.emit(CHANGED, json!({ "ids": ids }));
+}
+
+#[tauri::command(async)]
+pub fn delegations_record(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    input: RecordInput,
+) -> Result<Delegation, String> {
+    let row = record(&mut *store.lock_conn()?, input, now_millis())?;
+    changed(&app, &[&row]);
+    Ok(row)
+}
+
+#[tauri::command(async)]
+pub fn delegations_settle(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    input: SettleInput,
+) -> Result<Change, String> {
+    let change = settle(&mut *store.lock_conn()?, input, now_millis())?;
+    if let (true, Some(row)) = (change.applied, &change.row) {
+        changed(&app, &[row]);
+    }
+    Ok(change)
+}
+
+#[tauri::command(async)]
+pub fn delegations_reattach(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    child_session: String,
+    resume: bool,
+    by: Option<String>,
+) -> Result<Option<Delegation>, String> {
+    let row = reattach(
+        &mut *store.lock_conn()?,
+        &child_session,
+        resume,
+        by,
+        now_millis(),
+    )?;
+    if let Some(row) = &row {
+        changed(&app, &[row]);
+    }
+    Ok(row)
+}
+
+#[tauri::command(async)]
+pub fn delegations_set_question(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+    question: Option<String>,
+    by: Option<String>,
+) -> Result<Change, String> {
+    let change = set_question(&mut *store.lock_conn()?, &id, question, by, now_millis())?;
+    if let (true, Some(row)) = (change.applied, &change.row) {
+        changed(&app, &[row]);
+    }
+    Ok(change)
+}
+
+#[tauri::command(async)]
+pub fn delegations_set_delivery(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    input: DeliveryInput,
+) -> Result<Vec<Delegation>, String> {
+    let rows = set_delivery(&mut *store.lock_conn()?, input, now_millis())?;
+    changed(&app, &rows.iter().collect::<Vec<_>>());
+    Ok(rows)
+}
+
+#[tauri::command(async)]
+pub fn delegations_cancel(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    ids: Vec<String>,
+    reason: Option<String>,
+    by: Option<String>,
+) -> Result<Vec<Delegation>, String> {
+    let rows = cancel(&mut *store.lock_conn()?, &ids, reason, by, now_millis())?;
+    changed(&app, &rows.iter().collect::<Vec<_>>());
+    Ok(rows)
+}
+
+#[tauri::command(async)]
+pub fn delegations_refuse(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+    by: Option<String>,
+) -> Result<Change, String> {
+    let change = refuse(&mut *store.lock_conn()?, &id, by, now_millis())?;
+    if let (true, Some(row)) = (change.applied, &change.row) {
+        changed(&app, &[row]);
+    }
+    Ok(change)
+}
+
+#[tauri::command(async)]
+pub fn delegations_list_open(store: State<'_, SessionStore>) -> Result<Vec<Delegation>, String> {
+    list_open(&*store.lock_conn()?)
+}
+
+#[tauri::command(async)]
+pub fn delegations_reports_seen(
+    store: State<'_, SessionStore>,
+    owner_session: String,
+    message_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    reports_seen(&*store.lock_conn()?, &owner_session, &message_ids)
+}
+
+#[tauri::command(async)]
+pub fn delegations_tree(
+    store: State<'_, SessionStore>,
+    id: String,
+) -> Result<Vec<Delegation>, String> {
+    tree(&*store.lock_conn()?, &id)
+}
+
+#[tauri::command(async)]
+pub fn delegations_bind_chat(
+    store: State<'_, SessionStore>,
+    input: ChatBindInput,
+) -> Result<bool, String> {
+    bind_chat(&mut *store.lock_conn()?, input, now_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> SessionStore {
+        SessionStore::open_in_memory().unwrap()
+    }
+
+    fn launch(owner: &str, request: &str, child: &str) -> RecordInput {
+        RecordInput {
+            owner_session: owner.into(),
+            owner_mono: Some("vg-game-lead".into()),
+            batch_id: Some("turn-1".into()),
+            request_id: request.into(),
+            child_session: child.into(),
+            project: Some("/Users/ash/Projects/vg-game".into()),
+            title: Some("Fix the save bug".into()),
+            brief: Some("Fix the save bug on mission two".into()),
+            ..Default::default()
+        }
+    }
+
+    fn finish(id: &str, generation: i64, state: &str, result: &str) -> SettleInput {
+        SettleInput {
+            id: id.into(),
+            generation,
+            state: state.into(),
+            result: Some(result.into()),
+            ..Default::default()
+        }
+    }
+
+    fn deliver(ids: &[&str], delivery: &str, message: Option<&str>) -> DeliveryInput {
+        DeliveryInput {
+            ids: ids.iter().map(|id| id.to_string()).collect(),
+            delivery: delivery.into(),
+            queued_message: message.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_recorded_delegation_is_running_owed_and_idempotent_by_request() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(
+            &mut conn,
+            launch("mono-exo", "app-mono-exo-a", "app-mono-exo-a"),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.delivery.as_str(),
+                row.generation,
+                row.version
+            ),
+            (RUNNING, PENDING, 1, 1)
+        );
+        assert_eq!(
+            row.root_id, row.id,
+            "a delegation from a top-level chat is its own root"
+        );
+        assert!(row.id.starts_with("t-"));
+        let again = record(
+            &mut conn,
+            launch("mono-exo", "app-mono-exo-a", "app-mono-exo-a"),
+            11,
+        )
+        .unwrap();
+        assert_eq!(again, row, "the same request records nothing new");
+        assert_eq!(list_open(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn record_refuses_bad_ids_and_asks_the_studio_would_refuse() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        assert!(record(&mut conn, launch("mono exo", "r", "c"), 1).is_err());
+        assert!(record(&mut conn, launch("mono", "r", "c/../x"), 1).is_err());
+        let mut asks = launch("mono", "r", "c");
+        asks.ask_ids = vec!["a_good1".into(), "not-an-ask".into()];
+        assert!(record(&mut conn, asks, 1).is_err());
+        let mut ok = launch("mono", "r", "c");
+        ok.ask_ids = vec!["a_good1".into()];
+        assert_eq!(record(&mut conn, ok, 1).unwrap().ask_ids, vec!["a_good1"]);
+    }
+
+    #[test]
+    fn settle_is_atomic_only_from_running_or_question_and_only_for_the_current_generation() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let stale = settle(&mut conn, finish(&row.id, 2, COMPLETED, "late"), 11).unwrap();
+        assert!(
+            !stale.applied,
+            "another generation's settle changes nothing"
+        );
+        let done = settle(&mut conn, finish(&row.id, 1, COMPLETED, "Fixed it"), 12).unwrap();
+        assert!(done.applied);
+        let done = done.row.unwrap();
+        assert_eq!(
+            (
+                done.state.as_str(),
+                done.result.as_deref(),
+                done.settled_at,
+                done.version
+            ),
+            (COMPLETED, Some("Fixed it"), Some(12), 2)
+        );
+        let twice = settle(&mut conn, finish(&row.id, 1, FAILED, "again"), 13).unwrap();
+        assert!(!twice.applied, "a settled row stays settled");
+        assert_eq!(twice.row.unwrap().state, COMPLETED);
+        assert!(settle(&mut conn, finish(&row.id, 1, "running", ""), 14).is_err());
+        assert!(
+            !settle(&mut conn, finish("t-missing", 1, COMPLETED, ""), 14)
+                .unwrap()
+                .applied
+        );
+    }
+
+    #[test]
+    fn a_question_is_open_and_can_still_be_settled() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let asked =
+            set_question(&mut conn, &row.id, Some("Which branch?".into()), None, 11).unwrap();
+        assert_eq!(asked.row.as_ref().unwrap().state, QUESTION);
+        assert!(
+            !set_question(&mut conn, &row.id, Some("Which branch?".into()), None, 12)
+                .unwrap()
+                .applied
+        );
+        let answered =
+            set_question(&mut conn, &row.id, None, Some("owner:mono".into()), 13).unwrap();
+        assert_eq!(answered.row.as_ref().unwrap().state, RUNNING);
+        set_question(&mut conn, &row.id, Some("Merge?".into()), None, 14).unwrap();
+        let settled = settle(&mut conn, finish(&row.id, 1, FAILED, ""), 15).unwrap();
+        assert!(settled.applied);
+        assert_eq!(settled.row.unwrap().pending_question, None);
+        assert!(
+            !set_question(&mut conn, &row.id, Some("late".into()), None, 16)
+                .unwrap()
+                .applied
+        );
+    }
+
+    #[test]
+    fn errors_keep_the_provider_failure_and_are_capped() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let failed = settle(
+            &mut conn,
+            SettleInput {
+                id: row.id.clone(),
+                generation: 1,
+                state: FAILED.into(),
+                result: Some("x".repeat(20_000)),
+                error: Some("failed: billing refused".into()),
+                error_class: Some("Billing!".into()),
+                retryable: Some(false),
+                resets_at: Some(99),
+                by: None,
+            },
+            11,
+        )
+        .unwrap()
+        .row
+        .unwrap();
+        assert_eq!(failed.error_class.as_deref(), Some("billing"));
+        assert_eq!(failed.retryable, Some(false));
+        assert_eq!(failed.resets_at, Some(99));
+        assert_eq!(failed.result.unwrap().chars().count(), RESULT_MAX);
+        let log = failed.log.last().unwrap();
+        assert_eq!(log["event"], "settled");
+        assert_eq!(log["error_class"], "billing");
+    }
+
+    #[test]
+    fn delivery_moves_forward_once_and_disposed_is_final() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m1")), 11)
+                .unwrap()
+                .is_empty(),
+            "nothing is reported before the work finishes"
+        );
+        settle(&mut conn, finish(&row.id, 1, COMPLETED, "ok"), 12).unwrap();
+        assert_eq!(
+            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m1")), 13)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m1")), 14)
+                .unwrap()
+                .is_empty()
+        );
+        let by_message = DeliveryInput {
+            message_id: Some("m1".into()),
+            delivery: DELIVERED.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            set_delivery(&mut conn, by_message, 15).unwrap()[0].delivery,
+            DELIVERED
+        );
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m2")), 16)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], PENDING, None), 16)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(set_delivery(&mut conn, deliver(&[&row.id], "lost", None), 16).is_err());
+        assert!(set_delivery(&mut conn, deliver(&[&row.id], QUEUED, None), 16).is_err());
+        assert!(
+            list_open(&conn).unwrap().is_empty(),
+            "a delivered report is no longer owed"
+        );
+    }
+
+    /// T3's "treats repeated acknowledge and dispose with distinct command IDs as successful no-ops"
+    /// (DelegatedCompletionDelivery.test.ts, MIT): a second read-ack changes nothing, a dispose after it is final,
+    /// and an ack after the dispose leaves it disposed.
+    #[test]
+    fn a_duplicate_read_ack_and_an_ack_after_dispose_are_no_ops() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        settle(&mut conn, finish(&row.id, 1, COMPLETED, "ok"), 11).unwrap();
+        set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m")), 12).unwrap();
+        set_delivery(&mut conn, deliver(&[&row.id], DELIVERED, None), 13).unwrap();
+        let first = set_delivery(&mut conn, deliver(&[&row.id], ACKNOWLEDGED, None), 14).unwrap();
+        assert_eq!(first[0].delivery, ACKNOWLEDGED);
+        let after_first = get(&conn, &row.id).unwrap().unwrap();
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], ACKNOWLEDGED, None), 15)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            get(&conn, &row.id).unwrap().unwrap(),
+            after_first,
+            "the second ack left no trace"
+        );
+        let disposed = set_delivery(&mut conn, deliver(&[&row.id], DISPOSED, None), 16).unwrap();
+        assert_eq!(disposed[0].delivery, DISPOSED);
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], DISPOSED, None), 17)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            set_delivery(&mut conn, deliver(&[&row.id], ACKNOWLEDGED, None), 18)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DISPOSED);
+    }
+
+    /// T3's owner Stop: the owner stops the child, its report is thrown away and no later settle revives it.
+    #[test]
+    fn the_owners_stop_cancels_the_work_and_drops_the_report_for_good() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let stopped = cancel(
+            &mut conn,
+            std::slice::from_ref(&row.id),
+            None,
+            Some("owner:mono".into()),
+            11,
+        )
+        .unwrap();
+        assert_eq!(
+            (stopped[0].state.as_str(), stopped[0].delivery.as_str()),
+            (CANCELLED, DISPOSED)
+        );
+        assert!(
+            !settle(&mut conn, finish(&row.id, 1, COMPLETED, "late"), 12)
+                .unwrap()
+                .applied
+        );
+        assert!(
+            reattach(&mut conn, "child", true, None, 13)
+                .unwrap()
+                .is_none(),
+            "a thrown-away report never comes back"
+        );
+        assert!(list_open(&conn).unwrap().is_empty());
+        assert!(
+            cancel(&mut conn, std::slice::from_ref(&row.id), None, None, 14)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// T3's "holds a restart-cancelled child for its continuation's result": a child cut off by a quit stays running,
+    /// its resumed turn re-attaches with a new generation and that turn's settle is the one that counts.
+    #[test]
+    fn a_resumed_turn_reattaches_and_bumps_the_generation() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let resumed = reattach(&mut conn, "child", true, Some("boot".into()), 11)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                resumed.id.as_str(),
+                resumed.generation,
+                resumed.state.as_str()
+            ),
+            (row.id.as_str(), 2, RUNNING)
+        );
+        assert!(
+            !settle(&mut conn, finish(&row.id, 1, CANCELLED, ""), 12)
+                .unwrap()
+                .applied,
+            "the cut turn's settle is stale"
+        );
+        let done = settle(
+            &mut conn,
+            finish(&row.id, 2, COMPLETED, "Finished after the restart."),
+            13,
+        )
+        .unwrap();
+        assert_eq!(
+            done.row.unwrap().result.as_deref(),
+            Some("Finished after the restart.")
+        );
+        assert!(
+            reattach(&mut conn, "child", true, None, 14)
+                .unwrap()
+                .is_none(),
+            "a completed row is done"
+        );
+        assert!(reattach(&mut conn, "someone-else", true, None, 14)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn a_usage_limit_failure_reopens_only_for_a_resume() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let mut limit = finish(&row.id, 1, FAILED, "");
+        limit.error_class = Some("usage_limit".into());
+        settle(&mut conn, limit, 11).unwrap();
+        set_delivery(
+            &mut conn,
+            deliver(&[&row.id], QUEUED, Some("mono-completion-req-g1")),
+            12,
+        )
+        .unwrap();
+        set_delivery(&mut conn, deliver(&[&row.id], DELIVERED, None), 13).unwrap();
+        assert!(
+            reattach(&mut conn, "child", false, None, 14)
+                .unwrap()
+                .is_none(),
+            "a plain message is the user's own"
+        );
+        let reopened = reattach(&mut conn, "child", true, None, 15)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                reopened.generation,
+                reopened.state.as_str(),
+                reopened.delivery.as_str(),
+                reopened.error_class.as_deref()
+            ),
+            (2, RUNNING, PENDING, None)
+        );
+        assert_eq!(
+            reopened.delivery_message, None,
+            "the next report gets its own receipt"
+        );
+    }
+
+    #[test]
+    fn a_later_request_to_the_same_child_takes_over_an_open_one() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-1", "child"), 10).unwrap();
+        let second = record(&mut conn, launch("mono", "req-2", "child"), 11).unwrap();
+        let first = get(&conn, &first.id).unwrap().unwrap();
+        assert_eq!(
+            (first.state.as_str(), first.delivery.as_str()),
+            (CANCELLED, DISPOSED)
+        );
+        assert_eq!(
+            reattach(&mut conn, "child", false, None, 12)
+                .unwrap()
+                .unwrap()
+                .id,
+            second.id
+        );
+    }
+
+    #[test]
+    fn a_refused_launch_owes_nothing_and_a_retry_with_its_receipt_revives_it() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        assert!(refuse(&mut conn, &row.id, None, 11).unwrap().applied);
+        assert!(list_open(&conn).unwrap().is_empty());
+        let retried = record(&mut conn, launch("mono", "req", "child"), 12).unwrap();
+        assert_eq!(
+            (
+                retried.id.as_str(),
+                retried.state.as_str(),
+                retried.delivery.as_str()
+            ),
+            (row.id.as_str(), RUNNING, PENDING)
+        );
+        settle(&mut conn, finish(&row.id, 1, COMPLETED, "ok"), 13).unwrap();
+        assert!(!refuse(&mut conn, &row.id, None, 14).unwrap().applied);
+    }
+
+    #[test]
+    fn the_tree_links_a_workers_own_delegations_to_its_owner() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let top = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        let mid = record(&mut conn, launch("worker", "r2", "helper"), 11).unwrap();
+        let leaf = record(&mut conn, launch("helper", "r3", "leaf"), 12).unwrap();
+        assert_eq!(mid.parent_id.as_deref(), Some(top.id.as_str()));
+        assert_eq!(
+            (leaf.parent_id.as_deref(), leaf.root_id.as_str()),
+            (Some(mid.id.as_str()), top.id.as_str())
+        );
+        let ids: Vec<String> = tree(&conn, &leaf.id)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec![top.id.clone(), mid.id, leaf.id]);
+        assert!(tree(&conn, "t-none").unwrap().is_empty());
+        let other = record(&mut conn, launch("lead", "r9", "other"), 13).unwrap();
+        assert_eq!(
+            other.root_id, other.id,
+            "another top-level delegation starts its own tree"
+        );
+    }
+
+    #[test]
+    fn the_log_keeps_the_newest_fifty_entries_with_who_acted() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        for at in 0..60 {
+            reattach(
+                &mut conn,
+                "child",
+                false,
+                Some(format!("tester-{at}")),
+                100 + at,
+            )
+            .unwrap();
+        }
+        let row = get(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(row.log.len(), LOG_MAX);
+        assert_eq!(row.log.last().unwrap()["by"], "tester-59");
+        assert_eq!(row.generation, 61);
+    }
+
+    #[test]
+    fn a_chat_bind_gets_a_new_version_only_when_it_changes() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let bind = |mono: Option<&str>| ChatBindInput {
+            provider_session: "7f1c-claude".into(),
+            chat_id: "mono-exo".into(),
+            mono_id: mono.map(str::to_string),
+            role: Some("lead".into()),
+            delegation_id: None,
+        };
+        assert!(bind_chat(&mut conn, bind(Some("vg-game-lead")), 1).unwrap());
+        assert!(!bind_chat(&mut conn, bind(Some("vg-game-lead")), 2).unwrap());
+        assert!(bind_chat(&mut conn, bind(Some("frank")), 3).unwrap());
+        assert!(bind_chat(
+            &mut conn,
+            ChatBindInput {
+                provider_session: "bad id!".into(),
+                ..bind(None)
+            },
+            4
+        )
+        .is_err());
+        let version: i64 = conn
+            .query_row("SELECT version FROM delegation_chat_binds", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn a_report_is_seen_in_a_monos_transcript_or_a_plain_sessions_blocks() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        for id in ["mono-exo", "plain"] {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                 VALUES (?1, '/p', 'claude', '', 'supervised', 't', 1, 1)",
+                [id],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO mono_transcripts (session_id) VALUES ('mono-exo')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mono_blocks (session_id, seq, block_id, block_json, search_text, is_user, is_draft)
+             VALUES ('mono-exo', 1, 'b1', ?1, '', 1, 0)",
+            [json!({"id": "b1", "role": "user", "appRequestId": "mono-completion-r1-g1"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET blocks_json = ?1 WHERE id = 'plain'",
+            [
+                json!([{"id": "b2", "role": "user", "appRequestId": "mono-completion-r2-g2"}])
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            reports_seen(
+                &conn,
+                "mono-exo",
+                &ids(&["mono-completion-r1-g1", "mono-completion-r1-g2"])
+            )
+            .unwrap(),
+            ids(&["mono-completion-r1-g1"])
+        );
+        assert_eq!(
+            reports_seen(&conn, "plain", &ids(&["mono-completion-r2-g2"])).unwrap(),
+            ids(&["mono-completion-r2-g2"])
+        );
+        assert!(
+            reports_seen(&conn, "plain", &ids(&["mono-completion-r1-g1"]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(reports_seen(&conn, "bad id", &ids(&["x"])).is_err());
+    }
+
+    #[test]
+    fn cancel_leaves_a_delivered_report_on_the_record() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        settle(&mut conn, finish(&row.id, 1, COMPLETED, "ok"), 11).unwrap();
+        set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m")), 12).unwrap();
+        set_delivery(&mut conn, deliver(&[&row.id], DELIVERED, None), 13).unwrap();
+        assert!(
+            cancel(&mut conn, std::slice::from_ref(&row.id), None, None, 14)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DELIVERED);
+    }
+
+    /// The studio's version rule, as `ash-hub-delegation` applies it: a write lands only when newer.
+    #[derive(Default)]
+    struct FakeStudio {
+        copies: std::collections::HashMap<String, Value>,
+        calls: Vec<(&'static str, Value)>,
+        binds: Vec<Value>,
+        down: bool,
+        knows_chat_bind: bool,
+    }
+
+    impl FakeStudio {
+        fn send(&mut self, action: &'static str, payload: Value) -> Result<Value, HubError> {
+            self.calls.push((action, payload.clone()));
+            if self.down {
+                return Err(HubError {
+                    kind: "unreachable",
+                    message: "Ash OS isn't running.".into(),
+                });
+            }
+            if action == ACTION_CHAT_BIND {
+                if !self.knows_chat_bind {
+                    return Err(HubError {
+                        kind: "error",
+                        message: "Unknown hub action".into(),
+                    });
+                }
+                self.binds.push(payload);
+                return Ok(json!({ "applied": true }));
+            }
+            let id = payload["id"].as_str().unwrap().to_string();
+            let version = payload["version"].as_i64().unwrap();
+            let have = self
+                .copies
+                .get(&id)
+                .and_then(|c| c["version"].as_i64())
+                .unwrap_or(0);
+            if version <= have {
+                return Ok(json!({ "id": id, "applied": false, "version": have }));
+            }
+            self.copies.insert(id.clone(), payload);
+            Ok(json!({ "id": id, "applied": true, "version": version }))
+        }
+    }
+
+    fn drain(store: &SessionStore, studio: &mut FakeStudio, skip: &mut Skip) -> Pump {
+        loop {
+            let mut send = |action: &'static str, payload: Value| studio.send(action, payload);
+            match pump(store, &mut send, skip).unwrap() {
+                Pump::Progress(_) => continue,
+                other => return other,
+            }
+        }
+    }
+
+    #[test]
+    fn the_outbox_sends_the_studios_shape_and_waits_while_ash_os_is_down() {
+        let store = store();
+        let row = {
+            let mut conn = store.lock_conn().unwrap();
+            record(
+                &mut conn,
+                launch("mono-exo", "app-mono-exo-a", "app-mono-exo-a"),
+                10,
+            )
+            .unwrap()
+        };
+        let mut studio = FakeStudio {
+            down: true,
+            ..Default::default()
+        };
+        let mut skip = Skip::default();
+        assert!(matches!(
+            drain(&store, &mut studio, &mut skip),
+            Pump::Down(_)
+        ));
+        assert_eq!(
+            get(&store.lock_conn().unwrap(), &row.id)
+                .unwrap()
+                .unwrap()
+                .mirrored_version,
+            0
+        );
+
+        studio.down = false;
+        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
+        let copy = &studio.copies[&row.id];
+        assert_eq!(copy["owner_mono"], "vg-game-lead");
+        assert_eq!(copy["owner_session"], "mono-exo");
+        assert_eq!(copy["state"], "running");
+        assert_eq!(
+            copy["project"], "vg-game",
+            "the folder's name, which the studio resolves"
+        );
+        assert_eq!(copy["ask_ids"], json!([]));
+        assert_eq!(copy["generation"], 1);
+        // Exactly the fields ashos/hub.py `delegation` reads (docs/HUB-BACKEND.md), nothing of the hub's own.
+        let mut keys: Vec<&str> = copy
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "ask_ids",
+                "batch_id",
+                "brief",
+                "child_session",
+                "created_at",
+                "delivery",
+                "error",
+                "error_class",
+                "generation",
+                "goal",
+                "id",
+                "log",
+                "owner_mono",
+                "owner_session",
+                "parent_id",
+                "pending_question",
+                "project",
+                "request_id",
+                "resets_at",
+                "result",
+                "retryable",
+                "root_id",
+                "state",
+                "title",
+                "updated_at",
+                "version",
+            ]
+        );
+        assert_eq!(copy["log"][0]["event"], "recorded");
+        assert_eq!(
+            get(&store.lock_conn().unwrap(), &row.id)
+                .unwrap()
+                .unwrap()
+                .mirrored_version,
+            1
+        );
+        let sent = studio.calls.len();
+        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
+        assert_eq!(studio.calls.len(), sent, "nothing is sent twice");
+    }
+
+    /// Boot replay: what a run could not send (Ash OS down, then the app quit) goes out at the next boot, newest
+    /// version only, and the studio's copy ends at the hub's state whatever order the sends took.
+    #[test]
+    fn the_outbox_replays_at_boot_and_the_copy_ends_at_the_hubs_version() {
+        let store = store();
+        let id = {
+            let mut conn = store.lock_conn().unwrap();
+            let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+            settle(
+                &mut conn,
+                finish(&row.id, 1, COMPLETED, &"r".repeat(5_000)),
+                11,
+            )
+            .unwrap();
+            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m")), 12).unwrap();
+            row.id
+        };
+        let mut studio = FakeStudio {
+            down: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            drain(&store, &mut studio, &mut Skip::default()),
+            Pump::Down(_)
+        ));
+        // The app restarts: a fresh outbox run, Ash OS back.
+        studio.down = false;
+        assert_eq!(drain(&store, &mut studio, &mut Skip::default()), Pump::Idle);
+        let copy = &studio.copies[&id];
+        assert_eq!(
+            (copy["version"].as_i64(), copy["state"].as_str()),
+            (Some(3), Some("completed"))
+        );
+        assert_eq!(copy["delivery"], "queued");
+        assert_eq!(copy["result"].as_str().unwrap().len(), MIRROR_RESULT_MAX);
+        // An older version arriving late changes nothing in the copy.
+        let mut stale = copy.clone();
+        stale["version"] = json!(1);
+        stale["state"] = json!("running");
+        assert_eq!(
+            studio.send(ACTION_DELEGATION, stale).unwrap()["applied"],
+            false
+        );
+        assert_eq!(studio.copies[&id]["state"], "completed");
+    }
+
+    #[test]
+    fn a_refusal_is_given_up_for_this_run_and_an_unknown_action_stops_that_action() {
+        let store = store();
+        {
+            let mut conn = store.lock_conn().unwrap();
+            for n in 0..3 {
+                bind_chat(
+                    &mut conn,
+                    ChatBindInput {
+                        provider_session: format!("claude-{n}"),
+                        chat_id: format!("chat-{n}"),
+                        ..Default::default()
+                    },
+                    n,
+                )
+                .unwrap();
+            }
+            record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        }
+        let mut studio = FakeStudio::default();
+        let mut skip = Skip::default();
+        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
+        let bind_calls = studio
+            .calls
+            .iter()
+            .filter(|(a, _)| *a == ACTION_CHAT_BIND)
+            .count();
+        assert_eq!(
+            bind_calls, 1,
+            "an older studio without chat-bind is asked once per run"
+        );
+        let error: Option<String> = store
+            .lock_conn()
+            .unwrap()
+            .query_row(
+                "SELECT mirror_error FROM delegation_chat_binds WHERE provider_session = 'claude-0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(error.as_deref(), Some("Unknown hub action"));
+        // The next boot, against a studio that knows it: every bind goes out.
+        studio.knows_chat_bind = true;
+        assert_eq!(drain(&store, &mut studio, &mut Skip::default()), Pump::Idle);
+        assert_eq!(studio.binds.len(), 3);
+        assert_eq!(studio.binds[0]["chat_id"], "chat-0");
+        assert!(
+            studio.binds[0].get("mono_id").is_none(),
+            "unknown fields are left out, not null"
+        );
+    }
+
+    /// The real wire: `hub::call_blocking` posts the row to /api/ash-hub-delegation with the key.
+    #[test]
+    fn the_outbox_posts_to_ash_os_through_the_hub_bridge() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("delegations-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        std::fs::write(&token, "test-only-token").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&seen).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let want = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= want {
+                        break;
+                    }
+                }
+            }
+            let body = r#"{"ok":true,"result":{"applied":true}}"#;
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            String::from_utf8_lossy(&seen).to_string()
+        });
+        let store = store();
+        let id = record(
+            &mut store.lock_conn().unwrap(),
+            launch("mono", "req", "child"),
+            10,
+        )
+        .unwrap()
+        .id;
+        let endpoint = hub::Endpoint::local(port, token);
+        let mut send =
+            |action: &'static str, payload: Value| hub::call_blocking(&endpoint, action, payload);
+        assert_eq!(
+            pump(&store, &mut send, &mut Skip::default()).unwrap(),
+            Pump::Progress(1)
+        );
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /api/ash-hub-delegation HTTP/1.1"),
+            "{request}"
+        );
+        assert!(request.contains("Bearer test-only-token"));
+        assert!(request.contains(&format!("\"id\":\"{id}\"")));
+        assert_eq!(
+            get(&store.lock_conn().unwrap(), &id)
+                .unwrap()
+                .unwrap()
+                .mirrored_version,
+            1
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

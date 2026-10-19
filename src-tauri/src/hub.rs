@@ -133,7 +133,7 @@ impl Endpoint {
     }
 
     #[cfg(test)]
-    fn local(port: u16, token_path: PathBuf) -> Self {
+    pub(crate) fn local(port: u16, token_path: PathBuf) -> Self {
         Self { port, token_path }
     }
 

@@ -11,6 +11,7 @@ mod codex_mono_store;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod delegations;
 mod devin_config;
 mod devin_usage;
 mod external_editor;
@@ -336,6 +337,7 @@ pub fn run() {
                 harness::reap_orphaned_harness_processes();
             }
             session_store::init(app.handle())?;
+            delegations::init(app.handle());
             control::init(app.handle())?;
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
@@ -411,6 +413,17 @@ pub fn run() {
             reminders::reminder_take_open,
             reminders::reminder_register_window,
             reminders::reminder_open,
+            delegations::delegations_record,
+            delegations::delegations_settle,
+            delegations::delegations_reattach,
+            delegations::delegations_set_question,
+            delegations::delegations_set_delivery,
+            delegations::delegations_cancel,
+            delegations::delegations_refuse,
+            delegations::delegations_list_open,
+            delegations::delegations_tree,
+            delegations::delegations_reports_seen,
+            delegations::delegations_bind_chat,
             automations::automations_list,
             automations::automations_upsert,
             automations::automations_delete,
