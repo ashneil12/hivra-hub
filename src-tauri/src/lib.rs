@@ -45,6 +45,7 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod portable;
 mod project_logo;
 mod provider_session_transfer;
 mod pty;
@@ -653,6 +654,14 @@ pub fn run() {
             mono::mono_save,
             mono::mono_archive,
             mono::mono_unarchive,
+            portable::portable_info,
+            portable::portable_mono_files,
+            portable::portable_find_skills,
+            portable::portable_paths_exist,
+            portable::portable_session_engines,
+            portable::portable_export,
+            portable::portable_inspect,
+            portable::portable_import,
             checkpoint::session_checkpoint_ensure,
             checkpoint::session_checkpoint_begin_turn,
             checkpoint::session_checkpoint_finish_turn,
