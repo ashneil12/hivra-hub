@@ -174,6 +174,12 @@ import {
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
 import { useProjectDiffStats } from "../features/source-control/hooks/useProjectDiffStats";
+import { showWorktreeSetup } from "../features/source-control/model/worktreeSetup";
+import {
+  listProjectActions,
+  runProjectAction,
+  waitProjectAction,
+} from "../features/projects/model/projectActions";
 import {
   assertWorktreeFilesClosed,
   createOrchestrationWorktree,
@@ -8068,6 +8074,8 @@ function Workspace({
           workspacePins.current.set(sessionId, currentWorkspace(current.cwd));
           if (proposalDraft)
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
+          // The project's setup holds the first turn (and the queue) until it ends.
+          const setupHolds = !!(tree.setup?.hold && tree.setup.run);
           setSessions((prev) =>
             prev.map((session) =>
               session.id === sessionId
@@ -8077,7 +8085,7 @@ function Workspace({
                     branch: tree.branch ?? undefined,
                     workspaceMode: undefined,
                     worktreeBase: undefined,
-                    worktreePreparing: undefined,
+                    worktreePreparing: setupHolds ? true : undefined,
                   }
                 : session,
             ),
@@ -8109,6 +8117,23 @@ function Workspace({
               );
             })
             .catch(() => undefined);
+          if (tree.setup) {
+            await showWorktreeSetup(tree.setup, {
+              emit: (event) => {
+                enqueueHarnessEvent(sessionId, event);
+                flushHarnessEvents();
+              },
+              cancelled: () => turnGen.current.get(sessionId) !== gen,
+            });
+            if (setupHolds)
+              setSessions((prev) =>
+                prev.map((session) =>
+                  session.id === sessionId && session.worktreePreparing
+                    ? { ...session, worktreePreparing: undefined }
+                    : session,
+                ),
+              );
+          }
         }
         launchTitleGeneration(workCwd);
         if (turnGen.current.get(sessionId) !== gen) return;
@@ -11727,8 +11752,13 @@ function Workspace({
             worktrees: (cwd) => listWorktrees(cwd),
             ship: (input) => startShip(input),
             shipStatus: () => shipStatus().current,
-            createWorktree: (cwd, branch, base, existing) =>
-              createWorktree(cwd, branch, base, existing),
+            createWorktree: (cwd, branch, base, existing, options) =>
+              createWorktree(cwd, branch, base, existing, options),
+            projectActions: (cwd) => listProjectActions(cwd),
+            runProjectAction: (checkoutCwd, actionId) =>
+              runProjectAction(checkoutCwd, actionId, "agent"),
+            waitProjectAction: (runId, timeoutMs) =>
+              waitProjectAction(runId, timeoutMs),
             notes: () => invoke("notes_list"),
             note: (id) => invoke("notes_get", { id }),
             saveNote: async (note) => {

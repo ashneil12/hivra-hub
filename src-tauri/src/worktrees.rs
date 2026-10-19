@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::fs::{expand_home, git_checked, git_diff_files_for, path_to_js, resolve_repo_path};
 use crate::session_store::SessionStore;
@@ -20,6 +20,9 @@ pub struct Worktree {
     pub dirty: Option<bool>,
     pub unpushed: Option<u64>,
     pub session_ids: Vec<String>,
+    /// The project's setup action, started right after `git worktree add` (src/project_actions.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<crate::project_actions::WorktreeSetup>,
 }
 
 #[derive(Serialize)]
@@ -72,7 +75,7 @@ fn parse_worktrees(text: &str) -> Vec<Worktree> {
     result
 }
 
-fn list(root: &Path) -> Result<Vec<Worktree>, String> {
+pub(crate) fn list(root: &Path) -> Result<Vec<Worktree>, String> {
     Ok(parse_worktrees(&git(
         root,
         &["worktree", "list", "--porcelain", "-z"],
@@ -231,15 +234,27 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
         })
 }
 
+/// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
+/// holds its turn on `setup.hold` and shows the log (src/app/App.tsx). `run_setup: false` skips it.
+fn with_setup(app: &AppHandle, mut tree: Worktree, run_setup: Option<bool>) -> Worktree {
+    if run_setup != Some(false) {
+        tree.setup = crate::project_actions::start_worktree_setup(app, Path::new(&tree.path));
+    }
+    tree
+}
+
 #[tauri::command(async)]
 pub async fn git_worktree_create(
+    app: AppHandle,
     cwd: String,
     branch: String,
     base: String,
     existing: bool,
+    run_setup: Option<bool>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        create(&expand_home(&cwd), &branch, &base, existing)
+        let tree = create(&expand_home(&cwd), &branch, &base, existing)?;
+        Ok(with_setup(&app, tree, run_setup))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -392,12 +407,26 @@ fn create_seeded(root: &Path, branch: &str) -> Result<Worktree, String> {
 /// between Git creation and run-state persistence recoverable.
 #[tauri::command(async)]
 pub async fn git_orchestration_worktree_create(
+    app: AppHandle,
     cwd: String,
     branch: String,
+    run_setup: Option<bool>,
 ) -> Result<Worktree, String> {
-    tauri::async_runtime::spawn_blocking(move || create_seeded(&expand_home(&cwd), branch.trim()))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = expand_home(&cwd);
+        let known = list(&root)?
+            .into_iter()
+            .any(|tree| tree.branch.as_deref() == Some(branch.trim()));
+        let tree = create_seeded(&root, branch.trim())?;
+        // A recovered worker checkout was set up when it was first made.
+        Ok(if known {
+            tree
+        } else {
+            with_setup(&app, tree, run_setup)
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn rename_branch(root: &Path, path: &Path, branch: &str) -> Result<Worktree, String> {
@@ -493,7 +522,7 @@ fn check_removal(root: &Path, path: &Path, force: bool, has_terminals: bool) -> 
     Ok(())
 }
 
-fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
+pub(crate) fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
     let tree = removal_target(root, path)?;
     let mut args = vec!["worktree", "remove"];
     if force {

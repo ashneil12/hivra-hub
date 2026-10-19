@@ -38,6 +38,10 @@ import {
 } from "../../artifacts/artifacts";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
+import type {
+  ActionRun,
+  ActionsListing,
+} from "../../projects/model/projectActions";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
@@ -121,7 +125,13 @@ export type AgentAppHost = {
     branch: string,
     base: string,
     existing: boolean,
+    options?: { runSetup?: boolean },
   ): Promise<Worktree>;
+  /** The project's imported actions (.monocode/project.json) and recent runs. */
+  projectActions?(cwd: string): Promise<ActionsListing>;
+  /** Start one in a checkout of the project; returns at once. */
+  runProjectAction?(checkoutCwd: string, actionId: string): Promise<ActionRun>;
+  waitProjectAction?(runId: string, timeoutMs: number): Promise<ActionRun>;
   notes(): Promise<Note[]>;
   note(id: string): Promise<Note | null>;
   saveNote(note: NoteUpsert): Promise<Note>;
@@ -214,7 +224,9 @@ const FIELDS = new Map<string, readonly string[]>([
     ],
   ],
   ["worktrees.list", ["project"]],
-  ["worktrees.create", ["branch", "base", "existing", "project"]],
+  ["worktrees.create", ["branch", "base", "existing", "runSetup", "project"]],
+  ["actions.list", ["project"]],
+  ["actions.run", ["action", "worktreeCwd", "waitSeconds", "project"]],
   ["folders.list", ["project"]],
   ["folders.move", ["sessionId", "folderId", "newFolderName", "project"]],
   ["notes.list", ["limit", "offset"]],
@@ -373,6 +385,62 @@ async function projectSession(
   if (!target || pathKey(target.cwd) !== pathKey(cwd))
     throw new Error("Session was not found in this project");
   return target;
+}
+
+const RUN_TAIL_FOR_AGENTS = 20;
+
+function actionRunSummary(run: ActionRun) {
+  return {
+    runId: run.id,
+    action: run.actionId,
+    cwd: run.cwd,
+    status: run.status,
+    exitCode: run.exitCode,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    trigger: run.trigger,
+    logPath: run.logPath,
+    tail: run.tail.slice(-RUN_TAIL_FOR_AGENTS),
+    ...(run.error ? { error: run.error } : {}),
+    ...(run.status === "running"
+      ? {
+          note: run.longRunning
+            ? "It keeps running until stopped; Ash stops it in Settings > Worktrees."
+            : "Still running: call actions.list later to see how it ended.",
+        }
+      : {}),
+  };
+}
+
+/** What a Lead sees: the imported actions only, and the last few runs. */
+export function actionsListing(listing: ActionsListing) {
+  const { status } = listing;
+  const note =
+    status.state === "trusted"
+      ? undefined
+      : status.state === "changed"
+        ? "The project file changed since Ash imported it; the imported version still runs until he imports the new one."
+        : status.state === "none"
+          ? "This project has no .monocode/project.json."
+          : "Ash hasn't imported this project's .monocode/project.json yet; nothing in it runs until he does, once, in Settings > Worktrees.";
+  return {
+    project: status.projectRoot,
+    projectFile: {
+      path: status.path,
+      state: status.state,
+      ...(status.error ? { error: status.error } : {}),
+    },
+    actions: listing.actions.map((action) => ({
+      id: action.id,
+      name: action.name,
+      command: action.command,
+      ...(action.description ? { description: action.description } : {}),
+      ...(action.runOnWorktreeCreate ? { runOnWorktreeCreate: true } : {}),
+      ...(action.longRunning ? { longRunning: true } : {}),
+    })),
+    runs: listing.runs.slice(0, 10).map(actionRunSummary),
+    ...(note ? { note } : {}),
+  };
 }
 
 /** Two short body paragraphs, with a hard cap independent of Markdown length. */
@@ -1195,7 +1263,69 @@ export async function handleAgentApp(
       const base = optionalString(input.base, "base", 400);
       if (existing && base)
         throw new Error("base cannot be set for an existing branch");
-      return host.createWorktree(cwd, branch, base ?? "HEAD", existing);
+      const runSetup = input.runSetup ?? true;
+      if (typeof runSetup !== "boolean")
+        throw new Error("runSetup must be a boolean");
+      const tree = await host.createWorktree(
+        cwd,
+        branch,
+        base ?? "HEAD",
+        existing,
+        ...(runSetup ? [] : [{ runSetup: false }]),
+      );
+      const run = tree.setup?.run;
+      return run && run.status === "running"
+        ? {
+            ...tree,
+            setupNote: `${tree.setup?.name ?? "Setup"} is running in the new worktree (run ${run.id}). actions.list shows when it ends; start work there after it finishes.`,
+          }
+        : tree;
+    }
+    case "actions.list": {
+      const cwd = requireProject(source, input, host);
+      if (!host.projectActions)
+        throw new Error("Project actions aren't available in this app");
+      return actionsListing(await host.projectActions(cwd));
+    }
+    case "actions.run": {
+      const cwd = requireProject(source, input, host);
+      if (!host.runProjectAction)
+        throw new Error("Project actions aren't available in this app");
+      const actionId = requiredString(input.action, "action", 64);
+      const waitSeconds = input.waitSeconds ?? 0;
+      if (
+        !Number.isInteger(waitSeconds) ||
+        (waitSeconds as number) < 0 ||
+        (waitSeconds as number) > 25
+      )
+        throw new Error("waitSeconds must be an integer from 0 to 25");
+      // A session working in its own worktree runs actions there by default.
+      let checkout =
+        !host.monoOf?.(source.id) &&
+        source.worktreeCwd &&
+        !source.worktreeRemoved &&
+        pathKey(source.cwd) === pathKey(cwd)
+          ? source.worktreeCwd
+          : cwd;
+      if (input.worktreeCwd !== undefined) {
+        const wanted = requiredString(input.worktreeCwd, "worktreeCwd", 4096);
+        const chosen = (await host.worktrees(cwd)).worktrees.find(
+          (tree) => !tree.missing && pathKey(tree.path) === pathKey(wanted),
+        );
+        if (!chosen)
+          throw new Error(
+            "Worktree is unavailable in this project; run worktrees.list",
+          );
+        checkout = chosen.path;
+      }
+      let run = await host.runProjectAction(checkout, actionId);
+      if (
+        (waitSeconds as number) > 0 &&
+        run.status === "running" &&
+        host.waitProjectAction
+      )
+        run = await host.waitProjectAction(run.id, (waitSeconds as number) * 1000);
+      return actionRunSummary(run);
     }
     case "folders.list": {
       const cwd = requireProject(source, input, host);

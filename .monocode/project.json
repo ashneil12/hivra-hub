@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "name": "MonoCode Hub",
+  "actions": [
+    {
+      "id": "setup",
+      "name": "Setup",
+      "description": "Links node_modules from the main checkout when the lockfiles match (otherwise npm ci) and links env files that are missing.",
+      "command": "node scripts/setup-worktree.mjs",
+      "icon": "setup",
+      "runOnWorktreeCreate": true,
+      "timeoutSeconds": 900
+    },
+    {
+      "id": "dev",
+      "name": "Run dev slot",
+      "description": "This checkout's own dev copy of the Hub (npm run hub:dev): its own slot, port and data folder.",
+      "command": "npm run hub:dev",
+      "icon": "play",
+      "longRunning": true
+    },
+    {
+      "id": "check",
+      "name": "Check",
+      "description": "The web, script and Rust checks (npm run check).",
+      "command": "npm run check",
+      "icon": "check",
+      "timeoutSeconds": 3600
+    },
+    {
+      "id": "ship",
+      "name": "Ship",
+      "description": "Installs this checkout's checked build as the daily app, with a trial and automatic rollback (npm run hub:ship).",
+      "command": "npm run hub:ship",
+      "icon": "ship",
+      "timeoutSeconds": 1800,
+      "confirm": "Ship replaces the daily MonoCode Hub with this checkout's build and restarts it when it is idle. Continue?"
+    }
+  ],
+  "worktrees": {
+    "buildOutput": ["target", "node_modules", "dist"],
+    "regenerable": [".identity-baseline.json"]
+  }
+}
