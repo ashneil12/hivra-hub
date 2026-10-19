@@ -282,9 +282,9 @@ export function pinnedPages(): Page[] {
 export function keepPage(page: Page, now = Date.now()): Promise<boolean> {
   const permissions = page.spec.kind === "bespoke" ? page.spec.permissions : [];
   const kept: Page = { ...page, permissions, keptAt: now, removed: false };
-  recordPageChange(page.id, page.by, page.title);
   const b = backend();
   if (b.kind === "local") {
+    recordPageChange(page.id, page.by, page.title);
     local = [kept, ...local.filter((p) => p.id !== page.id)];
     saveLocal(local);
     changed();
@@ -293,7 +293,11 @@ export function keepPage(page: Page, now = Date.now()): Promise<boolean> {
   const payload = page.inRecord
     ? { pageId: page.id, kept: true, permissions }
     : { pageId: page.id, spec: page.spec, projectId: page.projectId, ...(page.monoId ? { monoId: page.monoId } : {}), by: page.by, request: page.request, kept: true, permissions };
-  return write(b.store, page.id, kept, "ash-hub-page-update", payload);
+  // The Bot changes row (with its Undo) only once Ash OS has kept it.
+  return write(b.store, page.id, kept, "ash-hub-page-update", payload).then((ok) => {
+    if (ok) recordPageChange(page.id, page.by, page.title);
+    return ok;
+  });
 }
 /** Undo takes the page away and revokes what it was allowed; Redo puts both back. Resolves to a refusal, if any. */
 async function setRemoved(id: string, removed: boolean): Promise<string | undefined> {
@@ -315,15 +319,15 @@ export function allowPage(id: string): void {
   const p = pages().find((x) => x.id === id);
   if (!p || !needsAllow(p) || p.spec.kind !== "bespoke") return;
   const permissions = p.spec.permissions;
-  recordPageChange(p.id, p.by, p.title);
   const b = backend();
   if (b.kind === "local") {
+    recordPageChange(p.id, p.by, p.title);
     local = local.map((x) => (x.id === id ? { ...x, permissions } : x));
     saveLocal(local);
     changed();
     return;
   }
-  void write(b.store, id, { ...p, permissions }, "ash-hub-page-update", { pageId: id, permissions });
+  void write(b.store, id, { ...p, permissions }, "ash-hub-page-update", { pageId: id, permissions }).then((ok) => ok && recordPageChange(p.id, p.by, p.title));
 }
 /**
  * Pages from a setup file. They come back with no permissions: a file can't grant a page anything, so its asks wait
