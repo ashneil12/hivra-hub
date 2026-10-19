@@ -156,14 +156,18 @@ verify, Looks right only when critical, its identity), is written to
 `<app data>/monos/<id>/SOUL.md` right away, and is registered in Ash OS as the
 project's Lead (`ash-hub-mono-project-add`, role lead). Never re-made, renamed or
 re-souled. A Lead's chats start in its project's folder (`monoWorkspace.ts`);
-other Monos still start at home. Its Claude Code sessions get Ash's own `ash-os`
-MCP entry (read in Rust, `hub_ash_os_mcp`, only that entry from `~/.claude.json`)
-with `ASH_MONO_ID` / `ASH_ROLE=lead` in its env, through
-`claudeExtraArgs.ts` (MonoCode registers nothing there). Claude Code gives MCP
-servers only HOME, LOGNAME, PATH, SHELL and USER of its own env (checked on this
-Mac with `claude mcp list` and `ps eww`), which is why the identity is in the
-entry. Not proven: that Claude Code lets this `--mcp-config` entry replace the
-user-scope `ash-os` entry of the same name (no session was started).
+other Monos still start at home. Every hub chat's Claude Code session gets one
+`--mcp-config` (`model/hubMcp.ts`, through `claudeExtraArgs.ts`; MonoCode
+registers nothing there): Ash's own `ash-os` entry (read in Rust,
+`hub_ash_os_mcp`, only that entry from `~/.claude.json`) with the chat's identity
+(`ASH_CHAT` always; `ASH_MONO_ID` / `ASH_ROLE` lead, mono or checker for a Mono's
+chat and its habit runs; `ASH_ROLE=worker` for a chat started through the app
+CLI), and for a Mono's own chat the delegate tool (`monocode mcp`, Phase 2 H3).
+Checked with Claude Code 2.1.302 on 19 Oct: a `--mcp-config` entry replaces the
+user-scope server of the same name, `${VAR}` in its env and args is expanded from
+Claude Code's own environment (an unset one stays literal), and a stdio server
+inherits that environment too (the 15 Oct note that it sees only HOME, LOGNAME,
+PATH, SHELL and USER no longer holds); the identity stays in the entry anyway.
 
 ### The MonoCode Hub app (a separate bundle)
 `src-tauri/tauri.hub.conf.json` builds **MonoCode Hub** (`com.ash.monocode-hub`)
