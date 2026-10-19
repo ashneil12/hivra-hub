@@ -62,7 +62,8 @@ export function WaitingOnYou({ projectId }: { projectId: string | undefined }) {
       </div>
       <div className="flex flex-col">
         {shown.map((chat) =>
-          sent[chat.sessionId] ? (
+          // A tick, unless that chat has since asked something new.
+          sent[chat.sessionId] && sent[chat.sessionId].chat.askedAt === chat.askedAt ? (
             <SentRow key={chat.sessionId} sent={sent[chat.sessionId]} />
           ) : (
             <WaitingRow key={chat.sessionId} chat={chat} showProject={!projectId} answer={(call) => answer(chat, call)} />
