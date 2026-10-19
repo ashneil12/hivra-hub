@@ -198,7 +198,9 @@ export async function seedDev({
       const cleared = scrub(copy);
       const integrity = copy.prepare("PRAGMA integrity_check").get();
       if (Object.values(integrity ?? {})[0] !== "ok") throw new SeedRefusal(`the copy failed its integrity check: ${JSON.stringify(integrity)}`);
-      copy.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      // Out of WAL, so the copy is one self-contained file that read-only tools can open too; the app switches it
+      // back to WAL when it opens it (session_store.rs).
+      copy.exec("PRAGMA journal_mode = DELETE");
       report = {
         from: source,
         to: target,
