@@ -14864,14 +14864,17 @@ function Workspace({
               }}
             />
           )}
-          <HarnessUpdateNotice
-            topOffset={
-              12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)
-            }
-            onHeightChange={setHarnessUpdateHeight}
-            // On the hub's views it sits over the sidebar instead of over Today's content.
-            placement={hubShown ? "bottom-left" : "top-right"}
-          />
+          {/* A dev copy never offers CLI updates: the Claude/Codex binaries are shared with the daily app. */}
+          {appPolicy().dailyClaude ? (
+            <HarnessUpdateNotice
+              topOffset={
+                12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)
+              }
+              onHeightChange={setHarnessUpdateHeight}
+              // On the hub's views it sits over the sidebar instead of over Today's content.
+              placement={hubShown ? "bottom-left" : "top-right"}
+            />
+          ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
               not prompt for the new one; it stays in Settings → Appearance. */}
           {IS_HUB_BUNDLE ? null : (
