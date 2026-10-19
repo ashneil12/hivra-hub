@@ -121,6 +121,8 @@ import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
 import type { TranscriptLayout } from "../../settings/model/appearance";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { MonoWorkTicker } from "./MonoWorkTicker";
+import { WorkflowRunPanel } from "./WorkflowRunPanel";
+import { stopHarnessTask } from "../../../integrations/harness/core/registry";
 import { monoWorkStatus } from "../model/monoWorkStatus";
 import { isEmojiOnlyMessage } from "../model/emojiMessage";
 import { attachmentPreviewSrc } from "../model/attachments";
@@ -138,6 +140,7 @@ import {
   isFailedStatus,
   isIncompleteTool,
   isSubagentBlock,
+  isWorkflowBlock,
   isThinkingBlock,
   lastActivityIndex,
   isProseBlock,
@@ -343,8 +346,18 @@ function AgentTranscriptComponent({
   parked = false,
   onScrollerChange,
   managed = false,
+  sessionId,
 }: Props) {
   const isMonoChat = !!agentMascot;
+  // One Stop for a whole workflow run. Only where this window runs the
+  // session's harness itself; a remote or detached view has no session id.
+  const onStopWorkflow = useMemo(
+    () =>
+      harness && sessionId
+        ? (taskId: string) => void stopHarnessTask(harness, sessionId, taskId)
+        : undefined,
+    [harness, sessionId],
+  );
   const blocks = useMemo(() => {
     // A Mono's reaction sits on the message it answers, not in a bubble.
     const chatBlocks = isMonoChat
@@ -1410,6 +1423,7 @@ function AgentTranscriptComponent({
                 live={live}
                 onOpenFile={onOpenFile}
                 onOpenDiff={onOpenDiff}
+                onStopWorkflow={onStopWorkflow}
               />
             ) : item.type !== "block" ? (
               inlineWork ? (
@@ -1417,9 +1431,11 @@ function AgentTranscriptComponent({
                   key={item.blocks[0].id}
                   blocks={item.blocks}
                   cwd={cwd}
+                  live={live}
                   onApproval={onApproval}
                   onOpenFile={onOpenFile}
                   onOpenDiff={onOpenDiff}
+                  onStopWorkflow={onStopWorkflow}
                 />
               ) : itemIndex === initialThinkingAt ? (
                 <InitialThinking
@@ -3524,32 +3540,61 @@ function MonoTurnHeader({
 type MonoWorkApprovalsProps = Pick<
   ActivityPhasesProps,
   "blocks" | "cwd" | "onApproval" | "onOpenFile" | "onOpenDiff"
->;
+> & {
+  live?: boolean;
+  onStopWorkflow?: (taskId: string) => void;
+};
 
-/** Pending approvals stay actionable while the rest of the work is hidden. */
-const MonoWorkApprovals = memo(function MonoWorkApprovals({
-  blocks,
-  cwd,
-  onApproval,
-  onOpenFile,
-  onOpenDiff,
-}: MonoWorkApprovalsProps) {
-  return (
-    <div className="flex min-w-0 flex-col px-4">
-      {blocks.filter(needsApproval).map((block) => (
-        <ToolCall
-          key={block.id}
-          block={block}
-          cwd={cwd}
-          embedded
-          onApproval={onApproval}
-          onOpenFile={onOpenFile}
-          onOpenDiff={onOpenDiff}
-        />
-      ))}
-    </div>
-  );
-}, sameActivity);
+/**
+ * Pending approvals stay actionable while the rest of the work is hidden, and
+ * a workflow run keeps its row: a Lead in a long fan-out must not read as one
+ * quiet "Running agent…" line.
+ */
+const MonoWorkApprovals = memo(
+  function MonoWorkApprovals({
+    blocks,
+    cwd,
+    live = false,
+    onApproval,
+    onOpenFile,
+    onOpenDiff,
+    onStopWorkflow,
+  }: MonoWorkApprovalsProps) {
+    return (
+      <div className="flex min-w-0 flex-col px-4">
+        {blocks
+          .filter(
+            (block) =>
+              isWorkflowBlock(block) &&
+              (live || toolCallState(block) === "rejected"),
+          )
+          .map((block) => (
+            <WorkflowRunPanel
+              key={block.id}
+              block={block}
+              live={live}
+              onStop={onStopWorkflow}
+            />
+          ))}
+        {blocks.filter(needsApproval).map((block) => (
+          <ToolCall
+            key={block.id}
+            block={block}
+            cwd={cwd}
+            embedded
+            onApproval={onApproval}
+            onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+          />
+        ))}
+      </div>
+    );
+  },
+  (a, b) =>
+    sameActivity(a, b) &&
+    a.live === b.live &&
+    a.onStopWorkflow === b.onStopWorkflow,
+);
 
 /** Full turn activity in transcript order, without the chat's work folding. */
 export function MonoActivityTrail({
@@ -3954,6 +3999,7 @@ function SubagentStack({
   embedded = false,
   onOpenFile,
   onOpenDiff,
+  onStopWorkflow,
 }: {
   blocks: Block[];
   cwd?: string;
@@ -3961,6 +4007,7 @@ function SubagentStack({
   embedded?: boolean;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
+  onStopWorkflow?: (taskId: string) => void;
 }) {
   return (
     <div className={`flex min-w-0 flex-col ${embedded ? "" : "px-4"}`}>
@@ -3972,6 +4019,7 @@ function SubagentStack({
           live={live}
           onOpenFile={onOpenFile}
           onOpenDiff={onOpenDiff}
+          onStopWorkflow={onStopWorkflow}
         />
       ))}
     </div>
@@ -3991,15 +4039,20 @@ function SubagentRow({
   live = false,
   onOpenFile,
   onOpenDiff,
+  onStopWorkflow,
 }: {
   block: Block;
   cwd?: string;
   live?: boolean;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
+  onStopWorkflow?: (taskId: string) => void;
 }) {
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? toolCallState(block) === "rejected";
+  if (isWorkflowBlock(block)) {
+    return <WorkflowRunPanel block={block} live={live} onStop={onStopWorkflow} />;
+  }
   return (
     <SubagentPanel
       block={block}

@@ -60,6 +60,8 @@ export type HarnessAdapter = {
   sendTurn(input: SendTurnInput): Promise<void>;
   /** Trigger provider-owned compaction outside MonoCode's normal user-turn path. */
   compactContext?(input: CompactContextInput): Promise<void>;
+  /** Stop one background task (a whole workflow run) and leave the turn going. */
+  stopTask?(sessionId: string, taskId: string): Promise<boolean>;
   /** Rewind provider state so the last user turn can be replaced. */
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
   steerTurn(input: SteerTurnInput): Promise<void>;
@@ -300,6 +302,17 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });
+}
+
+/** Stop one workflow run (or other background task) inside a live turn. */
+export async function stopHarnessTask(
+  harness: HarnessId,
+  sessionId: string,
+  taskId: string,
+): Promise<boolean> {
+  const adapter = getHarness(harness);
+  if (!adapter?.live || !adapter.stopTask) return false;
+  return adapter.stopTask(sessionId, taskId);
 }
 
 export function canCompactHarnessContext(id: HarnessId): boolean {

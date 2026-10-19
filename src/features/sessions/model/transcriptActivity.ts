@@ -725,7 +725,19 @@ export function isSubagentBlock(block: Block): boolean {
   return (
     isToolBlock(block) &&
     !needsApproval(block) &&
-    isAgentTool(block.tool?.kind, block.text || block.tool?.title)
+    (isWorkflowBlock(block) ||
+      isAgentTool(block.tool?.kind, block.text || block.tool?.title))
+  );
+}
+
+/**
+ * A workflow run: one row for the whole fan-out, pinned like a subagent while
+ * it works, with its phases and agents underneath.
+ */
+export function isWorkflowBlock(block: Block): boolean {
+  return (
+    isToolBlock(block) &&
+    (block.workflowRun != null || block.tool?.kind === "workflow")
   );
 }
 
@@ -832,7 +844,7 @@ export function toolCategory(block: Block): ActivityWorkKind {
   const title = block.text || block.tool?.title;
   const preview = block.tool?.preview;
   const label = toolCallLabel(block);
-  if (isAgentTool(kind, title)) return "agent";
+  if (isAgentTool(kind, title) || kind === "workflow") return "agent";
   if (isEditTool(kind, title, preview)) return "edit";
   if (isSearchTool(kind, title, preview)) return "research";
   if (isReadTool(kind, title, preview)) return "research";

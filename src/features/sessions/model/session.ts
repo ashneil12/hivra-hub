@@ -360,6 +360,8 @@ export type Block = {
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
+  /** A workflow run's phases and agents. Present on the tool block that launched it. */
+  workflowRun?: import("./workflowRun").WorkflowRunMeta;
   taskList?: TaskListMeta;
   plan?: PlanBlockMeta;
   orchestration?: OrchestrationProposal;

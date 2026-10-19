@@ -1080,6 +1080,7 @@ export function toolKindFromName(toolName: string): string {
     return "search";
   }
   if (normalized === "skill" || normalized === "skills") return "skill";
+  if (normalized === "workflow") return "workflow";
   if (isAgentToolName(toolName)) return "agent";
   return toolName;
 }

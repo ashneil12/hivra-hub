@@ -9,6 +9,7 @@ import {
   sendClaudeTurn,
   steerClaudeTurn,
   stopClaudeSession,
+  stopClaudeTask,
 } from "./claude";
 import { refreshClaudeCatalog } from "./claudeCatalog";
 import {
@@ -31,6 +32,7 @@ export const claudeAdapter: HarnessAdapter = {
   compactContext: compactClaudeContext,
   steerTurn: steerClaudeTurn,
   cancelTurn: cancelClaudeTurn,
+  stopTask: stopClaudeTask,
   respondApproval: respondClaudeApproval,
   respondQuestion: respondClaudeQuestion,
   stopSession: stopClaudeSession,

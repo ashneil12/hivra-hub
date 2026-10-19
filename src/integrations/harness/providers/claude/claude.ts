@@ -75,6 +75,20 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { claudeRetryFromMessage } from "./claudeFailure";
+import {
+  applyWorkflowProgress,
+  endWorkflowRun,
+  isClaudeWorkflowTaskType,
+  isClaudeWorkflowTool,
+  isWorkflowLaunchAck,
+  startWorkflowRun,
+  workflowEndStatus,
+  workflowFrame,
+} from "./claudeWorkflow";
+import type {
+  WorkflowRunMeta,
+  WorkflowRunStatus,
+} from "../../../../features/sessions/model/workflowRun";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -130,6 +144,12 @@ type BackgroundTask = {
   toolUseId?: string;
 };
 
+/** A workflow run in this turn and the tool call its row hangs off. */
+type LiveWorkflow = {
+  callId: string;
+  run: WorkflowRunMeta;
+};
+
 type Live = {
   cwd: string;
   claudeSessionId: string;
@@ -146,6 +166,8 @@ type Live = {
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
   agentTasks: Map<string, LiveAgentTask>;
+  /** Workflow runs by task id. */
+  workflows: Map<string, LiveWorkflow>;
   /**
    * Every task Claude still runs for this session, by id: subagents, shells it
    * backgrounded, monitors. Each one ends in a notification that wakes Claude
@@ -333,6 +355,9 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     cancelledThreads.add(sessionId);
     return;
   }
+  // A stopped run's last frames arrive after the stop and are muted, so its
+  // row is settled here or it would read as working for good.
+  settleWorkflows(live, "stopped");
   live.cancelled = true;
   live.muteUpdates = true;
   for (const [, pending] of live.approvals) pending.resolve("deny");
@@ -366,6 +391,7 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   const live = liveByThread.get(sessionId);
   liveByThread.delete(sessionId);
   if (live) {
+    settleWorkflows(live, "stopped");
     live.muteUpdates = true;
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
@@ -499,6 +525,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     toolsByIndex: new Map(),
     toolsById: new Map(),
     agentTasks: new Map(),
+    workflows: new Map(),
     backgroundTasks: new Map(),
     backgroundRows: new Map(),
     awaitingResume: null,
@@ -534,6 +561,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     (code) => {
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
+      if (current && !current.muteUpdates) settleWorkflows(current, "failed");
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
@@ -607,6 +635,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.toolsByIndex.clear();
   live.toolsById.clear();
   live.agentTasks.clear();
+  live.workflows.clear();
   live.backgroundTasks.clear();
   live.backgroundRows.clear();
   clearAwaitingResume(live);
@@ -971,6 +1000,15 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
     if (isAgentToolName(tool.name) && isBackgroundedAgentTool(live, tool.id)) {
       continue;
     }
+    // The Workflow tool answers at once that the run went to the background;
+    // the run, not that answer, decides when its row is done.
+    if (
+      isClaudeWorkflowTool(tool.name) &&
+      !result.isError &&
+      (isWorkflowLaunchAck(result.text) || workflowForCall(live, tool.id))
+    ) {
+      continue;
+    }
     live.onEvent({
       type: "tool.updated",
       callId: tool.id,
@@ -1288,6 +1326,17 @@ function handleAgentLifecycle(
       toolUseId: started.toolUseId,
     });
     syncBackgroundWait(live);
+    if (isClaudeWorkflowTaskType(started.taskType)) {
+      const run = startWorkflowRun(rec, Date.now());
+      if (run) {
+        trackWorkflow(
+          live,
+          started.toolUseId ?? `workflow:${started.taskId}`,
+          run,
+        );
+      }
+      return true;
+    }
     if (!isAgentTaskType(started.taskType)) return true;
     live.agentTasks.set(started.taskId, {
       taskId: started.taskId,
@@ -1306,6 +1355,26 @@ function handleAgentLifecycle(
 
   const progress = parseTaskProgress(rec);
   if (progress) {
+    const workflow = live.workflows.get(progress.taskId);
+    if (workflow) {
+      const next = applyWorkflowProgress(workflow.run, rec, Date.now());
+      if (next) trackWorkflow(live, workflow.callId, next);
+      return true;
+    }
+    // A run whose start this process never saw (a resumed conversation):
+    // its own frame says it is a workflow.
+    if (workflowFrame(rec)) {
+      const run = startWorkflowRun(rec, Date.now());
+      const next = run && applyWorkflowProgress(run, rec, Date.now());
+      if (next) {
+        trackWorkflow(
+          live,
+          progress.toolUseId ?? `workflow:${progress.taskId}`,
+          next,
+        );
+      }
+      return true;
+    }
     const task = live.agentTasks.get(progress.taskId);
     const title = progress.description || task?.description || "Subagent";
     const detail =
@@ -1336,6 +1405,7 @@ function handleAgentLifecycle(
       background.description = updated.description;
     }
     if (isTerminalAgentTaskStatus(updated.status)) {
+      endWorkflow(live, updated.taskId, workflowEndStatus(updated.status));
       settleBackgroundRow(
         live,
         updated.taskId,
@@ -1356,6 +1426,12 @@ function handleAgentLifecycle(
   const notice = parseTaskNotification(rec);
   if (notice) {
     if (!notice.ambient) {
+      endWorkflow(
+        live,
+        notice.taskId,
+        workflowEndStatus(notice.status),
+        notice.summary || undefined,
+      );
       noteTaskNotification(live, notice);
       finishBackgroundTask(live, notice.taskId);
       completeAgentTask(
@@ -1373,6 +1449,7 @@ function handleAgentLifecycle(
   const next = new Set(allTasks.map((task) => task.taskId));
   for (const id of [...live.backgroundTasks.keys()]) {
     if (next.has(id)) continue;
+    endWorkflow(live, id, "completed");
     settleBackgroundRow(live, id, "completed");
     finishBackgroundTask(live, id);
   }
@@ -1400,6 +1477,78 @@ function handleAgentLifecycle(
   }
   maybeFinishTurn(live);
   syncBackgroundWait(live);
+  return true;
+}
+
+/** Keep the run and tell the transcript; its row hangs off `callId`. */
+function trackWorkflow(
+  live: Live,
+  callId: string,
+  run: WorkflowRunMeta,
+): void {
+  live.workflows.set(run.taskId, { callId, run });
+  if (live.muteUpdates) return;
+  live.onEvent({ type: "workflow.progress", callId, run });
+}
+
+/**
+ * End a run once. `task_updated` usually ends it first; the notification that
+ * follows only adds what the CLI said about it.
+ */
+function endWorkflow(
+  live: Live,
+  taskId: string,
+  status: WorkflowRunStatus,
+  summary?: string,
+): void {
+  const workflow = live.workflows.get(taskId);
+  if (!workflow) return;
+  if (workflow.run.status !== "running") {
+    if (summary && !workflow.run.summary) {
+      trackWorkflow(live, workflow.callId, { ...workflow.run, summary });
+    }
+    return;
+  }
+  trackWorkflow(
+    live,
+    workflow.callId,
+    endWorkflowRun(workflow.run, status, Date.now(), summary),
+  );
+}
+
+function settleWorkflows(live: Live, status: WorkflowRunStatus): void {
+  for (const taskId of [...live.workflows.keys()]) {
+    endWorkflow(live, taskId, status);
+  }
+}
+
+function workflowForCall(
+  live: Live,
+  callId: string,
+): LiveWorkflow | undefined {
+  for (const workflow of live.workflows.values()) {
+    if (workflow.callId === callId) return workflow;
+  }
+  return undefined;
+}
+
+/**
+ * Stop one background task Claude runs for this session: a whole workflow
+ * run, with every agent in it. False when no live process has that task.
+ */
+export async function stopClaudeTask(
+  sessionId: string,
+  taskId: string,
+): Promise<boolean> {
+  const live = liveByThread.get(sessionId);
+  if (!live || !live.backgroundTasks.has(taskId)) return false;
+  await writeJson(
+    sessionId,
+    buildControlRequest(nextControlId(live), {
+      subtype: "stop_task",
+      task_id: taskId,
+    }),
+  );
   return true;
 }
 
@@ -1689,12 +1838,21 @@ function noteClaudeTurnStarted(live: Live): void {
 function showBackgroundRows(live: Live): void {
   if (!live.activeTurn || live.cancelled) return;
   for (const [taskId, task] of live.backgroundTasks) {
-    if (live.backgroundRows.has(taskId) || live.agentTasks.has(taskId))
+    if (
+      live.backgroundRows.has(taskId) ||
+      live.agentTasks.has(taskId) ||
+      live.workflows.has(taskId)
+    )
       continue;
     const source = task.toolUseId
       ? live.toolsById.get(task.toolUseId)
       : undefined;
-    if (source && isAgentToolName(source.name)) continue;
+    // Subagents and workflow runs already have a row of their own.
+    if (
+      source &&
+      (isAgentToolName(source.name) || isClaudeWorkflowTool(source.name))
+    )
+      continue;
     const callId = `background:${taskId}`;
     live.backgroundRows.set(taskId, callId);
     live.onEvent({

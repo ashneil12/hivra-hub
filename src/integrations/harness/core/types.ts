@@ -9,6 +9,7 @@ import type {
   TurnMetrics,
 } from "../../../features/sessions/model/session";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
+import type { WorkflowRunMeta } from "../../../features/sessions/model/workflowRun";
 
 /**
  * Why a provider refused or failed a turn. It travels with the error into the
@@ -194,6 +195,11 @@ export type HarnessEvent =
       /** False marks the plan ready for review. */
       streaming?: boolean;
     }
+  /**
+   * A workflow run's phases and agents, as a whole snapshot. `callId` is the
+   * tool call that launched it; the run's row hangs off that call.
+   */
+  | { type: "workflow.progress"; callId: string; run: WorkflowRunMeta }
   /** Context-window level after the harness's latest request. */
   | { type: "context"; used?: number; window?: number }
   /** Provider token accounting for the active user turn. */
