@@ -44,6 +44,8 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod project_actions;
+mod project_file;
 mod project_logo;
 mod provider_session_transfer;
 mod pty;
@@ -311,6 +313,7 @@ pub fn run() {
         })
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
+        .manage(project_actions::ActionRuns::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .setup(move |app| {
@@ -510,6 +513,13 @@ pub fn run() {
             worktrees::git_worktree_remove,
             worktrees::git_orchestration_worktree_remove,
             worktrees::git_orchestration_branch_remove,
+            project_file::project_file_status,
+            project_file::project_file_import,
+            project_file::project_file_forget,
+            project_actions::project_actions_list,
+            project_actions::project_action_run,
+            project_actions::project_action_stop,
+            project_actions::project_action_wait,
             fs::create_path,
             fs::rename_path,
             fs::delete_path,
@@ -783,6 +793,9 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+    }
+    if let Some(runs) = handle.try_state::<project_actions::ActionRuns>() {
+        runs.stop_all();
     }
 }
 
