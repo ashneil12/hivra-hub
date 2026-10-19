@@ -37,8 +37,36 @@ simply been written to upstream's store instead.
 
 **Fixed on 2026-10-16:** the identity now lives in `src-tauri/tauri.conf.json` itself (`productName`
 `MonoCode Hub`, `identifier` `com.ash.monocode-hub`), the overlay is stripped to non-identity build deltas,
-and the dev-bundle constants in `src-tauri/src/macos.rs` match. There is no build path left that can emit
-the upstream identifier. The scripts below keep it that way.
+and the dev wrapper bundle (`src-tauri/src/macos.rs`) takes its identifier from the config and only ever wraps a dev
+copy. There is no build path left that can emit the upstream identifier. The scripts below keep it that way.
+
+## Which copy is which (Phase 1b, `src-tauri/src/instance.rs`)
+
+The kind of copy comes from the identifier compiled into it:
+
+| Identifier | Kind | Data folder | Runs from |
+| --- | --- | --- | --- |
+| `com.ash.monocode-hub` | **daily** (Ash's real chats) | `…/Application Support/com.ash.monocode-hub` | only `~/Applications/MonoCode Hub.app` |
+| `com.ash.monocode-hub.dev.<slot>` | **dev copy** | `…/Application Support/com.ash.monocode-hub.dev.<slot>` | anywhere (`npm run hub:dev`) |
+
+Checked at the top of `run()`, before any plugin or data access. Each refusal shows an alert and exits:
+- any other identifier refuses to start (exit 78);
+- a **debug build with the daily identifier refuses** ("use npm run hub:dev", exit 78);
+- a daily build anywhere but `~/Applications/MonoCode Hub.app` refuses ("ship it", exit 78);
+- **one app per data folder:** the running copy holds `<data>/instance-owner.sqlite` locked for its whole life and
+  names itself in `<data>/running.json`; a second copy alerts with the owner and exits 75;
+- a database written by a newer build is refused (exit 65).
+
+A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOCODE_HUB_PORT` and
+`MONOCODE_HUB_TOKEN_FILE` point at the stub or the read-only proxy (never port 18767 or the live key), Keychain
+names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
+`~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy). The orphan reaper, phone access, habits,
+automations, reminders, auto-resume and the notification prompt are off. A DEV ribbon, the window title
+(`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
+
+**Never launch a build of this app with the real HOME to prove something.** To exercise a refusal or the lock, run
+the binary with `HOME` set to a fresh temporary folder and `MONOCODE_NO_ALERT=1` (refusal on stderr only, same
+exit code), and check that it used that folder.
 
 ## Before you build or launch — the checklist
 
@@ -46,18 +74,24 @@ the upstream identifier. The scripts below keep it that way.
    identifier, if upstream's database has grown (a misidentified build ran), or if the Hub database shrank.
 2. **`npm run hub:build`** — the only supported way to build this app. It passes the overlay config.
    Never run a bare `tauri build` here.
-3. **`npm run hub:verify`** — asserts the built bundle's `CFBundleIdentifier` is `com.ash.monocode-hub`
-   before anything installs it.
+3. **`npm run hub:verify`** — asserts the built bundle's `CFBundleIdentifier` is `com.ash.monocode-hub` and that
+   it carries a build stamp before anything installs it.
 4. **`npm run hub:install`** — verifies, then installs to `~/Applications/MonoCode Hub.app`. It refuses to
    install a bundle that is not the Hub.
 
-Prove any bundle's identity at any time:
+Prove any bundle's identity and build at any time, without launching it:
 
 ```bash
 /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
   "$HOME/Applications/MonoCode Hub.app/Contents/Info.plist"
 # must print: com.ash.monocode-hub
+LC_ALL=C grep -a -o -m1 'MONOCODE-STAMP:{[^}]*}' "$HOME/Applications/MonoCode Hub.app/Contents/MacOS/monocode"
+# the build stamp: {"sha","branch","dirty","builtAt"}, written by src-tauri/build.rs
 ```
+
+`…/Contents/MacOS/monocode version --json` prints the same stamp with the identity (no window, no data access), and
+agents get it from `app app.version`. `monocode healthcheck [--db PATH]` migrates a copy of a database (the live
+file is only read) and reports whether this build can open it.
 
 ## Conversations
 
@@ -100,8 +134,11 @@ Never hand-build and re-install the app just to look at a frontend change. On th
 is served from vite, so HMR applies it where it stands:
 
 ```bash
-npm run hub:dev      # tauri dev with the Hub overlay: vite on :1420 + HMR, the app in a real window
+npm run hub:dev      # a dev copy (tauri dev): vite on :1420 + HMR, the app in a real window, its own data
 ```
+
+Until per-worktree dev slots land (Phase 1b WP2), `hub:dev` runs one shared dev copy,
+`com.ash.monocode-hub.dev.default`, so only one worktree can run it at a time. It never opens the daily data.
 
 - **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
 - **Rust change** (`src-tauri/**`): `tauri dev` recompiles and relaunches the app by itself; the window
@@ -156,13 +193,11 @@ For a reported bug, record the failure before changing it and keep every ask in 
 A successful agent turn is not verification. Give exact check results and the app/revision exercised. If the native
 window, provider or service cannot be exercised, report that gap and keep that acceptance step open.
 
-`npm run hub:test-copy:build` creates **MonoCode Test.app**, identifier `com.ash.monocode-hub.sandbox`, compiled with
-`test-copy`. `npm run hub:test-copy:verify` checks the bundle identity. It has its own app-data directory, Mono files,
-webview storage and model-key service. Its live harness bridge is disabled and it never reaps daily-app processes.
-The test feature and identity must match or startup refuses before touching app data. This is a **release build**;
-its debug relaunch is intentionally refused because that path belongs to the daily app. Do not copy the daily database
-or keys into it. Do not use `hub:install` for it. Open the verified bundle directly, or copy it beside the daily app
-under its own name. Test sessions still use the installed agent CLIs; use a test worktree and avoid real external actions.
+To try a change in the app, use a dev copy (`npm run hub:dev`, see "Which copy is which"). It has its own data
+folder, Mono files, webview storage and Keychain names, its live harness bridge is off and it never reaps the daily
+app's processes. Do not copy the daily database or keys into it. Dev sessions still use the installed agent CLIs;
+use a test worktree and avoid real external actions. The old MonoCode Test copy (`hub:test-copy:*`,
+`com.ash.monocode-hub.sandbox`) is retired: dev copies replace it.
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
