@@ -8,21 +8,27 @@
 // messages. Time passing is not progress.
 // - Something real moved: it keeps going. Nothing is said anywhere (no spam).
 // - Only talk: it keeps going once; a second hour of only talk is stuck.
-// - Nothing moved, the same error over and over, or failing tests with nothing changed: stuck. The first time, the
-//   worker is told to try another way (the retry) and its Lead hears why, privately. Each further stuck hour in a row
-//   asks its Lead to stop it, split it or retry it (its call), and the second one is flagged to Ash. Either way the
-//   worker shows as stuck with a plain line (the stall on its row), so the "N stuck" line opens it with a one-tap reply,
-//   and Ash gets the native banner the stuck notifier already sends. Real progress (a commit, a changed file, a passing
-//   test) clears it within a couple of minutes.
-// - Long runs (every 3 h) and costly ones (every 5 million tokens) are flagged to Ash: a banner, never a stop.
-// There is no step cap and no cost ceiling.
+// - Nothing moved, the same error or the same failing test over and over, or failing tests with nothing changed: stuck,
+//   with a reason that says what actually happened ("Talked for 2 hours, no code or test changes yet", "Same test
+//   failing 5 times: saves survive a restart"). It shows on the worker's red card (the stall on its row, so the "N
+//   stuck" line opens it) and in its Lead's note.
+//   - Hour 1: the worker is told to try another way, and its Lead hears why.
+//   - Hour 2: its Lead decides by itself (it isn't asked): stop it, split it or retry it, then say in its own chat what
+//     it did. Ash is not told: "your workers ask you, not Ash" (Alfred), and he is asked too much already (frank).
+//   - Hour 3, still stuck after what its Lead did: its Lead tells Ash, in one plain line in its own chat, the one thing it
+//     needs. A Lead that sees the fix needs something only Ash can give (a key or sign-in, a delete, money) says so then
+//     instead, at any hour.
+//   Real progress (a commit, a changed file, a passing test) clears it within a couple of minutes. The red line stays in
+//   Ash's view the whole time, but no banner is pushed for it (stuckNotifications.ts leaves a Lead's workers to it).
+// There is no step cap, no time cap and no cost ceiling, and no pushes to Ash about time or cost: a worker's line shows
+// how long it has run, quietly (workerStuck.ts).
 //
 // Self-repair. A worker that crashed (a transient provider failure or its process dying, its Lead not yet told) or hung
 // (no output for the stall time while busy, or idle without reporting back) is retried with backoff: 1, 5, then 15
 // minutes after it went wrong. A hung busy worker is nudged first and restarted after; the rest are continued. After
-// three tries it is left stuck and its Lead hears that the repair gave up. A fault only starts over once the worker has
-// run cleanly for half an hour, so a crash loop can't be retried for ever. A question, a usage limit, a billing or
-// sign-in refusal, and anything Ash stopped are never retried.
+// three tries it is left stuck ("Crashed 4 times, retries gave up") and its Lead decides what's next. A fault only
+// starts over once the worker has run cleanly for half an hour, so a crash loop can't be retried for ever. A question, a
+// usage limit, a billing or sign-in refusal, and anything Ash stopped are never retried.
 //
 // What this window hasn't seen is unknown, and unknown is never stuck: the hour starts the first time a worker is seen
 // here (after a restart too), like the stall watcher's clock.
@@ -46,10 +52,6 @@ export type ProgressOptions = {
   relookMs: number;
   /** A failing step with the same error this many times in a row is stuck, whatever else moved. */
   repeatedErrors: number;
-  /** Flag a run to Ash each time it passes another multiple of this. */
-  longRunMs: number;
-  /** Flag a run to Ash each time its tokens pass another multiple of this. */
-  costlyTokens: number;
   /** Self-repair: the wait before each try, from when it went wrong; its length is the number of tries. */
   repairBackoffMs: readonly number[];
 };
@@ -59,8 +61,6 @@ export const PROGRESS_DEFAULTS: ProgressOptions = {
   everyMs: HOUR,
   relookMs: 2 * MIN,
   repeatedErrors: 5,
-  longRunMs: 3 * HOUR,
-  costlyTokens: 5_000_000,
   repairBackoffMs: [MIN, 5 * MIN, 15 * MIN],
 };
 
@@ -73,15 +73,16 @@ export type WorkerTally = {
   testsFailed: number;
   /** Distinct things it said. */
   messages: number;
-  /** The newest failed step's error and how many failed steps in a row ended with it. */
+  /** The newest failed step's error and how many failed steps in a row ended with it (test runs aside). */
   errorRun?: { text: string; count: number };
-  /** Tokens it has used: input, output and cache writes (cache reads are cheap and left out). */
-  tokens: number;
+  /** The newest failing test and how many test runs in a row failed on it (a passing run ends it). */
+  testRun?: { name: string; count: number };
 };
 
 const TEST_RUN =
   /\b(vitest|jest|pytest|mocha|playwright test|cargo test|go test|(npm|pnpm|yarn|bun) (run )?test|node --test|unittest|rspec|phpunit|swift test|xcodebuild test)\b/i;
-const TEST_FAILED = /\b[1-9]\d*\s+(failed|failing|failures?)\b|\btests? failed\b|^\s*FAIL\b/im;
+const TEST_FAILED =
+  /\b[1-9]\d*\s+(failed|failing|failures?)\b|\btests? failed\b|^\s*(?:FAIL\b|[×✗✕]\s)|--- FAIL:|^FAILED\b|\.\.\. FAILED\b/im;
 
 function isEdit(block: Block): boolean {
   const tool = block.tool;
@@ -98,27 +99,52 @@ function isTestRun(block: Block): boolean {
 
 const errorText = (block: Block) => (block.tool?.detail || block.tool?.title || block.text).trim().split("\n")[0].slice(0, 200);
 
+const short = (text: string, max = 100) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+
+/**
+ * The first failing test a test run names, in the words of the common runners (vitest/jest "FAIL file > test", "×",
+ * go "--- FAIL: TestX", pytest "FAILED file::test", cargo "test x ... FAILED"), else its first line that says it failed.
+ */
+export function failingTestName(detail: string): string {
+  const patterns: [RegExp, (m: RegExpMatchArray) => string][] = [
+    [/^\s*(?:FAIL|×|✗|✕)\s+(.+?)\s*$/m, (m) => m[1].split(" > ").slice(-1)[0]],
+    [/--- FAIL: (\S+)/, (m) => m[1]],
+    [/^FAILED (\S+?)(?:\s+-.*)?$/m, (m) => m[1].split("::").slice(-1)[0]],
+    [/^test (\S+) \.\.\. FAILED/m, (m) => m[1]],
+  ];
+  for (const [re, pick] of patterns) {
+    const m = detail.match(re);
+    if (m) return short(pick(m).trim());
+  }
+  const line = detail.split("\n").find((l) => /fail/i.test(l))?.trim();
+  return line ? short(line) : "the test run";
+}
+
 export function tallyTranscript(blocks: readonly Block[]): WorkerTally {
   let edits = 0;
   let testsPassed = 0;
   let testsFailed = 0;
-  let tokens = 0;
+  let testRun: WorkerTally["testRun"];
   const said = new Set<string>();
   const failures: string[] = [];
   for (const block of blocks) {
-    if (block.role === "user" && block.turnMetrics) {
-      const m = block.turnMetrics;
-      tokens += (m.inputTokens ?? 0) + (m.outputTokens ?? 0) + (m.cacheWriteTokens ?? 0);
-    }
     if (block.role === "assistant" && block.text.trim()) said.add(block.text.trim());
     if (block.role !== "tool" || !block.tool) continue;
     const state = toolCallState(block);
     if (state === "pending") continue;
     const failed = state === "rejected";
     if (isTestRun(block)) {
-      if (failed || TEST_FAILED.test(block.tool.detail ?? "")) testsFailed++;
-      else testsPassed++;
-    } else if (isEdit(block) && !failed) edits++;
+      if (failed || TEST_FAILED.test(block.tool.detail ?? "")) {
+        testsFailed++;
+        const name = failingTestName(block.tool.detail ?? "");
+        testRun = testRun?.name === name ? { name, count: testRun.count + 1 } : { name, count: 1 };
+      } else {
+        testsPassed++;
+        testRun = undefined;
+      }
+      continue;
+    }
+    if (isEdit(block) && !failed) edits++;
     if (failed) failures.push(errorText(block));
   }
   let errorRun: WorkerTally["errorRun"];
@@ -128,7 +154,7 @@ export function tallyTranscript(blocks: readonly Block[]): WorkerTally {
     for (let i = failures.length - 1; i >= 0 && failures[i] === text; i--) count++;
     errorRun = { text, count };
   }
-  return { edits, testsPassed, testsFailed, messages: said.size, ...(errorRun ? { errorRun } : {}), tokens };
+  return { edits, testsPassed, testsFailed, messages: said.size, ...(errorRun ? { errorRun } : {}), ...(testRun ? { testRun } : {}) };
 }
 
 // ---- judging an hour ----------------------------------------------------------------------------------------------------
@@ -146,22 +172,31 @@ export type ProgressSignals = {
   messages: number;
   /** The same error, this many times in a row, newer than the last check. */
   repeatedError?: { text: string; count: number };
+  /** The same test failing, this many runs in a row, newer than the last check. */
+  repeatedTest?: { name: string; count: number };
+  /** The test the newest failing run named. */
+  failingTest?: string;
 };
 
 export type Snapshot = { at: number; tally: WorkerTally; diff: string | null };
 
+function grewRun<T extends { count: number }>(after: T | undefined, before: T | undefined, same: (a: T, b: T) => boolean, at: number) {
+  return after && after.count >= at && (!before || !same(after, before) || after.count > before.count) ? after : undefined;
+}
+
 export function progressSignals(before: Snapshot, after: Snapshot, commits: number, options = PROGRESS_DEFAULTS): ProgressSignals {
   const grew = (key: "edits" | "testsPassed" | "testsFailed" | "messages") => Math.max(0, after.tally[key] - before.tally[key]);
-  const run = after.tally.errorRun;
-  const was = before.tally.errorRun;
-  const repeated = run && run.count >= options.repeatedErrors && (!was || was.text !== run.text || run.count > was.count) ? run : undefined;
+  const repeatedError = grewRun(after.tally.errorRun, before.tally.errorRun, (a, b) => a.text === b.text, options.repeatedErrors);
+  const repeatedTest = grewRun(after.tally.testRun, before.tally.testRun, (a, b) => a.name === b.name, options.repeatedErrors);
   return {
     commits,
     filesChanged: grew("edits") > 0 || (after.diff !== null && before.diff !== null && after.diff !== before.diff),
     testsPassed: grew("testsPassed"),
     testsFailed: grew("testsFailed"),
     messages: grew("messages"),
-    ...(repeated ? { repeatedError: repeated } : {}),
+    ...(repeatedError ? { repeatedError } : {}),
+    ...(repeatedTest ? { repeatedTest } : {}),
+    ...(after.tally.testRun ? { failingTest: after.tally.testRun.name } : {}),
   };
 }
 
@@ -177,19 +212,31 @@ export function movedLine(s: ProgressSignals): string {
   ].filter(Boolean).join(", ") || "nothing";
 }
 
-/** The plain rule (Ash OS's hourly check falls back on the same one, ashos/jobs.py `_heuristic`). */
-export function judgeProgress(s: ProgressSignals, talkedOnlyLastHour: boolean): Verdict {
+const forHours = (hours: number) => (hours <= 1 ? "an hour" : `${hours} hours`);
+
+/**
+ * The plain rule (Ash OS's hourly check falls back on the same one, ashos/jobs.py `_heuristic`). `hoursWithout` is how
+ * many hours in a row before this one had no real progress (only talk, or stuck). A stuck reason says what happened.
+ */
+export function judgeProgress(s: ProgressSignals, hoursWithout: number): Verdict {
+  const hours = hoursWithout + 1;
+  if (s.repeatedTest)
+    return { verdict: "stuck", reason: `Same test failing ${s.repeatedTest.count} times: ${s.repeatedTest.name}`, talkOnly: false };
   if (s.repeatedError)
-    return { verdict: "stuck", reason: `The same error came up ${s.repeatedError.count} times in a row`, talkOnly: false };
+    return { verdict: "stuck", reason: `Same error ${s.repeatedError.count} times: ${short(s.repeatedError.text)}`, talkOnly: false };
   if (s.commits || s.filesChanged || s.testsPassed)
     return { verdict: "keep_going", reason: `Moving: ${movedLine(s)}`, talkOnly: false };
   if (s.testsFailed)
-    return { verdict: "stuck", reason: "Tests keep failing and nothing has changed", talkOnly: false };
+    return {
+      verdict: "stuck",
+      reason: `Tests failing for ${forHours(hours)}, no code changes${s.failingTest ? `: ${s.failingTest}` : ""}`,
+      talkOnly: false,
+    };
   if (s.messages)
-    return talkedOnlyLastHour
-      ? { verdict: "stuck", reason: "Talking, but nothing saved or tested for two hours", talkOnly: true }
+    return hoursWithout
+      ? { verdict: "stuck", reason: `Talked for ${forHours(hours)}, no code or test changes yet`, talkOnly: true }
       : { verdict: "keep_going", reason: "Only talking this hour; nothing saved yet", talkOnly: true };
-  return { verdict: "stuck", reason: "Nothing moved in the last hour", talkOnly: false };
+  return { verdict: "stuck", reason: `No commits, file changes or test runs for ${forHours(hours)}`, talkOnly: false };
 }
 
 // ---- the watcher ----------------------------------------------------------------------------------------------------------
@@ -212,8 +259,6 @@ export type ProgressHost = {
   stopTurn(row: Delegation): Promise<boolean>;
   /** Its unread failure report won't be needed (it is being retried): out of the Lead's queue. */
   dropReport?(row: Delegation): void;
-  /** Tell Ash (a native banner). */
-  flagAsh(row: Delegation, text: string): void;
   now?(): number;
   options?(): ProgressOptions;
 };
@@ -223,11 +268,10 @@ type Watched = {
   lastCheckAt: number;
   base: Snapshot;
   stuckInARow: number;
-  talkedOnly: boolean;
+  /** Hours in a row with no real progress (only talk, or stuck). */
+  hoursWithout: number;
   verdict?: Stall;
   relookAt?: number;
-  longFlags: number;
-  tokenFlags: number;
   repair?: { episode: string; tries: number; nextAt: number; gaveUp: boolean; okSince?: number; restarting?: boolean };
   busy?: boolean;
 };
@@ -237,7 +281,7 @@ const titleOf = (row: Delegation) => (row.title || "Delegated work").trim();
 
 /** The note a worker gets when an hour moved nothing: the retry. */
 export function retryMessage(row: Delegation, reason: string): string {
-  return `Hourly check from your Lead: no real progress toward "${goalOf(row)}" in the last hour (${reason.toLowerCase()}). Stop what isn't working, say in one line what's blocking you, then try a different way. If it's too big for one go, say how you'd split it.`;
+  return `Hourly check from your Lead: no real progress toward "${goalOf(row)}" (${lowerFirst(reason)}). Stop what isn't working, say in one line what's blocking you, then try a different way. If it's too big for one go, say how you'd split it.`;
 }
 
 /**
@@ -325,7 +369,7 @@ export class ProgressCheck {
     if (!w) {
       if (row.state !== "running") return; // A failure seen before it ever ran here is its Lead's.
       const folder = await this.host.folder(chat.cwd, now).catch(() => null);
-      w = { since: now, lastCheckAt: now, base: { at: now, tally: tallyTranscript(chat.blocks), diff: folder ? JSON.stringify(folder.diff) : null }, stuckInARow: 0, talkedOnly: false, longFlags: 0, tokenFlags: 0 };
+      w = { since: now, lastCheckAt: now, base: { at: now, tally: tallyTranscript(chat.blocks), diff: folder ? JSON.stringify(folder.diff) : null }, stuckInARow: 0, hoursWithout: 0 };
       this.watched.set(row.id, w);
       return;
     }
@@ -337,7 +381,6 @@ export class ProgressCheck {
       w.lastCheckAt = Math.max(w.lastCheckAt, now - this.options().everyMs + this.options().relookMs);
       return;
     }
-    this.flagCost(row, chat, w, now);
     if (w.verdict && w.relookAt !== undefined && now >= w.relookAt) await this.relook(chat, w, now);
     const o = this.options();
     const due = now - w.since >= o.firstMs && now - w.lastCheckAt >= o.everyMs;
@@ -354,42 +397,50 @@ export class ProgressCheck {
   private async check(row: Delegation, chat: WorkerChat, w: Watched, now: number) {
     const { snap, commits } = await this.read(chat, w.lastCheckAt, now);
     const signals = progressSignals(w.base, snap, commits, this.options());
-    const verdict = judgeProgress(signals, w.talkedOnly);
+    const verdict = judgeProgress(signals, w.hoursWithout);
     w.lastCheckAt = now;
     w.base = snap;
-    // An hour of only talk, or a stuck one, means the next hour of only talk is stuck too.
-    w.talkedOnly = verdict.talkOnly || verdict.verdict === "stuck";
+    const real = verdict.verdict === "keep_going" && !verdict.talkOnly;
+    w.hoursWithout = real ? 0 : w.hoursWithout + 1;
     if (verdict.verdict === "keep_going") {
       w.stuckInARow = 0;
-      if (!verdict.talkOnly) this.clear(w);
+      if (real) this.clear(w);
       return;
     }
     w.stuckInARow++;
     const title = titleOf(row);
+    const reason = verdict.reason;
+    const since = w.verdict?.since ?? now;
+    w.relookAt = now + this.options().relookMs;
     if (w.stuckInARow === 1) {
-      w.verdict = { kind: "loop", reason: `No real progress in the last hour: ${lowerFirst(verdict.reason)} · asked it to try another way`, since: now };
-      w.relookAt = now + this.options().relookMs;
-      await this.host.message(row, retryMessage(row, verdict.reason)).catch(() => false);
+      w.verdict = { kind: "loop", reason: `${reason} · asked it to try another way`, since };
+      await this.host.message(row, retryMessage(row, reason)).catch(() => false);
       await this.host.tellLead(
         row,
-        `Hourly check on "${title}": no real progress in the last hour (${lowerFirst(verdict.reason)}). I asked it to try another way and I'll check again in an hour. If you can see it won't move, split it into smaller pieces or stop it.`,
+        `Hourly check on "${title}": ${lowerFirst(reason)}. I asked it to try another way. If it's still stuck in an hour, it's yours to stop, split or retry.`,
       );
       return;
     }
-    // Stopping, splitting or retrying it is its Lead's call (Ash's words: the main agent checks). It stays marked stuck,
-    // red, with a one-tap reply for Ash, until real progress clears it or someone moves it (D5: red Stuck stays).
-    const hours = w.stuckInARow;
-    w.verdict = {
-      kind: "loop",
-      reason: `No real progress for ${hours} hours: ${lowerFirst(verdict.reason)} · its Lead was asked to stop, split or retry it`,
-      since: w.verdict?.since ?? now,
-    };
-    w.relookAt = now + this.options().relookMs;
-    await this.host.tellLead(
-      row,
-      `Hourly check on "${title}": still no real progress after ${hours} hours (${lowerFirst(verdict.reason)}). Decide now: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief. If only Ash can unblock it, tell him in one line with your pick. It stays marked stuck until it moves.`,
-    );
-    if (hours === 2) this.host.flagAsh(row, `Stuck: no real progress for 2 hours. Its Lead has been asked to stop, split or retry it.`);
+    if (w.stuckInARow === 2) {
+      // Its Lead decides by itself; it isn't asked, and Ash isn't told (Alfred: "your workers ask you, not Ash").
+      w.verdict = { kind: "loop", reason: `${reason} · its Lead is on it`, since };
+      await this.host.tellLead(
+        row,
+        `Hourly check on "${title}": ${lowerFirst(reason)}, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief. Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
+      );
+      return;
+    }
+    if (w.stuckInARow === 3) {
+      // What its Lead did didn't unstick it: now it's Ash's, from its Lead's own chat, once.
+      w.verdict = { kind: "loop", reason: `${reason} · its Lead couldn't unstick it`, since };
+      await this.host.tellLead(
+        row,
+        `Hourly check on "${title}": still stuck after what you did (${lowerFirst(reason)}). Tell Ash now, in one plain line here: what's wrong and the one thing you need from him.`,
+      );
+      return;
+    }
+    // Later hours: the line keeps saying what happened; nobody is told again.
+    w.verdict = { kind: "loop", reason: `${reason} · its Lead couldn't unstick it`, since };
   }
 
   /** After a stuck verdict: a commit, a changed file or a passing test clears it at once. */
@@ -399,7 +450,7 @@ export class ProgressCheck {
     const s = progressSignals(w.base, snap, commits, this.options());
     if (s.commits || s.filesChanged || s.testsPassed) {
       w.stuckInARow = 0;
-      w.talkedOnly = false;
+      w.hoursWithout = 0;
       w.base = snap;
       w.lastCheckAt = now;
       this.clear(w);
@@ -409,24 +460,6 @@ export class ProgressCheck {
   private clear(w: Watched) {
     delete w.verdict;
     delete w.relookAt;
-  }
-
-  /** Long and costly runs: told to Ash, never stopped (no cost ceiling). */
-  private flagCost(row: Delegation, chat: WorkerChat, w: Watched, now: number) {
-    const o = this.options();
-    const long = Math.floor((now - w.since) / o.longRunMs);
-    if (long > w.longFlags) {
-      w.longFlags = long;
-      const hours = Math.round(((now - w.since) / HOUR) * 10) / 10;
-      const state = w.verdict ? "it's marked stuck" : w.talkedOnly ? "it's talking but hasn't saved anything this hour" : "it's still moving";
-      this.host.flagAsh(row, `Running ${hours} h and ${state}. There's no time cap; just letting you know.`);
-    }
-    const tokens = tallyTranscript(chat.blocks).tokens;
-    const costly = Math.floor(tokens / o.costlyTokens);
-    if (costly > w.tokenFlags) {
-      w.tokenFlags = costly;
-      this.host.flagAsh(row, `Has used about ${(tokens / 1_000_000).toFixed(1)} million tokens on this run. There's no cost cap; just letting you know.`);
-    }
   }
 
   /** Self-repair: a crashed or hung worker is retried with backoff, three times at most. */
@@ -468,9 +501,15 @@ export class ProgressCheck {
     if (r.gaveUp || now < r.nextAt) return;
     if (r.tries >= o.repairBackoffMs.length) {
       r.gaveUp = true;
+      const reason = gaveUpReason(row, r.tries + 1);
+      if (row.state === "running") {
+        // Its stall line now says what happened, over the watcher's minutes-scale one, until real progress clears it.
+        w.verdict = { kind: "loop", reason, since: wentWrongAt, final: true };
+        w.relookAt = now + o.relookMs;
+      }
       await this.host.tellLead(
         row,
-        `Self-repair gave up on "${titleOf(row)}" after ${r.tries} tries: ${row.state === "failed" ? lowerFirst(row.error?.trim() || "it keeps failing") : "it keeps going quiet"}. It's marked stuck; decide whether to retry it differently or tell Ash.`,
+        `"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently, split it, or stop it, then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
       );
       return;
     }
@@ -494,6 +533,17 @@ export class ProgressCheck {
     if (row.state !== "running") this.host.dropReport?.(row);
     await this.host.message(row, CONTINUE_PROMPT).catch(() => false);
   }
+}
+
+/** What self-repair saw before it gave up, in plain words: "Crashed 4 times, retries gave up: Claude exited with code 1". */
+export function gaveUpReason(row: Pick<Delegation, "state" | "stallKind" | "errorClass" | "error">, times: number): string {
+  if (row.state === "running")
+    return row.stallKind === "idle"
+      ? `Stopped without reporting back ${times} times, retries gave up`
+      : `Went quiet ${times} times, retries gave up`;
+  const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
+  const error = row.error?.trim().split("\n")[0];
+  return `${what} ${times} times, retries gave up${error && what === "Crashed" ? `: ${short(error, 120)}` : ""}`;
 }
 
 const lowerFirst = (text: string) => (text[0] && text[1] && text[1] === text[1].toLowerCase() ? text[0].toLowerCase() + text.slice(1) : text);

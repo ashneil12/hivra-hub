@@ -62,7 +62,8 @@ export function stallOptions(): StallOptions {
   };
 }
 
-export type Stall = { kind: StallKind; reason: string; since: number };
+/** `final`: the hourly check's self-repair gave up; its plain line wins over the watcher's own (workerProgress.ts). */
+export type Stall = { kind: StallKind; reason: string; since: number; final?: boolean };
 
 type WorkerChat = Pick<Session, "busy" | "blocks" | "pendingQuestion" | "queuedMessages" | "queueStatus" | "usageLimit" | "cwd">;
 
@@ -250,7 +251,7 @@ export class StallWatch {
     const own = waitsOnWorkers ? null : judgeStall(look, seen, now, this.host.options?.() ?? stallOptions());
     // Silence now (quiet, idle) says more than the hour's verdict; otherwise the hour's verdict stands while it holds.
     const hourly = waitsOnWorkers ? null : (this.host.hourly?.(row) ?? null);
-    const stall = own && own.kind !== "loop" ? own : (hourly ?? own);
+    const stall = hourly?.final ? hourly : own && own.kind !== "loop" ? own : (hourly ?? own);
     const changed = !!stall && (stall.kind !== stored || stall.reason !== (row.stallReason ?? ""));
     if (stall && changed && mode === "both") this.write(row, stall);
     // A stall only clears on something seen: activity after it began, or the worker now waiting on its own workers.

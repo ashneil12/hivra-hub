@@ -108,7 +108,7 @@ export class MemoryDelegations implements DelegationsBackend {
       settledAt: this.now,
       ...UNSTALLED,
     });
-    this.note(row, input.by ?? "app", "settled");
+    this.note(row, input.by ?? "app", "settled", { state: input.state });
     return { applied: true, row: this.copy(row) };
   }
 

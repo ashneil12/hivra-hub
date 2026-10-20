@@ -90,14 +90,33 @@ describe("stuck worker banners", () => {
     // The stall began before this run of the app started: nothing from before is announced. The failure, once.
     await act(async () => setDelegationRows([{ ...failed, version: 2, delivery: "delivered" }]));
     expect(banners()).toHaveLength(1);
+    // A Lead's stalled worker is its Lead's (the app retries it, then the Lead decides): its red line shows, no banner.
     await act(async () =>
       setDelegationRows([row("c", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: Date.now() })]),
     );
+    expect(banners()).toHaveLength(1);
+    // A worker with no Lead (a plain chat started it): its stall is Ash's, one banner.
+    await act(async () =>
+      setDelegationRows([
+        row("d", { ownerSession: "plain-chat", stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: Date.now() }),
+      ]),
+    );
     expect(banners()[1]).toEqual({
-      sessionId: "w-c",
-      subtitle: "EXO lead · Fix the save bug",
+      sessionId: "w-d",
+      subtitle: "its Lead · Fix the save bug",
       body: "Stuck: Stopped without reporting back · 1 min ago",
     });
+  });
+
+  it("leaves a Lead's crashed worker to its Lead, but a refusal only Ash can fix is his banner", async () => {
+    const at = Date.now();
+    await act(async () =>
+      setDelegationRows([
+        row("x", { state: "failed", error: "Claude exited with code 1", settledAt: at }),
+        row("y", { state: "failed", errorClass: "auth", settledAt: at }),
+      ]),
+    );
+    expect(banners().map((b) => b.sessionId)).toEqual(["w-y"]);
   });
 
   it("raises no banner for a worker's question its Lead can answer, but does once the Lead leaves it", async () => {

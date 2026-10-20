@@ -108,8 +108,32 @@ function clock(ms: number): string {
 
 const lowerFirst = (text: string) => (text[0] && text[1] && text[1] === text[1].toLowerCase() ? text[0].toLowerCase() + text.slice(1) : text);
 
-/** "Failed: usage limit reached, resets 3:10pm", "Failed: billing refused", "Failed: the build broke". */
-export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "resetsAt">): string {
+/** A failure the app retries by itself: its process died, or the provider failed for a moment (not a refusal or limit). */
+export function isCrash(row: Pick<Delegation, "state" | "errorClass">): boolean {
+  if (row.state !== "failed") return false;
+  return !isProviderErrorClass(row.errorClass) || row.errorClass === "overloaded" || row.errorClass === "provider_error";
+}
+
+/** How many times this row's work ended failed (its log keeps the newest fifty moves). */
+export function failedTimes(row: Pick<Delegation, "log">): number {
+  return (row.log ?? []).filter((entry) => entry.event === "settled" && entry.state === "failed").length;
+}
+
+/** Self-repair's tries (workerProgress.ts): more failures than this means its retries gave up. */
+const REPAIR_TRIES = 3;
+
+/**
+ * "Failed: usage limit reached, resets 3:10pm", "Failed: billing refused", "Failed: the build broke"; a crash that came
+ * back says so: "Crashed 4 times, retries gave up: Claude exited with code 1".
+ */
+export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "resetsAt"> & Partial<Pick<Delegation, "state" | "log">>): string {
+  const times = row.log ? failedTimes({ log: row.log }) : 0;
+  if (times >= 2 && isCrash({ state: row.state ?? "failed", errorClass: row.errorClass })) {
+    const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
+    const first = (row.error ?? "").trim().split("\n")[0].replace(/[.!?\s]+$/, "");
+    const words = what === "Crashed" && first ? `: ${first.length > 120 ? `${first.slice(0, 120).replace(/\s+\S*$/, "")}…` : first}` : "";
+    return `${what} ${times} times${times > REPAIR_TRIES ? ", retries gave up" : ""}${words}`;
+  }
   if (isProviderErrorClass(row.errorClass)) {
     const reset = row.errorClass === "usage_limit" && row.resetsAt ? clock(row.resetsAt) : "";
     return `Failed: ${PROVIDER_ERROR_LABEL[row.errorClass]}${reset ? `, resets ${reset}` : ""}`;
@@ -307,6 +331,8 @@ export function delegationLine(row: Delegation, now: number): string {
   if (stuck?.kind === "stalled") return stuck.line;
   if (stuck?.kind === "failed") return stuck.line;
   if (stuck?.kind === "asking") return "asking its Lead";
+  // How long it has run shows quietly from the first hour on (no time or cost pushes to Ash).
+  if (row.state === "running" && now - row.createdAt >= 60 * 60_000) return `working · ${minutes(now - row.createdAt)}`;
   return { running: "working", question: "asking its Lead", completed: "done", failed: "failed", cancelled: "stopped" }[row.state];
 }
 

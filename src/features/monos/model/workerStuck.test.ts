@@ -152,7 +152,9 @@ describe("what a Lead's work reads as", () => {
 
   it("reads one row as its state word for the rail", () => {
     expect(delegationLine(rows[1], NOW)).toBe("Repeating the same step: the tests (6 times)");
-    expect(delegationLine(rows[0], NOW)).toBe("working");
+    // A run past its first hour shows how long, quietly (no time or cost pushes to Ash).
+    expect(delegationLine(rows[0], NOW)).toBe("working · 1 h 30 min");
+    expect(delegationLine({ ...rows[0], createdAt: NOW - 59 * 60_000 }, NOW)).toBe("working");
   });
 });
 
