@@ -1749,6 +1749,19 @@ async function main() {
     else fail("cancelled_brief_stays_out", "A brief cancelled while it waits in a busy Lead's queue leaves the queue, the Lead isn't stopped, and a restart doesn't bring it back", JSON.stringify(cancelEvidence));
 
     // 12. One more restart, with everything idle: nothing goes in twice and no goal comes back.
+    // Idle includes Chief of Staff: its reports from this phase (goal A, goal B and the Lead's briefs) have gone in and
+    // its queue is empty. Under load the kill came while two still waited in its queue, and they went in after the
+    // lead-flow plan's launch, where check 17 read one as the report it was waiting for.
+    const cosSettled = await until(async () => {
+      if (!cosChat) return null;
+      const owed = (await query(db, "SELECT id, state, delivery FROM delegations WHERE owner_session = ?", cosChat)).filter(
+        (row) => row.state !== "running" && row.state !== "question" && (row.delivery === "pending" || row.delivery === "queued"),
+      );
+      const queue = await queueOf(cosChat);
+      const busyNow = (await inFlight()).some((entry) => entry.session_id === cosChat);
+      return !owed.length && !queue.messages.length && !busyNow ? true : null;
+    }, scale(90_000));
+    if (!cosSettled) log("Chief of Staff still had reports owed or queued at the idle restart (waited 90 s)");
     await sleep(scale(2_000));
     await kill("everything idle");
     await launch();
