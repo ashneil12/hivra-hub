@@ -56,11 +56,12 @@ import {
 } from "../features/hub/model/codingTeam";
 import {
   codingTeamNamed,
-  ensureMonoTeam,
+  ensureMonoWorkFolder,
   forgetMonoTeam,
-  isMonoTeamFolder,
+  isMonoWorkFolder,
   monoTeam,
   monoTeamName,
+  monoWorkFolder,
   nameMonoTeam,
   teamFor,
   useMonoTeamsVersion,
@@ -5299,8 +5300,8 @@ function Workspace({
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
       const team = leadCodingTeam(monoId);
-      // Any other Mono opens on its own (people, not work), or inside its own team (monoTeams.ts) when asked: its
-      // chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
+      // Any other Mono opens on its own, or inside its own team (monoTeams.ts) when it has one and that is asked for:
+      // its chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
       const own = !team && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
       if (team?.folder) {
         setHubSelection({ project: team.id, item: "coding-team" });
@@ -6360,7 +6361,8 @@ function Workspace({
         }
       }
       removeMono(monoId);
-      // Its team goes with it from the hub; the folder stays on disk with whatever its workers made (monoTeams.ts).
+      // Its own work and team go with it from the hub; the folder stays on disk with whatever its workers made
+      // (monoTeams.ts).
       forgetMonoTeam(monoId);
       if (lastMonoIdRef.current === monoId) lastMonoIdRef.current = undefined;
     },
@@ -6807,9 +6809,9 @@ function Workspace({
           // `onCwdChange` already moved to it.
           break;
       }
-      // Every project opened is remembered, the one chosen last most recently. A Mono's team folder is no project of
-      // Ash's (monoTeams.ts): it opens from its Mono, never from the recent list.
-      for (const step of steps) if (!isMonoTeamFolder(step.path)) setRecents(rememberProject(step.path));
+      // Every project opened is remembered, the one chosen last most recently. A Mono's own folder is no project of
+      // Ash's (monoTeams.ts): its team opens from its Mono, never from the recent list.
+      for (const step of steps) if (!isMonoWorkFolder(step.path)) setRecents(rememberProject(step.path));
     },
     [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
   );
@@ -12289,13 +12291,13 @@ function Workspace({
         }
         const sourceMono =
           monoForSession(source.id) ?? findMono(habitRunMono(source.id) ?? "");
-        // A Mono's own team's folder is its own too (monoTeams.ts): its workers run there.
-        const sourceTeam = sourceMono && codingTeamsOn() ? monoTeam(sourceMono.id) : undefined;
+        // A Mono's own folder is its own too (monoTeams.ts): its own workers run there, its team on or off.
+        const sourceOwnFolder = sourceMono && codingTeamsOn() ? monoWorkFolder(sourceMono.id) : undefined;
         const canAccessProject = (cwd: string) =>
           canAccessAgentAppProject(
             source,
             cwd,
-            sourceMono ? [...sourceMono.projects, ...(sourceTeam ? [sourceTeam.folder] : [])] : undefined,
+            sourceMono ? [...sourceMono.projects, ...(sourceOwnFolder ? [sourceOwnFolder] : [])] : undefined,
           );
         const sourceTurn = turnGen.current.get(source.id) ?? 0;
         const sourceTurns = isMonoSession(source.id)
@@ -12888,9 +12890,9 @@ function Workspace({
                         },
                       }
                     : {}),
-                  // Its own team's folder, once it has one (monoTeams.ts).
-                  ...(codingTeamsOn() && monoTeam(mono.id)
-                    ? { team: monoTeam(mono.id)!.folder }
+                  // Its own work's folder, once it has one (monoTeams.ts).
+                  ...(codingTeamsOn() && monoWorkFolder(mono.id)
+                    ? { ownFolder: monoWorkFolder(mono.id)! }
                     : {}),
                 }
               );
@@ -12923,16 +12925,16 @@ function Workspace({
                 sessionsRef.current = next;
                 flushSync(() => setSessions(next));
               },
-              // Sub-chats only ever live in a team (monoTeams.ts): a Mono hands a project's work to its coding team and
-              // starts workers of its own only in its own team's folder. A hub thing: plain MonoCode has no teams.
+              // Where a Mono's work goes (monoTeams.ts): a project's work to its coding team, its own work to its own
+              // folder (its sub-chats, or its team's when Ash gave it one). A hub thing: plain MonoCode has no teams.
               ...(codingTeamsOn()
                 ? {
                     monoWork: {
                       isLead: (monoId: string) => !!leadFor(monoId),
                       codingTeam: (named: string) => codingTeamNamed(named, hubData().listProjects()),
-                      ownTeam: async (mono: { id: string; name?: string }) => {
-                        const team = await ensureMonoTeam(mono.id);
-                        return { folder: team.folder, name: monoTeamName(mono.name) };
+                      ownWork: async (mono: { id: string; name?: string }) => {
+                        const work = await ensureMonoWorkFolder(mono.id);
+                        return { folder: work.folder, ...(work.on ? { team: monoTeamName(mono.name) } : {}) };
                       },
                     },
                   }

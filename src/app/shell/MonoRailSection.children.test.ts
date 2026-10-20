@@ -18,7 +18,7 @@ import { resetStuckDismissals } from "../../features/monos/model/workerStuck";
 import { setHubDataSource, hubData } from "../../features/hub/model/hubData";
 import { ensureProjectLeads } from "../../features/hub/model/hubLeads";
 import { setCodingTeamOpener, setHubSelection, setMonoTeamOpener } from "../../features/hub/model/hubNav";
-import { ensureMonoTeam, resetMonoTeams } from "../../features/hub/model/monoTeams";
+import { resetMonoTeams, setMonoTeam } from "../../features/hub/model/monoTeams";
 import type { HubProject } from "../../features/hub/model/types";
 import { MonoRailSection } from "./MonoRailSection";
 
@@ -187,7 +187,7 @@ describe("Open team (the hub)", () => {
     const alfred = createMono();
     updateMono(alfred.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
     const plain = createMono();
-    await ensureMonoTeam(alfred.id, async (id) => `/data/mono-teams/${id}`);
+    await setMonoTeam(alfred.id, true, async (id) => `/data/mono-teams/${id}`);
     setDelegationRows([row("t-1", "w1", exo, "lead-chat", "running"), row("t-2", "w2", alfred.id, "alfred-chat", "running")]);
     const onOpen = vi.fn();
     mount(new Map(), true, onOpen);

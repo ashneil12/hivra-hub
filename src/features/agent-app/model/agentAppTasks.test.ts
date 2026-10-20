@@ -449,72 +449,85 @@ describe("tasks.delegate", () => {
     expect(started).toHaveLength(0);
   });
 
-  // Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
-  // with the coding team. IF they do need to do work ... something like coding team should be created for that mono".
-  describe("a Mono's work goes to a team (monoTeams.ts)", () => {
-    const TEAM = "/data/mono-teams/alfred";
-    function alfred(rows: Delegation[] = []) {
+  // Ash, 20 Oct: a project's work "should either do it itself or pick it up with the coding team"; a Mono's own work keeps
+  // its sub-chats ("the mono sub chat setup is good too ... so team can be optional").
+  describe("where a Mono's work goes (monoTeams.ts)", () => {
+    const OWN = "/data/mono-teams/alfred";
+    function alfred(rows: Delegation[] = [], teamOn = false) {
       const fx = fixture(rows);
-      const ownTeam = vi.fn(async () => ({ folder: TEAM, name: "Alfred's team" }));
+      const ownWork = vi.fn(async () => ({ folder: OWN, ...(teamOn ? { team: "Alfred's team" } : {}) }));
       fx.api.monoWork = {
         isLead: (id) => id === "vg-game-lead",
         codingTeam: (named) =>
           named === "vg-game" || named === PROJECT || named === "EXO"
             ? { projectId: "vg-game", leadName: "EXO lead", name: "EXO coding team" }
             : undefined,
-        ownTeam,
+        ownWork,
       };
-      // Alfred works on EXO too; its team's folder is its own once it has one.
-      (fx.host as { monoOf: unknown }).monoOf = () => ({ id: "alfred", name: "Alfred", projects: [PROJECT], team: TEAM });
-      return { ...fx, ownTeam };
+      // Alfred works on EXO too; its own folder is its own once it has one.
+      (fx.host as { monoOf: unknown }).monoOf = () => ({ id: "alfred", name: "Alfred", projects: [PROJECT], ownFolder: OWN });
+      return { ...fx, ownWork };
     }
 
     it("sends a project's work to that project's coding team, never to a worker of its own", async () => {
-      const { source, host, started, ownTeam } = alfred();
+      const { source, host, started, ownWork } = alfred();
       for (const project of ["vg-game", PROJECT, "EXO"])
         await expect(
           handleAgentApp(source, `r-${project.length}`, "tasks.delegate", { brief: "Fix the save bug.", project }, host),
         ).rejects.toThrow(`has a coding team: hand its work to EXO coding team instead, with delegate_task and lead "vg-game"`);
       expect(started).toHaveLength(0);
-      expect(ownTeam).not.toHaveBeenCalled();
+      expect(ownWork).not.toHaveBeenCalled();
     });
 
-    it("starts its own work in its own team, made the first time, nested under its chat", async () => {
+    it("starts its own work in its own folder, made the first time, as a sub-chat under its chat (no team by default)", async () => {
       const rows: Delegation[] = [];
-      const { source, host, started, ownTeam } = alfred(rows);
+      const { source, host, started, ownWork } = alfred(rows);
       const result = await handleAgentApp(source, "r-own", "tasks.delegate", { brief: "Research the launch copy.", title: "Launch copy" }, host);
-      expect(ownTeam).toHaveBeenCalledWith(expect.objectContaining({ id: "alfred" }));
+      expect(ownWork).toHaveBeenCalledWith(expect.objectContaining({ id: "alfred" }));
       const [launch, id, , notify, meta] = started[0] as [Record<string, unknown>, string, unknown, string, Record<string, unknown>];
-      // Its chat is `app-<Alfred's chat>-<request>` in the team's folder: the team's list nests it under Alfred's chat.
+      // Its chat is `app-<Alfred's chat>-<request>`, owned by Alfred's chat: the rail nests it under Alfred.
       expect(id).toBe("app-mono-exo-r-own");
       expect(notify).toBe("mono-exo");
-      expect(launch).toMatchObject({ cwd: TEAM, workspaceMode: "current", reveal: false });
+      expect(launch).toMatchObject({ cwd: OWN, workspaceMode: "current", reveal: false });
       expect(String(launch.prompt).startsWith("[MonoCode brief from Alfred]\n\nResearch the launch copy.")).toBe(true);
       // Not a hub project: the row carries no project.
       expect(meta).toEqual({ title: "Launch copy", askIds: [] });
-      expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-own", cwd: TEAM, team: "Alfred's team" });
-      expect((result as { note: string }).note).toContain("Running in Alfred's team, where its chat shows under yours");
+      expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-own", cwd: OWN });
+      expect(result).not.toHaveProperty("team");
+      expect((result as { note: string }).note).toMatch(/^Running\. Its report comes back/);
       // A second worker there shares the folder: it isn't a repository, so there is no checkout of its own to make (the
       // bench, 20 Oct: one was asked for, never made, and the worker never ran). Asking for one is refused.
-      expect(rows[0].project).toBe(TEAM);
+      expect(rows[0].project).toBe(OWN);
       const second = await handleAgentApp(source, "r-own-2", "tasks.delegate", { brief: "Draft the post." }, host);
-      expect((started[1] as [Record<string, unknown>])[0]).toMatchObject({ cwd: TEAM, workspaceMode: "current" });
+      expect((started[1] as [Record<string, unknown>])[0]).toMatchObject({ cwd: OWN, workspaceMode: "current" });
       expect(second).not.toHaveProperty("isolation");
       await expect(
         handleAgentApp(source, "r-own-wt", "tasks.delegate", { brief: "Draft it again.", isolation: "worktree" }, host),
       ).rejects.toThrow("isn't a repository");
-      // Naming its own team's folder is the same.
-      await handleAgentApp(source, "r-own-3", "tasks.delegate", { brief: "Check the draft.", project: TEAM }, host);
-      expect((started[2] as [Record<string, unknown>])[0]).toMatchObject({ cwd: TEAM });
+      // Naming its own folder is the same.
+      await handleAgentApp(source, "r-own-3", "tasks.delegate", { brief: "Check the draft.", project: OWN }, host);
+      expect((started[2] as [Record<string, unknown>])[0]).toMatchObject({ cwd: OWN });
+    });
+
+    it("with its own team switched on, runs that work in its team, where its chat shows under the Mono's", async () => {
+      const { source, host, started } = alfred([], true);
+      const result = await handleAgentApp(source, "r-team", "tasks.delegate", { brief: "Research the launch copy.", title: "Launch copy" }, host);
+      expect((started[0] as [Record<string, unknown>])[0]).toMatchObject({ cwd: OWN, workspaceMode: "current" });
+      expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-team", cwd: OWN, team: "Alfred's team" });
+      expect((result as { note: string }).note).toContain("Running in Alfred's team, where its chat shows under yours");
+      // A project's work still goes to its coding team.
+      await expect(
+        handleAgentApp(source, "r-team-exo", "tasks.delegate", { brief: "Fix the save bug.", project: "EXO" }, host),
+      ).rejects.toThrow("has a coding team");
     });
 
     it("leaves a Lead, a coding-team chat and a project with no coding team as they were", async () => {
       // The Lead starts its workers in its project, as before.
       const lead = fixture();
-      lead.api.monoWork = { isLead: () => true, codingTeam: () => ({ projectId: "vg-game", leadName: "EXO lead", name: "EXO coding team" }), ownTeam: vi.fn() };
+      lead.api.monoWork = { isLead: () => true, codingTeam: () => ({ projectId: "vg-game", leadName: "EXO lead", name: "EXO coding team" }), ownWork: vi.fn() };
       await handleAgentApp(lead.source, "r-lead", "tasks.delegate", { brief: "Fix it.", project: "vg-game" }, lead.host);
       expect((lead.started[0] as [Record<string, unknown>])[0]).toMatchObject({ cwd: PROJECT });
-      expect(lead.api.monoWork.ownTeam).not.toHaveBeenCalled();
+      expect(lead.api.monoWork.ownWork).not.toHaveBeenCalled();
       // A folder of its own that is no hub project has no coding team: a worker may start there.
       const { source, host, started } = alfred();
       (host as { monoOf: unknown }).monoOf = () => ({ id: "alfred", name: "Alfred", projects: [PROJECT, "/tmp/scratch"] });

@@ -5,9 +5,10 @@
 //
 // - Only the chats Ash talks to have tasks: a Mono's own chat and a chat in a project's coding team (hub/model/
 //   codingTeam.ts). Not a habit run, a worker, another plain chat or the checker (it only reads).
-// - Sub-chats only ever live in a team (hub/model/monoTeams.ts; Ash, 20 Oct): a project's Lead and a coding-team chat
-//   start workers in their project, while any other Mono hands a project's work to that project's coding team (a brief
-//   to its Lead, `lead`) and starts workers only for work of its own, in its own team's folder.
+// - Where a Mono's work goes (hub/model/monoTeams.ts; Ash, 20 Oct): a project's Lead and a coding-team chat start
+//   workers in their project, while any other Mono hands a project's work to that project's coding team (a brief to its
+//   Lead, `lead`) and starts workers only for work of its own, in its own folder: sub-chats under it in the Monos rail,
+//   or in its own team when Ash gave it one.
 // - A chat sees and moves only its own rows. control.rs ties the app token to the chat it was made for and the store
 //   answers by owner, so a model that knows another chat's task id still gets "no task of yours".
 // - Calls work only inside the caller's active turn (control.rs), and each one answers within control.rs's 35 s:
@@ -117,8 +118,11 @@ export type AgentAppTasksHost = {
     isLead(monoId: string): boolean;
     /** The coding team a project the Mono named is (it has a Lead): its work goes there as a brief to that Lead. */
     codingTeam(named: string): { projectId: string; leadName: string; name: string } | undefined;
-    /** The Mono's own team, made the first time it hands out work of its own: its folder and name. */
-    ownTeam(mono: { id: string; name?: string }): Promise<{ folder: string; name: string }>;
+    /**
+     * The folder the Mono's own work runs in, made the first time it hands out such work, and its team's name when Ash
+     * gave it one (its workers then show in that team rather than under it in the Monos rail).
+     */
+    ownWork(mono: { id: string; name?: string }): Promise<{ folder: string; team?: string }>;
   };
   /**
    * A Mono briefs a project's Lead in its own long-running chat instead of starting a worker (double delegation,
@@ -443,9 +447,9 @@ async function delegate(
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
   if (owner.team && named !== undefined && named !== owner.team.project && (tasks.hubProjectFolder?.(named) ?? named) !== owner.team.folder)
     throw new Error(`A coding-team chat delegates on its own project (${owner.team.project}). Leave out project.`);
-  // Every Mono but a Lead works through teams (hub/model/monoTeams.ts): a project's work goes to its coding team as a
-  // brief to its Lead, and its own work to a worker in its own team's folder, made the first time.
-  let ownTeam: { folder: string; name: string } | undefined;
+  // Every Mono but a Lead hands a project's work to its coding team, as a brief to its Lead (hub/model/monoTeams.ts), and
+  // runs its own work in its own folder, made the first time: its sub-chats, or its team's when it has one.
+  let ownWork: { folder: string; team?: string } | undefined;
   if (owner.mono && tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id)) {
     const team = named !== undefined ? tasks.monoWork.codingTeam(named) : undefined;
     if (team)
@@ -453,12 +457,12 @@ async function delegate(
         `${named} has a coding team: hand its work to ${team.name} instead, with delegate_task and lead "${team.projectId}" (the brief goes to ${team.leadName}, its workers show in ${team.name}, and its report comes back to you). A small fix you can make yourself, here.`,
       );
     if (named === undefined) {
-      // A team's folder is no repository: its workers share it, never a checkout of their own.
+      // Its own folder is no repository: its workers share it, never a checkout of their own.
       if (asked === "worktree")
         throw new Error(
-          "Your own team's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
+          "Your own work's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
         );
-      ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+      ownWork = await tasks.monoWork.ownWork(owner.mono);
     }
   }
   const model = taskModel(input.model, source);
@@ -478,8 +482,8 @@ async function delegate(
       source,
       {
         prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
-        ...(ownTeam
-          ? { project: ownTeam.folder }
+        ...(ownWork
+          ? { project: ownWork.folder }
           : named !== undefined && !owner.team
             ? { project: tasks.hubProjectFolder?.(named) ?? named }
             : {}),
@@ -496,8 +500,8 @@ async function delegate(
   // Several workers in one repo at once each get a checkout of their own unless the chat said "shared": the baseline
   // (20 Oct) had two in one checkout stopping each other's dev server.
   const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
-  // Never in a Mono's own team: its folder is no repository (the checkout would never be made, and the worker never run).
-  const auto = !ownTeam && asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+  // Never in a Mono's own folder: it is no repository (the checkout would never be made, and the worker never run).
+  const auto = !ownWork && asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
   const meta = {
@@ -531,10 +535,10 @@ async function delegate(
       : {}),
     // Its port, which its brief tells it to use for any server it starts.
     port,
-    // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
-    ...(ownTeam ? { team: ownTeam.name } : {}),
+    // A Mono with a team of its own: the worker's chat shows there, under the Mono's.
+    ...(ownWork?.team ? { team: ownWork.team } : {}),
     note: row
-      ? `Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
+      ? `Running${ownWork?.team ? ` in ${ownWork.team}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
       : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }
