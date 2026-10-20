@@ -19,7 +19,7 @@ soul, chat ids only in WebView storage).
   lead will now ...") plus what was skipped for his edits; no diff, no paths. A soul with no recorded template (the
   live 15 Oct leads) is swapped only when it is exactly a soul the app once seeded (`knownSouls.generated.ts`, SHA-256s
   from git history: `node scripts/known-souls.mjs`, `--check` to verify); otherwise it is left alone with a plain row
-  and no Undo ("Hivra lead's soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.").
+  and no Undo ("Hivra lead's soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.").
 - **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
 - **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
   leadership can oversee it and set tasks, but isn't required."

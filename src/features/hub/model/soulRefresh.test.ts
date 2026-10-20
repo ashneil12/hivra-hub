@@ -300,7 +300,7 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     const rows = botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "lead-x");
     expect(rows).toHaveLength(1);
     const c = rows[0].kind === "one" ? rows[0].change : undefined;
-    expect(c?.line).toBe("Hivra lead's soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.");
+    expect(c?.line).toBe("Hivra lead's soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.");
     expect(c?.note).toBe(true);
     expectPlain(c!.line);
     // Nothing to undo, and the next pass doesn't say it again.

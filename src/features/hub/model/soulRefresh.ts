@@ -16,7 +16,7 @@
 //   as the 15 Oct leads), the soul is swapped only when it is exactly a soul the app itself once seeded
 //   (knownSouls.generated.ts, built from git history by scripts/known-souls.mjs); if it differs at all, Ash may have
 //   edited it, so it is left alone and a plain row says so ("Hivra lead's soul has your own changes, so the app's update
-//   was skipped. Ask me to merge it if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
+//   was skipped. Ask Alfred to merge it if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
 //   adds any new template ones.
 // - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
@@ -248,9 +248,9 @@ export function templateFingerprint(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone. */
+/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name and pointing to Alfred, who looks after souls. */
 export function skippedLine(name: string): string {
-  return `${name}'s soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.`;
+  return `${name}'s soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.`;
 }
 
 async function sha256(text: string): Promise<string> {
