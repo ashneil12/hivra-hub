@@ -54,9 +54,12 @@ const sha = (text) => crypto.createHash("sha256").update(norm(text)).digest("hex
 
 function versions(file) {
   const commits = git("log", "--all", "--format=%H %cs", "--", file).trim().split("\n").filter(Boolean).map((l) => l.split(" "));
-  // Oldest first, so each soul is labelled with the first commit that seeded it (stable as history grows).
-  const out = commits.reverse().map(([c, day]) => ({ from: `${c.slice(0, 8)} ${day}`, source: git("show", `${c}:${file}`) }));
-  if (fs.existsSync(path.join(root, file))) out.push({ from: "not committed yet", source: fs.readFileSync(path.join(root, file), "utf8") });
+  // Oldest first, so each soul is labelled with the day it was first seeded (stable as history grows).
+  // Labelled by day only, so a soul written in the working tree keeps its label once it is committed (same day).
+  const out = commits.reverse().map(([c, day]) => ({ from: day, source: git("show", `${c}:${file}`) }));
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (fs.existsSync(path.join(root, file))) out.push({ from: today, source: fs.readFileSync(path.join(root, file), "utf8") });
   return out;
 }
 
