@@ -12,18 +12,21 @@
 //   Undo, which puts the old soul back. An undone refresh is never made again for that template.
 // - Ash's hand edits win. With a recorded template, only the sections he left as they were take the new text; ones he
 //   rewrote stay as he wrote them, ones he deleted stay deleted, ones he added stay, and the row says in plain words
-//   which parts of the app's update were skipped because of that. Without one (Monos seeded before this existed), his
-//   edits can't be told from the old wording, so every section takes the template, sections he added stay, and the row
-//   says so: the saved old soul and Undo are how he gets his wording back. "## Skills" (the skills a Mono picked up)
-//   keeps every skill and adds any new template ones.
+//   which parts of the app's update were skipped because of that. Without one (Monos seeded before this existed, such
+//   as the 15 Oct leads), the soul is swapped only when it is exactly a soul the app itself once seeded
+//   (knownSouls.generated.ts, built from git history by scripts/known-souls.mjs); if it differs at all, Ash may have
+//   edited it, so it is left alone and a plain row says so ("Hivra lead's soul has your own changes, so the app's update
+//   was skipped. Ask me to merge it if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
+//   adds any new template ones.
 // - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
 import { listMonos, type Mono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { findBotChange, recordBotChange } from "./botChanges";
+import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
 import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
 import { leadFor, leadSoul } from "./hubLeads";
+import { KNOWN_SOUL_HASHES } from "./knownSouls.generated";
 import { TEAM_SOULS } from "./teamSouls";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
@@ -33,7 +36,24 @@ export function oldSoulNote(day: string, fingerprint?: string): AgentFilePath {
   return `memory/soul-before-refresh-${day}${fingerprint ? `-${fingerprint}` : ""}.md`;
 }
 
-export type SoulTemplate = { monoId: string; name: string; template: string };
+/** A Lead's own values in its soul, as the tokens scripts/known-souls.mjs hashed them with (keep the two in step). */
+export const SOUL_TOKENS = {
+  id: "\u27e6id\u27e7",
+  name: "\u27e6name\u27e7",
+  projectName: "\u27e6projectName\u27e7",
+  projectId: "\u27e6projectId\u27e7",
+  folder: "\u27e6folder\u27e7",
+} as const;
+
+export type SoulValues = Partial<Record<keyof typeof SOUL_TOKENS, string | null>>;
+
+export type SoulTemplate = {
+  monoId: string;
+  name: string;
+  template: string;
+  /** A Lead's: the values its soul was seeded with, so a past seed can be recognised. */
+  values?: SoulValues;
+};
 
 /** The template each Mono on the roster follows today: the team's souls, each Lead's and the checker's. */
 export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplate[] {
@@ -42,7 +62,11 @@ export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplat
     const spec = teamSpecOf(mono);
     if (spec && TEAM_SOULS[spec.id]) return [{ monoId: mono.id, name, template: defaultSoul(TEAM_SOULS[spec.id]) }];
     const lead = leadFor(mono.id);
-    if (lead) return [{ monoId: mono.id, name, template: defaultSoul(leadSoul({ ...lead, id: mono.id }, mono.projects[0] ?? null)) }];
+    if (lead) {
+      const folder = mono.projects[0] ?? null;
+      const values = { id: mono.id, name: lead.name, projectName: lead.projectName, projectId: lead.projectId, folder };
+      return [{ monoId: mono.id, name, template: defaultSoul(leadSoul({ ...lead, id: mono.id }, folder)), values }];
+    }
     if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(CHECKER_SOUL) }];
     return [];
   });
@@ -203,7 +227,7 @@ export function sectionSentence(key: string, name: string): string {
   return fill(known ?? `{name}'s “${heading(key)}” part is updated to the app's newer wording.`, name);
 }
 
-/** The Bot changes row's sentences: what changes, then what was skipped for Ash's own edits, then the backup. */
+/** The Bot changes row's sentences: what changes, then what was skipped for Ash's own edits. */
 export function refreshSentences(plan: Extract<RefreshPlan, { kind: "apply" }>, name: string): string[] {
   const part = (key: string) => (key ? `“${heading(key)}”` : "opening");
   return [
@@ -211,9 +235,6 @@ export function refreshSentences(plan: Extract<RefreshPlan, { kind: "apply" }>, 
     ...plan.dropped.map((key) => `${name} no longer has the ${part(key)} part; the app dropped it.`),
     ...plan.skipped.map((key) => `You had changed ${name}'s ${part(key)} part yourself, so your version stays and the app's update to it was skipped.`),
     ...plan.keptDropped.map((key) => `You had changed ${name}'s ${part(key)} part yourself, so it stays even though the app dropped it.`),
-    ...(plan.knownBaseline
-      ? []
-      : [`The app couldn't tell your own edits from its old wording here, so the whole old soul is saved in ${name}'s memory and Undo puts it back.`]),
   ];
 }
 
@@ -225,6 +246,32 @@ export function templateFingerprint(text: string): string {
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone. */
+export function skippedLine(name: string): string {
+  return `${name}'s soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.`;
+}
+
+async function sha256(text: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Whether `soul` is exactly a soul the app once seeded (any version in git history), with a Lead's own values put back
+ * as tokens. Anything else, even one character, may be Ash's edit. The hub's own Lead keeps "hub" as its project id:
+ * the word is in the soul's own text too.
+ */
+export async function isKnownSeededSoul(soul: string, values: SoulValues = {}): Promise<boolean> {
+  let text = norm(soul);
+  const swaps = (Object.keys(SOUL_TOKENS) as (keyof typeof SOUL_TOKENS)[])
+    .filter((k) => !(k === "projectId" && values.projectId === "hub"))
+    .map((k) => [values[k]?.trim() ?? "", SOUL_TOKENS[k]] as const)
+    .filter(([value]) => value.length > 0)
+    .sort((a, b) => b[0].length - a[0].length);
+  for (const [value, token] of swaps) text = text.split(value).join(token);
+  return KNOWN_SOUL_HASHES.has(await sha256(text));
 }
 
 type Files = {
@@ -243,22 +290,37 @@ async function saveChecked(files: Files, monoId: string, path: AgentFilePath, te
 
 /**
  * One pass over every Mono with a template: records the template for souls that match it and refreshes the rest, each
- * as a Bot changes row with Undo. Returns the ids it refreshed and the ids whose template it recorded.
+ * as a Bot changes row with Undo; a soul with no recorded template that isn't a known seed is left alone, with a note
+ * row. Returns the ids it refreshed, recorded the template for, and skipped.
  */
 export async function refreshSouls(
   files: Files = { read: readAgentFile, write: writeAgentFile },
   templates: SoulTemplate[] = soulTemplates(),
   now: Date = new Date(),
-): Promise<{ refreshed: string[]; recorded: string[] }> {
+): Promise<{ refreshed: string[]; recorded: string[]; skipped: string[] }> {
   const refreshed: string[] = [];
   const recorded: string[] = [];
-  for (const { monoId, name, template } of templates) {
+  const skipped: string[] = [];
+  for (const { monoId, name, template, values } of templates) {
     try {
       const soul = await files.read(monoId, "SOUL.md");
       // Not seeded yet: its creation writes the current template.
       if (soul.text == null) continue;
       const last = await files.read(monoId, SOUL_TEMPLATE_FILE);
-      const plan = planSoulRefresh(soul.text, template, last.text);
+      let baseline = last.text;
+      if (baseline == null && norm(soul.text) !== norm(template)) {
+        // No recorded template: only a soul the app itself seeded, untouched, is swapped (then it is its own baseline).
+        if (!(await isKnownSeededSoul(soul.text, values))) {
+          const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
+          if (!findBotChange(id)) {
+            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
+            skipped.push(monoId);
+          }
+          continue;
+        }
+        baseline = soul.text;
+      }
+      const plan = planSoulRefresh(soul.text, template, baseline);
       if (plan.kind === "current") {
         if (last.text !== template) {
           await files.write(monoId, SOUL_TEMPLATE_FILE, template, last.hash);
@@ -303,7 +365,7 @@ export async function refreshSouls(
       /* this Mono's files can't be read or saved now: the next pass tries again */
     }
   }
-  return { refreshed, recorded };
+  return { refreshed, recorded, skipped };
 }
 
 let running: Promise<unknown> | undefined;

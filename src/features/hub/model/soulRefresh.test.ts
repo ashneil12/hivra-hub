@@ -5,7 +5,9 @@
 // mono_read / mono_save commands (hash-checked, like mono.rs).
 import { beforeEach, describe, expect, it } from "vitest";
 import { botChangeRows, findBotChange, redoBotChange, setBotFiles, undoBotChange } from "./botChanges";
+import { LIVE_15_OCT_LEAD_SOULS } from "./testdata/leadSouls15Oct";
 import {
+  isKnownSeededSoul,
   planSoulRefresh,
   refreshSouls,
   SECTION_SENTENCES,
@@ -129,10 +131,11 @@ describe("planSoulRefresh", () => {
 describe("refreshSouls: a soul behind its template is refreshed on its own, with Undo", () => {
   const templates = [{ monoId: "hivra-lead", name: "Hivra lead", template: NEW_LEAD }];
 
-  it("refreshes the 15 Oct lead soul without a click, saves the old soul first, and Undo / Redo work", async () => {
+  it("refreshes a soul behind its template without a click, saves the old soul first, and Undo / Redo work", async () => {
     const f = fakeFiles();
     f.set("hivra-lead", "SOUL.md", OLD_LEAD);
-    expect(await refreshSouls(f, templates, DAY)).toEqual({ refreshed: ["hivra-lead"], recorded: [] });
+    f.set("hivra-lead", SOUL_TEMPLATE_FILE, OLD_LEAD);
+    expect(await refreshSouls(f, templates, DAY)).toEqual({ refreshed: ["hivra-lead"], recorded: [], skipped: [] });
     // Applied there and then.
     expect(f.get("hivra-lead", "SOUL.md")).toContain("Your workers ask you, not Ash.");
     expect(f.get("hivra-lead", SOUL_TEMPLATE_FILE)).toBe(NEW_LEAD);
@@ -144,12 +147,11 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
     const c = row.change;
     expect(c.day).toBe("Today");
     expect(c.undone).toBeFalsy();
-    // One plain sentence per section that changed, then the note about the old soul.
+    // One plain sentence per section that changed.
     expect(c.details).toEqual([
       "Hivra lead will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
       "Hivra lead will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
       "Hivra lead picks up the app's newer skills and keeps the ones it learned.",
-      "The app couldn't tell your own edits from its old wording here, so the whole old soul is saved in Hivra lead's memory and Undo puts it back.",
     ]);
     expect(c.line).toBe(`${c.details![0]} (and 2 more)`);
     for (const text of [c.line, c.now, c.after, ...c.details!]) expectPlain(text);
@@ -194,15 +196,16 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
   it("records the template for a soul already on it, and changes nothing", async () => {
     const f = fakeFiles();
     f.set("lead-c", "SOUL.md", NEW_LEAD);
-    expect(await refreshSouls(f, [{ ...templates[0], monoId: "lead-c" }], DAY)).toEqual({ refreshed: [], recorded: ["lead-c"] });
+    expect(await refreshSouls(f, [{ ...templates[0], monoId: "lead-c" }], DAY)).toEqual({ refreshed: [], recorded: ["lead-c"], skipped: [] });
     expect(f.get("lead-c", SOUL_TEMPLATE_FILE)).toBe(NEW_LEAD);
-    expect(await refreshSouls(f, [{ ...templates[0], monoId: "lead-c" }], DAY)).toEqual({ refreshed: [], recorded: [] });
+    expect(await refreshSouls(f, [{ ...templates[0], monoId: "lead-c" }], DAY)).toEqual({ refreshed: [], recorded: [], skipped: [] });
     expect(botChangeRows().some((r) => r.kind === "one" && r.change.monoId === "lead-c")).toBe(false);
   });
 
   it("a later template refreshes again, keeping each old soul in its own note", async () => {
     const f = fakeFiles();
     f.set("lead-d", "SOUL.md", OLD_LEAD);
+    f.set("lead-d", SOUL_TEMPLATE_FILE, OLD_LEAD);
     await refreshSouls(f, [{ ...templates[0], monoId: "lead-d" }], DAY);
     const first = f.get("lead-d", "SOUL.md")!;
     const newer = [{ ...templates[0], monoId: "lead-d", template: NEW_LEAD.replace("- Start-ack: your first reply cites the brief.", "- Start-ack: cite the brief and what started.") }];
@@ -215,6 +218,7 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
   it("leaves a soul Ash saved meanwhile alone (nothing recorded), and takes it up on the next pass", async () => {
     const f = fakeFiles();
     f.set("lead-e", "SOUL.md", OLD_LEAD);
+    f.set("lead-e", SOUL_TEMPLATE_FILE, OLD_LEAD);
     const realWrite = f.write;
     let raced = false;
     const racing = {
@@ -238,7 +242,73 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
 
   it("skips a Mono that hasn't been seeded yet", async () => {
     const f = fakeFiles();
-    expect(await refreshSouls(f, templates, DAY)).toEqual({ refreshed: [], recorded: [] });
+    expect(await refreshSouls(f, templates, DAY)).toEqual({ refreshed: [], recorded: [], skipped: [] });
+  });
+});
+
+describe("refreshSouls with no recorded template: only a soul the app itself seeded is swapped", () => {
+  const hivra = LIVE_15_OCT_LEAD_SOULS[0];
+  const lead = { id: "hivra-lead", name: "Hivra lead", projectName: "Hivra", projectId: "hivra" } as Parameters<typeof leadSoul>[0];
+  const template = defaultSoul(leadSoul(lead, hivra.values.folder));
+  const hivraTemplate = [{ monoId: "hivra-lead", name: "Hivra lead", template, values: hivra.values }];
+
+  it("knows the three live 15 Oct lead souls (Alfred: untouched) as souls the app shipped", async () => {
+    expect(LIVE_15_OCT_LEAD_SOULS.map((l) => [l.monoId, new TextEncoder().encode(l.soul).length])).toEqual([
+      ["hivra-lead", 2023],
+      ["nibbii-lead", 2015],
+      ["vg-game-lead", 2025],
+    ]);
+    for (const l of LIVE_15_OCT_LEAD_SOULS) expect(await isKnownSeededSoul(l.soul, l.values)).toBe(true);
+    // One changed character and it isn't.
+    expect(await isKnownSeededSoul(hivra.soul.replace("one row.", "one row!"), hivra.values)).toBe(false);
+    // Today's templates are known too: the team's, a Lead's, the hub's own Lead's and the checker's.
+    const monos = [
+      { id: "chief-of-staff", name: "Chief of Staff", mascot: "letter", color: "x", projects: [] },
+      { id: "nibbii-lead", name: "Nibbii lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/nibbii"] },
+      { id: "hub-lead", name: "MonoCode Hub lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/monocode-hub"] },
+      { id: "checker", name: "Checker", mascot: "robot", color: "x", projects: [] },
+    ];
+    for (const t of soulTemplates(monos)) expect([t.monoId, await isKnownSeededSoul(t.template, t.values)]).toEqual([t.monoId, true]);
+  });
+
+  it("swaps the untouched 15 Oct Hivra lead soul for today's, old soul saved, with Undo", async () => {
+    const f = fakeFiles();
+    f.set("hivra-lead", "SOUL.md", hivra.soul);
+    expect(await refreshSouls(f, hivraTemplate, DAY)).toEqual({ refreshed: ["hivra-lead"], recorded: [], skipped: [] });
+    const soul = f.get("hivra-lead", "SOUL.md")!;
+    expect(soul.replace(/\s+$/, "")).toBe(template.replace(/\s+$/, ""));
+    expect(soul).toContain("Your workers ask you, not Ash");
+    expect(soul).not.toContain("ash_ask_ash");
+    expect(f.get("hivra-lead", NOTE)).toBe(hivra.soul);
+    expect(f.get("hivra-lead", SOUL_TEMPLATE_FILE)).toBe(template);
+    const c = findBotChange(`soul-refresh:hivra-lead:${templateFingerprint(template)}`)!;
+    expect(c.details!.some((d) => d.startsWith("Hivra lead will now confirm when work has really started"))).toBe(true);
+    for (const text of [c.line, ...c.details!]) expectPlain(text);
+    await undoBotChange([c.id]);
+    expect(f.get("hivra-lead", "SOUL.md")).toBe(hivra.soul);
+  });
+
+  it("leaves an edited soul alone, with one plain row and no Undo", async () => {
+    const f = fakeFiles();
+    const edited = hivra.soul.replace("- Parallel work is fine.", "- Ash: never touch the token page.\n- Parallel work is fine.");
+    f.set("lead-x", "SOUL.md", edited);
+    const t = [{ ...hivraTemplate[0], monoId: "lead-x", values: { ...hivra.values, id: "lead-x" } }];
+    expect(await refreshSouls(f, t, DAY)).toEqual({ refreshed: [], recorded: [], skipped: ["lead-x"] });
+    expect(f.get("lead-x", "SOUL.md")).toBe(edited);
+    expect(f.get("lead-x", SOUL_TEMPLATE_FILE)).toBeUndefined();
+    expect([...f.files.keys()].filter((k) => k.startsWith("lead-x/memory/"))).toEqual([]);
+    const rows = botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "lead-x");
+    expect(rows).toHaveLength(1);
+    const c = rows[0].kind === "one" ? rows[0].change : undefined;
+    expect(c?.line).toBe("Hivra lead's soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.");
+    expect(c?.note).toBe(true);
+    expectPlain(c!.line);
+    // Nothing to undo, and the next pass doesn't say it again.
+    await undoBotChange([c!.id]);
+    expect(f.get("lead-x", "SOUL.md")).toBe(edited);
+    expect(findBotChange(c!.id)?.undone).toBeFalsy();
+    expect(await refreshSouls(f, t, DAY)).toEqual({ refreshed: [], recorded: [], skipped: [] });
+    expect(botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "lead-x")).toHaveLength(1);
   });
 });
 
