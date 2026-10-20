@@ -1148,6 +1148,81 @@ fn a_memory_file_that_isnt_text_is_skipped_never_written_empty() {
 }
 
 #[test]
+fn a_workspace_import_that_fails_midway_leaves_nothing_half_in() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    export(&source, &request).unwrap();
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport {
+            sessions: vec!["chat-1".into(), "chat-2".into(), "mono-chat".into()],
+            notes: vec!["note-1".into(), "art-1".into()],
+            automations: vec!["auto-1".into()],
+            reminders: true,
+            delegations: true,
+            ..Default::default()
+        }),
+    };
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    // The last step (delegations) fails, after notes, chats, automations and reminders went in.
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_delegations BEFORE INSERT ON delegations BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    )
+    .unwrap();
+    let failed = import(&target, &conn, &request).unwrap_err();
+    assert!(failed.contains("disk full"), "{failed}");
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    for table in [
+        "notes",
+        "sessions",
+        "automations",
+        "session_reminders",
+        "delegations",
+        "mono_transcripts",
+    ] {
+        assert_eq!(count(table), 0, "{table} is as it was");
+    }
+    assert!(
+        !target.data_dir.join("note-assets/note-1").exists(),
+        "no pictures for notes that didn't go in"
+    );
+
+    // The retry adds everything, and finds nothing of its own already here.
+    conn.execute_batch("DROP TRIGGER refuse_delegations;")
+        .unwrap();
+    let report = import(&target, &conn, &request).unwrap();
+    assert_eq!(
+        (
+            report.notes_added,
+            report.sessions_added,
+            report.automations_added,
+            report.reminders_added,
+            report.delegations_added,
+            report.kept
+        ),
+        (2, 3, 1, 2, 2, 0),
+        "{report:?}"
+    );
+    assert!(crate::mono_transcript::is_indexed(&conn, "mono-chat").unwrap());
+    assert!(target
+        .data_dir
+        .join("note-assets/note-1/1-shot.png")
+        .is_file());
+}
+
+#[test]
 fn a_newer_or_damaged_export_is_refused_and_a_v1_file_is_recognised() {
     let source_dir = TestDir::new("source");
     let out = TestDir::new("out");

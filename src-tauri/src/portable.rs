@@ -1838,12 +1838,47 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// What an import does once its rows are in: the pictures of the notes that went in, the Mono transcripts to index.
+#[derive(Default)]
+struct AfterRows {
+    note_assets: Vec<(String, String)>,
+    transcripts: Vec<String>,
+}
+
+/// The workspace's rows go in as one transaction: an error midway leaves nothing half in, so a retry starts clean
+/// rather than counting its own earlier rows as "already here".
 fn import_workspace(
     env: &Env,
     conn: &Connection,
     opened: &Opened,
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
+) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let mut after = AfterRows::default();
+    workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
+    tx.commit()?;
+    for (from, to) in &after.note_assets {
+        copy_note_assets(env, opened, from, to);
+    }
+    // Indexing has its own transaction. A chat it fails for still opens from its rows, and is indexed then.
+    for id in &after.transcripts {
+        if crate::mono_transcript::migrate_transcript(conn, id).is_err() {
+            report.notes.push(format!(
+                "The transcript of chat {id} will be indexed the first time it opens."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn workspace_rows(
+    env: &Env,
+    conn: &Connection,
+    opened: &Opened,
+    wanted: &WorkspaceImport,
+    report: &mut ImportReport,
+    after: &mut AfterRows,
 ) -> rusqlite::Result<()> {
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
@@ -1901,7 +1936,7 @@ fn import_workspace(
             } else {
                 report.notes_added += 1;
             }
-            copy_note_assets(env, opened, &id, &target);
+            after.note_assets.push((id.clone(), target));
         }
     }
 
@@ -1937,6 +1972,9 @@ fn import_workspace(
             )
         };
         insert_session(env, conn, &target, &title, &file)?;
+        if file["monoTranscript"].as_bool() == Some(true) {
+            after.transcripts.push(target.clone());
+        }
         if exists {
             report.sessions_copied += 1;
         } else {
@@ -2112,9 +2150,6 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    if file["monoTranscript"].as_bool() == Some(true) {
-        crate::mono_transcript::migrate_transcript(conn, id)?;
-    }
     Ok(())
 }
 
