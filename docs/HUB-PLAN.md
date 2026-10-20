@@ -6,7 +6,7 @@
 ## What Ash wants (19 Oct)
 
 - Run the business from this app. He loves the MonoCode UI: projects, custom dashboards, teams.
-- The leadership team lives here, on Claude Code. Grok Bot is no longer used.
+- The leadership team lives here, on Claude Code. The hub runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required (decided 20 Oct).
 - The chat he talks in owns what he says: it writes every ask down, stores it and delegates. Nothing works on
   a dump outside that chat.
 - One small checker (Haiku) compares each dump with what was recorded, delegated and done. It asks the owning

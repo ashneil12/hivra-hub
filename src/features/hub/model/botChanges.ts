@@ -205,6 +205,11 @@ export function isProposalDismissed(id: string): boolean {
   return dismissedIds().has(id);
 }
 
+/** A change kept here, by id (a fix checks whether Ash undid it, so it isn't made again). */
+export function findBotChange(id: string): BotChange | undefined {
+  return list.find((c) => c.id === id);
+}
+
 /** Pending proposals (Settings → Changes → Bot changes, with Apply and Dismiss). */
 export function pendingProposals(): BotChange[] {
   return list.filter((c) => c.proposed);
