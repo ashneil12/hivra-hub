@@ -731,7 +731,10 @@ import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
   verifyKickoffMono,
+  verifyRun,
+  watchVerifyMessages,
 } from "./model/verifyKickoff";
+import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import {
   loadShipNote,
   reportShipReady,
@@ -8923,6 +8926,20 @@ function Workspace({
       await onOpenMono(monoId);
       const sessionId = monoViewIdRef.current;
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
+    });
+  }, [onOpenMono, onSubmit, windowTransfer]);
+  // ...and Ash's messages the bench sends mid-run (the stub's ash-hub-verify-messages): each into its Mono's chat, as
+  // he would type it there, once per run.
+  useEffect(() => {
+    const runId = verifyRun();
+    if (!runId || windowTransfer) return;
+    return watchVerifyMessages(runId, {
+      list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
+      send: async (message) => {
+        await onOpenMono(message.monoId);
+        const sessionId = monoViewIdRef.current;
+        if (sessionId) onSubmit(sessionId, message.prompt);
+      },
     });
   }, [onOpenMono, onSubmit, windowTransfer]);
 
