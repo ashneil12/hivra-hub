@@ -345,6 +345,32 @@ export type ImportDeps = {
 
 export type ImportSummary = { lines: string[]; rust: RustImportReport | null; problems: string[] };
 
+/**
+ * A Mono's habits.json as it comes in: every habit paused and none waiting to run, so nothing starts on this Mac until
+ * Ash turns it on (a seated Mono's scheduler would otherwise pick them up at once). Text that isn't a list of habits
+ * runs nothing and stays as it is.
+ */
+export function pausedHabits(text: string | undefined): string {
+  if (!text?.trim()) return "";
+  let list: unknown;
+  try {
+    list = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (!Array.isArray(list)) return text;
+  let changed = false;
+  const paused = list.map((habit: unknown) => {
+    if (!habit || typeof habit !== "object" || Array.isArray(habit)) return habit;
+    const { runRequested, ...rest } = habit as Record<string, unknown>;
+    if (rest.enabled === false && runRequested === undefined) return habit;
+    changed = true;
+    return { ...rest, enabled: false };
+  });
+  // Already paused: byte for byte as written.
+  return changed ? `${JSON.stringify(paused, null, 2)}\n` : text;
+}
+
 function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): SetupSoul {
   const topics: Record<string, string> = {};
   if (withMemory) {
@@ -359,7 +385,7 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     role: mono.role,
     rules: mono.files["SOUL.md"] ?? "",
     memory: withMemory ? (mono.files["MEMORY.md"] ?? "") : "",
-    workflows: mono.files["habits.json"] ?? "",
+    workflows: pausedHabits(mono.files["habits.json"]),
     skills: mono.skills,
     mascot: mono.mascot,
     color: mono.color,
