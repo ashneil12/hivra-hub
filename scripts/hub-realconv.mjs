@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { ROOT, isMain, readJson } from "./hub-dev.mjs";
+import { claudeConfigArgs } from "./hub-realtest-accounts.mjs";
 import { makeClient, providerSpec } from "./realconv/llm.mjs";
 
 export const SCENES_FILE = path.join(ROOT, "tests/realconv/scenes.json");
@@ -50,6 +51,8 @@ export function parseArgs(argv, env = process.env) {
     dryRun: argv.includes("--dry-run"),
     build: !argv.includes("--no-build"),
     keep: argv.includes("--keep"),
+    // More Claude accounts Ash signed in himself, for the app's helper calls (E5; hub-realtest-accounts.mjs).
+    claudeConfigs: claudeConfigArgs(argv),
     slot: value("--slot", `${path.basename(ROOT)}-realconv`),
     maxMinutes: Number(value("--max-minutes", "0")) || null,
     maxTurns: Number(value("--max-turns", "0")) || null,
@@ -137,7 +140,7 @@ export async function runRealconv(options, { bench, clients } = {}) {
   const runBench = bench ?? (await import("./hub-realtest.mjs")).runBench;
   let out = null;
   const outcome = await runBench(
-    { build: options.build, keep: options.keep, grade: false, slot: options.slot, maxTurns: options.maxTurns, maxMinutes: options.maxMinutes, maxRequests: null, only: [] },
+    { build: options.build, keep: options.keep, grade: false, slot: options.slot, maxTurns: options.maxTurns, maxMinutes: options.maxMinutes, maxRequests: null, only: [], claudeConfigs: options.claudeConfigs ?? [] },
     {
       spec,
       label: "realconv",

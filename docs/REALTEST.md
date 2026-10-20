@@ -151,10 +151,22 @@ The login is **Ash's own Max account, shared with his own work and every other a
 tiny Haiku call reads the account's use from the CLI's `rate_limit_event` (`account-before.json`); the run refuses to
 start when the 5-hour window is above 60% (`budget.startBelowFiveHour`) or the account is already limited.
 
+**Several accounts (E5).** More Claude logins can join with `--claude-config <dir>` (repeat it or comma-separate;
+`hub:realconv` takes it too). Each is a Claude Code config folder Ash signed in himself
+(`CLAUDE_CONFIG_DIR=<dir> claude /login`); the bench only names the folder and never reads a token, and it never
+finds folders on its own. Every account is read before the start: the run starts when **any** account is under 60%
+and not limited, and refuses only when none is, naming each one's reason. The order is the dev login, then the folders
+in the order given. `claude/accounts.json` holds the order and which accounts are out; the wrapper sends each new Claude
+process to the first account that isn't out, tags its `ratelimits.ndjson` lines with the account, and writes a refusal
+to `claude/limited` (account 1) or `claude/limited-<n>`. A chat resumed after a move has its transcript copied to the new
+account first, and copied back to the dev login when it ends (the app reads transcripts there). An account that is out
+stays out for the rest of the run.
+
 Defaults (scenario file `budget`, overridable with flags): **350 model turns** (a turn = one prompt into a real chat),
 **2,500 model requests** (each assistant message), **115 minutes**, and the account guard: stop when the 5-hour window
 passes **85%** (`stopAtFiveHour`) or the 7-day passes **70%** (`stopAtSevenDay`), or the moment a chat is refused
-("You've hit your session limit", a `rejected` rate_limit_event). The run checks every 1.5 s; when any cap is hit it
+("You've hit your session limit", a `rejected` rate_limit_event). With several accounts these put that one account out
+and new chats move to the next; the run stops when every account is out. The run checks every 1.5 s; when any cap is hit it
 writes `claude/stop`, the wrapper refuses every new turn ("Realtest budget spent"), and the remaining scenarios are
 skipped with the reason. Helper calls (the room's Haiku router, chat titles) are counted separately. The grader is one
 Sonnet medium call per scenario. Rough cost of the baseline: about 40 model turns and 200-400 model requests per
@@ -254,6 +266,7 @@ FAIL on 010dfbcf (`evidence/verify-live-base/`). The browser proof (`tests/brows
 | `scripts/hub-realtest.mjs` | the run: HOME, project, wrapper, build, vite, stub, app, driver client, scenarios, evidence |
 | `scripts/hub-realtest-scenarios.mjs` | the scenario player and transcript writer |
 | `scripts/hub-realtest-claude.mjs` | the `claude` wrapper (login, Sonnet + medium, logs, budget stop, outages, memory server) |
+| `scripts/hub-realtest-accounts.mjs` | several Claude accounts: the start check, the per-account watch, the wrapper's pick |
 | `scripts/hub-realtest-memory-mcp.mjs` | the memory stand-in |
 | `scripts/hub-realtest-grade.mjs` | the grader and report |
 | `src/app/model/verifyDriver.ts` | the window's side of the driver |

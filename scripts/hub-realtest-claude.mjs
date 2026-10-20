@@ -24,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATE = process.env.REALTEST_STATE;
@@ -152,10 +153,12 @@ function main() {
     process.exit(2);
   }
   const args = process.argv.slice(2);
+  // Several accounts (E5): each new Claude process goes to the first account the bench hasn't marked out.
+  const account = activeAccount(STATE, CONFIG);
   const env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: CONFIG,
-    CLAUDE_SECURESTORAGE_CONFIG_DIR: CONFIG,
+    CLAUDE_CONFIG_DIR: account.config,
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: account.config,
     DISABLE_AUTOUPDATER: "1",
   };
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
@@ -182,8 +185,14 @@ function main() {
   };
   const routed = isRouted(process.env);
   const realArgs = withMemory(rewriteArgs(args, { routed }));
-  log({ dir: "start", routed, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
+  log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
+  // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
+  if (account.config !== CONFIG || accountConfigs(STATE).length > 1) {
+    const resumed = args.indexOf("--resume") >= 0 ? args[args.indexOf("--resume") + 1] : null;
+    const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
+    if (from) log({ dir: "carry", session: resumed, from, to: account.config });
+  }
   const child = spawn(REAL, realArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
   const named = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
   let session = named("--resume") ?? named("--session-id");
@@ -306,16 +315,16 @@ function main() {
       try {
         fs.appendFileSync(
           path.join(STATE, "ratelimits.ndjson"),
-          `${JSON.stringify({ t: Date.now(), status: info.status, type: info.rateLimitType, utilization: info.utilization ?? null, fiveHour: windows.five_hour?.utilization ?? null, sevenDay: windows.seven_day?.utilization ?? null, resetsAt: info.resetsAt ?? null })}\n`,
+          `${JSON.stringify({ t: Date.now(), account: account.n, status: info.status, type: info.rateLimitType, utilization: info.utilization ?? null, fiveHour: windows.five_hour?.utilization ?? null, sevenDay: windows.seven_day?.utilization ?? null, resetsAt: info.resetsAt ?? null })}\n`,
         );
-        if (info.status === "rejected") fs.writeFileSync(path.join(STATE, "limited"), `${info.rateLimitType ?? "limit"} rejected; resets ${info.resetsAt ?? "?"}\n`);
+        if (info.status === "rejected") fs.writeFileSync(path.join(STATE, limitedFile(account.n)), `${info.rateLimitType ?? "limit"} rejected; resets ${info.resetsAt ?? "?"}\n`);
       } catch {
         // the run's folder went away
       }
     }
     if (message.type === "result" && message.is_error && /hit your (session|usage|weekly) limit|usage limit/i.test(String(message.result ?? ""))) {
       try {
-        fs.writeFileSync(path.join(STATE, "limited"), `${String(message.result).slice(0, 200)}\n`);
+        fs.writeFileSync(path.join(STATE, limitedFile(account.n)), `${String(message.result).slice(0, 200)}\n`);
       } catch {
         // as above
       }
@@ -329,6 +338,14 @@ function main() {
   });
   child.on("exit", (code, signal) => {
     log({ dir: "exit", code, signal });
+    // The app reads transcripts from the shared dev config only: a chat run on another account is copied back there.
+    if (account.config !== CONFIG && session && !helper) {
+      try {
+        carryTranscript([account.config], CONFIG, session, { overwrite: true });
+      } catch {
+        // the app falls back to its own copy
+      }
+    }
     process.exit(code ?? (signal ? 1 : 0));
   });
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
