@@ -564,6 +564,9 @@ export async function startStub({
       case "since": return sinceCall(v);
       case "events": return waitEvents(Number(v.after || 0), Number(v.timeout || 0), v.topics);
       case "mono-projects": return monoProjectsCall(v);
+      // The fake-Claude bench's messages from Ash (scripts/hub-verify-live.mjs pushes them to state.verifyMessages): a
+      // dev copy with a verify plan sends each into its Mono's chat as Ash would, once per run. Nothing else asks.
+      case "verify-messages": return { messages: state.verifyMessages ?? [] };
       default:
         if (Object.hasOwn(studioCalls, name)) return studioCalls[name](v);
         if (Object.hasOwn(checkCalls, name)) return checkCalls[name](v);

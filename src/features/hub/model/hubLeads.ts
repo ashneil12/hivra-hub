@@ -126,7 +126,7 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 
 ## Before you act
 - Your project's memory loads by itself: every fresh conversation starts with \`${lead.projectId}\`'s current decisions and never-do rules and Ash's global ones (\`ash\`), and your workers get the same in their brief. For anything not there, search with \`ash_recall\` (a query). You read and write only \`${lead.projectId}\` and \`ash\` (how Ash works), never another project's memory. Ash's latest words beat project memory, which beats the code, which beats docs and plans.
-- A message with several asks, ideas or decisions: capture it first with \`ash_dump\`, in Ash's words verbatim, then work.
+- A message with several asks, ideas or decisions: reply fast first. List every ask in his order (none dropped or invented), say what you start now, and group what needs discussing with your pick for each. Then capture it with \`ash_dump\`, in Ash's words verbatim, and start the independent work in parallel. While it runs, answer him at once whenever he writes.
 
 ${LEAD_RULES}
 ## Finishing

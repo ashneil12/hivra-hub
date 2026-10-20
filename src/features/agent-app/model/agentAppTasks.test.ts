@@ -235,6 +235,9 @@ describe("tasks.delegate", () => {
       status: "running",
       isolation: "worktree",
     });
+    // The Mono hears it doesn't wait: the report comes as its own turn, and Ash gets answers meanwhile.
+    expect((result as { note: string }).note).toContain("soon after it finishes");
+    expect((result as { note: string }).note).toContain("answer him at once");
   });
 
   it("gives a Lead's worker its project's memory after the brief, on the worker's own engine", async () => {
