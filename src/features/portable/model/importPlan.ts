@@ -531,7 +531,10 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   if (pages.added) lines.push(`${plural(pages.added, "Page")} added, with no permissions until you allow them again.`);
   for (const why of pages.failed) problems.push(`Page not added: ${why}`);
 
-  const models = importCustomModels(plan.customModels.filter((x) => choices.customModels.has(x.model.id)).map((x) => x.model));
+  const models = importCustomModels(
+    plan.customModels.filter((x) => choices.customModels.has(x.model.id)).map((x) => x.model),
+    (reason) => problems.push(reason),
+  );
   if (models) lines.push(`${plural(models, "custom model")} added: enter each key again.`);
 
   if (choices.settings !== "none") {

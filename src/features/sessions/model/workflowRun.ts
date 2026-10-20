@@ -44,6 +44,15 @@ export type WorkflowPhase = { index: number; title: string };
 
 export type WorkflowRunStatus = "running" | "completed" | "failed" | "stopped";
 
+/**
+ * Agents a run left out to stay bounded (MAX_WORKFLOW_AGENTS): how many in
+ * each state, and the index every one of them is below, so a snapshot that
+ * repeats them neither brings them back nor counts them twice.
+ */
+export type WorkflowDroppedAgents = Partial<Record<WorkflowAgentState, number>> & {
+  below: number;
+};
+
 export type WorkflowRunMeta = {
   /** Provider task id; Stop stops this. */
   taskId: string;
@@ -63,7 +72,16 @@ export type WorkflowRunMeta = {
   durationMs?: number;
   /** What the provider said when the run ended. */
   summary?: string;
+  /** Agents left out of `agents` to keep the run bounded; still counted. */
+  dropped?: WorkflowDroppedAgents;
 };
+
+/**
+ * How many agents a run keeps, the way a subagent keeps MAX_AGENT_STEPS
+ * (core/apply.ts): a run can fan out to thousands, and the run is saved with
+ * its block. Those at work and the newest finished stay; the rest are counted.
+ */
+export const MAX_WORKFLOW_AGENTS = 300;
 
 /** What an agent was asked or handed back, kept to read in full when its row is opened. */
 export const AGENT_TEXT_CHARS = 4000;
@@ -82,6 +100,42 @@ function finished(state: WorkflowAgentState): boolean {
 }
 
 /**
+ * Keep at most MAX_WORKFLOW_AGENTS, leaving out the oldest first: done and
+ * skipped agents, then failed ones, then (only past that) ones still at work.
+ * `agents` is in index order, and so is what comes back.
+ */
+function boundAgents(
+  agents: WorkflowAgent[],
+  dropped: WorkflowDroppedAgents | undefined,
+): { agents: WorkflowAgent[]; dropped?: WorkflowDroppedAgents } {
+  const over = agents.length - MAX_WORKFLOW_AGENTS;
+  if (over <= 0) return { agents, ...(dropped ? { dropped } : {}) };
+  const rank = (agent: WorkflowAgent) =>
+    agent.state === "done" || agent.state === "skipped" ? 0 : agent.state === "failed" ? 1 : 2;
+  const leaving = new Set(
+    [...agents].sort((a, b) => rank(a) - rank(b) || a.index - b.index).slice(0, over),
+  );
+  const next: WorkflowDroppedAgents = { ...(dropped ?? { below: 0 }) };
+  for (const agent of leaving) {
+    next[agent.state] = (next[agent.state] ?? 0) + 1;
+    next.below = Math.max(next.below, agent.index + 1);
+  }
+  return { agents: agents.filter((agent) => !leaving.has(agent)), dropped: next };
+}
+
+/** Left-out agents still at work, settled the way the kept ones are. */
+export function settleDroppedAgents(
+  dropped: WorkflowDroppedAgents | undefined,
+  state: WorkflowAgentState,
+): WorkflowDroppedAgents | undefined {
+  if (!dropped || !(dropped.working || dropped.queued)) return dropped;
+  const { working = 0, queued = 0, ...rest } = dropped;
+  const next: WorkflowDroppedAgents = { ...rest };
+  next[state] = (next[state] ?? 0) + working + queued;
+  return next;
+}
+
+/**
  * Fold one frame's phases and agents into what the run already knew. Agents
  * missing from the frame keep their last state.
  */
@@ -92,8 +146,11 @@ export function mergeWorkflowFrame(
   const phases = new Map(previous.phases.map((phase) => [phase.index, phase]));
   for (const phase of frame.phases) phases.set(phase.index, phase);
   const agents = new Map(previous.agents.map((agent) => [agent.index, agent]));
+  const below = previous.dropped?.below ?? 0;
   for (const agent of frame.agents) {
     const prior = agents.get(agent.index);
+    // Left out already: a snapshot repeating it changes nothing.
+    if (!prior && agent.index < below) continue;
     const attempt = agent.attempt ?? prior?.attempt ?? 1;
     const priorAttempt = prior?.attempt ?? 1;
     // An older attempt reporting late says nothing about the current one.
@@ -121,10 +178,14 @@ export function mergeWorkflowFrame(
           },
     );
   }
+  const { dropped: _dropped, ...rest } = previous;
   return {
-    ...previous,
+    ...rest,
     phases: [...phases.values()].sort((a, b) => a.index - b.index),
-    agents: [...agents.values()].sort((a, b) => a.index - b.index),
+    ...boundAgents(
+      [...agents.values()].sort((a, b) => a.index - b.index),
+      previous.dropped,
+    ),
   };
 }
 
@@ -154,7 +215,17 @@ export function workflowCounts(run: WorkflowRunMeta): WorkflowCounts {
     else if (agent.state === "skipped") counts.skipped += 1;
     else counts.failed += 1;
   }
+  for (const state of AGENT_STATE_LIST) {
+    const left = run.dropped?.[state] ?? 0;
+    counts[state] += left;
+    counts.total += left;
+  }
   return counts;
+}
+
+/** Agents a run counts but no longer lists. */
+export function droppedAgentCount(run: WorkflowRunMeta): number {
+  return AGENT_STATE_LIST.reduce((sum, state) => sum + (run.dropped?.[state] ?? 0), 0);
 }
 
 /**
@@ -247,7 +318,8 @@ export const WORKFLOW_AGENT_STATE_LABEL: Record<WorkflowAgentState, string> = {
   skipped: "skipped",
 };
 
-const AGENT_STATES = new Set<WorkflowAgentState>(["queued", "working", "done", "failed", "skipped"]);
+const AGENT_STATE_LIST: WorkflowAgentState[] = ["queued", "working", "done", "failed", "skipped"];
+const AGENT_STATES = new Set<WorkflowAgentState>(AGENT_STATE_LIST);
 const RUN_STATUSES = new Set<WorkflowRunStatus>(["running", "completed", "failed", "stopped"]);
 
 const num = (value: unknown): number | undefined =>
@@ -298,7 +370,28 @@ export function parseWorkflowRun(
     }
     return [agent];
   });
-  const run: WorkflowRunMeta = { taskId, status, phases, agents };
+  const droppedRecord =
+    record.dropped && typeof record.dropped === "object" && !Array.isArray(record.dropped)
+      ? (record.dropped as Record<string, unknown>)
+      : undefined;
+  let saved: WorkflowDroppedAgents | undefined;
+  const below = num(droppedRecord?.below);
+  if (below !== undefined) {
+    saved = { below };
+    for (const state of AGENT_STATE_LIST) {
+      const n = num(droppedRecord?.[state]);
+      if (n) saved[state] = Math.floor(n);
+    }
+  }
+  const run: WorkflowRunMeta = {
+    taskId,
+    status,
+    phases,
+    ...boundAgents(
+      agents.sort((a, b) => a.index - b.index),
+      saved,
+    ),
+  };
   for (const key of ["name", "description", "summary"] as const) {
     const text = str(record[key]);
     if (text) run[key] = text;
@@ -308,12 +401,14 @@ export function parseWorkflowRun(
     if (n !== undefined) run[key] = n;
   }
   if (options?.hydrate && run.status === "running") {
+    const dropped = settleDroppedAgents(run.dropped, "skipped");
     return {
       ...run,
       status: "stopped",
       agents: run.agents.map((agent) =>
         agent.state === "working" || agent.state === "queued" ? { ...agent, state: "skipped" } : agent,
       ),
+      ...(dropped ? { dropped } : {}),
     };
   }
   return run;

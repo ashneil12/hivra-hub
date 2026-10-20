@@ -226,6 +226,47 @@ describe("a Claude Code workflow run (recorded from CLI 2.1.302)", () => {
     expect(row?.workflowRun?.agents.every((agent) => agent.state !== "working")).toBe(true);
   });
 
+  it("stops a run whose start this process never saw, known only from its progress frames", async () => {
+    // The same recorded run, minus the two frames that announced it (background_tasks_changed and task_started):
+    // what a turn sees of a run that began before it.
+    const lines = recorded("workflow-stopped").filter(
+      (rec) => rec.subtype !== "task_started" && rec.subtype !== "background_tasks_changed",
+    );
+    const { events, turn, settled } = await startTurn();
+    const firstAgents = lines.findIndex(
+      (rec) => Array.isArray(rec.workflow_progress) && rec.workflow_progress.length > 2,
+    );
+    for (const rec of lines.slice(0, firstAgents + 1)) emit(rec);
+    const taskId = runs(events).at(-1)!.taskId;
+    expect(session(events).blocks.find(isWorkflowBlock)?.workflowRun?.status).toBe("running");
+
+    expect(await stopClaudeTask("lead", taskId)).toBe(true);
+    expect(parse().at(-1)).toMatchObject({
+      type: "control_request",
+      request: { subtype: "stop_task", task_id: taskId },
+    });
+
+    for (const rec of lines.slice(firstAgents + 1)) emit(rec);
+    await turn;
+    expect(settled()).toBe(true);
+    expect(session(events).blocks.find(isWorkflowBlock)?.workflowRun?.status).toBe("stopped");
+  });
+
+  it("stops a run known only from its progress frames when the user stops the turn", async () => {
+    const lines = recorded("workflow-stopped").filter(
+      (rec) => rec.subtype !== "task_started" && rec.subtype !== "background_tasks_changed",
+    );
+    const { events } = await startTurn();
+    for (const rec of lines.slice(0, lines.findIndex((r) => r.subtype === "task_progress") + 1)) emit(rec);
+    const taskId = runs(events).at(-1)!.taskId;
+    await cancelClaudeTurn("lead");
+    expect(parse()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ request: { subtype: "stop_task", task_id: taskId } }),
+      ]),
+    );
+  });
+
   it("settles a running workflow as stopped when the user stops the turn", async () => {
     const lines = recorded("workflow-run");
     const { events } = await startTurn();

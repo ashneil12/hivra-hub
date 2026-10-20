@@ -60,6 +60,32 @@ test("one Stop ends the whole run", async ({ page }) => {
   await shot(page, "workflow-3-stopped");
 });
 
+test("Stop reaches a run known only from its progress frames", async ({ page }) => {
+  await page.goto("/tests/browser/workflow-run.html?scenario=stop-unseen");
+  await expect(page.locator("[data-workflow-stop]")).toBeVisible();
+  await expect.poll(async () => (await proof(page)).held).toBe(true);
+  await page.locator("[data-workflow-stop]").click();
+  await expect
+    .poll(async () => (await proof(page)).sent.find((m) => m.request?.subtype === "stop_task")?.request?.task_id)
+    .toMatch(/^w/);
+  await expect(page.locator("[data-workflow-run] [data-workflow-status]").first()).toHaveText(
+    "Stopped · 0 of 2 agents done · 2 skipped",
+  );
+  await expect(page.locator("[data-workflow-stop-failed]")).toHaveCount(0);
+});
+
+test("a Stop that fails comes back with the reason instead of Stopping… for good", async ({ page }) => {
+  await page.goto("/tests/browser/workflow-run.html?scenario=stop-fails");
+  await expect.poll(async () => (await proof(page)).held).toBe(true);
+  await page.locator("[data-workflow-stop]").click();
+  await expect(page.locator("[data-workflow-stop-failed]")).toHaveText(
+    "Couldn't stop it: the pipe to Claude Code broke",
+  );
+  await expect(page.locator("[data-workflow-stop]")).toBeVisible();
+  await expect(page.locator("[data-workflow-run]").first()).not.toContainText("Stopping…");
+  await shot(page, "workflow-7-stop-failed");
+});
+
 test("an agent in the run opens onto what Claude Code streams for it: its brief, progress and report", async ({ page }) => {
   // Claude Code 2.1.302 streams each workflow agent's prompt preview, counts and result preview (or error), and none
   // of its own messages or tool calls, so that is what an agent's row opens onto.

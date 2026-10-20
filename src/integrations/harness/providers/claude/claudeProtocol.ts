@@ -258,7 +258,10 @@ export function buildClaudeSpawnArgs(input: {
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
-  /** Accept a later live switch to bypassPermissions over the control channel. */
+  /**
+   * Accept a later live switch to bypassPermissions over the control channel.
+   * Only for a chat in Full access at launch (claude.ts).
+   */
   allowBypass?: boolean;
 }): string[] {
   const args = [
@@ -676,17 +679,21 @@ export function cutWorkKind(
  * What Claude Code 2.1.302 answers `--resume <id>` with when it has no transcript for that id (deleted, or saved
  * under another folder): a `result` with no turns, `is_error`, and "No conversation found with session ID: <id>" in
  * `errors`, then it exits 1. Recorded in fixtures/claude-cli-2.1.302/no-conversation-found.ndjson. The text, or null.
+ * Only an error result's `errors` count: a live conversation's zero-turn success (`/goal`, `/goal clear`) repeats
+ * whatever the user wrote in `result`, and that must never drop the conversation.
  */
 export function deadConversationFromResult(
   rec: Record<string, unknown>,
 ): string | null {
   if (stringField(rec, "type") !== "result") return null;
+  if (rec.is_error !== true || stringField(rec, "subtype") === "success") return null;
   if (typeof rec.num_turns === "number" && rec.num_turns > 0) return null;
-  const texts = [
-    ...(Array.isArray(rec.errors) ? rec.errors : []),
-    rec.result,
-  ].filter((value): value is string => typeof value === "string");
-  return texts.find((text) => /no conversation found/i.test(text)) ?? null;
+  const errors = Array.isArray(rec.errors) ? rec.errors : [];
+  return (
+    errors.find(
+      (text): text is string => typeof text === "string" && /no conversation found/i.test(text),
+    ) ?? null
+  );
 }
 
 export function isAgentTaskType(taskType: string | undefined): boolean {

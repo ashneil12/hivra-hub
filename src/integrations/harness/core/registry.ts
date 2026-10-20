@@ -91,6 +91,11 @@ export type HarnessAdapter = {
   stopSession(sessionId: string): Promise<void>;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
   forgetSession(sessionId: string): Promise<void>;
+  /**
+   * The chat was deleted for good: drop what forgetSession keeps on purpose
+   * for a chat that goes on in a fresh conversation (a rotation).
+   */
+  dropSession?(sessionId: string): void;
   /** Seed resume state from a restored MonoCode session. */
   bindSession(
     threadId: string,
@@ -470,6 +475,11 @@ export async function forgetHarnessSession(
   const adapter = getHarness(harness);
   if (!adapter) return;
   await adapter.forgetSession(sessionId);
+}
+
+/** A deleted chat: every adapter drops what it still keeps for it. */
+export function dropHarnessSession(sessionId: string): void {
+  for (const adapter of adapters.values()) adapter.dropSession?.(sessionId);
 }
 
 export function bindHarnessSession(

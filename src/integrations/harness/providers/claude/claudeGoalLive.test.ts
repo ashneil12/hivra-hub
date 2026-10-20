@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../core/types";
 import type { SessionGoal } from "../../../../features/sessions/model/session";
@@ -39,8 +40,18 @@ vi.mock("../../../../features/settings/model/settings", async (original) => ({
   loadClaudeHooks: () => hooks.on,
 }));
 
-const { sendClaudeTurn, stopClaudeSession, bindClaudeSession, forgetClaudeSession, restoreClaudeGoal, __claudeTestReset } =
-  await import("./claude");
+const {
+  sendClaudeTurn,
+  stopClaudeSession,
+  cancelClaudeTurn,
+  compactClaudeContext,
+  bindClaudeSession,
+  forgetClaudeSession,
+  restoreClaudeGoal,
+  dropClaudeSession,
+  __claudeGoalState,
+  __claudeTestReset,
+} = await import("./claude");
 const { GOAL_CHECK_CAP } = await import("./claudeGoal");
 
 const parse = () => sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -219,6 +230,77 @@ describe("/goal through the live adapter", () => {
     expect(goals(turn).at(-1)).toMatchObject({ status: "stopped" });
   });
 
+  it(`at the cap the goal reads stopped only once \`/goal clear\` has gone in`, async () => {
+    const { writeChild } = await import("../../core/child");
+    let deliver!: () => void;
+    const turn = await start(BRIEF);
+    // The next write is MonoCode's `/goal clear`; it goes in only when `deliver` says so.
+    vi.mocked(writeChild).mockImplementationOnce(
+      (_id: string, line: string) =>
+        new Promise<void>((resolve) => {
+          sent.push(line);
+          deliver = resolve;
+        }),
+    );
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    for (let i = 0; i < GOAL_CHECK_CAP; i++) {
+      emit(said(`try ${i}`));
+      emit(feedback(`still failing ${i}`));
+    }
+    await tick();
+    expect(prompts().at(-1)).toBe("/goal clear");
+    expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+    deliver();
+    await tick();
+    expect(goals(turn).at(-1)).toMatchObject({ status: "stopped", checks: GOAL_CHECK_CAP });
+    emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 21 consecutive times — overriding and ending turn." });
+    emit(result("", { num_turns: 22 }));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal cleared: ${GOAL}`));
+    emit(result(`Goal cleared: ${GOAL}`, { num_turns: 0 }));
+    await turn.done;
+    expect(goals(turn).filter((goal) => goal?.status === "stopped")).toHaveLength(1);
+  });
+
+  it("at the cap, a `/goal clear` that can't be written says so, keeps the goal open and owes nothing for it", async () => {
+    const { writeChild } = await import("../../core/child");
+    const original = vi.mocked(writeChild).getMockImplementation()!;
+    // Every `/goal clear` fails to go in (each later goal line tries again); everything else is written.
+    vi.mocked(writeChild).mockImplementation(async (id: string, line: string) => {
+      if (line.includes("/goal clear")) throw new Error("broken pipe");
+      return original(id, line);
+    });
+    try {
+      const turn = await start(BRIEF);
+      emit(said("Started."));
+      emit(result("Started."));
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(synthetic(`Goal set: ${GOAL}`));
+      for (let i = 0; i < GOAL_CHECK_CAP; i++) {
+        emit(said(`try ${i}`));
+        emit(feedback(`still failing ${i}`));
+      }
+      await tick();
+      expect(turn.events).toContainEqual(
+        expect.objectContaining({ type: "notice", level: "warning", text: expect.stringContaining("broken pipe") }),
+      );
+      expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+      // The CLI's own per-turn cap ends the goal's turn; with no clear owed, the MonoCode turn ends with it.
+      emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 21 consecutive times — overriding and ending turn." });
+      await tick();
+      emit(result("", { num_turns: 22 }));
+      await tick();
+      expect(turn.outcome).toBe("completed");
+      expect(goals(turn).at(-1)).toMatchObject({ status: "paused", checks: GOAL_CHECK_CAP });
+      expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+    } finally {
+      vi.mocked(writeChild).mockImplementation(original);
+    }
+  });
+
   it("a fresh conversation gets the open goal again with its next turn; a resumed one keeps it", async () => {
     const first = await start(BRIEF);
     emit(said("Started."));
@@ -263,6 +345,108 @@ describe("/goal through the live adapter", () => {
     expect(goals(fresh).at(-1)).toMatchObject({ status: "met" });
   });
 
+  it("Stop, then a /compact, never marks the goal met: the CLI still enforces it, so the app keeps it", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    // Claude speaks, so its next stop would be checked; Stop cuts the turn before that, and mutes its result.
+    emit(said("Working on it."));
+    await cancelClaudeTurn("worker");
+    emit(result("", { subtype: "error_during_execution", is_error: true, num_turns: 2 }));
+    await turn.done;
+
+    // The next /compact (manual, or the idle one before a message) ends in a zero-turn success: not a check.
+    const events: HarnessEvent[] = [];
+    const before = parse().length;
+    const compact = compactClaudeContext({
+      sessionId: "worker",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => parse().slice(before).some((m) => m.type === "user"), "the /compact");
+    expect(prompts().at(-1)).toBe("/compact");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit({ type: "system", subtype: "compact_boundary", session_id: "sess_1" });
+    emit(result("", { num_turns: 0, stop_reason: null }));
+    await compact;
+    expect(events.flatMap((e) => (e.type === "goal.updated" ? [e.goal] : []))).toEqual([]);
+
+    // Still the chat's open goal: a fresh conversation gets it again.
+    await forgetClaudeSession("worker");
+    const fresh = await start("Here is where we were: …", "worker", "sess_2");
+    expect(prompts().slice(-2)).toEqual(["Here is where we were: …", `/goal ${GOAL}`]);
+    emit({ ...result("ok"), session_id: "sess_2" });
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_2" });
+    emit({ ...said("Done."), session_id: "sess_2" });
+    emit({ ...result("Done."), session_id: "sess_2" });
+    await fresh.done;
+  });
+
+  for (const how of ["Stop", "stopping the process"] as const) {
+    it(`${how} leaves no stop pending: the next turn's result checks only what that turn said`, async () => {
+      const turn = await start(BRIEF);
+      emit(said("Started."));
+      emit(result("Started."));
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(synthetic(`Goal set: ${GOAL}`));
+      emit(said("Working on it."));
+      if (how === "Stop") await cancelClaudeTurn("worker");
+      else await stopClaudeSession("worker");
+      await turn.done;
+      // Stopping the process: the app starts it again on the same conversation, the goal carried with its state.
+      if (how !== "Stop") bindClaudeSession("worker", "sess_1", "/repo");
+      const next = await start("how far did you get?");
+      // A turn that ends before Claude says anything (a hook can end one) checked nothing: the cut stop never counts.
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(result("", { num_turns: 1 }));
+      await next.done;
+      expect(goals(next).filter((goal) => goal?.status === "met")).toEqual([]);
+    });
+  }
+
+  it("a brief whose conversation was gone still gets its /goal, behind the chat's brief", async () => {
+    // What Claude Code 2.1.302 answers `--resume` with for a conversation it has no transcript for.
+    const dead = JSON.parse(
+      readFileSync(new URL("./fixtures/claude-cli-2.1.302/no-conversation-found.ndjson", import.meta.url), "utf8").trim(),
+    ) as Record<string, unknown>;
+    bindClaudeSession("worker", dead.session_id as string, "/repo");
+    const initializes = () =>
+      parse().filter((m) => (m.request as { subtype?: string } | undefined)?.subtype === "initialize").length;
+    const events: HarnessEvent[] = [];
+    const turn = sendClaudeTurn({
+      sessionId: "worker",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      text: BRIEF,
+      attachments: [],
+      resumeFallback: (prompt) => `CHAT SO FAR\n\n${prompt}`,
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => initializes() === 1, "the first initialize");
+    emit(dead);
+    onExit!(1);
+    await waitFor(() => initializes() === 2, "a fresh process");
+    emit({ type: "control_response", response: { subtype: "success", request_id: "monocode_2" } });
+    await waitFor(() => prompts().length === 2, "the brief and its /goal");
+    expect(prompts()).toEqual([`CHAT SO FAR\n\n${BRIEF}`, `/goal ${GOAL}`]);
+    expect(events.filter((e) => e.type === "session.providerLost")).toHaveLength(1);
+    emit({ ...said("Read it."), session_id: "sess_2" });
+    emit({ ...result("Read it."), session_id: "sess_2" });
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_2" });
+    emit({ ...said("Done."), session_id: "sess_2" });
+    emit({ ...result("Done."), session_id: "sess_2" });
+    await turn;
+  });
+
   it("a turn waiting on a /goal that never starts is let go after the grace period", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -287,6 +471,39 @@ describe("/goal through the live adapter", () => {
     onExit!(1);
     await turn.done;
     expect(turn.outcome).toBe("failed");
+  });
+});
+
+describe("a chat's goal state over its life", () => {
+  it("a rotation (forget) keeps the open goal for the fresh conversation; deleting the chat drops it", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 9 consecutive times — overriding and ending turn." });
+    emit(result("", { num_turns: 10 }));
+    await turn.done;
+    await forgetClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: true, ended: false });
+    dropClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: false });
+  });
+
+  it("deleting a chat drops the record of the goal it finished", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    emit(said("Fixed: the save test passes."));
+    emit(result("Fixed: the save test passes.", { num_turns: 2 }));
+    await turn.done;
+    expect(goals(turn).at(-1)).toMatchObject({ status: "met" });
+    await forgetClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: true });
+    dropClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: false });
   });
 });
 

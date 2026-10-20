@@ -92,4 +92,24 @@ describe("nextGoal over Claude Code 2.1.302's own output", () => {
     const failed = { type: "result", subtype: "error_during_execution", is_error: true };
     expect(nextGoal(current, failed, 2)).toMatchObject({ status: "active", checks: 1, pendingCheck: false });
   });
+
+  it("a zero-turn result (a /compact, `/goal`, `/goal clear`) is never a check, even with a stop still pending", () => {
+    // Claude spoke, then Stop muted the interrupted result: the stop that never reached the evaluator is still pending.
+    const current: GoalTrack = { objective: "x", checks: 1, status: "active", setAt: 1, pendingCheck: true };
+    // What a /compact ends with (T3 Code's recording of the CLI, claude_compact_after_peer_turn).
+    const compacted = readFileSync(new URL("../t3code/claude_compact_after_peer_turn.ndjson", FIXTURES), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => (JSON.parse(line) as { frame?: Record<string, unknown> }).frame)
+      .filter((frame): frame is Record<string, unknown> => frame?.type === "result")
+      .at(-1)!;
+    expect(compacted).toMatchObject({ subtype: "success", is_error: false, num_turns: 0 });
+    expect(nextGoal(current, compacted, 2)).toBeUndefined();
+    // `/goal` with no argument answers the same way (goal-block-cap-status).
+    const status = frames("goal-block-cap-status.ndjson").filter((rec) => rec.type === "result").at(-1)!;
+    expect(status).toMatchObject({ subtype: "success", num_turns: 0 });
+    expect(nextGoal(current, status, 2)).toBeUndefined();
+    // A turn Claude ran is still checked.
+    expect(nextGoal(current, { ...compacted, num_turns: 1 }, 2)).toMatchObject({ status: "met", checks: 2 });
+  });
 });

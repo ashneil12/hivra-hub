@@ -7,11 +7,15 @@ import { AgentMarkdown } from "./AgentMarkdown";
 import type { Block } from "../model/session";
 import {
   WORKFLOW_AGENT_STATE_LABEL,
+  droppedAgentCount,
   workflowStatusLine,
   type WorkflowAgent,
   type WorkflowPhase,
   type WorkflowRunMeta,
 } from "../model/workflowRun";
+
+/** Stop one workflow run: whether the harness took the stop, or nothing to say. */
+export type StopWorkflow = (taskId: string) => Promise<boolean> | void;
 
 /**
  * One row for a whole workflow run, pinned like a subagent while it works:
@@ -30,8 +34,11 @@ export function WorkflowRunPanel({
 }: {
   block: Block;
   live?: boolean;
-  /** Stops the whole run, every agent in it. */
-  onStop?: (taskId: string) => void;
+  /**
+   * Stops the whole run, every agent in it. Its promise says whether the
+   * harness took the stop; a caller with nothing to say returns nothing.
+   */
+  onStop?: StopWorkflow;
   cwd?: string;
   onOpenFile?: (path: string) => void;
 }) {
@@ -39,12 +46,14 @@ export function WorkflowRunPanel({
   const running = live && (run ? run.status === "running" : true);
   const [override, setOverride] = useState<boolean | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [stopFailed, setStopFailed] = useState<string | null>(null);
   // A run that went wrong anywhere opens on its own, so the failure shows.
   const attention =
     !!run &&
     (run.status === "failed" ||
       run.status === "stopped" ||
-      run.agents.some((agent) => agent.state === "failed"));
+      run.agents.some((agent) => agent.state === "failed") ||
+      !!run.dropped?.failed);
   const open = override ?? (running || attention);
   const name =
     run?.name ?? run?.description ?? block.tool?.title ?? block.text ?? "Workflow";
@@ -103,7 +112,21 @@ export function WorkflowRunPanel({
             data-workflow-stop
             onClick={() => {
               setStopping(true);
-              onStop?.(run.taskId);
+              setStopFailed(null);
+              const outcome = onStop?.(run.taskId);
+              if (!outcome) return;
+              const failed = (why: string) => {
+                setStopping(false);
+                setStopFailed(why);
+              };
+              outcome.then(
+                (stopped) => {
+                  if (stopped === false)
+                    failed("Couldn't stop it: Claude Code isn't running this workflow any more.");
+                },
+                (error: unknown) =>
+                  failed(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`),
+              );
             }}
             className="flex shrink-0 items-center gap-1 rounded-md bg-content/8 px-2 py-0.5 text-[11px] text-content/75 hover:bg-content/14 hover:text-content"
           >
@@ -114,6 +137,15 @@ export function WorkflowRunPanel({
           <span className="shrink-0 text-[11px] text-content/45">Stopping…</span>
         ) : null}
       </div>
+      {stopFailed && running ? (
+        <div
+          role="status"
+          data-workflow-stop-failed
+          className="pl-6 font-sans text-[12px] text-red-400"
+        >
+          {stopFailed}
+        </div>
+      ) : null}
       <div className="zen-phase-body" data-open={open}>
         {open && run ? (
           <WorkflowPhases run={run} live={running} cwd={cwd} onOpenFile={onOpenFile} />
@@ -135,6 +167,7 @@ function WorkflowPhases({
   onOpenFile?: (path: string) => void;
 }) {
   const groups = phaseGroups(run);
+  const dropped = droppedAgentCount(run);
   if (groups.length === 0) {
     return (
       <div className="py-1 pl-6 font-sans text-[12px] text-content/45">
@@ -166,6 +199,11 @@ function WorkflowPhases({
           ))}
         </div>
       ))}
+      {dropped > 0 ? (
+        <div className="font-sans text-[12px] text-content/40" data-workflow-dropped>
+          {dropped} earlier agent{dropped === 1 ? "" : "s"} not listed (counted above)
+        </div>
+      ) : null}
       {!live && run.summary ? (
         <div className="font-sans text-[12px] text-content/45">{run.summary}</div>
       ) : null}
