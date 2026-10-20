@@ -57,7 +57,13 @@ fn test(entry: &Entry, login: &mut Login, store: &dyn SecretStore) -> Outcome {
                     match oauth::refresh(&tokens) {
                         Ok(renewed) => {
                             login.oauth = Some(renewed);
-                            let _ = store.put(&entry.id, login);
+                            // The provider may have retired the old refresh token: a login that isn't kept is lost.
+                            if let Err(why) = store.put(&entry.id, login) {
+                                return failed(format!(
+                                    "{}'s login was renewed but couldn't be saved ({why}), so the next session would start with the old one. Sign in again.",
+                                    entry.name
+                                ));
+                            }
                             if let Ok(Plan::Remote { url, headers }) =
                                 super::launch::plan(entry, login)
                             {
@@ -306,6 +312,65 @@ mod tests {
         assert_eq!(handshake(&remote), Ok(2));
         let refused = Remote::new(url, vec![("Authorization".into(), "Bearer BAD".into())]);
         assert_eq!(handshake(&refused), Err(PostError::Unauthorized));
+    }
+
+    /// A store whose every write fails (a locked Keychain, say).
+    #[derive(Default)]
+    struct ReadOnly(Memory);
+    impl SecretStore for ReadOnly {
+        fn get(&self, id: &str) -> Result<Option<Login>, String> {
+            self.0.get(id)
+        }
+        fn put(&self, _: &str, _: &Login) -> Result<(), String> {
+            Err("The Keychain refused the change.".into())
+        }
+        fn remove(&self, id: &str) -> Result<bool, String> {
+            self.0.remove(id)
+        }
+    }
+
+    /// A hosted server reached with an OAuth login whose access token the server no longer takes.
+    fn oauth_entry(url: String) -> Entry {
+        use super::super::catalog::{Auth, Launch, Method};
+        Entry {
+            id: "notion".into(),
+            name: "Notion".into(),
+            composio: false,
+            launch: Launch::Remote {
+                url,
+                headers: BTreeMap::from([("Authorization".into(), "Bearer {token}".into())]),
+            },
+            auth: Auth {
+                methods: vec![Method::Oauth],
+                fields: vec![],
+                oauth: None,
+            },
+            test: None,
+        }
+    }
+
+    #[test]
+    fn a_renewed_login_that_cant_be_saved_fails_the_test() {
+        use super::super::oauth::tests::{rotating_login, rotating_token_endpoint};
+        let (token_url, sent) = rotating_token_endpoint(Duration::ZERO);
+        // The server takes only the renewed token.
+        let mcp = fake_mcp(
+            Arc::new(Mutex::new("ACCESS_1".into())),
+            Arc::new(Seen::default()),
+        );
+        let entry = oauth_entry(mcp);
+        let mut login = rotating_login(&token_url, oauth::now() + 3600);
+        let store = ReadOnly::default();
+        store.0.put("notion", &login).unwrap();
+        let outcome = run(&entry, &mut login, &store);
+        assert_eq!(*sent.lock().unwrap(), vec!["REFRESH_0".to_string()]);
+        // The provider has moved on to REFRESH_1, but the Keychain still holds REFRESH_0: not "Connected".
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.message.contains("couldn't be saved"),
+            "{}",
+            outcome.message
+        );
     }
 
     #[test]

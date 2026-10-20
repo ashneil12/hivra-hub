@@ -529,11 +529,79 @@ pub fn sign_in(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::bridge::tests::read_request;
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    /// A token endpoint that rotates refresh tokens the way strict providers do: each refresh token works once
+    /// (`REFRESH_0` → `ACCESS_1`/`REFRESH_1` → …) and a reused one is refused with invalid_grant. Each answer comes after
+    /// `delay`. Returns its URL and every refresh token it was sent, in order.
+    pub(crate) fn rotating_token_endpoint(delay: Duration) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let valid = Arc::new(Mutex::new((String::from("REFRESH_0"), 0u32)));
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let (log, valid) = (Arc::clone(&log), Arc::clone(&valid));
+                thread::spawn(move || {
+                    let (_, body) = read_request(&mut stream);
+                    let sent = body
+                        .split('&')
+                        .find_map(|pair| pair.strip_prefix("refresh_token="))
+                        .unwrap_or("")
+                        .to_string();
+                    log.lock().unwrap().push(sent.clone());
+                    thread::sleep(delay);
+                    let mut valid = valid.lock().unwrap();
+                    let (status, reply) = if sent == valid.0 {
+                        valid.1 += 1;
+                        let n = valid.1;
+                        valid.0 = format!("REFRESH_{n}");
+                        (
+                            "200 OK",
+                            serde_json::json!({"access_token": format!("ACCESS_{n}"), "refresh_token": format!("REFRESH_{n}"), "expires_in": 3600}),
+                        )
+                    } else {
+                        (
+                            "400 Bad Request",
+                            serde_json::json!({"error": "invalid_grant"}),
+                        )
+                    };
+                    let body = reply.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        (url, seen)
+    }
+
+    /// An OAuth login at `REFRESH_0` against `token_endpoint`, its access token `ACCESS_0` expiring at `expires_at`.
+    pub(crate) fn rotating_login(
+        token_endpoint: &str,
+        expires_at: u64,
+    ) -> super::super::secrets::Login {
+        super::super::secrets::Login {
+            fields: Default::default(),
+            oauth: Some(OAuthTokens {
+                access_token: "ACCESS_0".into(),
+                refresh_token: Some("REFRESH_0".into()),
+                expires_at: Some(expires_at),
+                token_endpoint: token_endpoint.into(),
+                client_id: "client".into(),
+                client_secret: None,
+                resource: None,
+            }),
+        }
+    }
 
     #[test]
     fn pkce_matches_rfc_7636() {
