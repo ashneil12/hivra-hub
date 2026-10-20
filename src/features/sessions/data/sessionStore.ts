@@ -228,6 +228,7 @@ function sanitizeMonoSessionCompletion(
     completion.sessionCount > 1
       ? { sessionCount: completion.sessionCount }
       : {}),
+    ...(completion.question === true ? { question: true as const } : {}),
   };
 }
 

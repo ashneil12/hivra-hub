@@ -41,7 +41,9 @@ under yours and is stored as a task: it reports back to you as a new turn ([Mono
 across restarts. Put Ash's own words and the full context in brief, the Ash OS ask ids it covers in asks, and the \
 finish line in goal. After an async delegation, say in one line what you started and end your turn instead of polling. \
 task_status reads results (a result read here is not reported again), task_wait blocks until a task finishes or asks \
-a question, task_cancel stops a task and drops its report, task_answer answers your worker's question.";
+a question, task_cancel stops a task and everything beneath it, task_answer answers your worker's question. A \
+worker's question reaches you as a [MonoCode question] turn (or task_wait returns hasPendingQuestion): answer it from \
+the brief or Ash's words; only a real choice goes to Ash, asked in your own chat with your pick.";
 
 /// One app call (`monocode app ACTION`), as the app answered it: its result, or why it refused.
 pub(crate) trait App: Send + Sync {
@@ -240,7 +242,7 @@ fn tools() -> Value {
         {
             "name": "task_cancel",
             "title": "Cancel a task",
-            "description": "Stop one of your tasks: its worker's turn is stopped and the report still owed is dropped. A finished task keeps its result.",
+            "description": "Stop one of your tasks and everything it delegated in turn: each worker's turn is stopped, depth first, and the reports still owed are dropped. stopFailed lists any worker that would not stop. A finished task keeps its result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

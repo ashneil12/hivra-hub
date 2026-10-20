@@ -145,6 +145,11 @@ export type AgentAppHost = {
     requestId: string,
   ): Promise<{ alreadySaved: boolean; draft: boolean }>;
   stop(id: string): Promise<void>;
+  /**
+   * `sessions.stop {"cascade":true}` (H4, monos/model/stopTree.ts): stop the session, then everything beneath it,
+   * depth first, touching only rows owned by a chat it stopped. Returns the chats that would not stop.
+   */
+  stopTree?(id: string): Promise<{ stopFailed: string[]; stopped: string[]; cancelled: string[] }>;
   remove(id: string, mode: "archive" | "delete"): Promise<void>;
   worktrees(cwd: string): Promise<Worktrees>;
   createWorktree(
@@ -231,7 +236,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
   ["sessions.send", ["sessionId", "prompt", "project", "notifyOnComplete"]],
   ["sessions.draft", ["sessionId", "prompt", "project"]],
-  ["sessions.stop", ["sessionId", "project"]],
+  ["sessions.stop", ["sessionId", "project", "cascade"]],
   ["sessions.archive", ["sessionId", "project"]],
   ["sessions.delete", ["sessionId", "project"]],
   [
@@ -1282,6 +1287,20 @@ export async function handleAgentApp(
       )
         throw new Error("Only regular project sessions can be managed here");
       if (action === "sessions.stop") {
+        if (input.cascade !== undefined && typeof input.cascade !== "boolean")
+          throw new Error("cascade must be a boolean");
+        if (input.cascade === true) {
+          if (!host.stopTree)
+            throw new Error("This build can't stop a session's tree; stop each session instead");
+          const { stopFailed, cancelled } = await host.stopTree(id);
+          return {
+            sessionId: id,
+            stopped: !stopFailed.includes(id),
+            cascade: true,
+            cancelled: cancelled.length,
+            stopFailed,
+          };
+        }
         await host.stop(id);
         return { sessionId: id, stopped: true };
       }

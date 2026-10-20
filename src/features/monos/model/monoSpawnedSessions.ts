@@ -1,5 +1,8 @@
 import { unwrapShellCommand } from "../../../integrations/harness/core/shellIntent";
-import { monoCodeToolCall } from "../../sessions/model/monocodeToolCall";
+import {
+  delegateToolData,
+  monoCodeToolCall,
+} from "../../sessions/model/monocodeToolCall";
 import {
   HARNESSES,
   sessionDraftBlock,
@@ -98,6 +101,13 @@ function sessionReceipt(block: Block): SessionReceipt {
           },
         })
       : undefined;
+    // The delegate tool's delegate_task names the worker's chat; its details come from the launch the app recorded.
+    const delegated =
+      call?.delegate === "delegate_task"
+        ? delegateToolData(block.tool.detail)?.childSessionId
+        : undefined;
+    if (typeof delegated === "string" && delegated.startsWith("app-"))
+      found.sentSessionId = delegated;
     if (
       call &&
       ["sessions.start", "sessions.list", "sessions.send"].includes(call.action)

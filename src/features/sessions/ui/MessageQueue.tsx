@@ -101,9 +101,11 @@ export function MessageQueue({
           const editing = editingId === message.id;
           const label =
             (message.monoSessionCompletion
-              ? message.monoSessionCompletion.sessionCount
-                ? `${message.monoSessionCompletion.sessionCount} sessions finished`
-                : `Session ${message.monoSessionCompletion.status}: ${message.monoSessionCompletion.title}`
+              ? message.monoSessionCompletion.question
+                ? `Question from ${message.monoSessionCompletion.title}`
+                : message.monoSessionCompletion.sessionCount
+                  ? `${message.monoSessionCompletion.sessionCount} sessions finished`
+                  : `Session ${message.monoSessionCompletion.status}: ${message.monoSessionCompletion.title}`
               : message.text.trim()) ||
             message.noteCard?.title ||
             message.handoffCard?.brief ||

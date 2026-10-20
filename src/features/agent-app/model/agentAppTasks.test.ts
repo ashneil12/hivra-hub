@@ -460,3 +460,78 @@ describe("tasks.cancel and tasks.answer", () => {
     expect(answered).toEqual([[rows[0], 3, { kind: "answered", answers: { slot: ["two"] } }]]);
   });
 });
+
+describe("questions and the tree (H4)", () => {
+  it("starts every worker with full access, so no permission prompt strands it", async () => {
+    const { source, host, started } = fixture();
+    await handleAgentApp(source, "fa1", "tasks.delegate", { brief: "Fix the save bug" }, host);
+    expect((started[0] as [Record<string, unknown>])[0]).toMatchObject({ runtimeMode: "full-access" });
+  });
+
+  it("marks the chat as waiting for the length of a wait, and ends it with hasPendingQuestion when a worker asks", async () => {
+    const rows = [row({ id: "t-1" })];
+    const { source, host, api } = fixture(rows);
+    const waiting: boolean[] = [];
+    api.waiting = (owner, on) => {
+      expect(owner).toBe("mono-exo");
+      waiting.push(on);
+    };
+    api.nextChange = vi.fn(async () => {
+      rows[0].state = "question";
+      rows[0].pendingQuestion = "Which branch?";
+    });
+    const result = await handleAgentApp(source, "qw1", "tasks.wait", { taskIds: ["t-1"], timeoutSeconds: 25 }, host);
+    expect(result).toMatchObject({
+      settled: ["t-1"],
+      hasPendingQuestion: true,
+      tasks: [{ taskId: "t-1", status: "question", hasPendingQuestion: true }],
+    });
+    expect(waiting).toEqual([true, false]);
+    // A refused wait still ends the chat's waiting.
+    await expect(
+      handleAgentApp(source, "qw2", "tasks.wait", { taskIds: ["t-nobody"] }, host),
+    ).rejects.toThrow("No task t-nobody of yours");
+    expect(waiting).toEqual([true, false, true, false]);
+  });
+
+  it("says how many tasks beneath a cancelled one stopped with it", async () => {
+    const rows = [row({ id: "t-1" })];
+    const { source, host, api } = fixture(rows);
+    api.cancel = vi.fn(async (_owner, entry) => {
+      entry.state = "cancelled";
+      return { stopFailed: ["app-helper"], stopped: ["app-mono-exo-t-1"], cancelled: ["t-1", "t-2", "t-3"] };
+    });
+    expect(await handleAgentApp(source, "cc1", "tasks.cancel", { taskId: "t-1" }, host)).toEqual({
+      taskId: "t-1",
+      status: "cancelled",
+      cancelledBeneath: 2,
+      stopFailed: ["app-helper"],
+    });
+  });
+});
+
+describe("sessions.stop with cascade (H4)", () => {
+  it("stops the session and everything beneath it, and reports what would not stop", async () => {
+    const { source, host } = fixture();
+    const worker: Session = { ...newSession("claude", PROJECT), id: "app-mono-exo-r1" };
+    host.session = vi.fn(async (id: string) => (id === worker.id ? worker : null));
+    host.sessions = vi.fn(async () => [{ id: worker.id }] as never);
+    host.isMono = (id: string) => id === source.id;
+    host.stopTree = vi.fn(async () => ({ stopFailed: ["app-app-mono-exo-r1-h"], stopped: [worker.id], cancelled: ["t-7"] }));
+    expect(
+      await handleAgentApp(source, "sc1", "sessions.stop", { sessionId: worker.id, cascade: true }, host),
+    ).toEqual({
+      sessionId: worker.id,
+      stopped: true,
+      cascade: true,
+      cancelled: 1,
+      stopFailed: ["app-app-mono-exo-r1-h"],
+    });
+    expect(host.stop).not.toHaveBeenCalled();
+    await expect(
+      handleAgentApp(source, "sc2", "sessions.stop", { sessionId: worker.id, cascade: "yes" }, host),
+    ).rejects.toThrow("cascade must be a boolean");
+    await handleAgentApp(source, "sc3", "sessions.stop", { sessionId: worker.id }, host);
+    expect(host.stop).toHaveBeenCalledWith(worker.id);
+  });
+});
