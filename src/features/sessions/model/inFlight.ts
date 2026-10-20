@@ -203,6 +203,22 @@ export function canAutoContinue(session: Session): boolean {
   );
 }
 
+/**
+ * Claim one restart's resume of a chat: true the first time for this chat and resume count, false after. The
+ * auto-continue effect runs again whenever another chat's resumability changes, and a chat it has just sent Continue
+ * to can still read as resumable until that turn is accepted (a worker whose sibling started in a worktree of its own
+ * was sent Continue twice, and the second, steered into nothing, failed it). `claimed` lives as long as the window.
+ */
+export function claimAutoContinue(
+  claimed: Set<string>,
+  session: Pick<Session, "id" | "autoResumes">,
+): boolean {
+  const key = `${session.id}:${session.autoResumes ?? 0}`;
+  if (claimed.has(key)) return false;
+  claimed.add(key);
+  return true;
+}
+
 /** This turn has resumed itself after restarts as often as it may: it stops and waits for Ash instead. */
 export function resumeBlocked(session: Pick<Session, "autoResumes">): boolean {
   return (session.autoResumes ?? 0) >= MAX_AUTO_RESUMES;

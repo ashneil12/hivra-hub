@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { newTab } from "../../workspace/model/layout";
 import {
+  claimAutoContinue,
   CONTINUE_PROMPT,
   CUT_NOTE_MAX_ENTRIES,
   CUT_NOTE_MAX_LABEL,
@@ -515,5 +516,18 @@ describe("restart-safe resume (Phase 1b WP5)", () => {
         pendingQuestion: { requestId: 1, questions: [] },
       }),
     ).toBe(false);
+  });
+});
+
+describe("claimAutoContinue", () => {
+  it("lets one restart resume a chat once, and the next restart's resume again", () => {
+    const claimed = new Set<string>();
+    expect(claimAutoContinue(claimed, { id: "app-cos-r1" })).toBe(true);
+    // The effect runs again (another chat's resumability changed) before this Continue was accepted.
+    expect(claimAutoContinue(claimed, { id: "app-cos-r1" })).toBe(false);
+    expect(claimAutoContinue(claimed, { id: "app-cos-r2" })).toBe(true);
+    // Cut by the next restart: its resume count went up, so it may resume again.
+    expect(claimAutoContinue(claimed, { id: "app-cos-r1", autoResumes: 1 })).toBe(true);
+    expect(claimAutoContinue(claimed, { id: "app-cos-r1", autoResumes: 1 })).toBe(false);
   });
 });

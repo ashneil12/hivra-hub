@@ -947,6 +947,7 @@ import {
   inFlightRefs,
   inFlightSnapshotKey,
   markResumeStopped,
+  claimAutoContinue,
   resumeBlocked,
   resumePrompt,
   shouldWriteInFlightSnapshot,
@@ -11192,6 +11193,8 @@ function Workspace({
   );
 
   const shipResumes = useRef(new Set<string>());
+  /** The chats this window has auto-continued, by chat and resume count (inFlight.ts claimAutoContinue). */
+  const autoContinued = useRef(new Set<string>());
   const autoContinueKey = sessions
     .filter(
       (session) => canAutoContinue(session) && isLiveHarness(session.harness),
@@ -11247,11 +11250,15 @@ function Workspace({
           stopResuming(session);
           continue;
         }
+        // Once per restart: this effect runs again whenever another chat's resumability changes.
+        if (!claimAutoContinue(autoContinued.current, session)) continue;
         const autoResume = (session.autoResumes ?? 0) + 1;
         const ship = interruptingShip(session);
         if (!ship) {
-          // With what the restart cut, if anything was running in the background.
-          onSubmit(id, resumePrompt(session), [], { autoResume });
+          // With what the restart cut, if anything was running in the background. A Continue refused outright may be
+          // tried again the next time this runs.
+          if (!onSubmit(id, resumePrompt(session), [], { autoResume }))
+            autoContinued.current.delete(`${id}:${session.autoResumes ?? 0}`);
           continue;
         }
         // Cut by a ship's restart: resume once, with what the ship did.
