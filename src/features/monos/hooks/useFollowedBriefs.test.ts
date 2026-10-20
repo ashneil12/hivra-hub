@@ -36,12 +36,16 @@ describe("a Lead's answered report", () => {
       .fn()
       .mockRejectedValueOnce(new Error("room unavailable"))
       .mockResolvedValue(true);
-    await postAnsweredLeadReports([leadRow], [owner], reported, post);
+    const posted = vi.fn();
+    await postAnsweredLeadReports([leadRow], [owner], reported, post, posted);
     expect(reported.has(receipt)).toBe(false);
+    expect(posted).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledTimes(1);
     error.mockRestore();
-    await postAnsweredLeadReports([leadRow], [owner], reported, post);
+    await postAnsweredLeadReports([leadRow], [owner], reported, post, posted);
     expect(reported.has(receipt)).toBe(true);
+    // The tracker lets the row go once its room post is done.
+    expect(posted).toHaveBeenCalledExactlyOnceWith(leadRow);
     await postAnsweredLeadReports([leadRow], [owner], reported, post);
     expect(post).toHaveBeenCalledTimes(2);
     expect(post.mock.calls[1][0]).toMatchObject({

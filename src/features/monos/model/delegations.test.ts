@@ -860,3 +860,40 @@ describe("a boot whose open rows can't be loaded", () => {
     expect(relaunch.tracker.isLoaded()).toBe(false);
   });
 });
+
+describe("the rows a window keeps", () => {
+  it("lets go of a row once its work is settled and its report reached the owner (or was thrown away)", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const done = await app.start("app-mono-exo-a", "Fix the save bug");
+    done.finish("Fixed.");
+    app.endMonoTurn();
+    await app.settledDown();
+    // Finished, its report queued: still owed, still kept.
+    expect(app.tracker.row(done.row!.id)).toMatchObject({ delivery: "queued" });
+    app.deliverHead();
+    await app.settledDown();
+    expect(store.rows.get(done.row!.id)).toMatchObject({ delivery: "delivered" });
+    expect(app.tracker.row(done.row!.id)).toBeUndefined();
+    const running = await app.start("app-mono-exo-b", "Fix the audio");
+    expect(app.tracker.known().map((row) => row.childSession)).toEqual(["app-mono-exo-b"]);
+    expect(app.tracker.openRowFor("app-mono-exo-b")?.id).toBe(running.row!.id);
+  });
+
+  it("keeps a Lead's delivered report until its room post is done", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const launch = app.tracker.launch({ ownerSession: MONO, requestId: "app-cos-b1", childSession: "lead-chat", follow: "lead" });
+    const lead = (await launch.row)!;
+    // This store doesn't keep `follow` (followedBriefs.test.ts covers it): set it as delegations.rs would.
+    store.rows.get(lead.id)!.follow = "lead";
+    await store.settle({ id: lead.id, generation: 1, state: "completed", result: "Shipped." });
+    await store.setDelivery({ ids: [lead.id], delivery: "queued", queuedMessage: "mono-completion-app-cos-b1-g1" });
+    await app.tracker.refresh([lead.id], MONO);
+    app.tracker.delivered("mono-completion-app-cos-b1-g1");
+    await app.settledDown();
+    expect(app.tracker.row(lead.id)).toMatchObject({ delivery: "delivered" });
+    app.tracker.forget(lead.id);
+    expect(app.tracker.row(lead.id)).toBeUndefined();
+  });
+});

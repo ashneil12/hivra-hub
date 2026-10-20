@@ -36,6 +36,8 @@ export async function postAnsweredLeadReports(
   sessions: readonly Session[],
   reported: Set<string>,
   onLeadReport: (report: FollowedReport) => Promise<unknown> | void,
+  /** Its post went through (the tracker lets the row go). */
+  posted?: (row: Delegation) => void,
 ): Promise<void> {
   for (const row of rows) {
     if (row.follow !== "lead" || row.state === "running" || row.state === "question") continue;
@@ -48,6 +50,7 @@ export async function postAnsweredLeadReports(
     try {
       await onLeadReport({ row, receipt, owner, ...answered });
       reported.add(receipt);
+      posted?.(row);
     } catch (error) {
       console.error("Could not post the Lead's report to its room; trying again on the next sweep", error);
     }
@@ -106,7 +109,9 @@ export function useFollowedBriefs(options: {
     }
     const onLeadReport = latest.current.onLeadReport;
     if (!onLeadReport) return;
-    await postAnsweredLeadReports(tracker.known(), sessionsRef.current, reported.current, onLeadReport);
+    await postAnsweredLeadReports(tracker.known(), sessionsRef.current, reported.current, onLeadReport, (row) =>
+      tracker.forget(row.id),
+    );
   };
 
   // After a change to the chats: once, shortly after the first change (a streaming chat changes constantly, so this

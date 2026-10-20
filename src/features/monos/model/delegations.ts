@@ -447,6 +447,18 @@ export type BootSummary = Record<BootStep["kind"], number>;
 
 const key = (owner: string, request: string) => `${owner}\u0000${request}`;
 
+/**
+ * A row this window still needs: one whose work runs or whose report is owed, and a Lead's report that reached its
+ * owner until its room post is done (`forget`). A settled row whose report was delivered, acknowledged or thrown away
+ * is let go, so a long-running window doesn't keep every row it ever saw.
+ */
+function retained(row: Delegation): boolean {
+  return (
+    isOwed(row) ||
+    (row.follow === "lead" && row.delivery !== "disposed" && !!row.deliveryMessage)
+  );
+}
+
 /** The app's side of the delegation rows: one instance per window, every store call in order. */
 export class DelegationTracker {
   private tail: Promise<unknown> = Promise.resolve();
@@ -470,13 +482,24 @@ export class DelegationTracker {
 
   private remember(row: Delegation | null | undefined) {
     if (!row) return;
-    this.rows.set(row.id, row);
-    this.requests.set(key(row.ownerSession, row.requestId), row.id);
+    if (retained(row)) {
+      this.rows.set(row.id, row);
+      this.requests.set(key(row.ownerSession, row.requestId), row.id);
+    } else this.forget(row.id);
     // A followed brief never re-attaches to a turn in its chat (the watcher reports it), so it isn't "the row this
     // chat works for" either.
     if (isOpenDelegation(row) && !row.follow) this.openChildren.set(row.childSession, row.id);
     else if (this.openChildren.get(row.childSession) === row.id)
       this.openChildren.delete(row.childSession);
+  }
+
+  /** Let go of a row this window no longer needs (a Lead's report once its room post is done). */
+  forget(id: string): void {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.rows.delete(id);
+    const request = key(row.ownerSession, row.requestId);
+    if (this.requests.get(request) === id) this.requests.delete(request);
   }
 
   /** The followed briefs still open (followedBriefs.ts watches their chats). */
