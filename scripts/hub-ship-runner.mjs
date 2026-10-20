@@ -23,6 +23,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -310,6 +311,37 @@ export function backupData(data, backup) {
   return hashes;
 }
 
+/** Where the daily app's Monos live since 21 Oct (src-tauri/src/mono_home.rs), under this runner's HOME. */
+export function monosHome(home = os.homedir()) {
+  return path.join(home, "agent-memory", "monos");
+}
+
+/**
+ * Copy the Monos' permanent home into `backup/monos-home`, checking every file against the original. A copy only:
+ * rollback doesn't swap it back (the home outlives builds; a bad build's edits are undone from Bot changes). Returns
+ * how many files it copied, or null when there is no home yet.
+ */
+export function backupMonoHome(home, backup) {
+  if (!exists(home)) return null;
+  const dest = path.join(backup, "monos-home");
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.cpSync(home, dest, { recursive: true, verbatimSymlinks: true });
+  let files = 0;
+  const check = (dir, rel = "") => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const from = path.join(dir, entry.name);
+      const to = path.join(dest, rel, entry.name);
+      if (entry.isDirectory()) check(from, path.join(rel, entry.name));
+      else if (entry.isFile()) {
+        if (sha256File(to) !== sha256File(from)) throw new Error(`the copy of monos/${path.join(rel, entry.name)} doesn't match it`);
+        files++;
+      }
+    }
+  };
+  check(home);
+  return files;
+}
+
 /**
  * Put `backup`'s database files back byte for byte (a file it doesn't have is removed), check them against `expected`,
  * and swap monos/ back (the live one goes to `aside`). Same steps as ship.rs `restore_db`.
@@ -509,6 +541,7 @@ async function swap(ctx, ship) {
   try {
     if (!step(ship, "backup")) {
       (ship.db ??= {}).backup = backupData(data, path.join(ctx.dir, BACKUP_DIR));
+      ship.db.monosHome = backupMonoHome(monosHome(), path.join(ctx.dir, BACKUP_DIR));
       markStep(ship, "backup");
       saveShip(ctx.dir, ship);
       testCrash(ship);

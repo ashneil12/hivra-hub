@@ -18,7 +18,7 @@ import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
-import { isRunning, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { backupMonoHome, isRunning, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -766,4 +766,22 @@ test("a fake app quits by itself once the test run that started it is gone", asy
   assert.equal(quit, false, "it runs while its owner does");
   await exited;
   await until("the app to quit", () => quit, 5_000);
+});
+
+test("a ship also copies the Monos' permanent home, byte for byte, and never needs one", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "monos-home-"));
+  try {
+    assert.equal(monosHome("/Users/ash"), "/Users/ash/agent-memory/monos");
+    const home = path.join(root, "agent-memory", "monos");
+    const backup = path.join(root, "backup");
+    assert.equal(backupMonoHome(home, backup), null);
+    fs.mkdirSync(path.join(home, "chief-of-staff", "memory"), { recursive: true });
+    fs.writeFileSync(path.join(home, "MONOS.json"), '{"monos":[]}');
+    fs.writeFileSync(path.join(home, "chief-of-staff", "SOUL.md"), "# Soul\n");
+    fs.writeFileSync(path.join(home, "chief-of-staff", "memory", "hub.md"), "# Hub\n");
+    assert.equal(backupMonoHome(home, backup), 3);
+    assert.equal(fs.readFileSync(path.join(backup, "monos-home", "chief-of-staff", "memory", "hub.md"), "utf8"), "# Hub\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
