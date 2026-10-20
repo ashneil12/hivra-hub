@@ -339,10 +339,22 @@ describe("existing providers over headless process I/O", () => {
         if (harness === "codex")
           efforts.push(calls.find((call) => "codexEffort" in call).codexEffort);
         else {
-          const args: string[] = calls.find(
-            (call) => call.claudeArgs,
-          ).claudeArgs;
-          efforts.push(args[args.indexOf("--effort") + 1] ?? null);
+          // The first message also starts MonoCode's own isolated helper
+          // call (the chat title), which never takes the chat's effort. Read
+          // the chat's own Claude Code process: the one that keeps a session.
+          const chatSpawns: string[][] = calls
+            .filter(
+              (call) =>
+                call.claudeArgs &&
+                !call.claudeArgs.includes("--no-session-persistence"),
+            )
+            .map((call) => call.claudeArgs);
+          for (const args of chatSpawns)
+            efforts.push(
+              args.includes("--effort")
+                ? args[args.indexOf("--effort") + 1]
+                : null,
+            );
         }
       }
       expect(efforts).toEqual(["low", "high"]);
