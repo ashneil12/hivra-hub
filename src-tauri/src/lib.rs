@@ -9,6 +9,7 @@ mod background_work;
 mod chat_background;
 mod checkpoint;
 mod codex_mono_store;
+pub mod connectors;
 mod control;
 pub mod control_cli;
 mod cursor_store;

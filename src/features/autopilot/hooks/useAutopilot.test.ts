@@ -2,10 +2,11 @@
 // The app hook end to end against the in-memory store: what a covered chat's question and approvals get, what the red
 // list keeps for Ash, that an uncovered project is left alone, and that agents' limits are armed and come back after a
 // restart.
-import { act, createElement, useState } from "react";
+import { act, createElement, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHubDataSource, type HubDataSource } from "../../hub/model/hubData";
+import { noteChats, resetWaitingChats, setWaitingChatsHost } from "../../hub/model/waitingChats";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import { refreshAutopilot, setAutopilotBackend } from "../model/autopilot";
@@ -18,6 +19,7 @@ let container: HTMLElement;
 let backend: MemoryAutopilot;
 let answers: { id: string; requestId: number; reply: UserQuestionReply }[];
 let approvals: { id: string; requestId: number; decision: string }[];
+let sent: { id: string; text: string }[];
 let current: Session[];
 
 function session(id: string, cwd: string, patch: Partial<Session> = {}): Session {
@@ -30,11 +32,25 @@ function Harness({ initial }: { initial: Session[] }) {
   const [sessions, setSessions] = useState(initial);
   current = sessions;
   const ref = { current: sessions };
+  // As App.tsx wires Today's waiting list: it reads the chats and borrows these hands.
+  useEffect(() => noteChats(sessions), [sessions]);
+  useEffect(
+    () =>
+      setWaitingChatsHost({
+        liveQuestion: (id) => current.find((s) => s.id === id)?.pendingQuestion,
+        respond: (id, requestId, reply) => answers.push({ id, requestId, reply }),
+        send: async (id, text) => {
+          sent.push({ id, text });
+          return true;
+        },
+        open: () => undefined,
+      }),
+    [],
+  );
   useAutopilot({
     sessions,
     sessionsRef: ref,
     updateSession: (id, change) => setSessions((all) => all.map((s) => (s.id === id ? change(s) : s))),
-    answerQuestion: (id, requestId, reply) => answers.push({ id, requestId, reply }),
     approve: (id, requestId, decision) => approvals.push({ id, requestId, decision }),
     openSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     isDelegated: (id) => delegated.has(id),
@@ -57,11 +73,15 @@ async function mount(initial: Session[]) {
 }
 
 beforeEach(async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   answers = [];
   approvals = [];
+  sent = [];
+  localStorage.clear();
+  resetWaitingChats();
   delegated = new Set();
   backend = memoryAutopilot();
   setAutopilotBackend(backend);
@@ -75,6 +95,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.unstubAllGlobals();
   container.remove();
   setAutopilotBackend(null);
   setHubDataSource(undefined);
@@ -97,6 +118,8 @@ describe("useAutopilot", () => {
       session("tests", "/Users/ash/Projects/hivra", { blocks: [approval("npm run check")] }),
       session("force", "/Users/ash/Projects/hivra", { blocks: [approval("git push --force origin main")] }),
       session("exo", "/Users/ash/Projects/vg-game", question("exo", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }])),
+      session("line", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Done the first half.\nNeeds Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag" }] }),
+      session("nopick", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Which name do you prefer?" }] }),
     ]);
     expect(answers).toEqual([{ id: "pick", requestId: 5, reply: { kind: "answered", answers: { q: ["a"] } } }]);
     expect(approvals).toEqual([{ id: "tests", requestId: 9, decision: "allow" }]);
@@ -106,6 +129,11 @@ describe("useAutopilot", () => {
     expect(byChat.tests).toMatchObject({ kind: "approval", outcome: "taken", recommendation: "Allowed" });
     expect(byChat.force).toMatchObject({ kind: "approval", outcome: "held", red: "mass-destructive" });
     expect(byChat.exo).toBeUndefined();
+    // A "Needs Ash:" line takes its "My pick:" as Ash's go; one with no pick is handed back in words.
+    expect(sent.find((m) => m.id === "line")?.text).toBe("Go with your pick: yes, behind a flag");
+    expect(byChat.line).toMatchObject({ kind: "question", outcome: "taken", recommendation: "yes, behind a flag" });
+    expect(sent.find((m) => m.id === "nopick")?.text).toMatch(/^Ash is away on autopilot until .* Decide this yourself/);
+    expect(byChat.nopick).toMatchObject({ kind: "question", outcome: "handed_back" });
   });
 
   it("leaves a delegated worker's question to its Lead, but still decides its approvals", async () => {

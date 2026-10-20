@@ -1,9 +1,11 @@
 // The app's one hook for autopilot (model/*.ts holds the rules; src-tauri/src/autopilot.rs the truth). Every window
 // keeps the store live and answers "will this chat resume by itself?" for completion reports. The main window also
 // acts:
-// - while a switch covers a chat, its pending question takes the agent's own recommendation and its tool approvals are
-//   allowed, unless either touches Ash's red list (then it waits for him); each call goes in the Autopilot log. A
-//   delegated worker's question is left to its Lead (H3's tasks.answer);
+// - while a switch covers a chat that waits on Ash (Today's "Waiting on you", hub/model/waitingChats.ts), its pick is
+//   taken through that list's own `takePick(id, { by: "autopilot" })`, which refuses its red lines; a question with no
+//   pick is handed back to the agent in words. Tool approvals are allowed. Anything that touches Ash's red list (theirs
+//   or ours, model/redList.ts) waits for him. Each call goes in the Autopilot log. A delegated worker's question is
+//   left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),
 //   brought back after a restart from the stored row, and marked done once a turn finishes.
 
@@ -15,7 +17,13 @@ import { leadFor } from "../../hub/model/hubLeads";
 import { monoForSession, monoLook } from "../../monos/model/mono";
 import type { ApprovalDecision } from "../../../integrations/harness/core/types";
 import type { Session } from "../../sessions/model/session";
-import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import {
+  answerInWords,
+  subscribeWaitingChats,
+  takePick,
+  waitingChats,
+  type WaitingChat,
+} from "../../hub/model/waitingChats";
 import {
   autopilotBackend,
   autopilotSnapshot,
@@ -28,7 +36,7 @@ import {
   type Resume,
 } from "../model/autopilot";
 import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
-import { approvalVerdict, chatProject, questionVerdict } from "../model/decide";
+import { approvalVerdict, chatProject, handBackText } from "../model/decide";
 import { formatUntil } from "../model/endTime";
 import {
   pausedLabel,
@@ -39,6 +47,7 @@ import {
   type Track,
 } from "../model/limitResume";
 import { publishPaused } from "../model/paused";
+import { callText, redVerdict } from "../model/redList";
 
 function isMainWindow(): boolean {
   try {
@@ -87,7 +96,6 @@ export function useAutopilot(options: {
   sessions: Session[];
   sessionsRef: MutableRefObject<Session[]>;
   updateSession: (id: string, change: (session: Session) => Session) => void;
-  answerQuestion: (sessionId: string, requestId: number, reply: UserQuestionReply) => void;
   approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => void;
   /** Open a stored chat in this window, for a resume armed before a restart. */
   openSession: (id: string) => Promise<Session | null>;
@@ -101,11 +109,16 @@ export function useAutopilot(options: {
   const version = useAutopilotVersion();
   const main = useRef(isMainWindow());
   const handled = useRef(new Set<string>());
+  /** A waiting chat whose answer couldn't be delivered: tried again after this time, not on every streamed word. */
+  const retryAt = useRef(new Map<string, number>());
   const tracks = useRef(new Map<string, Track>());
   const busyIds = useRef(new Set<string>());
   const triedArm = useRef(new Set<string>());
   const loaded = useRef(false);
   const [booted, setBooted] = useState(0);
+  const [waiting, setWaiting] = useState(0);
+  // The waiting list changes on its own schedule (a chat asks, Ash answers from Today): look again each time.
+  useEffect(() => subscribeWaitingChats(() => setWaiting((n) => n + 1)), []);
 
   // Every window: the store, where projects come from, and the completion report's question.
   useEffect(() => {
@@ -209,41 +222,30 @@ export function useAutopilot(options: {
     const status = autopilotSnapshot();
     const { sessions } = options;
 
-    // 1. Questions and approvals in chats a switch covers. Only chats waiting on someone are looked at, and only their
-    // recent blocks: this runs on every streamed change.
+    // 1. Calls a switch covers. Questions come from Today's waiting list (both shapes: an AskUserQuestion and a
+    // "Needs Ash:" line); approvals from the chats' latest blocks, as this runs on every streamed change.
     if (status?.switches.length) {
+      for (const chat of waitingChats()) {
+        // A delegated worker's question is its Lead's to answer (H3's tasks.answer), not Ash's: autopilot leaves it.
+        if (latest.current.isDelegated(chat.sessionId)) continue;
+        const covering = coveringSwitch(status, chat.projectId, now);
+        if (!covering) continue;
+        const key = `w:${chat.sessionId}:${chat.requestId ?? "line"}:${hash(`${chat.question}|${chat.pick ?? ""}`)}`;
+        if (handled.current.has(key)) {
+          const again = retryAt.current.get(key);
+          if (again === undefined || again > now) continue;
+          retryAt.current.delete(key);
+        }
+        handled.current.add(key);
+        void decideWaiting(chat, formatUntil(covering.untilMs, now), key);
+      }
       for (const session of sessions) {
         if (session.worktreeRemoved) continue;
         const pending = recentApprovals(session);
-        if (!session.pendingQuestion && !pending.length) continue;
+        if (!pending.length) continue;
         const covering = coveringSwitch(status, sessionProject(session), now);
         if (!covering) continue;
-        const untilLabel = formatUntil(covering.untilMs, now);
         const base = { project: sessionProject(session), chatId: session.id, ...who(session) };
-        // A delegated worker's question is its Lead's to answer (H3's tasks.answer), not Ash's: autopilot leaves it.
-        const question =
-          session.orchestrationLeadId || latest.current.isDelegated(session.id) ? undefined : session.pendingQuestion;
-        if (question) {
-          const key = `q:${session.id}:${question.requestId}:${hash(JSON.stringify(question.questions))}`;
-          if (!handled.current.has(key)) {
-            handled.current.add(key);
-            const forced = redHoldFor(session.id, now);
-            const verdict = questionVerdict(question, untilLabel, forced);
-            if (verdict.kind === "held") {
-              if (forced) clearRedHold(session.id);
-              void log({ ...base, kind: "question", outcome: "held", what: verdict.what, red: verdict.red, dedupe: key });
-            } else {
-              void log({
-                ...base,
-                kind: "question",
-                outcome: verdict.handedBack ? "handed_back" : "taken",
-                what: verdict.what,
-                recommendation: verdict.taken,
-                dedupe: key,
-              }).then(() => latest.current.answerQuestion(session.id, question.requestId, verdict.reply));
-            }
-          }
-        }
         for (const block of pending) {
           if (!block.approval || block.approval.decided) continue;
           const key = `a:${session.id}:${block.approval.requestId}:${hash(block.tool?.title ?? block.text)}`;
@@ -260,6 +262,39 @@ export function useAutopilot(options: {
           }
         }
       }
+    }
+
+    /** One waiting chat under autopilot: held on a red line (either list's), its pick taken, or handed back. */
+    async function decideWaiting(chat: WaitingChat, untilLabel: string, key: string) {
+      const base = {
+        project: chat.projectId,
+        chatId: chat.sessionId,
+        monoId: chat.monoId ?? null,
+        who: chat.chatName,
+        what: chat.question,
+        recommendation: chat.pick ?? null,
+        dedupe: key,
+      };
+      const forced = redHoldFor(chat.sessionId, now);
+      const red = forced ?? redVerdict(callText(chat.question, chat.pick));
+      if (red || chat.redLine) {
+        if (forced) clearRedHold(chat.sessionId);
+        // It stays in Waiting on you for Ash.
+        void log({ ...base, kind: "question", outcome: "held", red: red ?? null });
+        return;
+      }
+      if (chat.pick) {
+        const taken = await takePick(chat.sessionId, { by: "autopilot" });
+        if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });
+        else if (/red line/i.test(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
+        // Couldn't deliver (the chat is busy or gone): try again in a while.
+        else retryAt.current.set(key, Date.now() + RETRY_MS);
+        return;
+      }
+      const handed = await answerInWords(chat.sessionId, handBackText(untilLabel));
+      if (handed.ok)
+        void log({ ...base, kind: "question", outcome: "handed_back", recommendation: "Told to decide itself" });
+      else retryAt.current.set(key, Date.now() + RETRY_MS);
     }
 
     // 2. Auto-resume at the limit's reset.
@@ -383,10 +418,11 @@ export function useAutopilot(options: {
         busyIds.current.delete(id);
       }
     }
-  }, [options.sessions, version, booted]);
+  }, [options.sessions, version, booted, waiting]);
 }
 
 const APPROVAL_LOOKBACK = 200;
+const RETRY_MS = 30_000;
 
 /** Undecided approvals among a chat's latest blocks. */
 function recentApprovals(session: Session) {

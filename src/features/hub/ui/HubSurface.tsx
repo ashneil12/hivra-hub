@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
-import { signIn, useConnectorsVersion } from "../model/connectors";
+import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
 import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -17,6 +17,9 @@ import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
+import { WaitingOnYou } from "./WaitingOnYou";
+import { OlderQuestions } from "./OlderQuestions";
+import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { ProposalView } from "./ProposalView";
@@ -96,6 +99,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 }
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
+  useWaitingChatsVersion();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(25);
@@ -109,6 +113,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const sinceAt = data.sinceAt();
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
+  // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
+  const chatsWaiting = waitingChats(projectId).length > 0;
+  const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
   // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox keeps its own fixed order.
   const sections: readonly TodaySection[] = projectId ? TODAY_DEFAULT.filter((s) => s.kind !== "being-built") : data.todayLayout?.() ?? TODAY_DEFAULT;
@@ -137,7 +144,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     ) : null;
   const needsBlock = (s: TodaySection) => (
     <div key={s.id} className="flex flex-col gap-6" data-hub-today-section={s.kind}>
-      {s.title !== "Needs you" ? <h2 className="-mb-4 text-xs text-content/60" data-hub-needs-heading>{s.title}</h2> : null}
+      {s.title !== "Needs you" || (chatsWaiting && needsShown) ? <h2 className="-mb-4 text-xs text-content/60" data-hub-needs-heading>{s.title}</h2> : null}
       <label className="flex flex-col gap-1 text-[12px] text-content/60">
         Find an ask, including Later and Older
         <input type="search" aria-label="Search asks" value={query} onChange={(e) => { setQuery(e.target.value); setShown(25); }} placeholder="Search by words or project…" className="rounded-md border border-stroke bg-content/3 px-3 py-2 text-[13px] text-content outline-none focus:border-content/30" />
@@ -179,7 +186,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const block = (s: TodaySection) =>
     s.kind === "since" ? sinceBlock(s)
     : s.kind === "setup" ? setupBlock(s)
-    : s.kind === "needs" ? needsBlock(s)
+    // Waiting on you sits right above Needs you, wherever the board puts it.
+    : s.kind === "needs" ? <Fragment key={s.id}><WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
     : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} />
     : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
     : null;
@@ -196,8 +204,10 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </div>
         </div>)}
       </section> : null}
+      {/* The board took Needs you off Today: the chats waiting on Ash still lead it. */}
+      {sections.some((s) => s.kind === "needs") ? null : <WaitingOnYou projectId={projectId} />}
       {sections.map(block)}
-      {!query.trim() ? <OlderGroup projectId={projectId} onSheet={setSheet} /> : null}
+      {!query.trim() ? <OlderQuestions projectId={projectId} renderRow={(n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />} /> : null}
       {!projectId ? <LastChange /> : null}
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
@@ -292,38 +302,6 @@ function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet:
   );
 }
 
-/**
- * Older questions (recovered from past chats and the like). They are not Needs: in no badge and no count, and shut
- * until Ash opens them. On Today they sit once at the bottom, under their project's name; in a project, its own.
- */
-function OlderGroup({ projectId, onSheet }: { projectId: string | undefined; onSheet: (sheet: SheetFor) => void }) {
-  const [open, setOpen] = useState(false);
-  const data = hubData();
-  const older = data.listOlder(projectId);
-  if (!older.length) return null;
-  const names = new Map(data.listProjects().map((p) => [p.id, p.name]));
-  const groups = [...new Set(older.map((n) => n.projectId))];
-  return (
-    <section data-hub-older>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 text-xs text-content/60 hover:text-content">
-        Older ({older.length})
-      </button>
-      {open ? (
-        <div className="mt-1 flex flex-col">
-          {groups.map((pid) => (
-            <div key={pid} className="flex flex-col">
-              {projectId ? null : <h2 className="mb-1 mt-2 px-2 text-xs text-content/60">{names.get(pid) ?? pid}</h2>}
-              {older.filter((n) => n.projectId === pid).map((n) => (
-                <NeedRow key={n.id} need={n} onSheet={onSheet} />
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
 function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) => void }) {
   const done = need.state === "done";
   const [busy, setBusy] = useState(false);
@@ -403,11 +381,17 @@ function StuckRow({ item }: { item: WaitingItem }) {
         <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="waiting" role="status">Waiting for your Mac…</span>
       ) : item.signIn === "on-this-mac" ? (
         <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="on-this-mac" role="status">On this Mac</span>
-      ) : item.target || item.connectorId ? (
+      ) : item.target || item.connectorId || item.act ? (
         <button
           type="button"
           data-hub-take-look={item.id}
-          onClick={() => (item.connectorId ? void signIn(item.connectorId) : item.target && setHubSelection(item.target))}
+          onClick={() => {
+            if (item.act) return item.act();
+            if (!item.connectorId) return item.target && setHubSelection(item.target);
+            // A connector the catalog has signs in on Settings > Connectors; any other keeps the setup file's flow.
+            const name = allConnectors().find((c) => c.id === item.connectorId)?.name ?? "";
+            if (!openConnectorSettings(name)) void signIn(item.connectorId);
+          }}
           className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
         >
           {item.actionLabel ?? "Take a look"}

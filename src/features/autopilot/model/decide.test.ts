@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { UserQuestionPrompt } from "../../sessions/model/userQuestion";
-import { approvalVerdict, chatProject, decideCall, handBackText, questionVerdict, recommendedOptions } from "./decide";
+import { approvalVerdict, chatProject, decideCall, handBackText } from "./decide";
 
 const UNTIL = Date.parse("2026-10-19T09:00:00");
-
-function prompt(questions: UserQuestionPrompt["questions"], title?: string): UserQuestionPrompt {
-  return { requestId: 7, ...(title ? { title } : {}), questions };
-}
 
 describe("autopilot.decide", () => {
   it("is off without a covering switch", () => {
@@ -29,91 +24,12 @@ describe("autopilot.decide", () => {
   });
 });
 
-describe("a chat's question under autopilot", () => {
-  it("takes the option the agent marked (Recommended)", () => {
-    const verdict = questionVerdict(
-      prompt([
-        {
-          id: "q1",
-          prompt: "Which lighting pass first?",
-          multiSelect: false,
-          allowCustom: true,
-          options: [
-            { id: "dusk", label: "Dusk (Recommended)" },
-            { id: "night", label: "Night" },
-          ],
-        },
-      ]),
-      "Mon 9:00",
-    );
-    expect(verdict).toMatchObject({ kind: "answer", handedBack: false, taken: "Dusk", what: "Which lighting pass first?" });
-    if (verdict.kind === "answer") expect(verdict.reply).toEqual({ kind: "answered", answers: { q1: ["dusk"] } });
-  });
-
-  it("finds a recommendation in the description too, and never picks Other", () => {
-    expect(
-      recommendedOptions({
-        id: "q",
-        prompt: "?",
-        multiSelect: false,
-        allowCustom: true,
-        options: [
-          { id: "a", label: "Keep it", description: "recommended: smallest change" },
-          { id: "o", label: "Other (recommended)" },
-        ],
-      }).map((o) => o.id),
-    ).toEqual(["a"]);
-  });
-
-  it("hands an unmarked question back to the agent in words", () => {
-    const verdict = questionVerdict(
-      prompt([{ id: "q1", prompt: "Which name?", multiSelect: false, allowCustom: true, options: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }] }]),
-      "Mon 9:00",
-    );
-    expect(verdict).toMatchObject({ kind: "answer", handedBack: true });
-    if (verdict.kind === "answer") {
-      expect(verdict.reply.custom?.q1).toBe(handBackText("Mon 9:00"));
-      expect(verdict.reply.answers).toEqual({});
-    }
-  });
-
-  it("takes the first option when no free text is allowed and none is marked, and a lone option as is", () => {
-    const verdict = questionVerdict(
-      prompt([
-        { id: "q1", prompt: "Pick", multiSelect: false, allowCustom: false, options: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }] },
-        { id: "q2", prompt: "Confirm", multiSelect: false, allowCustom: true, options: [{ id: "ok", label: "Go ahead" }, { id: "__custom__", label: "Other" }] },
-      ]),
-      "Mon 9:00",
-    );
-    if (verdict.kind !== "answer") throw new Error("expected an answer");
-    expect(verdict.reply.answers).toEqual({ q1: ["a"], q2: ["ok"] });
-    expect(verdict.taken).toContain("Alpha (its first option; none was marked recommended)");
-    expect(verdict.taken).toContain("Go ahead");
-  });
-
-  it("holds a question that touches the red list, even when the agent marked a pick", () => {
-    const verdict = questionVerdict(
-      prompt([
-        {
-          id: "q1",
-          prompt: "The customer was charged twice. What now?",
-          multiSelect: false,
-          allowCustom: true,
-          options: [{ id: "r", label: "Refund the second charge (Recommended)" }, { id: "w", label: "Wait" }],
-        },
-      ]),
-      "Mon 9:00",
-    );
-    expect(verdict).toEqual({ kind: "held", red: "money", what: "The customer was charged twice. What now?" });
-  });
-
-  it("holds a plain-looking question when the chat was told to ask Ash a red call", () => {
-    const verdict = questionVerdict(
-      prompt([{ id: "q1", prompt: "OK to go ahead?", multiSelect: false, allowCustom: true, options: [{ id: "y", label: "Yes (Recommended)" }] }], "Go ahead?"),
-      "Mon 9:00",
-      "prod-host",
-    );
-    expect(verdict).toEqual({ kind: "held", red: "prod-host", what: "Go ahead?" });
+describe("a question with no pick", () => {
+  it("is handed back with the end time and the red list", () => {
+    const text = handBackText("Mon 9:00");
+    expect(text).toContain("until Mon 9:00");
+    expect(text).toContain("take your own recommendation");
+    expect(text).toContain("still waits for him");
   });
 });
 

@@ -3,6 +3,7 @@ import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
+import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -665,6 +666,7 @@ export function SettingsView({
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
+              {section === "teams" ? <TeamsPage /> : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}

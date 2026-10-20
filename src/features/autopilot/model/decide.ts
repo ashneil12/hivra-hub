@@ -1,19 +1,13 @@
 // What autopilot does with a call that would have gone to Ash: take the agent's own recommendation, or hold it for him
 // when it touches his red list (redList.ts). Three doors reach it, all pure here:
 // - `app autopilot.decide`, an agent asking before it asks Ash (decideCall);
-// - a chat's own question (AskUserQuestion and the like) left for Ash (questionVerdict);
+// - a chat's question for Ash is read and answered by Today's waiting list (hub/model/waitingChats.ts takePick); a
+//   question with no pick is handed back to the agent with handBackText;
 // - a tool approval a supervised chat is waiting on (approvalVerdict).
 // The app hook (useAutopilot.ts) applies the verdicts and writes each one to the Autopilot log.
 
 import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
-import {
-  isOtherOption,
-  type UserQuestion,
-  type UserQuestionOption,
-  type UserQuestionPrompt,
-  type UserQuestionReply,
-} from "../../sessions/model/userQuestion";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
 
 export type CallVerdict =
@@ -40,88 +34,9 @@ export function decideCall(input: {
   return { outcome: "taken", answer: input.recommendation, until: input.until };
 }
 
-const RECOMMENDED = /\(?\brecommended\b\)?/i;
-
-/** The option an agent marked as its pick ("(Recommended)" in its label or description), never "Other". */
-export function recommendedOptions(question: UserQuestion): UserQuestionOption[] {
-  return question.options.filter(
-    (option) =>
-      !isOtherOption(option) &&
-      !/^other\b/i.test(option.label.trim()) &&
-      (RECOMMENDED.test(option.label) || RECOMMENDED.test(option.description ?? "")),
-  );
-}
-
-export function plainLabel(option: UserQuestionOption): string {
-  return option.label.replace(/\s*\(?\brecommended\b\)?\s*/i, " ").replace(/\s+/g, " ").trim() || option.label;
-}
-
 /** What Ash's absence tells an agent whose question has no marked pick. */
 export function handBackText(untilLabel: string): string {
   return `Ash is away on autopilot until ${untilLabel} and can't answer. Decide this yourself: take your own recommendation, carry on, and say what you chose and why in your report. Anything on his red list (money, deleting data without a backup, production hosts, mass destructive changes, messages sent as him, credentials) still waits for him.`;
-}
-
-export type QuestionVerdict =
-  | { kind: "held"; red: RedCategory; what: string }
-  | {
-      kind: "answer";
-      reply: Extract<UserQuestionReply, { kind: "answered" }>;
-      what: string;
-      /** What was taken, as it reads in the log. */
-      taken: string;
-      /** No pick was marked: the agent was told to decide itself. */
-      handedBack: boolean;
-    };
-
-export function questionWhat(prompt: UserQuestionPrompt): string {
-  const first = prompt.questions[0];
-  return (prompt.title?.trim() || first?.prompt.trim() || first?.header?.trim() || "A question").slice(0, 500);
-}
-
-/**
- * A chat's question while autopilot covers it. Red list (in its title, prompts or options), or a red hold the chat
- * itself asked for: held. Otherwise each question takes the option marked recommended; a single real option is taken;
- * a question with none marked is handed back to the agent in words when it takes free text, else its first option is
- * taken (agents put their pick first).
- */
-export function questionVerdict(
-  prompt: UserQuestionPrompt,
-  untilLabel: string,
-  forcedRed?: RedCategory,
-): QuestionVerdict {
-  const what = questionWhat(prompt);
-  const text = callText(
-    prompt.title,
-    ...prompt.questions.flatMap((q) => [q.header, q.prompt, ...q.options.flatMap((o) => [o.label, o.description])]),
-  );
-  const red = forcedRed ?? redListCategory(text);
-  if (red) return { kind: "held", red, what };
-  const answers: Record<string, string[]> = {};
-  const custom: Record<string, string> = {};
-  const taken: string[] = [];
-  let handedBack = false;
-  for (const question of prompt.questions) {
-    const real = question.options.filter((o) => !isOtherOption(o));
-    const marked = recommendedOptions(question);
-    const picks = marked.length ? (question.multiSelect ? marked : marked.slice(0, 1)) : real.length === 1 ? real : [];
-    if (picks.length) {
-      answers[question.id] = picks.map((o) => o.id);
-      taken.push(picks.map(plainLabel).join(", "));
-    } else if (question.allowCustom) {
-      custom[question.id] = handBackText(untilLabel);
-      handedBack = true;
-    } else if (real.length) {
-      answers[question.id] = [real[0].id];
-      taken.push(`${plainLabel(real[0])} (its first option; none was marked recommended)`);
-    }
-  }
-  return {
-    kind: "answer",
-    reply: { kind: "answered", answers, ...(Object.keys(custom).length ? { custom } : {}) },
-    what,
-    taken: [...taken, ...(handedBack ? ["Handed back: the agent decides itself"] : [])].join("; "),
-    handedBack,
-  };
 }
 
 const APPROVAL_TEXT_MAX = 6_000;

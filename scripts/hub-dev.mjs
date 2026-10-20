@@ -418,7 +418,11 @@ export async function startHubBridge(mode, tokenFile) {
   fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
   if (mode === "stub") {
     const { startStub } = await import("./hub-stub-server.mjs");
-    const stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
+    // MONOCODE_HUB_STUB_SCENARIO adds invented scenarios to look at: "jobs", "questions" (the retired question queue).
+    const scenario = process.env.MONOCODE_HUB_STUB_SCENARIO ?? "";
+    const stub = await startStub({
+      port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex"), jobs: /\bjobs\b/.test(scenario), questions: /\bquestions\b/.test(scenario),
+    });
     return { port: stub.port, tokenFile, label: `stub on 127.0.0.1:${stub.port} (invented data)`, close: () => stub.close() };
   }
   if (mode === "live") {

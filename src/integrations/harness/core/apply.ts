@@ -493,6 +493,7 @@ type UserTurnExtra = {
   intent?: Block["intent"];
   appRequestId?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  monoCheck?: Block["monoCheck"];
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -507,6 +508,7 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.monoSessionCompletion
       ? { monoSessionCompletion: extra.monoSessionCompletion }
       : {}),
+    ...(extra?.monoCheck ? { monoCheck: extra.monoCheck } : {}),
   };
 }
 

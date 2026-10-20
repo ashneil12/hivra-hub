@@ -1,4 +1,7 @@
 import { MonoBusyError, setGroupChatRunner, setRoomRouter } from "../features/hub/model/hubChats";
+import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
+import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
+import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
@@ -35,6 +38,8 @@ import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
+import { useHubChecks } from "./hooks/useHubChecks";
+import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
@@ -129,6 +134,7 @@ import {
   setHubSelection,
   useHubSelection,
 } from "../features/hub/model/hubNav";
+import { noteChats, setWaitingChatsHost } from "../features/hub/model/waitingChats";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -972,6 +978,8 @@ type SubmitOptions = ComposerTurnOptions & {
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
   followsUp?: boolean;
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  /** A checker's note for this chat (hub/model/hubChecks.ts): a hidden turn shown as a quiet card. */
+  monoCheck?: Block["monoCheck"];
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
@@ -2445,10 +2453,13 @@ function Workspace({
     // The roster is read through its snapshot.
     [monosSnap],
   );
-  // How many replies each Mono has that the user has not read, for the rail.
+  // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one.
+  const replyBusyRef = useRef(busySessionIds);
+  const replyBusy = withoutCheckTurns(busySessionIds, sessions);
+  if (!setsEqual(replyBusyRef.current, replyBusy)) replyBusyRef.current = replyBusy;
   const monoReplies = useUnseenReplyCounts(
     monoSessionIds,
-    busySessionIds,
+    replyBusyRef.current,
     activeSessionId,
   );
 
@@ -7257,6 +7268,7 @@ function Workspace({
         options?.onSettled ||
         options?.managed ||
         options?.monoSessionCompletion ||
+        options?.monoCheck ||
         options?.resendEdited
           ? undefined
           : delegationsRef.current?.resumeMonitor(
@@ -7844,12 +7856,13 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : {}),
         // The orchestrator writes these turns, not the user; hide them.
-        ...(options?.managed || options?.monoSessionCompletion
+        ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck
           ? { internal: true }
           : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
           : {}),
+        ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
       const queuedHandoff =
@@ -8699,8 +8712,8 @@ function Workspace({
               (s) => s.id === sessionId,
             );
             const visible = sessionId === activeSessionIdRef.current;
-            // A habit's hidden run speaks through its Mono's chat instead.
-            if (finished && !isHabitRun(sessionId))
+            // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
+            if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
               void announceSessionFinished(finished, visible);
           }, 0);
           notifyReviewChanged(sessionId);
@@ -9129,6 +9142,23 @@ function Workspace({
     quitting: isAppQuitting,
   });
   delegationsRef.current = delegations;
+  // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
+  useHubChecks(
+    {
+      sessions,
+      sessionsRef,
+      openSession: ensureOpenSession,
+      openMono: (monoId) =>
+        ensureMonoSession(monoId, {
+          home: homeDir,
+          load: (id) => ensureOpenSession(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => updateSessionState(sessionsRef, setSessions, (current) => [...current, created]),
+        }),
+      submit: (sessionId, text, options) => submitSession(sessionId, text, [], options),
+    },
+    IS_HUB_BUNDLE,
+  );
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
       const mono = sessionsRef.current.find((session) => session.id === monoId);
@@ -11044,7 +11074,6 @@ function Workspace({
       updateSessionState(sessionsRef, setSessions, (all) =>
         all.map((entry) => (entry.id === id ? change(entry) : entry)),
       ),
-    answerQuestion: onQuestionReply,
     approve: onApproval,
     openSession: ensureOpenSession,
     isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
@@ -11064,6 +11093,35 @@ function Workspace({
     },
     [],
   );
+
+  // Today's "Waiting on you" (hub/model/waitingChats.ts): the chats whose agent asked Ash something. The store reads the
+  // chats as they change and borrows these hands to answer in place, send his words into a chat, or open it.
+  useEffect(() => {
+    if (IS_HUB_BUNDLE) noteChats(sessions);
+  }, [sessions]);
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    return setWaitingChatsHost({
+      liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
+      respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      send: async (id, text) => {
+        const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
+        if (!session) return false;
+        // Mid-turn it steers or queues, as a message typed in the composer would.
+        if (!(await Promise.resolve(submitSessionRef.current(session.id, text, [], { followsUp: true })))) return false;
+        await upsertSession(sessionsRef.current.find((s) => s.id === session.id) ?? session);
+        return true;
+      },
+      open: (id, projectId) => {
+        const mono = monoForSession(id);
+        if (mono) return void onOpenMono(mono.id);
+        // The hub steps aside for the project's coding view, where the chat opens.
+        const project = hubData().listProjects().find((p) => p.id === projectId && p.folder);
+        if (project) setHubSelection({ project: project.id, item: "coding-team" });
+        void openReminderSession(id).catch(() => undefined);
+      },
+    });
+  }, [onQuestionReply, onOpenMono, openReminderSession]);
 
   const onOpenApprovalSession = useCallback(
     (sessionId: string) => {
@@ -12744,6 +12802,31 @@ function Workspace({
     window.addEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
     return () => window.removeEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
   }, []);
+
+  // Hub: a Sign in on Today opens that connector on Settings > Connectors; a Mono proposal opens Settings > Teams.
+  useEffect(() => {
+    const onConnector = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) focusConnector(id);
+      openSettings("connectors", id ? `connector-${id}` : undefined);
+    };
+    const onTeams = () => openSettings("teams");
+    // A team's room (a hub group chat) opened from Settings > Teams: leave Settings for the hub view.
+    const onOpenHub = (event: Event) => {
+      const target = (event as CustomEvent<{ project: string; item: string }>).detail;
+      if (!target) return;
+      setSettingsOpen(false);
+      setHubSelection(target);
+    };
+    window.addEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+    window.addEventListener(OPEN_TEAMS_EVENT, onTeams);
+    window.addEventListener(OPEN_HUB_EVENT, onOpenHub);
+    return () => {
+      window.removeEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+      window.removeEventListener(OPEN_TEAMS_EVENT, onTeams);
+      window.removeEventListener(OPEN_HUB_EVENT, onOpenHub);
+    };
+  }, [openSettings]);
 
   useEffect(() => {
     const onOpenMcp = () => openSettings("mcp");

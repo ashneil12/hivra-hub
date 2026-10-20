@@ -14,7 +14,7 @@ fn main() {
     {
         println!("cargo::rustc-link-arg-cdylib=-Wl,--exclude-libs=ALL,--exclude-all-symbols");
     }
-    // The hub plugin's three commands get their permissions here (capabilities/default.json allows `hub:default`).
+    // The hub plugin's commands get their permissions here (capabilities/default.json allows `hub:default`).
     let hub = tauri_build::InlinedPlugin::new()
         .commands(&[
             "hub_call",
@@ -24,6 +24,18 @@ fn main() {
             "connector_login_store",
             "connector_login_exists",
             "connector_login_delete",
+            "connectors_state",
+            "connector_save_login",
+            "connector_turn_on",
+            "connector_save_google_client",
+            "connector_forget_google_client",
+            "connector_oauth",
+            "connector_oauth_cancel",
+            "connector_sign_out",
+            "connector_test",
+            "connector_set_allow",
+            "connector_set_mono",
+            "connectors_set_composio",
             "model_key_save",
             "model_key_test",
             "model_key_delete",

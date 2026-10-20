@@ -3,7 +3,7 @@
 // held red-list calls, and turning it off.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHubDataSource, type HubDataSource } from "../../hub/model/hubData";
 import { setAutopilotBackend } from "../model/autopilot";
 import { memoryAutopilot, type MemoryAutopilot } from "../model/memoryAutopilot";
@@ -28,6 +28,7 @@ function button(label: string): HTMLButtonElement {
 }
 
 beforeEach(async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -43,6 +44,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.unstubAllGlobals();
   container.remove();
   setAutopilotBackend(null);
   setHubDataSource(undefined);

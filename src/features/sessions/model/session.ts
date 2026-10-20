@@ -271,6 +271,19 @@ export type MonoSessionCompletion = {
   sessionCount?: number;
 };
 
+/**
+ * A `[MonoCode check]` turn: the checker's private note to the chat that owns one of Ash's messages
+ * (hub/model/hubChecks.ts). The chat shows it as a quiet collapsed card, never as Ash's words.
+ */
+export type MonoCheck = {
+  /** The check's id in Ash OS (`ck_...`), which the owner answers with ash_record. */
+  id: string;
+  /** The message it is about. */
+  dumpId?: string;
+  /** What the checker noticed, for the card. */
+  finding?: string;
+};
+
 export type QueuedMessage = {
   id: string;
   /** User bubble already shown optimistically in a Mono's conversation. */
@@ -377,6 +390,8 @@ export type Block = {
   internal?: boolean;
   /** Hidden app prompt that starts a separate completion report in a Mono chat. */
   monoSessionCompletion?: MonoSessionCompletion;
+  /** Hidden app prompt that hands this chat a checker's note (an internal user turn). */
+  monoCheck?: MonoCheck;
   /** Accepted session launches, kept on the originating user turn. */
   monoSpawnedSessions?: MonoSpawnedSession[];
   handoff?: HandoffMeta;
