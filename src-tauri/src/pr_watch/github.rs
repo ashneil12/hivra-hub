@@ -147,17 +147,33 @@ impl Gh for CliGh {
         })?;
         let mut command = Command::new(program);
         command
-            .args(["api", "graphql", "-f", &format!("query={query}")])
+            .args(graphql_args(query, vars))
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("NO_COLOR", "1");
-        for (key, value) in vars {
-            command.arg("-F").arg(format!("{key}={value}"));
-        }
         crate::harness::apply_gui_env(&mut command);
         run_with_timeout(command, GH_TIMEOUT)
     }
+}
+
+/// The queries' variables that aren't `String!`: gh gets them typed (`-F`). Every other one goes raw (`-f`), so an owner
+/// or repository named `123`, `true` or `null` stays a string.
+const TYPED_VARS: &[&str] = &["number"];
+
+/// `gh api graphql`'s arguments for a query and its variables.
+fn graphql_args(query: &str, vars: &[(&str, String)]) -> Vec<String> {
+    let mut args = vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "-f".to_string(),
+        format!("query={query}"),
+    ];
+    for (key, value) in vars {
+        args.push(if TYPED_VARS.contains(key) { "-F" } else { "-f" }.into());
+        args.push(format!("{key}={value}"));
+    }
+    args
 }
 
 /// Run `gh` to its end, or stop it after `timeout` (a hung network call must not stall every watch).
@@ -742,6 +758,37 @@ pub(crate) mod tests {
         let calls = gh.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert!(calls[1].contains(&("after".to_string(), "CUR1".to_string())));
+    }
+
+    #[test]
+    fn owner_and_name_go_to_gh_as_strings_and_only_the_number_typed() {
+        // `-F` would send 123 as a number and true/null as JSON literals, and GitHub would refuse the String! variable.
+        for odd in ["123", "true", "false", "null", "1e3"] {
+            let args = graphql_args(
+                "query",
+                &[
+                    ("owner", odd.to_string()),
+                    ("name", odd.to_string()),
+                    ("number", "7".to_string()),
+                    ("after", odd.to_string()),
+                ],
+            );
+            assert_eq!(
+                args[4..],
+                [
+                    "-f".to_string(),
+                    format!("owner={odd}"),
+                    "-f".to_string(),
+                    format!("name={odd}"),
+                    "-F".to_string(),
+                    "number=7".to_string(),
+                    "-f".to_string(),
+                    format!("after={odd}"),
+                ],
+                "{odd}"
+            );
+            assert_eq!(split_repo(&format!("{odd}/{odd}")), Some((odd, odd)));
+        }
     }
 
     #[test]
