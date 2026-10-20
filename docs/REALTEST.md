@@ -167,6 +167,26 @@ messages, console errors, memory calls. Then `scripts/hub-realtest-grade.mjs` se
 metrics with its benchmark items to Sonnet (medium, no tools, no MCP), which answers PASS / PARTIAL / FAIL /
 NOT-TRIGGERED per item with the evidence quoted. `report.md` puts the grades, timings and problems together.
 
+## Baseline, 20 Oct (hub/next 9d9e6351 plus this bench)
+
+Four runs, because the shared account hit its limit mid-run and one unanswered question blocked the Lead: s01-s05
+`evidence/realtest/20261020-152110-ab58`, s06-s08 `20261020-165951-879b`, s08-s15 + s99 `20261020-172441-21fa`,
+s13-s15 again `20261020-174916-15c6`. Each folder's `report.md` has the grades with the evidence quoted.
+
+| | Result | What was seen |
+| --- | --- | --- |
+| Room first reply | FAIL | 27-58 s for the host (median about 36 s; Grok 9 s). Router pick median 19 s, 8 s of it a dead wait |
+| Room dump / wat now | FAIL | One good CoS digest, but slow; walls of text (median room message 1,255 chars); "wat now" drew 3 messages once |
+| Plan to Lead to report | PARTIAL | CoS briefed the Lead, 3 workers, report with commit and 45/45 tests back in the room; review never closed |
+| Interrupt / skip review | FAIL / PARTIAL | Ack 51 s; skip-review shipped with a commit and a live call, no test output |
+| Worker stuck (Lead asked Ash) | FAIL | Question shown well on Today (Take the pick); Ash's typed answer queued behind it; Lead blocked 20+ min |
+| Pushback | PARTIAL | frank and Alfred pushed back with reasons; CoS locked first and corrected after |
+| Outage / out of credit | FAIL | Raw CLI error in the chat only; rail back to idle; nothing on Being built or Today |
+| where are we / from now on | PARTIAL / PASS | One question with a pick; the rule saved to memory at once |
+| Memory | PARTIAL | Lead used Tally memory; Ash's decision never saved, so the room could not recall it; no EXO leak in any run |
+| Page | FAIL | None possible; CoS said so plainly |
+| 40-ask dump / busy / parallel | PARTIAL | Ack 15 s, one worker for 36 items, no item list; Lead answered in 16 s while working; look-into came back in 90 s |
+
 ## Lessons from the first runs (20 Oct)
 
 - **Never edit files in this worktree while a run is going.** vite and Tailwind watch it: saving

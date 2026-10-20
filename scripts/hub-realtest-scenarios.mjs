@@ -232,7 +232,7 @@ export async function runScenario(scenario, ctx) {
   const childOwner = Object.fromEntries((await ctx.delegationRows()).map((row) => [row.child_session, row.owner_mono ?? monoOfSession[row.owner_session] ?? row.owner_session]));
   const texts = (await ctx.claudeTexts(t0)).map((line) => ({
     ...line,
-    who: monoOfSession[line.session] ?? (childOwner[line.session] ? `worker of ${childOwner[line.session]}` : line.session ? `chat ${titleOf[line.session] ?? line.session}` : "helper/unknown"),
+    who: monoOfSession[line.session] ?? (childOwner[line.session] ? `worker of ${childOwner[line.session]}` : line.session ? `chat ${titleOf[line.session] ?? line.session}` : "app helper call (room router or title; never shown to Ash)"),
   }));
   const room = roomMessages(events, roomId, t0);
   const otherRooms = events.filter((e) => e.kind === "room-message" && e.room !== roomId && e.t >= t0);
@@ -282,7 +282,7 @@ export async function runScenario(scenario, ctx) {
 export function runChecks(checks, { room, texts, events, memoryCalls }) {
   const toAsh = [
     ...room.filter((m) => m.from !== ASH).map((m) => ({ who: m.from, where: "room", text: m.text })),
-    ...texts.filter((line) => line.text && !line.result && !String(line.who).startsWith("worker") && !String(line.who).startsWith("helper")).map((line) => ({ who: line.who, where: "chat", text: line.text })),
+    ...texts.filter((line) => line.text && !line.result && !String(line.who).startsWith("worker") && !String(line.who).startsWith("app helper")).map((line) => ({ who: line.who, where: "chat", text: line.text })),
   ];
   const everything = [...toAsh, ...texts.filter((line) => line.text).map((line) => ({ who: line.who, where: "any", text: line.text }))];
   const leaks = (checks.leak ?? []).flatMap((pattern) =>
