@@ -42,6 +42,10 @@ function fakeDeps(mono: typeof import("../../monos/model/mono")) {
       writeSoul: async (id: string, soul: string) => void souls.set(id, soul),
       setConnectors: async (id: string, ids: string[]) => void connectorChoices.set(id, ids),
       addToRoom: (chat: string, id: string) => void rooms.push([chat, id]),
+      discard: (id: string) => {
+        connectorChoices.delete(id);
+        mono.discardNewMono(id);
+      },
     },
   };
 }
@@ -150,6 +154,34 @@ describe("a Mono proposed by an agent needs Ash's okay", () => {
     expect(teams.pendingMonoProposals()).toEqual([]);
     expect(waiting.setupItems().some((i) => i.id.startsWith("mono-proposal:"))).toBe(false);
     await expect(teams.approveProposal(proposal.id, [], fake.deps)).rejects.toThrow(/isn't waiting/);
+  });
+
+  it("an Approve that fails part way leaves no half-made Mono, and Approve again works", async () => {
+    await withHubProjects();
+    const teams = await import("./hubTeams");
+    const mono = await import("../../monos/model/mono");
+    const fake = fakeDeps(mono);
+    const removedByAsh = () => Object.keys(localStorage).filter((key) => key.includes("removed")).map((key) => localStorage.getItem(key));
+    const removedBefore = removedByAsh();
+    const before = mono.listMonos().map((m) => m.id);
+    const proposal = teams.proposeMono(
+      { team: "Marketing", spec: { name: "Maya", brief: "Social posts", engine: "claude", projects: [HIVRA], connectors: [] } },
+      { name: "Alfred" },
+    );
+    for (const broken of ["writeSoul", "setConnectors"] as const) {
+      const failing = { ...fake.deps, [broken]: async () => { throw new Error("disk full"); } };
+      await expect(teams.approveProposal(proposal.id, ["hivra"], failing)).rejects.toThrow("disk full");
+      // No Mono is left without a connector choice (which would mean everything its projects allow).
+      expect(mono.listMonos().map((m) => m.id)).toEqual(before);
+      expect(fake.connectorChoices.size).toBe(0);
+      expect(teams.pendingMonoProposals().map((p) => p.id)).toEqual([proposal.id]);
+    }
+    // A rollback is not Ash removing a Mono: nothing is recorded as removed by him.
+    expect(removedByAsh()).toEqual(removedBefore);
+    const made = await teams.approveProposal(proposal.id, ["hivra"], fake.deps);
+    expect(mono.findMono(made.id)?.name).toBe("Maya");
+    expect(fake.connectorChoices.get(made.id)).toEqual([]);
+    expect(teams.listTeams().find((t) => t.name === "Marketing")?.memberIds).toEqual([made.id]);
   });
 
   it("Not now makes nothing", async () => {
