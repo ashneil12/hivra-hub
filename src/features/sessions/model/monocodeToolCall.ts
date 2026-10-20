@@ -4,7 +4,172 @@ export type MonoCodeToolCall = {
   action: string;
   label: string;
   command: string;
+  /** One of the delegate tool's MCP tools (mcp__monocode__*), not an app CLI command. */
+  delegate?: DelegateToolName;
 };
+
+/** The delegate tool's tools (src-tauri/src/mcp_server.rs), as Claude Code names them: mcp__monocode__<tool>. */
+export type DelegateToolName =
+  "delegate_task" | "task_status" | "task_wait" | "task_cancel" | "task_answer";
+
+/**
+ * T3's verb table (packages/shared/src/t3McpToolPresentation.ts, MIT): what the tool does, while it runs, once it is
+ * done, and its object. Distinct ids are counted for the tools that act on one task each.
+ */
+const DELEGATE_TOOLS: Record<
+  DelegateToolName,
+  {
+    labels: readonly [string, string, string, string];
+    /** The noun counted across a group of calls, and the id that makes two calls the same one. */
+    count?: { noun: string; id: (output: Record<string, unknown>) => unknown };
+  }
+> = {
+  delegate_task: {
+    labels: ["Delegate", "Delegating", "Delegated", "a task"],
+    count: { noun: "task", id: (output) => output.taskId },
+  },
+  task_status: { labels: ["Check", "Checking", "Checked", "task status"] },
+  task_wait: { labels: ["Wait for", "Waiting for", "Waited for", "tasks"] },
+  task_cancel: {
+    labels: ["Stop", "Stopping", "Stopped", "a task"],
+    count: { noun: "task", id: (output) => output.taskId },
+  },
+  task_answer: {
+    labels: ["Answer", "Answering", "Answered", "a worker's question"],
+    count: { noun: "worker's question", id: (output) => output.taskId },
+  },
+};
+
+const DELEGATE_TOOL_NAME = /^mcp__monocode__([a-z_]+)$/;
+
+/** Which delegate tool a tool block called, if it is one. */
+export function delegateToolName(block: Block): DelegateToolName | undefined {
+  if (block.role !== "tool" && block.role !== "approval") return undefined;
+  for (const candidate of [block.tool?.kind, block.tool?.title, block.text]) {
+    const name = candidate?.trim().match(DELEGATE_TOOL_NAME)?.[1];
+    if (name && Object.prototype.hasOwnProperty.call(DELEGATE_TOOLS, name))
+      return name as DelegateToolName;
+  }
+  return undefined;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** A tool's input or result, read from JSON text (an MCP result may wrap its text in content blocks). */
+export function delegateToolData(
+  value: unknown,
+  depth = 0,
+): Record<string, unknown> | undefined {
+  if (depth > 4) return undefined;
+  if (typeof value === "string") {
+    try {
+      return delegateToolData(JSON.parse(value), depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const text = record(entry)?.text;
+      const data =
+        text !== undefined ? delegateToolData(text, depth + 1) : undefined;
+      if (data) return data;
+    }
+    return undefined;
+  }
+  const data = record(value);
+  if (!data) return undefined;
+  const content = data.structuredContent ?? data.content;
+  if (content !== undefined && !("taskId" in data) && !("tasks" in data))
+    return delegateToolData(content, depth + 1) ?? data;
+  return data;
+}
+
+/** T3's rule: an MCP error can come back as data even when the call itself completed. */
+export function delegateToolFailed(block: Block): boolean {
+  const status = block.tool?.status?.toLowerCase() ?? "";
+  if (["failed", "error", "cancelled", "canceled"].includes(status))
+    return true;
+  if (block.approval?.decided === "deny") return true;
+  const output = record(
+    (() => {
+      try {
+        return JSON.parse(block.tool?.detail ?? "");
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  return (
+    !!output &&
+    (output.isError === true ||
+      output.is_error === true ||
+      (output.error !== undefined && output.error !== null))
+  );
+}
+
+function delegateToolDone(block: Block): boolean {
+  const status = block.tool?.status?.toLowerCase() ?? "";
+  return (
+    status === "completed" ||
+    status === "success" ||
+    (!status && !block.streaming)
+  );
+}
+
+/** One delegate tool call as its row reads: "Delegating a task", "Delegated a task", "Tried to delegate a task". */
+export function delegateToolLabel(
+  block: Block,
+  name: DelegateToolName,
+): string {
+  const [action, running, done, object] = DELEGATE_TOOLS[name].labels;
+  if (delegateToolFailed(block))
+    return `Tried to ${action.toLowerCase()} ${object}`;
+  return `${delegateToolDone(block) ? done : running} ${object}`;
+}
+
+function quantity(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
+/**
+ * A group of calls to one delegate tool, summed up as T3 does: "Delegated 3 tasks", "Checked task status 2 times",
+ * "Tried to delegate 1 task" when every call failed. Distinct ids are counted, so a retried call counts once.
+ */
+export function delegateToolsSummary(
+  steps: Block[],
+  live: boolean,
+): string | undefined {
+  const names = steps.map(delegateToolName);
+  const name = names[0];
+  if (!name || names.some((entry) => entry !== name)) return undefined;
+  const definition = DELEGATE_TOOLS[name];
+  const [action, running, done, object] = definition.labels;
+  const completed = steps.filter((step) => !delegateToolFailed(step));
+  const selected = completed.length ? completed : steps;
+  const verb = !completed.length
+    ? `Tried to ${action.toLowerCase()}`
+    : live && completed.some((step) => !delegateToolDone(step))
+      ? running
+      : done;
+  if (!definition.count) {
+    const times = selected.length;
+    return `${verb} ${object}${times > 1 ? ` ${times} times` : ""}`;
+  }
+  // A call's result names its task (the input isn't kept once the call is done).
+  const ids = selected.map((step) => {
+    const id = definition.count!.id(delegateToolData(step.tool?.detail) ?? {});
+    return typeof id === "string" && id ? id : undefined;
+  });
+  const count =
+    new Set(ids.filter((id) => id !== undefined)).size +
+    ids.filter((id) => id === undefined).length;
+  return `${verb} ${quantity(count, definition.count.noun)}`;
+}
 
 const ACTION_LABELS: Record<string, string> = {
   "app.version": "Check the app version",
@@ -85,6 +250,16 @@ function shellWords(command: string): string[] | undefined {
 /** Recognize the actual app CLI command, not a mention of it in prose/output. */
 export function monoCodeToolCall(block: Block): MonoCodeToolCall | undefined {
   if (block.role !== "tool" && block.role !== "approval") return undefined;
+  const delegate = delegateToolName(block);
+  if (delegate) {
+    const [action, , , object] = DELEGATE_TOOLS[delegate].labels;
+    return {
+      action: delegate,
+      label: `${action} ${object}`,
+      command: `mcp__monocode__${delegate}`,
+      delegate,
+    };
+  }
   // A shell preview retains the original command when the display title was
   // simplified. Never accept a shorter title in place of that command.
   const candidate =
@@ -131,5 +306,8 @@ export function monoCodeWorkSummary(
   if (calls.length === 0 || calls.some((block) => !monoCodeToolCall(block))) {
     return undefined;
   }
-  return live ? "Using MonoCode" : "Used MonoCode";
+  return (
+    delegateToolsSummary(calls, live) ??
+    (live ? "Using MonoCode" : "Used MonoCode")
+  );
 }

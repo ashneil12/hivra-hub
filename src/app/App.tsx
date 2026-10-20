@@ -35,6 +35,7 @@ import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
+import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -10843,6 +10844,23 @@ function Workspace({
     },
     [flushHarnessEvents],
   );
+  // The delegation tree (H4): workers' questions go to the Mono that delegated them, and Ash's Stop on a Mono with
+  // work out stops everything beneath it (monos/hooks/useDelegationTree.ts).
+  const delegationTree = useDelegationTree({
+    sessions,
+    sessionsRef,
+    setSessions,
+    tracker: () => delegationsRef.current,
+    batches: () => monoCompletionBatches.current,
+    queueWake: (owner, message) =>
+      queueMonoSessionCompletionRef.current(owner, message),
+    stopSession: (id, managed) => onStop(id, managed),
+    openMono: onOpenMono,
+    monoView: () => monoViewIdRef.current,
+    showLaunched: showMonoLaunchedSession,
+    openSession: openReminderSession,
+  });
+  const onStopFromUser = delegationTree.stopFromUser;
 
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
@@ -10886,12 +10904,12 @@ function Workspace({
         ) {
           return;
         }
-        onStop(sessionId);
+        onStopFromUser(sessionId);
       });
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [onStop]);
+  }, [onStopFromUser]);
 
   const onApproval = useCallback(
     (sessionId: string, requestId: number, decision: ApprovalDecision) => {
@@ -11360,6 +11378,8 @@ function Workspace({
 
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
+  const delegationTreeRef = useRef(delegationTree);
+  delegationTreeRef.current = delegationTree;
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -11766,6 +11786,35 @@ function Workspace({
               flushHarnessEvents();
               dismissCompletion(id);
             },
+            // sessions.stop {"cascade":true}: the session, then everything beneath it (H4).
+            stopTree: async (id) => {
+              if (
+                removingSessionIds.current.has(id) ||
+                switchingWorktrees.current.has(id)
+              )
+                throw new Error(
+                  "Session is being removed or changing worktrees",
+                );
+              const target = sessionsRef.current.find(
+                (session) => session.id === id,
+              );
+              if (
+                target &&
+                (target.orchestrationLeadId ||
+                  !canAccessProject(target.cwd) ||
+                  isMonoSession(id) ||
+                  isHabitRun(id))
+              )
+                throw new Error("Session is unavailable in this project");
+              const result = await delegationTreeRef.current.stopTree(
+                id,
+                "Stopped by its owner.",
+                `owner:${source.id}`,
+              );
+              flushHarnessEvents();
+              dismissCompletion(id);
+              return result;
+            },
             remove: async (id, mode) => {
               const target = await ensureOpenSessionRef.current(id);
               if (
@@ -11869,6 +11918,10 @@ function Workspace({
               dropReport,
               respond: (child, requestId, reply) =>
                 respondHarnessQuestion(child.harness, child.id, requestId, reply),
+              stopTask: (row, reason, by) =>
+                delegationTreeRef.current.stopTask(row, reason, by),
+              waits: delegationTreeRef.current.waits,
+              questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
             }),
@@ -13684,7 +13737,7 @@ function Workspace({
         },
       }),
     submit: onSubmit,
-    stop: onStop,
+    stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
     questionInteraction: onQuestionInteraction,
@@ -13720,7 +13773,7 @@ function Workspace({
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
-    onStop,
+    onStop: onStopFromUser,
     onCompactContext,
     onPlaceSessionInFolder,
     onDeleteQueuedMessage,

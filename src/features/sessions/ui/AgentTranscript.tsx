@@ -73,7 +73,7 @@ import {
   type LaunchedSessionView,
 } from "../../monos/model/monoSpawnedSessions";
 import type { MonoSpawnedSession } from "../model/session";
-import { LaunchedSessionCard } from "../../monos/ui/LaunchedSessionCard";
+import { DelegationBatchRow } from "../../monos/ui/DelegationBatchRow";
 import type { MessageDelivery } from "../../monos/model/monoMessaging";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
@@ -165,6 +165,8 @@ import {
 } from "../model/transcriptActivity";
 import { lastUserTurnBlock } from "../model/editLastTurn";
 import {
+  delegateToolFailed,
+  delegateToolLabel,
   monoCodeToolCall,
   monoCodeWorkSummary,
   type MonoCodeToolCall,
@@ -1271,19 +1273,17 @@ function AgentTranscriptComponent({
               data-launched-sessions
               className={`flex flex-col gap-2 px-4 pt-1 ${spacing}`}
             >
-              {launches.map((launch) => (
-                <LaunchedSessionCard
-                  key={launch.sessionId}
-                  launch={launch}
-                  view={launchedSessions?.get(launch.sessionId)}
-                  open={openSessionId === launch.sessionId}
-                  onOpen={
-                    onOpenSession
-                      ? () => onOpenSession(turnId, turn, launch.sessionId)
-                      : undefined
-                  }
-                />
-              ))}
+              {/* One counted line per batch, a chip per worker and a Stop while it runs (H4). */}
+              <DelegationBatchRow
+                launches={launches}
+                views={launchedSessions}
+                openSessionId={openSessionId}
+                onOpen={
+                  onOpenSession
+                    ? (sessionId) => onOpenSession(turnId, turn, sessionId)
+                    : undefined
+                }
+              />
             </div>
           );
           const fold = inlineWork ? undefined : foldableWork(items);
@@ -4691,7 +4691,10 @@ function MonoCodeCallRow({
     stored.detail?.trim() ||
     (stored.pending ? LOADING_OUTPUT : undefined) ||
     block.tool?.preview?.output?.trim();
-  const hasError = state === "rejected" && (!!output || stored.omitted);
+  // The delegate tool's errors can come back as data from a completed call (T3's rule).
+  const failed =
+    state === "rejected" || (!!call.delegate && delegateToolFailed(block));
+  const hasError = failed && (!!output || stored.omitted);
   const pendingApproval = needsApproval(block);
   const command = `monocode app ${call.action}`;
   const verb = pendingApproval
@@ -4699,7 +4702,24 @@ function MonoCodeCallRow({
     : state === "pending"
       ? "Running"
       : "Ran";
-  const summary = (
+  const summary = call.delegate ? (
+    <>
+      <MonoCodeMark className="size-3.5 shrink-0" />
+      <span
+        className={`min-w-0 truncate font-sans text-sm ${failed ? "text-red-400" : "text-content/60"}`}
+        title={call.command}
+      >
+        {delegateToolLabel(block, call.delegate)}
+      </span>
+      <ToolCallStatusIcon state={failed ? "rejected" : state} />
+      {hasError ? (
+        <ChevronRight
+          className={`size-3.5 shrink-0 text-red-400/60 transition-transform ${errorOpen ? "rotate-90" : ""}`}
+          strokeWidth={1.75}
+        />
+      ) : null}
+    </>
+  ) : (
     <>
       <span
         className={`shrink-0 font-sans text-sm ${state === "rejected" ? "text-red-400" : "text-content/50"}`}
