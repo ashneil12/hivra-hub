@@ -204,5 +204,7 @@ export function launchedSessionState(session: Session): LaunchedSessionState {
   const notice = session.blocks[session.blocks.length - 1]?.notice;
   if (notice === "error") return "failed";
   if (notice === "interrupt") return "stopped";
+  // It stopped resuming itself after restarts and waits for someone to look.
+  if (notice === "resume-stopped") return "input";
   return "done";
 }

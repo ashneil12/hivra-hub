@@ -181,7 +181,8 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
     "mark each ask done with ash_update_ask and the evidence",
     "Your workers' questions come to you first, never to Ash",
     "each arrives as a [MonoCode question] turn",
-    "asked in this chat with your recommendation as your pick",
+    "from your own chat with your pick (as <ask_ash_rules> says)",
+    "then you answer the worker with his choice",
     "task_cancel stops a task and everything it delegated in turn",
   ])
     expect(taught).toContain(step);

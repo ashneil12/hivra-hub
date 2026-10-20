@@ -33,7 +33,7 @@ export function sessionConversationPage(
   for (const block of session.blocks) {
     if (
       block.role === "user" &&
-      (!block.internal || block.monoSessionCompletion) &&
+      (!block.internal || block.monoSessionCompletion || block.monoCheck) &&
       !block.draft
     ) {
       exchanges.push({ user: block, assistants: [] });
@@ -63,12 +63,14 @@ export function sessionConversationPage(
     turns: selected.map(({ user, assistants }) => ({
       turnId: user.id,
       user: capped(
-        user.monoSessionCompletion
-          ? user.monoSessionCompletion.question
-            ? `MonoCode: a question from ${user.monoSessionCompletion.title}`
-            : user.monoSessionCompletion.sessionCount
-              ? `MonoCode: results from ${user.monoSessionCompletion.sessionCount} sessions`
-              : `MonoCode: session ${user.monoSessionCompletion.status}: ${user.monoSessionCompletion.title}`
+        user.monoCheck
+          ? `MonoCode check ${user.monoCheck.id}: ${user.monoCheck.finding ?? "the checker's note"}`
+          : user.monoSessionCompletion
+            ? user.monoSessionCompletion.question
+              ? `MonoCode: a question from ${user.monoSessionCompletion.title}`
+              : user.monoSessionCompletion.sessionCount
+                ? `MonoCode: results from ${user.monoSessionCompletion.sessionCount} sessions`
+                : `MonoCode: session ${user.monoSessionCompletion.status}: ${user.monoSessionCompletion.title}`
           : operatorUserPrompt(user),
         maxChars,
       ),

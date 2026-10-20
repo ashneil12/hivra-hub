@@ -14,8 +14,14 @@ import type { Artifact } from "../../artifacts/artifacts";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { handleAgentApp, notePreview, canAccessAgentAppProject, type AgentAppHost } from "./agentApp";
 
+const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",
+  hasProbedHarnessAvailability: () => probe.probed,
+  probeHarnessAvailability: async () => {
+    probe.runs += 1;
+    probe.probed = true;
+  },
 }));
 
 const note: Note = {
@@ -259,6 +265,24 @@ describe("agent app commands", () => {
       }
     },
   );
+
+  it("waits for the first harness probe before sessions.start (a Lead resumed right after a restart)", async () => {
+    const { source, host } = fixture();
+    probe.probed = false;
+    probe.runs = 0;
+    await handleAgentApp(source, "early-launch", "sessions.start", {
+      prompt: "Review the project",
+      notifyOnComplete: false,
+    }, host);
+    expect(probe.runs).toBe(1);
+    expect(host.start).toHaveBeenCalled();
+    // Once probed, no further probes.
+    await handleAgentApp(source, "later-launch", "sessions.start", {
+      prompt: "Review it again",
+      notifyOnComplete: false,
+    }, host);
+    expect(probe.runs).toBe(1);
+  });
 
   it("keeps sessions a regular /operator thread starts in the sidebar", async () => {
     const { source, host } = fixture();

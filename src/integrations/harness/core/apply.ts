@@ -157,6 +157,13 @@ export function applyHarnessEvent(
         return rest;
       }
       return { ...session, backgroundTasks: event.tasks };
+    case "background.work":
+      if (event.work.length === 0) {
+        if (!session.cutWork) return session;
+        const { cutWork: _cleared, ...rest } = session;
+        return rest;
+      }
+      return { ...session, cutWork: event.work };
     case "plan":
       return upsertPlan(session, event);
     case "session.error":
@@ -186,6 +193,18 @@ export function applyHarnessEvent(
       );
     case "session.providerBound":
       return { ...session, providerSessionId: event.providerSessionId };
+    case "session.providerLost":
+      return appendBlock(
+        session.providerSessionId === event.providerSessionId
+          ? { ...session, providerSessionId: undefined }
+          : session,
+        {
+          id: crypto.randomUUID(),
+          role: "system",
+          text: event.text,
+          notice: "recovered",
+        },
+      );
     case "turn.started": {
       const index = lastMatchingBlock(
         session.blocks,
@@ -474,6 +493,7 @@ type UserTurnExtra = {
   intent?: Block["intent"];
   appRequestId?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  monoCheck?: Block["monoCheck"];
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -488,6 +508,7 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.monoSessionCompletion
       ? { monoSessionCompletion: extra.monoSessionCompletion }
       : {}),
+    ...(extra?.monoCheck ? { monoCheck: extra.monoCheck } : {}),
   };
 }
 

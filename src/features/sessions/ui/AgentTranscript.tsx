@@ -74,6 +74,7 @@ import {
 } from "../../monos/model/monoSpawnedSessions";
 import type { MonoSpawnedSession } from "../model/session";
 import { DelegationBatchRow } from "../../monos/ui/DelegationBatchRow";
+import { CheckTurnCard } from "../../hub/ui/CheckTurnCard";
 import type { MessageDelivery } from "../../monos/model/monoMessaging";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
@@ -141,6 +142,7 @@ import {
   isThinkingBlock,
   lastActivityIndex,
   isProseBlock,
+  isMonoCheckPrompt,
   needsApproval,
   nestedScrollAbsorbsWheel,
   proseSummary,
@@ -1179,6 +1181,16 @@ function AgentTranscriptComponent({
           </div>
         ) : null}
         {visibleTurns.map((turn, turnIndex) => {
+          // A checker's note and the answer to it: one quiet line (an approval it waits on still shows as usual).
+          if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
+            return (
+              <CheckTurnCard
+                key={turn[0].id}
+                turn={turn}
+                live={!!busy && firstVisibleTurn + turnIndex === activeTurnIndex}
+                agentName={agentName}
+              />
+            );
           const isLastTurn = firstVisibleTurn + turnIndex === turns.length - 1;
           // A Mono's own follow-up replies join the turn they follow; each
           // run keeps its prompt, but the turn reads as one message.

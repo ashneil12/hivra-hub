@@ -19,6 +19,7 @@ import {
 } from "../model/delegationQuestions";
 import {
   delegationRows,
+  hasJumpedIn,
   noteStopFailures,
   setDelegationActions,
 } from "../model/delegationStore";
@@ -28,6 +29,7 @@ import {
   type DelegationsBackend,
   type DelegationTracker,
 } from "../model/delegations";
+import { delegationOf } from "../model/delegationView";
 import { isMonoSession, monoForSession } from "../model/mono";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -103,6 +105,10 @@ export function useDelegationTree(options: {
         ),
       ),
     waits: waits.current,
+    reportsTo: (child) => {
+      const row = delegationOf(child, delegationRows());
+      return !!row && isMonoSession(row.ownerSession) && !hasJumpedIn(child);
+    },
   });
 
   // Every change to the chats: a new question goes to its Lead, an answered one is withdrawn.

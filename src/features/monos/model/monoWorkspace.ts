@@ -56,10 +56,12 @@ async function loadMonoSession(
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   // Removed while the home folder was looked up.
   if (!findMono(monoId)) return undefined;
-  // A Mono with its own engine (the hub's team is noted as Claude Code) starts there; any other uses the app's default.
+  // A Mono with its own engine (the hub's team is noted as Claude Code; a setup import may bring another engine and a
+  // model) starts there; any other, or an engine this build doesn't know, uses the app's default.
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
-  const session: Session = { ...(engine && engine !== created.harness ? newSession(engine, home) : created), runtimeMode: "auto" };
+  const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
+  const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;

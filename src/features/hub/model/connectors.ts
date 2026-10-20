@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { examplesOn } from "./examples";
+import { catalogEntryNamed, connectorsView, setComposioOn } from "./hubConnectors";
 
 export type Connector = { id: string; name: string; projectId: string; signedIn: boolean; account?: string };
 
@@ -138,33 +139,47 @@ export async function signOut(id: string): Promise<void> {
   save(list.map((x) => (x.id === id ? { ...x, signedIn: false, account: undefined } : x)));
 }
 
-/** Every connector still waiting for a sign-in, app-wide, plus ones that just landed (shown until Ash leaves). */
+/** Every connector still waiting for a sign-in, app-wide, plus ones that just landed (shown until Ash leaves). One
+ * signed in on Settings > Connectors (hubConnectors.ts) isn't waiting any more. */
 export function pendingSignIns(): Connector[] {
-  return list.filter((c) => !c.signedIn || landed.has(c.id));
+  return list.filter((c) => (!c.signedIn && !signedInOnConnectorsPage(c)) || landed.has(c.id));
 }
 
-// ---- Where logins live. Composio is off by default: every login stays on
-// this Mac. Turning it on moves new logins to Composio's servers.
-const COMPOSIO_KEY = "monocode:hub-composio";
+function signedInOnConnectorsPage(c: Connector): boolean {
+  const entry = catalogEntryNamed(c.name);
+  return !!entry && !!connectorsView()?.settings.connectors[entry.id]?.signedIn;
+}
+
+/** A restored connector's Sign in opens it on Settings > Connectors when the catalog has it (App.tsx listens). */
+export const OPEN_CONNECTOR_EVENT = "monocode:open-connector";
+export function openConnectorSettings(name: string): boolean {
+  const entry = catalogEntryNamed(name);
+  if (!entry) return false;
+  window.dispatchEvent(new CustomEvent(OPEN_CONNECTOR_EVENT, { detail: { id: entry.id } }));
+  return true;
+}
+
+// ---- Where logins live. Composio is off by default: every login stays on this Mac. The switch is kept with the
+// rest of the connector settings (Rust, `connectors.json`), so the launcher sees it too.
 export function composioOn(): boolean {
-  try { return localStorage.getItem(COMPOSIO_KEY) === "1"; } catch { return false; }
+  return connectorsView()?.settings.composio ?? false;
 }
 export function setComposio(on: boolean): void {
-  try { localStorage.setItem(COMPOSIO_KEY, on ? "1" : "0"); } catch { /* best effort */ }
-  version++;
-  window.dispatchEvent(new CustomEvent(EVENT));
+  void setComposioOn(on).finally(() => {
+    version++;
+    window.dispatchEvent(new CustomEvent(EVENT));
+  });
 }
 /** All connectors, app-wide. */
 export function allConnectors(): Connector[] {
   return list;
 }
 
-/** Main apps have a direct connector, so their login always stays on this Mac.
+/** Main apps have a direct connector (the catalog, connectorCatalog.json), so their login always stays on this Mac.
  * Only rare apps without one go through Composio (when the switch is on). */
-const DIRECT = ["github", "gmail", "google", "slack", "notion", "linear", "figma", "outlook", "x"];
 export function hasDirectConnector(c: Connector): boolean {
-  const n = c.name.toLowerCase().replace(/^example:\s*/, "");
-  return DIRECT.includes(n.split(/\s+/)[0]);
+  const entry = catalogEntryNamed(c.name);
+  return !!entry && !entry.composio;
 }
 export function loginLivesOn(c: Connector): "On this Mac" | "On Composio" | "Needs Composio" {
   if (hasDirectConnector(c)) return "On this Mac";

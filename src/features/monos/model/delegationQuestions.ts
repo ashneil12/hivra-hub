@@ -146,6 +146,11 @@ export type QuestionRouterHost = {
   /** Take a wake that is still waiting out of the Mono's queue. */
   withdrawWake(owner: string, messageId: string): void;
   waits: TaskWaits;
+  /**
+   * Whether this chat's turns report to a Mono that delegated it (its newest row is a Mono's and Ash hasn't jumped in):
+   * a "Needs Ash:" line it ends a turn with reaches that Mono in the report, so it isn't Ash's either.
+   */
+  reportsTo?(childSession: string): boolean;
   now?(): number;
   /** Look again later (a skipped wake whose owner's wait just ended); tests run it by hand. */
   schedule?(run: () => void, ms: number): void;
@@ -178,9 +183,14 @@ export class QuestionRouter {
     return row && this.host.isMono(row.ownerSession) ? row : undefined;
   }
 
-  /** Whether this chat's question goes to its Lead, not Ash (the questions-in-chat package's router seam). */
-  routes = (chat: { sessionId: string }): boolean =>
-    !!this.ownerRow(chat.sessionId);
+  /**
+   * Whether this chat's question goes to its Lead, not Ash: the questions-in-chat package's router seam
+   * (hub/model/waitingChats.ts `setWorkerQuestionRouter`). A live question of a worker whose row is open is routed to
+   * the Lead here; a "Needs Ash:" line a worker ended its turn with reaches the Lead in its report.
+   */
+  routes = (chat: { sessionId: string; source?: string }): boolean =>
+    !!this.ownerRow(chat.sessionId) ||
+    (chat.source === "line" && !!this.host.reportsTo?.(chat.sessionId));
 
   /** The wake this child's question has (or had) in its owner's queue, if any. */
   wakeFor(child: string): { owner: string; id: string } | undefined {

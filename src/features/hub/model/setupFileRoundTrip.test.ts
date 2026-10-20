@@ -1,33 +1,33 @@
 // @vitest-environment happy-dom
+// A v1 setup file (the single .json from before Phase 5) still imports, through the v2 preview and restore.
 import { beforeEach, expect, it } from "vitest";
-import { addConnectors, allConnectors } from "./connectors";
-import { exportSetup, parseSetup, restoreSetup } from "./setupFile";
-import { approvedPermissions, buildPreview, keepPage, keptPages, resetPagesForTest } from "../../pages/model/pages";
+import { allConnectors } from "./connectors";
+import { parseSetup } from "./setupFile";
+import { approvedPermissions, buildPreview, keptPages, resetPagesForTest } from "../../pages/model/pages";
+import { migrateV1 } from "../../portable/model/setupDoc";
+import { applyImport, defaultChoices, planImport } from "../../portable/model/importPlan";
 
-beforeEach(() => resetPagesForTest());
-
-it("export carries projects, services and kept Pages, and never a key or account", () => {
-  addConnectors([{ id: "c-linear", name: "Linear", projectId: "hivra" }]);
-  keepPage(buildPreview("sign-ups this week", "Hivra lead", 1, "hivra"));
-  const text = exportSetup();
-  const file = parseSetup(text);
-  expect(file.connectors?.some((c) => c.name === "Linear")).toBe(true);
-  expect(file.pages?.length).toBe(1);
-  expect(text).not.toMatch(/"(secret|account|signedIn)"/);
+beforeEach(() => {
+  localStorage.clear();
+  resetPagesForTest();
 });
 
-it("import brings the Pages back without their permissions", () => {
-  const page = { ...buildPreview("bespoke key page", "Hivra lead", 2, "hivra") };
-  keepPage(page);
-  const text = exportSetup();
-  resetPagesForTest();
-  expect(keptPages("hivra")).toHaveLength(0);
-  restoreSetup(text);
+async function importV1(file: unknown) {
+  const pending = { name: "monocode-setup.json", path: null, doc: migrateV1(parseSetup(JSON.stringify(file))), inspection: null, fromV1: true, folders: {}, skillsHere: {} };
+  const plan = planImport(pending);
+  return applyImport(pending, plan, defaultChoices(plan));
+}
+
+it("a v1 file's Pages come back without their permissions, and its services as sign-ins to do", async () => {
+  const page = { ...buildPreview("bespoke key page", "Hivra lead", 2, "hivra"), permissions: ["keys.read:Anthropic"] };
+  const summary = await importV1({ format: "monocode-hub-setup", version: 1, projects: [], connectors: [{ id: "c-linear", name: "Linear", projectId: "hivra" }], pages: [page] });
   expect(keptPages("hivra").map((p) => p.id)).toContain(page.id);
   expect(approvedPermissions(page.id)).toEqual([]);
-  expect(allConnectors().length).toBeGreaterThan(0);
+  expect(allConnectors()).toEqual([{ id: "c-linear", name: "Linear", projectId: "hivra", signedIn: false }]);
+  expect(summary.lines.join(" ")).toContain("sign in to each again");
 });
 
 it("a file that isn't a setup export is turned down in plain words", () => {
   expect(() => parseSetup('{"hello":1}')).toThrow("That file isn't a Monocode setup export.");
+  expect(() => parseSetup("not json")).toThrow("That file isn't a Monocode setup export.");
 });

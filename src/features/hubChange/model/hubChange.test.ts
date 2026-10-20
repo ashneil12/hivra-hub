@@ -15,7 +15,7 @@ it("only a seated Mono may ask; temporary workers are turned away", async () => 
 it("asks the backend for a preview build and shows Not connected yet when it isn't wired", async () => {
   const call = vi.fn(async () => { throw new HubCallError("unreachable", "down"); });
   const r = await requestChange(req, { roster, transport: { call: call as never, openFeed: () => () => undefined } });
-  expect(call).toHaveBeenCalledWith("ash-hub-change-preview", req);
+  expect(call).toHaveBeenCalledWith("ash-hub-change-preview", { ...req, wait: 30 });
   expect(r.status).toBe("not-connected");
   for (const flow of ["today", "connect"] as const) {
     expect((await requestChange({ ...req, flow }, { roster, transport: { call: call as never, openFeed: () => () => undefined } })).status).toBe("not-connected");
