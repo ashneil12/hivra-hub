@@ -27,6 +27,7 @@ import {
   type CustomModelForm,
   type KeyTestResult,
 } from "../model/customModels";
+import { notConnectedYet } from "../../providers/model/providerSignIn";
 
 export function useCustomModels(): CustomModel[] {
   useSyncExternalStore(subscribeCustomModels, customModelsVersion, customModelsVersion);
@@ -270,6 +271,12 @@ export function AddModelForm({
           </div>
         ) : null}
       </div>
+      {notConnectedYet(form.provider).map((option) => (
+        // Honest about what isn't built: the provider has this sign-in, the app doesn't yet. Never a button.
+        <div key={option.label} className="text-[11px] text-content/45" data-signin-not-connected={form.provider}>
+          {option.label}: {option.note ?? "Not connected yet"}
+        </div>
+      ))}
       <label className="flex flex-col gap-1 text-[11px] text-content/55">
         Your provider's address
         <input className={input} value={form.baseUrl} placeholder="https://api.example.com/v1" aria-label="Base URL" onChange={(e) => set({ baseUrl: e.target.value })} />
