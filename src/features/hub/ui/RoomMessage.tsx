@@ -1,5 +1,5 @@
 // A room's messages and its status line (docs/leadership/ROOM.md), in the group chat's own look (GroupChatView): Ash's
-// bubble, a Mono's name over its words, the reactions that replace "got it" bubbles, a notice when a Mono couldn't
+// bubble, a Mono's name over its words (live while a turn writes them), the reactions that replace "got it" bubbles, a notice when a Mono couldn't
 // answer (never silence), the app's quiet lines, and the line above the composer that says who is working, with Stop,
 // or that the team paused for Ash, with Keep going.
 import type { ReactNode } from "react";
@@ -9,6 +9,7 @@ import {
   REACTIONS,
   retryNotice,
   roomActive,
+  roomDrafts,
   roomPauseReason,
   roomRouting,
   roomWorking,
@@ -75,6 +76,7 @@ export function RoomMessage({
   messages,
   nameOf,
   children,
+  live = false,
 }: {
   chatId: string;
   message: ChatMessage;
@@ -83,6 +85,8 @@ export function RoomMessage({
   nameOf: (id: string) => string;
   /** A Mono's words, as the chat renders them. */
   children?: ReactNode;
+  /** Words still being written (a live message): no reactions yet, and it says so. */
+  live?: boolean;
 }) {
   if (message.from === "ash")
     return (
@@ -121,10 +125,16 @@ export function RoomMessage({
             to {answered.from === "ash" ? "you" : nameOf(answered.from)}: {shorten(answered.text, 60)}
           </span>
         ) : null}
-        <ReactButtons chatId={chatId} message={message} />
+        {live ? (
+          <span className="ml-auto text-content/45" data-hub-msg-writing>
+            writing…
+          </span>
+        ) : (
+          <ReactButtons chatId={chatId} message={message} />
+        )}
       </div>
       {children}
-      <Reactions chatId={chatId} message={message} nameOf={nameOf} />
+      {live ? null : <Reactions chatId={chatId} message={message} nameOf={nameOf} />}
     </>
   );
 }
@@ -140,7 +150,9 @@ function pauseText(reason: string | undefined): string {
 /** The line above the composer: who is working (their own words for it), Stop, or the pause and Keep going. */
 export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; convId?: string; nameOf: (id: string) => string }) {
   const working = roomWorking(chatId, convId);
-  const writing = working.filter((w) => w.state === "writing").map((w) => nameOf(w.monoId));
+  // A seat whose words already show in the room needs no "is writing": the line is for seats that haven't started.
+  const showing = new Set(roomDrafts(chatId, convId).map((d) => d.monoId));
+  const writing = working.filter((w) => w.state === "writing" && !showing.has(w.monoId)).map((w) => nameOf(w.monoId));
   const away = working.filter((w) => w.state !== "writing").map((w) => nameOf(w.monoId));
   const paused = convId ? roomPauseReason(chatId, convId) : undefined;
   const active = roomActive(chatId, convId);

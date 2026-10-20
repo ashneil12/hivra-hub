@@ -36,6 +36,7 @@ import {
   chimePrompt,
   cleanPost,
   DIGEST_SEATS,
+  draftShowable,
   failureNotice,
   hostOf,
   isProgress,
@@ -73,6 +74,8 @@ export type RoomTurnRequest = {
   /** The same turn for a busy Mono: it answers with room_post. */
   wakePrompt: string;
   note: RoomTurnNote;
+  /** A managed turn's words so far, as they are written (the runner calls it as they grow): the room shows them live. */
+  onText?(text: string): void;
 };
 export type RoomWakeEnd = { status: "done" | "dropped" | "failed"; error?: string };
 /** A managed turn's reply, or a wake that went into a busy Mono's chat (steered into its work, or queued behind it). */
@@ -162,6 +165,21 @@ type Wake = {
   back?: { title: string; answer: string };
 };
 type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean };
+/**
+ * A turn's words as it writes them, shown in the room as a live message until the turn ends (then the post takes its
+ * place, under the same id) or is stopped (then it goes). Never saved: the Mono's own chat keeps the turn.
+ */
+export type RoomDraft = {
+  id: string;
+  monoId: string;
+  convId: string;
+  text: string;
+  replyTo?: string;
+  quiet: boolean;
+  pick: { by: ChatPickSource; why: string };
+  startedAt: number;
+};
+type Draft = RoomDraft & { wakeId: string; gen: number };
 type PauseReason = "ceiling" | "stalled" | "stopped";
 type Thread = {
   gen: number;
@@ -188,13 +206,15 @@ type RoomRun = {
   retries: Map<string, Wake>;
   /** room_post times per Mono (the rate limit). */
   posts: Map<string, number[]>;
+  /** Live words of running managed turns, by wake id. */
+  drafts: Map<string, Draft>;
 };
 const rooms = new Map<string, RoomRun>();
 
 function roomOf(chatId: string): RoomRun {
   let r = rooms.get(chatId);
   if (!r) {
-    r = { queue: [], running: new Map(), threads: new Map(), idle: [], retries: new Map(), posts: new Map() };
+    r = { queue: [], running: new Map(), threads: new Map(), idle: [], retries: new Map(), posts: new Map(), drafts: new Map() };
     rooms.set(chatId, r);
   }
   return r;
@@ -287,6 +307,52 @@ export function roomPauseReason(chatId: string, convId?: string): PauseReason | 
   for (const t of r.threads.values()) if (t.paused) return t.paused.reason;
   return undefined;
 }
+/** The words running turns have written so far (oldest first): the room shows each as a live message. */
+export function roomDrafts(chatId: string, convId?: string): RoomDraft[] {
+  const r = rooms.get(chatId);
+  if (!r) return [];
+  return [...r.drafts.values()]
+    .filter((d) => !convId || d.convId === convId)
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map(({ wakeId: _w, gen: _g, ...draft }) => draft);
+}
+/** A turn's words so far: shown once they can't be NO_REPLY or an acknowledgement, and only while the turn counts. */
+function showDraft(chatId: string, wake: Wake, me: Seat, text: string): void {
+  const r = roomOf(chatId);
+  if (stale(r, wake) || r.running.get(me.id)?.wake !== wake) return;
+  const clean = cleanPost(text, me.name);
+  const existing = r.drafts.get(wake.id);
+  if (existing ? existing.text === clean : !draftShowable(clean)) return;
+  r.drafts.set(
+    wake.id,
+    existing
+      ? { ...existing, text: clean }
+      : {
+          id: newMessageId(me.id),
+          wakeId: wake.id,
+          gen: wake.gen,
+          monoId: me.id,
+          convId: wake.convId,
+          text: clean,
+          ...(wake.trigger ? { replyTo: wake.trigger } : {}),
+          quiet: wake.kind === "chime" || wake.kind === "reply",
+          pick: { by: wake.by, why: wake.why },
+          startedAt: Date.now(),
+        },
+  );
+  notify();
+}
+/** The turn is over: its live words go (the caller posts the final ones under the same id). */
+function takeDraft(r: RoomRun, wake: Wake): Draft | undefined {
+  const draft = r.drafts.get(wake.id);
+  if (draft) r.drafts.delete(wake.id);
+  return draft;
+}
+/** Live words of turns Ash or Stop overtook go at once. */
+function pruneDrafts(r: RoomRun): void {
+  for (const [id, d] of r.drafts) if (d.gen >= 0 && d.gen !== threadOf(r, d.convId).gen) r.drafts.delete(id);
+}
+
 /** Who was picked to answer Ash's last message, and why. */
 export function roomPick(chatId: string): Pick | undefined {
   return rooms.get(chatId)?.pick;
@@ -341,6 +407,7 @@ function onAsh(chatId: string, convId: string): boolean {
   const answering = (w: Wake) => w.convId === convId && w.kind === "answer" && w.gen === t.gen && !!w.batch && w.batch[w.batch.length - 1] === newest;
   if (newest && (r.queue.some(answering) || [...r.running.values()].some((run) => answering(run.wake)))) return false;
   t.gen++;
+  pruneDrafts(r);
   Object.assign(t, { posts: 0, since: Date.now(), stale: 0, authors: [], spoke: new Set(), chimed: new Set(), paused: undefined });
   setRoomRuntime(chatId, { replyError: undefined });
   // He turned the room: what waited in this conversation is dropped, what runs is stopped (work coming back stays).
@@ -506,19 +573,23 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       prompt: turnPrompt(base),
       wakePrompt: turnPrompt({ ...base, viaTool: true }),
       note: { kind: "room", room: chat.name, roomId: chatId, line: noteLine(wake) },
+      onText: (text) => showDraft(chatId, wake, me, text),
     });
   } catch (error) {
+    takeDraft(r, wake);
     finish();
     if (!stale(r, wake)) failed(chatId, wake, me, error instanceof Error ? error.message : String(error));
     pump(chatId);
     return;
   }
   if (outcome.kind === "reply") {
+    const draft = takeDraft(r, wake);
     finish();
-    if (!stale(r, wake)) land(chatId, wake, me, outcome.text);
+    if (!stale(r, wake)) land(chatId, wake, me, outcome.text, draft?.id);
     pump(chatId);
     return;
   }
+  takeDraft(r, wake);
   running.mode = outcome.delivery;
   notify();
   // A newer answer to Ash may have been waiting on this Mono: it can follow into its busy work now.
@@ -539,8 +610,11 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   pump(chatId);
 }
 
-/** A managed turn's reply becomes the post (a bare acknowledgement becomes a 👍 on what it answers). */
-function land(chatId: string, wake: Wake, me: Seat, text: string): void {
+/**
+ * A managed turn's reply becomes the post (a bare acknowledgement becomes a 👍 on what it answers). `id`: the live
+ * message it replaces, so the room shows one message that filled in rather than a new one.
+ */
+function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): void {
   if (wake.kind === "answer" && !text.trim()) {
     failed(chatId, wake, me, "The Mono finished without a text reply. Open its conversation to inspect the result.");
     return;
@@ -559,6 +633,7 @@ function land(chatId: string, wake: Wake, me: Seat, text: string): void {
     return;
   }
   const posted = appendMessage(chatId, wake.convId, {
+    ...(id ? { id } : {}),
     from: me.id,
     kind: "mono",
     text: cleanPost(text, me.name),
@@ -745,6 +820,7 @@ export function stopRoom(chatId: string, convId?: string): void {
     if (!t.paused) pause(chatId, id, "stopped");
     else t.paused = { reason: "stopped", wakes: [] };
   }
+  pruneDrafts(r);
   notify();
   settleIfIdle(chatId);
 }

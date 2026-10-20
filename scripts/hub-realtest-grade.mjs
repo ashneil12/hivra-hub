@@ -167,7 +167,9 @@ export function report(evidenceDir, summary, grades) {
   const results = summary?.results ?? Object.keys(grades).map((id) => ({ id }));
   for (const result of results) {
     const grade = grades[result.id];
-    const timings = (result.metrics?.replies ?? []).map((r) => `${r.label ?? r.to}: ${r.firstReplySec}s${r.from ? ` (${r.from})` : ""}`).join("; ");
+    const timings = (result.metrics?.replies ?? [])
+      .map((r) => `${r.label ?? r.to}: ${r.firstWordsSec != null && r.firstWordsSec < r.firstReplySec ? `words ${r.firstWordsSec}s, ` : ""}${r.firstReplySec}s${r.from ? ` (${r.from})` : ""}`)
+      .join("; ");
     lines.push(
       `| ${result.id} ${result.title ?? ""} | ${result.skipped ? `SKIPPED (${result.skipped})` : result.error ? `ERROR (${result.error})` : (grade?.grade ?? "UNGRADED")} | ${(result.bench ?? []).join(", ")} | ${timings || "-"} | ${(grade?.summary ?? "").replace(/\|/g, "/").replace(/\n/g, " ")} |`,
     );

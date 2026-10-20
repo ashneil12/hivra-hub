@@ -89,6 +89,24 @@ export function answerAfter(session: Session, requestId: string): { delivered: b
 }
 
 /**
+ * A managed room turn's words so far: every message the Mono has written since the hidden prompt carrying `requestId`
+ * (tool calls left out), one per line, as the turn's reply joins them. The room shows it live (roomConductor drafts).
+ */
+export function liveAnswer(session: Session, requestId: string): string {
+  const at = session.blocks.findIndex((b) => b.role === "user" && b.appRequestId === requestId);
+  if (at < 0) return "";
+  const parts: string[] = [];
+  for (const block of session.blocks.slice(at + 1)) {
+    if (block.role === "user" && !block.internal) break;
+    if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) parts.push(block.text.trim());
+  }
+  return parts.join("\n");
+}
+
+/** How often a managed room turn's words are read into the room while it writes (hidden chats flush every 250 ms). */
+const LIVE_TEXT_MS = 300;
+
+/**
  * How a wake in a busy Mono's queue ended, once it has: it went in and the chat is idle again (done, or failed with
  * the chat's error), or it left the queue without going in (dropped). Undefined while it is still waiting or working.
  */
@@ -156,9 +174,19 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
               () => reject(new Error(`${name} is still working on its reply after 10 minutes. Its own chat has the work.`)),
               TURN_TIMEOUT_MS,
             );
+            // Its words go into the room as it writes them, so Ash sees the answer start within seconds.
+            let shown = "";
+            const live = window.setInterval(() => {
+              const now = latest.current.sessionsRef.current.find((s) => s.id === session.id);
+              const text = now ? liveAnswer(now, request.wakeId) : "";
+              if (!text || text === shown) return;
+              shown = text;
+              request.onText?.(text);
+            }, LIVE_TEXT_MS);
             managed.current.set(request.monoId, { sessionId: session.id, wakeId: request.wakeId });
             const done = (fn: () => void) => {
               window.clearTimeout(timer);
+              window.clearInterval(live);
               if (managed.current.get(request.monoId)?.wakeId === request.wakeId) managed.current.delete(request.monoId);
               fn();
             };

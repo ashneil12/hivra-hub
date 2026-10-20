@@ -12,6 +12,7 @@ import {
   getChat,
   leadershipChatId,
   replyProblem,
+  roomDrafts,
   roomPaused,
   roomPick,
   sendMessage,
@@ -181,7 +182,10 @@ function captureConsole(): void {
   window.addEventListener("unhandledrejection", (event) => keep("unhandled", [event.reason]));
 }
 
-/** Timestamped changes the window saw: room messages as they land, typing, and each chat's busy and question state. */
+/**
+ * Timestamped changes the window saw: room messages as they land (and as they first show while written), typing, and
+ * each chat's busy and question state.
+ */
 export class DriverLog {
   private seen = new Set<string>();
   private typing = new Map<string, string | null>();
@@ -195,6 +199,13 @@ export class DriverLog {
       if ((this.typing.get(chat.id) ?? null) !== typing) {
         this.typing.set(chat.id, typing);
         this.events.push({ t: now, kind: "room-typing", room: chat.id, who: typing });
+      }
+      // A turn's words first showing in the room as it writes them (the live message), once per message.
+      for (const draft of roomDrafts(chat.id)) {
+        const key = `${chat.id}/draft/${draft.id}`;
+        if (this.seen.has(key)) continue;
+        this.seen.add(key);
+        this.events.push({ t: now, kind: "room-draft", room: chat.id, conv: draft.convId, id: draft.id, from: draft.monoId, text: clip(draft.text) });
       }
       for (const conv of chat.conversations)
         for (const message of conv.messages) {

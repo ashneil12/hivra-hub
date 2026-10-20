@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { newSession, type Block, type Session } from "../../features/sessions/model/session";
 import { groupMonoChatTurns, groupTurns } from "../../features/sessions/model/transcriptActivity";
 import { sanitizeSessionForPersist } from "../../features/sessions/data/sessionStore";
-import { answerAfter, reportAnswer, wakeEnd } from "./useRoomRunner";
+import { answerAfter, liveAnswer, reportAnswer, wakeEnd } from "./useRoomRunner";
 
 const chat = (patch: Partial<Session> = {}): Session => ({ ...newSession("claude", "/code/hub"), id: "mono-frank", ...patch });
 const note = { kind: "room" as const, from: "Leadership team", ref: "hub:leadership", line: "Answered Projects Manager" };
@@ -29,6 +29,24 @@ describe("a wake in a busy Mono's queue", () => {
   it("reads the answer after the hidden prompt", () => {
     expect(answerAfter(chat({ blocks: [steered, { id: "a", role: "assistant", text: "NO_REPLY" }] }), "room-1")).toEqual({ delivered: true, text: "NO_REPLY" });
     expect(answerAfter(chat(), "room-1")).toEqual({ delivered: false, text: "" });
+  });
+});
+
+describe("a managed room turn as it is written", () => {
+  const prompt: Block = { id: "p", role: "user", text: "[MonoCode room] ...", internal: true, appRequestId: "room-7", sentAt: 5 };
+  it("is every word the Mono has written to the room so far, across its messages, without tool calls or Ash's next message", () => {
+    expect(liveAnswer(chat({ blocks: [] }), "room-7")).toBe("");
+    expect(liveAnswer(chat({ blocks: [prompt] }), "room-7")).toBe("");
+    const blocks: Block[] = [
+      { id: "old", role: "assistant", text: "An earlier answer." },
+      prompt,
+      { id: "a1", role: "assistant", text: "Heard you: delete has to work end to end." },
+      { id: "t", role: "assistant", text: "", tool: { callId: "c", title: "delegate_task", kind: "other", status: "completed" } as Block["tool"] },
+      { id: "a2", role: "assistant", text: "Tally lead has it." },
+      { id: "next", role: "user", text: "and streaks?" },
+      { id: "a3", role: "assistant", text: "Streaks next." },
+    ];
+    expect(liveAnswer(chat({ blocks }), "room-7")).toBe("Heard you: delete has to work end to end.\nTally lead has it.");
   });
 });
 

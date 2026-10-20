@@ -120,7 +120,11 @@ same and leaves the conversation quiet until he writes or presses Keep going; ro
 the last 30 messages as data (the message that woke it marked >>) and what this turn is for (answer, one extra reply, a
 reply to a seat that named it, the digest, work coming back).
 - A free Mono takes it as a managed turn: its reply is the post, and its own chat shows one quiet line
-  ("Leadership team · Answered Ash") that opens to the reply.
+  ("Leadership team · Answered Ash") that opens to the reply. Its words show in the room as it writes them (a live
+  message marked "writing…", read from its chat every 300 ms), and the post takes that message's place when the turn
+  ends, so Ash sees the host start answering within seconds. Words that could still be NO_REPLY, a reaction, a bare
+  acknowledgement or filler never show; a turn Ash or Stop overtakes loses its live message at once. The line above
+  the composer names only the seats that haven't started writing.
 - A Mono that is working, has messages waiting or is out of budget gets a wake in its queue: steered into its running work
   when it can take one, sent behind it otherwise. It reads anything newer with room_read and answers with room_post, then
   carries on. The room shows "frank will answer from its own chat". Nothing is refused or dropped quietly.

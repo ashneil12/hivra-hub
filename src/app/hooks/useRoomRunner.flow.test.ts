@@ -113,6 +113,38 @@ it("a free Mono's room turn is a managed turn with its quiet line; a busy one ge
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Next: the Pages round." });
 });
 
+it("the host's words show in the room while its managed turn writes them, then the post takes their place", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const requestId = submitted[0].options.appRequestId as string;
+  const cos = chatOf("chief-of-staff");
+  const write = (text: string) =>
+    setSessions(
+      sessionsRef.current.map((s) =>
+        s.id === cos
+          ? {
+              ...s,
+              busy: true,
+              blocks: [
+                { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: requestId },
+                { id: "a", role: "assistant", text, streaming: true },
+              ],
+            }
+          : s,
+      ),
+    );
+  write("Heard you. Waiting on the Tally lead");
+  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)).toMatchObject([{ monoId: "chief-of-staff", text: "Heard you. Waiting on the Tally lead" }]), { timeout: 2_000 });
+  write("Heard you. Waiting on the Tally lead's start-ack.");
+  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)[0]?.text).toBe("Heard you. Waiting on the Tally lead's start-ack."), { timeout: 2_000 });
+  settle.get(cos)!("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");
+  await chat.roomIdle(room.id);
+  expect(chat.roomDrafts(room.id)).toEqual([]);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
+});
+
 it("work delegated during a room turn comes back to that room as 'X is back' once its report turn is over", async () => {
   const { chat, room, sessionsRef, submitted, settle, origins, done, host, setSessions, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "research launch platforms in parallel");

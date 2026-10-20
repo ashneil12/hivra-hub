@@ -282,6 +282,20 @@ export function isSilent(reply: string): boolean {
   return BARE_ACK.test(text) || (text.length <= 90 && FILLER.test(text));
 }
 
+/** A turn's words show in the room as they are written once there are this many (or a line break). */
+export const DRAFT_MIN_CHARS = 20;
+
+/**
+ * Words a turn has written so far that may show in the room as a live message: enough to tell them from NO_REPLY, a
+ * reaction, a bare acknowledgement or filler, none of which is ever posted.
+ */
+export function draftShowable(text: string): boolean {
+  const t = text.trim();
+  if (t.length < DRAFT_MIN_CHARS && !t.includes("\n")) return false;
+  if (t.toUpperCase().startsWith(NO_REPLY) || t.startsWith("<")) return false;
+  return !isSilent(t);
+}
+
 /** A post as it goes into the room: trimmed, without the speaker's own name in front, and no em dashes (Ash's rule). */
 export function cleanPost(text: string, speaker?: string): string {
   let out = text.trim();

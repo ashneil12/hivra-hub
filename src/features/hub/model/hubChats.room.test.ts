@@ -488,3 +488,61 @@ it("work that came back, with the gate down, still gets its check: frank looks a
   expect(script.who()).toEqual(["chief-of-staff", "frank"]);
   expect(said(conv).find((m) => m.from === "frank")!.pick).toMatchObject({ by: "lanes" });
 });
+
+it("the host's answer shows in the room as it is written, then becomes the message in the same place", async () => {
+  const { chat, id, said } = await room();
+  let write!: (text: string) => void;
+  let end!: (text: string) => void;
+  chat.setGroupChatRunner({
+    run: (request) => {
+      write = (text) => request.onText?.(text);
+      return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
+    },
+  });
+  const conv = chat.startConversation(id, "wat now");
+  const done = chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(write).toBeTypeOf("function"));
+  // Too little to tell from an acknowledgement or NO_REPLY: nothing shows yet, the seat is "writing".
+  write("Heard");
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
+  write("Heard you. Waiting on");
+  expect(chat.roomDrafts(id, conv)).toMatchObject([{ monoId: "chief-of-staff", text: "Heard you. Waiting on", replyTo: said(conv)[0].id }]);
+  const draftId = chat.roomDrafts(id, conv)[0].id;
+  write("Chief of Staff: Heard you. Waiting on the Tally lead — its start-ack.");
+  // Its own name label and em dashes are taken out as it streams, like the post.
+  expect(chat.roomDrafts(id, conv)[0].text).toBe("Heard you. Waiting on the Tally lead, its start-ack.");
+  // Nothing is saved while it is a draft.
+  expect(said(conv)).toHaveLength(1);
+  end("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");
+  await done;
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
+  expect(said(conv)[1]).toMatchObject({ id: draftId, from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
+});
+
+it("NO_REPLY, a reaction and a bare acknowledgement never show as they stream; a turn Ash overtakes loses its draft at once", async () => {
+  const { chat, id, said } = await room();
+  const writers: ((text: string) => void)[] = [];
+  chat.setGroupChatRunner({
+    run: (request) => {
+      writers.push((text) => request.onText?.(text));
+      return new Promise(() => undefined);
+    },
+    stop: () => undefined,
+  });
+  const conv = chat.startConversation(id, "wat now");
+  void chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(writers).toHaveLength(1));
+  for (const partial of ["NO_", "NO_REPLY", "<reac", "<reaction>👍</reaction>", "Got it, thanks!", "Checking the board now."]) {
+    writers[0](partial);
+    expect(chat.roomDrafts(id, conv), partial).toEqual([]);
+  }
+  writers[0]("The board has three cards left, all with the Tally lead.");
+  expect(chat.roomDrafts(id, conv)).toHaveLength(1);
+  // Ash writes again: the old turn is stopped and its words go at once; its late text never shows.
+  chat.sendMessage(id, "and what about delete?", conv);
+  void chat.requestReply(id, conv);
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
+  writers[0]("The board has three cards left, all with the Tally lead, and more.");
+  expect(chat.roomDrafts(id, conv).filter((d) => d.text.includes("more"))).toEqual([]);
+  expect(said(conv).filter((m) => m.from !== "ash")).toEqual([]);
+});
