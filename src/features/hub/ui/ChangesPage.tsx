@@ -1,7 +1,7 @@
 import { pastChanges, undoProposal, useProposalsVersion } from "../model/proposals";
 import { useState } from "react";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { applyProposedChange, botChangeRows, dismissProposedChange, redoBotChange, undoAllFrom, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
+import { botChangeRows, redoBotChange, undoAllFrom, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
 
 const UNDO = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
 
@@ -39,7 +39,7 @@ function BotChanges() {
 
 /** One "Undo all from {Mono}" per Mono with changes still standing. */
 function UndoAllFrom({ rows }: { rows: BotChangeRow[] }) {
-  const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone && !c.proposed);
+  const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone);
   const bots = [...new Set(standing.map((c) => c.bot))];
   if (!bots.length) return null;
   return (
@@ -56,19 +56,12 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
   const items = row.kind === "one" ? [row.change] : row.items;
   const line = row.kind === "one" ? row.change.line : row.line;
   const undone = items.every((c) => c.undone);
-  const proposal = row.kind === "one" && row.change.proposed ? row.change : undefined;
   return (
     <div className="rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-bot-change>
       <div className="flex items-center gap-3">
         <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
           className={`min-w-0 flex-1 truncate text-left text-[13px] ${undone ? "text-content/60" : "text-content"}`}>{line}</button>
-        {proposal ? (
-          <span className="flex shrink-0 items-center gap-1" data-hub-bot-change-proposed>
-            <button type="button" className={UNDO} data-hub-bot-change-apply onClick={() => void applyProposedChange(proposal.id)}>Apply</button>
-            <button type="button" data-hub-bot-change-dismiss onClick={() => dismissProposedChange(proposal.id)}
-              className="rounded-md px-1.5 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">Dismiss</button>
-          </span>
-        ) : undone ? (
+        {undone ? (
           <span className="flex shrink-0 items-center gap-2 text-xs text-content/60" data-hub-bot-change-undone>
             <span>{row.kind === "one" ? undoneLine(row.change) : "Undone"}</span>
             <button type="button" data-hub-bot-change-redo onClick={() => void redoBotChange(items.map((c) => c.id))}
@@ -88,13 +81,13 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
                 <span className="text-content/60">Now</span><span>{c.now}</span>
                 <span className="text-content/60">After</span><span>{c.after}</span>
               </div>
+              {c.details?.length ? (
+                <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-4 text-content/85" data-hub-bot-change-details>
+                  {c.details.map((d) => <li key={d}>{d}</li>)}
+                </ul>
+              ) : null}
             </div>
           ))}
-          {proposal?.afterText ? (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-content/5 p-2 text-xs text-content/85" data-hub-bot-change-after-text>
-              {proposal.afterText}
-            </pre>
-          ) : null}
         </div>
       ) : null}
     </div>

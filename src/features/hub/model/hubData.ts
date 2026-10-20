@@ -127,7 +127,7 @@ function startHubBundleLeads(store: HubStore): void {
       tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
     );
     seatLeadershipTeams(strip);
-    // After the seeds: a Mono whose soul is behind the app's template gets a proposed Bot change (soulRefresh.ts).
+    // After the seeds: a Mono whose soul is behind the app's template takes it, as a Bot change with Undo (soulRefresh.ts).
     void seedTeamFiles()
       .then(() => applyMemoryLineFixes())
       .then(() => refreshSoulsSoon());

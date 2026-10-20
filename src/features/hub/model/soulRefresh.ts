@@ -1,22 +1,26 @@
-// Soul refresh: when the app's soul template for a Mono changes, the Mono hears about it (decided 20 Oct).
+// Soul refresh: when the app's soul template for a Mono changes, the Mono takes it on its own (decided 20 Oct; applied
+// automatically per Ash's 14 Oct rule: bigger bot changes apply themselves, land in Bot changes with Undo, and never wait
+// for a click).
 //
 // Souls used to be seeded once and never again (hubTeam.ts seedTeamFiles, hubLeads.ts leadSoul through
 // ensureProjectLeads and monoFiles.ts readMonoFiles), so every copy froze at whatever template its branch had that day:
 // on Ash's Mac the Hivra, Nibbii and EXO leads still ran on the 15 Oct soul, without the start-ack, Stuck and report-back
 // rules. Now, on each pass:
 // - A Mono whose SOUL.md already matches its template has that template recorded as `soul-template.md` in its home.
-// - A Mono whose soul is behind gets a proposed Bot change (Settings → Changes → Bot changes, Apply or Dismiss). Nothing
-//   is written until Apply, and once applied it has Undo like any other bot change.
-// - Edits Ash made by hand are never overwritten silently. With a recorded template, the proposal changes only the
-//   sections he left as they were, keeps the ones he rewrote, keeps sections he added and respects ones he deleted.
-//   Without one (Monos seeded before this existed), it proposes the template section by section and says so, so he
-//   (or CoS) checks the full text before applying, and Apply keeps the whole old soul as a topic note
-//   (memory/soul-before-refresh.md) so a line he typed is never lost. Sections he added are kept either way, and so is
-//   "## Skills" (the skills a Mono picked up), with any new template skills added.
-// - Dismissed: never proposed again for that template; a later template change proposes again.
+// - A Mono whose soul is behind takes the new template there and then. The whole old soul is saved first as a topic note
+//   (memory/soul-before-refresh-<day>.md), and the change is a Bot changes row (Settings → Changes → Bot changes) with
+//   Undo, which puts the old soul back. An undone refresh is never made again for that template.
+// - Ash's hand edits win. With a recorded template, only the sections he left as they were take the new text; ones he
+//   rewrote stay as he wrote them, ones he deleted stay deleted, ones he added stay, and the row says in plain words
+//   which parts of the app's update were skipped because of that. Without one (Monos seeded before this existed), his
+//   edits can't be told from the old wording, so every section takes the template, sections he added stay, and the row
+//   says so: the saved old soul and Undo are how he gets his wording back. "## Skills" (the skills a Mono picked up)
+//   keeps every skill and adds any new template ones.
+// - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
+//   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
 import { listMonos, type Mono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { isProposalDismissed, proposeBotChange } from "./botChanges";
+import { findBotChange, recordBotChange } from "./botChanges";
 import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
 import { leadFor, leadSoul } from "./hubLeads";
@@ -24,8 +28,10 @@ import { TEAM_SOULS } from "./teamSouls";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
 
-/** Where Apply keeps the old soul when hand edits can't be told apart. */
-export const OLD_SOUL_NOTE: AgentFilePath = "memory/soul-before-refresh.md";
+/** Where the whole old soul is saved before a refresh: a topic note in that Mono's memory, one per day. */
+export function oldSoulNote(day: string, fingerprint?: string): AgentFilePath {
+  return `memory/soul-before-refresh-${day}${fingerprint ? `-${fingerprint}` : ""}.md`;
+}
 
 export type SoulTemplate = { monoId: string; name: string; template: string };
 
@@ -78,21 +84,23 @@ export type RefreshPlan =
   | { kind: "current" }
   | { kind: "nothing-to-change" }
   | {
-      kind: "propose";
+      kind: "apply";
       after: string;
-      /** Sections that take the template's text. */
+      /** Sections (their headings, "" for the opening) that take the template's new text. */
       updated: string[];
-      /** Sections Ash rewrote, kept as he wrote them. */
-      kept: string[];
+      /** New sections from the template. */
       added: string[];
+      /** Sections the template no longer has, which Ash never touched: they go. */
       dropped: string[];
+      /** Sections the template changed that Ash had rewritten or deleted: his version wins, the update is skipped. */
+      skipped: string[];
+      /** Sections the template dropped that Ash had rewritten: they stay. */
+      keptDropped: string[];
       /** Whether the last template this Mono took is known (so hand edits are known too). */
       knownBaseline: boolean;
     };
 
-const label = (key: string) => (key ? key.replace(/^## /, "") : "opening");
-
-/** What the soul would read on the new template, keeping what Ash wrote (see the file's notes). */
+/** What the soul reads on the new template, keeping what Ash wrote (see the file's notes). */
 export function planSoulRefresh(current: string, template: string, lastTemplate?: string | null): RefreshPlan {
   if (norm(current) === norm(template)) return { kind: "current" };
   const cur = new Map(soulSections(current).map((s) => [s.key, s.text]));
@@ -101,44 +109,115 @@ export function planSoulRefresh(current: string, template: string, lastTemplate?
   const nextKeys = new Set(next.map((s) => s.key));
   const out: string[] = [];
   const updated: string[] = [];
-  const kept: string[] = [];
   const added: string[] = [];
   const dropped: string[] = [];
+  const skipped: string[] = [];
+  const keptDropped: string[] = [];
+  const templateChanged = (key: string, text: string) => !seed || norm(seed.get(key)) !== norm(text);
   for (const section of next) {
     const mine = cur.get(section.key);
     if (section.key === SKILLS && mine !== undefined) {
-      out.push(mergeSkills(mine, section.text));
+      const merged = mergeSkills(mine, section.text);
+      out.push(merged);
+      if (merged !== mine) updated.push(section.key);
       continue;
     }
     if (mine === undefined) {
       // In the old template but not in the soul: Ash deleted it, and it stays deleted.
-      if (seed?.has(section.key)) continue;
+      if (seed?.has(section.key)) {
+        if (templateChanged(section.key, section.text)) skipped.push(section.key);
+        continue;
+      }
       out.push(section.text);
-      added.push(label(section.key));
+      added.push(section.key);
     } else if (!seed || norm(mine) === norm(seed.get(section.key))) {
       out.push(section.text);
-      if (norm(mine) !== norm(section.text)) updated.push(label(section.key));
+      if (norm(mine) !== norm(section.text)) updated.push(section.key);
     } else {
       out.push(mine);
-      if (norm(mine) !== norm(section.text)) kept.push(label(section.key));
+      if (norm(mine) !== norm(section.text) && templateChanged(section.key, section.text)) skipped.push(section.key);
     }
   }
   for (const [key, text] of cur) {
     if (nextKeys.has(key)) continue;
-    // The template dropped a section Ash never touched: it goes. One he wrote or changed stays.
-    if (seed && seed.has(key) && norm(seed.get(key)) === norm(text)) {
-      dropped.push(label(key));
-      continue;
+    if (seed && seed.has(key)) {
+      // The template dropped a section Ash never touched: it goes. One he changed stays.
+      if (norm(seed.get(key)) === norm(text)) {
+        dropped.push(key);
+        continue;
+      }
+      keptDropped.push(key);
     }
     out.push(text);
-    kept.push(label(key));
   }
   const after = `${out.join("\n\n")}\n`;
-  if (norm(after) === norm(current)) return { kind: "nothing-to-change" };
-  return { kind: "propose", after, updated, kept, added, dropped, knownBaseline: !!seed };
+  // Nothing of the app's changes lands (only Ash's own parts would move around): leave the soul as it is.
+  if (norm(after) === norm(current) || (!updated.length && !added.length && !dropped.length)) return { kind: "nothing-to-change" };
+  return { kind: "apply", after, updated, added, dropped, skipped, keptDropped, knownBaseline: !!seed };
 }
 
-/** A short, stable fingerprint of a template, so a proposal (and its dismissal) is per template. */
+/**
+ * What each part of a soul makes its Mono do, in Ash's words-level English: "{name} will now ...". One sentence per
+ * section heading in the app's templates (teamSouls.ts, hubLeads.ts leadSoul, the checker's). When you change what a
+ * section says, check its sentence still describes it; a new heading needs a sentence (soulRefresh.test.ts checks).
+ */
+export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
+  "": "{name}'s opening line is updated.",
+  "Standing instructions": "{name}'s main instructions are updated to the app's newer wording.",
+  // Leads
+  "Your job": "{name} will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
+  "Before you act": "{name} will now check its project's memory before acting, and answer a long message fast with every ask listed in Ash's order before it starts.",
+  "How you run the project": "{name} will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
+  "Finishing": "{name} will now prove its own work before calling it done, and ask Ash to look only at very critical work.",
+  "Who you are to Ash OS": "{name} will now show up in Ash OS under its own name, and leave development to Claude Code.",
+  "Developing the hub from inside the hub": "{name} will now build every hub change in its own copy, try it in a dev copy, and reach the daily app only through a ship.",
+  // The leadership team
+  "Role": "{name}'s one-line role is updated.",
+  "Who I am": "{name} describes who it is in the app's newer words.",
+  "How I talk to Ash": "{name} will now talk to Ash the newer way: outcome first, plain words, one question at a time.",
+  "How I talk": "{name} will now talk the newer way: plain words, short, and saying what's real before anyone asks.",
+  "What I own": "{name}'s list of what it owns is updated.",
+  "How I hand work to a project Lead and get the report back": "{name} will now brief a Lead with the outcome, what's already done and what not to touch, and expect a start confirmation and proof back.",
+  "How I hand work to Leads and read the report back": "{name} will now brief Leads the newer way and check their reports against the board.",
+  "RED (Ash's call, never mine)": "{name} will now leave money, customer emails, launches and anything that can't be undone to Ash.",
+  "Capacity rules I enforce": "{name} will now apply the newer capacity rules before any work is given out.",
+  "Job one: memory that stays true": "{name} will now keep memory true the newer way.",
+  "Job two: the owner's-words check": "{name} will now check each build against Ash's own words the newer way.",
+  "Job three: the dump check": "{name} will now keep Ash's rants word for word and account for every idea in them.",
+  "How I work": "{name}'s review steps are updated.",
+  "The look I defend (hub design rules)": "{name} will now judge screens against the newer hub design rules.",
+  "How I work with the others": "{name} will now work with the other Monos the newer way.",
+  "How a delegated job comes back": "{name} will now report delegated jobs from the board and wait for a yes instead of acting itself.",
+  "In the room": "{name} will now follow the room's newer rules: speak only with something new, keep posts short, and hand off by name.",
+  "What I never do": "{name}'s list of things it never does is updated.",
+  Skills: "{name} picks up the app's newer skills and keeps the ones it learned.",
+  "Voice (real lines)": "{name}'s example lines are updated.",
+};
+
+const heading = (key: string) => key.replace(/^## /, "");
+const fill = (sentence: string, name: string) => sentence.replace(/\{name\}/g, name);
+
+/** One plain sentence for a section that changes: from SECTION_SENTENCES, else a plain fallback. */
+export function sectionSentence(key: string, name: string): string {
+  const known = SECTION_SENTENCES[heading(key)];
+  return fill(known ?? `{name}'s “${heading(key)}” part is updated to the app's newer wording.`, name);
+}
+
+/** The Bot changes row's sentences: what changes, then what was skipped for Ash's own edits, then the backup. */
+export function refreshSentences(plan: Extract<RefreshPlan, { kind: "apply" }>, name: string): string[] {
+  const part = (key: string) => (key ? `“${heading(key)}”` : "opening");
+  return [
+    ...[...plan.updated, ...plan.added].map((key) => sectionSentence(key, name)),
+    ...plan.dropped.map((key) => `${name} no longer has the ${part(key)} part; the app dropped it.`),
+    ...plan.skipped.map((key) => `You had changed ${name}'s ${part(key)} part yourself, so your version stays and the app's update to it was skipped.`),
+    ...plan.keptDropped.map((key) => `You had changed ${name}'s ${part(key)} part yourself, so it stays even though the app dropped it.`),
+    ...(plan.knownBaseline
+      ? []
+      : [`The app couldn't tell your own edits from its old wording here, so the whole old soul is saved in ${name}'s memory and Undo puts it back.`]),
+  ];
+}
+
+/** A short, stable fingerprint of a template, so a refresh (and its Undo) is per template. */
 export function templateFingerprint(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -153,17 +232,25 @@ type Files = {
   write(monoId: string, path: AgentFilePath, text: string, expectedHash?: string): Promise<unknown>;
 };
 
-const list = (items: string[]) => items.join(", ");
+const today = (now: Date) =>
+  `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+/** Save `text` and read it back; false when it didn't go in. */
+async function saveChecked(files: Files, monoId: string, path: AgentFilePath, text: string, hash: string): Promise<boolean> {
+  await files.write(monoId, path, text, hash);
+  return (await files.read(monoId, path)).text === text;
+}
 
 /**
- * One pass over every Mono with a template. Writes nothing to a soul: it records the template for souls that match it
- * and proposes the rest. Returns the ids it proposed for and the ids whose template it recorded.
+ * One pass over every Mono with a template: records the template for souls that match it and refreshes the rest, each
+ * as a Bot changes row with Undo. Returns the ids it refreshed and the ids whose template it recorded.
  */
 export async function refreshSouls(
   files: Files = { read: readAgentFile, write: writeAgentFile },
   templates: SoulTemplate[] = soulTemplates(),
-): Promise<{ proposed: string[]; recorded: string[] }> {
-  const proposed: string[] = [];
+  now: Date = new Date(),
+): Promise<{ refreshed: string[]; recorded: string[] }> {
+  const refreshed: string[] = [];
   const recorded: string[] = [];
   for (const { monoId, name, template } of templates) {
     try {
@@ -179,44 +266,44 @@ export async function refreshSouls(
         }
         continue;
       }
-      if (plan.kind !== "propose") continue;
-      const id = `soul-refresh:${monoId}:${templateFingerprint(template)}`;
-      if (isProposalDismissed(id)) continue;
-      const changes = [
-        plan.updated.length ? `updates ${list(plan.updated)}` : "",
-        plan.added.length ? `adds ${list(plan.added)}` : "",
-        plan.dropped.length ? `drops ${list(plan.dropped)}` : "",
-      ].filter(Boolean);
-      proposeBotChange({
+      if (plan.kind !== "apply") continue;
+      const fp = templateFingerprint(template);
+      const id = `soul-refresh:${monoId}:${fp}`;
+      // Made once per template: one Ash undid stays undone.
+      if (findBotChange(id)) continue;
+      // 1. The whole old soul, saved first (a second refresh the same day gets its own note).
+      let note = oldSoulNote(today(now));
+      let existing = await files.read(monoId, note);
+      if (existing.text != null && existing.text !== soul.text) {
+        note = oldSoulNote(today(now), fp);
+        existing = await files.read(monoId, note);
+      }
+      if (existing.text !== soul.text && !(await saveChecked(files, monoId, note, soul.text, existing.hash))) continue;
+      // 2. The soul itself, over the hash it was read at (a soul Ash saved meanwhile is left alone until the next pass).
+      if (!(await saveChecked(files, monoId, "SOUL.md", plan.after, soul.hash))) continue;
+      // 3. The template it now follows, so his later edits are known.
+      await files.write(monoId, SOUL_TEMPLATE_FILE, template, last.hash);
+      const sentences = refreshSentences(plan, name);
+      const changes = plan.updated.length + plan.added.length + plan.dropped.length;
+      recordBotChange({
         id,
         bot: name,
-        day: "Proposed",
-        line: plan.knownBaseline
-          ? `${name}'s soul can move to the app's newer template`
-          : `${name}'s soul can move to the app's newer template (check the text: hand edits can't be told apart)`,
-        now: "Its soul as it is",
-        after: [
-          changes.length ? `New template: ${changes.join("; ")}.` : "New template.",
-          plan.kept.length ? `Kept as written: ${list(plan.kept)}.` : "",
-          plan.knownBaseline ? "" : `The old soul is kept as the note ${OLD_SOUL_NOTE}.`,
-        ]
-          .filter(Boolean)
-          .join(" "),
+        day: "Today",
+        line: changes > 1 ? `${sentences[0]} (and ${changes - 1} more)` : sentences[0],
+        now: "Its soul as it was",
+        after: "Its soul on the app's newer version",
+        details: sentences,
         monoId,
         file: "SOUL.md",
         beforeText: soul.text,
         afterText: plan.after,
-        alsoWrite: [
-          { file: SOUL_TEMPLATE_FILE, text: template },
-          ...(plan.knownBaseline ? [] : [{ file: OLD_SOUL_NOTE, text: soul.text }]),
-        ],
       });
-      proposed.push(monoId);
+      refreshed.push(monoId);
     } catch {
-      /* this Mono's files can't be read now: the next pass tries again */
+      /* this Mono's files can't be read or saved now: the next pass tries again */
     }
   }
-  return { proposed, recorded };
+  return { refreshed, recorded };
 }
 
 let running: Promise<unknown> | undefined;
