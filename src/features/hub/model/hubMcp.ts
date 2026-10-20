@@ -5,7 +5,9 @@
 //   env, for every hub chat: ASH_CHAT always; a Mono's chat and its habit runs also ASH_MONO_ID and ASH_ROLE (lead,
 //   mono, or checker for the checker); a worker (a chat a Mono or another chat started) ASH_ROLE=worker. Claude Code
 //   doesn't hand MCP servers the chat's identity, so it has to be in the entry. This entry replaces a user-scope
-//   `ash-os` of the same name (checked with Claude Code 2.1.302 on 19 Oct: only the --mcp-config one started).
+//   `ash-os` of the same name (checked with Claude Code 2.1.302 on 19 Oct: only the --mcp-config one started). The
+//   entry's own env arrives from Rust as `${MONOCODE_ASH_OS_<KEY>}` references that harness_spawn fills in the child's
+//   environment (hub.rs ash_os_server_from), so Ash's values never go in argv; only the identity is literal.
 // - `monocode`: the delegate tool (`monocode mcp`, src-tauri/src/mcp_server.rs), for a Mono's own chat only (never a
 //   habit run, a worker, a plain chat or the checker), pre-approved with `--allowedTools mcp__monocode__*`. Its app
 //   connection is written as "${MONOCODE_APP_ENDPOINT}" / "${MONOCODE_APP_TOKEN}": Claude Code expands `${VAR}` in a
@@ -137,7 +139,8 @@ export function hubMcpArgs(
     Object.assign(mcpServers, servers.connectors(identity.monoId));
   if (servers.ashOs) {
     const { ashOs } = servers;
-    // The server's own settings stay; who is calling is only ever this chat's identity, never Ash's config's.
+    // The server's own settings stay (as references the child's environment fills); who is calling is only ever this
+    // chat's identity, never Ash's config's.
     const {
       ASH_MONO_ID: _mono,
       ASH_ROLE: _role,
