@@ -54,7 +54,6 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
         <span className="min-w-0 truncate" data-mono-failure-where>
           {[where, name].filter(Boolean).join(" · ")}
         </span>
-        <span className="shrink-0">· can't answer</span>
         {failure.at ? (
           <span className="ml-auto shrink-0 tabular-nums">{ago(now - failure.at)}</span>
         ) : null}

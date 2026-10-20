@@ -8,7 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, ImagePlus, Loader, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2 } from "../../shared/ui/icons";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono, type ChildChat } from "../../features/monos/model/delegationView";
 import { countWork, delegationLine, useStuckDismissalsVersion, workSplit, type StuckWorker } from "../../features/monos/model/workerStuck";
@@ -497,13 +497,15 @@ function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: Mono
         type="button"
         disabled={trying}
         data-mono-failed-retry
+        title="Try again"
+        aria-label={trying ? "Trying again" : "Try again"}
         onClick={() => {
           setTrying(true);
           if (!retryMonoFailure(monoId)) setTrying(false);
         }}
-        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-content/60 hover:bg-content/8 hover:text-content disabled:opacity-60"
+        className="grid size-5 shrink-0 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content disabled:opacity-60"
       >
-        {trying ? "Trying…" : "Try again"}
+        <RotateCcw className={`size-3.5 ${trying ? "animate-spin motion-reduce:animate-none" : ""}`} strokeWidth={1.75} />
       </button>
     </div>
   );
