@@ -210,6 +210,10 @@ async function main() {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
     maxMinutes: options.maxMinutes ?? spec.budget?.maxMinutes ?? 110,
     maxRequests: options.maxRequests ?? spec.budget?.maxRequests ?? 2500,
+    /** Don't start above this share of the account's 5-hour window, and stop once it passes stopAtFiveHour. */
+    startBelowFiveHour: spec.budget?.startBelowFiveHour ?? 0.6,
+    stopAtFiveHour: spec.budget?.stopAtFiveHour ?? 0.85,
+    stopAtSevenDay: spec.budget?.stopAtSevenDay ?? 0.7,
   };
   const scenarios = spec.scenarios.filter((s) => !options.only.length || options.only.includes(s.id));
   const id = runId();
@@ -240,6 +244,7 @@ async function main() {
   let slot = null;
   let jobsTimer = null;
   let pumpTimer = null;
+  let stopReason = null;
 
   const cleanup = async () => {
     clearInterval(jobsTimer);
@@ -360,6 +365,13 @@ async function main() {
     })();
     if (!status.loggedIn) throw new Error("the dev Claude login isn't reachable under the temporary HOME (claude auth status says logged out)");
     log(`claude login reachable under the temporary HOME (${status.authMethod}, ${status.subscriptionType})`);
+    // The login is Ash's own account, shared with his work: don't start a run it can't afford.
+    const use = accountUse(home);
+    fs.writeFileSync(path.join(evidence, "account-before.json"), JSON.stringify(use, null, 2));
+    log(`account use: 5-hour ${pctOf(use.fiveHour)}, 7-day ${pctOf(use.sevenDay)}${use.status ? ` (${use.status})` : ""}`);
+    if (use.status === "rejected") throw new Error("the account is at its limit right now; try after it resets");
+    if (use.fiveHour != null && use.fiveHour >= budget.startBelowFiveHour)
+      throw new Error(`the account's 5-hour use is ${pctOf(use.fiveHour)} (run needs it under ${pctOf(budget.startBelowFiveHour)}); Ash's own work shares it`);
 
     // -- the test project ------------------------------------------------------------------------------------------------
     fs.cpSync(TEMPLATE, project, { recursive: true });
@@ -538,9 +550,20 @@ async function main() {
     pumpTimer = setInterval(() => {
       void pump();
       const now = usageOf(readNdjson(path.join(state, "usage.ndjson")));
-      if ((now.turns >= budget.maxTurns || now.requests >= budget.maxRequests || Date.now() > deadline) && !fs.existsSync(path.join(state, "stop"))) {
-        fs.writeFileSync(path.join(state, "stop"), `budget spent: ${now.turns} turns, ${now.requests} requests\n`);
-        log(`BUDGET: ${now.turns} turns / ${now.requests} requests: the claude wrapper now refuses new turns`);
+      const limits = readNdjson(path.join(state, "ratelimits.ndjson"));
+      const fiveHour = limits.filter((l) => l.fiveHour != null).at(-1)?.fiveHour ?? null;
+      const sevenDay = limits.filter((l) => l.sevenDay != null).at(-1)?.sevenDay ?? null;
+      const limited = fs.existsSync(path.join(state, "limited"));
+      const why =
+        limited ? `the account hit its limit (${fs.readFileSync(path.join(state, "limited"), "utf8").trim()})`
+        : fiveHour != null && fiveHour >= budget.stopAtFiveHour ? `the account's 5-hour use reached ${pctOf(fiveHour)}`
+        : sevenDay != null && sevenDay >= budget.stopAtSevenDay ? `the account's 7-day use reached ${pctOf(sevenDay)}`
+        : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
+        : Date.now() > deadline ? "time budget spent" : null;
+      if (why && !fs.existsSync(path.join(state, "stop"))) {
+        fs.writeFileSync(path.join(state, "stop"), `${why}\n`);
+        stopReason = why;
+        log(`STOP: ${why}: the claude wrapper now refuses new turns and the remaining scenarios are skipped`);
       }
     }, 1_500);
 
@@ -630,6 +653,10 @@ async function main() {
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
     const results = [];
     for (const scenario of scenarios) {
+      if (stopReason && scenario.since !== "run") {
+        results.push({ id: scenario.id, title: scenario.title, skipped: stopReason });
+        continue;
+      }
       const spent = usage();
       if ((spent.turns >= budget.maxTurns || spent.requests >= budget.maxRequests) && scenario.since !== "run") {
         log(`budget spent (${spent.turns} turns): skipping ${scenario.id} and the rest`);
@@ -657,7 +684,10 @@ async function main() {
     const finalSnap = await act("snapshot").catch(() => null);
     if (finalSnap) fs.writeFileSync(path.join(evidence, "snapshot-final.json"), JSON.stringify(finalSnap, null, 2));
     const total = usage();
-    const summary = { runId: id, build: stamp, slot: slot.slot, started: iso(started), ended: iso(Date.now()), wallMinutes: secs(Date.now() - started) / 60, usage: total, budget, results };
+    const after = accountUse(home);
+    fs.writeFileSync(path.join(evidence, "account-after.json"), JSON.stringify(after, null, 2));
+    log(`account use after: 5-hour ${pctOf(after.fiveHour)}, 7-day ${pctOf(after.sevenDay)}`);
+    const summary = { runId: id, stopReason, account: { before: JSON.parse(fs.readFileSync(path.join(evidence, "account-before.json"), "utf8")), after }, build: stamp, slot: slot.slot, started: iso(started), ended: iso(Date.now()), wallMinutes: secs(Date.now() - started) / 60, usage: total, budget, results };
     fs.writeFileSync(path.join(evidence, "summary.json"), JSON.stringify(summary, null, 2));
     log(`done: ${total.turns} turns, ${total.requests} model requests, ${Math.round((Date.now() - started) / 60000)} min`);
   } finally {
@@ -669,6 +699,40 @@ async function main() {
     await gradeRun(evidence, { claudeConfig: DEV_CLAUDE_CONFIG });
   }
   return 0;
+}
+
+const pctOf = (value) => (value == null ? "?" : `${Math.round(value * 100)}%`);
+
+/**
+ * The shared account's use right now, from one tiny Haiku call's rate_limit_event (the CLI prints one per call):
+ * {status, fiveHour, sevenDay} as fractions, null when the CLI didn't say.
+ */
+export function accountUse(home) {
+  const run = spawnSync(
+    path.join(REAL_HOME, ".local/bin/claude"),
+    ["-p", "--model", "haiku", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "reply with the word ok"],
+    {
+      encoding: "utf8",
+      timeout: 90_000,
+      cwd: home,
+      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: DEV_CLAUDE_CONFIG, CLAUDE_SECURESTORAGE_CONFIG_DIR: DEV_CLAUDE_CONFIG, DISABLE_AUTOUPDATER: "1" },
+    },
+  );
+  const out = { at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
+  for (const line of String(run.stdout ?? "").split("\n")) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message.type !== "rate_limit_event") continue;
+    const info = message.rate_limit_info ?? {};
+    out.status = info.status ?? out.status;
+    out.fiveHour = info.unifiedWindows?.five_hour?.utilization ?? (info.rateLimitType === "five_hour" ? info.utilization : out.fiveHour);
+    out.sevenDay = info.unifiedWindows?.seven_day?.utilization ?? (info.rateLimitType === "seven_day" ? info.utilization : out.sevenDay);
+  }
+  return out;
 }
 
 /** On-screen and off-screen windows (CGWindowList), via a tiny Swift script; [] when it can't run. */

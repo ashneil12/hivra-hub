@@ -274,6 +274,27 @@ function main() {
       return;
     }
     if (message.session_id) session = message.session_id;
+    // The shared account's limits (Ash's own work uses the same login): the run watches these and stops in time.
+    if (message.type === "rate_limit_event") {
+      const info = message.rate_limit_info ?? {};
+      const windows = info.unifiedWindows ?? {};
+      try {
+        fs.appendFileSync(
+          path.join(STATE, "ratelimits.ndjson"),
+          `${JSON.stringify({ t: Date.now(), status: info.status, type: info.rateLimitType, utilization: info.utilization ?? null, fiveHour: windows.five_hour?.utilization ?? null, sevenDay: windows.seven_day?.utilization ?? null, resetsAt: info.resetsAt ?? null })}\n`,
+        );
+        if (info.status === "rejected") fs.writeFileSync(path.join(STATE, "limited"), `${info.rateLimitType ?? "limit"} rejected; resets ${info.resetsAt ?? "?"}\n`);
+      } catch {
+        // the run's folder went away
+      }
+    }
+    if (message.type === "result" && message.is_error && /hit your (session|usage|weekly) limit|usage limit/i.test(String(message.result ?? ""))) {
+      try {
+        fs.writeFileSync(path.join(STATE, "limited"), `${String(message.result).slice(0, 200)}\n`);
+      } catch {
+        // as above
+      }
+    }
     if (message.type === "assistant" && !helper) usage({ kind: "request", session, model: message.message?.model ?? model, outputTokens: message.message?.usage?.output_tokens ?? 0 });
     log({ dir: "out", line: line.length > 8000 ? `${line.slice(0, 8000)}…` : line });
   });

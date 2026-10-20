@@ -100,6 +100,62 @@ export async function gradeRun(evidenceDir, { claudeConfig }) {
   return 0;
 }
 
+const pct = (values, p) => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+};
+
+/**
+ * Where the time goes, from the wrapper's per-process logs: each helper call (the room's router picking who answers,
+ * its chime-in pick, chat titles) from spawn to result, with the wait before the app even sent the prompt; and each
+ * room turn (a Mono's "[MonoCode group chat]" prompt) from prompt to result.
+ */
+export function latency(evidenceDir) {
+  const dir = path.join(evidenceDir, "claude", "claude");
+  const helpers = [];
+  const roomTurns = [];
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".ndjson")) : []) {
+    const entries = fs.readFileSync(path.join(dir, name), "utf8").split("\n").filter(Boolean).flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+    const start = entries.find((e) => e.dir === "start");
+    if (!start) continue;
+    const helper = (start.args ?? []).includes("--no-session-persistence");
+    let prompt = null;
+    for (const entry of entries) {
+      if (entry.dir === "prompt") prompt = entry;
+      if (entry.dir !== "out" || !prompt) continue;
+      let message;
+      try {
+        message = JSON.parse(entry.line);
+      } catch {
+        continue;
+      }
+      if (message.type !== "result") continue;
+      const text = prompt.text ?? "";
+      if (helper) {
+        const kind = /route a message in a group chat to the ONE member/i.test(text) ? "router-pick" : /"chime"/.test(text) || /chime/i.test(text.slice(0, 400)) ? "router-chime" : /title/i.test(text.slice(0, 300)) ? "title" : "other";
+        helpers.push({ kind, waitBeforePromptSec: (prompt.t - start.t) / 1000, totalSec: (entry.t - start.t) / 1000 });
+      } else if (text.includes("[MonoCode group chat]")) roomTurns.push({ turnSec: (entry.t - prompt.t) / 1000 });
+      prompt = null;
+    }
+  }
+  const sum = (rows, key) => ({ n: rows.length, median: pct(rows.map((r) => r[key]), 50), p90: pct(rows.map((r) => r[key]), 90), max: rows.length ? Math.max(...rows.map((r) => r[key])) : null });
+  const kinds = [...new Set(helpers.map((h) => h.kind))];
+  return {
+    helpers: Object.fromEntries(kinds.map((kind) => {
+      const rows = helpers.filter((h) => h.kind === kind);
+      return [kind, { total: sum(rows, "totalSec"), waitBeforePrompt: sum(rows, "waitBeforePromptSec"), over20s: rows.filter((r) => r.totalSec > 20).length }];
+    })),
+    roomTurns: sum(roomTurns, "turnSec"),
+  };
+}
+
 export function report(evidenceDir, summary, grades) {
   const lines = ["# Real-Claude test run", ""];
   if (summary)
@@ -116,6 +172,9 @@ export function report(evidenceDir, summary, grades) {
       `| ${result.id} ${result.title ?? ""} | ${result.skipped ? `SKIPPED (${result.skipped})` : result.error ? `ERROR (${result.error})` : (grade?.grade ?? "UNGRADED")} | ${(result.bench ?? []).join(", ")} | ${timings || "-"} | ${(grade?.summary ?? "").replace(/\|/g, "/").replace(/\n/g, " ")} |`,
     );
   }
+  const timing = latency(evidenceDir);
+  lines.push("", "## Where the time goes", "", "```json", JSON.stringify(timing, null, 2), "```");
+  fs.writeFileSync(path.join(evidenceDir, "latency.json"), JSON.stringify(timing, null, 2));
   lines.push("", "## Per item", "");
   for (const [id, grade] of Object.entries(grades)) {
     lines.push(`### ${id}: ${grade.grade}`, "");
