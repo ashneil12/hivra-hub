@@ -63,7 +63,7 @@ async function prepare(): Promise<void> {
   addConnectors([{ id: "proof-github", name: "GitHub", projectId: "hivra" }]);
 }
 
-async function exportRun(file: string, folders: string[]): Promise<void> {
+async function exportRun(folders: string[]): Promise<void> {
   await prepare();
   await openPage();
   await step(1, "export page");
@@ -81,7 +81,6 @@ async function exportRun(file: string, folders: string[]): Promise<void> {
   await until(() => $("[data-portable-report]") ?? $("[data-portable-problem]"), "export result");
   ($("[data-portable-report]") ?? $("[data-portable-problem]"))?.scrollIntoView({ block: "center" });
   await step(3, $("[data-portable-report]") ? "exported" : "export failed");
-  void file;
 }
 
 async function importRun(): Promise<void> {
@@ -114,7 +113,7 @@ async function run(): Promise<void> {
   const original = await getCurrentWindow().title().catch(() => "");
   await wait(8_000);
   try {
-    if (mode === "export") await exportRun(file, folders.split(",").filter(Boolean));
+    if (mode === "export") await exportRun(folders.split(",").filter(Boolean));
     else if (mode === "import") await importRun();
     await getCurrentWindow().setTitle(`PROOF done ${mode}`);
   } catch (e) {
