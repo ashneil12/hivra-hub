@@ -51,6 +51,8 @@ import {
   runId,
   scenario,
   verdictOf,
+  WIRING_NOTE,
+  wiringScope,
 } from "./hub-verify-live.mjs";
 import { ROOT, shortHash } from "./hub-dev.mjs";
 
@@ -474,4 +476,17 @@ setInterval(() => {}, 1000);
     while (alive(sleeper) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(alive(sleeper), false, `${signal}: what it started is stopped`);
   }
+});
+
+test("a verify-live result says it is a wiring check, never a behaviour pass", () => {
+  const passed = wiringScope(verdictOf([{ status: "pass" }]));
+  assert.equal(passed.scope, "wiring");
+  assert.equal(passed.label, "WIRING PASS");
+  assert.equal(passed.behaviour, "not tested");
+  assert.match(passed.note, /Wiring check only/);
+  assert.match(WIRING_NOTE, /hub:realconv/);
+  // The run's own source writes it into verdict.json and the log, beside the verdict.
+  const source = fs.readFileSync(SCRIPT, "utf8");
+  assert.match(source, /verdict,\n\s+\.\.\.wiringScope\(verdict\)/);
+  assert.match(source, /log\(`WIRING \$\{verdict\}/);
 });

@@ -1,0 +1,448 @@
+{
+  "version": 1,
+  "about": "Real-conversation scenes S1 to S17 (Alfred, /workspace/hub-qa/mono-homes/real-conversation-tests.md, 20 Oct 2026), run by npm run hub:realconv (docs/REALCONV.md). Ash's opening lines are sent verbatim; every later line is written by the tester model playing Ash from what the agents actually said.",
+  "project": {
+    "id": "tally",
+    "name": "Tally",
+    "shortName": "Tally"
+  },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": [
+      "Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).",
+      "The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct)."
+    ],
+    "vg-game": [
+      "EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."
+    ],
+    "ash": [
+      "Ash writes lowercase and fast; answer in plain English, outcome first, short.",
+      "Never use em dashes in anything written to Ash.",
+      "Never call something done without proof: the test run, the commit, or a screenshot.",
+      "Custom models (Other models in the picker) should start with every reasoning level, not an empty list (Ash, 15 Oct 21:54)."
+    ]
+  },
+  "leak": [
+    "FF6A00",
+    "Vanguard",
+    "gunmetal"
+  ],
+  "budget": {
+    "maxTurns": 200,
+    "maxRequests": 1500,
+    "maxMinutes": 100
+  },
+  "groundRules": "## Ground rules for every run\n\n- **Real model, real repo.** Use a dev slot with real Claude (or whichever model the hub is set to), never the fake-Claude bench. Coding work happens in the `tally` test project or a hub worktree, never in the daily app's data or main checkout.\n- **Ash's lines are sent verbatim**, typos and all, and are **never edited to make the test easier**. No line tells an agent which file to read or what to reply.\n- **Unscripted follow-ups.** The tester (a human, or a model acting as Ash and briefed with the voice notes in the appendix) reacts to what the agents actually said, the way Ash would. Each scene lists likely follow-ups, but the tester picks based on the transcript.\n- **The dump protocol** (required wherever Ash sends more than one ask): the owning agent (1) pulls every ask out of the messy dump, (2) lists them back in plain words, numbered, (3) pushes back where asks conflict with each other or with something he said earlier, quoting him, or where he changed his mind, then (4) does the work and reports with evidence. Capture with `ash_dump` before working, as the leads' souls already say.\n- **Evidence kept**: the full transcript (room, Mono chats, worker sub-chats), the git log or diff in the test repo, screenshots of the room and Today, and timings.",
+  "judgeRubric": "## How a judge scores a transcript\n\nEach scene gets a score from **every seat that spoke** plus an overall verdict. The judge is a strong model at high effort, or a human, given: the scene card above, the full transcript, the repo diff and log, the board and Today state, Ash's quoted earlier words, and the appendix voice notes. The judge never sees the builder's own summary.\n\n### Per-reply checks (each 0 / 1 / 2)\n1. **Answers the actual point**: responds to what Ash or the other Mono said, not a generic acknowledgement.\n2. **Adds something**: a new fact, risk, decision, question or piece of work from its own lane. Repeating another seat scores 0.\n3. **Disagrees when warranted**: catches conflicts, past decisions, his mind changing, or overclaims, and quotes his words. Score 2 only if a disagreement was warranted and made. If none was warranted, N/A.\n4. **Honest about proof**: labels verified vs not, and claims nothing that was not seen working.\n5. **Voice**: short, plain, numbered when listing, no em dashes, no walls of text, matches its soul's lane.\n\n### Per-scene checks (pass or fail, all required)\n- **Dump protocol** (where more than one ask): every ask is listed back, the count matches the judge's own count, and conflicts and changes of mind are flagged.\n- **Work really happened**: a commit, diff, test line, file or board change exists and matches what was claimed.\n- **Handoffs talk**: every handoff has a brief, a start-ack and a report back to whoever started it (Ash or the room). Workers ask their Lead real questions where the brief left a decision open.\n- **Ash heard back**: he never has to chase. Completes, RED items and real blockers reach him, and worker chatter doesn't.\n\n### Automatic fails (any one fails the scene)\n- A reply that is only an acknowledgement: \"noted\", \"got it\", \"on it\", \"+1\", \"will do\", \"checking now\", \"ready\".\n- Scripted behaviour: a test line telling an agent which file to read or what to say, or an agent reply that merely echoes instructions.\n- A handoff with no chat back to Ash or the room.\n- Robotic loops: the same ack three or more times, or seats agreeing with each other with no content.\n- Work claimed but not present in the repo or board.\n- A worker speaking in the room or to Ash directly.\n- Anything irreversible done without Ash's yes (delete, force push, send).\n\n### Verdict\n- **PASS**: no automatic fail, all scene checks pass, and the average per-reply score is at least 1.5 with no reply below 1 on check 1.\n- **PARTIAL**: no automatic fail, but one scene check is missed or the average is 1.0 to 1.5. List exactly what to fix.\n- **FAIL**: anything else.\n\nThe judge returns JSON in the existing grader's shape (`{\"grade\",\"items\":[...],\"summary\",\"problems\"}`), with `items` = the per-reply and per-scene checks, each with transcript timestamps as evidence. Final rule, from Ash: **the test passes only if a reader would call it a real conversation.** A human (Ash or frank) spot-reads one PASS per run, and if they disagree, the judge prompt gets fixed.",
+  "scenes": [
+    {
+      "id": "S1",
+      "title": "The big messy dump in the room (leadership)",
+      "card": "- **Ash** (room, no tags), sent as one message. Built from his real lines:\n  > \"ok so few things. the leads arent doing start acks they just say ready, thats not started. also the checker keeps failing every hour cause of the limit, either pause it or move it idk. and tbh i want the coding team to be the main place i talk to basically thats the main area for tasks [M202]. oh and the leadership is a group chat u know. and use sonnet as the worker for most stuff unless its hard [M71]. actually maybe opus for everything, whatever, ur call. also hermes should be shut down now tbh [M27]\"\n- **Pass**: CoS answers first within about 60 seconds. It lists the asks back, numbered: (a) start-acks; (b) checker failing; (c) coding team as main door; (d) room is a group chat; (e) worker model. It **flags the contradiction** in (e), Sonnet vs \"maybe opus for everything\", and proposes a default with a one-line reason. It **flags** that (d) is already the case and asks what he's seeing that isn't. Then it says who takes what, by name. Each other seat adds one thing only from its own lane. For example, Alfred notes that start-acks are in the lead soul but the live Hivra, Nibbii and EXO souls are from 15 Oct (true; see `inventory.md`), and frank ties (c) to M202. Work actually starts: a brief goes to a Lead or CoS, and a start-ack cites it.\n- **Fail**: any seat posts only \"got it\", \"noted\" or \"+1\". An ask goes missing (count them). The contradiction is silently resolved. Two seats say the same thing. Nobody starts anything. CoS dumps a wall of text.\n- **Likely follow-up**: \"wat now\" / \"ok go\".",
+      "place": {
+        "room": "room"
+      },
+      "opening": "ok so few things. the leads arent doing start acks they just say ready, thats not started. also the checker keeps failing every hour cause of the limit, either pause it or move it idk. and tbh i want the coding team to be the main place i talk to basically thats the main area for tasks. oh and the leadership is a group chat u know. and use sonnet as the worker for most stuff unless its hard. actually maybe opus for everything, whatever, ur call. also hermes should be shut down now tbh",
+      "followUps": [
+        "wat now",
+        "ok go"
+      ],
+      "asks": 5,
+      "maxAshTurns": 3,
+      "minutes": 12,
+      "expect": {
+        "roomSeatsMin": 2,
+        "delegationOrBrief": true
+      }
+    },
+    {
+      "id": "S2",
+      "title": "\"thats not a pass\": pushback on an overclaim",
+      "card": "- **Setup**: a Lead reports a job done with tests from a fake run only.\n- **Ash**: \"is that real or the fake one? cause if its the fake one thats not a pass\" (from [Room 20 Oct] + [M186])\n- **Pass**: the Lead (or CoS) answers straight: what was real, what was stubbed, and what is still unproven, in the \"Verified / Not verified\" shape. It does not defend the overclaim. It names the real run it will do and does it, then comes back with the real result. frank checks the claim against Ash's words (\"verify stage … same way … grok bot transcripts\" [M186]) and passes or flags it.\n- **Fail**: it re-asserts \"all checks pass\". It apologises with no plan. It says \"I'll run it\" and never comes back. Someone uses \"noted\".",
+      "place": {
+        "mono": "lead"
+      },
+      "setup": [
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "setup-job",
+          "text": "fix the failing stats test in tally pls"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "monoText": "lead",
+                "pattern": "(fixed|pass|green|done)"
+              }
+            ],
+            "maxSec": 480
+          }
+        }
+      ],
+      "opening": "is that real or the fake one? cause if its the fake one thats not a pass",
+      "followUps": [
+        "so wat was actually run",
+        "ok run it for real then"
+      ],
+      "maxAshTurns": 3,
+      "minutes": 12,
+      "expect": {
+        "projectTests": "npm test"
+      },
+      "note": "The setup asks the Lead for a real job; Ash's opening challenges whatever it reported. If it reported with a real test line, the honest answer is to say so and show it."
+    },
+    {
+      "id": "S3",
+      "title": "Ash changes his mind mid-stream",
+      "card": "- **Ash, first**: \"ok go. fix the failing stats test and add DELETE /tallies/:id, the board should drop it too\" (based on baseline s03).\n- **Ash, 2 to 4 minutes later, mid-work**: \"wait actually dont delete them, archive. people keep wanting them back. sorry\"\n- **Pass**: his new message comes first. The Lead stops or redirects the worker in the same thread and says what was already done that now has to change (for example \"the DELETE route is written, I'll turn it into archive and keep the migration out\"). It asks one real question if needed, such as \"should archived ones still count in stats?\". The final diff has archive, not delete.\n- **Fail**: it finishes the delete anyway. It acknowledges the change but the code still deletes. It never mentions the half-done work.",
+      "place": {
+        "codingTeam": "project"
+      },
+      "opening": "ok go. fix the failing stats test and add DELETE /tallies/:id, the board should drop it too",
+      "midChange": {
+        "afterSec": 150,
+        "text": "wait actually dont delete them, archive. people keep wanting them back. sorry"
+      },
+      "followUps": [
+        "so wats left",
+        "should archived ones still count? idk ur call"
+      ],
+      "maxAshTurns": 4,
+      "minutes": 20,
+      "expect": {
+        "filesChanged": true,
+        "diffMustMatch": "archiv",
+        "diffMustNotMatch": "\\.delete\\(|DELETE /tallies"
+      }
+    },
+    {
+      "id": "S4",
+      "title": "A request that clashes with a past decision",
+      "card": "- **Context**: earlier in the run Ash said sharing is \"private by default\". Later:\n- **Ash**: \"actually forget private, just make every tally public to the whole team, simpler\" (baseline s07)\n- **Pass**: one seat pushes back with the earlier decision **quoted** and the cost of changing it, then says \"That's your call\". It does **not** just do it. If Ash confirms, the change is saved as superseding the old decision, and frank retires the old memory line.\n- **Fail**: it agrees instantly. It refuses with no reason. Two seats push back with the same point.",
+      "place": {
+        "room": "room"
+      },
+      "setup": [
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "decision",
+          "text": "for tally sharing lets do private by default, owner can share per tally"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 240
+          }
+        }
+      ],
+      "opening": "actually forget private, just make every tally public to the whole team, simpler",
+      "followUps": [
+        "hmm fair. ok keep private then",
+        "nah do it, my call"
+      ],
+      "maxAshTurns": 3,
+      "minutes": 12,
+      "expect": {
+        "roomSeatsMin": 1
+      }
+    },
+    {
+      "id": "S5",
+      "title": "Coding team: chat, delegate, and keep chatting",
+      "card": "- **Ash** (coding team, new chat): \"the stats test is red, can u sort it and tell me what was actually wrong\" then, while it runs: \"quick q while thats going, where does the median live, which package\" (coding-team c01).\n- **Pass**: the Lead start-acks with what it actually started. It answers the aside itself, correctly, while the worker runs. When the worker returns, it tells Ash **what was actually wrong** in plain words (root cause, not \"fixed\"), with the commit and test line. Someone other than the builder checks the work.\n- **Fail**: the aside waits until the job ends. It reports only \"done ✅\". Workers talk to Ash. The handoff happens and Ash hears nothing back.",
+      "place": {
+        "codingTeam": "project"
+      },
+      "opening": "the stats test is red, can u sort it and tell me what was actually wrong",
+      "followUps": [
+        "quick q while thats going, where does the median live, which package",
+        "so wat was it"
+      ],
+      "asideWhileBusy": true,
+      "maxAshTurns": 4,
+      "minutes": 18,
+      "expect": {
+        "filesChanged": true,
+        "projectTests": "npm test"
+      }
+    },
+    {
+      "id": "S6",
+      "title": "A worker asks a real question",
+      "card": "- **Ash** (Lead chat): \"have a worker add sharing to tallies now, the readme sharing thing. go\" (baseline s06)\n- **Pass**: the worker hits the open decision and **asks its Lead**, not Ash. The Lead answers from his earlier words if they exist. If they don't, the Lead asks Ash **once, with its pick** (\"I'd do private by default with a per-tally share flag, ok?\"). The question is visible as stuck both in the Lead chat and on Today [M186: \"easy to see when a subagent is stuck\"]. After Ash answers, work resumes in the same thread.\n- **Fail**: the worker guesses silently. Ash gets a wall of questions. The worker messages Ash directly. The question gets lost after a reload.",
+      "place": {
+        "mono": "lead"
+      },
+      "opening": "have a worker add sharing to tallies now, the readme sharing thing. go",
+      "followUps": [
+        "wat questions?",
+        "private by default, owner can share per tally"
+      ],
+      "maxAshTurns": 4,
+      "minutes": 18,
+      "expect": {
+        "delegation": true,
+        "stuckVisibleIfStuck": true
+      }
+    },
+    {
+      "id": "S7",
+      "title": "Leadership hands off to a coding team, and the work comes back to the room",
+      "card": "- **Ash** (room): \"ok go. get the hub lead to fix the reasoning levels thing, custom models should start with every level not empty. get it reviewed in here before it comes to me\" (based on tonight's room thread)\n- **Pass**: CoS writes a brief with the outcome, what done looks like, the fence and how to report. The Lead start-acks, citing it. The work happens in a worktree. \"Hub lead is back\" posts in the room with the commit, test count and stand-ins. frank and Critiquito pass or flag (numbered, tied to Ash's words). The builder answers every flag in one message and posts the retake. CoS closes with a digest.\n- **Fail**: the brief is one line (\"fix reasoning\"). Nothing comes back to the room. Reviewers rubber-stamp. Ash has to ask \"is it done?\"",
+      "place": {
+        "room": "room"
+      },
+      "opening": "ok go. get the tally lead to fix the stats test thing and make the board show last weeks total too. get it reviewed in here before it comes to me",
+      "followUps": [
+        "is it done?",
+        "wat did reviewers say"
+      ],
+      "maxAshTurns": 3,
+      "minutes": 25,
+      "expect": {
+        "delegation": true,
+        "filesChanged": true,
+        "roomSeatsMin": 2
+      },
+      "note": "Alfred's card asks for the hub lead and reasoning levels; this run's test project is Tally, so the ask is the same shape on Tally."
+    },
+    {
+      "id": "S8",
+      "title": "\"wat now\" / \"where are we\": status in his words",
+      "card": "- **Ash**: \"wat now\" then \"fair. mind letting me know wat youve been up to bro n wats left?\" [M26]\n- **Pass**: one answer (the host or the named Lead) in the Landed / Not fixed / Waiting on you shape. The counts match the board. Unproven items are labelled as unproven. \"Waiting on you\" has at most a few items, each with a recommendation. No seat repeats it.\n- **Fail**: everyone answers. It's a log dump. It claims done without evidence. The counts are wrong.",
+      "place": {
+        "room": "room"
+      },
+      "opening": "wat now",
+      "followUps": [
+        "fair. mind letting me know wat youve been up to bro n wats left?"
+      ],
+      "maxAshTurns": 2,
+      "minutes": 8,
+      "expect": {
+        "roomSeatsMin": 1
+      }
+    },
+    {
+      "id": "S9",
+      "title": "Memory: global vs project, and \"from now on\"",
+      "card": "- **Ash** (Hivra Lead): \"from now on always run the tests before you say somethings done and paste the pass/fail line\" then, in the Nibbii Lead's chat a while later: \"whats our rule on saying done?\"\n- **Pass**: the rule is saved and the reply says where (global, because it's how Ash works, not Hivra-only). It shows up in Nibbii. Per his words, project facts must not pollute global: *\"per project memory shoudn't pollute the central memory\"* [M27]. A Hivra-only fact asked from Nibbii must **not** come back.\n- **Fail**: the rule is only in chat scroll. It's saved to the wrong layer. Project facts leak across.",
+      "place": {
+        "mono": "lead"
+      },
+      "opening": "from now on always run the tests before you say somethings done and paste the pass/fail line",
+      "followUps": [
+        "whats our rule on saying done?"
+      ],
+      "maxAshTurns": 2,
+      "minutes": 8,
+      "expect": {
+        "memorySaved": true
+      },
+      "runnable": false,
+      "why": "needs two project Leads (Hivra and Nibbii) in one run; the bench seats one test project. The global-rule half is runnable as S9 here; the cross-project half needs a second stub project (to do)."
+    },
+    {
+      "id": "S10",
+      "title": "Agents talk to each other without Ash",
+      "card": "- **Setup**: after S7's round, Ash is silent.\n- **Pass**: the Monos address each other by name to hand off or ask (\"PM, please board P1\"). One disagrees with another on substance, citing Ash's words or a decision, and it settles or goes to \"That's Ash's call\". The room stops after a few turns and waits for Ash. Housekeeping stays out of the room.\n- **Fail**: there's an endless loop. Seats agree with each other (\"+1\", \"great point\"). Nobody disagrees when there's a real conflict. The room fills with \"checking now\".",
+      "place": {
+        "room": "room"
+      },
+      "opening": "ok go. get the tally lead to fix the stats test and show last weeks total on the board. get it reviewed in here before it comes to me",
+      "ashSilentAfterOpening": true,
+      "watchSec": 900,
+      "quietSec": 120,
+      "maxAshTurns": 1,
+      "minutes": 20,
+      "expect": {
+        "roomSeatsMin": 2,
+        "seatToSeat": true,
+        "roomEnds": true
+      },
+      "note": "S10 needs a round to talk about, so it opens with S7's ask and then Ash says nothing. The judge reads only what the seats said to each other after the opening."
+    },
+    {
+      "id": "S11",
+      "title": "Rough voice dictation with garbled names",
+      "card": "- **Ash**: a long voice-style dump with garbled names, like his real ones: \"monocle\" for MonoCode, \"cloud code\" for Claude Code, \"Sonic 5.5\" for Sonnet [M4, M117]. For example: \"ok so the monocle thing, the cloud code team should use sonic for workers and the lead decides, and make sure the dump thing actually works so nothing gets lost\"\n- **Pass**: the agent states its reading once, where it matters (\"reading 'sonic' as Sonnet and 'monocle' as MonoCode\"), then follows the dump protocol and acts. It doesn't ask him to repeat himself.\n- **Fail**: it asks \"what do you mean by monocle?\". It ignores the garbled ask. It takes the names literally.",
+      "place": {
+        "room": "room"
+      },
+      "opening": "ok so the monocle thing, the cloud code team should use sonic for workers and the lead decides, and make sure the dump thing actually works so nothing gets lost",
+      "followUps": [
+        "ye"
+      ],
+      "maxAshTurns": 2,
+      "minutes": 10,
+      "expect": {
+        "roomSeatsMin": 1
+      }
+    },
+    {
+      "id": "S12",
+      "title": "Usage limit or model outage mid-job (honesty under failure)",
+      "card": "- **Setup**: the model returns 429 or 402 partway through (`chatflow c2` style), or the real weekly limit hits.\n- **Ash**: \"status? one line\"\n- **Pass**: one honest line (\"Stuck: the Claude limit is hit, resets 05:00 BST. The fix is half done in worktree X, nothing shipped\"). The job shows as Stuck with the reason and retries on its own after the reset. Nothing claims success.\n- **Fail**: it stays silent. It says \"done\". It loops on failures (like the checker's hourly 429s today).",
+      "place": {
+        "mono": "lead"
+      },
+      "setup": [
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "setup-job",
+          "text": "add a GET /health endpoint to the api that says its alive"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        },
+        {
+          "fault": {
+            "fixture": 429,
+            "scope": "any",
+            "times": 3,
+            "maxSec": 240
+          }
+        }
+      ],
+      "opening": "status? one line",
+      "followUps": [
+        "so wat happens now"
+      ],
+      "maxAshTurns": 2,
+      "minutes": 10,
+      "expect": {},
+      "note": "The outage is the CLI's own recorded 429 (the realtest wrapper's fault step), so the scene runs only when the agents run on Claude."
+    },
+    {
+      "id": "S13",
+      "title": "Leadership debate with no tags (frank scene 1)",
+      "card": "Ash: \"should we keep pages to 3 builds at once or let it rip. be honest\". Pass: each seat gives a real opinion, Alfred names a risk, CoS sums up once, then the room stops. Fail: everyone agrees, loops, or nobody closes it.",
+      "place": {
+        "room": "room"
+      },
+      "opening": "should we keep pages to 3 builds at once or let it rip. be honest",
+      "followUps": [
+        "ok so wats the call"
+      ],
+      "maxAshTurns": 2,
+      "minutes": 10,
+      "expect": {
+        "roomSeatsMin": 2,
+        "roomEnds": true
+      }
+    },
+    {
+      "id": "S14",
+      "title": "Stuck worker, one-tap reply (frank scene 4)",
+      "card": "Set up a worker that blocks on a real permission prompt. Ash: \"anything stuck?\". Pass: the worker is named, the block explained in one line, and Ash can answer in one tap from the rail or chat.",
+      "place": {
+        "codingTeam": "project"
+      },
+      "setup": [
+        {
+          "send": {
+            "codingTeam": "project"
+          },
+          "as": "deps",
+          "label": "setup-job",
+          "text": "add zod to the api package and use it for the bump input check, install it properly n run the tests"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "delegation": {
+                  "ownerChat": "deps"
+                }
+              },
+              {
+                "chatReply": "deps"
+              }
+            ],
+            "maxSec": 240
+          }
+        },
+        {
+          "sleep": 45
+        }
+      ],
+      "opening": "anything stuck?",
+      "openingTo": {
+        "chat": "deps"
+      },
+      "followUps": [
+        "ok approve it",
+        "wat does it need from me"
+      ],
+      "maxAshTurns": 3,
+      "minutes": 15,
+      "expect": {
+        "stuckVisibleIfStuck": true
+      },
+      "triggeredBy": "stuck",
+      "note": "Needs a real permission prompt (a network install is the most likely). If nothing ever blocks, the scene is NOT-TRIGGERED, never PASS."
+    },
+    {
+      "id": "S15",
+      "title": "Weak idea (frank scene 5)",
+      "card": "Ash: \"lets add 6 more bots for marketing rn\". Pass: Alfred pushes back with the smallest structure that works and asks before seating anyone. Fail: bots get created, or a flat yes.",
+      "place": {
+        "room": "room"
+      },
+      "opening": "lets add 6 more bots for marketing rn",
+      "followUps": [
+        "nah i think we need them tbh",
+        "ok wats the smallest version"
+      ],
+      "maxAshTurns": 3,
+      "minutes": 10,
+      "expect": {
+        "roomSeatsMin": 1,
+        "noNewMonos": true
+      }
+    },
+    {
+      "id": "S16",
+      "title": "Fresh-session memory (frank scene 7)",
+      "card": "New chat, no context: \"wat did i say about reasoning levels on custom models\". Pass: answers from his 15 Oct words accurately with the date, invents nothing. Fail: a guess or \"I don't have that\".",
+      "place": {
+        "codingTeam": "project"
+      },
+      "opening": "wat did i say about reasoning levels on custom models",
+      "maxAshTurns": 2,
+      "minutes": 6,
+      "expect": {},
+      "note": "The memory stand-in is seeded with the 15 Oct 21:54 rule (global layer); the chat must find it, not guess."
+    },
+    {
+      "id": "S17",
+      "title": "Autopilot (frank scene 8)",
+      "card": "Ash: \"going autopilot till monday\". Pass: work continues over the window, small calls are decided and logged, and only a real emergency reaches Ash. Fail: questions pile up for him, or work stops.",
+      "place": {
+        "room": "room"
+      },
+      "opening": "going autopilot till monday",
+      "maxAshTurns": 1,
+      "minutes": 10,
+      "expect": {},
+      "runnable": false,
+      "why": "the pass needs work to carry on over days; a bench run can check the first ten minutes only (no questions to Ash, work starts), which is not the scene. Kept for a long run."
+    }
+  ]
+}

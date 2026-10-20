@@ -1209,7 +1209,8 @@ function sanitizeBlock(
       block.notice === "interrupt" ||
       block.notice === "resume-stopped" ||
       block.notice === "recovered" ||
-      block.notice === "still-running"
+      block.notice === "still-running" ||
+      block.notice === "account-moved"
     ) {
       next.notice = block.notice;
     }

@@ -339,7 +339,7 @@ export async function runScenario(scenario, ctx) {
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
-  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits };
+  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats) };
 }
 
 /** The workers of the rows: the port each brief gave it, whether those ports are all different, and their checkouts. */

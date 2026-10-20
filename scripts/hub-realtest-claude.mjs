@@ -14,6 +14,7 @@
 //     "new" (only chats started after it was set), times: n}), the next prompt is not sent to the model and the CLI's
 //     own recorded output (fixtures/claude-cli-2.1.302) comes back instead, with this session's id: what Claude Code
 //     prints when the model is down or the account is out of credit;
+//   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it.
@@ -23,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATE = process.env.REALTEST_STATE;
@@ -46,8 +48,24 @@ export function pickEffort(asked) {
   return asked && KEEP_EFFORTS.has(asked) ? asked : EFFORT;
 }
 
+/**
+ * A chat on one of Ash's own custom models: the hub pointed Claude Code at its loopback model router
+ * (src-tauri/src/model_router.rs) through ANTHROPIC_BASE_URL. Its model id and effort are the custom model's, not
+ * Anthropic's, so the budget rewrite must leave them alone (it would swap the custom id for sonnet and send the chat
+ * to Anthropic's names through the router). Only loopback counts: any other base URL is not the hub's router.
+ */
+export function isRouted(env = process.env) {
+  try {
+    const url = new URL(String(env.ANTHROPIC_BASE_URL ?? ""));
+    return ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** The CLI's arguments with the model and effort held to the budget (added when missing, except for --version). */
-export function rewriteArgs(args) {
+export function rewriteArgs(args, { routed = false } = {}) {
+  if (routed) return [...args];
   const out = [];
   let model = false;
   let effort = false;
@@ -106,7 +124,8 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
 }
 
 /** One stdin line with live model/effort changes held to the budget. */
-export function rewriteInput(line) {
+export function rewriteInput(line, { routed = false } = {}) {
+  if (routed) return line;
   let message;
   try {
     message = JSON.parse(line);
@@ -134,10 +153,12 @@ function main() {
     process.exit(2);
   }
   const args = process.argv.slice(2);
+  // Several accounts (E5): each new Claude process goes to the first account the bench hasn't marked out.
+  const account = activeAccount(STATE, CONFIG);
   const env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: CONFIG,
-    CLAUDE_SECURESTORAGE_CONFIG_DIR: CONFIG,
+    CLAUDE_CONFIG_DIR: account.config,
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: account.config,
     DISABLE_AUTOUPDATER: "1",
   };
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
@@ -162,9 +183,16 @@ function main() {
       // as above
     }
   };
-  const realArgs = withMemory(rewriteArgs(args));
-  log({ dir: "start", cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
+  const routed = isRouted(process.env);
+  const realArgs = withMemory(rewriteArgs(args, { routed }));
+  log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
+  // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
+  if (account.config !== CONFIG || accountConfigs(STATE).length > 1) {
+    const resumed = args.indexOf("--resume") >= 0 ? args[args.indexOf("--resume") + 1] : null;
+    const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
+    if (from) log({ dir: "carry", session: resumed, from, to: account.config });
+  }
   const child = spawn(REAL, realArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
   const named = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
   let session = named("--resume") ?? named("--session-id");
@@ -245,7 +273,7 @@ function main() {
         usage({ kind: "turn", session, model, cwd: process.cwd() });
       }
     } else if (message?.type === "control_request") {
-      const rewritten = rewriteInput(line);
+      const rewritten = rewriteInput(line, { routed });
       if (rewritten !== line) log({ dir: "rewrote", from: line.slice(0, 300), to: rewritten.slice(0, 300) });
       if (message.request?.subtype === "set_model") model = JSON.parse(rewritten).request.model;
       log({ dir: "control-in", line: rewritten.slice(0, 600) });
@@ -287,16 +315,16 @@ function main() {
       try {
         fs.appendFileSync(
           path.join(STATE, "ratelimits.ndjson"),
-          `${JSON.stringify({ t: Date.now(), status: info.status, type: info.rateLimitType, utilization: info.utilization ?? null, fiveHour: windows.five_hour?.utilization ?? null, sevenDay: windows.seven_day?.utilization ?? null, resetsAt: info.resetsAt ?? null })}\n`,
+          `${JSON.stringify({ t: Date.now(), account: account.n, status: info.status, type: info.rateLimitType, utilization: info.utilization ?? null, fiveHour: windows.five_hour?.utilization ?? null, sevenDay: windows.seven_day?.utilization ?? null, resetsAt: info.resetsAt ?? null })}\n`,
         );
-        if (info.status === "rejected") fs.writeFileSync(path.join(STATE, "limited"), `${info.rateLimitType ?? "limit"} rejected; resets ${info.resetsAt ?? "?"}\n`);
+        if (info.status === "rejected") fs.writeFileSync(path.join(STATE, limitedFile(account.n)), `${info.rateLimitType ?? "limit"} rejected; resets ${info.resetsAt ?? "?"}\n`);
       } catch {
         // the run's folder went away
       }
     }
     if (message.type === "result" && message.is_error && /hit your (session|usage|weekly) limit|usage limit/i.test(String(message.result ?? ""))) {
       try {
-        fs.writeFileSync(path.join(STATE, "limited"), `${String(message.result).slice(0, 200)}\n`);
+        fs.writeFileSync(path.join(STATE, limitedFile(account.n)), `${String(message.result).slice(0, 200)}\n`);
       } catch {
         // as above
       }
@@ -310,6 +338,14 @@ function main() {
   });
   child.on("exit", (code, signal) => {
     log({ dir: "exit", code, signal });
+    // The app reads transcripts from the shared dev config only: a chat run on another account is copied back there.
+    if (account.config !== CONFIG && session && !helper) {
+      try {
+        carryTranscript([account.config], CONFIG, session, { overwrite: true });
+      } catch {
+        // the app falls back to its own copy
+      }
+    }
     process.exit(code ?? (signal ? 1 : 0));
   });
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])

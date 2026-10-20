@@ -278,6 +278,9 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import { AccountOrderControls, AccountWaterfallSwitch } from "../../providers/ui/AccountWaterfall";
+import { orderedAccounts } from "../../providers/model/accountWaterfall";
+import { signInOptions } from "../../providers/model/providerSignIn";
 import {
   saveComposerAutocorrect,
   savePacedReveal,
@@ -3902,12 +3905,13 @@ function ProviderAccountsSettings() {
     <Group
       id="provider-accounts"
       title="Accounts"
-      description="Create isolated sign-ins for providers that support account profiles. Account switching stays available from the usage control in the footer."
+      description="Add more than one account where the provider allows it. Each is its own sign-in, which you finish in your browser; the app never sees the password or token. Set the order they're used in, and a chat moves to the next one when an account runs out."
       action={<AccountUsageRefresh usage={usage} />}
     >
       {PROVIDER_ACCOUNT_PROVIDERS.map((provider) => {
-        const accounts = providerAccounts(provider);
+        const accounts = orderedAccounts(provider);
         const adding = editor?.provider === provider && !editor.accountId;
+        const signIn = signInOptions(provider)[0];
         return (
           <div
             key={provider}
@@ -3925,7 +3929,11 @@ function ProviderAccountsSettings() {
                   <div className="mt-0.5 text-[11px] text-content/40">
                     {accounts.length}{" "}
                     {accounts.length === 1 ? "account" : "accounts"}
+                    {signIn ? ` · ${signIn.label}` : ""}
                   </div>
+                  {signIn?.note && !supportsAccountProfiles(provider) ? (
+                    <div className="mt-0.5 text-[10px] text-content/35">{signIn.note}</div>
+                  ) : null}
                 </div>
               </div>
               {supportsAccountProfiles(provider) ? (
@@ -3940,8 +3948,9 @@ function ProviderAccountsSettings() {
                 </button>
               ) : null}
             </div>
+            <AccountWaterfallSwitch provider={provider} count={accounts.length} />
             <div className="border-t border-content/5 bg-content/[0.015] pl-10">
-              {accounts.map((account) => {
+              {accounts.map((account, index) => {
                 const editing =
                   editor?.provider === provider &&
                   editor.accountId === account.id;
@@ -3995,6 +4004,14 @@ function ProviderAccountsSettings() {
                       </div>
                     </div>
                     <AccountUsageMeters limits={limits} now={usage.now} />
+                    <AccountOrderControls
+                      account={account}
+                      index={index}
+                      count={accounts.length}
+                      now={usage.now}
+                      usageFor={(entry) => usage.usage[accountUsageKey(entry)]}
+                      disabled={Boolean(working)}
+                    />
                     <div className="flex w-24 shrink-0 items-center justify-end gap-1">
                       {account.isDefault ? (
                         <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">

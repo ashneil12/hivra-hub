@@ -756,6 +756,22 @@ describe("sanitizeSessionForPersist", () => {
     expect(persisted[3]?.notice).toBeUndefined();
   });
 
+  it("keeps the line that says a chat moved to another account", () => {
+    const session = newSession("claude", "/tmp/project");
+    session.blocks = [
+      {
+        id: "m1",
+        role: "system",
+        text: "Claude account 1 hit its limit, so this chat moved to account 2.",
+        notice: "account-moved",
+      },
+    ];
+    expect(sanitizeSessionForPersist(session).blocks[0]).toMatchObject({
+      text: "Claude account 1 hit its limit, so this chat moved to account 2.",
+      notice: "account-moved",
+    });
+  });
+
   it("keeps a second-opinion card on the user turn", () => {
     const session = newSession("codex", "/tmp/project");
     session.blocks = [

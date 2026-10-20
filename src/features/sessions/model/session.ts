@@ -483,7 +483,9 @@ export type Block = {
     /** The provider's saved conversation was gone; a fresh one started from the chat's brief (`claude.ts`). */
     | "recovered"
     /** A Lead said the job is done while work it delegated still runs (`monos/model/leadFlow.ts`). */
-    | "still-running";
+    | "still-running"
+    /** The chat moved to (or started on) another account of its provider because one hit its limit (E5, accountWaterfall.ts). */
+    | "account-moved";
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */

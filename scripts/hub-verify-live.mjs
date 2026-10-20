@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// WIRING CHECK ONLY. A PASS here is never a behaviour result: the agents are a scripted fake (see WIRING_NOTE). Real
+// conversations with real models are `npm run hub:realconv` (docs/REALCONV.md).
+//
 // `npm run hub:verify-live`: the fake-Claude test bench (Phase 1b WP5, docs/PHASE-1B-DEV-SETUP.md, docs/T3-HARVEST.md
 // "Fake-Claude test bench with evidence"). It runs this worktree's dev copy of the Hub, with a scripted fake Claude
 // (scripts/fake-claude.mjs), under a throwaway HOME, and walks the delegation chain through real restarts:
@@ -755,6 +758,19 @@ export function scenario({ runId, failGate = false }) {
   return { version: 1, rules };
 }
 
+/**
+ * What a verify-live result is about. The bench's Claude is the scripted fake (fake-claude.mjs): every agent line is a
+ * rule's canned text, so a PASS says the hub's plumbing (delegation rows, restarts, queues, routing, goals) works, and
+ * nothing about how the agents talk or whether they do the work. Behaviour is `npm run hub:realconv` (docs/REALCONV.md).
+ */
+export const WIRING_NOTE =
+  "Wiring check only: scripted fake Claude, canned replies. A PASS means the plumbing works, not that the agents behave; behaviour is npm run hub:realconv (real models).";
+
+/** The fields every verdict.json carries so it can't be read as a behaviour pass. */
+export function wiringScope(verdict) {
+  return { scope: "wiring", label: `WIRING ${verdict}`, behaviour: "not tested", note: WIRING_NOTE };
+}
+
 /** PASS only when every check that ran passed; skipped checks are reported, never counted. */
 export function verdictOf(checks) {
   const ran = checks.filter((check) => check.status !== "skipped");
@@ -1062,6 +1078,7 @@ async function main() {
     dataDir = path.join(home, "Library/Application Support", slot.identifier);
     db = path.join(dataDir, "monocode.db");
     log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
+    log(WIRING_NOTE);
 
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: project });
     fs.writeFileSync(path.join(project, "README.md"), "Scratch project for hub:verify-live.\n");
@@ -2556,6 +2573,7 @@ async function main() {
   const result = {
     run: id,
     verdict,
+    ...wiringScope(verdict),
     failGate: options.failGate,
     ...(options.failGate
       ? {
@@ -2578,7 +2596,8 @@ async function main() {
     },
   };
   fs.writeFileSync(path.join(evidence, "verdict.json"), `${JSON.stringify(result, null, 2)}\n`);
-  log(`${verdict}${options.failGate ? ` (negative control ${result.negativeControl})` : ""}: ${path.relative(ROOT, path.join(evidence, "verdict.json"))}`);
+  log(`WIRING ${verdict}${options.failGate ? ` (negative control ${result.negativeControl})` : ""}: ${path.relative(ROOT, path.join(evidence, "verdict.json"))}`);
+  log(WIRING_NOTE);
   return exitCode(verdict, options.failGate);
 }
 

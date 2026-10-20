@@ -21,6 +21,7 @@
 //   npm run hub:realtest -- --no-grade                     # skip the Sonnet grader (rule metrics only)
 //   npm run hub:realtest -- --grade-only evidence/realtest/<run>   # grade a finished run again
 //   npm run hub:realtest -- --keep                         # keep the temporary HOME afterwards
+//   npm run hub:realtest -- --claude-config ~/claude-acct-2   # more Claude accounts Ash signed in himself (repeatable)
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -31,6 +32,7 @@ import path from "node:path";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
+import { benchAccounts, claudeConfigArgs, latestReadings, limitedFiles, startCheck, watchAccounts, writeAccounts } from "./hub-realtest-accounts.mjs";
 
 const REAL_HOME = os.homedir();
 export const DEV_CLAUDE_CONFIG = path.join(REAL_HOME, ".monocode-hub-dev/claude-config");
@@ -80,6 +82,7 @@ export function parseArgs(argv) {
     maxTurns: Number(value("--max-turns", "0")) || null,
     maxMinutes: Number(value("--max-minutes", "0")) || null,
     maxRequests: Number(value("--max-requests", "0")) || null,
+    claudeConfigs: claudeConfigArgs(argv),
   };
 }
 
@@ -205,7 +208,24 @@ async function main() {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
     return gradeRun(path.resolve(options.gradeOnly), { claudeConfig: DEV_CLAUDE_CONFIG });
   }
-  const spec = readJson(options.scenarios);
+  await runBench(options);
+  return 0;
+}
+
+/**
+ * The bench: a dev copy under a temporary HOME with the test project, the stub Ash OS and the window's driver, then the
+ * scenarios, then the evidence. `hooks` let another runner use the same bench (scripts/hub-realconv.mjs):
+ *  - spec: the run's spec object instead of reading options.scenarios;
+ *  - evidenceDir: where under the repo the run's folder goes (default evidence/realtest);
+ *  - routedAgents: the agents run on a custom model through the hub's router, so the Claude login is only needed for
+ *    the app's helper calls and its account limits don't gate the run (they are still read and logged when reachable);
+ *  - afterReady(ctx): once the hub is ready and its defaults are set (add a custom model, pick it);
+ *  - play(ctx, {runScenario, stopped}): replaces the scenario loop and returns the results; the realtest grader is not
+ *    run (the caller judges).
+ * Resolves with {id, evidence, results, stopReason}.
+ */
+export async function runBench(options, hooks = {}) {
+  const spec = hooks.spec ?? readJson(options.scenarios);
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
     maxMinutes: options.maxMinutes ?? spec.budget?.maxMinutes ?? 110,
@@ -215,9 +235,9 @@ async function main() {
     stopAtFiveHour: spec.budget?.stopAtFiveHour ?? 0.85,
     stopAtSevenDay: spec.budget?.stopAtSevenDay ?? 0.7,
   };
-  const scenarios = spec.scenarios.filter((s) => !options.only.length || options.only.includes(s.id));
+  const scenarios = hooks.play ? [] : spec.scenarios.filter((s) => !options.only.length || options.only.includes(s.id));
   const id = runId();
-  const evidence = path.join(ROOT, "evidence/realtest", id);
+  const evidence = path.resolve(ROOT, hooks.evidenceDir ?? "evidence/realtest", id);
   const state = path.join(evidence, "claude");
   fs.mkdirSync(state, { recursive: true });
   // Canonical (macOS's /var is /private/var): the app, git and Claude all report real paths, and the stub's project
@@ -232,7 +252,7 @@ async function main() {
   const started = Date.now();
   const deadline = started + budget.maxMinutes * 60_000;
   const log = (line) => {
-    const text = `[realtest ${new Date().toISOString().slice(11, 19)}] ${line}`;
+    const text = `[${hooks.label ?? "realtest"} ${new Date().toISOString().slice(11, 19)}] ${line}`;
     console.log(text);
     fs.appendFileSync(path.join(evidence, "run.log"), `${text}\n`);
   };
@@ -245,6 +265,8 @@ async function main() {
   let jobsTimer = null;
   let pumpTimer = null;
   let stopReason = null;
+  let results = [];
+  let accountList = [];
 
   const cleanup = async () => {
     clearInterval(jobsTimer);
@@ -336,7 +358,7 @@ async function main() {
     dataDir = path.join(home, "Library/Application Support", slot.identifier);
     db = path.join(dataDir, "monocode.db");
     log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
-    log(`budget: ${budget.maxTurns} model turns, ${budget.maxRequests} model requests, ${budget.maxMinutes} min; ${scenarios.length} scenarios`);
+    log(`budget: ${budget.maxTurns} model turns, ${budget.maxRequests} model requests, ${budget.maxMinutes} min; ${hooks.play ? "the caller's scenes" : `${scenarios.length} scenarios`}`);
 
     // -- the temporary HOME: the dev copies' Claude login and git identity, nothing of the real home's ---------------------
     if (!fs.existsSync(DEV_CLAUDE_CONFIG)) throw new Error(`${DEV_CLAUDE_CONFIG} is missing: sign a dev copy's Claude in first`);
@@ -352,26 +374,40 @@ async function main() {
       path.join(home, ".gitconfig"),
       "[user]\n\tname = Tally Agents\n\temail = agents@tally.invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
     );
-    const login = spawnSync(path.join(REAL_HOME, ".local/bin/claude"), ["auth", "status"], {
-      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: DEV_CLAUDE_CONFIG, CLAUDE_SECURESTORAGE_CONFIG_DIR: DEV_CLAUDE_CONFIG },
-      encoding: "utf8",
-    });
-    const status = (() => {
+    // Every Claude account the run may use (E5): the shared dev login first, then any folder Ash signed in himself and
+    // named with --claude-config. Each is checked for its login and its use; the run starts when any has room.
+    const accounts = benchAccounts(DEV_CLAUDE_CONFIG, options.claudeConfigs ?? []);
+    const loginOf = (config) => {
+      const login = spawnSync(path.join(REAL_HOME, ".local/bin/claude"), ["auth", "status"], {
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_SECURESTORAGE_CONFIG_DIR: config },
+        encoding: "utf8",
+      });
       try {
         return JSON.parse(login.stdout);
       } catch {
         return {};
       }
-    })();
-    if (!status.loggedIn) throw new Error("the dev Claude login isn't reachable under the temporary HOME (claude auth status says logged out)");
-    log(`claude login reachable under the temporary HOME (${status.authMethod}, ${status.subscriptionType})`);
-    // The login is Ash's own account, shared with his work: don't start a run it can't afford.
-    const use = accountUse(home);
-    fs.writeFileSync(path.join(evidence, "account-before.json"), JSON.stringify(use, null, 2));
-    log(`account use: 5-hour ${pctOf(use.fiveHour)}, 7-day ${pctOf(use.sevenDay)}${use.status ? ` (${use.status})` : ""}`);
-    if (use.status === "rejected") throw new Error("the account is at its limit right now; try after it resets");
-    if (use.fiveHour != null && use.fiveHour >= budget.startBelowFiveHour)
-      throw new Error(`the account's 5-hour use is ${pctOf(use.fiveHour)} (run needs it under ${pctOf(budget.startBelowFiveHour)}); Ash's own work shares it`);
+    };
+    const readings = accounts.map((account) => {
+      const login = loginOf(account.config);
+      if (login.loggedIn) log(`claude account ${account.n} signed in under the temporary HOME (${login.authMethod}, ${login.subscriptionType}): ${account.config}`);
+      else log(`claude account ${account.n} isn't signed in: ${account.config}`);
+      // The login is Ash's own account, shared with his work: one tiny Haiku call reads its use.
+      return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
+    });
+    const status = { loggedIn: readings.some((r) => r.loggedIn) };
+    if (!status.loggedIn && !hooks.routedAgents) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
+    if (!status.loggedIn) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
+    const use = readings[0];
+    fs.writeFileSync(path.join(evidence, "account-before.json"), JSON.stringify({ ...use, accounts: accounts.map((a, i) => ({ ...a, ...readings[i] })) }, null, 2));
+    for (const [i, reading] of readings.entries()) log(`account ${i + 1} use: 5-hour ${pctOf(reading.fiveHour)}, 7-day ${pctOf(reading.sevenDay)}${reading.status ? ` (${reading.status})` : ""}`);
+    // A run whose agents are on a custom model only spends Claude on helper calls, so its limits are logged, not enforced.
+    const checked = startCheck(accounts, hooks.routedAgents ? readings.map((r) => ({ ...r, fiveHour: null, sevenDay: null, status: null })) : readings, budget);
+    if (!checked.ok && !hooks.routedAgents)
+      throw new Error(`no Claude account has room to start (each must be under ${pctOf(budget.startBelowFiveHour)} of its 5-hour window; Ash's own work shares them): ${checked.list.map((a) => `account ${a.n} ${a.out}`).join("; ")}`);
+    accountList = checked.list;
+    writeAccounts(state, accountList);
+    if (checked.active) log(`new Claude chats go to account ${checked.active.n}${accounts.length > 1 ? ` of ${accounts.length}` : ""}`);
 
     // -- the test project ------------------------------------------------------------------------------------------------
     fs.cpSync(TEMPLATE, project, { recursive: true });
@@ -550,14 +586,24 @@ async function main() {
     pumpTimer = setInterval(() => {
       void pump();
       const now = usageOf(readNdjson(path.join(state, "usage.ndjson")));
-      const limits = readNdjson(path.join(state, "ratelimits.ndjson"));
-      const fiveHour = limits.filter((l) => l.fiveHour != null).at(-1)?.fiveHour ?? null;
-      const sevenDay = limits.filter((l) => l.sevenDay != null).at(-1)?.sevenDay ?? null;
-      const limited = fs.existsSync(path.join(state, "limited"));
+      // Every account's newest reading and limit file: an account that runs out sits out, new Claude processes go to
+      // the next one, and the run stops only when every account is out (E5, hub-realtest-accounts.mjs).
+      const limitedNow = limitedFiles(state, accountList);
+      const watched = watchAccounts(
+        accountList,
+        hooks.routedAgents ? accountList.map(() => ({})) : latestReadings(readNdjson(path.join(state, "ratelimits.ndjson")), accountList.length),
+        limitedNow,
+        budget,
+      );
+      if (JSON.stringify(watched.list) !== JSON.stringify(accountList)) {
+        accountList = watched.list;
+        writeAccounts(state, accountList);
+        for (const a of accountList.filter((x) => x.out)) log(`claude account ${a.n} is out: ${a.out}`);
+        if (watched.moved) log(`new Claude chats now go to account ${watched.moved.to} (account ${watched.moved.from} is out)`);
+      }
       const why =
-        limited ? `the account hit its limit (${fs.readFileSync(path.join(state, "limited"), "utf8").trim()})`
-        : fiveHour != null && fiveHour >= budget.stopAtFiveHour ? `the account's 5-hour use reached ${pctOf(fiveHour)}`
-        : sevenDay != null && sevenDay >= budget.stopAtSevenDay ? `the account's 7-day use reached ${pctOf(sevenDay)}`
+        // A run on a custom model only needs Claude for helper calls: it stops on a refusal, not on a missing login.
+        watched.stop && !(hooks.routedAgents && !Object.keys(limitedNow).length) ? watched.stop
         : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
         : Date.now() > deadline ? "time budget spent" : null;
       if (why && !fs.existsSync(path.join(state, "stop"))) {
@@ -656,7 +702,11 @@ async function main() {
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
-    const results = [];
+    if (hooks.afterReady) await hooks.afterReady(ctx);
+    if (hooks.play) {
+      results = await hooks.play(ctx, { runScenario, stopped: () => stopReason });
+      fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
+    }
     for (const scenario of scenarios) {
       if (stopReason && scenario.since !== "run") {
         results.push({ id: scenario.id, title: scenario.title, skipped: stopReason });
@@ -689,9 +739,11 @@ async function main() {
     const finalSnap = await act("snapshot").catch(() => null);
     if (finalSnap) fs.writeFileSync(path.join(evidence, "snapshot-final.json"), JSON.stringify(finalSnap, null, 2));
     const total = usage();
-    const after = accountUse(home);
+    // Every account that was signed in at the start is read again (one tiny Haiku call each).
+    const afterAll = accountList.map((a) => (a.reading?.loggedIn ? { n: a.n, config: a.config, ...accountUse(home, a.config) } : { n: a.n, config: a.config, loggedIn: false }));
+    const after = { ...(afterAll[0] ?? accountUse(home)), accounts: afterAll };
     fs.writeFileSync(path.join(evidence, "account-after.json"), JSON.stringify(after, null, 2));
-    log(`account use after: 5-hour ${pctOf(after.fiveHour)}, 7-day ${pctOf(after.sevenDay)}`);
+    for (const a of afterAll) log(`account ${a.n} use after: 5-hour ${pctOf(a.fiveHour)}, 7-day ${pctOf(a.sevenDay)}`);
     const summary = { runId: id, stopReason, account: { before: JSON.parse(fs.readFileSync(path.join(evidence, "account-before.json"), "utf8")), after }, build: stamp, slot: slot.slot, started: iso(started), ended: iso(Date.now()), wallMinutes: secs(Date.now() - started) / 60, usage: total, budget, results };
     fs.writeFileSync(path.join(evidence, "summary.json"), JSON.stringify(summary, null, 2));
     log(`done: ${total.turns} turns, ${total.requests} model requests, ${Math.round((Date.now() - started) / 60000)} min`);
@@ -699,11 +751,11 @@ async function main() {
     await ending.finish();
     ending.dispose();
   }
-  if (options.grade) {
+  if (options.grade && !hooks.play) {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
     await gradeRun(evidence, { claudeConfig: DEV_CLAUDE_CONFIG });
   }
-  return 0;
+  return { id, evidence, results, stopReason };
 }
 
 const pctOf = (value) => (value == null ? "?" : `${Math.round(value * 100)}%`);
@@ -712,7 +764,7 @@ const pctOf = (value) => (value == null ? "?" : `${Math.round(value * 100)}%`);
  * The shared account's use right now, from one tiny Haiku call's rate_limit_event (the CLI prints one per call):
  * {status, fiveHour, sevenDay} as fractions, null when the CLI didn't say.
  */
-export function accountUse(home) {
+export function accountUse(home, config = DEV_CLAUDE_CONFIG) {
   const run = spawnSync(
     path.join(REAL_HOME, ".local/bin/claude"),
     ["-p", "--model", "haiku", "--output-format", "stream-json", "--verbose", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "reply with the word ok"],
@@ -720,7 +772,7 @@ export function accountUse(home) {
       encoding: "utf8",
       timeout: 90_000,
       cwd: home,
-      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: DEV_CLAUDE_CONFIG, CLAUDE_SECURESTORAGE_CONFIG_DIR: DEV_CLAUDE_CONFIG, DISABLE_AUTOUPDATER: "1" },
+      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_SECURESTORAGE_CONFIG_DIR: config, DISABLE_AUTOUPDATER: "1" },
     },
   );
   const out = { at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
