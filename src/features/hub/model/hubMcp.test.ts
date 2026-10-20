@@ -280,13 +280,26 @@ describe("the fence round the Monos' home (decided 20 Oct: only the app writes t
     }
   });
 
-  it("also fences a dev copy's or the bench's own home, when its path can be a rule", () => {
+  it("also fences a dev copy's or the bench's own home, spaces and \"?\" included", () => {
     try {
       setMonoHomeRoot("/tmp/bench-home/monos");
       expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)", "Edit(//tmp/bench-home/monos/**)"]);
-      // A path with spaces (Application Support) never becomes a rule that might not parse; the daily home isn't doubled.
+      // A dev copy's home has a space (Application Support): it still gets its rule, as one list item.
       setMonoHomeRoot("/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos");
-      expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)"]);
+      expect(monoHomeDeniedTools()).toEqual([
+        "Edit(~/agent-memory/monos/**)",
+        "Edit(//Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos/**)",
+      ]);
+      // A space and a "?", like EXO's real folder.
+      setMonoHomeRoot("/Users/ash/Projects/boxin game?/monos/");
+      expect(monoHomeDeniedTools()[1]).toBe("Edit(//Users/ash/Projects/boxin game?/monos/**)");
+      // Each rule reaches Claude Code as one value of the comma-joined list.
+      expect(monoHomeDeniedTools().join(",").split(",")).toHaveLength(2);
+      // What would split the list or the rule never becomes one.
+      for (const bad of ["/tmp/a,b/monos", "/tmp/a(b)/monos", "/tmp/a\nb/monos", "relative/monos"]) {
+        setMonoHomeRoot(bad);
+        expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)"]);
+      }
       setMonoHomeRoot("/Users/ash/agent-memory/monos");
       expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)"]);
     } finally {

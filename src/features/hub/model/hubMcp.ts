@@ -63,10 +63,14 @@ export const MONO_HOME_FENCE = `The Monos' home (${MONO_HOME}/) is read-only for
 let extraHome: string | undefined;
 /**
  * Where this copy's Monos live, when it isn't the daily home (a dev copy's data folder, the bench's throwaway home),
- * from mono_home_info. Only a path without spaces becomes a rule (absolute: `//path`), so a rule never fails to parse.
+ * from mono_home_info. Written absolute (`//path`). Spaces and "?" are fine: the rule is one argv value and Claude Code
+ * reads a rule's parentheses whole (as in "Bash(git log:*)"), and "?" in the path still matches itself. A dev copy's
+ * own home is under "Application Support", so dropping spaced paths left every dev copy unfenced (Mac rehearsal, 21
+ * Oct). Only what would split the list or the rule (a comma, a parenthesis, a line break) keeps a path out.
  */
 export function setMonoHomeRoot(root: string | undefined): void {
-  extraHome = root && root.startsWith("/") && !/\s/.test(root) && !root.endsWith("/agent-memory/monos") ? root : undefined;
+  const path = root?.replace(/\/+$/, "");
+  extraHome = path && path.startsWith("/") && !/[,()\r\n]/.test(path) && !path.endsWith("/agent-memory/monos") ? path : undefined;
 }
 export function monoHomeDeniedTools(): string[] {
   const roots = [MONO_HOME, ...(extraHome ? [`/${extraHome}`] : [])];
