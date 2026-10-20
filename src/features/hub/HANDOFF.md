@@ -1,3 +1,24 @@
+# Update: 21 October 2026, one permanent home per Mono (branch cos/mono-homes)
+
+Decided 20 Oct (Grok Bot leadership, from Alfred's audit: 14 sets of Mono folders on the Mac, the live leads on the 15 Oct
+soul, chat ids only in WebView storage).
+- **Where Monos live** (`src-tauri/src/mono_home.rs`, `mono.rs resolved_root`): the daily app keeps every Mono in
+  `~/agent-memory/monos/<id>/` (SOUL.md, MEMORY.md, memory/, habits.json, chats.json, soul-template.md) with the roster in
+  `MONOS.json`. Dev copies keep `<app data>/monos`; `MONOCODE_MONOS_HOME` names a throwaway home. The first daily launch
+  copies (never moves) the old folder there, checked byte for byte, record in `.migration.json`; a clash stops it and the
+  app keeps the old folder that session. Every write is checked before saving (`check_write`). Ship backs the home up as
+  `monos-home/`.
+- **Roster and chat ids** (`monos/model/monoHome.ts`): MONOS.json is durable, the WebView copy a cache, reconciled before
+  the first render (a wiped WebView gets its Monos and chats back), then written through. Chat ids also go to
+  `<id>/chats.json`.
+- **Only the app writes there**: every hub chat is denied `Edit(~/agent-memory/monos/**)` (`hubMcp.ts`
+  `monoHomeDeniedTools`), and worker and Lead briefs say it in plain words (`MONO_HOME_FENCE`).
+- **Soul refresh** (`model/soulRefresh.ts`): a soul behind the app's template gets a proposed Bot change (Apply / Dismiss,
+  then Undo); hand edits are kept (see the file).
+- **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
+- **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
+  leadership can oversee it and set tasks, but isn't required."
+
 # Update: 20 October 2026, teams, not sub-chats (branch hub/10-monoteams)
 
 Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
