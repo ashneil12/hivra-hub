@@ -715,6 +715,7 @@ pub fn run() {
             mono::mono_save,
             mono::mono_archive,
             mono::mono_unarchive,
+            mono::mono_team_dir,
             portable::portable_info,
             portable::portable_mono_files,
             portable::portable_find_skills,

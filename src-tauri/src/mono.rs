@@ -16,6 +16,19 @@
 //! A Mono is not tied to a project, so its folder is named by its own id. One
 //! that was a project's Mono passes that project along until its old folder
 //! has moved under its id.
+//!
+//! A Mono that does work of its own, outside any project, has a team (Ash,
+//! 20 Oct: "something like coding team should be created for that mono"): a
+//! folder its workers run in, beside `monos/` rather than inside it.
+//!
+//! ```text
+//! <app data>/mono-teams/
+//! └── <mono id>/            its workers' folder: research, drafts, whatever
+//!                           they make; made the first time it delegates
+//! ```
+//!
+//! Not inside `monos/<id>/`: a ship backs up `monos/` (and a team's output can
+//! be large), and the Mono's file commands read only its own files there.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -28,6 +41,8 @@ const MONOS_DIR: &str = "monos";
 /// Where Monos lived before they had their name; moved on first use.
 const LEGACY_DIR: &str = "agents";
 const INDEX_FILE: &str = "index.json";
+/// Each Mono's own team folder, beside `monos/` (see the module docs).
+const TEAMS_DIR: &str = "mono-teams";
 const SOUL_FILE: &str = "SOUL.md";
 const MEMORY_FILE: &str = "MEMORY.md";
 const MEMORY_DIR: &str = "memory";
@@ -424,6 +439,30 @@ pub async fn mono_unarchive(app: AppHandle, mono: String, archive: String) -> Re
         .map_err(|e| e.to_string())?
 }
 
+/// A Mono's own team folder under `data`, made on first use. Only a Mono id
+/// names it, so it can never point outside `mono-teams/`.
+fn team_dir(data: &Path, mono: &str) -> Result<PathBuf, String> {
+    if !valid_id(mono) {
+        return Err("Not a Mono id".into());
+    }
+    let dir = data.join(TEAMS_DIR).join(mono);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// The folder a Mono's own team works in (`<app data>/mono-teams/<id>`),
+/// created if it isn't there yet. Each copy of the app has its own, since it
+/// lives in that copy's data folder.
+#[tauri::command]
+pub async fn mono_team_dir(app: AppHandle, mono: String) -> Result<String, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        team_dir(&data, &mono).map(|dir| dir.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +635,27 @@ mod tests {
         assert!(unarchive(&root, "mono-b", &name).is_err());
         assert!(archive(&root, "../x", "1").is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_monos_team_folder_sits_beside_monos_and_only_a_mono_id_names_it() {
+        let data = temp_root();
+        let team = team_dir(&data, "alfred").unwrap();
+        assert_eq!(team, data.join(TEAMS_DIR).join("alfred"));
+        assert!(team.is_dir());
+        // Made once; asking again finds the same folder and keeps what is in it.
+        std::fs::write(team.join("notes.md"), "kept").unwrap();
+        assert_eq!(team_dir(&data, "alfred").unwrap(), team);
+        assert_eq!(
+            std::fs::read_to_string(team.join("notes.md")).unwrap(),
+            "kept"
+        );
+        // Not under monos/: a ship's backup of monos/ never carries a team's work.
+        assert!(!team.starts_with(data.join(MONOS_DIR)));
+        assert!(team_dir(&data, "../x").is_err());
+        assert!(team_dir(&data, "").is_err());
+        assert!(team_dir(&data, "a/b").is_err());
+        std::fs::remove_dir_all(data).unwrap();
     }
 
     #[test]

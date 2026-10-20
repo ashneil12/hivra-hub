@@ -110,6 +110,9 @@ function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown
   return null;
 }
 
+/** Where this browser page's app data would be (a dev copy's data folder has its own name). */
+const DEV_DATA = "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.browser";
+
 mockWindows("main");
 const seen = new Set<string>();
 mockIPC(
@@ -135,6 +138,8 @@ mockIPC(
       return { status: "ok", body: JSON.stringify({ five_hour: { utilization: 3, resets_at: at(165) }, seven_day: { utilization: 99, resets_at: at((5 * 24 + 15) * 60) } }) };
     }
     if (cmd === "mono_archive") { const a = args as { mono: string; stamp: string }; return `${a.mono}-${a.stamp}`; }
+    // A Mono's own team folder (mono.rs mono_team_dir), in this page's stand-in data folder.
+    if (cmd === "mono_team_dir") return `${DEV_DATA}/mono-teams/${(args as { mono: string }).mono}`;
     // Dev only: delegation rows a browser test seeds (`monocode:dev-delegations`), as delegations_recent returns them;
     // `__devDelegationsChanged()` tells the app they changed, as delegations.rs does.
     if (cmd === "delegations_recent") {

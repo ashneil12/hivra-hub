@@ -45,8 +45,24 @@ export function useHubSelection(): HubSelection {
   return useSyncExternalStore(subscribe, read, read);
 }
 
-/** True when a hub view (not Monocode's own workspace) fills the main area. */
+/**
+ * A Mono's own team (monoTeams.ts) is the item `team:<mono id>`, with no project selected (Today's): it isn't a project,
+ * so the strip highlights none and the Monos rail marks the Mono instead.
+ */
+const MONO_TEAM_ITEM = "team:";
+
+export function monoTeamItem(monoId: string): string {
+  return `${MONO_TEAM_ITEM}${monoId}`;
+}
+
+/** The Mono whose own team is selected, if one is. */
+export function monoTeamInView(sel: HubSelection): string | undefined {
+  return sel.item.startsWith(MONO_TEAM_ITEM) ? sel.item.slice(MONO_TEAM_ITEM.length) || undefined : undefined;
+}
+
+/** True when a hub view (not Monocode's own workspace) fills the main area: a coding team or a Mono's team is a workspace. */
 export function hubSurfaceOpen(sel: HubSelection): boolean {
+  if (monoTeamInView(sel)) return false;
   return sel.project === "today" || sel.item !== "coding-team";
 }
 
@@ -69,4 +85,24 @@ export function setCodingTeamOpener(open: (projectId: string, target?: CodingTea
 export function openCodingTeam(projectId: string, target?: CodingTeamTarget): void {
   if (codingTeamOpener) codingTeamOpener(projectId, target);
   else setHubSelection({ project: projectId, item: "coding-team" });
+}
+
+/**
+ * Opening a Mono's own team (monoTeams.ts): its folder's workspace with the Sessions list, the Mono's chat pinned on top
+ * and its workers under it, on the Mono's chat by default (`owner`) or the chat Ash was last in there. The app lends the
+ * way; without it (a browse-only page) it only selects the item.
+ */
+export type MonoTeamTarget = { owner?: boolean };
+let monoTeamOpener: ((monoId: string, target?: MonoTeamTarget) => void) | undefined;
+
+export function setMonoTeamOpener(open: (monoId: string, target?: MonoTeamTarget) => void): () => void {
+  monoTeamOpener = open;
+  return () => {
+    if (monoTeamOpener === open) monoTeamOpener = undefined;
+  };
+}
+
+export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
+  if (monoTeamOpener) monoTeamOpener(monoId, target);
+  else setHubSelection({ project: "today", item: monoTeamItem(monoId) });
 }
