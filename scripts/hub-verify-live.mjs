@@ -61,8 +61,9 @@
 //   22. the fix goes to Verify's coding team: a worker of its own in the project is refused, its brief goes to the Lead,
 //       whose worker sits under the brief and nests under the Lead in the coding team; the Mono's chat shows one
 //       "Briefed Verify coding team" line, the Monos rail lists no sub-chats, and the Lead's report comes back to it;
-//   23. its own work goes to its own team: the worker runs in <app data>/mono-teams/<mono id>, whose Sessions list pins
-//       the Mono's chat with that worker under it (and nothing of Verify's), and its report comes back to the Mono.
+//   23. its own work goes to its own team: the worker runs in <app data>/mono-teams/<mono id> (its row's project is that
+//       folder, no hub project), whose Sessions list pins the Mono's chat with that worker under it (and nothing of
+//       Verify's), the rail's line counts it, and its report comes back to the Mono.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -2521,7 +2522,8 @@ async function main() {
       !!mtOwn &&
       mtOwn.owner_session === mtChat &&
       mtOwn.child_session?.startsWith(`app-${mtChat}-`) &&
-      !mtOwn.project &&
+      // No hub project: a folder outside the hub's projects stays a path on the row (App.tsx launch).
+      mtOwn.project === teamFolder &&
       mtEvidence.own?.cwd === teamFolder &&
       mtEvidence.teamFolder?.exists &&
       mtEvidence.own?.team === `${MT_MONO}'s team` &&
