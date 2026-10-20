@@ -72,24 +72,26 @@ impl Service {
         })
     }
 
-    pub fn view(&self) -> View {
-        View {
-            settings: settings::load(&self.dir),
+    /// What the page shows; a damaged settings file is an error the page shows, never empty settings.
+    pub fn view(&self) -> Result<View, String> {
+        Ok(View {
+            settings: settings::load(&self.dir)?,
             launcher: self.launcher.clone(),
             subcommand: SUBCOMMAND,
             kind: crate::instance::kind(),
-        }
+        })
     }
 
+    /// Read, edit and write `connectors.json`. A file that can't be read is refused, never saved over.
     fn change(
         &self,
         edit: impl FnOnce(&mut Settings) -> Result<(), String>,
     ) -> Result<View, String> {
         let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-        let mut current = settings::load(&self.dir);
+        let mut current = settings::load(&self.dir)?;
         edit(&mut current)?;
         settings::save(&self.dir, &current)?;
-        Ok(self.view())
+        self.view()
     }
 
     fn signed_in(
@@ -361,7 +363,7 @@ async fn blocking<T: Send + 'static>(
 
 #[tauri::command]
 pub async fn connectors_state() -> Result<View, String> {
-    blocking(|s| Ok(s.view())).await
+    blocking(|s| s.view()).await
 }
 
 #[tauri::command]
@@ -513,7 +515,7 @@ mod tests {
                 .contains_key("monocode-hub:connector:github"),
             "signed out: gone from the store"
         );
-        let after = svc.view().settings.connectors["github"].clone();
+        let after = svc.view().unwrap().settings.connectors["github"].clone();
         assert!(!after.signed_in);
         assert_eq!(
             after.allow,
@@ -602,9 +604,39 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_that_cant_be_read_is_never_saved_over() {
+        let (svc, _) = service();
+        std::fs::create_dir_all(&svc.dir).unwrap();
+        let path = super::super::settings::path(&svc.dir);
+        let damaged =
+            r#"{"composio": true, "connectors": {"github": {"signedIn": true, "allow": ["/p/hiv"#;
+        std::fs::write(&path, damaged).unwrap();
+        let err = svc.set_composio(false).unwrap_err();
+        assert!(err.contains("connectors.json"), "{err}");
+        assert!(svc.set_allow("github", vec![EVERYWHERE.into()]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            damaged,
+            "kept for Ash to fix"
+        );
+        // The page says so instead of showing nothing connected, and a session's launch says the same.
+        assert!(svc.view().unwrap_err().contains("damaged"));
+        let launch = super::super::launch::tests::signed(svc.store.as_ref(), "github", "m", &[]);
+        let err = prepare(&launch, &svc.dir, svc.store.as_ref()).unwrap_err();
+        assert!(err.contains("damaged"), "{err}");
+        // A missing file is simply nothing connected yet.
+        std::fs::remove_file(&path).unwrap();
+        assert!(svc.view().unwrap().settings.connectors.is_empty());
+        let _ = std::fs::remove_dir_all(&svc.dir);
+    }
+
+    #[test]
     fn mono_choices_and_composio_round_trip() {
         let (svc, _) = service();
-        assert!(!svc.view().settings.composio, "Composio is off by default");
+        assert!(
+            !svc.view().unwrap().settings.composio,
+            "Composio is off by default"
+        );
         assert!(svc.set_composio(true).unwrap().settings.composio);
         let view = svc
             .set_mono(
@@ -671,7 +703,7 @@ mod tests {
             .collect();
         // 2. The settings file and the view.
         assert!(!every_file(&svc.dir).contains(SENTINEL));
-        assert!(!serde_json::to_string(&svc.view())
+        assert!(!serde_json::to_string(&svc.view().unwrap())
             .unwrap()
             .contains(SENTINEL));
         // 3. The launch, exactly as Claude Code starts it, with its log captured.

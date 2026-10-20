@@ -142,12 +142,28 @@ pub fn path(dir: &Path) -> PathBuf {
     dir.join("connectors.json")
 }
 
-/// A missing or unreadable file is "nothing connected yet": every connector stays off.
-pub fn load(dir: &Path) -> Settings {
-    std::fs::read_to_string(path(dir))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+/// A missing file is "nothing connected yet": every connector stays off. A file that is there but can't be read or
+/// parsed is an error, never an empty one: saving over it would wipe every connector's settings.
+pub fn load(dir: &Path) -> Result<Settings, String> {
+    let file = path(dir);
+    let raw = match std::fs::read_to_string(&file) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Settings::default())
+        }
+        Err(error) => {
+            return Err(format!(
+                "The connector settings ({}) can't be read: {error}. Nothing was changed.",
+                file.display()
+            ))
+        }
+    };
+    serde_json::from_str(&raw).map_err(|error| {
+        format!(
+            "The connector settings ({}) are damaged ({error}), so connectors stay off and nothing is saved over them. Fix or remove that file.",
+            file.display()
+        )
+    })
 }
 
 /// Written whole to a temporary file, then renamed over: the launcher never reads half a file. Owner-only.
@@ -304,23 +320,24 @@ mod tests {
     #[test]
     fn the_file_round_trips_and_is_owner_only() {
         let dir = std::env::temp_dir().join(format!("mc-conn-{}", uuid::Uuid::new_v4()));
-        assert_eq!(load(&dir), Settings::default());
+        assert_eq!(
+            load(&dir),
+            Ok(Settings::default()),
+            "missing means nothing on"
+        );
         let mut s = settings("github", on(&[HIVRA]));
         s.composio = true;
         save(&dir, &s).unwrap();
-        assert_eq!(load(&dir), s);
+        assert_eq!(load(&dir), Ok(s));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(path(&dir)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // Damaged is an error (the launcher refuses, the page shows it), never "nothing on" to be saved over.
         std::fs::write(path(&dir), "{not json").unwrap();
-        assert_eq!(
-            load(&dir),
-            Settings::default(),
-            "unreadable means nothing on"
-        );
+        assert!(load(&dir).unwrap_err().contains("damaged"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

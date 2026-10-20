@@ -151,7 +151,7 @@ pub fn prepare(
         &args.projects,
         args.sig.as_deref(),
     )?;
-    let settings = settings::load(dir);
+    let settings = settings::load(dir)?;
     settings::allowed(&settings, entry, &args.mono, &args.projects)
         .map_err(|denied| denied.message(&entry.name))?;
     let mut login = if entry.needs_login() {
