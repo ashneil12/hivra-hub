@@ -14,16 +14,22 @@ type Files = {
   write(monoId: string, path: AgentFilePath, text: string, expectedHash?: string): Promise<unknown>;
 };
 
-export type LineFix = { id: string; matches: RegExp; line: string; summary: string };
+/** `remembers`: what the Mono will now know, to follow "will now remember that" in one sentence. */
+export type LineFix = { id: string; matches: RegExp; line: string; remembers: string };
 
 export const LINE_FIXES: readonly LineFix[] = [
   {
     id: "grok-bot-not-required",
     matches: /Grok Bot is no longer used/i,
     line: `- 2026-10-20 · ${GROK_BOT_LINE}`,
-    summary: "Grok Bot: not required, may oversee and set tasks",
+    remembers: "Grok Bot isn't required, but may oversee and set tasks",
   },
 ];
+
+/** "Chief of Staff will now remember that Grok Bot isn't required, but may oversee and set tasks." */
+export function memoryFixLine(name: string, fix: Pick<LineFix, "remembers">): string {
+  return `${name} will now remember that ${fix.remembers.replace(/[.\s]+$/, "")}.`;
+}
 
 /** Rewrites each matching line in every Mono's MEMORY.md. Returns "<mono>:<fix>" for each rewrite. */
 export async function applyMemoryLineFixes(
@@ -54,7 +60,8 @@ export async function applyMemoryLineFixes(
           id: `memory-fix:${mono.id}:${fix.id}`,
           bot: name,
           day: "Today",
-          line: `${name}'s memory: ${fix.summary}`,
+          line: memoryFixLine(name, fix),
+          undoneText: `Undone: ${name}'s memory is back to how it was.`,
           now: "Grok Bot is no longer used",
           after: fix.line.replace(/^- [\d-]+ · /, ""),
           monoId: mono.id,

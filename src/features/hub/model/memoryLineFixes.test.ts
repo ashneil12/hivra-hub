@@ -3,7 +3,7 @@
 // runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required." Only that line
 // changes, and Undo puts it back. The Mono files are a stand-in for the Rust mono_read / mono_save commands.
 import { beforeEach, describe, expect, it } from "vitest";
-import { setBotFiles, undoBotChange } from "./botChanges";
+import { setBotFiles, undoBotChange, findBotChange } from "./botChanges";
 import { applyMemoryLineFixes } from "./memoryLineFixes";
 import { GROK_BOT_LINE, teamMemorySeed } from "./teamSouls";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
@@ -53,6 +53,10 @@ describe("the Grok Bot memory line", () => {
       "",
     ]);
     expect(f.files.get("frank/MEMORY.md")).toBe("- 2026-10-19 · something else\n");
+    // The row reads as one sentence about what the Mono will now know (Critiquito), and Undo's as one too.
+    const row = findBotChange("memory-fix:chief-of-staff:grok-bot-not-required")!;
+    expect(row.line).toBe("Chief of Staff will now remember that Grok Bot isn't required, but may oversee and set tasks.");
+    expect(row.undoneText).toBe("Undone: Chief of Staff's memory is back to how it was.");
     // Again: nothing left to fix.
     expect(await applyMemoryLineFixes(f, monos)).toEqual([]);
     await undoBotChange(["memory-fix:chief-of-staff:grok-bot-not-required"]);

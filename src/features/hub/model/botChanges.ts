@@ -40,6 +40,10 @@ export type BotChange = {
   details?: string[];
   /** Only a note of something a bot left alone on purpose: nothing changed, so there is no Undo. */
   note?: boolean;
+  /** What the row reads once undone, as one natural sentence (e.g. "Undone: Hivra lead's soul is back to how it was."). */
+  undoneText?: string;
+  /** A button that opens a Mono's chat with `text` typed in, not sent (a skipped soul's "Ask Alfred"). */
+  ask?: { monoId: string; label: string; text: string };
   /** When it was made (epoch ms), for Today's "Since …" paragraph. Rows from before this was kept have none. */
   at?: number;
 };
@@ -194,7 +198,7 @@ export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & 
 }
 
 /** Something a bot left alone on purpose, said in plain words: a row with no Undo (there is nothing to put back). */
-export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now" | "after" | "details" | "monoId">): void {
+export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now" | "after" | "details" | "monoId" | "ask">): void {
   list = [{ ...note, day: "Today", note: true }, ...list.filter((c) => c.id !== note.id)];
   saveReal();
   changed();
@@ -283,8 +287,9 @@ async function recordStep(r: BotChange, step: "undo" | "redo"): Promise<void> {
 }
 
 /** "Back to 12 steps (was 8 steps)": what an undone change reads like. */
-export function undoneLine(c: Pick<BotChange, "now" | "after">): string {
-  return `Back to ${c.now} (was ${c.after})`;
+export function undoneLine(c: Pick<BotChange, "now" | "after" | "undoneText">): string {
+  if (c.undoneText) return c.undoneText;
+  return /^as it was$/i.test(c.now.trim()) ? "Undone: back to how it was." : `Undone: back to \u201c${c.now.trim()}\u201d.`;
 }
 
 /**

@@ -22,6 +22,7 @@ import {
   soulSections,
   soulTemplates,
   templateFingerprint,
+  undoneSoulLine,
   type SoulFiles,
   type SoulTemplate,
 } from "./soulRefresh";
@@ -148,6 +149,7 @@ export async function mergeSoul(
     line,
     now: "Its soul as it was",
     after: "Its soul with the app's update merged in",
+    undoneText: undoneSoulLine(t.name),
     details,
     monoId: input.mono,
     file: "SOUL.md",

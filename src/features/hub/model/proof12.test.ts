@@ -101,7 +101,7 @@ describe("Undo in Bot changes really reverts the bot's rules", () => {
     expect(f.disk.get("frank|SOUL.md")).toBe(before);
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc1");
     expect(row && row.kind === "one" && row.change.undone).toBe(true);
-    expect(b.undoneLine({ now: "12 steps", after: "8 steps" })).toBe("Back to 12 steps (was 8 steps)");
+    expect(b.undoneLine({ now: "12 steps", after: "8 steps" })).toBe("Undone: back to “12 steps”.");
     vi.resetModules();
     const again = await import("./botChanges");
     const kept = again.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc1");

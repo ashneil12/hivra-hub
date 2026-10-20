@@ -253,6 +253,16 @@ export function templateFingerprint(text: string): string {
 }
 
 /** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name and pointing to Alfred, who looks after souls. */
+/** The skipped row's button: Alfred's chat, with the ask typed in for Ash to send. */
+export function askAlfred(name: string): { monoId: string; label: string; text: string } {
+  return { monoId: "alfred", label: "Ask Alfred", text: `merge ${name}'s update` };
+}
+
+/** A soul row once undone. */
+export function undoneSoulLine(name: string): string {
+  return `Undone: ${name}'s soul is back to how it was.`;
+}
+
 export function skippedLine(name: string): string {
   return `${name}'s soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.`;
 }
@@ -374,7 +384,7 @@ export async function refreshSouls(
         if (!match) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
-            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
+            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is", ask: askAlfred(name) });
             skipped.push(monoId);
           }
           continue;
@@ -409,6 +419,7 @@ export async function refreshSouls(
         line: changes > 1 ? `${sentences[0]} (and ${changes - 1} more)` : sentences[0],
         now: "Its soul as it was",
         after: "Its soul on the app's newer version",
+        undoneText: undoneSoulLine(name),
         details: sentences,
         monoId,
         file: "SOUL.md",
