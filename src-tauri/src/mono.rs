@@ -1,15 +1,19 @@
-//! Each Mono keeps its files in the app's data folder, never in a repo: it
-//! works in repos with full file access, so a soul kept there could be
-//! rewritten outside the app's controlled CLI or by a pull request.
+//! Each Mono keeps its files out of every repo: it works in repos with full file access, so a soul kept there could
+//! be rewritten outside the app's controlled CLI or by a pull request. The daily app keeps them in one permanent home,
+//! `~/agent-memory/monos/` (mono_home.rs: the layout, the one-time move there and the checks on every write); a dev
+//! copy keeps its own in its data folder. Only the app writes there; workers are denied edits under it (hubMcp.ts).
 //!
 //! ```text
-//! <app data>/monos/
+//! <monos root>/             ~/agent-memory/monos for the daily app, <app data>/monos for a dev copy
+//! ├── MONOS.json            the roster (mono.ts keeps a copy in the WebView as a cache)
 //! ├── index.json            from when each project had its own Mono:
 //! │                         folder id → the project keys it answered for
 //! └── <mono id>/
 //!     ├── SOUL.md           who it is; edited by the user or at their request
 //!     ├── MEMORY.md         what it has learned; loads into every turn
 //!     ├── habits.json       what it does on its own, on a schedule
+//!     ├── chats.json        its chat id, and the ones it had before
+//!     ├── soul-template.md  the app's soul template as it last took it (soul refresh, soulRefresh.ts)
 //!     └── memory/           topic notes read on demand, and archive.md
 //! ```
 //!
@@ -35,7 +39,9 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
+
+use crate::mono_home::{self, CHATS_FILE, ROSTER_FILE, SOUL_TEMPLATE_FILE};
 
 const MONOS_DIR: &str = "monos";
 /// Where Monos lived before they had their name; moved on first use.
@@ -98,10 +104,18 @@ pub struct AgentFiles {
 }
 
 /// The files the app reads and writes for an agent, relative to its folder:
-/// SOUL.md, MEMORY.md, habits.json, or one `memory/<name>.md`. Nothing nested, nothing
-/// hidden, so a path from the agent's CLI can never leave the folder.
+/// SOUL.md, MEMORY.md, habits.json, chats.json, soul-template.md, or one `memory/<name>.md`.
+/// Nothing nested, nothing hidden, so a path from the agent's CLI can never leave the folder.
 fn resolve_file(dir: &Path, relative: &str) -> Result<PathBuf, String> {
-    if relative == SOUL_FILE || relative == MEMORY_FILE || relative == HABITS_FILE {
+    if [
+        SOUL_FILE,
+        MEMORY_FILE,
+        HABITS_FILE,
+        CHATS_FILE,
+        SOUL_TEMPLATE_FILE,
+    ]
+    .contains(&relative)
+    {
         return Ok(dir.join(relative));
     }
     let name = relative
@@ -138,14 +152,64 @@ fn topics(dir: &Path) -> Vec<String> {
     names
 }
 
-fn monos_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+/// This copy's `<app data>/monos`, after moving an older `agents/` folder to it.
+fn app_monos(data: &Path) -> PathBuf {
     let root = data.join(MONOS_DIR);
     let legacy = data.join(LEGACY_DIR);
     if !root.exists() && legacy.join(INDEX_FILE).is_file() {
         let _ = std::fs::rename(&legacy, &root);
     }
-    Ok(root)
+    root
+}
+
+/// The root this process settled on: worked out once, so it never switches mid-session.
+static ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where this copy's Monos live (mono_home.rs `choose_root`). The daily app's first call copies its Monos from
+/// `<app data>/monos` into the permanent home; if that can't be done safely, it keeps using the old folder this
+/// session and says why.
+pub fn resolved_root(data: &Path) -> PathBuf {
+    let mut settled = ROOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(root) = settled.as_ref() {
+        return root.clone();
+    }
+    let app_root = app_monos(data);
+    let override_root = std::env::var_os(mono_home::HOME_ENV).map(PathBuf::from);
+    let daily = crate::instance::kind() == crate::instance::Kind::Daily;
+    let home = dirs::home_dir();
+    let chosen = mono_home::choose_root(daily, home.as_deref(), override_root.as_deref(), data);
+    let root = if chosen == app_root {
+        app_root
+    } else {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "0".into());
+        match mono_home::ensure_home(&chosen, &app_root, &stamp) {
+            Ok(mono_home::HomeState::Migrated(moved)) => {
+                eprintln!(
+                    "Copied {} Monos ({} files) to {}; {} is kept as it was",
+                    moved.monos.len(),
+                    moved.files.len(),
+                    chosen.display(),
+                    app_root.display()
+                );
+                chosen
+            }
+            Ok(mono_home::HomeState::Ready) => chosen,
+            Err(error) => {
+                eprintln!("Monos stay in {} this session: {error}", app_root.display());
+                app_root
+            }
+        }
+    };
+    *settled = Some(root.clone());
+    root
+}
+
+fn monos_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(resolved_root(&data))
 }
 
 pub fn content_hash(text: &str) -> String {
@@ -295,6 +359,7 @@ fn save(
     if text.len() > FILE_MAX {
         return Err(format!("{relative} is too large"));
     }
+    mono_home::check_write(relative, text)?;
     let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
     let dir = agent_dir(root, mono, legacy_project)?;
     let path = resolve_file(&dir, relative)?;
@@ -357,6 +422,113 @@ pub async fn mono_save(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeInfo {
+    /// The folder every Mono lives in this session.
+    pub root: String,
+    /// True for the permanent home (`~/agent-memory/monos` or a named override), false for `<app data>/monos`.
+    pub permanent: bool,
+    /// What the one-time move recorded, once it ran.
+    pub migration: Option<serde_json::Value>,
+}
+
+fn home_info(root: &Path, data: &Path) -> HomeInfo {
+    HomeInfo {
+        root: root.to_string_lossy().into_owned(),
+        permanent: root != data.join(MONOS_DIR),
+        migration: std::fs::read_to_string(root.join(mono_home::MIGRATION_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok()),
+    }
+}
+
+#[tauri::command]
+pub async fn mono_home_info(app: AppHandle) -> Result<HomeInfo, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || home_info(&resolved_root(&data), &data))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn roster_load(root: &Path) -> Result<AgentFile, String> {
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    let text = read_optional(&root.join(ROSTER_FILE))?;
+    Ok(AgentFile {
+        hash: content_hash(text.as_deref().unwrap_or("")),
+        text,
+    })
+}
+
+/// The roster, checked (every id a Mono id, none twice) and saved over `expected_hash` when one is given.
+fn roster_save(root: &Path, text: &str, expected_hash: Option<&str>) -> Result<String, String> {
+    if text.len() > FILE_MAX {
+        return Err("MONOS.json is too large".into());
+    }
+    mono_home::check_write(ROSTER_FILE, text)?;
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let path = root.join(ROSTER_FILE);
+    if let Some(expected) = expected_hash {
+        let current = read_optional(&path)?.unwrap_or_default();
+        if content_hash(&current) != expected {
+            return Err(CONFLICT.into());
+        }
+    }
+    write_atomic(&path, text)?;
+    Ok(content_hash(text))
+}
+
+#[tauri::command]
+pub async fn mono_roster_load(app: AppHandle) -> Result<AgentFile, String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || roster_load(&root))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mono_roster_save(
+    app: AppHandle,
+    text: String,
+    expected_hash: Option<String>,
+) -> Result<String, String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        roster_save(&root, &text, expected_hash.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonoRenamed {
+    pub folder: mono_home::Renamed,
+    pub refs: mono_home::RefsRenamed,
+}
+
+/// A Mono takes a new id (ash-lead → hub-lead, monoRename.ts): its folder moves, its old soul is kept in memory/, and
+/// its rows in the database follow it. The roster and the WebView's own records are the caller's.
+#[tauri::command]
+pub async fn mono_rename(
+    app: AppHandle,
+    store: State<'_, crate::session_store::SessionStore>,
+    from: String,
+    to: String,
+) -> Result<MonoRenamed, String> {
+    let root = monos_root(&app)?;
+    let (from_id, to_id) = (from.clone(), to.clone());
+    let folder = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+        mono_home::rename_mono_folder(&root, &from_id, &to_id)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let refs = mono_home::rename_refs(&mut *store.lock_conn()?, &from, &to)?;
+    Ok(MonoRenamed { folder, refs })
 }
 
 /// Where retired Monos' folders go. Hidden from `load` (not a valid id), never deleted by the app.
@@ -814,5 +986,83 @@ mod tests {
             assert!(save(&root, "m", None, path, "x", None).is_err(), "{path}");
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_ids_and_the_soul_template_live_in_the_monos_folder_and_are_checked_before_saving() {
+        let root = temp_root();
+        let chats = r#"{"main":"df9afb39","history":["older"]}"#;
+        save(&root, "chief-of-staff", None, CHATS_FILE, chats, None).unwrap();
+        save(
+            &root,
+            "chief-of-staff",
+            None,
+            SOUL_TEMPLATE_FILE,
+            "# Soul\n",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            read(&root, "chief-of-staff", None, CHATS_FILE)
+                .unwrap()
+                .text
+                .as_deref(),
+            Some(chats)
+        );
+        // A broken write is refused and the last good text stays.
+        assert!(save(&root, "chief-of-staff", None, CHATS_FILE, "{", None).is_err());
+        assert!(save(&root, "chief-of-staff", None, HABITS_FILE, "not json", None).is_err());
+        assert!(save(&root, "chief-of-staff", None, SOUL_FILE, "   ", None).is_err());
+        assert_eq!(
+            read(&root, "chief-of-staff", None, CHATS_FILE)
+                .unwrap()
+                .text
+                .as_deref(),
+            Some(chats)
+        );
+        // Still nothing outside the folder, and nothing else at its top level.
+        for path in [
+            "../chats.json",
+            "memory/chats.json",
+            "MONOS.json",
+            "index.json",
+        ] {
+            assert!(
+                save(&root, "chief-of-staff", None, path, "{}", None).is_err(),
+                "{path}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The roster survives the WebView forgetting it: it is a file in the home, saved only over the version read.
+    #[test]
+    fn the_roster_is_a_checked_file_saved_over_the_version_it_was_read_at() {
+        let root = temp_root();
+        let empty = roster_load(&root).unwrap();
+        assert_eq!(empty.text, None);
+        let first = r#"{"version":1,"monos":[{"id":"chief-of-staff","sessionId":"df9afb39"}]}"#;
+        let hash = roster_save(&root, first, Some(&empty.hash)).unwrap();
+        assert_eq!(roster_load(&root).unwrap().text.as_deref(), Some(first));
+        assert_eq!(
+            roster_save(&root, first, Some(&empty.hash)),
+            Err(CONFLICT.into())
+        );
+        assert!(roster_save(&root, r#"{"monos":[{"id":"a"},{"id":"a"}]}"#, None).is_err());
+        assert!(roster_save(&root, r#"{"monos":[{"id":"../x"}]}"#, Some(&hash)).is_err());
+        assert_eq!(roster_load(&root).unwrap().hash, hash);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn home_info_says_whether_the_monos_live_in_the_permanent_home() {
+        let data = temp_root();
+        assert!(!home_info(&data.join(MONOS_DIR), &data).permanent);
+        let home = data.join("agent-memory/monos");
+        mono_home::ensure_home(&home, &data.join(MONOS_DIR), "1").unwrap();
+        let info = home_info(&home, &data);
+        assert!(info.permanent);
+        assert!(info.migration.is_some());
+        std::fs::remove_dir_all(data).unwrap();
     }
 }

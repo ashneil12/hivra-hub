@@ -43,6 +43,7 @@ mod model_router;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
+mod mono_home;
 mod mono_transcript;
 mod notes;
 mod notifications;
@@ -716,6 +717,10 @@ pub fn run() {
             mono::mono_archive,
             mono::mono_unarchive,
             mono::mono_team_dir,
+            mono::mono_home_info,
+            mono::mono_roster_load,
+            mono::mono_roster_save,
+            mono::mono_rename,
             portable::portable_info,
             portable::portable_mono_files,
             portable::portable_find_skills,

@@ -2364,12 +2364,21 @@ pub struct MonoRef {
 
 /// Each Mono's SOUL.md and habits.json, and with `memory` its MEMORY.md and memory/ notes. Read only: a folder that
 /// isn't there yet stays not there.
+#[cfg(test)]
 pub fn mono_files(
     env: &Env,
     monos: &[MonoRef],
     memory: bool,
 ) -> BTreeMap<String, BTreeMap<String, String>> {
-    let root = env.data_dir.join("monos");
+    mono_files_in(&env.data_dir.join("monos"), monos, memory)
+}
+
+/// The same, from the folder this copy's Monos live in (mono.rs `resolved_root`).
+pub fn mono_files_in(
+    root: &Path,
+    monos: &[MonoRef],
+    memory: bool,
+) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for mono in monos {
         if mono.id.is_empty()
@@ -2525,9 +2534,11 @@ pub async fn portable_mono_files(
     memory: bool,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
     let env = Env::for_app(&app)?;
-    tauri::async_runtime::spawn_blocking(move || mono_files(&env, &monos, memory))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        mono_files_in(&crate::mono::resolved_root(&env.data_dir), &monos, memory)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
