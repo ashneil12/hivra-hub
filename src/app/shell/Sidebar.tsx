@@ -4456,9 +4456,9 @@ export function groupStartedSessions<T extends { id: string }>(
 const NO_MODIFIERS = { shiftKey: false, ctrlKey: false, metaKey: false };
 
 /**
- * A coding-team chat's sub-chats (hub/model/codingTeamList.ts), folded under a count until Ash opens them or one is
- * stuck, asking or failed, with the same rows and marks as the Monos rail (monos/ui/SubChatList.tsx). Its own clock, so
- * "No output for 9 min" counts up without the whole list redrawing.
+ * A team chat's sub-chats (hub/model/codingTeamList.ts), folded under a count until Ash opens them or one is stuck,
+ * asking or failed (monos/ui/SubChatList.tsx). Its own clock, so "No output for 9 min" counts up without the whole list
+ * redrawing.
  */
 function TeamSubChats({
   parent,
@@ -4482,7 +4482,6 @@ function TeamSubChats({
       attention={attention}
       stuckSplit={workSplit(counts)}
       now={now}
-      variant="sessions"
       onOpen={onOpen}
     />
   );
