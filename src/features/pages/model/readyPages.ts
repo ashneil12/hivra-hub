@@ -16,7 +16,7 @@ const AGENTS_CSS = `
 .item{border-radius:8px}
 .item:hover{background:color-mix(in srgb,var(--color-content) 4%,transparent)}
 .item + .item{border-top:1px solid var(--color-stroke);border-top-left-radius:0;border-top-right-radius:0}
-.row,.worker{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.4fr) 124px 236px;align-items:center;gap:12px;padding:8px}
+.row,.worker{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.4fr) 124px 260px;align-items:center;gap:12px;padding:8px}
 .wide{grid-column:span 2}
 .name{font-size:13px;color:var(--color-content);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .under{font-size:12px;color:color-mix(in srgb,var(--color-content) 62%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -27,7 +27,7 @@ const AGENTS_CSS = `
 .status-dot[data-state=asking],.status-dot[data-state=stuck],.status-dot[data-state=paused]{background:var(--color-status-warn)}
 .status-dot[data-state=failed]{background:var(--color-status-bad)}
 .acts{display:flex;gap:4px;justify-content:flex-end}
-button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:6px 12px;cursor:pointer;background:transparent;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
+button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:6px 12px;cursor:pointer;white-space:nowrap;background:transparent;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
 button:hover{background:var(--color-surface-raised);color:var(--color-content)}
 button.primary{background:color-mix(in srgb,var(--color-content) 12%,transparent);color:var(--color-content)}
 button.primary:hover{background:color-mix(in srgb,var(--color-content) 18%,transparent)}
@@ -43,6 +43,15 @@ button:disabled{opacity:.45;cursor:default}
 .worker .doing{font-size:12px;color:color-mix(in srgb,var(--color-content) 70%,transparent)}
 .more .worker{margin:0 -8px}
 .empty{font-size:13px;color:color-mix(in srgb,var(--color-content) 70%,transparent);padding:8px}
+@media (max-width:659px){
+.row,.worker{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+.wide{grid-column:auto}
+.doing{grid-column:1 / -1;grid-row:2}
+.status{grid-column:2;grid-row:1}
+.acts{grid-column:1 / -1;justify-content:flex-start;flex-wrap:wrap;margin-left:-8px}
+.worker .doing{padding-left:16px}
+.worker .acts{margin-left:4px}
+}
 `;
 
 const AGENTS_HTML = `<div class="wrap">

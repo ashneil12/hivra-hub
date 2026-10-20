@@ -99,6 +99,58 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await shot(page, "agents-5-after");
 });
 
+// A button is one line (Ash, 20 Oct: "Take it" wrapped onto two in the stuck and asking rows), whatever the page's width:
+// wide, the columns hold every row's buttons; narrow, a row stacks (name and state, what it is doing, its buttons)
+// instead of squeezing its columns until things overlap. Checked on the real page by measuring what it drew.
+const PROBLEMS = () => {
+  const out: string[] = [];
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) out.push(`the page scrolls sideways (${doc.scrollWidth} > ${doc.clientWidth})`);
+  for (const b of document.querySelectorAll("button")) {
+    const text = document.createRange();
+    text.selectNodeContents(b);
+    if (text.getClientRects().length > 1) out.push(`"${b.textContent}" wraps onto ${text.getClientRects().length} lines`);
+  }
+  const apart = (a: DOMRect, b: DOMRect) => a.right <= b.left + 0.5 || b.right <= a.left + 0.5 || a.bottom <= b.top + 0.5 || b.bottom <= a.top + 0.5;
+  for (const row of document.querySelectorAll<HTMLElement>(".row, .worker")) {
+    const box = row.getBoundingClientRect();
+    const who = row.querySelector(".name")?.textContent ?? "a row";
+    const cells = [...row.children].filter((c) => c.getBoundingClientRect().width > 0);
+    const buttons = [...row.querySelectorAll("button")];
+    for (const part of [...cells, ...buttons]) {
+      const r = part.getBoundingClientRect();
+      if (r.left < box.left - 0.5 || r.right > box.right + 0.5) out.push(`in "${who}", ${part.className || part.textContent} sticks out of its row`);
+    }
+    for (const [i, a] of cells.entries())
+      for (const b of cells.slice(i + 1))
+        if (!apart(a.getBoundingClientRect(), b.getBoundingClientRect())) out.push(`in "${who}", ${a.className || "a part"} overlaps ${b.className || "another"}`);
+    for (const button of buttons)
+      for (const cell of cells.filter((c) => !c.contains(button)))
+        if (!apart(button.getBoundingClientRect(), cell.getBoundingClientRect())) out.push(`in "${who}", "${button.textContent}" overlaps ${cell.className || "a part"}`);
+  }
+  return out;
+};
+
+test("every button stays on one line, and rows still fit, from a wide page to a narrow one", async ({ page }) => {
+  await page.goto("/tests/browser/agents-page.html");
+  await expect(page.locator("[data-pages-open] h1")).toHaveText("Agents");
+  const frame = page.frameLocator("iframe[data-bespoke-page]");
+  await move(page, "workerAsks");
+  await move(page, "workerStuck");
+  await move(page, "leadAsks");
+  // The widest row: a worker asking its Lead (Take it, Answer, Open, Stop); a Lead asking Ash; the stuck one; working Monos.
+  await expect(frame.locator('[data-list="attention"] [data-item="w:d2"]').getByRole("button", { name: "Take it" })).toBeVisible();
+  await expect(frame.locator('[data-list="attention"] [data-item="a:hivra-lead"]')).toBeVisible();
+  const inner = () => page.frames().find((f) => f !== page.mainFrame())!;
+  // The page's own width is what its layout answers to (it sits in a column up to 768px wide with 32px at each side).
+  for (const width of [1100, 760, 700, 560, 420]) {
+    await page.locator("#root").evaluate((root, w) => void (root.style.width = `${w}px`), width);
+    await page.waitForTimeout(250);
+    await shot(page, `agents-width-${width}`);
+    expect.soft(await inner().evaluate(PROBLEMS), `at ${width}px`).toEqual([]);
+  }
+});
+
 test("Rebuild changes the page from Ash's words: the new version previews live, and Use this version keeps the page and its permissions", async ({ page }) => {
   await page.goto("/tests/browser/agents-page.html");
   await expect(page.locator("[data-pages-open] h1")).toHaveText("Agents");
