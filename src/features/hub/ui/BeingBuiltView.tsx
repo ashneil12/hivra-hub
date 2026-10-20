@@ -20,7 +20,7 @@ import { StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
 import { withStuckWorkers } from "../model/stuckJobs";
 import { failedMonoName, monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { MonoFailureList } from "../../monos/ui/MonoFailureCard";
-import { failedMonosFor } from "./StuckToday";
+import { failedMonosFor } from "../model/todayCounts";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {

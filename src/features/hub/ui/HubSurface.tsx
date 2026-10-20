@@ -18,7 +18,8 @@ import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
-import { failedMonosFor, StuckToday, stuckProject } from "./StuckToday";
+import { StuckToday } from "./StuckToday";
+import { attentionCount, failedMonosFor, stuckProject, useAttentionVersion } from "../model/todayCounts";
 import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
@@ -208,7 +209,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
           <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="hover:text-content">{data.listNeeds(p.id).filter((n) => n.state !== "done").length} {data.listNeeds(p.id).filter((n) => n.state !== "done").length === 1 ? "need" : "needs"}</button>
+            <ProjectNeedsCount projectId={p.id} />
             <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
             <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
           </div>
@@ -223,6 +224,20 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
     </div>
+  );
+}
+
+/**
+ * The project card's count: everything waiting on Ash for it, as Today lists it (todayCounts.ts): open Needs and stuck
+ * rows, chats waiting on him, stuck workers and Monos that can't answer. The strip badge reads the same number.
+ */
+function ProjectNeedsCount({ projectId }: { projectId: string }) {
+  useAttentionVersion();
+  const count = attentionCount(projectId);
+  return (
+    <button type="button" data-hub-card-needs={count} onClick={() => setHubSelection({ project: projectId, item: "inbox" })} className="hover:text-content">
+      {count} {count === 1 ? "need" : "needs"}
+    </button>
   );
 }
 
