@@ -327,6 +327,29 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   "Take a look" button (chats, builds, being built) read only from it. Never
   count separately. A new page must add a provider, not its own count.
 - At most 5 Needs per project (`MAX_NEEDS`).
+- The strip count also adds the project's chats waiting on Ash (next section).
+
+## Questions live in the chat that owns the work (19 Oct)
+- **Waiting on you** (`model/waitingChats.ts`, `ui/WaitingOnYou.tsx`): one row per chat whose agent asked Ash
+  something, above Needs you on Today and in each project's Inbox: project, chat (a Mono's name or the chat title),
+  the one-line question and the agent's pick. "Take the pick" answers in that chat in one tap, "Open" jumps in, the
+  box answers in his words; answered rows tick and stay until he leaves, "Take all N picks" clears every row with a
+  pick that is not a red line.
+- Two shapes, read by `model/chatQuestions.ts`: a live AskUserQuestion (pick = the option marked "(Recommended)",
+  answered in place through `respondHarnessQuestion`), or a finished turn ending "Needs Ash: …" / "My pick: …"
+  (answered with a message into the chat). The list is kept in local storage, so a question cut off by a restart still
+  waits and is then answered with a message naming it. App wiring: two effects next to `onQuestionReply` in App.tsx
+  (`noteChats(sessions)`, `setWaitingChatsHost`).
+- **Hooks.** Autopilot: `waitingChats()`, `subscribeWaitingChats`, `autopilotMayTake`, `takePick(id, { by: "autopilot" })`
+  (refused on a red line). H4: `setWorkerQuestionRouter` (return true when a worker's question went to its Lead; until
+  H4 sets one, every question is Ash's).
+- **Older questions** (`ui/OlderQuestions.tsx`): the retired studio queue as one quiet "Older questions (N)" line at
+  the bottom of Today, in no badge. Opened: answer any row with its sheet, or "Dismiss all older than 3 days / 1 week /
+  2 weeks / 1 month" (`ash-hub-older-dismiss`, Ash only; their asks are parked, never dropped). Ash OS (branch
+  `ash-os-questions`) adds no new questions to the queue and keeps only red-line gates and failures as Needs.
+- Agents are told how to ask (`model/askAshRules.ts`, in every Mono's context): decide what they can, ask only what
+  truly needs Ash, in their own chat, always with a pick; workers ask their Lead.
+- Stub: `MONOCODE_HUB_STUB_SCENARIO=questions npm run hub:dev` shows the retired queue (`startStub({ questions: true })`).
 
 ## Builds: only Ash marks a build played
 - "Played" is `Build.played = { by: "ash", at }`. It is set only by an action by Ash:

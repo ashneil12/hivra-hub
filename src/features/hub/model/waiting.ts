@@ -9,6 +9,7 @@ import { pendingSignIns, signInProblem, signInState } from "./connectors";
 import { getTeam, openTeamsSettings, pendingMonoProposals } from "./hubTeams";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
+import { waitingChats } from "./waitingChats";
 
 export type WaitingItem = {
   id: string;
@@ -113,11 +114,11 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
 
 /**
  * The strip badge: exactly the open rows Today shows for the project (stuck rows included, at most MAX_NEEDS), the
- * same in example and real data (SPEC: "every count matches the items you can see"). Later is not counted: its own
- * line says how many wait there. A row that ticked itself off no longer counts.
+ * same in example and real data (SPEC: "every count matches the items you can see"), plus its chats waiting on Ash.
+ * Later is not counted: its own line says how many wait there. A row that ticked itself off no longer counts.
  */
 export function waitingCount(projectId: string): number {
-  return waitingOnAsh(projectId).filter((i) => !i.done).length;
+  return waitingOnAsh(projectId).filter((i) => !i.done).length + waitingChats(projectId).length;
 }
 
 export function findWaiting(id: string): WaitingItem | undefined {

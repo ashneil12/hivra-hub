@@ -131,6 +131,7 @@ import {
   setHubSelection,
   useHubSelection,
 } from "../features/hub/model/hubNav";
+import { noteChats, setWaitingChatsHost } from "../features/hub/model/waitingChats";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -11044,6 +11045,35 @@ function Workspace({
     },
     [],
   );
+
+  // Today's "Waiting on you" (hub/model/waitingChats.ts): the chats whose agent asked Ash something. The store reads the
+  // chats as they change and borrows these hands to answer in place, send his words into a chat, or open it.
+  useEffect(() => {
+    if (IS_HUB_BUNDLE) noteChats(sessions);
+  }, [sessions]);
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    return setWaitingChatsHost({
+      liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
+      respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      send: async (id, text) => {
+        const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
+        if (!session) return false;
+        // Mid-turn it steers or queues, as a message typed in the composer would.
+        if (!(await Promise.resolve(submitSessionRef.current(session.id, text, [], { followsUp: true })))) return false;
+        await upsertSession(sessionsRef.current.find((s) => s.id === session.id) ?? session);
+        return true;
+      },
+      open: (id, projectId) => {
+        const mono = monoForSession(id);
+        if (mono) return void onOpenMono(mono.id);
+        // The hub steps aside for the project's coding view, where the chat opens.
+        const project = hubData().listProjects().find((p) => p.id === projectId && p.folder);
+        if (project) setHubSelection({ project: project.id, item: "coding-team" });
+        void openReminderSession(id).catch(() => undefined);
+      },
+    });
+  }, [onQuestionReply, onOpenMono, openReminderSession]);
 
   const onOpenApprovalSession = useCallback(
     (sessionId: string) => {
