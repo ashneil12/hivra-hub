@@ -300,7 +300,10 @@ pub fn verdict(f: &Facts, policy: &Policy, now: u64) -> Verdict {
         return keep("protected", why.clone());
     }
     if f.process_running {
-        return keep("busy", "An agent or terminal is running in it".into());
+        return keep(
+            "busy",
+            "An agent, terminal or project action is running in it".into(),
+        );
     }
     if f.chat_running {
         return keep(
@@ -871,7 +874,7 @@ fn build_outputs(
 pub struct Context {
     /// (checkout, last update ms, in flight) for every chat whose checkout still exists.
     pub chats: Vec<(PathBuf, u64, bool)>,
-    /// Paths with a running agent or terminal (checked live by the app).
+    /// Paths with a running agent, terminal or project action (checked live by the app).
     pub busy: Vec<PathBuf>,
     /// Paths that must never be touched, with why. A worktree containing one is protected.
     pub protected: Vec<(PathBuf, String)>,
@@ -1588,6 +1591,25 @@ fn chats_from_store(conn: &rusqlite::Connection) -> Vec<(PathBuf, u64, bool)> {
         .collect()
 }
 
+/// The candidates something is running in: an agent or a terminal (`process_in`, the app's live hosts), or a project
+/// action that hasn't finished (a setup's install, a dev server) whose working folder is inside it.
+fn busy_paths(
+    paths: &[PathBuf],
+    process_in: impl Fn(&Path) -> bool,
+    runs: &[crate::project_actions::RunRecord],
+) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| {
+            process_in(path)
+                || runs
+                    .iter()
+                    .any(|run| !run.finished() && contains_working_dir(path, Path::new(&run.cwd)))
+        })
+        .cloned()
+        .collect()
+}
+
 fn app_context(
     app: &AppHandle,
     paths: &[PathBuf],
@@ -1601,11 +1623,12 @@ fn app_context(
     };
     let agents = app.state::<crate::harness::HarnessHost>();
     let terminals = app.state::<crate::pty::PtyHost>();
-    let busy = paths
-        .iter()
-        .filter(|path| agents.has_working_dir(path) || terminals.has_working_dir(path))
-        .cloned()
-        .collect();
+    let runs = app.state::<crate::project_actions::ActionRuns>().list(None);
+    let busy = busy_paths(
+        paths,
+        |path| agents.has_working_dir(path) || terminals.has_working_dir(path),
+        &runs,
+    );
     Ok(Context {
         chats,
         busy,
@@ -1945,7 +1968,7 @@ mod tests {
             (
                 Box::new(|f| f.process_running = true),
                 "busy",
-                "agent or terminal",
+                "terminal or project action",
             ),
             (Box::new(|f| f.chat_running = true), "busy", "chat in it"),
             (Box::new(|f| f.locked = true), "locked", "Locked"),
@@ -2270,6 +2293,52 @@ mod tests {
         );
         assert!(!is_symlink(&tree.join("node_modules")), "its own link goes");
         assert!(outside.join("real").is_dir());
+    }
+
+    /// A project action still running in a worktree (its setup's npm ci, a dev server Ash started) makes it busy, like
+    /// an agent or a terminal: never removed or freed under it.
+    #[test]
+    fn a_running_project_action_makes_its_worktree_busy() {
+        use crate::project_actions::{RunRecord, RunStatus};
+        let temp = temp("monocode-janitor-actions");
+        let (tree, other) = (temp.0.join("tree"), temp.0.join("other"));
+        std::fs::create_dir_all(tree.join("app")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let run = |cwd: &Path, status: RunStatus| RunRecord {
+            id: "r1".into(),
+            project_root: "/repo".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            action_id: "setup".into(),
+            action_name: "Setup".into(),
+            command: "npm ci".into(),
+            trigger: "worktree-create".into(),
+            status,
+            exit_code: None,
+            started_at: 1,
+            ended_at: None,
+            log_path: "/tmp/log".into(),
+            tail: vec![],
+            long_running: false,
+            error: None,
+        };
+        let paths = vec![tree.clone(), other.clone()];
+        let idle = |_: &Path| false;
+        assert_eq!(
+            busy_paths(&paths, idle, &[run(&tree.join("app"), RunStatus::Running)]),
+            vec![tree.clone()]
+        );
+        assert!(busy_paths(&paths, idle, &[run(&tree, RunStatus::Succeeded)]).is_empty());
+        // And the verdict keeps it.
+        let ctx = Context {
+            busy: busy_paths(&paths, idle, &[run(&tree, RunStatus::Running)]),
+            ..Context::default()
+        };
+        let mut facts = merged();
+        facts.process_running = ctx.busy.iter().any(|b| contains_working_dir(&tree, b));
+        assert_eq!(
+            verdict(&facts, &Policy::default(), NOW).outcome,
+            Outcome::Keep
+        );
     }
 
     /// "Merged" means on the repository's real mainline. Here `origin/HEAD` still points at an old `hub-frontend`
