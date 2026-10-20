@@ -8,8 +8,9 @@ import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
-import { buildPage, type BuildPageResult } from "../model/buildPage";
+import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
+import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
+import type { PageSpec } from "../model/pageSpec";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
 import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
@@ -316,16 +317,16 @@ function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   );
 }
 
-function AskBox({ onAsk, monos, monoId, onPick }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void }) {
+function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe the page" }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void; placeholder: string; label?: string }) {
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
   return (
     <form className={`${card} flex items-center gap-2 px-3 py-2`} onSubmit={(e) => { e.preventDefault(); send(); }}>
       <input
-        aria-label="Describe the page"
+        aria-label={label}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Describe the page…"
+        placeholder={placeholder}
         className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-content outline-none placeholder:text-content/60"
       />
       <select aria-label="Mono that builds it" data-pages-mono-picker value={monoId} onChange={(e) => onPick(e.target.value)}
@@ -374,6 +375,7 @@ export function PagesContent() {
   const [newPage, setNewPage] = useState(false);
   const [kept, setKept] = useState<string>();
   const [sentBack, setSentBack] = useState<string>();
+  const [rebuilding, setRebuilding] = useState<string>();
   // The sidebar's pinned pages open here.
   const requested = pendingOpenPage();
   useEffect(() => {
@@ -482,6 +484,7 @@ export function PagesContent() {
           <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
+            <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
             <PinToggle page={shown} inHeader />
           </div>
           <div className="mt-1 text-[12px] text-content/60">Kept · {nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
@@ -495,8 +498,10 @@ export function PagesContent() {
             </div>
           ) : null}
           {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
-          <PageBody page={shown} live />
-          <PageActivity pageId={shown.id} title={shown.title} />
+          <PageRebuild key={shown.id} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
+            <PageBody page={shown} live />
+            <PageActivity pageId={shown.id} title={shown.title} />
+          </PageRebuild>
         </div>
       </div>
     );
@@ -510,7 +515,7 @@ export function PagesContent() {
           <div className="mt-1 text-[13px] text-content/70">Describe the page. {asker} builds it and shows you a preview first.</div>
           <div className="mt-2"><Limits /></div>
         </div>
-        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} /></div>
+        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
         {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
       </div>
     );
@@ -566,6 +571,119 @@ export function PagesContent() {
       </div>
     </div>
   );
+}
+
+type Rebuild = { prompt: string; monoId: string; by: string } & ({ state: "building" } | BuildPageResult);
+
+/**
+ * Rebuild: Ash says what should change ("add a column for stuck time") and a seated Mono (the one that built it, unless
+ * he picks another) changes the page as it is now. The new version shows as a preview with what it would keep and what it
+ * newly asks; the page runs as it is until he uses it (same page, pin and place on Today) or throws it away. A Mono's
+ * rebuild from its chat (ash_page_rebuild) waits on the page the same way.
+ */
+function PageRebuild({ page, asking, onDone, seated, projectId, children }: { page: Page; asking: boolean; onDone: () => void; seated: { id: string; name: string }[]; projectId: string; children: ReactNode }) {
+  const [run, setRun] = useState<Rebuild>();
+  const [viewing, setViewing] = useState<{ id?: string; spec: PageSpec; request: string; by: string }>();
+  const [picked, setPicked] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const builderId = picked && seated.some((m) => m.id === picked) ? picked : page.monoId && seated.some((m) => m.id === page.monoId) ? page.monoId : defaultBuilder(projectId, seated);
+  const builder = seated.find((m) => m.id === builderId)?.name ?? page.by;
+  const ask = (prompt: string, monoId = builderId, by = builder) => {
+    setRun({ prompt, monoId, by, state: "building" });
+    void rebuildPage({ pageId: page.id, monoId, prompt, current: page.spec }).then((result) => {
+      setRun({ prompt, monoId, by, ...result });
+      if (result.status === "ready") {
+        setViewing({ id: result.pageId, spec: result.spec, request: prompt, by });
+        onDone();
+      }
+    });
+  };
+  const close = () => { setViewing(undefined); setRun(undefined); };
+  const fresh = useNewAsksDelay(viewing ? newAsks(page, viewing.spec) : []);
+
+  if (viewing) {
+    const added = newAsks(page, viewing.spec);
+    const keeps = viewing.spec.kind === "bespoke" ? viewing.spec.permissions.filter((a) => page.permissions.includes(a)) : [];
+    const preview: Page = { ...page, spec: viewing.spec, title: viewing.spec.title, newVersion: undefined };
+    const use = (allowNew: boolean) => {
+      setBusy(true);
+      void useNewVersion(page, viewing, { allowNew }).then((ok) => { setBusy(false); if (ok) close(); });
+    };
+    return (
+      <div data-pages-new-version>
+        <div className="mb-1 text-[12px] text-content/60">“{viewing.request}” · {viewing.by} built a new version</div>
+        <div className="mb-3 text-[12px] text-content/70" data-pages-new-version-keeps>
+          {keeps.length ? `It keeps what you allowed: ${keeps.map(describeCapability).join("; ").toLowerCase()}.` : "The page stays as it is until you use this version."}
+        </div>
+        {added.length ? <div className="mb-3"><div className="mb-1 text-[12px] text-content/70">The new version also asks:</div><Permissions asks={added} /></div> : null}
+        <div className="relative rounded-xl border border-dashed border-content/30 p-4">
+          <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
+            <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
+          </div>
+          <div className="relative"><PageBody page={preview} /></div>
+        </div>
+        <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
+          <span className="text-[12px] text-content/70">This is the new version. Your page stays as it is until you use it.</span>
+          <span className="ml-auto" />
+          <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Throw away</button>
+          <button type="button" data-pages-use-version disabled={busy || !fresh} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
+            {added.length ? "Use it and allow" : "Use this version"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const waiting = page.newVersion;
+  return (
+    <>
+      {asking && !run ? (
+        <div className="mb-4" data-pages-rebuild-ask>
+          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the page and shows you the new version first.</div>
+          <AskBox onAsk={(text) => ask(text)} monos={seated} monoId={builderId} onPick={setPicked} placeholder="What should change? Like “add a column for stuck time”…" label="What should change" />
+        </div>
+      ) : null}
+      {run ? (
+        <div className="mb-4" data-pages-rebuild-state={"status" in run ? run.status : "building"}>
+          <div className="mb-1 text-[12px] text-content/60">“{run.prompt}” · asked {run.by}</div>
+          {!("status" in run) || run.status === "building" ? (
+            <div className={`${card} flex items-center gap-3 p-4 text-[13px] text-content/80`} role="status">
+              <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
+              <span className="min-w-0 flex-1 leading-5">{"status" in run ? run.reason : `${run.by} is changing the page…`}</span>
+              {"status" in run ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
+            </div>
+          ) : run.status === "not-connected" ? (
+            <div className={`${card} p-4`}>
+              <div className="text-[14px] text-content">Not connected yet</div>
+              <p className="mt-1 text-[13px] leading-5 text-content/70">{run.reason}</p>
+            </div>
+          ) : run.status !== "ready" ? (
+            <div className="rounded-lg px-3 py-2.5">
+              <div className="text-[13px] text-content">{run.status === "turned-down" ? `Sent back to ${run.by}` : "That didn't work"}</div>
+              <div className="text-[13px] leading-5 text-content/60">{run.status === "turned-down" ? "Turned down automatically: " : ""}{run.reason}</div>
+            </div>
+          ) : null}
+          {"status" in run && run.status !== "ready" ? (
+            <div className="mt-2 flex gap-2">
+              <button type="button" className={quietBtn} onClick={() => setRun(undefined)}>Back to the page</button>
+              {run.status === "error" ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {waiting && !run ? (
+        <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} data-pages-version-waiting>
+          <span className="min-w-0 flex-1 truncate">New version from {waiting.by}: “{waiting.request}”</span>
+          <button type="button" className={quietBtn} onClick={() => setViewing({ id: waiting.id, spec: waiting.spec, request: waiting.request, by: waiting.by })}>See it</button>
+        </div>
+      ) : null}
+      {children}
+    </>
+  );
+}
+/** The key delay (useKeyDelay) for a new version that newly asks to read keys. */
+function useNewAsksDelay(added: Capability[]): boolean {
+  return useKeyDelay(added.some((a) => !!keyName(a)));
 }
 
 /** Pin or unpin a page; pinned pages show in the sidebar. */

@@ -132,15 +132,30 @@ export function createStudio(ctx) {
     return { kind: "blocks", title, blocks, ...(/pin/i.test(prompt) ? { pin: true } : {}) };
   }
 
+  /** The newest new version (a rebuild nobody used or threw away) waiting on a kept page. */
+  const newVersionOf = (p) =>
+    p.state === "kept" ? studio.pages.filter((x) => x.replaces === p.id && x.state === "preview").sort((a, b) => b.createdAt - a.createdAt)[0] : undefined;
   const pageOut = (p) => {
     const removed = p.state === "removed";
+    const waiting = newVersionOf(p);
     return {
       id: p.id, projectId: p.projectId, title: p.title, request: p.request, by: p.by, monoId: p.monoId, spec: clone(p.spec),
       permissions: removed ? [] : [...p.permissions], state: p.state, version: p.version,
       ...(p.keptAt ? { keptAt: p.keptAt } : {}), ...(removed ? { removed: true } : {}),
       ...(p.pinned ? { pinned: true, pinnedBy: p.pinnedBy || "you" } : {}), ...(p.pinAsked ? { pinAsked: true } : {}),
+      ...(waiting ? { newVersion: { id: waiting.id, request: waiting.request, by: waiting.by, monoId: waiting.monoId, at: waiting.createdAt, spec: clone(waiting.spec) } } : {}),
     };
   };
+  /** The stub's stand-in for a Mono changing a page from Ash's words: the same page, with a line saying what he asked. */
+  function stubRebuild(spec, prompt) {
+    if (/turn (it )?down/i.test(prompt)) return { turnDown: "Example: that change would need your bank login, and pages never hold keys." };
+    if (spec.kind === "bespoke") {
+      const line = `<p class="hub-rebuilt" data-rebuilt>Example: changed for “${prompt.replace(/[<>&"]/g, "")}”</p>`;
+      const permissions = /message/i.test(prompt) ? [...new Set([...(spec.permissions ?? []), "agents.message"])] : [...(spec.permissions ?? [])];
+      return { ...clone(spec), html: `${spec.html}${line}`, permissions };
+    }
+    return { ...clone(spec), blocks: [...spec.blocks.slice(0, 11), { kind: "note", title: "Changed", text: `Example: changed for “${prompt}”` }] };
+  }
   const asksOf = (spec) => (spec.kind === "bespoke" ? spec.permissions ?? [] : []);
   function approved(perms, spec) {
     if (!Array.isArray(perms) || !perms.every((x) => typeof x === "string")) throw new Error("permissions: a list of what the page asked for.");
@@ -162,7 +177,31 @@ export function createStudio(ctx) {
     return p;
   };
 
+  async function rebuildPage(v, target) {
+    const word = String(target).trim();
+    const page = studio.pages.find((p) => p.id === word) ?? studio.pages.find((p) => p.state === "kept" && words(p.title) === words(word));
+    if (!page) throw new Error(`There is no kept page called “${word}”.`);
+    if (page.state === "removed") throw new Error("That page was removed. Restore it first (Redo in Bot changes).");
+    if (page.state !== "kept") throw new Error("Keep the page first; then it can be rebuilt.");
+    const mono = whoBuilds({ monoId: v.monoId || v.mono_id || page.monoId }, SEATED_ONLY_PAGES);
+    const prompt = promptOf(v, "Say what should change on the page.");
+    const by = monoName(mono);
+    const key = `rebuild|${page.id}|${mono}|${words(prompt)}`;
+    const row = await run(key, by, "new version of this page", () => {
+      const got = stubRebuild(page.spec, prompt);
+      if (got.turnDown) throw new Error(`${by} turned it down: ${got.turnDown}`);
+      const spec = validSpec(got);
+      const r = { id: newId("pg"), projectId: page.projectId, title: spec.title, request: prompt, by, monoId: mono, spec, permissions: [], state: "preview", version: 1, createdAt: now(), replaces: page.id };
+      studio.pages.push(r);
+      pageEvent(page);
+      return r;
+    }, v.wait);
+    return { ...clone(row.spec), pageId: row.id, replaces: page.id };
+  }
+
   async function buildPage(v) {
+    const target = v.pageId ?? v.page_id ?? v.page;
+    if (target) return rebuildPage(v, target);
     const sid = scope(v.projectId ?? v.project_id ?? v.project);
     const mono = whoBuilds(v, SEATED_ONLY_PAGES);
     const prompt = promptOf(v, "Say what the page should show.");
@@ -211,6 +250,21 @@ export function createStudio(ctx) {
     const p = findPage(id);
     if (p.state === "removed") throw new Error("That page was removed. Restore it first (Redo in Bot changes).");
     let changed = false;
+    const versionId = v.useVersion ?? v.dropVersion;
+    if (versionId) {
+      const ver = studio.pages.find((x) => x.id === versionId && x.replaces === p.id && x.state === "preview");
+      if (!ver) throw new Error("That new version is gone: ask for the change again.");
+      if (v.useVersion) {
+        // The new code, keeping what Ash allowed that it still asks for (a new ask waits unless this call allows it).
+        p.spec = clone(ver.spec);
+        p.title = p.spec.title;
+        if (!("permissions" in v)) p.permissions = p.permissions.filter((x) => asksOf(p.spec).includes(x));
+        ver.state = "used";
+      } else {
+        ver.state = "dropped";
+      }
+      changed = true;
+    }
     if (v.spec != null) {
       p.spec = validSpec(v.spec);
       p.title = p.spec.title;
@@ -238,7 +292,7 @@ export function createStudio(ctx) {
       p.pinnedBy = p.pinned ? String(v.pinnedBy || v.pinned_by || "you") : undefined;
       changed = true;
     }
-    if (!changed) throw new Error("Nothing to change: say kept, permissions, pinned, title or spec.");
+    if (!changed) throw new Error("Nothing to change: say kept, permissions, pinned, title, spec, useVersion or dropVersion.");
     p.version += 1;
     pageEvent(p);
     return pageOut(p);

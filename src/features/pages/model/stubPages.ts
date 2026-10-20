@@ -70,3 +70,13 @@ g.appendChild(hub.block("note",{title:"Note",text:"Example: the new headline is 
 export function stubPageSpec(request: string): BlocksSpec | BespokeSpec {
   return stubBespoke(request) ?? blocksFor(request);
 }
+
+/** Dev only: a Mono "changing" a page from Ash's words (the same page, with a line saying what he asked). */
+export function stubRebuildSpec(spec: BlocksSpec | BespokeSpec, prompt: string): BlocksSpec | BespokeSpec {
+  if (spec.kind === "bespoke") {
+    const line = `<p class="hub-rebuilt" data-rebuilt>Example: changed for “${prompt.replace(/[<>&"]/g, "")}”</p>`;
+    const permissions = /message/i.test(prompt) ? [...new Set([...spec.permissions, "agents.message" as const])] : [...spec.permissions];
+    return { ...spec, html: `${spec.html}${line}`, permissions };
+  }
+  return { ...spec, blocks: [...spec.blocks.slice(0, 11), { kind: "note", title: "Changed", text: `Example: changed for “${prompt}”` }] };
+}

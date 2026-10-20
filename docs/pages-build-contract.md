@@ -162,6 +162,20 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
 
+## Rebuild (change a kept page from Ash's words)
+
+- **Rebuild** beside the pin on a kept page: Ash says what should change ("add a column for stuck time") and picks the
+  Mono (the one that built it by default). `rebuildPage({pageId, monoId, prompt})` sends `ash-hub-build-page` with the
+  page's `pageId`; the Mono changes the page as it is now. The answer carries `replaces`.
+- A Mono can do the same from Ash's words in its own chat: the ash-os tool `ash_page_rebuild {page (title or id), prompt}`.
+- Either way the new version **waits on the page** (`newVersion` in `ash-hub-pages`; "New version from frank: “…” · See
+  it"). The page runs as it is until Ash taps:
+  - **Use this version** (`ash-hub-page-update {pageId, useVersion}`): the same page (pin, place on Today) takes the new
+    code and keeps what he allowed that it still asks for. If the new version asks for something new, the button is
+    **Use it and allow** (it sends `permissions`), with the key delay when a key is newly asked for.
+  - **Throw away** (`dropVersion`): the page stays as it was.
+- The new version previews like a new page: dashed border, "Preview" watermark, live data it asked to read, no taps.
+
 ## Pinning
 
 The answer may carry `pin: true` (next to the spec's own fields). That pins the page to the sidebar once Ash keeps it, marked "pinned by {Mono}". Ash can unpin it, or pin any page himself, from the Pages list.
