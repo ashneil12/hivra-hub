@@ -76,6 +76,12 @@ it("setup only by default, and nothing happens when the save dialog is cancelled
   expect(bridge.exportEverything).toHaveBeenCalledWith(expect.objectContaining({ memory: null, workspace: false }));
 });
 
+it("when this copy's memory can't be read, the page says so instead of showing none", async () => {
+  bridge.portableInfo.mockRejectedValue(new Error("The memory folder couldn't be read: permission denied"));
+  const host = await render();
+  expect(host.querySelector("[data-portable-problem]")?.textContent).toContain("permission denied");
+});
+
 it("a failed read says why in plain words and changes nothing", async () => {
   bridge.pickImportSource.mockResolvedValue("/tmp/newer.tar.gz");
   bridge.readImport.mockRejectedValue(new Error("This export was made by a newer MonoCode Hub (format 3; this build reads up to 2). Update the app first."));
