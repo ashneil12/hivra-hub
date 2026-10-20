@@ -169,6 +169,14 @@ impl Delegation {
         self.state == RUNNING || self.state == QUESTION
     }
 
+    /// The newest event in the row's history.
+    fn last_event(&self) -> Option<&str> {
+        self.log
+            .last()
+            .and_then(|entry| entry.get("event"))
+            .and_then(Value::as_str)
+    }
+
     /// One line of the row's history, stamped with who acted. The newest 50 are kept.
     fn note(&mut self, now: i64, by: &str, event: &str, extra: Value) {
         let mut entry = json!({ "at": now, "by": by, "event": event });
@@ -469,12 +477,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     if let Some(mut existing) = by_request(&tx, &owner, &request)? {
-        let refused = existing
-            .log
-            .last()
-            .and_then(|e| e.get("event"))
-            .and_then(Value::as_str)
-            == Some("refused");
+        let refused = existing.last_event() == Some("refused");
         if refused && existing.state == CANCELLED {
             existing.state = RUNNING.into();
             existing.delivery = PENDING.into();
@@ -655,17 +658,28 @@ pub fn reattach(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    // The child's newest delegation, never an older one behind it (that one is another request's, maybe another
+    // owner's). A refused launch never reached the child, so it is looked past.
     let latest = query(
         &tx,
-        "WHERE child_session = ?1 AND delivery != 'disposed' AND follow IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "WHERE child_session = ?1 AND follow IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 20",
         &[&child],
     )?
     .into_iter()
-    .next();
+    .find(|row| row.last_event() != Some("refused"));
     let Some(mut row) = latest else {
         return Ok(None);
     };
-    let reopen = resume && (row.state == FAILED || row.state == CANCELLED);
+    // Its report was thrown away: nothing comes back.
+    if row.delivery == DISPOSED {
+        return Ok(None);
+    }
+    // A later request took the child over: that row is over for good.
+    let superseded = row
+        .log
+        .iter()
+        .any(|entry| entry.get("event").and_then(Value::as_str) == Some("superseded"));
+    let reopen = resume && !superseded && (row.state == FAILED || row.state == CANCELLED);
     if !row.is_open() && !reopen {
         return Ok(None);
     }
@@ -2017,6 +2031,75 @@ mod tests {
         assert_eq!(
             reopened.delivery_message, None,
             "the next report gets its own receipt"
+        );
+    }
+
+    /// A takes the child, B takes it over, B's report is thrown away: a resumed turn in the child is B's work, not A's.
+    #[test]
+    fn a_resume_never_reopens_another_owners_older_delegation() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono-a", "req-a", "child"), 10).unwrap();
+        let second = record(&mut conn, launch("mono-b", "req-b", "child"), 11).unwrap();
+        let before = get(&conn, &first.id).unwrap().unwrap();
+        assert_eq!(before.state, CANCELLED);
+        settle(&mut conn, finish(&second.id, 1, COMPLETED, "done"), 12).unwrap();
+        // B throws its report away.
+        cancel(
+            &mut conn,
+            std::slice::from_ref(&second.id),
+            None,
+            Some("owner:mono-b".into()),
+            13,
+        )
+        .unwrap();
+        assert_eq!(
+            reattach(&mut conn, "child", true, None, 14).unwrap(),
+            None,
+            "the newest delegation's report was thrown away: nothing comes back"
+        );
+        let after = get(&conn, &first.id).unwrap().unwrap();
+        assert_eq!(
+            (
+                after.state.as_str(),
+                after.delivery.as_str(),
+                after.generation
+            ),
+            (CANCELLED, before.delivery.as_str(), before.generation),
+            "A's superseded row is untouched"
+        );
+    }
+
+    /// B's takeover was refused (nothing ran), so the newest real row is A's, which B's request superseded: it stays
+    /// ended.
+    #[test]
+    fn a_superseded_delegation_is_never_reopened() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono-a", "req-a", "child"), 10).unwrap();
+        let second = record(&mut conn, launch("mono-b", "req-b", "child"), 11).unwrap();
+        assert!(refuse(&mut conn, &second.id, None, 12).unwrap().applied);
+        assert_eq!(reattach(&mut conn, "child", true, None, 13).unwrap(), None);
+        assert_eq!(get(&conn, &first.id).unwrap().unwrap().state, CANCELLED);
+    }
+
+    /// A refused launch never ran, so it doesn't hide the work before it: a usage-limit resume still reopens that.
+    #[test]
+    fn a_refused_launch_does_not_hide_the_row_before_it() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
+        let mut limit = finish(&row.id, 1, FAILED, "");
+        limit.error_class = Some("usage_limit".into());
+        settle(&mut conn, limit, 11).unwrap();
+        let refused = record(&mut conn, launch("mono", "req-2", "child"), 12).unwrap();
+        assert!(refuse(&mut conn, &refused.id, None, 13).unwrap().applied);
+        let reopened = reattach(&mut conn, "child", true, None, 14)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (reopened.id.as_str(), reopened.state.as_str()),
+            (row.id.as_str(), RUNNING)
         );
     }
 
