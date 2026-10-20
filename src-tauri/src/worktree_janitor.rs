@@ -1528,14 +1528,30 @@ pub fn free_build_output(worktree: &Path, facts: &Facts) -> Result<u64, String> 
 /// worktree. Only the links; the main checkout's folder is untouched. Ignored links are left to `git worktree remove`,
 /// which unlinks without following.
 fn unlink_output_links(worktree: &Path, facts: &Facts) {
+    let Ok(root) = worktree.canonicalize() else {
+        return;
+    };
     for output in facts
         .build_output
         .iter()
         .filter(|output| output.linked && !output.ignored)
     {
-        let path = worktree.join(&output.path);
-        if is_symlink(&path) {
-            let _ = std::fs::remove_file(&path);
+        if !project_file::valid_relative_path(&output.path) {
+            continue;
+        }
+        let path = root.join(&output.path);
+        if !is_symlink(&path) {
+            continue;
+        }
+        // The link must really be inside this worktree, as in `free_build_output`: no linked folder on the way.
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        match parent.canonicalize() {
+            Ok(real) if real == parent && real.starts_with(&root) => {
+                let _ = std::fs::remove_file(&path);
+            }
+            _ => {}
         }
     }
 }
@@ -2214,6 +2230,46 @@ mod tests {
         let text = render_text(&report, later);
         assert!(text.contains("nothing was removed"));
         assert!(text.contains("REMOVE"));
+    }
+
+    /// Only links really inside the worktree are unlinked: never one reached through a linked folder, nor a path that
+    /// climbs out.
+    #[cfg(unix)]
+    #[test]
+    fn unlinking_setups_links_stays_inside_the_worktree() {
+        let temp = temp("monocode-janitor-unlink");
+        let tree = temp.0.join("tree");
+        let outside = temp.0.join("outside");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::create_dir_all(outside.join("real")).unwrap();
+        // Someone else's links, outside the worktree.
+        std::os::unix::fs::symlink(outside.join("real"), outside.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(outside.join("real"), temp.0.join("node_modules")).unwrap();
+        // The worktree reaches them through a linked folder, or a path that climbs out.
+        std::os::unix::fs::symlink(&outside, tree.join("vendor")).unwrap();
+        // And its own link from setup, which may go.
+        std::os::unix::fs::symlink(outside.join("real"), tree.join("node_modules")).unwrap();
+        let mut facts = Facts::new(&tree, Kind::Linked);
+        facts.build_output = ["vendor/node_modules", "../node_modules", "node_modules"]
+            .into_iter()
+            .map(|path| BuildOutput {
+                path: path.into(),
+                bytes: None,
+                linked: true,
+                ignored: false,
+            })
+            .collect();
+        unlink_output_links(&tree, &facts);
+        assert!(
+            is_symlink(&outside.join("node_modules")),
+            "reached through a linked folder"
+        );
+        assert!(
+            is_symlink(&temp.0.join("node_modules")),
+            "a path that climbs out"
+        );
+        assert!(!is_symlink(&tree.join("node_modules")), "its own link goes");
+        assert!(outside.join("real").is_dir());
     }
 
     /// "Merged" means on the repository's real mainline. Here `origin/HEAD` still points at an old `hub-frontend`
