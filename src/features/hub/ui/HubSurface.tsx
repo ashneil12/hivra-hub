@@ -25,6 +25,9 @@ import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
+import { appSinceText } from "../model/appSince";
+import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
+import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
@@ -108,6 +111,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   useWaitingChatsVersion();
   useMonoFailuresVersion();
   const { stuck: stuckWorkersNow } = useStuckWorkers();
+  const delegationRows = useDelegationRows();
+  useBotChangesVersion();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(25);
@@ -119,6 +124,18 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   if (!data.listProjects().length) return <FirstTodayEmpty />;
   const since = data.sinceSummary(projectId);
   const sinceAt = data.sinceAt();
+  // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the projects' work, then
+  // the app's own real events (work handed out, finished and reported back, stuck, Bot changes: appSince.ts).
+  const sinceMs = sinceAt ? Date.parse(sinceAt) : NaN;
+  const appSince = Number.isFinite(sinceMs)
+    ? appSinceText({
+        sinceMs,
+        rows: projectId ? delegationRows.filter((r) => r.project === projectId) : delegationRows,
+        stuck: projectId ? stuckWorkersNow.filter((s) => stuckProject(s)?.id === projectId) : stuckWorkersNow,
+        changes: projectId ? [] : botChangesSince(sinceMs),
+        nameOf: (row) => leadNameOf({ row }),
+      })
+    : "";
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
@@ -133,11 +150,23 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const sinceBlock = (s: TodaySection) => (
     <section key={s.id} data-hub-today-section={s.kind}>
       {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{s.title === "Since you were away" ? sinceLabel(sinceAt) : `${s.title} · ${sinceLabel(sinceAt).toLowerCase()}`}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
-      {since.pending ? (
+      {since.pending && !appSince ? (
         // Ash OS is still writing it: a quiet line, and the paragraph swaps in here when it is ready.
         <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
       ) : (
-        <p className="line-clamp-4 text-[13px] leading-5 text-content/85" data-hub-since>{calmSummary(since.plainText)}</p>
+        (() => {
+          const text = [since.pending ? "" : calmSummary(since.plainText), appSince].filter(Boolean).join(" ");
+          return (
+            <p
+              className={`line-clamp-4 text-[13px] leading-5 ${text ? "text-content/85" : "text-content/60"}`}
+              title={text || undefined}
+              data-hub-since
+              data-hub-since-app={appSince || undefined}
+            >
+              {text || "Nothing new since then."}
+            </p>
+          );
+        })()
       )}
     </section>
   );

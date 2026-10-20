@@ -1,0 +1,82 @@
+// The app's own share of Today's "Since …" paragraph (C9; Ash 14 Oct: "give me a quick summary of what's been happening
+// since then"). Ash OS writes the paragraph about the projects' work; this adds, in the same plain words, what only the
+// app knows since Ash was last active: the work his Monos handed out, what finished and reported back, what is stuck or
+// failed, and the Bot changes made. Real events only; nothing here is invented, and with nothing new it says nothing.
+//
+// A pure function over the events, so a future model-written summary can take the same input (see `AppSinceInput`).
+import type { Delegation } from "../../monos/model/delegations";
+import type { StuckWorker } from "../../monos/model/workerStuck";
+
+export type AppSinceInput = {
+  /** Epoch ms Ash was last active (the start of "Since …"). */
+  sinceMs: number;
+  /** Every delegation row the app knows. */
+  rows: readonly Delegation[];
+  /** The workers stuck now. */
+  stuck: readonly StuckWorker[];
+  /** Bot changes that still stand, made since `sinceMs` (botChangesSince). */
+  changes: readonly { bot: string; line: string }[];
+  /** The Mono a row's work answers to, by name ("EXO lead"). */
+  nameOf: (row: Delegation) => string;
+};
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "A, B and C"; more than three: "A, B and 2 more". */
+function list(items: readonly string[]): string {
+  const shown = items.length > 3 ? [...items.slice(0, 2), `${items.length - 2} more`] : items;
+  return shown.length <= 1 ? (shown[0] ?? "") : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+}
+
+/** Each child chat's newest row (a later try in the same chat replaces an earlier one). */
+function newest(rows: readonly Delegation[]): Delegation[] {
+  const latest = new Map<string, Delegation>();
+  for (const row of rows) {
+    const known = latest.get(row.childSession);
+    if (!known || row.createdAt > known.createdAt) latest.set(row.childSession, row);
+  }
+  return [...latest.values()];
+}
+
+/** One plain paragraph, or "" when nothing happened in the app since then. */
+export function appSinceText({ sinceMs, rows, stuck, changes, nameOf }: AppSinceInput): string {
+  const current = newest(rows);
+  const sentences: string[] = [];
+
+  // Handed out, by the Mono that did it.
+  const handed = current.filter((r) => r.createdAt >= sinceMs);
+  if (handed.length) {
+    const byMono = new Map<string, number>();
+    for (const r of handed) byMono.set(nameOf(r), (byMono.get(nameOf(r)) ?? 0) + 1);
+    const parts = [...byMono.entries()].map(([name, n], i) => (i === 0 ? `${name} handed out ${plural(n, "job", "jobs")}` : `${name} ${n}`));
+    sentences.push(`${list(parts)}.`);
+  }
+
+  // Finished since then, and whether its report reached the Mono that asked.
+  const finished = current.filter((r) => r.state === "completed" && (r.settledAt ?? 0) >= sinceMs);
+  if (finished.length) {
+    const reported = finished.filter((r) => r.delivery === "delivered" || r.delivery === "acknowledged").length;
+    const titles = list(finished.map((r) => r.title?.trim() || "a job"));
+    sentences.push(
+      reported === finished.length
+        ? `${finished.length === 1 ? "One" : finished.length} finished and reported back: ${titles}.`
+        : `${finished.length === 1 ? "One" : finished.length} finished: ${titles}.`,
+    );
+  }
+
+  // Stuck now (asking counts, as everywhere), failures said apart.
+  const title = (s: StuckWorker) => s.row.title?.trim() || "a job";
+  const waiting = stuck.filter((s) => s.kind !== "failed");
+  const failed = stuck.filter((s) => s.kind === "failed");
+  if (waiting.length)
+    sentences.push(`${waiting.length} ${waiting.length === 1 ? "is" : "are"} stuck or waiting on an answer: ${list(waiting.map(title))}.`);
+  if (failed.length) sentences.push(`${failed.length} failed: ${list(failed.map(title))}.`);
+
+  // Bot changes that still stand.
+  if (changes.length) {
+    const bots = [...new Set(changes.map((c) => c.bot))];
+    sentences.push(`${list(bots)} made ${plural(changes.length, "change", "changes")} to how ${bots.length === 1 ? "it works" : "they work"}, each with Undo in Bot changes.`);
+  }
+
+  return sentences.join(" ");
+}
