@@ -316,6 +316,9 @@ export function MonoRailSection({
           const attention = subChatAttention(children, now);
           const counts = countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now);
           const stuckSplit = workSplit({ ...counts, working: 0 });
+          // Open team sits on the row only while the Mono has work out (with its line under it): a Mono with nothing out
+          // looks exactly as it always did, on hover too (Ash's shipped rail, 20 Oct); its menu still opens the team.
+          const rowTeam = team && workSplit(counts) ? team : undefined;
           const status =
             state.status === "idle"
               ? (state.activity ?? workSplit(counts))
@@ -372,7 +375,7 @@ export function MonoRailSection({
                   .join(", ")}
                 aria-current={selected ? "true" : undefined}
                 className={`flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none ${
-                  team ? "group-hover:pr-12 group-has-[button:focus-visible]:pr-12" : "group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
+                  rowTeam ? "group-hover:pr-12 group-has-[button:focus-visible]:pr-12" : "group-hover:pr-6 group-has-[button:focus-visible]:pr-6"
                 }`}
               >
                 <MonoRailMascot
@@ -412,17 +415,17 @@ export function MonoRailSection({
                   </span>
                 ) : null}
               </button>
-              {team ? (
+              {rowTeam ? (
                 <button
                   type="button"
                   data-no-drag
                   data-mono-open-team={mono.id}
-                  title={`Open ${team.name}`}
-                  aria-label={`Open ${team.name}`}
+                  title={`Open ${rowTeam.name}`}
+                  aria-label={`Open ${rowTeam.name}`}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
-                    openTeam(team);
+                    openTeam(rowTeam);
                   }}
                   className="absolute right-7 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[button:focus-visible]:grid"
                 >

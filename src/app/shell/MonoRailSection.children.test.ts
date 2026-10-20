@@ -216,6 +216,30 @@ describe("Open team (the hub)", () => {
     expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
   });
 
+  // Ash, 20 Oct (his screenshot of the shipped rail: "basically this is good"): a Mono with nothing out shows nothing
+  // extra, not even on hover; its menu still opens its team.
+  it("adds nothing to the row of a Mono with nothing out, a Lead's or one with its own team; the menu still opens it", async () => {
+    const exo = "vg-game-lead";
+    updateMono(exo, (m) => ({ ...m, sessionId: "lead-chat" }));
+    const alfred = createMono();
+    updateMono(alfred.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
+    await ensureMonoTeam(alfred.id, async (id) => `/data/mono-teams/${id}`);
+    // What it had out is back: nothing is out any more.
+    setDelegationRows([row("t-1", "w1", alfred.id, "alfred-chat", "completed", { settledAt: Date.now() })]);
+    mount(new Map(), true);
+    expect(container.querySelector("[data-mono-open-team]")).toBeNull();
+    expect(container.querySelector("[data-mono-work]")).toBeNull();
+    // Its row keeps the shipped hover room (one button's worth, for its options).
+    const alfredRow = container.querySelector<HTMLButtonElement>('button[aria-label^="Alfred,"]');
+    expect(alfredRow?.className).toContain("group-hover:pr-6");
+    expect(alfredRow?.className).not.toContain("pr-12");
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Alfred options"]')!.click());
+    const item = document.querySelector<HTMLButtonElement>("[data-mono-menu-open-team]");
+    expect(item?.textContent).toBe("Open Alfred's team");
+    act(() => item!.click());
+    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
+  });
+
   it("a Mono with work out but no team (it only briefed coding teams) opens its chat from the line", () => {
     const cos = createMono(["/code/vg-game"]);
     updateMono(cos.id, (m) => ({ ...m, sessionId: "cos-chat" }));

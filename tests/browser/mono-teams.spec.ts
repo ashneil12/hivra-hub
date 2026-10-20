@@ -7,8 +7,8 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 // itself or pick it up with the coding team. IF they do need to do work ... something like coding team should be created
 // for that mono"). The real app in a browser (hub-dev.html reading the stub through its real transport), with
 // delegation rows as delegations.rs returns them and chats as session_list_by_project does:
-// - the Monos rail lists people: no sub-chats under any Mono, a Lead's included; one line says what each has out
-//   ("2 working · 1 stuck", red or amber), and Open team on the row;
+// - the Monos rail lists people: nothing extra for a Mono with nothing out, on hover too; no sub-chats under any Mono, a
+//   Lead's included; one line says what each has out ("2 working · 1 stuck", red or amber), and Open team on the row;
 // - Chief of Staff briefed EXO's coding team: its chat shows ONE live line for it, which opens the coding team on the
 //   Lead, where the brief's workers nest under the Lead;
 // - Alfred did work of its own: its own team, a workspace like a coding team, with Alfred's chat pinned on top and its
@@ -114,6 +114,16 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
   await expect(rail(page)).toBeVisible({ timeout: 60_000 });
   await expect(railRow(page, "EXO lead")).toBeVisible({ timeout: 30_000 });
+
+  // 0. Nothing out yet: the rail is the shipped one (Ash's screenshot, 20 Oct: "basically this is good"), with nothing
+  // extra under or on any Mono, on hover too, though Alfred already has a team and the EXO lead its coding team.
+  await page.mouse.move(900, 500);
+  await expect(rail(page).locator("[data-mono-work], [data-mono-open-team], [data-mono-children], [data-mono-child]")).toHaveCount(0);
+  await shot(page, "0-rail-at-rest");
+  await railRow(page, "EXO lead").hover();
+  await expect(rail(page).locator('button[aria-label="EXO lead options"]')).toBeVisible();
+  await expect(rail(page).locator("[data-mono-open-team]")).toHaveCount(0);
+  await page.mouse.move(900, 500);
 
   // Their chats, so the rows have owners.
   const chats = {
