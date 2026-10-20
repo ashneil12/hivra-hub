@@ -1,4 +1,4 @@
-# Update: 21 October 2026, one permanent home per Mono (branch cos/mono-homes)
+# Update: 20 October 2026, one permanent home per Mono (branch cos/mono-homes)
 
 Decided 20 Oct (Grok Bot leadership, from Alfred's audit: 14 sets of Mono folders on the Mac, the live leads on the 15 Oct
 soul, chat ids only in WebView storage).
