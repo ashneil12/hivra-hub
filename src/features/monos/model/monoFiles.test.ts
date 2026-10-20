@@ -9,6 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { createMono, findMono, HANDED_KEY, updateMono } from "./mono";
 import {
   defaultSoul,
+  DELEGATE_RULES,
   loadMonoFiles,
   MEMORY_MAX_LINES,
   memoryWithinBudget,
@@ -16,6 +17,7 @@ import {
   monoContext,
   monoTurn,
   recordAgentContext,
+  MONO_TEAM_RULES,
   resetMonoDefaults,
   TALK_RULES,
 } from "./monoFiles";
@@ -241,15 +243,46 @@ it("teaches a Lead with the delegate tool to talk as well as do (talk_rules), an
   expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true })).not.toContain("<talk_rules>");
 });
 
-it("teaches the leadership team to brief Leads (lead_brief_rules), only with the delegate tool and Leads to brief", () => {
+it("teaches a Mono to brief Leads (lead_brief_rules), only with the delegate tool and Leads to brief", () => {
   const look = { name: "Chief of Staff", mascot: "skull", color: "#fff", projects: [{ path: "/code/monocode-hub", name: "hub" }] };
   const leads = ['MonoCode Hub lead (lead "hub")'];
   const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, leads });
   expect(taught).toContain("<lead_brief_rules>");
   expect(taught).toContain('MonoCode Hub lead (lead "hub")');
   expect(taught).toContain("Leadership room");
+  // Every Mono, not only the leadership team (Ash, 20 Oct); the Lead's workers live in its coding team, not under it.
+  expect(taught).not.toContain("You are on the leadership team");
+  expect(taught).toContain("A project's work goes to that project's coding team, never to a worker of your own");
+  expect(taught).toContain("whose chats show in that project's coding team, not under you; your chat shows one line for the brief");
   expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true, leads: [] })).not.toContain("<lead_brief_rules>");
   expect(monoContext(look, files(), { soul: true, memory: true }, { leads })).not.toContain("<lead_brief_rules>");
+});
+
+// Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
+// with the coding team. IF they do need to do work ... something like coding team should be created for that mono".
+it("teaches a Mono that isn't a Lead where its work goes (team_rules): itself, a coding team, or its own team", () => {
+  const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
+  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['EXO lead (lead "vg-game")'] });
+  expect(taught).toContain(MONO_TEAM_RULES);
+  for (const rule of [
+    "You keep no sub-chats of your own",
+    "A small fix or a quick look: do it yourself, here in your chat",
+    "Never start a worker for something you can finish in a few minutes",
+    "pick it up with that project's coding team by briefing its Lead",
+    "Never start a worker in a project's folder yourself, with delegate_task or app sessions.start",
+    "Real work of your own, outside any project",
+    "delegate_task with no project",
+    "Your workers run in your own team, made the first time you delegate there",
+    "Sessions list shows your chat on top and their chats under it",
+    "the Team button in your chat",
+  ])
+    expect(MONO_TEAM_RULES).toContain(rule);
+  expect(MONO_TEAM_RULES).not.toMatch(/\u2014/);
+  // Only with the delegate tool; a Lead (teams unset) works in its coding team instead.
+  expect(monoContext(look, files(), { soul: true, memory: true }, { teams: true })).not.toContain("<team_rules>");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true })).not.toContain("<team_rules>");
+  // A worker's chat shows in the team's Sessions list, never in the Monos list.
+  expect(DELEGATE_RULES).toContain("its worker's chat shows nested under yours in the team's Sessions list");
 });
 
 it("teaches the PR watch with the delegate tool: register, end the turn, act on the wake, close with evidence", () => {

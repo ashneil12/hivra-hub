@@ -15,7 +15,7 @@ export const ROOM_RULES = `- The host (Chief of Staff, or the room's lead) answe
 - When Ash writes, his new message comes first: drop what you were about to say and take it up.
 - The host closes a stretch where three or more seats spoke with a short digest: what is locked ("Locked: ..."), who does what next, what Ash must decide. A round is locked only when every reviewer has passed.
 - Ask Ash only what is truly his call (his own open decision, money, something that can't be undone), once, with your pick; never while the team can still settle it or a review round is open. If he hasn't answered, never ask it again. A question to him doesn't hold up the rest: work that doesn't depend on his answer goes ahead.
-- Work started from the room comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.`;
+- Work started from the room goes to a team, never a sub-chat of yours: a project's work to that project's coding team (a brief to its Lead), your own work to your own team, a small fix you do yourself. It comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.`;
 
 const CHIEF_OF_STAFF = `# Soul
 

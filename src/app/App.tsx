@@ -8857,9 +8857,11 @@ function Workspace({
                 // A project's Lead is an orchestrator Ash talks to: it talks back like a colleague (TALK_RULES).
                 talk: !!leadFor(monoRecord!.id),
                 ...(projectMemory ? { projectMemory } : {}),
-                // The leadership team briefs project Leads (double delegation).
+                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work in its own
+                // team (monoTeams.ts): no sub-chats of its own.
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
+                      teams: true,
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
                         (target) => `${target.leadName} (lead "${target.projectId}")`,
                       ),
