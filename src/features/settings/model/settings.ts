@@ -27,6 +27,7 @@ export type SettingsSectionId =
   | "mcp"
   | "skills"
   | "monos"
+  | "teams"
   | "inbox"
   | "worktrees"
   | "archive"
@@ -158,6 +159,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "The resident agent beside your tabs, and which projects have one.",
     keywords: "mono resident agent mascot claim project title bar",
+  },
+  {
+    id: "teams",
+    group: "agents",
+    label: "Teams",
+    description: "Teams of named Monos you work with (Marketing and more), each with its room, and new Monos agents propose for your okay.",
+    keywords: "team marketing named mono agent propose approve room soul engine",
   },
   {
     id: "inbox",

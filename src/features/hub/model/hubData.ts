@@ -22,6 +22,7 @@ import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
 import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
+import { connectorServersForMono, loadConnectors } from "./hubConnectors";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
@@ -29,13 +30,18 @@ seedHubBundleDefaults();
 
 /**
  * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): Ash's ash-os entry with the chat's identity,
- * and for a Mono's own chat the delegate tool. A session that starts before the entries are read waits for them (at
+ * for a Mono's own chat the delegate tool, and for a Mono's chat and its habit runs the connectors its projects allow
+ * (hubConnectors.ts; read again whenever a window comes back to the front, and re-checked by the launcher at start). A session that starts before the entries are read waits for them (at
  * most a few seconds; then it starts without them).
  */
 function startHubMcp(): void {
   const ashOs = tauriAshOsServer();
   const cli = invoke<string>("app_cli_path").catch(() => null);
-  const read = Promise.all([ashOs, cli]).then(([ashOs, cli]): HubMcpServers => ({ ashOs, cli }));
+  const connectors = loadConnectors();
+  window.addEventListener("focus", () => void loadConnectors());
+  const read = Promise.all([ashOs, cli, connectors]).then(
+    ([ashOs, cli]): HubMcpServers => ({ ashOs, cli, connectors: connectorServersForMono }),
+  );
   const ready = Promise.race([
     read.then((servers) => {
       setHubMcpServers(servers, {

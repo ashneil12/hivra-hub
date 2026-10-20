@@ -93,6 +93,7 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
+import { proposeMonoFromAgent } from "../../hub/model/hubTeams";
 import {
   handleTasks,
   TASK_FIELDS,
@@ -273,6 +274,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
+  ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
 ]);
 
@@ -1092,6 +1094,23 @@ export async function handleAgentApp(
       note: host.isMono(source.id)
         ? "It shows in the chat where you are in your reply."
         : "It goes out with your report, after its text; if you stay quiet, it is dropped.",
+    };
+  }
+  if (action === "monos.propose") {
+    // A new named Mono needs Ash's okay: this only files a proposal (hub/model/hubTeams.ts). Nothing is made until he
+    // approves it on Settings > Teams.
+    const mono = host.monoOf?.(source.id);
+    if (!mono || !host.isMono(source.id))
+      throw new Error("Only a Mono can propose a new Mono");
+    const proposal = proposeMonoFromAgent(input, {
+      monoId: mono.id,
+      projects: mono.projects,
+    });
+    return {
+      proposed: proposal.spec.name,
+      id: proposal.id,
+      status: "pending",
+      note: "Waiting for the user's okay on Settings > Teams (it also shows on Today). Nothing is created until they approve it; tell them it's there.",
     };
   }
   switch (action) {

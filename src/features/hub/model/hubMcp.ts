@@ -13,6 +13,9 @@
 //   so the token never appears in argv (checked with 2.1.302 on 19 Oct; an unset variable stays the literal text,
 //   which the server treats as no connection). `timeout` lets a wait run its full hour: Claude Code otherwise cuts an
 //   MCP call off after its default and a silent one after 30 minutes.
+// - connectors (hubConnectors.ts): for a Mono's own chat and its habit runs, one `<app> connector-run <id> --mono <id>
+//   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
+//   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import type { AshOsServer } from "./hubLeads";
 
 /** The checker's Mono id (the studio's tests and lanes use it; H6 makes the Mono). */
@@ -84,6 +87,8 @@ export type HubMcpServers = {
   ashOs: AshOsServer | null;
   /** This app's executable, or null when it couldn't be read. */
   cli: string | null;
+  /** A Mono's connector entries (hubConnectors.connectorServersForMono); none when absent. */
+  connectors?: (monoId: string) => Record<string, unknown>;
 };
 
 function identityEnv(identity: HubChatIdentity): Record<string, string> {
@@ -102,6 +107,9 @@ export function hubMcpArgs(
 ): string[] {
   const identity = hubChatIdentity(sessionId, lookups);
   const mcpServers: Record<string, unknown> = {};
+  // A Mono's connectors go in first, so the hub's own entries below always keep their names.
+  if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
+    Object.assign(mcpServers, servers.connectors(identity.monoId));
   if (servers.ashOs) {
     const { ashOs } = servers;
     // The server's own settings stay; who is calling is only ever this chat's identity, never Ash's config's.
