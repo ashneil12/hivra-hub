@@ -27,6 +27,16 @@ soul, chat ids only in WebView storage).
   logs one plain row ("Alfred merged the app's update into Hivra lead's soul and kept your changes to 'Your job'.") with
   Undo and Redo. Alfred's soul has the matching section. The real-model scene ("merge hivra leads update") is for the
   conversation runner.
+  The skipped row's "Ask Alfred" opens Alfred's chat with "merge Hivra lead's update" typed in, not sent
+  (`monos/model/monoPrefill.ts`). The guard tries the roster's folder, the folder the soul names, and none, so a roster
+  without folders no longer makes untouched leads look hand-edited; any other reason is said on the row.
+- **Soul tamper check** (`model/soulTamper.ts`): every soul the app saves is recorded (hash and text, in the app's own
+  storage: `monos/model/soulSaved.ts`, from `writeAgentFile`). At launch and whenever a Mono's files open, a soul that no
+  longer matches is set against when chats were running (`monos/model/sessionRuns.ts`, from App's sessions; the file's
+  change time comes from `mono_read`'s `modifiedMs`). A chat running then: the saved soul is put back, the changed file
+  kept as `memory/soul-changed-outside-<time>.md`, row with "Keep that change". Nothing running: Ash's edit, kept and
+  recorded, row with Undo. Known gap: a portable restore writes souls from Rust, so its souls show once as "edited
+  outside the app" (kept, never put back unless a chat was running at that moment).
 - **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
 - **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
   leadership can oversee it and set tasks, but isn't required."

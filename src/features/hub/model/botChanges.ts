@@ -42,6 +42,8 @@ export type BotChange = {
   note?: boolean;
   /** What the row reads once undone, as one natural sentence (e.g. "Undone: Hivra lead's soul is back to how it was."). */
   undoneText?: string;
+  /** What the Undo button says when "Undo" isn't the plain word for it (a put-back soul's "Keep that change"). */
+  undoLabel?: string;
   /** A button that opens a Mono's chat with `text` typed in, not sent (a skipped soul's "Ask Alfred"). */
   ask?: { monoId: string; label: string; text: string };
   /** When it was made (epoch ms), for Today's "Since …" paragraph. Rows from before this was kept have none. */

@@ -129,3 +129,10 @@ it("a long row wraps rather than being cut off, its '(and N more)' opens the ful
   await vi.waitFor(() => expect(row.querySelector("[data-hub-bot-change-undone]")?.textContent).toContain("Undone: Hivra lead's soul is back to how it was."));
   expect(row.querySelector("[data-hub-bot-change-undone]")!.textContent).not.toMatch(/Back to|Its soul|\(was /);
 });
+
+it("a put-back soul's row offers 'Keep that change' in place of Undo", () => {
+  recordBotChange({ id: "soul-put-back:hivra-lead:x", bot: "Hivra lead", day: "Today", line: "Something outside the app changed Hivra lead's soul while a worker was running, so it was put back.", now: "Changed from outside the app", after: "Back to the soul the app last saved", undoLabel: "Keep that change", monoId: "hivra-lead", file: "SOUL.md", beforeText: "a", afterText: "b" });
+  openBots();
+  const row = rowWith("while a worker was running");
+  expect(row.querySelector("[data-hub-bot-change-undo]")!.textContent).toBe("Keep that change");
+});

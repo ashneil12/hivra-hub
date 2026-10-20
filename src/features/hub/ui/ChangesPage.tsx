@@ -110,7 +110,9 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
               onClick={() => openMonoChatWith(items[0]!.ask!.monoId, items[0]!.ask!.text)}>{items[0].ask.label}</button>
           ) : null
         ) : (
-          <button type="button" className={UNDO} onClick={() => void undoBotChange(items.map((c) => c.id))}>Undo</button>
+          <button type="button" className={UNDO} data-hub-bot-change-undo onClick={() => void undoBotChange(items.map((c) => c.id))}>
+            {(row.kind === "one" && row.change.undoLabel) || "Undo"}
+          </button>
         )}
       </div>
       {items.find((c) => c.problem) ? <div className="mt-1 text-xs text-content/60" data-hub-bot-change-problem>{items.find((c) => c.problem)!.problem}</div> : null}

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { recordSavedSoul } from "./soulSaved";
 import { ASK_ASH_RULES } from "../../hub/model/askAshRules";
 import { AUTOPILOT_RULES } from "../../autopilot/model/autopilotRules";
 import {
@@ -102,6 +103,7 @@ export function loadMonoFiles(monoId: string): Promise<MonoFiles> {
 const loading = new Map<string, Promise<MonoFiles>>();
 
 async function readMonoFiles(monoId: string): Promise<MonoFiles> {
+  await soulOpenCheck?.(monoId).catch(() => undefined);
   const loaded = await invoke<LoadedFiles>("mono_load", folder(monoId));
   // Once read, its old project folder is its own.
   if (findMono(monoId)?.legacyProject)
@@ -116,6 +118,7 @@ async function readMonoFiles(monoId: string): Promise<MonoFiles> {
       text: soul,
       expectedHash: loaded.soulHash,
     });
+    recordSavedSoul(monoId, soul, soulHash);
     updateMono(monoId, (mono) => ({ ...mono, instructions: "" }));
     return { ...loaded, soul, soulHash };
   } catch (error) {
@@ -160,12 +163,21 @@ export async function editMonoFile(
   }
 }
 
-/** One agent file and the hash a save over it must name. */
+/** One agent file, the hash a save over it must name, and when it last changed. */
 export async function readAgentFile(
   monoId: string,
   path: AgentFilePath,
-): Promise<{ text: string | null; hash: string }> {
+): Promise<{ text: string | null; hash: string; modifiedMs?: number }> {
   return invoke("mono_read", { ...folder(monoId), path });
+}
+
+/**
+ * Before a Mono's files are opened, its soul is checked against the last one the app saved (hub/model/soulTamper.ts,
+ * registered from there so this file stays free of the hub).
+ */
+let soulOpenCheck: ((monoId: string) => Promise<unknown>) | undefined;
+export function setSoulOpenCheck(check: ((monoId: string) => Promise<unknown>) | undefined): void {
+  soulOpenCheck = check;
 }
 
 /** Saves over `expectedHash`; throws `MonoFileConflict` if it moved. */
@@ -182,6 +194,8 @@ export async function writeAgentFile(
       text,
       expectedHash: expectedHash ?? null,
     });
+    // Every soul the app saves is the one the tamper check compares with.
+    if (path === "SOUL.md") recordSavedSoul(monoId, text, hash);
     window.dispatchEvent(new CustomEvent(FILES_CHANGED));
     return hash;
   } catch (error) {

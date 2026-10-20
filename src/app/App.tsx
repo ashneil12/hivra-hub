@@ -1,4 +1,5 @@
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
+import { noteSessionRuns } from "../features/monos/model/sessionRuns";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
@@ -2653,6 +2654,8 @@ function Workspace({
 
   useEffect(() => {
     syncDockBadge(sessions);
+    // When chats run, for the soul tamper check (hub/model/soulTamper.ts).
+    noteSessionRuns(sessions);
   }, [sessions]);
 
   useEffect(() => {

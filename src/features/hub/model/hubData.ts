@@ -18,6 +18,7 @@ import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects 
 import { refreshSoulsSoon } from "./soulRefresh";
 import { renameAshLeadToHubLead } from "./monoRename";
 import { applyMemoryLineFixes } from "./memoryLineFixes";
+import { checkSouls, watchSoulOpens } from "./soulTamper";
 import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
@@ -128,7 +129,10 @@ function startHubBundleLeads(store: HubStore): void {
     );
     seatLeadershipTeams(strip);
     // After the seeds: a Mono whose soul is behind the app's template takes it, as a Bot change with Undo (soulRefresh.ts).
+    // Then every soul is checked against the last one the app saved, before anything else reads it (soulTamper.ts).
+    watchSoulOpens();
     void seedTeamFiles()
+      .then(() => checkSouls())
       .then(() => applyMemoryLineFixes())
       .then(() => refreshSoulsSoon());
   };
