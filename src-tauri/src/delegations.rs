@@ -14,6 +14,10 @@
 //! - **Resumed turns** (auto-continue, a usage-limit resume, a later message in an interrupted child) re-attach to the
 //!   child's row and bump its generation, so their report has a new receipt (`mono-completion-<requestId>-g<n>`).
 //! - **The tree**: `parent_id` is the open delegation the owner itself is working for, `root_id` the top of that chain.
+//! - **Followed briefs** (`follow`: `queue`, `steer`, `lead`): a brief sent to a chat that was busy (queued behind its
+//!   work, or steered into it) or a leadership Mono's brief to a project Lead's long-running chat. The app reports these
+//!   by watching the child chat (monos/model/followedBriefs.ts), not from a launch's own callback, so they never take
+//!   the child over from earlier rows, a plain record never cancels them, and a resumed turn never re-attaches to them.
 //! - **Outbox**: every change bumps `version`. One thread copies rows newer than `mirrored_version` to Ash OS
 //!   (`ash-hub-delegation`), and each chat's Claude session binding (`ash-hub-chat-bind`), and replays whatever is left
 //!   at boot. It goes through `hub::Endpoint`, so a dev copy only ever reaches the stub or the read-only proxy.
@@ -111,7 +115,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            mirrored_version INTEGER NOT NULL DEFAULT 0,
            mirror_error TEXT
          );",
-    )
+    )?;
+    // Added after the first rows were written: older stores get the column here.
+    let has_follow = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'follow'")?
+        .exists([])?;
+    if !has_follow {
+        conn.execute_batch("ALTER TABLE delegations ADD COLUMN follow TEXT;")?;
+    }
+    Ok(())
 }
 
 /// One delegation, as the webview and the tests see it.
@@ -148,6 +160,8 @@ pub struct Delegation {
     pub version: i64,
     pub mirrored_version: i64,
     pub mirror_error: Option<String>,
+    /// `queue`, `steer` or `lead` for a followed brief (see the module docs); none for a launch's own report.
+    pub follow: Option<String>,
 }
 
 impl Delegation {
@@ -178,7 +192,7 @@ impl Delegation {
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error";
+     mirrored_version, mirror_error, follow";
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
@@ -214,6 +228,7 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         version: row.get(27)?,
         mirrored_version: row.get(28)?,
         mirror_error: row.get(29)?,
+        follow: row.get(30)?,
     })
 }
 
@@ -240,7 +255,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
     conn.execute(
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)"
+             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)"
         ),
         params![
             d.id,
@@ -273,6 +288,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.version,
             d.mirrored_version,
             d.mirror_error,
+            d.follow,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -395,7 +411,16 @@ pub struct RecordInput {
     pub ask_ids: Vec<String>,
     #[serde(default)]
     pub by: Option<String>,
+    /// A followed brief: `queue`, `steer` or `lead` (module docs).
+    #[serde(default)]
+    pub follow: Option<String>,
+    /// The open row the owner works for, when the app knows better than "the newest" (a Lead with several briefs
+    /// open). Used only if it is open and names the owner as its child.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
+
+const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
 
 fn by_request(conn: &Connection, owner: &str, request: &str) -> Result<Option<Delegation>, String> {
     Ok(query(
@@ -430,6 +455,15 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
     if asks.len() > ASKS_MAX || !asks.iter().all(|a| ask_id_ok(a)) {
         return Err("ask ids must be up to 50 ask ids (a_...)".into());
     }
+    let follow = input
+        .follow
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
+    if let Some(f) = follow.as_deref() {
+        if !FOLLOWS.contains(&f) {
+            return Err("follow must be queue, steer or lead".into());
+        }
+    }
     let by = actor(input.by);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -455,7 +489,17 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         nudge();
         return Ok(existing);
     }
-    for mut older in open_for_child(&tx, &child)? {
+    // A followed brief waits its turn (or joins the work) instead of taking the child over, and a plain request only
+    // takes over plain rows: a Lead's open briefs stay open.
+    let take_over = if follow.is_some() {
+        Vec::new()
+    } else {
+        open_for_child(&tx, &child)?
+            .into_iter()
+            .filter(|d| d.follow.is_none())
+            .collect()
+    };
+    for mut older in take_over {
         older.state = CANCELLED.into();
         older.error = Some("A later request to that session took it over.".into());
         older.settled_at = Some(now);
@@ -466,8 +510,12 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         older.touch(now);
         save(&tx, &older)?;
     }
-    // The owner is itself a worker when an open delegation names it as the child: that one is the parent.
-    let parent = open_for_child(&tx, &owner)?.into_iter().next();
+    // The owner is itself a worker when an open delegation names it as the child: that one is the parent (the one the
+    // app names, when it is open and really the owner's; else the newest).
+    let open_above = open_for_child(&tx, &owner)?;
+    let named =
+        text(input.parent_id, 200).and_then(|id| open_above.iter().find(|p| p.id == id).cloned());
+    let parent = named.or_else(|| open_above.into_iter().next());
     let id = format!("t-{}", uuid::Uuid::new_v4());
     let mut row = Delegation {
         root_id: parent
@@ -503,8 +551,16 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         version: 1,
         mirrored_version: 0,
         mirror_error: None,
+        follow: follow.clone(),
     };
-    row.note(now, &by, "recorded", json!({}));
+    row.note(
+        now,
+        &by,
+        "recorded",
+        follow
+            .map(|f| json!({ "follow": f }))
+            .unwrap_or_else(|| json!({})),
+    );
     insert(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
     nudge();
@@ -585,7 +641,8 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
 
 /// A new turn in a delegated child picks its row back up. An open row (its turn was cut off by a quit or crash) always
 /// does; a failed or cancelled one only for a resumed turn (`resume`: auto-continue, a usage-limit resume), and never
-/// one whose report was thrown away. The generation goes up, so the next report has its own receipt.
+/// one whose report was thrown away, or a followed brief (the app reports those by watching the chat). The generation
+/// goes up, so the next report has its own receipt.
 pub fn reattach(
     conn: &mut Connection,
     child_session: &str,
@@ -600,7 +657,7 @@ pub fn reattach(
         .map_err(|e| e.to_string())?;
     let latest = query(
         &tx,
-        "WHERE child_session = ?1 AND delivery != 'disposed' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "WHERE child_session = ?1 AND delivery != 'disposed' AND follow IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1",
         &[&child],
     )?
     .into_iter()
@@ -1932,6 +1989,118 @@ mod tests {
         assert_eq!(
             other.root_id, other.id,
             "another top-level delegation starts its own tree"
+        );
+    }
+
+    fn followed(owner: &str, request: &str, child: &str, follow: &str) -> RecordInput {
+        RecordInput {
+            follow: Some(follow.into()),
+            ..launch(owner, request, child)
+        }
+    }
+
+    #[test]
+    fn a_followed_brief_waits_its_turn_and_a_plain_request_never_cancels_one() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        // The child is busy with an earlier plain request; a brief queued behind it leaves that one running.
+        let earlier = record(&mut conn, launch("cos", "r1", "lead-chat"), 10).unwrap();
+        let queued = record(&mut conn, followed("pm", "r2", "lead-chat", "queue"), 11).unwrap();
+        assert_eq!(queued.follow.as_deref(), Some("queue"));
+        assert_eq!(get(&conn, &earlier.id).unwrap().unwrap().state, RUNNING);
+        assert_eq!(queued.log[0]["follow"], json!("queue"));
+        // A Lead's two briefs from two leadership Monos are both open.
+        let lead_a = record(
+            &mut conn,
+            followed("cos", "lead-a", "lead-chat", "lead"),
+            12,
+        )
+        .unwrap();
+        let lead_b = record(&mut conn, followed("pm", "lead-b", "lead-chat", "lead"), 13).unwrap();
+        // A later plain request takes over the plain row only.
+        record(&mut conn, launch("frank", "r3", "lead-chat"), 14).unwrap();
+        assert_eq!(get(&conn, &earlier.id).unwrap().unwrap().state, CANCELLED);
+        for id in [&queued.id, &lead_a.id, &lead_b.id] {
+            assert_eq!(get(&conn, id).unwrap().unwrap().state, RUNNING, "{id}");
+        }
+        // A resumed turn in that chat never re-attaches to a followed brief: the app watches those itself.
+        let resumed = reattach(&mut conn, "lead-chat", true, None, 15)
+            .unwrap()
+            .unwrap();
+        assert!(resumed.follow.is_none());
+        assert!(
+            record(&mut conn, followed("cos", "bad", "lead-chat", "later"), 16)
+                .unwrap_err()
+                .contains("follow must be")
+        );
+    }
+
+    #[test]
+    fn a_leads_worker_goes_under_the_brief_the_app_names() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        // Two briefs open on the Lead's chat; the newest is still waiting in its queue.
+        let working = record(
+            &mut conn,
+            followed("cos", "lead-a", "lead-chat", "lead"),
+            10,
+        )
+        .unwrap();
+        let waiting = record(&mut conn, followed("pm", "lead-b", "lead-chat", "lead"), 11).unwrap();
+        let worker = record(
+            &mut conn,
+            RecordInput {
+                parent_id: Some(working.id.clone()),
+                ..launch("lead-chat", "w1", "worker")
+            },
+            12,
+        )
+        .unwrap();
+        assert_eq!(
+            (worker.parent_id.as_deref(), worker.root_id.as_str()),
+            (Some(working.id.as_str()), working.id.as_str())
+        );
+        // A parent that isn't open above the owner is ignored: the newest open one is used.
+        let fallback = record(
+            &mut conn,
+            RecordInput {
+                parent_id: Some("t-not-mine".into()),
+                ..launch("lead-chat", "w2", "worker-2")
+            },
+            13,
+        )
+        .unwrap();
+        assert_eq!(fallback.parent_id.as_deref(), Some(waiting.id.as_str()));
+        // The Lead-under-leadership rows are one tree (H4's cascade Stop walks it).
+        let ids: Vec<String> = tree(&conn, &worker.id)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec![working.id.clone(), worker.id.clone()]);
+    }
+
+    #[test]
+    fn an_older_store_gets_the_follow_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE delegations (id TEXT PRIMARY KEY, owner_session TEXT NOT NULL, owner_mono TEXT, batch_id TEXT,
+               parent_id TEXT, root_id TEXT NOT NULL, child_session TEXT NOT NULL, request_id TEXT NOT NULL,
+               generation INTEGER NOT NULL DEFAULT 1, project TEXT, title TEXT, brief TEXT, goal TEXT,
+               ask_ids TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, error_class TEXT, error TEXT, retryable INTEGER,
+               resets_at INTEGER, result TEXT, pending_question TEXT, delivery TEXT NOT NULL, delivery_message TEXT,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, settled_at INTEGER,
+               log TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1,
+               mirrored_version INTEGER NOT NULL DEFAULT 0, mirror_error TEXT, UNIQUE (owner_session, request_id));",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        let mut conn = conn;
+        let row = record(&mut conn, followed("cos", "r", "lead-chat", "lead"), 1).unwrap();
+        assert_eq!(
+            get(&conn, &row.id).unwrap().unwrap().follow.as_deref(),
+            Some("lead")
         );
     }
 

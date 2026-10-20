@@ -82,13 +82,14 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 41] = [
+const APP_ACTIONS: [&str; 42] = [
     "app.version",
     "app.ship",
     "models.list",
     "sessions.list",
     "sessions.read",
     "sessions.send",
+    "sessions.queue",
     "sessions.draft",
     "sessions.start",
     "sessions.stop",
@@ -155,11 +156,17 @@ Actions:
                   reasoning are omitted. Omit before for the newest page;
                   pass nextBefore from a result for older exchanges. maxChars
                   caps each message (200-6000, default 1200).
-  sessions.send  {"sessionId":"...","prompt":"...","notifyOnComplete":true}
-                  Submit a follow-up to an idle session in this project.
-                  A busy session is rejected. Reuse --request-id on retries.
-                  Optional notifyOnComplete:true asks for a completion report
-                  in the calling Mono's chat. It waits until that Mono is idle.
+  sessions.send  {"sessionId":"...","prompt":"...","notifyOnComplete":true,"mode":"auto"}
+                  Submit a follow-up to a session in this project. To a busy
+                  session it queues behind the current work (mode "queue", or
+                  "auto") or steers into it (mode "steer"); the result says
+                  "delivery": "started", "queued" or "steered". Reuse
+                  --request-id on retries. Optional notifyOnComplete:true asks
+                  for a completion report in the calling Mono's chat. It waits
+                  until that Mono is idle.
+  sessions.queue {"sessionId":"..."} or {"cancel":"<request id>"}
+                  The briefs you queued that haven't gone in yet (all your
+                  projects, or one session), or take one back out.
   sessions.draft {"sessionId":"...","prompt":"..."}
                   Save an unsent draft in an idle project session. Existing
                   drafts are preserved; send or remove one in MonoCode first.
@@ -304,7 +311,11 @@ Actions:
                   stored task (taskId) that reports back as a new turn once you
                   are idle. asks are the Ash OS ask ids it covers; isolation
                   "worktree" gives it its own git worktree. Optional project,
-                  model (an id or a family such as "sonnet") and effort. Reuse
+                  model (an id or a family such as "sonnet") and effort.
+                  Leadership team: "lead":"<Lead id or project>" briefs that
+                  project's Lead in its own chat instead ("whenBusy":"queue" or
+                  "steer"); its final report comes back once its workers have
+                  reported. Reuse
                   --request-id on retries. The monocode MCP tools (delegate_task,
                   task_status, task_wait, task_cancel, task_answer) call these.
   tasks.status   {"taskIds":["t-..."]}  Your tasks: status, activity, result and
@@ -695,6 +706,7 @@ mod tests {
         for action in [
             "sessions.read",
             "sessions.send",
+            "sessions.queue",
             "sessions.draft",
             "sessions.stop",
             "sessions.archive",

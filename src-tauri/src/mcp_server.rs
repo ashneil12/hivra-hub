@@ -208,7 +208,9 @@ fn tools() -> Value {
                     "isolation": { "type": "string", "enum": ["shared", "worktree"], "default": "shared" },
                     "mode": { "type": "string", "enum": ["async", "wait"], "default": "async" },
                     "timeoutMinutes": wait_minutes.clone(),
-                    "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." }
+                    "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
+                    "lead": { "type": "string", "description": "Leadership team only: brief a project's Lead instead of starting a worker (its id, or the project's id or name). The brief goes into the Lead's own long-running chat; the Lead delegates to its workers and its final report comes back to you (and to the project's Leadership room) as a new turn." },
+                    "whenBusy": { "type": "string", "enum": ["queue", "steer"], "default": "queue", "description": "With lead: if the Lead is mid-turn, queue the brief behind its current work (default) or steer it into that work." }
                 },
                 "required": ["brief"],
                 "additionalProperties": false
@@ -272,7 +274,7 @@ fn tools() -> Value {
     ])
 }
 
-const DELEGATE_APP_FIELDS: [&str; 8] = [
+const DELEGATE_APP_FIELDS: [&str; 10] = [
     "brief",
     "title",
     "asks",
@@ -281,6 +283,8 @@ const DELEGATE_APP_FIELDS: [&str; 8] = [
     "model",
     "effort",
     "isolation",
+    "lead",
+    "whenBusy",
 ];
 
 /// Run one tool. An error is the reason the model reads (a refusal from the app comes through word for word).
@@ -347,9 +351,18 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         "hasPendingQuestion": false,
         "waitTimedOut": false,
     });
+    // A Lead brief says how it went in (started, queued behind the Lead's work, or steered into it) and to whom.
+    for key in ["delivery", "lead"] {
+        if let Some(value) = started.get(key) {
+            out[key] = value.clone();
+        }
+    }
     let task = started.get("taskId").and_then(Value::as_str);
     let Some(task) = task.filter(|_| wait_mode) else {
-        out["note"] = json!("Started. Its report comes back to you as a new turn once you are idle: tell Ash in one line what you started and end your turn.");
+        out["note"] = match started.get("note") {
+            Some(note) => note.clone(),
+            None => json!("Started. Its report comes back to you as a new turn once you are idle: tell Ash in one line what you started and end your turn."),
+        };
         return Ok(out);
     };
     let ids = vec![task.to_string()];
@@ -879,6 +892,38 @@ mod tests {
                 "isolation": "worktree",
             }),
             "mode, timeoutMinutes and clientRequestId stay in the tool"
+        );
+    }
+
+    #[test]
+    fn a_lead_brief_passes_lead_and_when_busy_and_says_how_it_went_in() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "tasks.delegate");
+            assert_eq!(input["lead"], "hub", "the app resolves the Lead");
+            assert_eq!(input["whenBusy"], "steer");
+            Ok(json!({
+                "taskId": "t-9",
+                "childSessionId": "lead-chat",
+                "status": "running",
+                "delivery": "queued",
+                "lead": "MonoCode Hub lead",
+                "note": "Queued behind MonoCode Hub lead's current work."
+            }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Ship the room", "lead": "hub", "whenBusy": "steer", "clientRequestId": "b1" }),
+        );
+        let out = outcome.unwrap();
+        assert_eq!(
+            (&out["taskId"], &out["delivery"], &out["lead"]),
+            (&json!("t-9"), &json!("queued"), &json!("MonoCode Hub lead"))
+        );
+        assert_eq!(
+            out["note"],
+            "Queued behind MonoCode Hub lead's current work."
         );
     }
 
