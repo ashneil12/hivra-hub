@@ -239,6 +239,15 @@ export class MemoryDelegations implements DelegationsBackend {
   }
 
   /** delegations.rs `set_stall`: only a running row of that generation, once per kind. */
+  async noteRedo(ownerSession: string, id: string, task: string) {
+    this.calls.push(`redo:${id}:${task}`);
+    const row = this.rows.get(id);
+    if (!row || row.ownerSession !== ownerSession) throw new Error("no task of yours has that id");
+    if (row.id === task) throw new Error("a task can't redo itself");
+    this.note(row, `owner:${ownerSession}`, "lead_redo", { task });
+    return { applied: true, row: this.copy(row) };
+  }
+
   async setStall(input: StallInput) {
     this.calls.push(`stall:${input.id}:${input.kind ?? "clear"}`);
     const row = this.rows.get(input.id);

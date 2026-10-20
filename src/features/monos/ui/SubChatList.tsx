@@ -7,7 +7,7 @@ import { useState } from "react";
 import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
 import { shownSubChats, subChatsOpen, toggleSubChats, type subChatAttention } from "../model/subChats";
-import { delegationLine, type StuckWorker } from "../model/workerStuck";
+import { delegationLine, runningFor, type StuckWorker } from "../model/workerStuck";
 
 /** A child chat's state as a small mark: working, asking its Lead, stuck, done, failed or stopped. */
 export function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; stalled?: boolean }) {
@@ -99,19 +99,26 @@ export function SubChatList({
           {shown.map((chat) => {
             const stalled = chat.state === "running" && !!chat.row?.stallKind;
             const line = childLine(chat, now);
+            // How long it has run: muted, after its title, never a second status.
+            const ran = chat.row ? runningFor(chat.row, now) : undefined;
             return (
               <button
                 key={chat.sessionId}
                 type="button"
                 {...{ [attrs.child]: chat.sessionId }}
                 data-state={stalled ? "stalled" : chat.state}
-                title={`${chat.title}, ${line}`}
-                aria-label={`Open ${chat.title}, ${line}`}
+                title={`${chat.title}, ${line}${ran ? `, running ${ran}` : ""}`}
+                aria-label={`Open ${chat.title}, ${line}${ran ? `, running ${ran}` : ""}`}
                 onClick={() => onOpen(chat)}
                 className="flex h-6 min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/60 hover:bg-content/6 hover:text-content"
               >
                 <ChildChatMark state={chat.state} stalled={stalled} />
                 <span className="min-w-0 truncate">{chat.title}</span>
+                {ran ? (
+                  <span data-sub-chat-ran className="ml-auto shrink-0 text-[11px] tabular-nums text-content/35">
+                    {ran}
+                  </span>
+                ) : null}
               </button>
             );
           })}

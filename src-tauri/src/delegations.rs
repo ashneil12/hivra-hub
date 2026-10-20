@@ -1078,6 +1078,42 @@ pub fn cancel(
     Ok(changed)
 }
 
+/// The owner retried or split one of its tasks (delegate_task `redoes`): `task` is the new task that takes it on. Kept
+/// in the row's log, so its card can say what the Lead did after a restart too; several in one go are a split.
+pub fn note_redo(
+    conn: &mut Connection,
+    owner_session: &str,
+    id: &str,
+    task: &str,
+    now: i64,
+) -> Result<Change, String> {
+    let owner = session_id(owner_session, "owner session")?;
+    let task = id_like(task, "task", 128)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, id)?.filter(|row| row.owner_session == owner) else {
+        return Err("no task of yours has that id".into());
+    };
+    if row.id == task {
+        return Err("a task can't redo itself".into());
+    }
+    row.note(
+        now,
+        &format!("owner:{owner}"),
+        "lead_redo",
+        json!({ "task": task }),
+    );
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
 /// A launch the CLI refused: nothing ran and the calling turn already heard why, so no report is owed. A retry with
 /// the same receipt revives it (`record`).
 pub fn refuse(
@@ -1730,6 +1766,27 @@ pub fn delegations_cancel(
     let rows = cancel(&mut *store.lock_conn()?, &ids, reason, by, now_millis())?;
     changed(&app, &rows.iter().collect::<Vec<_>>());
     Ok(rows)
+}
+
+#[tauri::command(async)]
+pub fn delegations_note_redo(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    owner_session: String,
+    id: String,
+    task: String,
+) -> Result<Change, String> {
+    let change = note_redo(
+        &mut *store.lock_conn()?,
+        &owner_session,
+        &id,
+        &task,
+        now_millis(),
+    )?;
+    if let Some(row) = &change.row {
+        changed(&app, &[row]);
+    }
+    Ok(change)
 }
 
 #[tauri::command(async)]
@@ -2570,6 +2627,31 @@ mod tests {
         let stored = get(&conn, &row.id).unwrap().unwrap();
         assert_eq!(stored.stall_kind.as_deref(), Some("idle"));
         assert_eq!(stored.stalled_at, Some(960));
+    }
+
+    #[test]
+    fn a_lead_redo_is_kept_on_its_own_task_only() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        let noted = note_redo(&mut conn, "lead", &row.id, "t-new", 500).unwrap();
+        assert!(noted.applied);
+        let noted = noted.row.unwrap();
+        assert!(
+            noted.version > row.version,
+            "the action is copied to Ash OS"
+        );
+        let entry = noted.log.last().unwrap();
+        assert_eq!(entry["event"], "lead_redo");
+        assert_eq!(entry["task"], "t-new");
+        assert_eq!(entry["by"], "owner:lead");
+        assert_eq!(entry["at"], 500);
+        // It survives a read back from the store (an app restart).
+        let stored = get(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(stored.log.last().unwrap()["event"], "lead_redo");
+        // Another chat's task, or itself: refused.
+        assert!(note_redo(&mut conn, "someone-else", &row.id, "t-new", 600).is_err());
+        assert!(note_redo(&mut conn, "lead", &row.id, &row.id, 600).is_err());
     }
 
     #[test]

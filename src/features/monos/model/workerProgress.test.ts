@@ -9,7 +9,7 @@ import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import { DelegationTracker, type Delegation } from "./delegations";
 import { MemoryDelegations } from "./memoryDelegations";
 import { StallWatch } from "./workerStall";
-import { countWork, delegationLine, failureLine, shortSplit, stuckWorkers } from "./workerStuck";
+import { countWork, delegationLine, failureLine, runningFor, shortSplit, stuckWorkers } from "./workerStuck";
 import {
   failingTestName,
   gaveUpReason,
@@ -220,7 +220,7 @@ describe("ProgressCheck: the hour", () => {
     await t.look(60 * MIN);
     await t.look(120 * MIN);
     expect(t.lead[1]).toBe(
-      'Hourly check on "Fix the save bug": no commits, file changes or test runs for 2 hours, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief. Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
+      'Hourly check on "Fix the save bug": no commits, file changes or test runs for 2 hours, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it (task_cancel t-1), split it into smaller pieces and brief them, or retry it with a clearer brief (delegate_task with redoes "t-1" on each, so its card shows what you did). Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
     );
     expect(t.ash).toEqual([]);
     expect(t.stored()).toMatchObject({ state: "running", stallKind: "loop", stallReason: "No commits, file changes or test runs for 2 hours · its Lead is on it" });
@@ -343,8 +343,9 @@ describe("ProgressCheck: the hour", () => {
     expect([...t.ash, ...t.lead, ...t.worker]).toEqual([]);
     expect(t.stopped).toEqual([]);
     const row = { ...t.stored(), createdAt: 0 };
-    expect(delegationLine(row, 6 * HOUR + 20 * MIN)).toBe("working · 6 h 20 min");
-    expect(delegationLine(row, 59 * MIN)).toBe("working");
+    // Its state word stays "working"; how long it has run is a muted value of its own (SubChatList.tsx).
+    expect(delegationLine(row, 6 * HOUR + 20 * MIN)).toBe("working");
+    expect(runningFor(row, 6 * HOUR + 20 * MIN)).toBe("6 h 20 min");
   });
 
   it("with no git folder it judges on the chat alone: edits are progress", async () => {
@@ -424,7 +425,7 @@ describe("ProgressCheck: self-repair", () => {
     await t.look(3 * HOUR);
     expect(t.worker).toHaveLength(3);
     expect(t.lead).toEqual([
-      '"Fix the save bug": crashed 4 times, retries gave up: Claude exited with code 1. Handle it yourself, without asking Ash: retry it differently, split it, or stop it, then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
+      '"Fix the save bug": crashed 4 times, retries gave up: Claude exited with code 1. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "t-1"), or stop it (task_cancel t-1), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
     ]);
     expect(t.dropped).toHaveLength(3); // The last failure reaches its Lead.
     // Its red card says what happened; no banner pushed while it's its Lead's.

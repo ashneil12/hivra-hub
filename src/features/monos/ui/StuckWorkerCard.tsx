@@ -17,7 +17,7 @@ import {
   takeSuggestion,
   type StuckResult,
 } from "../model/stuckActions";
-import type { StuckWorker } from "../model/workerStuck";
+import { leadActionLine, type StuckWorker } from "../model/workerStuck";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
@@ -141,6 +141,8 @@ export function StuckWorkerCard({
   const prompt = liveQuestion(stuck);
   const options = questionOptions(prompt);
   const pick = suggestion(prompt, stuck);
+  // What its Lead last did about it, so Ash sees someone acted ("Hivra lead retried it at 2h").
+  const acted = stuck.kind === "asking" ? undefined : leadActionLine(stuck.row, leadNameOf(stuck));
   const run = async (call: () => StuckResult | Promise<StuckResult>) => {
     setBusy(true);
     setProblem(null);
@@ -172,6 +174,11 @@ export function StuckWorkerCard({
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-stuck-line>
         {stuck.line}
       </div>
+      {acted ? (
+        <div className="whitespace-normal break-words text-[12px] leading-5 text-content/60" data-stuck-lead-action>
+          {acted}
+        </div>
+      ) : null}
       {stuck.kind === "asking" && pick && !options.length ? (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-stuck-pick>
           Suggests: {pick}
