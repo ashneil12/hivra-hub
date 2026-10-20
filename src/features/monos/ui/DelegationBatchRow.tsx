@@ -1,8 +1,9 @@
 // A Lead's delegated batch in its chat (H4; T3's agentSpawnSummary): one counted line ("Delegated 3: 2 working, 1
-// failed"), then each worker's chat as a clickable chip with a Stop while it runs. Ash's Stop on a row stops that task
+// failed"), then each worker's chat as a clickable chip with a Stop while it runs, and an amber Stuck beside one that
+// stalled (workerStall.ts; its card above the composer says how). Ash's Stop on a row stops that task
 // and everything it delegated in turn (stopTree.ts), and no report follows for it.
 import { useState } from "react";
-import { Square } from "../../../shared/ui/icons";
+import { CircleAlert, Square } from "../../../shared/ui/icons";
 import type { MonoSpawnedSession } from "../../sessions/model/session";
 import {
   delegationActions,
@@ -77,7 +78,9 @@ export function DelegationBatchRow({
       {launches.map((launch, index) => {
         const row = stoppableRow(launch.sessionId, rows);
         const running =
-          states[index] === "working" || states[index] === "input";
+          states[index] === "working" ||
+          states[index] === "input" ||
+          states[index] === "stuck";
         const busy = stopping.has(launch.sessionId);
         return (
           <div
@@ -90,6 +93,15 @@ export function DelegationBatchRow({
               open={openSessionId === launch.sessionId}
               onOpen={onOpen ? () => onOpen(launch.sessionId) : undefined}
             />
+            {states[index] === "stuck" ? (
+              <span
+                data-delegation-stuck={launch.sessionId}
+                className="flex shrink-0 items-center gap-1 font-sans text-[12px] text-amber-400"
+              >
+                <CircleAlert className="size-3.5" strokeWidth={1.75} />
+                Stuck
+              </span>
+            ) : null}
             {row && running ? (
               <button
                 type="button"

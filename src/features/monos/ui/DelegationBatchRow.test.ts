@@ -139,6 +139,33 @@ describe("DelegationBatchRow", () => {
     expect(onOpen).toHaveBeenCalledWith("w3");
   });
 
+  it("counts a stalled worker as stuck while its chat still spins, marks it, and keeps its Stop", () => {
+    setDelegationRows([
+      row("t-1", "w1", "running"),
+      { ...row("t-2", "w2", "running"), stallKind: "quiet", stallReason: "", stalledAt: 1 },
+    ]);
+    const views = new Map<string, LaunchedSessionView>([
+      ["w1", { state: "working", title: "Fix saves" }],
+      ["w2", { state: "working", title: "Fix audio" }],
+    ]);
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w1", "Fix saves"), launch("w2", "Fix audio")],
+          views,
+        }),
+      ),
+    );
+    expect(container.querySelector("[data-delegation-rollup]")?.textContent).toBe(
+      "Delegated 2: 1 working, 1 stuck",
+    );
+    expect(container.querySelector('[data-delegation-stuck="w2"]')?.textContent).toBe("Stuck");
+    expect(container.querySelector('[data-delegation-stuck="w1"]')).toBeNull();
+    expect(
+      [...container.querySelectorAll<HTMLElement>("[data-delegation-stop]")].map((b) => b.dataset.delegationStop),
+    ).toEqual(["w1", "w2"]);
+  });
+
   it("falls back on the stored rows for chats this window hasn't loaded, and shows a lone launch without a count", () => {
     setDelegationRows([row("t-1", "w1", "question")]);
     act(() =>

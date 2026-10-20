@@ -14,11 +14,13 @@ import type {
   LaunchedSessionView,
 } from "./monoSpawnedSessions";
 
-const ROLLUP_ORDER: ReadonlyArray<
-  [LaunchedSessionState, (n: number) => string]
-> = [
+/** A worker as a batch line counts it: a launched chat's state, or `stuck` for one that stalled (workerStall.ts). */
+export type RollupState = LaunchedSessionState | "stuck";
+
+const ROLLUP_ORDER: ReadonlyArray<[RollupState, (n: number) => string]> = [
   ["working", (n) => `${n} working`],
   ["input", (n) => `${n} asking`],
+  ["stuck", (n) => `${n} stuck`],
   ["failed", (n) => `${n} failed`],
   ["stopped", (n) => `${n} stopped`],
   ["done", (n) => `${n} done`],
@@ -27,9 +29,9 @@ const ROLLUP_ORDER: ReadonlyArray<
 
 /** One batch's counted line: "Delegated 3: 2 working, 1 failed", or "Delegated 2: all done". */
 export function batchRollup(
-  states: readonly (LaunchedSessionState | undefined)[],
+  states: readonly (RollupState | undefined)[],
 ): string {
-  const counts = new Map<LaunchedSessionState, number>();
+  const counts = new Map<RollupState, number>();
   let known = 0;
   for (const state of states) {
     if (!state) continue;
@@ -56,11 +58,15 @@ const ROW_STATE: Record<DelegationState, LaunchedSessionState> = {
   cancelled: "stopped",
 };
 
-/** Where a launched chat stands: what its live session shows, else what its stored row says. */
+/**
+ * Where a launched chat stands: what its live session shows, else what its stored row says. A stalled row is stuck
+ * even while its chat still reads as working: that is exactly when it is.
+ */
 export function launchState(
   view: LaunchedSessionView | undefined,
-  row: Pick<Delegation, "state"> | undefined,
-): LaunchedSessionState | undefined {
+  row: Pick<Delegation, "state" | "stallKind"> | undefined,
+): RollupState | undefined {
+  if (row?.state === "running" && row.stallKind && (!view || view.state === "working")) return "stuck";
   return view?.state ?? (row ? ROW_STATE[row.state] : undefined);
 }
 

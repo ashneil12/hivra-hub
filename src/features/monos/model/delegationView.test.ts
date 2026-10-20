@@ -68,6 +68,13 @@ describe("batchRollup", () => {
     expect(launchState(undefined, { state: "cancelled" })).toBe("stopped");
     expect(launchState(undefined, undefined)).toBeUndefined();
   });
+
+  it("counts a stalled worker as stuck even while its chat still reads as working", () => {
+    expect(launchState({ state: "working", title: "x" }, { state: "running", stallKind: "quiet" })).toBe("stuck");
+    expect(launchState(undefined, { state: "running", stallKind: "idle" })).toBe("stuck");
+    expect(launchState({ state: "input", title: "x" }, { state: "running", stallKind: "quiet" })).toBe("input");
+    expect(batchRollup(["working", "stuck", "failed"])).toBe("Delegated 3: 1 working, 1 stuck, 1 failed");
+  });
 });
 
 describe("a Lead's work", () => {
