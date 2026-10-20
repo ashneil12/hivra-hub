@@ -174,6 +174,7 @@ const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
+if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
   -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi ;;
   -d) if [ "$sig" = adhoc ]; then echo 'designated => cdhash H"0000"'; else echo "designated => identifier \\"${HUB}\\" and certificate leaf[subject.CN] = \\"$sig\\""; fi ;;
@@ -716,6 +717,36 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.equal(stampOf(w.app).sha, w.sha);
   assert.equal(stampOf(answer.previousKeptAt).sha, SHA_A);
   assert.ok(answer.previousKeptAt.startsWith(path.join(w.home, "Archive/monocode/ships/legacy-")));
+});
+
+test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fails leaves the old app installed", () => {
+  const legacy = (w) =>
+    spawnSync(NODE, ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--legacy", "--json", "--repo", w.repo], {
+      env: w.env,
+      encoding: "utf8",
+    });
+  const unsigned = world({ newBundle: { signature: "unsigned" } });
+  let result = legacy(unsigned);
+  assert.equal(result.status, 1, result.stderr);
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.ok(answer.refusals.some((refusal) => /isn't signed/.test(refusal)), JSON.stringify(answer.refusals));
+  assert.equal(stampOf(unsigned.app).sha, SHA_A);
+
+  // ditto stops on a file it can't read, after copying part of the bundle.
+  const w = world();
+  const locked = path.join(w.bundle, "Contents/Resources/locked");
+  fs.writeFileSync(locked, "unreadable");
+  fs.chmodSync(locked, 0);
+  try {
+    result = legacy(w);
+  } finally {
+    fs.chmodSync(locked, 0o600);
+  }
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Copying the bundle failed/);
+  assert.equal(stampOf(w.app).sha, SHA_A, "the old app is still installed");
+  assert.deepEqual(fs.readdirSync(path.join(w.home, "Applications")), ["MonoCode Hub.app"], "no half copy left beside it");
+  assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
 });
 
 test("a fake app quits by itself once the test run that started it is gone", async () => {
