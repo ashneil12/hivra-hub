@@ -9265,6 +9265,8 @@ function Workspace({
     tracker: delegations,
     sessions,
     sessionsRef,
+    // A Lead asked for its report on its own (a message steered into its last turn on the brief): like a report.
+    ask: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
     onLeadReport: ({ row, receipt, report, answer }) =>
       row.project && row.ownerMono
         ? postLeadReport({

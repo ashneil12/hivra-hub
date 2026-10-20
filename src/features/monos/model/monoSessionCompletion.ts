@@ -35,6 +35,8 @@ type CompletionOptions = {
   session?: Session;
   /** Read the reply of the session's latest turn, not the request's own (a resumed turn answers it). */
   latestTurn?: boolean;
+  /** The reply, already read by the caller (a Lead's report: followedBriefs.ts reads its whole answer). */
+  reply?: string;
 };
 
 export type MonoSessionCompletionResult = {
@@ -61,14 +63,14 @@ export function monoSessionCompletionResult(
 ): MonoSessionCompletionResult {
   const { requestId, sessionId, project, prompt, outcome, session } = options;
   const title = session?.title || "Agent session";
-  const start = !session
+  const start = !session || options.reply !== undefined
     ? -1
     : options.latestTurn
       ? lastUserTurn(session)
       : session.blocks.findIndex(
           (block) => block.role === "user" && block.appRequestId === requestId,
         );
-  let reply = "";
+  let reply = options.reply ?? "";
   if (session && start >= 0) {
     for (const block of session.blocks.slice(start + 1)) {
       if (block.role === "user") break;

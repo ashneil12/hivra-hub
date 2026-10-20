@@ -5,7 +5,7 @@
 // had its turn on it, also lands in the project's Leadership room (hub/model/roomReports.ts).
 import { useEffect, useRef, type MutableRefObject } from "react";
 import { getSession } from "../../sessions/data/sessionStore";
-import type { Session } from "../../sessions/model/session";
+import type { QueuedMessage, Session } from "../../sessions/model/session";
 import {
   tauriDelegations,
   type Delegation,
@@ -63,6 +63,11 @@ export function useFollowedBriefs(options: {
   sessionsRef: MutableRefObject<Session[]>;
   /** A Lead's report reached its owner and the owner answered: post it to the room (once per receipt). */
   onLeadReport?: (report: FollowedReport) => Promise<unknown> | void;
+  /**
+   * Put an app request in a Lead's queue: its report on a brief, asked for on its own when a message steered into its
+   * last turn on it mixed that turn's reply (followedBriefs.ts `reportRequest`). Without it the turn's last words go.
+   */
+  ask?: (chatId: string, message: QueuedMessage) => Promise<unknown> | void;
   backend?: DelegationsBackend;
   now?: () => number;
 }): void {
@@ -71,6 +76,7 @@ export function useFollowedBriefs(options: {
   const running = useRef(false);
   const again = useRef(false);
   const reported = useRef(new Set<string>());
+  const asked = useRef(new Map<string, number>());
 
   const sweepRef = useRef<() => Promise<void>>(async () => undefined);
   sweepRef.current = async () => {
@@ -97,14 +103,19 @@ export function useFollowedBriefs(options: {
       sessionsRef.current.find((s) => s.id === id) ?? (await getSession(id).catch(() => null));
     for (const row of tracker.openFollowed()) {
       const chat = await chatOf(row.childSession);
-      let step = followStep(row, { chat, children: [], now });
+      let step = followStep(row, { chat, children: [], now, asked: asked.current });
       // A Lead's brief also waits for every worker it started for it: read its tree only when that is all left.
-      if (step.kind === "settle" && row.follow === "lead") {
+      if ((step.kind === "settle" || step.kind === "ask") && row.follow === "lead") {
         const tree = await backend.tree(row.id).catch(() => null);
         if (!tree) continue;
-        step = followStep(row, { chat, children: tree, now });
+        step = followStep(row, { chat, children: tree, now, asked: asked.current });
       }
-      if (step.kind === "settle") await tracker.settleFollowed(row, step.result).catch(() => false);
+      if (step.kind === "ask") {
+        // Once per brief in this window; with nobody to ask, the turn's last words settle it after the grace period.
+        asked.current.set(step.request.id, now);
+        const ask = latest.current.ask;
+        if (ask) await Promise.resolve(ask(row.childSession, step.request)).catch(() => undefined);
+      } else if (step.kind === "settle") await tracker.settleFollowed(row, step.result).catch(() => false);
       else if (step.kind === "cancel") await tracker.cancelFollowed(row, step.reason).catch(() => undefined);
     }
     const onLeadReport = latest.current.onLeadReport;
