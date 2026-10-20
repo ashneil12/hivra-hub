@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { newSession, type QueuedMessage, type Session } from "../../sessions/model/session";
 import {
   PrWatchTracker,
+  loadOwner,
   prWatchLine,
   waitingActivity,
   wakeMessage,
@@ -170,6 +171,40 @@ describe("delivering wakes", () => {
     expect(wakes[0].delivery).toBe("disposed");
     expect(store.removed).toEqual([{ ownerSession: "deleted-chat", reason: "owner-gone" }]);
     expect(app.queued.map(([owner]) => owner)).toEqual(["mono-hivra"]);
+  });
+
+  it("a chat that can't be read right now keeps its wakes and watches for the next round", async () => {
+    const wakes = [wake({ id: "pr-watch-w1-1" }), wake({ id: "pr-watch-w1-2", seq: 2 })];
+    const store = backend(wakes);
+    const app = host([mono()]);
+    let failing = true;
+    let reads = 0;
+    const flaky = {
+      ...app.host,
+      // The app's real read: the chat as this window has it, else the store, which is busy for a moment.
+      load: (id: string) =>
+        loadOwner([], id, async (wanted) => {
+          reads++;
+          if (failing) throw new Error("database is locked");
+          return app.host.load(wanted);
+        }),
+    };
+    const tracker = new PrWatchTracker(store.api, flaky);
+    expect(await tracker.deliver()).toEqual({ queued: 0, delivered: 0, dropped: 0, waiting: 1 });
+    expect(reads).toBe(1);
+    expect(wakes.map((w) => w.delivery)).toEqual(["pending", "pending"]);
+    expect(store.removed).toEqual([]);
+    expect(store.api.setDelivery).not.toHaveBeenCalled();
+    failing = false;
+    expect(await tracker.deliver()).toEqual({ queued: 2, delivered: 0, dropped: 0 });
+    expect(wakes.map((w) => w.delivery)).toEqual(["queued", "queued"]);
+  });
+
+  it("only a chat the store really doesn't have is gone", async () => {
+    expect(await loadOwner([], "mono-hivra", async () => null)).toBeNull();
+    const open = mono();
+    expect(await loadOwner([open], "mono-hivra", async () => null)).toBe(open);
+    await expect(loadOwner([], "mono-hivra", async () => Promise.reject(new Error("busy")))).rejects.toThrow("busy");
   });
 
   it("a wake Ash deletes from the queue is not owed any more", async () => {

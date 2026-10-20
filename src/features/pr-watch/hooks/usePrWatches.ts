@@ -8,9 +8,11 @@ import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isMonoSession } from "../../monos/model/mono";
 import { setCurrentPrWatches } from "../model/prWatchBoard";
 import {
+  OWNER_RETRY_MS,
   PR_WATCH_WAKE,
   PR_WATCHES_CHANGED,
   PrWatchTracker,
+  loadOwner,
   tauriPrWatches,
   type PrWatchBackend,
 } from "../model/prWatches";
@@ -35,9 +37,7 @@ export function usePrWatches(options: {
     () =>
       new PrWatchTracker(options.backend ?? tauriPrWatches, {
         isMono: isMonoSession,
-        load: async (id) =>
-          latest.current.sessionsRef.current.find((s) => s.id === id) ??
-          (await getSession(id).catch(() => null)),
+        load: (id) => loadOwner(latest.current.sessionsRef.current, id, getSession),
         queueWake: (monoId, message) => latest.current.queueWake(monoId, message),
       }),
   );
@@ -46,12 +46,23 @@ export function usePrWatches(options: {
   useEffect(() => {
     const deliver = isMainWindow();
     let live = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
       void tracker.refresh().catch((error: unknown) => console.error("Could not read the PR watches", error));
     };
     const sendWakes = () => {
       if (!deliver) return;
-      void tracker.deliver().catch((error: unknown) => console.error("Could not deliver a PR watch wake", error));
+      void tracker
+        .deliver()
+        .then((summary) => {
+          // An owner whose chat couldn't be read keeps its wakes: try again soon rather than at the next wake.
+          if (live && summary.waiting && !retry)
+            retry = setTimeout(() => {
+              retry = undefined;
+              if (live) sendWakes();
+            }, OWNER_RETRY_MS);
+        })
+        .catch((error: unknown) => console.error("Could not deliver a PR watch wake", error));
     };
     refresh();
     sendWakes();
@@ -65,6 +76,7 @@ export function usePrWatches(options: {
     ];
     return () => {
       live = false;
+      if (retry) clearTimeout(retry);
       for (const off of offs) void off.then((unlisten) => unlisten()).catch(() => undefined);
     };
   }, [tracker]);

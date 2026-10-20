@@ -186,13 +186,29 @@ export function prWatchLine(watch: Pick<PrWatch, "status" | "state" | "endReason
 export type PrWatchHost = {
   /** Whether a chat is a Mono's own chat (the only kind that watches). */
   isMono(id: string): boolean;
-  /** The owner's chat as this window has it, else as stored; null when it no longer exists. */
+  /** The owner's chat as this window has it, else as stored; null when it no longer exists. Throws when it can't tell. */
   load(id: string): Promise<Session | null>;
   /** Put a wake in the owner's queue (deduplicated by its id). */
   queueWake(ownerId: string, message: QueuedMessage): Promise<void>;
 };
 
-export type DeliverSummary = { queued: number; delivered: number; dropped: number };
+/**
+ * The owner's chat as this window has it, else as stored (`read`: sessionStore's getSession). Null only when the store
+ * says there is no such chat; a read that fails throws, so the owner is skipped this round instead of dropped.
+ */
+export async function loadOwner(
+  open: readonly Session[],
+  id: string,
+  read: (id: string) => Promise<Session | null>,
+): Promise<Session | null> {
+  return open.find((session) => session.id === id) ?? (await read(id));
+}
+
+/** `waiting`: owners whose chat couldn't be read this round (their wakes are tried again shortly). */
+export type DeliverSummary = { queued: number; delivered: number; dropped: number; waiting?: number };
+
+/** How soon a round that skipped an unreadable owner is tried again. */
+export const OWNER_RETRY_MS = 30_000;
 
 /** The app's side of the watches: one per window. Only the main window delivers. */
 export class PrWatchTracker {
@@ -248,19 +264,26 @@ export class PrWatchTracker {
    * Put every wake still owed into its owner's queue: a pending one is marked queued first (so a crash between the
    * two re-queues it, never loses it); a queued one that already reached the transcript is marked delivered, one that
    * is neither there nor in the queue (the app died before the queue was saved) is queued again. A wake whose owner is
-   * gone is dropped and its watches end.
+   * gone is dropped and its watches end; one whose owner can't be read right now waits for the next round.
    */
   deliver(): Promise<DeliverSummary> {
     return this.serial(async () => {
       const summary: DeliverSummary = { queued: 0, delivered: 0, dropped: 0 };
       const open = await this.backend.wakesOpen();
       const gone = new Set<string>();
+      const unread = new Set<string>();
       for (const wake of open) {
-        const owner = gone.has(wake.ownerSession)
-          ? null
-          : this.host.isMono(wake.ownerSession)
-            ? await this.host.load(wake.ownerSession)
-            : null;
+        if (unread.has(wake.ownerSession)) continue;
+        let owner: Session | null = null;
+        if (!gone.has(wake.ownerSession) && this.host.isMono(wake.ownerSession)) {
+          try {
+            owner = await this.host.load(wake.ownerSession);
+          } catch (error) {
+            console.warn("PR watch: couldn't read the owner's chat; its wakes wait for the next round", error);
+            unread.add(wake.ownerSession);
+            continue;
+          }
+        }
         if (!owner) {
           gone.add(wake.ownerSession);
           await this.backend.setDelivery([wake.id], "disposed");
@@ -285,6 +308,7 @@ export class PrWatchTracker {
         await this.backend
           .remove({ ownerSession, reason: "owner-gone" })
           .catch(() => [] as PrWatch[]);
+      if (unread.size) summary.waiting = unread.size;
       return summary;
     });
   }
