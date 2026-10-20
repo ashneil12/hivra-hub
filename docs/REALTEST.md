@@ -8,6 +8,10 @@ The fake-Claude bench (`npm run hub:verify-live`, `scripts/fake-claude.mjs`) pro
 one proves behaviour: who answers, how fast, whether agents talk among themselves, whether a stuck worker is visible,
 whether memory stays in its project.
 
+Ash's side here is scripted lines from the scenario file. For real conversations, where a tester model plays Ash and
+follows up on what the agents actually said, judged with Alfred's rubric, use `npm run hub:realconv`
+([REALCONV.md](REALCONV.md)). `hub:verify-live` is a wiring check only: its PASS never says anything about behaviour.
+
 ## Run it
 
 ```bash
