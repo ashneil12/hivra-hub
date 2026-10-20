@@ -167,7 +167,7 @@ pub fn prepare(
     if login.oauth.as_ref().is_some_and(oauth::expiring) {
         // Another session may be renewing the same login right now (renew.rs).
         login = renew::renew(dir, store, &entry.id, &login)
-            .map_err(|why| redact(&why, &login.secrets()))?;
+            .map_err(|failure| redact(&failure.message(), &login.secrets()))?;
     }
     let plan = plan(entry, &login)?;
     Ok((entry, login, plan))
@@ -188,7 +188,7 @@ fn refresher(
         *login = renew::renew(&dir, store.as_ref(), &entry.id, &login)?;
         match plan(entry, &login)? {
             Plan::Remote { headers, .. } => Ok(headers),
-            _ => Err("not a hosted server".into()),
+            _ => Err(renew::Failure::Failed("not a hosted server".into())),
         }
     }))
 }
@@ -747,6 +747,25 @@ pub(crate) mod tests {
             *sent.lock().unwrap(),
             vec!["REFRESH_0".to_string(), "REFRESH_1".to_string()]
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Ash signs out while a session's bridge runs: its next renewal stops it, and never puts the login back.
+    #[test]
+    fn a_bridge_signed_out_under_it_stops_and_never_brings_the_login_back() {
+        use super::super::oauth::tests::{rotating_login, rotating_token_endpoint};
+        let (token_url, sent) = rotating_token_endpoint(std::time::Duration::ZERO);
+        let dir = temp_dir();
+        let entry = catalog::entry("notion").unwrap();
+        let store: Arc<dyn SecretStore> = Arc::new(Memory::default());
+        let started = rotating_login(&token_url, oauth::now() + 3600);
+        store.put("notion", &started).unwrap();
+        let bridge_refresh = refresher(entry, started, Arc::clone(&store), dir.clone()).unwrap();
+        // Settings > Connectors > Sign out.
+        store.remove("notion").unwrap();
+        assert_eq!(bridge_refresh(), Err(renew::Failure::SignedOut));
+        assert_eq!(store.get("notion").unwrap(), None, "the login came back");
+        assert!(sent.lock().unwrap().is_empty(), "a refresh token was spent");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

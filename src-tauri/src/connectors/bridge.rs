@@ -3,11 +3,14 @@
 //! never in Claude Code's config, argv or environment, never in a child process, never printed.
 
 use super::remote::{PostError, Remote};
+use super::renew::Failure;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Gets fresh headers when the server says the login expired (an OAuth refresh). `None` when there is no refresh.
-pub type Refresher = Arc<dyn Fn() -> Result<Vec<(String, String)>, String> + Send + Sync>;
+/// [`Failure::SignedOut`] stops the bridge.
+pub type Refresher = Arc<dyn Fn() -> Result<Vec<(String, String)>, Failure> + Send + Sync>;
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct Bridge {
@@ -17,10 +20,15 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    /// Relay until stdin closes, then wait for answers still on their way and end the server's session.
+    /// Relay until stdin closes (or the login is signed out under it), then wait for answers still on their way and end
+    /// the server's session.
     pub fn run(&self, input: impl BufRead, out: Arc<Mutex<dyn Write + Send>>) {
         let mut workers = Vec::new();
+        let stopped = Arc::new(AtomicBool::new(false));
         for line in input.lines() {
+            if stopped.load(Ordering::SeqCst) {
+                break;
+            }
             let Ok(line) = line else { break };
             let line = line.trim().to_string();
             if line.is_empty() {
@@ -35,20 +43,21 @@ impl Bridge {
                 == Some("initialize");
             // `initialize` sets up the session every later request carries, so it goes first, alone.
             if is_initialize {
-                self.relay(&line, id, &out, true);
+                self.relay(&line, id, &out, true, &stopped);
                 continue;
             }
             let remote = Arc::clone(&self.remote);
             let refresh = self.refresh.clone();
             let log = Arc::clone(&self.log);
             let out = Arc::clone(&out);
+            let stopped = Arc::clone(&stopped);
             workers.push(std::thread::spawn(move || {
                 Bridge {
                     remote,
                     refresh,
                     log,
                 }
-                .relay(&line, id, &out, false);
+                .relay(&line, id, &out, false, &stopped);
             }));
             workers.retain(|w| !w.is_finished());
         }
@@ -64,6 +73,7 @@ impl Bridge {
         id: Option<serde_json::Value>,
         out: &Arc<Mutex<dyn Write + Send>>,
         is_initialize: bool,
+        stopped: &AtomicBool,
     ) {
         let mut emit = |message: String| {
             if is_initialize {
@@ -73,7 +83,11 @@ impl Bridge {
             let _ = writeln!(out, "{message}");
             let _ = out.flush();
         };
+        if stopped.load(Ordering::SeqCst) {
+            return;
+        }
         let mut result = self.remote.post(line, &mut emit);
+        let mut signed_out = None;
         if result == Err(PostError::Unauthorized) {
             if let Some(refresh) = &self.refresh {
                 match refresh() {
@@ -81,12 +95,19 @@ impl Bridge {
                         self.remote.set_headers(headers);
                         result = self.remote.post(line, &mut emit);
                     }
-                    Err(why) => (self.log)(&format!("couldn't renew the login: {why}")),
+                    Err(Failure::SignedOut) => {
+                        // Signed out in the app: nothing more goes to the server, and the bridge ends.
+                        stopped.store(true, Ordering::SeqCst);
+                        signed_out = Some(Failure::SignedOut.message());
+                    }
+                    Err(Failure::Failed(why)) => {
+                        (self.log)(&format!("couldn't renew the login: {why}"))
+                    }
                 }
             }
         }
         if let Err(error) = result {
-            let message = error.message();
+            let message = signed_out.unwrap_or_else(|| error.message());
             (self.log)(&message);
             // A request gets a JSON-RPC error back, so Claude Code sees a clean failure instead of waiting forever.
             if let Some(id) = id {
@@ -302,6 +323,41 @@ pub(crate) mod tests {
             refreshed.load(Ordering::SeqCst),
             1,
             "renewed once, then the new token sticks"
+        );
+    }
+
+    #[test]
+    fn a_login_signed_out_under_a_running_bridge_stops_it() {
+        let seen = Arc::new(Seen::default());
+        let url = fake_mcp(Arc::new(Mutex::new("RIGHT".into())), Arc::clone(&seen));
+        let bridge = Bridge {
+            remote: Arc::new(Remote::new(
+                url,
+                vec![("Authorization".into(), "Bearer EXPIRED".into())],
+            )),
+            refresh: Some(Arc::new(|| Err(Failure::SignedOut))),
+            log: Arc::new(|_| {}),
+        };
+        let out = Buffer::default();
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"a"}}"#,
+            "\n",
+        );
+        bridge.run(input.as_bytes(), Arc::new(Mutex::new(out.clone())));
+        let text = out.text();
+        assert!(
+            text.contains("\"id\":1") && text.contains("signed out"),
+            "{text}"
+        );
+        // Nothing after the sign-out reached the server.
+        let requests = seen.requests.lock().unwrap();
+        assert!(
+            !requests.iter().any(|(_, body)| body.contains("tools/")),
+            "{requests:?}"
         );
     }
 

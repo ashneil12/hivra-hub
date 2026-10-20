@@ -11,21 +11,52 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 /// Run `work` holding connector `id`'s renewal lock (blocking until any other process lets it go).
-fn locked<T>(dir: &Path, id: &str, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+fn locked<T>(
+    dir: &Path,
+    id: &str,
+    work: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, Failure> {
     let folder = dir.join("connector-locks");
     std::fs::create_dir_all(&folder)
-        .map_err(|_| "Couldn't make the connector lock folder.".to_string())?;
+        .map_err(|_| Failure::Failed("Couldn't make the connector lock folder.".into()))?;
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(folder.join(format!("{id}.lock")))
-        .map_err(|_| "Couldn't open the connector's lock.".to_string())?;
+        .map_err(|_| Failure::Failed("Couldn't open the connector's lock.".into()))?;
     file.lock()
-        .map_err(|_| "Couldn't take the connector's lock.".to_string())?;
+        .map_err(|_| Failure::Failed("Couldn't take the connector's lock.".into()))?;
     let out = work();
     let _ = file.unlock();
     out
+}
+
+/// Why a renewal gave nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failure {
+    /// The login is gone from the Keychain: Ash signed out. Nothing is renewed or written back, and a running bridge
+    /// stops.
+    SignedOut,
+    Failed(String),
+}
+
+impl Failure {
+    pub fn message(&self) -> String {
+        match self {
+            Failure::SignedOut => {
+                "It was signed out on this Mac, so this connector stopped. Sign in again under Settings > Connectors."
+                    .into()
+            }
+            Failure::Failed(why) => why.clone(),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(why: String) -> Self {
+        Failure::Failed(why)
+    }
 }
 
 fn tokens(login: &Login) -> Option<(&str, Option<&str>)> {
@@ -36,10 +67,18 @@ fn tokens(login: &Login) -> Option<(&str, Option<&str>)> {
 }
 
 /// The login to use now, in place of `held` (whose access token expired or was refused): the one another process already
-/// renewed, or a fresh renewal, kept in the store before it is used.
-pub fn renew(dir: &Path, store: &dyn SecretStore, id: &str, held: &Login) -> Result<Login, String> {
+/// renewed, or a fresh renewal, kept in the store before it is used. A login no longer in the store was signed out: it
+/// is never renewed, and never written back.
+pub fn renew(
+    dir: &Path,
+    store: &dyn SecretStore,
+    id: &str,
+    held: &Login,
+) -> Result<Login, Failure> {
     locked(dir, id, || {
-        let stored = store.get(id)?.unwrap_or_else(|| held.clone());
+        let Some(stored) = store.get(id)? else {
+            return Err(Failure::SignedOut);
+        };
         let renewed_elsewhere = tokens(&stored) != tokens(held);
         if renewed_elsewhere && stored.oauth.as_ref().is_some_and(|t| !oauth::expiring(t)) {
             return Ok(stored);
@@ -47,7 +86,7 @@ pub fn renew(dir: &Path, store: &dyn SecretStore, id: &str, held: &Login) -> Res
         let current = stored
             .oauth
             .as_ref()
-            .ok_or("The login has no OAuth token.")?;
+            .ok_or_else(|| Failure::Failed("The login has no OAuth token.".into()))?;
         let fresh = oauth::refresh(current)?;
         let mut login = stored;
         login.oauth = Some(fresh);

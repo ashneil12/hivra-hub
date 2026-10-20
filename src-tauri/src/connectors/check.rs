@@ -64,7 +64,9 @@ fn test(entry: &Entry, login: &mut Login, store: &dyn SecretStore, dir: &Path) -
                             result = handshake(&Remote::new(url, headers));
                         }
                     }
-                    Err(why) => return failed(format!("{}: {why}", entry.name)),
+                    Err(failure) => {
+                        return failed(format!("{}: {}", entry.name, failure.message()))
+                    }
                 }
             }
             match result {
