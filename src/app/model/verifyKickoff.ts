@@ -65,3 +65,98 @@ export async function verifyKickoffMono(
     await sleep(500);
   }
 }
+
+const MESSAGES_KEY = "monocode:verify-live-messages";
+
+/**
+ * One of Ash's messages the bench sends mid-run (the stub's `ash-hub-verify-messages`, scripts/hub-verify-live.mjs):
+ * typed into that Mono's chat the way Ash types, so it takes his path (it goes first, and steers a running turn).
+ */
+export type VerifyMessage = { id: string; monoId: string; prompt: string };
+
+/** The run whose messages this window sends: a dev copy's plan only (the daily app never has one). */
+export function verifyRun(identity: AppIdentity | null = appIdentity()): string | null {
+  return identity?.kind === "dev" && identity.verify?.runId ? identity.verify.runId : null;
+}
+
+function sentMessages(runId: string, storage: Pick<Storage, "getItem"> | undefined): Set<string> {
+  try {
+    const saved = JSON.parse(storage?.getItem(MESSAGES_KEY) ?? "null") as { runId?: unknown; sent?: unknown } | null;
+    return saved?.runId === runId && Array.isArray(saved.sent) ? new Set(saved.sent.filter((id): id is string => typeof id === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+/** The messages the stub lists that this run hasn't sent yet, in order. */
+export function unsentVerifyMessages(
+  runId: string,
+  answer: unknown,
+  storage: Pick<Storage, "getItem"> | undefined = globalThis.localStorage,
+): VerifyMessage[] {
+  const list = (answer as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(list)) return [];
+  const sent = sentMessages(runId, storage);
+  return list.flatMap((entry: unknown) => {
+    const m = entry as Partial<VerifyMessage> | null;
+    return m &&
+      typeof m.id === "string" &&
+      /^[A-Za-z0-9_-]{1,64}$/.test(m.id) &&
+      typeof m.monoId === "string" &&
+      m.monoId &&
+      typeof m.prompt === "string" &&
+      m.prompt.trim() &&
+      m.prompt.length <= 20_000 &&
+      !sent.has(m.id)
+      ? [{ id: m.id, monoId: m.monoId, prompt: m.prompt }]
+      : [];
+  });
+}
+
+/** Record that one went out, so a restart of the same run never sends it again. */
+export function claimVerifyMessage(
+  runId: string,
+  id: string,
+  storage: (Pick<Storage, "getItem"> & Pick<Storage, "setItem">) | undefined = globalThis.localStorage,
+): void {
+  const sent = sentMessages(runId, storage);
+  sent.add(id);
+  try {
+    storage?.setItem(MESSAGES_KEY, JSON.stringify({ runId, sent: [...sent] }));
+  } catch {
+    // No storage: a restart may send it again, which the walk notices.
+  }
+}
+
+/**
+ * Look for the bench's messages from Ash every second while a verify plan runs, and send each once: `send` opens the
+ * Mono's chat and submits the prompt as Ash. Returns a stop.
+ */
+export function watchVerifyMessages(
+  runId: string,
+  host: {
+    list(): Promise<unknown>;
+    send(message: VerifyMessage): Promise<void>;
+    everyMs?: number;
+  },
+): () => void {
+  let busy = false;
+  // Also in memory: without storage a message would otherwise go out every second.
+  const sent = new Set<string>();
+  const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
+    void (async () => {
+      const answer = await host.list().catch(() => null);
+      for (const message of unsentVerifyMessages(runId, answer)) {
+        if (sent.has(message.id)) continue;
+        sent.add(message.id);
+        claimVerifyMessage(runId, message.id);
+        await host.send(message).catch((error: unknown) => console.error("verify message", message.id, error));
+      }
+    })().finally(() => {
+      busy = false;
+    });
+  }, host.everyMs ?? 1_000);
+  return () => clearInterval(timer);
+}

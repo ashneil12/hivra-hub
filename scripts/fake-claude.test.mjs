@@ -160,6 +160,47 @@ test("plays rules: says, runs background work, marks progress, and ends with a r
   assert.equal(prompts[0].rule, "work");
 });
 
+test("a steerable rule takes a prompt written mid-turn at its next step, in the same turn; any other waits its turn", async () => {
+  const dir = scratch();
+  const scenario = rules(dir, [
+    { name: "hold", match: "HOLD", steerable: true, steps: [{ say: "Holding." }, { mark: "holding" }, { waitFile: "go" }, { say: "HELD-DONE" }] },
+    { name: "plain", match: "PLAIN", steps: [{ say: "Plain." }, { mark: "plain" }, { waitFile: "go-plain" }, { say: "PLAIN-DONE" }] },
+    { name: "ash", match: "^ASH-QUESTION", steps: [{ mark: "ash-answered" }, { say: "ASH-ANSWER" }] },
+  ]);
+  const fake = start(["--output-format", "stream-json", "--session-id", "conv-steer"], {
+    FAKE_CLAUDE_STATE: dir,
+    FAKE_CLAUDE_SCENARIO: scenario,
+  });
+  await fake.initialize();
+  const waitFor = async (file) => {
+    for (let i = 0; i < 100 && !fs.existsSync(path.join(dir, file)); i++) await new Promise((r) => setTimeout(r, 50));
+    return fs.existsSync(path.join(dir, file));
+  };
+  fake.prompt("HOLD on");
+  assert.ok(await waitFor("marks/holding.json"));
+  fake.prompt("ASH-QUESTION how is it going?");
+  // Answered inside the running turn, before its gate opens: no result yet.
+  await fake.until((f) => f.type === "assistant" && f.message.content[0]?.text === "ASH-ANSWER", "the steered answer");
+  assert.equal(fake.results().length, 0);
+  fs.writeFileSync(path.join(dir, "gates/go"), "");
+  const result = await fake.until((f) => f.type === "result", "result");
+  assert.equal(result.result, "HELD-DONE");
+  // A rule that isn't steerable: the prompt written meanwhile gets its own turn after it.
+  fake.prompt("PLAIN on");
+  assert.ok(await waitFor("marks/plain.json"));
+  fs.rmSync(path.join(dir, "marks/ash-answered.json"));
+  fake.prompt("ASH-QUESTION again");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(fs.existsSync(path.join(dir, "marks/ash-answered.json")), false);
+  fs.writeFileSync(path.join(dir, "gates/go-plain"), "");
+  await fake.until((f) => f.type === "result" && f.result === "ASH-ANSWER", "the queued prompt's own turn");
+  assert.equal(fake.results().length, 3);
+  fake.child.stdin.end();
+  assert.equal(await fake.exited, 0);
+  const prompts = fs.readFileSync(path.join(dir, "prompts.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(prompts.map((p) => [p.rule, p.steered ?? false]), [["hold", false], ["ash", true], ["plain", false], ["ash", false]]);
+});
+
 test("resumes a conversation it has, and answers a missing one exactly like Claude Code 2.1.302", async () => {
   const dir = scratch();
   const scenario = rules(dir, [{ name: "hi", match: "hi", steps: [{ say: "hello again" }] }]);

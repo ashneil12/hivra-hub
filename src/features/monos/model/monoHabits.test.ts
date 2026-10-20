@@ -22,6 +22,7 @@ import {
   QUIET_MARKER,
   serializeHabits,
   unseenHabitPosts,
+  usageLimitHold,
   type Habit,
 } from "./monoHabits";
 
@@ -97,6 +98,49 @@ it("moves to the next run and records how it went", () => {
   expect(afterRun(failed, at(6, 9), { kind: "quiet" })).not.toHaveProperty(
     "lastError",
   );
+});
+
+it("holds a habit refused for a usage limit until the limit resets", () => {
+  const now = at(20, 5, 23);
+  const resetsAt = at(21, 5);
+  const refused = {
+    status: "failed" as const,
+    errorClass: "usage_limit" as const,
+    resetsAt,
+  };
+  const notBefore = usageLimitHold(refused, now);
+  expect(notBefore).toBe(resetsAt + 30_000);
+  // Only a usage limit with a reset still ahead holds it.
+  expect(
+    usageLimitHold({ ...refused, errorClass: "auth" }, now),
+  ).toBeUndefined();
+  expect(
+    usageLimitHold({ ...refused, resetsAt: undefined }, now),
+  ).toBeUndefined();
+  expect(
+    usageLimitHold({ ...refused, resetsAt: now - 1 }, now),
+  ).toBeUndefined();
+  expect(
+    usageLimitHold({ ...refused, status: "completed" }, now),
+  ).toBeUndefined();
+
+  const hourly = habit({
+    schedule: {
+      scheduleKind: "hourly",
+      minute: 23,
+      time: "09:00",
+      dayOfWeek: 1,
+    },
+  });
+  // The first scheduled time after the reset, not the next hour.
+  expect(afterRun(hourly, now, { kind: "failed", notBefore }).nextRunAt).toBe(
+    at(21, 5, 23),
+  );
+  // A hold that ends before the next scheduled time changes nothing.
+  expect(
+    afterRun(hourly, now, { kind: "failed", notBefore: at(20, 5, 40) })
+      .nextRunAt,
+  ).toBe(at(20, 6, 23));
 });
 
 it("stays silent when the run has nothing to say", () => {

@@ -142,7 +142,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
     "Submitted sessions notify you on completion by default",
   );
   expect(full).toContain('set "notifyOnComplete":false on sessions.start');
-  expect(full).toContain("waits for every session in that group to stop");
+  expect(full).toContain("Each one's result comes to you as a new turn soon after it stops");
+  expect(full).not.toContain("waits for every session in that group to stop");
   expect(full).toContain("give one consolidated report");
   expect(full).toContain("acknowledge the action in your current reply");
   expect(full).toContain("dismisses your pending report for that session");
@@ -174,7 +175,19 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
   const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true });
   expect(taught).toContain("<delegate_rules>");
   for (const step of [
-    "record his asks with ash_record, quoting his own words",
+    "record his asks with ash_record before you act, quoting his own words",
+    "one call with every ask of the message in asks",
+    // A brain dump (Ash, 20 Oct): a fast first reply that lists every ask, then parallel work.
+    "your first words come within a minute, before any tool call",
+    "List every ask in his order",
+    "none dropped, merged away or invented",
+    "group what needs discussing, each point with your recommendation",
+    "start the independent work in parallel",
+    // Still chatting while workers run.
+    "While workers run you are never busy: answer whatever Ash writes at once",
+    "a message of his that arrives mid-turn gets a short answer right then",
+    "says how many are back and what still runs",
+    "Never call the job done while some of it still runs",
     "the ask ids it covers in asks, and the finish line in goal",
     "end your turn: don't poll, wait or do the delegated work yourself",
     "Check its evidence yourself",
@@ -217,6 +230,19 @@ it("teaches the PR watch with the delegate tool: register, end the turn, act on 
     "Call pr_unwatch when you hand the pull request back",
   ])
     expect(taught).toContain(step);
+});
+
+it("starts a Lead's fresh conversation on its project's memory, handed with the soul and never again mid-session", () => {
+  const look = { name: "Hivra lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/hivra", name: "hivra" }] };
+  const projectMemory = "<project_memory>\n- Never delete a customer VM as a fix\n</project_memory>";
+  const fresh = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, projectMemory });
+  expect(fresh).toContain(projectMemory);
+  // before its own MEMORY.md block, after the rules
+  expect(fresh.indexOf(projectMemory)).toBeGreaterThan(fresh.indexOf("<delegate_rules>"));
+  expect(fresh.indexOf(projectMemory)).toBeLessThan(fresh.indexOf("<memory>"));
+  // a turn that only hands a changed MEMORY.md, or a chat with no project, carries none
+  expect(monoContext(look, files(), { soul: false, memory: true }, { projectMemory })).not.toContain("<project_memory>");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { projectMemory: " " })).not.toContain("<project_memory>");
 });
 
 it("seeds SOUL.md once, moving the old instructions into it", async () => {
