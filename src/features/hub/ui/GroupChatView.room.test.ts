@@ -117,3 +117,18 @@ it("the host's answer fills in where it will stay: a live message while it write
   expect(live.isConnected).toBe(true);
   expect(live.textContent).toContain("Nothing needs you.");
 }, 20_000);
+
+it("a long post shows its first lines with Show more; a short one shows whole", async () => {
+  const { chat, room, conv, q } = await render();
+  const long = ["Heard you: seven things for this week.", "", ...Array.from({ length: 14 }, (_, i) => `${i + 1}. Item ${i + 1} with its owner and what done looks like.`)].join("\n");
+  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? long : "NO_REPLY"));
+  await act(async () => {
+    await chat.requestReply(room.id, conv);
+  });
+  const folded = q("[data-hub-msg-folded]")!;
+  expect(folded.textContent).toContain("Heard you: seven things");
+  expect(folded.textContent).not.toContain("Item 14");
+  await act(async () => q("[data-hub-msg-more]")!.click());
+  expect(container.textContent).toContain("Item 14 with its owner");
+  expect(q("[data-hub-msg-more]")!.textContent).toBe("Show less");
+}, 20_000);

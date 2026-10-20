@@ -203,6 +203,22 @@ describe("the gate and the prompts", () => {
     expect(busy).not.toContain("Your reply is posted to the room for you");
   });
 
+  it("posts are short and point to the detail; reviews verify and close; Ash is asked only what is his call", () => {
+    for (const rule of ["400 characters", "a file path, a commit, a test count", "only the host", "check it yourself", "a review ends in", "Locked:", "truly his call"])
+      expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
+    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
+    const host = turnPrompt({ ...base, me: COS, kind: "answer" });
+    expect(host).toContain("one short line each");
+    expect(host).toContain("Don't list his asks back");
+    expect(host).toContain("2 to 5 short lines");
+    const reviewer = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
+    expect(reviewer).toContain("check it yourself first");
+    expect(reviewer).toContain('"pass from me"');
+    const digest = turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 });
+    expect(digest).toContain("Locked:");
+    expect(digest).toContain("only when every reviewer has passed");
+  });
+
   it("the room rules carry what the Grok room did and what it must not copy", () => {
     for (const rule of ["answers Ash first", "by name", "pass from me", "Stand down out loud", "skip review", "That's Ash's call", "Locked", "is back", "no em dashes", "don't just agree"])
       expect(ROOM_RULES.toLowerCase()).toContain(rule.toLowerCase());

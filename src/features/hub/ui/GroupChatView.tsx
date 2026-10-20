@@ -11,7 +11,6 @@ import {
 } from "../../monos/model/mono";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import { MonoRailMascot } from "../../monos/ui/MonoRailMascot";
-import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { hubData } from "../model/hubData";
 import {
   addMember,
@@ -36,7 +35,7 @@ import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import type { ChatMessage, GroupChat } from "../model/types";
 import { StatusMark } from "./StatusMark";
-import { RoomMessage, RoomStatusLine } from "./RoomMessage";
+import { RoomMessage, RoomStatusLine, RoomText } from "./RoomMessage";
 
 function useMonos(): Mono[] {
   const snap = useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
@@ -298,7 +297,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
                       <RoomMessage chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} live={live}>
-                        <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
+                        <RoomText text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
                       </RoomMessage>
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;

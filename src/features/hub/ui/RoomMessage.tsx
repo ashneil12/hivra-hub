@@ -1,8 +1,10 @@
 // A room's messages and its status line (docs/leadership/ROOM.md), in the group chat's own look (GroupChatView): Ash's
-// bubble, a Mono's name over its words (live while a turn writes them), the reactions that replace "got it" bubbles, a notice when a Mono couldn't
-// answer (never silence), the app's quiet lines, and the line above the composer that says who is working, with Stop,
-// or that the team paused for Ash, with Keep going.
-import type { ReactNode } from "react";
+// bubble, a Mono's name over its words (live while a turn writes them; a long post folded to its first lines with Show
+// more), the reactions that replace "got it" bubbles, a notice when a Mono couldn't answer (never silence), the app's
+// quiet lines, and the line above the composer that says who is working, with Stop, or that the team paused for Ash,
+// with Keep going.
+import { useState, type ReactNode } from "react";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import {
   keepGoing,
   react,
@@ -21,6 +23,53 @@ const shorten = (text: string, max = 70) => {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
+
+/** A post longer than this many lines or characters shows its first lines and "Show more" (Ash: no walls of text). */
+export const FOLD_LINES = 6;
+export const FOLD_CHARS = 600;
+const HEAD_CHARS = 420;
+
+/**
+ * The first lines of a long post, cut at a line (or, inside one long paragraph, at a word) and with any open code block
+ * closed; undefined when the post is short enough to show whole.
+ */
+export function foldText(text: string): string | undefined {
+  const lines = text.trim().split("\n");
+  const filled = lines.filter((l) => l.trim()).length;
+  if (filled <= FOLD_LINES && text.length <= FOLD_CHARS) return undefined;
+  const head: string[] = [];
+  let count = 0;
+  let chars = 0;
+  for (const line of lines) {
+    if (count >= FOLD_LINES || (head.length && chars + line.length > HEAD_CHARS)) break;
+    head.push(line);
+    chars += line.length + 1;
+    if (line.trim()) count++;
+  }
+  let out = head.join("\n").trimEnd();
+  if (out.length > HEAD_CHARS) {
+    const cut = out.slice(0, HEAD_CHARS);
+    const space = cut.lastIndexOf(" ");
+    out = `${(space > HEAD_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+  }
+  if ((out.match(/```/g) ?? []).length % 2) out += "\n```";
+  return out;
+}
+
+/** A Mono's words in the room: whole when short, else the first lines with Show more (and Show less once open). */
+export function RoomText({ text, className }: { text: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const head = foldText(text);
+  if (!head) return <AgentMarkdown text={text} className={className} />;
+  return (
+    <div data-hub-msg-folded={open ? undefined : true}>
+      <AgentMarkdown text={open ? text : head} className={className} />
+      <button type="button" onClick={() => setOpen(!open)} className="pt-0.5 text-xs text-content/60 underline hover:text-content" data-hub-msg-more aria-expanded={open}>
+        {open ? "Show less" : "Show more"}
+      </button>
+    </div>
+  );
+}
 
 /** "frank", "frank and PM", "frank, PM and Alfred". */
 export function namesList(names: readonly string[]): string {
