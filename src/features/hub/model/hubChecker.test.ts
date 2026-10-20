@@ -176,7 +176,7 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
       "--tools",
       "Bash,Read,Grep,Glob",
       "--disallowedTools",
-      CHECKER_DENIED_TOOLS.join(","),
+      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)"].join(","),
       "--allowedTools",
       "mcp__ash-os__*",
     ]);
@@ -186,7 +186,8 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
   it("is the checker's alone: a Lead keeps all its tools and the delegate tool", () => {
     const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
     expect(args).not.toContain("--tools");
-    expect(args).not.toContain("--disallowedTools");
+    // Its only deny rule is the fence round the Monos' home, which every hub chat has.
+    expect(flag(args, "--disallowedTools")).toBe("Edit(~/agent-memory/monos/**)");
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
   });
 });

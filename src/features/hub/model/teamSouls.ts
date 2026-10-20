@@ -303,6 +303,13 @@ export const TEAM_SOULS: Readonly<Record<string, string>> = {
   critiquito: CRITIQUITO,
 };
 
+/**
+ * Where Grok Bot stands (decided 20 Oct, when Ash handed the build to the Grok Bot leadership team). Replaces the 19 Oct
+ * line "Grok Bot is no longer used" (memoryLineFixes.ts rewrites it in a MEMORY.md that still has it).
+ */
+export const GROK_BOT_LINE =
+  "The hub runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required.";
+
 /** What each one starts knowing (MEMORY.md, dated so the Mono can supersede a line with memory.replace). */
 const SEEDED_ON = "2026-10-19";
 const TEAM_FACTS: Readonly<Record<string, readonly string[]>> = {
@@ -312,7 +319,7 @@ const TEAM_FACTS: Readonly<Record<string, readonly string[]>> = {
     "Ash is UX-first: calm and chat-first, machinery hidden, at most 5 things waiting on him, the rest under Later.",
     "A new named Mono needs Ash's okay. Screenshots are not enough for him; he wants to click the real thing before it counts.",
     "Do research before committing to a decision (pricing, chain, stack), then give a verdict.",
-    "The team runs on Claude Code in MonoCode Hub; Grok Bot is no longer used (Ash, 19 Oct 2026).",
+    GROK_BOT_LINE,
   ],
   "projects-manager": [
     "Ash wants screens as pictures first, then clickable on his Mac; screenshots alone do not count as done.",

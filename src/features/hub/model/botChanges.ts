@@ -33,6 +33,16 @@ export type BotChange = {
   hubChangeId?: string;
   /** A Mono pinned or unpinned a page: Undo flips it back, Redo flips it again. */
   pin?: { pageId: string; pinned: boolean };
+  /**
+   * Not applied yet: Apply writes `afterText` over `beforeText` (only if the file still reads `beforeText`), then it is
+   * an ordinary change with Undo; Dismiss drops it and it is never proposed again under the same id.
+   */
+  proposed?: boolean;
+  /**
+   * Written as well when the proposal is applied: soul refresh records the template the soul now follows, and keeps the
+   * old soul as a topic note when it can't tell Ash's hand edits apart.
+   */
+  alsoWrite?: { file: AgentFilePath; text: string }[];
 };
 
 type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
@@ -99,7 +109,7 @@ export function recordPinChange(pageId: string, by: string, title: string, pinne
 
 /** Undo all from one Mono: every change of theirs that isn't undone yet. */
 export async function undoAllFrom(bot: string): Promise<void> {
-  await undoBotChange(all().filter((c) => c.bot === bot && !c.undone).map((c) => c.id));
+  await undoBotChange(all().filter((c) => c.bot === bot && !c.undone && !c.proposed).map((c) => c.id));
 }
 
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
@@ -152,11 +162,12 @@ export type BotChangeRow =
   | { kind: "one"; change: BotChange }
   | { kind: "bundle"; id: string; bot: string; day: string; line: string; items: BotChange[] };
 
-/** Rows to show: big changes one by one, small ones bundled per bot per day. */
+/** Rows to show: proposals first, then big changes one by one, small ones bundled per bot per day. */
 export function botChangeRows(): BotChangeRow[] {
   const rows: BotChangeRow[] = [];
   const bundles = new Map<string, BotChange[]>();
-  for (const c of all()) {
+  const every = all();
+  for (const c of [...every.filter((x) => x.proposed), ...every.filter((x) => !x.proposed)]) {
     if (!c.small) { rows.push({ kind: "one", change: c }); continue; }
     const k = `${c.bot}|${c.day}`;
     if (!bundles.has(k)) {
@@ -175,6 +186,98 @@ export function botChangeRows(): BotChangeRow[] {
 /** A bot rewrote one of its own files: the row Ash sees, with what it can put back. Kept across restarts. */
 export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & Required<Pick<BotChange, "monoId" | "file" | "beforeText" | "afterText">>): void {
   list = [change, ...list.filter((c) => c.id !== change.id)];
+  saveReal();
+  changed();
+}
+
+const DISMISSED_KEY = "monocode:hub-bot-changes-dismissed";
+function dismissedIds(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Whether Ash (or CoS) dismissed the proposal with this id: it is never proposed again. */
+export function isProposalDismissed(id: string): boolean {
+  return dismissedIds().has(id);
+}
+
+/** A change kept here, by id (a fix checks whether Ash undid it, so it isn't made again). */
+export function findBotChange(id: string): BotChange | undefined {
+  return list.find((c) => c.id === id);
+}
+
+/** Pending proposals (Settings → Changes → Bot changes, with Apply and Dismiss). */
+export function pendingProposals(): BotChange[] {
+  return list.filter((c) => c.proposed);
+}
+
+/**
+ * A change a bot would make to one of its own files, waiting for Apply. One pending proposal per Mono and file: a newer
+ * one replaces it. Nothing is written until Apply.
+ */
+export function proposeBotChange(
+  change: Omit<BotChange, "undone" | "problem" | "proposed"> & Required<Pick<BotChange, "monoId" | "file" | "beforeText" | "afterText">>,
+): void {
+  if (isProposalDismissed(change.id)) return;
+  const same = list.find((c) => c.id === change.id && c.proposed);
+  if (same && same.beforeText === change.beforeText && same.afterText === change.afterText) return;
+  list = [
+    { ...change, proposed: true },
+    ...list.filter((c) => c.id !== change.id && !(c.proposed && c.monoId === change.monoId && c.file === change.file)),
+  ];
+  saveReal();
+  changed();
+}
+
+/**
+ * Apply a proposal for real: only when the file still reads what it was proposed over (otherwise nothing is touched and
+ * the row says why), saved over the hash it was read at, then read back. It becomes an ordinary change with Undo.
+ */
+export async function applyProposedChange(id: string): Promise<boolean> {
+  const c = list.find((x) => x.id === id);
+  if (!c?.proposed || !c.monoId || !c.file || c.afterText === undefined) return false;
+  let next: BotChange;
+  try {
+    const now = await files.read(c.monoId, c.file);
+    if ((now.text ?? "") !== (c.beforeText ?? "")) {
+      next = { ...c, problem: `${c.bot}'s file changed since this was proposed, so nothing was applied.` };
+    } else {
+      await files.write(c.monoId, c.file, c.afterText, now.hash);
+      const back = await files.read(c.monoId, c.file);
+      if ((back.text ?? "") !== c.afterText) {
+        next = { ...c, problem: "The change didn't go in. Nothing was applied." };
+      } else {
+        for (const extra of c.alsoWrite ?? []) {
+          const record = await files.read(c.monoId, extra.file);
+          await files.write(c.monoId, extra.file, extra.text, record.hash);
+        }
+        const { proposed: _p, alsoWrite: _a, ...applied } = c;
+        next = { ...applied, day: "Today", problem: undefined };
+      }
+    }
+  } catch (e) {
+    next = { ...c, problem: e instanceof Error ? e.message : typeof e === "string" ? e : "That Apply didn't go through." };
+  }
+  list = list.map((x) => (x.id === id ? next : x));
+  saveReal();
+  changed();
+  return !next.proposed;
+}
+
+/** Dismiss a proposal: it goes, nothing is written, and the same proposal is never made again. */
+export function dismissProposedChange(id: string): void {
+  const c = list.find((x) => x.id === id);
+  if (!c?.proposed) return;
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissedIds(), id]));
+  } catch {
+    /* storage unavailable: it may be proposed again next launch */
+  }
+  list = list.filter((x) => x.id !== id);
   saveReal();
   changed();
 }
@@ -203,7 +306,7 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       continue;
     }
     const c = list.find((x) => x.id === id);
-    if (!c || c.undone) continue;
+    if (!c || c.undone || c.proposed) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
     if (c.hubChangeId) {
       try {
