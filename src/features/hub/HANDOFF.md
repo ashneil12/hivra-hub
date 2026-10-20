@@ -195,6 +195,24 @@ Claude Code's own environment (an unset one stays literal), and a stdio server
 inherits that environment too (the 15 Oct note that it sees only HOME, LOGNAME,
 PATH, SHELL and USER no longer holds); the identity stays in the entry anyway.
 
+**The checker (Phase 2 H6, `model/hubChecker.ts`, `model/hubChecks.ts`).** One small Mono, "Checker" (`checker`,
+Claude Code on Haiku: Haiku 5.5 when the CLI lists it, else its `haiku` alias; `Mono.model`), made by
+`app/hooks/useHubChecks.ts` in the Hub bundle's main window with an hourly habit (given once; Ash's remove or pause
+sticks): `ash_checker_queue`, one `ash_checker_note` per flagged message, always `NOTHING_TO_REPORT`. It can't start
+work, three ways, each tested (`hubChecker.test.ts`): the app lane (`agentApp.ts` `CHECKER_ACTIONS`: models.list,
+memory.*, soul.read only, for its chat and its habit runs); its tool list (`hubMcp.ts` `checkerToolArgs`: ash-os as
+role `checker`, no delegate tool, `--tools Bash,Read,Grep,Glob`, `--disallowedTools` Agent, Task, Edit, Write,
+NotebookEdit, `Bash(ash:*)`, `Bash(claude:*)`, its ash-os tools pre-approved); no delegation (tasks.* refused, its
+context is `<checker_rules>`, never the session or delegate rules). Delivery: the store pulls `ash-hub-checks` at boot
+and on feed topic `checks` (`onChecks`); `CheckDelivery` hands each to its owner's chat (a Mono's current chat, made
+if missing; a hub chat by id; never the checker, a worker or a chat outside the hub) only when that chat is idle with
+nothing queued or waiting on Ash, one per chat at a time, as an internal user turn with `monoCheck` and the receipt
+`mono-check-<id>` (so a restart only confirms it), then `ash-hub-check-delivered`. The chat shows it as one quiet
+collapsed line (`ui/CheckTurnCard.tsx`: "Checker's note · answered: right", the note and the answer behind a click);
+no unread count, no notification, never on Today. Owners learn to answer from `<check_rules>` (`checkerRules.ts`, with
+the delegate rules): `ash_record check {id, verdict, note}`, then "Right: ..." or "Fixed: ...". A dev copy can opt in
+to an ash-os stand-in that only talks to its stub (`VITE_MONOCODE_DEV_ASH_OS`, `scripts/hub-stub-ash-os-mcp.mjs`).
+
 ### The MonoCode Hub app (a separate bundle)
 `src-tauri/tauri.hub.conf.json` builds **MonoCode Hub** (`com.ash.monocode-hub`)
 next to Ash's MonoCode without touching it: its own name and bundle id, so its
