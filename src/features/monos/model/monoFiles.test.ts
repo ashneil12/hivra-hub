@@ -190,6 +190,11 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
     "each brief with Ash's own words for only its asks",
     "Never hand a whole message to one worker; a big area gets more than one worker, or a second round",
     "end with one line naming what is running and who has which asks",
+    // Baseline, 20 Oct: decisions Ash gave in a Lead's chat were never saved, so the room couldn't recall them.
+    "Save his decisions the moment he makes them",
+    "his answer to a question (a pick he took counts), a rule (\"from now on\", \"always\", \"never\"), a no",
+    "Each goes into memory at once with ash_remember, before you act on it",
+    "your own project when you work on one; project ash only for how he works in every project",
     // Still chatting while workers run.
     "While workers run you are never busy: answer whatever Ash writes at once",
     "a message of his that arrives mid-turn gets a short answer right then",
