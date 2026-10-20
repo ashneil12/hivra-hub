@@ -13,8 +13,10 @@ soul, chat ids only in WebView storage).
   `<id>/chats.json`.
 - **Only the app writes there**: every hub chat is denied `Edit(~/agent-memory/monos/**)` (`hubMcp.ts`
   `monoHomeDeniedTools`), and worker and Lead briefs say it in plain words (`MONO_HOME_FENCE`).
-- **Soul refresh** (`model/soulRefresh.ts`): a soul behind the app's template gets a proposed Bot change (Apply / Dismiss,
-  then Undo); hand edits are kept (see the file).
+- **Soul refresh** (`model/soulRefresh.ts`): a soul behind the app's template takes it on its own (Ash, 14 Oct: bigger bot
+  changes apply themselves and never wait for a click), with the whole old soul saved in its memory first and a Bot changes
+  row with Undo. His hand edits win. The row reads as one plain sentence per changed part (`SECTION_SENTENCES`, "Hivra
+  lead will now ...") plus what was skipped for his edits; no diff, no paths.
 - **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
 - **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
   leadership can oversee it and set tasks, but isn't required."
