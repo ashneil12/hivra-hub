@@ -46,6 +46,7 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+pub(crate) mod pr_watch;
 mod project_actions;
 mod project_file;
 mod project_logo;
@@ -352,6 +353,7 @@ pub fn run() {
             session_store::init(app.handle())?;
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             delegations::init(app.handle());
+            pr_watch::init(app.handle());
             control::init(app.handle())?;
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
@@ -452,6 +454,11 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            pr_watch::pr_watch_add,
+            pr_watch::pr_watch_remove,
+            pr_watch::pr_watch_list,
+            pr_watch::pr_watch_wakes_open,
+            pr_watch::pr_watch_wake_delivery,
             automations::automations_list,
             automations::automations_upsert,
             automations::automations_delete,

@@ -1,0 +1,336 @@
+{
+ "data": {
+  "viewer": {
+   "login": "ashneil12"
+  },
+  "rateLimit": {
+   "remaining": 4940,
+   "resetAt": "2026-10-20T00:38:26Z",
+   "cost": 1
+  },
+  "repository": {
+   "nameWithOwner": "cli/cli",
+   "pullRequest": {
+    "number": 14716,
+    "url": "https://github.com/cli/cli/pull/14716",
+    "title": "chore(deps): bump actions/create-github-app-token from 3.2.0 to 3.3.0",
+    "state": "OPEN",
+    "isDraft": false,
+    "merged": false,
+    "mergedAt": null,
+    "closedAt": null,
+    "mergeCommit": null,
+    "headRefOid": "936921fa9e67cdbf78fb25abc6252afabafef056",
+    "headRefName": "dependabot/github_actions/actions/create-github-app-token-3.3.0",
+    "baseRefName": "trunk",
+    "headRepository": {
+     "nameWithOwner": "cli/cli"
+    },
+    "mergeable": "MERGEABLE",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "author": {
+     "login": "dependabot"
+    },
+    "commits": {
+     "nodes": [
+      {
+       "commit": {
+        "oid": "936921fa9e67cdbf78fb25abc6252afabafef056",
+        "statusCheckRollup": {
+         "state": "SUCCESS",
+         "contexts": {
+          "totalCount": 16,
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "label-external",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128887480",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "CodeQL-Build (go, manual, ./.github/codeql/codeql-config.yml)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694875/job/118128876438",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Code Scanning"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "build (ubuntu-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128877234",
+            "isRequired": true,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "CodeQL-Build (actions, none, security-and-quality)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694875/job/118128876935",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Code Scanning"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "build (windows-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128877056",
+            "isRequired": true,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "build (macos-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128877286",
+            "isRequired": true,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-from-default-branch",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128887180",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "integration-tests (ubuntu-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128876429",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "integration-tests (windows-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128877029",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "integration-tests (macos-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272694853/job/118128877341",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "Unit and Integration Tests"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "check-requirements / check-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128888357",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "check-requirements / close-unmet-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128963838",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-unmet-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128951905",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-no-help-wanted",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128886135",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ready-for-review",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39272695107/job/118128968155",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "CodeQL",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/runs/118129227691",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": null
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    "comments": {
+     "totalCount": 3,
+     "nodes": [
+      {
+       "id": "IC_kwDODKw3uc8AAAABcpR92A",
+       "author": {
+        "login": "williammartin"
+       },
+       "body": "This should be handled in a `gh-aw` bump.",
+       "createdAt": "2026-10-16T14:08:37Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14716#issuecomment-6217301464",
+       "isMinimized": false
+      },
+      {
+       "id": "IC_kwDODKw3uc8AAAABc3v2EQ",
+       "author": {
+        "login": "cli-triage"
+       },
+       "body": "**Recommendation: Review before merging, Confidence: High**\n\nThe upstream change between [v3.2.0 and v3.3.0](https://github.com/actions/create-github-app-token/",
+       "createdAt": "2026-10-17T09:49:08Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14716#issuecomment-6232471057",
+       "isMinimized": true
+      },
+      {
+       "id": "IC_kwDODKw3uc8AAAABdc0Wpg",
+       "author": {
+        "login": "cli-triage"
+       },
+       "body": "**Recommendation: Review before merging, Confidence: High**\n\nThe upstream diff between [v3.2.0 and v3.3.0](https://github.com/actions/create-github-app-token/re",
+       "createdAt": "2026-10-19T15:52:08Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14716#issuecomment-6271342246",
+       "isMinimized": false
+      }
+     ]
+    },
+    "reviews": {
+     "totalCount": 0,
+     "nodes": []
+    },
+    "reviewThreads": {
+     "totalCount": 0,
+     "nodes": []
+    }
+   }
+  }
+ }
+}
