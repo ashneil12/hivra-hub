@@ -26,7 +26,7 @@ import {
   type RoomTurnOutcome,
   type RoomWakeEnd,
 } from "../../features/hub/model/roomConductor";
-import { getChat } from "../../features/hub/model/hubChats";
+import { getChat, leadershipChatId, requestReply, sendMessage } from "../../features/hub/model/hubChats";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
 import { homeDir } from "../../platform/tauri/fs";
@@ -120,6 +120,15 @@ export function reportAnswer(owner: Session, childSession: string): { answer: st
     return { answer, title: report.title };
   }
   return undefined;
+}
+
+/** The fake-Claude bench's message from Ash into a room (a room id, or a project's Leadership team), as he types it. */
+export async function sendVerifyRoomMessage(room: string, text: string): Promise<void> {
+  const chatId = getChat(room) ? room : leadershipChatId(room);
+  if (!getChat(chatId)) throw new Error(`verify message: no room ${room}`);
+  const conv = getChat(chatId)!.conversations[0]?.id;
+  sendMessage(chatId, text, conv);
+  void requestReply(chatId, conv);
 }
 
 export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { delegated(source: Session, result: unknown): void } {
@@ -221,32 +230,45 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
     [],
   );
 
-  // Work delegated from a room comes back to it, once its owner has had the report turn.
+  // Work delegated from a room comes back to it, once its owner has had the report turn. Looked at shortly after a change
+  // to the chats (once per burst: a streaming chat changes constantly, so this never waits for a quiet moment).
   const origins = useRef<RoomOrigin[] | undefined>(undefined);
   const sweeping = useRef(false);
-  useEffect(() => {
-    const store = latest.current.origins ?? tauriRooms;
-    const sweep = async () => {
-      if (sweeping.current) return;
-      sweeping.current = true;
-      try {
-        origins.current ??= await store.openOrigins().catch(() => []);
-        for (const origin of [...origins.current]) {
-          const owner = latest.current.sessionsRef.current.find((s) => s.id === origin.ownerSession);
-          const back = owner ? reportAnswer(owner, origin.childSession) : undefined;
-          if (!back) continue;
-          if (getChat(origin.roomId))
-            postBack({ chatId: origin.roomId, convId: origin.conversationId, monoId: origin.monoId, title: origin.title || back.title, answer: back.answer });
-          origins.current = origins.current.filter((o) => o.childSession !== origin.childSession);
-          await store.originDone(origin.childSession).catch(() => false);
-        }
-      } finally {
-        sweeping.current = false;
+  const sweepRef = useRef<() => Promise<void>>(async () => undefined);
+  sweepRef.current = async () => {
+    if (sweeping.current) return;
+    sweeping.current = true;
+    try {
+      const store = latest.current.origins ?? tauriRooms;
+      origins.current ??= await store.openOrigins().catch(() => []);
+      for (const origin of [...origins.current]) {
+        const owner = latest.current.sessionsRef.current.find((s) => s.id === origin.ownerSession);
+        const back = owner ? reportAnswer(owner, origin.childSession) : undefined;
+        if (!back) continue;
+        if (getChat(origin.roomId))
+          postBack({ chatId: origin.roomId, convId: origin.conversationId, monoId: origin.monoId, title: origin.title || back.title, answer: back.answer });
+        origins.current = origins.current.filter((o) => o.childSession !== origin.childSession);
+        await store.originDone(origin.childSession).catch(() => false);
       }
-    };
-    const timer = window.setTimeout(() => void sweep(), 500);
-    return () => window.clearTimeout(timer);
+    } finally {
+      sweeping.current = false;
+    }
+  };
+  const scheduled = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (scheduled.current !== undefined) return;
+    scheduled.current = window.setTimeout(() => {
+      scheduled.current = undefined;
+      void sweepRef.current();
+    }, 500);
   }, [host.sessions]);
+  useEffect(
+    () => () => {
+      if (scheduled.current !== undefined) window.clearTimeout(scheduled.current);
+      scheduled.current = undefined;
+    },
+    [],
+  );
 
   return useMemo(
     () => ({

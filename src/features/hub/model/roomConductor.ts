@@ -337,7 +337,8 @@ function onAsh(chatId: string, convId: string): boolean {
   // He turned the room: what waited in this conversation is dropped, what runs is stopped (work coming back stays).
   r.queue = r.queue.filter((w) => w.convId !== convId || w.kind === "back");
   for (const [monoId, run] of r.running)
-    if (run.wake.convId === convId && run.wake.kind !== "back" && run.mode !== "steered") void Promise.resolve(runner?.stop?.(monoId, run.wake.id)).catch(() => undefined);
+    // A wake already steered into a Mono's work can't be taken back; the runner only withdraws one still waiting.
+    if (run.wake.convId === convId && run.wake.kind !== "back") void Promise.resolve(runner?.stop?.(monoId, run.wake.id)).catch(() => undefined);
   const chat = getChat(chatId)!;
   const conv = chat.conversations.find((c) => c.id === convId)!;
   const batch = unanswered(conv);
@@ -708,7 +709,7 @@ export function stopRoom(chatId: string, convId?: string): void {
   if (convId) touched.add(convId);
   r.queue = r.queue.filter((w) => w.kind === "back" || !touched.has(w.convId));
   for (const [monoId, run] of r.running)
-    if (touched.has(run.wake.convId) && run.wake.kind !== "back" && run.mode !== "steered")
+    if (touched.has(run.wake.convId) && run.wake.kind !== "back")
       void Promise.resolve(runner?.stop?.(monoId, run.wake.id)).catch(() => undefined);
   for (const id of touched) {
     const t = threadOf(r, id);
