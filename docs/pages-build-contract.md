@@ -162,6 +162,10 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
 
+Ash OS also tells the Mono how to connect a page (section 4b: `hub.watch`, the data's shape, taps only inside a click
+handler, list every read and tap in `permissions`), and, for a Rebuild, the page as it is now (`ashos/pages.py`,
+`PAGE_RULES` and `REBUILD_RULES`).
+
 ## Ready-made pages
 
 `readyPages.ts`. Pages offers them under **Ready-made** (in the list, and on the empty screen) until one is kept. **Add**
