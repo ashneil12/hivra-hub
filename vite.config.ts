@@ -8,11 +8,16 @@ const host = env.TAURI_DEV_HOST;
 // A dev slot's own port (scripts/hub-dev.mjs puts it in the slot's beforeDevCommand). 1420 otherwise: plain
 // `npm run dev` and upstream's devUrl. strictPort stays on, so a clash fails loudly instead of moving the page.
 const port = Number(env.MONOCODE_VITE_PORT) || 1420;
+// A dev slot keeps its own pre-bundled dependencies in its worktree's target/. Worktrees share node_modules through a
+// link, and slots running side by side would otherwise re-optimise one node_modules/.vite under each other: a page
+// then gets "504 Outdated Optimize Dep" for a dependency and the window stays black.
+const cacheDir = env.MONOCODE_VITE_PORT ? "target/vite-deps" : undefined;
 
 export default defineConfig(async ({ mode }) => {
   const stable = mode === "stable";
 
   return {
+    ...(cacheDir ? { cacheDir } : {}),
     plugins: [react(), tailwindcss()],
     worker: { format: "es" },
     resolve: {
