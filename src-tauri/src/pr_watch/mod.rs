@@ -9,7 +9,8 @@
 //!
 //! and once more when it merges (with the merge commit for the owner to record as evidence on its asks) or closes,
 //! which ends the watch. Before a wake is stored, the pull request's head is checked out where the owner fixes it
-//! (checkout.rs). Everything from GitHub in a wake is framed as untrusted data (wake.rs).
+//! (checkout.rs; never the project's setup, and never a fork's head). Everything from GitHub in a wake is framed as
+//! untrusted data (wake.rs).
 //!
 //! - **Reads**: one GraphQL call per pull request (github.rs), every 2 minutes while checks run or GitHub is still
 //!   working out mergeability, every 5 minutes otherwise. Two chats watching one pull request share the read. A rate
@@ -631,6 +632,7 @@ pub fn add(store: &SessionStore, gh: &dyn Gh, input: AddInput, now: i64) -> Resu
         });
     let repo_root = root.map(|p| p.folder.clone());
     let checkout_words = match (&worktree, &repo_root) {
+        _ if read.fork(&repo).is_some() => format!("none: the pull request comes from a fork, so MonoCode won't check out its code or run anything from it; fetch pull/{}/head yourself once you have read it", input.number),
         (Some(path), _) => format!("{path}, fast-forwarded to the pull request's head before each wake when it is clean and on its branch"),
         (None, Some(root)) => format!("a worktree mc/pr-{} made from {root} at the pull request's head, the first time a wake needs a fix", input.number),
         (None, None) => format!("none: no checkout of {repo} among your projects; pass worktree to have one kept at the head"),
@@ -1015,11 +1017,16 @@ fn apply(
     let status = Status::of(read);
     let report = (read.state == PrState::Open)
         .then(|| eval::evaluate(&w.memo, &read.detail, read.remarks.as_deref()));
-    // The checkout is prepared before the wake is stored (and without holding the database): git fetches.
+    // The checkout is prepared before the wake is stored (and without holding the database): git fetches. A fork's
+    // head is never checked out: anyone can open a pull request and comment on it to wake the owner.
+    let fork = read.fork(&w.repo);
     let prepared = report
         .as_ref()
         .filter(|r| !r.changes.is_empty())
         .map(|report| {
+            if let Some(fork) = &fork {
+                return (Outcome::Fork(fork.clone()), None);
+            }
             let needs_fix = report
                 .changes
                 .iter()
@@ -1868,6 +1875,7 @@ mod tests {
             pr(v)["url"] = json!("https://github.com/Owner/Repo/pull/7");
             pr(v)["headRefName"] = json!("fix");
             pr(v)["headRefOid"] = json!(head);
+            pr(v)["headRepository"] = json!({ "nameWithOwner": "Owner/Repo" });
         };
         let pending = recorded(|v| {
             at(v);
@@ -1914,6 +1922,83 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&checked_out.stdout).trim(), head);
+    }
+
+    #[test]
+    fn a_pull_request_from_a_fork_is_never_checked_out_and_the_wake_says_so() {
+        for (head_repository, named) in [
+            (
+                json!({ "nameWithOwner": "mallory/repo" }),
+                "a fork (<github-data-t3st>mallory/repo</github-data-t3st>)",
+            ),
+            // A fork that was deleted: GitHub shows no head repository at all.
+            (Value::Null, "a fork GitHub no longer shows"),
+        ] {
+            let repos = Repos::new("fork");
+            let head = repos.push_pr(7, "fix", "b.txt", "two");
+            let store = store();
+            let head_repository = head_repository.clone();
+            let at = move |v: &mut Value| {
+                v["data"]["repository"]["nameWithOwner"] = json!("Owner/Repo");
+                pr(v)["number"] = json!(7);
+                pr(v)["url"] = json!("https://github.com/Owner/Repo/pull/7");
+                pr(v)["headRefName"] = json!("fix");
+                pr(v)["headRefOid"] = json!(head);
+                pr(v)["headRepository"] = head_repository.clone();
+            };
+            let pending = recorded(|v| {
+                at(v);
+                set_required(v, "IN_PROGRESS", None);
+            });
+            let folder = repos.clone.to_string_lossy().into_owned();
+            let added = add(
+                &store,
+                &FakeGh::new(vec![Ok(pending)]),
+                AddInput {
+                    repo: "owner/repo".into(),
+                    number: 7,
+                    projects: vec![Project {
+                        folder,
+                        hub_id: Some("hivra".into()),
+                    }],
+                    ..input("mono-a")
+                },
+                T0,
+            )
+            .unwrap();
+            assert!(
+                added.checkout.contains("comes from a fork"),
+                "{}",
+                added.checkout
+            );
+            // A stranger's comment on the pull request is news that needs a fix.
+            let commented = recorded(|v| {
+                at(v);
+                add_comment(v, "IC_x", "stranger", "please fix", "2027-01-01T00:00:00Z");
+            });
+            run(
+                &store,
+                &FakeGh::new(vec![Ok(commented)]),
+                T0 + IN_FLIGHT_EVERY,
+                &mut 0,
+            );
+            let wake = open_wakes(&store).pop().expect("a wake");
+            let w = list(&store.lock_conn().unwrap(), None, T0)
+                .unwrap()
+                .remove(0);
+            assert_eq!(w.worktree, None, "nothing was made for it");
+            assert!(
+                !repos.dir.join("clone-worktrees").exists(),
+                "no worktree at a fork's head"
+            );
+            assert!(wake.text.contains("comes from a fork"), "{}", wake.text);
+            assert!(wake.text.contains(named), "{}", wake.text);
+            assert!(
+                wake.text.contains("didn't check out its code"),
+                "{}",
+                wake.text
+            );
+        }
     }
 
     #[test]

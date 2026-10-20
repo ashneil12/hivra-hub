@@ -69,13 +69,30 @@ pub struct PrRead {
     pub merged_at: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
-    /// The fork it comes from, when it isn't the repository itself.
+    /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
     pub detail: Detail,
     /// Comments, reviews and review comments, oldest first. `None` when the read could not see them all.
     pub remarks: Option<Vec<Remark>>,
     pub rate: Option<RateLimit>,
+}
+
+impl PrRead {
+    /// Whether the head comes from outside `repo`: a fork (`Some(name)`), or a repository GitHub no longer shows
+    /// (`Some(None)`). Anyone can open one, so its code is never checked out or run.
+    pub fn fork(&self, repo: &str) -> Option<Option<String>> {
+        let base = if self.repo.is_empty() {
+            repo
+        } else {
+            &self.repo
+        };
+        match &self.head_repo {
+            Some(head) if head.eq_ignore_ascii_case(base) => None,
+            Some(head) => Some(Some(head.clone())),
+            None => Some(None),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -496,7 +513,6 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
     let head_repo = pr
         .pointer("/headRepository/nameWithOwner")
         .and_then(Value::as_str)
-        .filter(|h| !h.eq_ignore_ascii_case(&repo))
         .map(str::to_string);
     let state = match text(pr, "state").as_deref() {
         Some("MERGED") => PrState::Merged,

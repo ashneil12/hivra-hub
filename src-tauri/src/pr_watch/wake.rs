@@ -266,7 +266,7 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
     }
 }
 
-fn checkout_line(outcome: &Outcome) -> String {
+fn checkout_line(outcome: &Outcome, about: &About, frame: &Frame) -> String {
     match outcome {
         Outcome::Ready {
             path,
@@ -294,6 +294,15 @@ fn checkout_line(outcome: &Outcome) -> String {
         }
         Outcome::Left { path, reason } => format!("Checkout: {path} was left as it is: {reason}"),
         Outcome::Skipped(reason) => format!("Checkout: none prepared ({reason})."),
+        Outcome::Fork(head_repo) => format!(
+            "Checkout: none prepared. The pull request comes from {}, not {}, so its code is whoever opened it: MonoCode didn't check out its code or run anything from it. Read the change on GitHub first, and fetch pull/{}/head yourself only if your task needs it; never run its setup, tests or build before you have read them.",
+            match head_repo {
+                Some(name) => format!("a fork ({})", frame.wrap(name)),
+                None => "a fork GitHub no longer shows".to_string(),
+            },
+            about.repo,
+            about.number
+        ),
     }
 }
 
@@ -331,7 +340,7 @@ pub fn update(
         lines.extend(change_lines(change, about, frame));
     }
     lines.push(String::new());
-    lines.push(checkout_line(checkout));
+    lines.push(checkout_line(checkout, about, frame));
     lines.push(String::new());
     let green = changes
         .iter()

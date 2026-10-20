@@ -4,9 +4,11 @@
 //!   `git merge --ff-only`), only when it is clean (tracked files), on the pull request's branch, on `mc/pr-<n>` or
 //!   detached. Otherwise it is left exactly as it is and the wake says why.
 //! - With none registered, a worktree `mc/pr-<n>` is made from a checkout of the repository among the owner's projects
-//!   (MonoCode's usual worktree folder, with the project's setup started), the first time a wake needs a fix.
+//!   (MonoCode's usual worktree folder, without the project's setup), the first time a wake needs a fix.
 //!
-//! Only `fetch`, `merge --ff-only` and `worktree add` run: nothing is reset, rebased, pushed or deleted.
+//! Only `fetch`, `merge --ff-only` and `worktree add` run: nothing is reset, rebased, pushed or deleted, and the
+//! project's setup never runs in a worktree made here (the checkout holds the pull request's code). A pull request from a
+//! fork is never checked out at all (mod.rs `apply`): anyone can open one and comment to wake the owner.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,6 +31,9 @@ pub enum Outcome {
         reason: String,
     },
     Skipped(String),
+    /// The pull request's head is in another repository (a fork, `None` when GitHub no longer shows it): its code is
+    /// whoever opened it, so nothing is checked out.
+    Fork(Option<String>),
 }
 
 /// What to check out.
@@ -255,7 +260,7 @@ pub fn prepare(plan: &Plan, maker: &dyn Maker) -> (Outcome, Option<String>) {
         Ok(outcome) => {
             let made = match &outcome {
                 Outcome::Ready { path, .. } | Outcome::Left { path, .. } => Some(path.clone()),
-                Outcome::Skipped(_) => None,
+                Outcome::Skipped(_) | Outcome::Fork(_) => None,
             };
             (outcome, made)
         }
@@ -266,7 +271,23 @@ pub fn prepare(plan: &Plan, maker: &dyn Maker) -> (Outcome, Option<String>) {
     }
 }
 
-/// The app's worktree maker: worktrees.rs's own `git worktree add`, then the project's setup.
+/// What the wake says about the project's setup in a worktree made for it.
+pub const SETUP_NOT_RUN: &str = "The project's setup was not run: the checkout holds the pull request's code, so MonoCode runs nothing from it. Read the change before you run its setup, tests or build.";
+
+/// worktrees.rs's own `git worktree add`, then `setup` (worktrees.rs `with_setup`) told never to run the project's
+/// setup: the checkout is at the pull request's head, and its package.json, build.rs or setup script is whoever wrote it.
+fn make_worktree(
+    root: &Path,
+    branch: &str,
+    commit: &str,
+    setup: impl FnOnce(crate::worktrees::Worktree, Option<bool>) -> crate::worktrees::Worktree,
+) -> Result<(PathBuf, Option<String>), String> {
+    let tree = crate::worktrees::create(root, branch, commit, false)?;
+    let tree = setup(tree, Some(false));
+    Ok((PathBuf::from(tree.path), Some(SETUP_NOT_RUN.to_string())))
+}
+
+/// The app's worktree maker.
 pub struct AppMaker(pub tauri::AppHandle);
 
 impl Maker for AppMaker {
@@ -276,22 +297,9 @@ impl Maker for AppMaker {
         branch: &str,
         commit: &str,
     ) -> Result<(PathBuf, Option<String>), String> {
-        let tree = crate::worktrees::create(root, branch, commit, false)?;
-        let tree = crate::worktrees::with_setup(&self.0, tree, None);
-        let setup = tree.setup.as_ref().and_then(|setup| {
-            if let Some(run) = &setup.run {
-                Some(format!(
-                    "Its setup ({}) started; log: {}.",
-                    run.action_name, run.log_path
-                ))
-            } else {
-                setup
-                    .skipped
-                    .as_ref()
-                    .map(|why| format!("Setup didn't run: {why}."))
-            }
-        });
-        Ok((PathBuf::from(tree.path), setup))
+        make_worktree(root, branch, commit, |tree, run_setup| {
+            crate::worktrees::with_setup(&self.0, tree, run_setup)
+        })
     }
 }
 
@@ -567,6 +575,50 @@ pub(crate) mod tests {
             matches!(&outcome, Outcome::Ready { created: false, .. }),
             "{outcome:?}"
         );
+        let _ = std::fs::remove_dir_all(repos.dir.join("clone-worktrees"));
+    }
+
+    /// The app's maker with the setup step recorded instead of started (it needs a running app).
+    struct SetupSpy(std::sync::Mutex<Vec<Option<bool>>>);
+    impl Maker for SetupSpy {
+        fn make(
+            &self,
+            root: &Path,
+            branch: &str,
+            commit: &str,
+        ) -> Result<(PathBuf, Option<String>), String> {
+            make_worktree(root, branch, commit, |mut tree, run_setup| {
+                self.0.lock().unwrap().push(run_setup);
+                if run_setup != Some(false) {
+                    // What `with_setup` does: the project's setup starts in the new worktree.
+                    tree.setup = Some(crate::project_actions::WorktreeSetup {
+                        action_id: Some("setup".into()),
+                        name: Some("Setup".into()),
+                        command: Some("npm ci".into()),
+                        hold: true,
+                        run: None,
+                        skipped: Some("the spy stands in for it".into()),
+                    });
+                }
+                tree
+            })
+        }
+    }
+
+    #[test]
+    fn a_worktree_made_for_a_wake_never_runs_the_projects_setup() {
+        let repos = Repos::new("nosetup");
+        let head = repos.push_pr(7, "fix", "b.txt", "two");
+        let spy = SetupSpy(Default::default());
+        let (outcome, made) = prepare(&plan(&repos, &head, None), &spy);
+        assert!(made.is_some(), "{outcome:?}");
+        // The pull request's package.json, build.rs or setup script is whoever opened it: nothing in it runs.
+        assert_eq!(*spy.0.lock().unwrap(), vec![Some(false)]);
+        let Outcome::Ready { setup, .. } = &outcome else {
+            panic!("{outcome:?}")
+        };
+        let setup = setup.as_deref().unwrap_or("");
+        assert!(setup.contains("setup was not run"), "{setup}");
         let _ = std::fs::remove_dir_all(repos.dir.join("clone-worktrees"));
     }
 
