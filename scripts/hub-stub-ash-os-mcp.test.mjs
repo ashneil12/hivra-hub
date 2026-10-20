@@ -14,9 +14,10 @@ import { startStub } from "./hub-stub-server.mjs";
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "hub-stub-ash-os-mcp.mjs");
 let stub;
 let tokenFile;
+let dir;
 
 before(async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ash-os-stub-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "ash-os-stub-"));
   tokenFile = path.join(dir, "token");
   stub = await startStub({ tokenFile, token: "stub-token-not-a-real-key" });
   stub.addDump({
@@ -27,7 +28,10 @@ before(async () => {
     suspect: [{ rule: "no_asks", ask_ids: [], why: "Only one of two asks was written down." }],
   });
 });
-after(async () => stub.close());
+after(async () => {
+  await stub?.close();
+  if (dir) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 /** One MCP session as a chat with this identity. */
 function client(identity) {

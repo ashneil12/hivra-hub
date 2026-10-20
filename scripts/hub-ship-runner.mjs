@@ -187,6 +187,25 @@ export function moveDir(from, to) {
   }
 }
 
+/** launchctl, behind a seam (`MONOCODE_SHIP_LAUNCHCTL`) so tests never touch the real user's launchd. */
+export const launchctlPath = () => process.env.MONOCODE_SHIP_LAUNCHCTL || "/bin/launchctl";
+
+export function launchctl(args) {
+  return spawnSync(launchctlPath(), args, { encoding: "utf8" });
+}
+
+/**
+ * Unload a ship's runner LaunchAgent (if it ran as one) and delete its plist, before its folder moves or it is called
+ * off: a plist left behind starts a runner at every login, and one whose folder is gone crash-loops. Only the ship's
+ * own job: its label ends with its id and the plist is named after it.
+ */
+export function removeLaunchAgent(doc) {
+  const { label, domain, plist } = doc?.launchd ?? {};
+  if (!label || !domain || !doc?.id || !label.endsWith(`.${doc.id}`)) return;
+  launchctl(["bootout", `${domain}/${label}`]);
+  if (plist && path.basename(plist) === `${label}.plist`) fs.rmSync(plist, { force: true });
+}
+
 export function appendLog(dir, line) {
   try {
     fs.appendFileSync(path.join(dir, RUNNER_LOG), `${nowIso()} [runner ${process.pid}] ${line}\n`);
@@ -241,8 +260,12 @@ export function receiptFor(ship, dir, by) {
   };
 }
 
-/** Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. */
-export function retainShips(shipRoot, archive, currentId, keep = KEEP_SHIPS) {
+/**
+ * Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. `keepIds` (one id or a
+ * list) are never moved: the ship being staged, and the ship a rollback restores from.
+ */
+export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
+  const protectedIds = new Set([keepIds].flat().filter(Boolean));
   let names;
   try {
     names = fs
@@ -255,9 +278,10 @@ export function retainShips(shipRoot, archive, currentId, keep = KEEP_SHIPS) {
   }
   const moved = [];
   for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-    if (name === currentId) continue;
+    if (protectedIds.has(name)) continue;
     const doc = readJson(path.join(shipRoot, name, STATE));
     if (doc && !FINAL.has(doc.phase)) continue;
+    removeLaunchAgent(doc);
     moveDir(path.join(shipRoot, name), path.join(archive, name));
     moved.push(name);
   }
@@ -289,34 +313,63 @@ export function backupData(data, backup) {
 /**
  * Put `backup`'s database files back byte for byte (a file it doesn't have is removed), check them against `expected`,
  * and swap monos/ back (the live one goes to `aside`). Same steps as ship.rs `restore_db`.
+ *
+ * Nothing changes unless the backup is all there and right: a backup folder that is gone (an archived ship), a file
+ * `expected` names that isn't in it, or one that doesn't match its checksum throws first. Every file is hashed and
+ * copied in beside its live file before any live file changes. `beforeChange` runs just before the first one does; an
+ * error after that carries `changedLive`, so the caller puts its own backup back instead of saying nothing changed.
  */
-export function restoreData(backup, data, expected, aside) {
-  const restored = {};
-  for (const name of DB_FILES) {
-    const saved = path.join(backup, name);
-    const live = path.join(data, name);
-    if (exists(saved)) {
-      const temporary = path.join(data, `.${name}.restoring`);
-      fs.copyFileSync(saved, temporary);
-      fs.renameSync(temporary, live);
-      const sum = sha256File(live);
-      if (expected?.[name] && expected[name] !== sum)
-        throw new Error(`${name} doesn't match its backup after the copy (${sum} vs ${expected[name]})`);
-      restored[name] = sum;
-    } else if (exists(live)) {
-      fs.rmSync(live);
-    }
-  }
+export function restoreData(backup, data, expected, aside, { beforeChange } = {}) {
+  if (!exists(backup)) throw new Error(`the database copy ${backup} is missing`);
   const savedMonos = path.join(backup, MONOS);
   const liveMonos = path.join(data, MONOS);
   const staging = path.join(data, ".monos.restoring");
-  fs.rmSync(staging, { recursive: true, force: true });
-  if (exists(savedMonos)) fs.cpSync(savedMonos, staging, { recursive: true, verbatimSymlinks: true });
-  if (exists(liveMonos)) {
-    fs.rmSync(aside, { recursive: true, force: true });
-    fs.renameSync(liveMonos, aside);
+  const steps = [];
+  try {
+    for (const name of DB_FILES) {
+      const saved = path.join(backup, name);
+      const live = path.join(data, name);
+      if (!exists(saved)) {
+        if (expected?.[name]) throw new Error(`${name} is missing from the database copy in ${backup}`);
+        steps.push({ name, live });
+        continue;
+      }
+      const sum = sha256File(saved);
+      if (expected?.[name] && expected[name] !== sum) throw new Error(`${name} doesn't match its backup (${sum} vs ${expected[name]})`);
+      const temporary = path.join(data, `.${name}.restoring`);
+      steps.push({ name, live, temporary, sum });
+      fs.copyFileSync(saved, temporary);
+      const copied = sha256File(temporary);
+      if (copied !== sum) throw new Error(`the copy of ${name} doesn't match its backup (${copied} vs ${sum})`);
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    if (exists(savedMonos)) fs.cpSync(savedMonos, staging, { recursive: true, verbatimSymlinks: true });
+  } catch (error) {
+    for (const { temporary } of steps) if (temporary) fs.rmSync(temporary, { force: true });
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw error;
   }
-  if (exists(savedMonos)) fs.renameSync(staging, liveMonos);
+  beforeChange?.();
+  const restored = {};
+  try {
+    for (const { name, live, temporary, sum } of steps) {
+      if (!temporary) {
+        if (exists(live)) fs.rmSync(live);
+        continue;
+      }
+      fs.renameSync(temporary, live);
+      restored[name] = sum;
+      testFault("restoring");
+    }
+    if (exists(liveMonos)) {
+      fs.rmSync(aside, { recursive: true, force: true });
+      fs.renameSync(liveMonos, aside);
+    }
+    if (exists(savedMonos)) fs.renameSync(staging, liveMonos);
+  } catch (error) {
+    error.changedLive = true;
+    throw error;
+  }
   return restored;
 }
 
@@ -337,7 +390,8 @@ export async function runShip(dir) {
     log(`start ${ship.runner.starts}: ship ${ship.id} is ${ship.phase}`);
     if (ship.runner.starts > MAX_RUNNER_STARTS && !FINAL.has(ship.phase)) {
       ship.reason = `The runner kept stopping (${ship.runner.starts} starts) during ${ship.phase}.`;
-      setPhase(ship, step(ship, "oldMoved") && !step(ship, "dbRestored") ? "failed" : "cancelled", ship.reason);
+      const changed = step(ship, "oldMoved") || step(ship, "dbReplacing");
+      setPhase(ship, changed && !step(ship, "dbRestored") ? "failed" : "cancelled", ship.reason);
     }
     saveShip(dir, ship);
     for (;;) {
@@ -374,6 +428,14 @@ export async function runShip(dir) {
     releaseLock(ctx.instance);
     releaseLock(lock);
   }
+}
+
+/** Tests only: fail once at a named point (`MONOCODE_SHIP_TEST_FAIL_AT`), the way a full disk would. */
+const faulted = new Set();
+function testFault(at) {
+  if (process.env.MONOCODE_SHIP_TEST_FAIL_AT !== at || faulted.has(at)) return;
+  faulted.add(at);
+  throw new Error(`test fault at ${at}`);
 }
 
 /** Tests only: stop dead right after a step, the way a crash or a reboot would. */
@@ -451,14 +513,25 @@ async function swap(ctx, ship) {
       saveShip(ctx.dir, ship);
       testCrash(ship);
     }
+  } catch (error) {
+    return cancel(ship, `Backing up the database failed, so nothing changed: ${error.message}`);
+  }
+  try {
     if (ship.restoreDb && !step(ship, "dbReplaced")) {
       // hub:rollback: the older build comes back with the database from before its replacement.
-      ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS));
+      ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS), {
+        beforeChange: () => {
+          markStep(ship, "dbReplacing");
+          saveShip(ctx.dir, ship);
+        },
+      });
       markStep(ship, "dbReplaced");
       saveShip(ctx.dir, ship);
     }
   } catch (error) {
-    return cancel(ship, `Backing up the database failed, so nothing changed: ${error.message}`);
+    // Once a live file has changed (this run or one before it), only this ship's own backup puts things right.
+    if (step(ship, "dbReplacing")) return toRollback(ship, `Putting the database copy in place failed partway: ${error.message}`);
+    return cancel(ship, `The database copy to roll back to can't be used, so nothing changed: ${error.message}`);
   }
   try {
     if (!step(ship, "oldMoved")) {
@@ -472,7 +545,7 @@ async function swap(ctx, ship) {
       testCrash(ship);
     }
   } catch (error) {
-    if (ship.restoreDb && step(ship, "dbReplaced")) return toRollback(ship, `Moving the old app aside failed: ${error.message}`);
+    if (step(ship, "dbReplacing")) return toRollback(ship, `Moving the old app aside failed: ${error.message}`);
     return cancel(ship, `Moving the old app aside failed, so nothing changed: ${error.message}`);
   }
   try {
@@ -713,7 +786,7 @@ function unloadLaunchAgent(ship) {
   } catch {
     // already gone
   }
-  spawn("/bin/launchctl", ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
+  spawn(launchctlPath(), ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
 }
 
 // Run as a program (launchd, or a test), not when imported by hub-ship.mjs.

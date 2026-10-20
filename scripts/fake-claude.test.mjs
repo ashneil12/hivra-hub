@@ -7,7 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseTranscript, transcriptTurns } from "./claude-fixtures.mjs";
@@ -17,8 +17,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(HERE, "fake-claude.mjs");
 const T3 = path.join(HERE, "../src/integrations/harness/providers/claude/fixtures/t3code");
 
+const scratches = [];
+after(() => {
+  for (const dir of scratches) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** A temporary folder for one test, removed when the suite ends. */
 function scratch() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "fake-claude-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-claude-test-"));
+  scratches.push(dir);
+  return dir;
 }
 
 /** A fake Claude process with helpers to send lines and wait for frames. */

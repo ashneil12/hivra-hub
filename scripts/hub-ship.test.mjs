@@ -18,7 +18,7 @@ import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
-import { isRunning, readJson, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { isRunning, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -174,6 +174,7 @@ const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
+if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
   -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi ;;
   -d) if [ "$sig" = adhoc ]; then echo 'designated => cdhash H"0000"'; else echo "designated => identifier \\"${HUB}\\" and certificate leaf[subject.CN] = \\"$sig\\""; fi ;;
@@ -243,6 +244,25 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   };
   const env = { ...process.env, HOME: home, MONOCODE_SHIP_CODESIGN: codesign, HUB_SHIP_TEST_OWNER: String(process.pid) };
   return { root, home, repo, sha, app, bundle, data, before, env, git };
+}
+
+/** A new commit in the fixture checkout, the bundle rebuilt from it (behaving as told) and a check pass for it. */
+function nextBuild(w, behavior) {
+  fs.writeFileSync(path.join(w.repo, `change-${crypto.randomBytes(4).toString("hex")}.txt`), "a change\n");
+  w.git("add", ".");
+  w.git("commit", "-q", "-m", "a change");
+  const sha = w.git("rev-parse", "HEAD");
+  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  bundleAt(w.bundle, { sha, behavior, root: w.root });
+  return sha;
+}
+
+function rollbackCli(w, id, args = [], env = {}) {
+  return spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-rollback.mjs"), id, "--json", "--launcher", "spawn", ...args],
+    { env: { ...w.env, ...env }, encoding: "utf8" },
+  );
 }
 
 function ship(w, args = [], env = {}) {
@@ -506,6 +526,184 @@ test("hub:rollback puts back the build a committed ship replaced, with that ship
   assert.equal(rollback(["--confirm"]).status, 1);
 });
 
+test("SH-1: hub:rollback of a ship with two newer ship folders after it puts that ship's database back", async () => {
+  const w = world();
+  const shipped = ship(w);
+  assert.equal(shipped.code, 0, JSON.stringify(shipped.answer));
+  await until("the commit", settled(shipped.answer.shipDir, "committed"));
+  remember(shipped.answer.shipDir);
+  const committed = w.sha;
+  // Two more ships after it, both rolled back: the installed app is still the one it committed.
+  for (const n of [1, 2]) {
+    nextBuild(w, "crash");
+    const later = ship(w);
+    assert.equal(later.code, 0, `ship ${n}: ${JSON.stringify(later.answer)}`);
+    await until(`ship ${n} rolled back`, settled(later.answer.shipDir, "rolled-back"));
+    remember(later.answer.shipDir);
+    await until(`the committed build back after ship ${n}`, () => {
+      const running = readJson(path.join(w.data, "running.json"));
+      return running?.sha === committed && isRunning(running.pid, running.startTime);
+    });
+  }
+  assert.equal(stampOf(w.app).sha, committed);
+  fs.appendFileSync(path.join(w.data, "monocode.db"), "a newer chat");
+  const done = rollbackCli(w, shipped.answer.id, ["--confirm"]);
+  assert.equal(done.status, 0, done.stderr || done.stdout);
+  const answer = JSON.parse(done.stdout.trim());
+  // Staging the rollback (4 ship folders now) must not archive the ship it restores from.
+  assert.ok(fs.existsSync(path.join(shipped.answer.shipDir, "backup/monocode.db")), "the rolled-back ship's copy stays put");
+  const state = await until("the rollback's commit", settled(answer.shipDir, "committed"));
+  remember(answer.shipDir);
+  assert.equal(stampOf(w.app).sha, SHA_A, "the replaced build is back");
+  // That ship's copy, which the old build has opened (and, being a fake, appended to) since.
+  const liveDb = fs.readFileSync(path.join(w.data, "monocode.db"));
+  assert.equal(crypto.createHash("sha256").update(liveDb.subarray(0, 64 * 1024)).digest("hex"), w.before.db, "the live database is that ship's copy");
+  assert.equal(sha256File(path.join(w.data, "monocode.db-wal")), w.before.wal);
+  assert.equal(fs.readFileSync(path.join(w.data, "monos/frank/SOUL.md"), "utf8"), "the old soul\n");
+  assert.equal(state.db.replacedWith["monocode.db"], w.before.db);
+});
+
+test("SH-1: a restore whose backup is missing throws and leaves the live files alone", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const data = path.join(root, "data");
+  fs.mkdirSync(path.join(data, "monos/frank"), { recursive: true });
+  fs.writeFileSync(path.join(data, "monocode.db"), "live db");
+  fs.writeFileSync(path.join(data, "monocode.db-wal"), "live wal");
+  fs.writeFileSync(path.join(data, "monos/frank/SOUL.md"), "live soul");
+  const live = () =>
+    ["monocode.db", "monocode.db-wal", "monos/frank/SOUL.md"].map((name) => fs.readFileSync(path.join(data, name), "utf8"));
+  const before = live();
+  const aside = path.join(root, "aside");
+  // The whole backup folder is gone (an archived ship).
+  assert.throws(() => restoreData(path.join(root, "gone"), data, { "monocode.db": "x" }, aside), /missing/);
+  assert.deepEqual(live(), before);
+  // A file the backup says it took isn't there.
+  const backup = path.join(root, "backup");
+  fs.mkdirSync(backup);
+  fs.writeFileSync(path.join(backup, "monocode.db-wal"), "old wal");
+  assert.throws(
+    () => restoreData(backup, data, { "monocode.db": "0".repeat(64), "monocode.db-wal": sha256File(path.join(backup, "monocode.db-wal")) }, aside),
+    /monocode\.db is missing/,
+  );
+  assert.deepEqual(live(), before);
+  assert.equal(fs.existsSync(aside), false, "monos/ wasn't moved aside");
+});
+
+test("SH-2: a database copy that doesn't match its checksums changes nothing", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const data = path.join(root, "data");
+  const backup = path.join(root, "backup");
+  for (const dir of [path.join(data, "monos/frank"), path.join(backup, "monos/frank")]) fs.mkdirSync(dir, { recursive: true });
+  for (const [dir, label] of [[data, "live"], [backup, "saved"]]) {
+    fs.writeFileSync(path.join(dir, "monocode.db"), `${label} db`);
+    fs.writeFileSync(path.join(dir, "monocode.db-wal"), `${label} wal`);
+    fs.writeFileSync(path.join(dir, "monos/frank/SOUL.md"), `${label} soul`);
+  }
+  const expected = {
+    "monocode.db": sha256File(path.join(backup, "monocode.db")),
+    "monocode.db-wal": sha256File(path.join(backup, "monocode.db-wal")),
+  };
+  // The second file is the bad one: the first must not have been put in place already.
+  fs.writeFileSync(path.join(backup, "monocode.db-wal"), "tampered wal");
+  const aside = path.join(root, "aside");
+  assert.throws(() => restoreData(backup, data, expected, aside), /monocode\.db-wal doesn't match/);
+  assert.deepEqual(
+    ["monocode.db", "monocode.db-wal", "monos/frank/SOUL.md"].map((name) => fs.readFileSync(path.join(data, name), "utf8")),
+    ["live db", "live wal", "live soul"],
+  );
+  assert.deepEqual(fs.readdirSync(data).sort(), ["monocode.db", "monocode.db-wal", "monos"], "no temporaries left");
+  assert.equal(fs.existsSync(aside), false);
+});
+
+test("SH-2: a rollback whose restore fails partway puts its own backup back instead of calling it off", async () => {
+  const w = world();
+  const shipped = ship(w);
+  await until("the commit", settled(shipped.answer.shipDir, "committed"));
+  remember(shipped.answer.shipDir);
+  fs.appendFileSync(path.join(w.data, "monocode.db"), "a newer chat");
+  const newer = sha256File(path.join(w.data, "monocode.db"));
+  // The runner fails once, right after the first live file was replaced (a full disk, a permissions error).
+  const done = rollbackCli(w, shipped.answer.id, ["--confirm"], { MONOCODE_SHIP_TEST_FAIL_AT: "restoring" });
+  assert.equal(done.status, 0, done.stderr || done.stdout);
+  const answer = JSON.parse(done.stdout.trim());
+  const state = await until("the rollback ship to finish", () => {
+    const now = stateOf(answer.shipDir);
+    return now && ["committed", "rolled-back", "cancelled", "failed"].includes(now.phase) && fs.existsSync(path.join(answer.shipDir, "receipt.json")) ? now : null;
+  });
+  remember(answer.shipDir);
+  assert.equal(state.phase, "rolled-back", state.reason);
+  assert.match(state.reason, /partway/);
+  assert.equal(sha256File(path.join(w.data, "monocode.db")), newer, "the live database is as it was before the rollback");
+  assert.equal(sha256File(path.join(w.data, "monocode.db-wal")), w.before.wal);
+  assert.equal(stampOf(w.app).sha, w.sha, "the committed build stays");
+  await until("the committed build reopened", () => readJson(path.join(w.data, "running.json"))?.sha === w.sha);
+  remember(answer.shipDir);
+});
+
+/** A stand-in for /bin/launchctl that only writes down what it was asked. */
+function fakeLaunchctl(root) {
+  const log = path.join(root, "launchctl.log");
+  const bin = path.join(root, "launchctl");
+  fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+  return { bin, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []) };
+}
+
+/** A ship folder whose runner ran as a LaunchAgent, with its plist still in place. */
+function launchdShip(ships, agents, id, phase) {
+  const label = `test.monocode-hub-ship.${id}`;
+  const plist = path.join(agents, `${label}.plist`);
+  fs.mkdirSync(path.join(ships, id), { recursive: true });
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(plist, "<plist/>");
+  const domain = `gui/${process.getuid()}`;
+  fs.writeFileSync(
+    path.join(ships, id, "state.json"),
+    JSON.stringify({ id, phase, to: { sha: "c".repeat(40) }, launchd: { label, domain, plist } }),
+  );
+  return { label, plist, target: `${domain}/${label}` };
+}
+
+test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "home/Library/Application Support", HUB, "ship");
+  const agents = path.join(root, "home/Library/LaunchAgents");
+  const archive = path.join(root, "home/Archive/monocode/ships");
+  const ids = ["20261019-000001-aaaaaaa", "20261019-000002-aaaaaaa", "20261019-000003-aaaaaaa", "20261019-000004-aaaaaaa"];
+  const agentsOf = ids.map((id) => launchdShip(ships, agents, id, "cancelled"));
+  const launchctl = fakeLaunchctl(root);
+  const saved = process.env.MONOCODE_SHIP_LAUNCHCTL;
+  process.env.MONOCODE_SHIP_LAUNCHCTL = launchctl.bin;
+  try {
+    assert.deepEqual(retainShips(ships, archive, ids[3]), [ids[0]]);
+  } finally {
+    if (saved === undefined) delete process.env.MONOCODE_SHIP_LAUNCHCTL;
+    else process.env.MONOCODE_SHIP_LAUNCHCTL = saved;
+  }
+  assert.ok(fs.existsSync(path.join(archive, ids[0], "state.json")), "the oldest ship is archived");
+  assert.equal(fs.existsSync(agentsOf[0].plist), false, "and its LaunchAgent can't start a runner that is gone");
+  assert.deepEqual(launchctl.calls(), [`bootout ${agentsOf[0].target}`]);
+  for (const kept of agentsOf.slice(1)) assert.ok(fs.existsSync(kept.plist), "the ships kept keep theirs");
+});
+
+test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", async () => {
+  const w = world();
+  const ships = path.join(w.data, "ship");
+  const old = "20261019-000001-ccccccc";
+  const agent = launchdShip(ships, path.join(w.home, "Library/LaunchAgents"), old, "staged");
+  fs.writeFileSync(path.join(ships, "current.json"), JSON.stringify({ id: old }));
+  const launchctl = fakeLaunchctl(w.root);
+  const { code, answer } = ship(w, [], { MONOCODE_SHIP_LAUNCHCTL: launchctl.bin });
+  assert.equal(code, 0, JSON.stringify(answer));
+  await until("the new ship's commit", settled(answer.shipDir, "committed"));
+  remember(answer.shipDir);
+  assert.equal(stateOf(path.join(ships, old)).phase, "cancelled");
+  assert.equal(fs.existsSync(agent.plist), false, "its plist is gone");
+  assert.ok(launchctl.calls().includes(`bootout ${agent.target}`), JSON.stringify(launchctl.calls()));
+});
+
 test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   const w = world();
   const result = spawnSync(
@@ -519,6 +717,36 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.equal(stampOf(w.app).sha, w.sha);
   assert.equal(stampOf(answer.previousKeptAt).sha, SHA_A);
   assert.ok(answer.previousKeptAt.startsWith(path.join(w.home, "Archive/monocode/ships/legacy-")));
+});
+
+test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fails leaves the old app installed", () => {
+  const legacy = (w) =>
+    spawnSync(NODE, ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--legacy", "--json", "--repo", w.repo], {
+      env: w.env,
+      encoding: "utf8",
+    });
+  const unsigned = world({ newBundle: { signature: "unsigned" } });
+  let result = legacy(unsigned);
+  assert.equal(result.status, 1, result.stderr);
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.ok(answer.refusals.some((refusal) => /isn't signed/.test(refusal)), JSON.stringify(answer.refusals));
+  assert.equal(stampOf(unsigned.app).sha, SHA_A);
+
+  // ditto stops on a file it can't read, after copying part of the bundle.
+  const w = world();
+  const locked = path.join(w.bundle, "Contents/Resources/locked");
+  fs.writeFileSync(locked, "unreadable");
+  fs.chmodSync(locked, 0);
+  try {
+    result = legacy(w);
+  } finally {
+    fs.chmodSync(locked, 0o600);
+  }
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Copying the bundle failed/);
+  assert.equal(stampOf(w.app).sha, SHA_A, "the old app is still installed");
+  assert.deepEqual(fs.readdirSync(path.join(w.home, "Applications")), ["MonoCode Hub.app"], "no half copy left beside it");
+  assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
 });
 
 test("a fake app quits by itself once the test run that started it is gone", async () => {

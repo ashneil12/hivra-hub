@@ -334,9 +334,17 @@ export function tauriArgs(slotConfigFile, extra = [], root = ROOT) {
 /** The environment `tauri dev` (and so cargo, vite and the app) runs with. */
 export function devEnvironment({ slot, hub, memory, background = false, home = os.homedir(), env = process.env }) {
   const next = { ...env };
-  // Whatever an enclosing dev copy or shell set is not this slot's.
+  // Whatever an enclosing dev copy or shell set is not this slot's: least of all the app and control credentials of a
+  // chat in the daily app that ran hub:dev (control.rs `configure_child` hands them to that chat only).
   for (const key of Object.keys(next))
-    if (key === "TAURI_CONFIG" || key.startsWith("TAURI_ENV_") || key.startsWith("MONOCODE_HUB_") || key === "MONOCODE_VITE_PORT")
+    if (
+      key === "TAURI_CONFIG" ||
+      key.startsWith("TAURI_ENV_") ||
+      key.startsWith("MONOCODE_HUB_") ||
+      key.startsWith("MONOCODE_APP_") ||
+      key.startsWith("MONOCODE_CONTROL_") ||
+      key === "MONOCODE_VITE_PORT"
+    )
       delete next[key];
   next.CARGO_BUILD_BUILD_DIR = path.join(home, SHARED_BUILD_DIR);
   // The dev wrapper bundle's name (src-tauri/src/macos.rs): one per slot, so two slots never share an Info.plist.

@@ -341,6 +341,17 @@ test("the dev environment shares the Rust build cache and points Ash OS only at 
   assert.equal(leaked.MONOCODE_HUB_MEMORY_ROOT, undefined);
   const asked = devEnvironment({ slot: "a", hub: null, memory: "/tmp/fixture-memory", home, env: inherited });
   assert.equal(asked.MONOCODE_HUB_MEMORY_ROOT, "/tmp/fixture-memory");
+  // SH-3: started from a chat inside the daily app, hub:dev's shell carries that chat's app and control credentials.
+  const agent = {
+    MONOCODE_APP_ENDPOINT: "127.0.0.1:49152",
+    MONOCODE_APP_TOKEN: "daily-app-grant",
+    MONOCODE_CONTROL_ENDPOINT: "127.0.0.1:49152",
+    MONOCODE_CONTROL_TOKEN: "daily-control-grant",
+    MONOCODE_APP_ANYTHING_NEW: "x",
+  };
+  const fromChat = devEnvironment({ slot: "a", hub: null, home, env: { ...inherited, ...agent } });
+  for (const key of Object.keys(agent)) assert.equal(fromChat[key], undefined, key);
+  assert.equal(fromChat.PATH, "/usr/bin");
 });
 
 test("--print shows the plan and changes nothing; bad options are refused", (t) => {

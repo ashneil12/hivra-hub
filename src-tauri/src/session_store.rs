@@ -862,8 +862,7 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
     }
 }
 
-/// Add a `sessions` column when it is absent, so a half-applied history cannot
-/// leave the schema short of what the queries select.
+/// Add `column` to `table` when it is absent.
 fn ensure_table_column(
     conn: &Connection,
     table: &str,
@@ -884,19 +883,10 @@ fn ensure_table_column(
     Ok(())
 }
 
+/// Add a `sessions` column when it is absent, so a half-applied history cannot
+/// leave the schema short of what the queries select.
 fn ensure_session_column(conn: &Connection, column: &str, decl: &str) -> rusqlite::Result<()> {
-    let present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
-        params![column],
-        |row| row.get(0),
-    )?;
-    if present == 0 {
-        conn.execute(
-            &format!("ALTER TABLE sessions ADD COLUMN {column} {decl}"),
-            [],
-        )?;
-    }
-    Ok(())
+    ensure_table_column(conn, "sessions", column, decl)
 }
 
 /// Add a `sessions` column when it is missing, tolerating the case where a
