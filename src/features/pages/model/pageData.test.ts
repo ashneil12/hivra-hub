@@ -5,7 +5,7 @@ import type { HubJobGroup, HubProject } from "../../hub/model/types";
 import type { Delegation } from "../../monos/model/delegations";
 import type { Mono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
-import { agentsData, ENDED_QUIET_MS, jobsData, needsData, roomsData, STUCK_QUIET_MS, type AgentInputs } from "./pageData";
+import { agentsData, jobsData, needsData, roomsData, type AgentInputs } from "./pageData";
 
 const NOW = 1_800_000_000_000;
 const projects: HubProject[] = [
@@ -55,29 +55,46 @@ it("an agent that asked Ash is asking, with its question, pick and the chat to a
 });
 
 it("handed-out work nests under the agent that started it, with working, asking, stuck, failed, done and stopped", () => {
+  // Stuck is what every screen reads (workerStuck.ts): the row the app's watcher marked stalled, or a failure.
   const rows = [
     row("d1", "s-exo", "w1"),
     row("d2", "s-exo", "w2", { state: "question", pendingQuestion: "Example: keep the old saves?" }),
-    row("d3", "s-exo", "w3"),
-    row("d4", "s-exo", "w4", { state: "failed", error: "Example: the build broke" }),
+    row("d3", "s-exo", "w3", { stallKind: "quiet", stallReason: "", stalledAt: NOW - 11 * 60_000 }),
+    row("d4", "s-exo", "w4", { state: "failed", error: "Example: the build broke", settledAt: NOW - 60_000 }),
     row("d5", "s-exo", "w5", { state: "completed", settledAt: NOW - 60_000 }),
     row("d6", "s-exo", "w6", { state: "cancelled" }),
-    row("d7", "w1", "w7"),
+    row("d7", "w1", "w7", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: NOW - 3 * 60_000 }),
+    row("d8", "s-exo", "w8", { state: "failed", errorClass: "usage_limit", settledAt: NOW - 60_000 }),
   ];
   const data = agentsData(inputs({
     monos: [mono("vg-game-lead", { sessionId: "s-exo" })], rows,
     sessions: [session("w1", { busy: true }), session("w3", { busy: true }), session("w7", { busy: false })],
-    quiet: { w1: 1000, w3: STUCK_QUIET_MS + 60_000, w7: ENDED_QUIET_MS + 1 },
+    quiet: { w1: 1000 },
   }));
   const exo = data.agents[0];
-  expect(exo.workers.map((w) => [w.id, w.state])).toEqual([["d1", "working"], ["d2", "asking"], ["d3", "stuck"], ["d4", "failed"], ["d5", "done"], ["d6", "stopped"]]);
+  expect(exo.workers.map((w) => [w.id, w.state])).toEqual([
+    ["d1", "working"], ["d2", "asking"], ["d3", "stuck"], ["d4", "failed"], ["d5", "done"], ["d6", "stopped"], ["d8", "failed"],
+  ]);
   expect(exo.workers[1].question).toMatchObject({ chatId: "w2", text: "Example: keep the old saves?", canAnswer: false });
-  expect(exo.workers[2].reason).toBe("No progress for 11 min.");
+  expect(exo.workers[2]).toMatchObject({ reason: "No output for 11 min", since: NOW - 11 * 60_000 });
   expect(exo.workers[3].reason).toBe("Example: the build broke");
-  expect(exo.workers[0].workers.map((w) => [w.id, w.state, w.reason])).toEqual([["d7", "stuck", "Its chat stopped without reporting back."]]);
+  // A worker that dies on a usage limit is failed with the reason, never silently.
+  expect(exo.workers[6].reason).toBe("Usage limit reached");
+  expect(exo.workers[0].workers.map((w) => [w.id, w.state, w.doing, w.reason])).toEqual([
+    ["d7", "stuck", "Stopped", "Stopped without reporting back · 3 min ago"],
+  ]);
   expect(exo.waitingOn).toBe(3);
-  // The Lead itself is idle in its chat but its workers are at it.
+  // The Lead itself is idle in its chat but its workers are at it (the stuck one is listed as itself).
   expect(exo).toMatchObject({ state: "working", doing: "Waiting on 3 workers" });
+});
+
+it("a Lead whose own brief the watcher marked stalled is stuck, with how", () => {
+  const rows = [row("brief", "s-cos", "s-exo", { follow: "lead", stallKind: "quiet", stallReason: "Still running npm test", stalledAt: NOW - 8 * 60_000 })];
+  const data = agentsData(inputs({
+    monos: [mono("vg-game-lead", { sessionId: "s-exo" })], rows,
+    sessions: [session("s-exo", { busy: true, blocks: [{ id: "b", role: "tool", text: "", tool: { title: "Run npm test", status: "in_progress" } } as never] })],
+  }));
+  expect(data.agents[0]).toMatchObject({ state: "stuck", reason: "No output for 8 min · still running npm test", since: NOW - 8 * 60_000 });
 });
 
 it("a worker asking its Lead with a live question can be answered from the page (its chat)", () => {

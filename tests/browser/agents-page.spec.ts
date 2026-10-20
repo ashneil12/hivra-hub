@@ -44,7 +44,7 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(asking.locator(".pick")).toHaveText("Suggested: Three slots");
   await expect(asking.locator(".status")).toContainText("Asking");
   await expect(stuck.locator(".status")).toContainText("Stuck");
-  await expect(stuck.locator(".pick")).toContainText("Waiting for a usage limit to reset at");
+  await expect(stuck.locator(".pick")).toContainText("No output for 12 min · still running npm run build");
   await expect(frame.locator("[data-summary]")).toHaveText("2 need you · 2 working · 4 idle");
   // Asking first, then stuck.
   await expect(frame.locator('[data-list="attention"] [data-item]')).toHaveText([/Pick the save slot layout/, /Build 0.15 for the playtest/]);

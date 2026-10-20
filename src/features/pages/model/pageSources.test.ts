@@ -9,7 +9,7 @@ import { addMono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { SessionStateStore } from "../../sessions/model/sessionStateStore";
 import { PageBridgeHost } from "./pageBridgeHost";
-import { STUCK_QUIET_MS, type AgentsData } from "./pageData";
+import type { AgentsData } from "./pageData";
 import { AGENTS_TICK_MS, appPageSources } from "./pageSources";
 
 const session = (id: string, over: Partial<Session> = {}): Session =>
@@ -53,15 +53,18 @@ it("a watching page hears every change to the agents and reads them as they are 
   await vi.advanceTimersByTimeAsync(60);
   expect(last()).toMatchObject({ state: "asking", question: { chatId: "s-exo", pick: "today" } });
 
-  // A busy worker chat with no new word for ten minutes reads as stuck, by itself (the clock ticks).
-  setDelegationRows([row("d1")]);
+  // The app's watcher marks the busy worker stalled on its row (workerStall.ts): the page reads it as stuck, and its
+  // "No output for N min" counts up by itself (the clock ticks).
+  setDelegationRows([row("d1", { stallKind: "quiet", stallReason: "", stalledAt: now - 11 * 60_000 })]);
   await vi.advanceTimersByTimeAsync(60);
-  now += STUCK_QUIET_MS + 60_000;
+  expect(last().workers[0]).toMatchObject({ state: "stuck", reason: "No output for 11 min" });
+  now += 60_000;
   await vi.advanceTimersByTimeAsync(AGENTS_TICK_MS + 60);
-  expect(last().workers[0]).toMatchObject({ state: "stuck", reason: "No progress for 11 min." });
+  expect(last().workers[0]).toMatchObject({ state: "stuck", reason: "No output for 12 min" });
 
-  // A new word from the worker: working again.
+  // A new word from the worker: the watcher clears the stall, and it is working again.
   store.update((all) => all.map((s) => (s.id === "w-d1" ? { ...s, blocks: [{ id: "t", role: "tool", text: "", tool: { title: "Run the save tests" } } as never] } : s)));
+  setDelegationRows([row("d1")]);
   await vi.advanceTimersByTimeAsync(60);
   expect(last().workers[0]).toMatchObject({ state: "working", doing: "Run the save tests" });
   host.dispose();

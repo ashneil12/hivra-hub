@@ -7,6 +7,7 @@ import { leadFor } from "../../hub/model/hubLeads";
 import type { WaitingChat } from "../../hub/model/waitingChats";
 import type { GroupChat, HubJob, HubJobGroup, HubProject, Need } from "../../hub/model/types";
 import type { Delegation } from "../../monos/model/delegations";
+import { failureLine, stallLine, stuckOf } from "../../monos/model/workerStuck";
 import { defaultMonoName, monoState, type Mono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
@@ -40,7 +41,7 @@ export type PageJob = {
   title: string;
   agentId: string | null;
   agentName: string;
-  state: "working" | "checking" | "stuck" | "gave_up" | "done" | "parked";
+  state: "working" | "checking" | "waiting" | "stuck" | "gave_up" | "done" | "parked" | "unknown";
   reason?: string;
   startedAt?: number;
   lastActiveAt?: number;
@@ -67,9 +68,8 @@ export type PageAgent = {
 };
 export type AgentsData = { agents: PageAgent[]; counts: Record<AgentState, number> };
 
-/** A busy chat with no new word for this long reads as stuck; a worker whose chat ended without reporting, after this. */
-export const STUCK_QUIET_MS = 10 * 60_000;
-export const ENDED_QUIET_MS = 2 * 60_000;
+// Stuck has one definition everywhere (monos/model/workerStuck.ts): a worker asking, stalled (the app's watcher marks
+// its row quiet, loop or idle: workerStall.ts) or failed. The page reads it from the delegation rows like every screen.
 const MAX_DEPTH = 4;
 const MAX_WORKERS = 20;
 
@@ -80,12 +80,11 @@ export type AgentInputs = {
   waiting: readonly WaitingChat[];
   jobs: readonly HubJobGroup[];
   projects: readonly HubProject[];
-  /** How long a chat has been as it is now (ms), when known: no new word, or not busy. */
+  /** How long a chat has been as it is now (ms), when known: no new word, or not busy (for `since`). */
   quietFor(sessionId: string): number | undefined;
   now: number;
 };
 
-const minutes = (ms: number) => Math.max(1, Math.round(ms / 60_000));
 const isoMs = (iso: string | null | undefined) => {
   const t = iso ? new Date(iso).getTime() : NaN;
   return Number.isNaN(t) ? undefined : t;
@@ -134,23 +133,26 @@ export function jobsData(groups: readonly HubJobGroup[], projects: readonly HubP
 
 const ROW_STATE: Record<Delegation["state"], WorkerState> = { running: "working", question: "asking", completed: "done", failed: "failed", cancelled: "stopped" };
 
-/** Where one piece of handed-out work stands, from its row and (when it is loaded) its chat. */
-export function workerState(row: Delegation, session: Session | undefined, quiet: number | undefined, now: number): Pick<PageWorker, "state" | "doing" | "reason"> {
+/** "Usage limit reached, resets 3:10pm": why a worker failed, as every surface says it (workerStuck.ts). */
+function failedWords(row: Delegation): string {
+  const words = failureLine(row).replace(/^Failed: /, "");
+  return words[0].toUpperCase() + words.slice(1);
+}
+
+/** Where one piece of handed-out work stands, from its row (the one reading of stuck) and, when loaded, its chat. */
+export function workerState(row: Delegation, session: Session | undefined, now: number): Pick<PageWorker, "state" | "doing" | "reason"> {
   const base = ROW_STATE[row.state];
-  if (base === "failed") return { state: "failed", doing: "Failed", reason: row.error?.trim() || "It stopped with an error." };
+  if (base === "failed") return { state: "failed", doing: "Failed", reason: failedWords(row) };
   if (base === "stopped") return { state: "stopped", doing: "Stopped", ...(row.error ? { reason: row.error } : {}) };
   if (base === "done") return { state: "done", doing: "Done" };
   const live = liveQuestion(session);
   if (base === "asking" || live) return { state: "asking", doing: "Asking" };
-  if (row.resetsAt && row.resetsAt > now) {
-    const at = new Date(row.resetsAt);
-    return { state: "stuck", doing: "Waiting", reason: `Waiting for a usage limit to reset at ${at.getHours() % 12 || 12}:${String(at.getMinutes()).padStart(2, "0")}${at.getHours() < 12 ? "am" : "pm"}` };
-  }
-  if (session?.usageLimit) return { state: "stuck", doing: "Waiting", reason: "It hit a usage limit." };
-  if (session && !session.busy && quiet !== undefined && quiet >= ENDED_QUIET_MS)
-    return { state: "stuck", doing: "Stopped", reason: "Its chat stopped without reporting back." };
-  if (session?.busy && quiet !== undefined && quiet >= STUCK_QUIET_MS)
-    return { state: "stuck", doing: monoState(session).activity ?? "Working", reason: `No progress for ${minutes(quiet)} min.` };
+  if (stuckOf(row, now)?.kind === "stalled")
+    return {
+      state: "stuck",
+      doing: row.stallKind === "idle" ? "Stopped" : session ? (monoState(session).activity ?? "Working") : "Working",
+      reason: stallLine(row, now),
+    };
   return { state: "working", doing: session ? monoState(session).activity ?? "Working" : "Working" };
 }
 
@@ -179,8 +181,7 @@ function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: S
   return rows.map((row) => {
     seen.add(row.id);
     const session = inputs.session(row.childSession);
-    const quiet = inputs.quietFor(row.childSession);
-    const st = workerState(row, session, quiet, inputs.now);
+    const st = workerState(row, session, inputs.now);
     const question = st.state === "asking" ? questionFor(row.childSession, session, inputs.waiting, row) : undefined;
     const ended = row.settledAt ?? undefined;
     return {
@@ -189,7 +190,7 @@ function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: S
       ...st,
       chatId: row.childSession,
       startedAt: row.createdAt,
-      since: st.state === "stuck" && quiet !== undefined ? inputs.now - quiet : ended ?? row.updatedAt,
+      since: st.state === "stuck" ? (row.stalledAt ?? row.updatedAt) : ended ?? row.updatedAt,
       ...(ended ? { endedAt: ended } : {}),
       ...(question ? { question } : {}),
       workers: workersUnder(row.childSession, inputs, depth + 1, seen),
@@ -234,9 +235,15 @@ export function agentsData(inputs: AgentInputs): AgentsData {
       state = "paused";
       doing = look.activity ?? "Paused";
     } else if (look?.status === "working") {
-      state = quiet !== undefined && quiet >= STUCK_QUIET_MS ? "stuck" : "working";
+      // Its own chat is stuck only when the app's watcher marked the brief it works on stalled (a Lead briefed by the
+      // leadership team), like any worker's.
+      const own = chatId ? inputs.rows.find((r) => r.childSession === chatId && r.state === "running" && r.stallKind) : undefined;
+      state = own ? "stuck" : "working";
       doing = look.activity ?? "Working";
-      if (state === "stuck") reason = `No progress for ${minutes(quiet ?? 0)} min.`;
+      if (own) {
+        reason = stallLine(own, inputs.now);
+        since = own.stalledAt ?? since;
+      }
     } else if (waitingOn) {
       state = "working";
       doing = `Waiting on ${waitingOn} ${waitingOn === 1 ? "worker" : "workers"}`;

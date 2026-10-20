@@ -115,9 +115,9 @@ const slotQuestion: UserQuestionPrompt = { requestId: 7, questions: [{ id: "layo
     setSession("w-d2", { pendingQuestion: slotQuestion });
     setRow("d2", { state: "question", pendingQuestion: "Three save slots or five?" });
   },
-  /** The build worker gets stuck: its chat hit a usage limit until a reset. */
+  /** The build worker gets stuck: the app's watcher marks its row stalled (workerStall.ts), as every screen reads it. */
   workerStuck() {
-    setRow("d3", { resetsAt: Date.now() + 47 * MIN });
+    setRow("d3", { stallKind: "quiet", stallReason: "Still running npm run build", stalledAt: Date.now() - 12 * MIN });
   },
   /** Hivra lead ends its turn asking Ash (Waiting on you). */
   leadAsks() {

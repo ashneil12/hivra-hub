@@ -1,7 +1,8 @@
 // Where a connected page's live data comes from, and how it hears about changes: the same stores the app's own screens
 // read (pageData.ts turns them into plain data). A page's watch subscribes here; nothing polls Ash OS for it: the hub
 // store's change feed, the delegation feed, Waiting on you, the Monos roster and the chats already move on their own.
-// One clock per sessions store notes when each chat last changed, so a chat that went quiet mid-turn can read as stuck.
+// One clock per sessions store notes when each chat last changed (how long an agent has been as it is). Stuck is read
+// from the delegation rows, the one definition every screen uses (monos/model/workerStuck.ts).
 import { hubData, liveHubStore } from "../../hub/model/hubData";
 import { listChats } from "../../hub/model/hubChats";
 import { subscribeWaitingChats, waitingChats } from "../../hub/model/waitingChats";
@@ -14,7 +15,7 @@ import { agentName, agentsData, jobsData, needsData, roomsData } from "./pageDat
 
 /** hubChats.ts's change event (its constant isn't exported): the rooms moved. */
 const CHATS_CHANGED = "monocode:hub-chats-changed";
-/** How often the agents are read again with nothing else moving, so "no progress for N min" turns up by itself. */
+/** How often the agents are read again with nothing else moving, so "No output for N min" counts up by itself. */
 export const AGENTS_TICK_MS = 30_000;
 
 type Sessions = Pick<SessionStateStore, "snapshot" | "session" | "subscribeShell">;
