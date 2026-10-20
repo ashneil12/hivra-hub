@@ -105,10 +105,11 @@ export async function runScenario(scenario, ctx) {
       // The chat itself shows a reply after the last cut-turn note (a resumed turn), and its turn is over.
       const snap = await act("snapshot");
       const chat = (snap.sessions ?? []).find((x) => x.mono === resolveMono(cond.monoAnswered));
-      if (!chat || chat.busy) return false;
+      // Nothing of Ash's may still wait in its queue: a message that never went in was not answered.
+      if (!chat || chat.busy || chat.queued) return false;
       const tail = chat.tail ?? [];
-      const cut = tail.map((block) => block.notice).lastIndexOf("interrupt");
-      return tail.slice(cut + 1).some((block) => block.role === "assistant" && String(block.text ?? "").trim());
+      const after = Math.max(tail.map((block) => block.notice).lastIndexOf("interrupt"), tail.map((block) => block.role).lastIndexOf("user"));
+      return tail.slice(after + 1).some((block) => block.role === "assistant" && String(block.text ?? "").trim());
     }
     if (cond.monoSaid) {
       // Anything the Mono wrote (text or a tool call) since Ash's last message to it.
