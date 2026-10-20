@@ -58,6 +58,7 @@ describe("the Autopilot screen's words", () => {
     expect(outcomeLabel({ kind: "decision", outcome: "taken", red: null })).toBe("Took its recommendation");
     expect(outcomeLabel({ kind: "approval", outcome: "taken", red: null })).toBe("Allowed");
     expect(outcomeLabel({ kind: "decision", outcome: "held", red: "money" })).toBe("Waiting for you: moving money, refunds or charges");
+    expect(outcomeLabel({ kind: "approval", outcome: "held", red: null })).toBe("Waiting for you: not one autopilot allows by itself");
     expect(outcomeLabel({ kind: "question", outcome: "handed_back", red: null })).toBe("Told to decide itself");
     expect(outcomeLabel({ kind: "relaunch", outcome: "relaunched", red: null })).toBe("Reopened after a crash");
     expect(outcomeLabel({ kind: "resume", outcome: "armed", red: null })).toBe("Paused at a usage limit");

@@ -161,6 +161,24 @@ describe("project actions for agents", () => {
     expect(host.runProjectAction).not.toHaveBeenCalled();
   });
 
+  it("never runs an action that asks Ash first, and lists which ones do", async () => {
+    const { source, host } = fixture({
+      actions: [
+        { id: "check", name: "Check", command: "npm run check" },
+        { id: "ship", name: "Ship", command: "npm run hub:ship", confirm: "Replace the daily app?" },
+      ],
+    });
+    await expect(handleAgentApp(source, "c1", "actions.run", { action: "ship" }, host)).rejects.toThrow(
+      "Ship asks Ash first; ask him in your chat",
+    );
+    expect(host.runProjectAction).not.toHaveBeenCalled();
+    const listing = (await handleAgentApp(source, "c2", "actions.list", {}, host)) as ReturnType<typeof actionsListing>;
+    expect(listing.actions.find((action) => action.id === "ship")).toMatchObject({ confirm: true });
+    expect(listing.actions.find((action) => action.id === "check")).not.toHaveProperty("confirm");
+    await handleAgentApp(source, "c3", "actions.run", { action: "check" }, host);
+    expect(host.runProjectAction).toHaveBeenCalledWith("/tmp/project", "check");
+  });
+
   it("creates a worktree with or without its setup, and says when setup is still running", async () => {
     const { source, host } = fixture();
     vi.mocked(host.createWorktree).mockResolvedValueOnce({

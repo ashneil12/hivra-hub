@@ -1,5 +1,6 @@
 import type {
   AgentStepKind,
+  ApprovalCall,
   Attachment,
   CutWork,
   InterjectionMeta,
@@ -162,6 +163,8 @@ export type HarnessEvent =
       kind?: string;
       callId?: string;
       preview?: ToolPreview;
+      /** Exactly what it would run, when the provider can say. */
+      call?: ApprovalCall;
     }
   | {
       type: "approval.resolved";

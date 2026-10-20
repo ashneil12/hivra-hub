@@ -40,7 +40,8 @@ export function outcomeLabel(entry: Pick<LogEntry, "kind" | "outcome" | "red">):
     case "taken":
       return entry.kind === "approval" ? "Allowed" : "Took its recommendation";
     case "held":
-      return `Waiting for you: ${isRedCategory(entry.red) ? redLabel(entry.red).toLowerCase() : "red list"}`;
+      if (isRedCategory(entry.red)) return `Waiting for you: ${redLabel(entry.red).toLowerCase()}`;
+      return entry.kind === "approval" ? "Waiting for you: not one autopilot allows by itself" : "Waiting for you: red list";
     case "handed_back":
       return "Told to decide itself";
     case "on":
