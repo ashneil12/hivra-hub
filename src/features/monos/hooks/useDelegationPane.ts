@@ -27,6 +27,18 @@ import {
   type StuckWorker,
 } from "../model/workerStuck";
 import { useClock } from "./useStuckWorkers";
+import {
+  codingTeamChatProject,
+  codingTeamName,
+  startedByCodingTeamChat,
+  useCodingTeamVersion,
+} from "../../hub/model/codingTeam";
+import { hubData } from "../../hub/model/hubData";
+
+/** A hub project by id, for its name. */
+function hubProjectNamed(id: string) {
+  return hubData().listProjects().find((project) => project.id === id);
+}
 
 export type DelegationPane =
   | {
@@ -56,14 +68,19 @@ export type DelegationPane =
       onStopAll?: () => Promise<unknown>;
     };
 
+/**
+ * `orchestrator`: a chat Ash talks to (a Mono's own chat, or a coding-team chat: monos/model/orchestrators.ts), which
+ * reads what it has out; anything else may be a worker, which runs on its own.
+ */
 export function useDelegationPane(
   sessionId: string,
-  isMono: boolean,
+  orchestrator: boolean,
 ): DelegationPane | undefined {
   const rows = useDelegationRows();
   useStuckDismissalsVersion();
+  useCodingTeamVersion();
   const now = useClock();
-  if (isMono) {
+  if (orchestrator) {
     const count = waitingOn(sessionId, rows);
     const stuck = stuckOwnedBy(sessionId, rows, now);
     const rollup = leadRollup(sessionId, rows, now);
@@ -110,13 +127,16 @@ export function useDelegationPane(
     ? ((row.ownerMono ? findMono(row.ownerMono) : undefined) ??
       monoForSession(row.ownerSession))
     : startedByMono(sessionId, listMonos());
-  if (!owner) return undefined;
-  const ownerSession = row?.ownerSession ?? owner.sessionId;
+  // A coding-team chat's worker answers to that chat, which is named as its coding team.
+  const teamChat = owner ? undefined : (row?.ownerSession ?? startedByCodingTeamChat(sessionId));
+  const team = teamChat ? codingTeamChatProject(teamChat) : undefined;
+  if (!owner && !team) return undefined;
+  const ownerSession = row?.ownerSession ?? owner?.sessionId ?? teamChat;
   const actions = delegationActions();
   const stuck = row ? stuckOf(row, now) : undefined;
   return {
     kind: "worker",
-    ownerName: monoLook(owner).name,
+    ownerName: owner ? monoLook(owner).name : codingTeamName(hubProjectNamed(team!)),
     ...(stuck ? { stuck } : {}),
     now,
     state:

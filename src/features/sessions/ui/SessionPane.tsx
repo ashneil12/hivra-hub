@@ -70,6 +70,8 @@ import {
 } from "../../monos/model/mono";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { useDelegationPane } from "../../monos/hooks/useDelegationPane";
+import { isOrchestratorChat } from "../../monos/model/orchestrators";
+import { useCodingTeamVersion } from "../../hub/model/codingTeam";
 import {
   DelegatedChatNotice,
   DelegationWaitingLine,
@@ -428,8 +430,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const mono = monoForSession(session.id);
   const agent = mono ? monoLook(mono) : undefined;
-  // A worker's chat runs on its own; a Mono with work out reads "Waiting on N" (H4).
-  const delegationPane = useDelegationPane(session.id, !!mono);
+  // A worker's chat runs on its own; a chat Ash talks to (a Mono, or a coding-team chat) with work out reads what is
+  // out ("2 working: API · 1 stuck: Tests"), with a card for each stuck worker (H4).
+  useCodingTeamVersion();
+  const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id));
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -1296,6 +1300,20 @@ const LocalSessionPane = memo(function LocalSessionPane({
               ) : (
                 <>
                   {session.goal ? <GoalRow goal={session.goal} /> : null}
+                  {/* A coding-team chat is an orchestrator like the Lead: its stuck workers and what is out. */}
+                  {delegationPane?.kind === "lead" ? (
+                    <DelegationWaitingLine
+                      count={delegationPane.count}
+                      working={delegationPane.working}
+                      asking={delegationPane.asking}
+                      rollup={delegationPane.rollup}
+                      stuck={delegationPane.stuck}
+                      now={delegationPane.now}
+                      failed={delegationPane.failed}
+                      unloaded={delegationPane.unloaded}
+                      onStopAll={delegationPane.onStopAll}
+                    />
+                  ) : null}
                   {composer}
                 </>
               )}

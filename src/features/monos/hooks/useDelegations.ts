@@ -13,7 +13,8 @@ import {
   type ChatBindInput,
   type DelegationsBackend,
 } from "../model/delegations";
-import { isMonoSession, monoForSession } from "../model/mono";
+import { monoForSession } from "../model/mono";
+import { isOrchestratorChat } from "../model/orchestrators";
 
 /**
  * Boot recovery runs once per page load of the main window (React's dev double mount runs it once too): one attempt
@@ -79,7 +80,8 @@ export function useDelegations(options: {
           latest.current.sessionsRef.current.find((s) => s.id === id) ??
           (await getSession(id).catch(() => null)),
         openOwner: (id) => latest.current.openSession(id),
-        isMono: isMonoSession,
+        // A coding-team chat owns its workers' reports like a Mono does (orchestrators.ts).
+        isMono: isOrchestratorChat,
         queueReport: (monoId, message) =>
           latest.current.queueReport(monoId, message),
         quitting: () => latest.current.quitting(),

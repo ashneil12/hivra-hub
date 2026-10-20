@@ -46,7 +46,17 @@ import {
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
+import {
+  codingTeamChatProject,
+  codingTeamName,
+  codingTeamProjectFor,
+  forgetCodingTeamChat,
+  noteCodingTeamChat,
+} from "../features/hub/model/codingTeam";
+import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
+import { leadSpecFor } from "../features/hub/model/hubLeads";
+import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
 import {
@@ -716,6 +726,7 @@ import {
   type MonoState,
 } from "../features/monos/model/mono";
 import {
+  codingTeamContext,
   loadMonoFiles,
   MONO_PROMPT_VERSION,
   planAgentContext,
@@ -1232,6 +1243,20 @@ type AppProps = {
 /** The worktree a project's workspace currently shows. */
 function currentWorkspace(project: string): string {
   return worktreeFocus(project)?.path ?? project;
+}
+
+/**
+ * The hub project whose coding team this chat is in, noted the first time (hub/model/codingTeam.ts): a top-level chat
+ * in a hub project's code folder. None outside the Hub bundle.
+ */
+function codingTeamOf(session: Session): HubProject | undefined {
+  if (!IS_HUB_BUNDLE) return undefined;
+  const projects = hubData().listProjects();
+  const noted = codingTeamChatProject(session.id);
+  if (noted) return projects.find((project) => project.id === noted && !!project.folder);
+  const project = codingTeamProjectFor(session, projects, { isMono: isMonoSession, isHabitRun });
+  if (project) noteCodingTeamChat(session.id, project.id);
+  return project;
 }
 
 export default function App(props: AppProps) {
@@ -5992,6 +6017,8 @@ function Workspace({
         const removed = await remover.remove(sessionId);
         // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
         if (removed) forgetWaitingChat(sessionId);
+        // A deleted chat leaves its project's coding team (an archived one can come back, and stays in it).
+        if (removed && mode === "delete") forgetCodingTeamChat(sessionId);
         if (removed && deleteWorktreePath && seed) {
           try {
             await onRemoveWorktree(seed.cwd, deleteWorktreePath, false);
@@ -7518,6 +7545,10 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
+      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
+      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      const team = mono ? undefined : codingTeamOf(current);
+      const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
         mono && options?.queuedMessageId
           ? current.queuedMessages?.find(
@@ -7527,6 +7558,7 @@ function Workspace({
       const operatorAccess =
         operatorCommand.matched ||
         mono ||
+        teamDelegates ||
         operatorEnabledInThread(current.blocks);
       const monoFirstTurn =
         mono &&
@@ -8674,6 +8706,29 @@ function Workspace({
               }),
             );
           }
+          // A coding-team chat is handed who it is, a Lead's rules and its project's memory once per conversation, and
+          // again when the rules change (monoFiles.ts codingTeamContext).
+          const teamHanded =
+            team && teamDelegates && !rawCommand
+              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate`, memoryHash: "" }
+              : undefined;
+          const teamPlan = teamHanded
+            ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
+            : undefined;
+          if (team && teamPlan?.soul) {
+            const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
+            appContext.push(
+              codingTeamContext(
+                {
+                  projectId: team.id,
+                  projectName: team.name,
+                  folder: team.folder!,
+                  leadName: leadSpecFor(team).name,
+                },
+                projectMemory ? { projectMemory } : {},
+              ),
+            );
+          }
           if (operatorCommand.matched || handAgent) {
             const cli = appCliCommand(await invoke<string | null>("app_cli_path"));
             appContext.push(
@@ -8682,10 +8737,18 @@ function Workspace({
           }
           // A Mono reads who it is ahead of the message, so it never takes it
           // for something the user pasted. A command must stay first.
-          if (mono && !rawCommand) sendText = monoTurn(sendText, appContext);
+          if ((mono || teamPlan?.soul) && !rawCommand) sendText = monoTurn(sendText, appContext);
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
           await sendTurn(sendText);
+          if (teamHanded && teamPlan?.soul && !providerLost) {
+            recordAgentContext(
+              sessionId,
+              sessionsRef.current.find((session) => session.id === sessionId)
+                ?.providerSessionId ?? current.providerSessionId,
+              teamHanded,
+            );
+          }
           // A fresh conversation after a lost one never got the soul and memory: leave them unrecorded so the next
           // turn hands them over again.
           if (agentFiles && !providerLost) {
@@ -9255,7 +9318,8 @@ function Workspace({
       message: QueuedMessage,
       current: () => QueuedMessage | undefined = () => message,
     ) => {
-      if (!isMonoSession(monoId) || removingSessionIds.current.has(monoId))
+      // A worker's report goes to the chat Ash talks to that started it: a Mono's, or a coding-team chat.
+      if (!isOrchestratorChat(monoId) || removingSessionIds.current.has(monoId))
         return;
       if (
         !(await ensureOpenSession(monoId)) ||
@@ -12066,7 +12130,7 @@ function Workspace({
           );
         };
         const dismissCompletion = (sessionId: string) => {
-          if (!isMonoSession(source.id)) return;
+          if (!isOrchestratorChat(source.id)) return;
           void delegationsRef.current?.stopOwned(source.id, sessionId);
           dropReport(source.id, sessionId);
         };
@@ -12525,6 +12589,16 @@ function Workspace({
             },
             isMono: (id) => isMonoSession(id),
             isHabitRun: (id) => isHabitRun(id),
+            // A chat in a hub project's coding team delegates and watches pull requests like the Lead (codingTeam.ts).
+            codingTeamOf: (id) => {
+              const projectId = codingTeamChatProject(id);
+              const project = projectId
+                ? hubData().listProjects().find((entry) => entry.id === projectId)
+                : undefined;
+              return project?.folder
+                ? { project: project.id, name: codingTeamName(project), folder: project.folder }
+                : undefined;
+            },
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");

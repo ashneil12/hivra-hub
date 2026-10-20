@@ -5,13 +5,16 @@
 import { hasJumpedIn } from "../../monos/model/delegationStore";
 import { isOpenDelegation, type Delegation } from "../../monos/model/delegations";
 import { delegationOf } from "../../monos/model/delegationView";
-import { isMonoSession } from "../../monos/model/mono";
+import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import type { StuckWorker } from "../../monos/model/workerStuck";
 
-/** A question this chat asks goes to the Lead that delegated it, not to Ash (its open row is a Mono's). */
+/**
+ * A question this chat asks goes to the chat that delegated it (a Lead, or a coding-team chat), not to Ash: its open
+ * row is an orchestrator's.
+ */
 export function questionGoesToLead(sessionId: string, rows: readonly Delegation[]): boolean {
   const row = delegationOf(sessionId, rows);
-  return !!row && isOpenDelegation(row) && isMonoSession(row.ownerSession) && !hasJumpedIn(sessionId);
+  return !!row && isOpenDelegation(row) && isOrchestratorChat(row.ownerSession) && !hasJumpedIn(sessionId);
 }
 
 /** How far back a stuck episode may have begun and still be news when the app starts. */

@@ -31,7 +31,8 @@ import {
 } from "../model/delegations";
 import { delegationOf } from "../model/delegationView";
 import { briefWaiting, withoutQueuedBrief } from "../model/followedBriefs";
-import { isMonoSession, monoForSession } from "../model/mono";
+import { monoForSession } from "../model/mono";
+import { isOrchestratorChat } from "../model/orchestrators";
 import {
   dismissQueuedMonoSessionCompletion,
   type MonoSessionCompletionBatches,
@@ -60,7 +61,10 @@ export type DelegationTree = {
     reason: string,
     by: string,
   ): Promise<StopTreeResult>;
-  /** Ash's Stop on a chat: a Mono with work out stops with everything beneath it; any other chat as before. */
+  /**
+   * Ash's Stop on a chat: a chat he talks to (a Mono, a coding-team chat) with work out stops with everything beneath
+   * it; any other chat as before.
+   */
   stopFromUser(sessionId: string, managed?: boolean): Promise<unknown> | void;
 };
 
@@ -95,7 +99,8 @@ export function useDelegationTree(options: {
     tracker: () => latest.current.tracker(),
     session: (id) =>
       latest.current.sessionsRef.current.find((session) => session.id === id),
-    isMono: isMonoSession,
+    // A Lead's or a coding-team chat's worker asks the chat that delegated it (orchestrators.ts).
+    isMono: isOrchestratorChat,
     queueWake: (owner, message) => latest.current.queueWake(owner, message),
     withdrawWake: (owner, id) =>
       latest.current.setSessions((previous) =>
@@ -109,7 +114,7 @@ export function useDelegationTree(options: {
     waits: waits.current,
     reportsTo: (child) => {
       const row = delegationOf(child, delegationRows());
-      return !!row && isMonoSession(row.ownerSession) && !hasJumpedIn(child);
+      return !!row && isOrchestratorChat(row.ownerSession) && !hasJumpedIn(child);
     },
   });
 
@@ -186,7 +191,7 @@ export function useDelegationTree(options: {
     (sessionId: string, managed = false) => {
       if (
         managed ||
-        !isMonoSession(sessionId) ||
+        !isOrchestratorChat(sessionId) ||
         !hasWorkBeneath(sessionId, delegationRows())
       )
         return latest.current.stopSession(sessionId, managed);

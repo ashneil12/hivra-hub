@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
-import { isMonoSession } from "../../monos/model/mono";
+import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { setCurrentPrWatches } from "../model/prWatchBoard";
 import {
   OWNER_RETRY_MS,
@@ -36,7 +36,8 @@ export function usePrWatches(options: {
   const [tracker] = useState(
     () =>
       new PrWatchTracker(options.backend ?? tauriPrWatches, {
-        isMono: isMonoSession,
+        // A coding-team chat watches its pull requests like a Mono does (orchestrators.ts).
+        isMono: isOrchestratorChat,
         load: (id) => loadOwner(latest.current.sessionsRef.current, id, getSession),
         queueWake: (monoId, message) => latest.current.queueWake(monoId, message),
       }),

@@ -418,9 +418,10 @@ function completionRecipient(
   const isMono = host.isMono(source.id);
   if (!(requested ?? (defaultForMono && isMono && !input.draft)))
     return undefined;
-  if (!isMono)
+  // The chats Ash talks to hear back from what they start: a Mono's, and a coding-team chat (hub/model/codingTeam.ts).
+  if (!isMono && !host.codingTeamOf?.(source.id))
     throw new Error(
-      "Completion notifications are only available in a Mono's chat",
+      "Completion notifications are only available in a Mono's chat or a coding-team chat",
     );
   if (input.draft === true)
     throw new Error("An unsent draft cannot send a completion notification");

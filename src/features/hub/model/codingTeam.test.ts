@@ -10,6 +10,7 @@ import {
   isCodingTeamChat,
   noteCodingTeamChat,
   resetCodingTeamChats,
+  startedByCodingTeamChat,
 } from "./codingTeam";
 import type { HubProject } from "./types";
 
@@ -59,6 +60,16 @@ describe("the coding team's chats", () => {
     expect(codingTeamChatProject("c1")).toBe("vg-game");
     forgetCodingTeamChat("c1");
     expect(isCodingTeamChat("c1")).toBe(false);
+  });
+
+  it("are found from a worker's id, however deep, for a worker whose row has aged out", () => {
+    noteCodingTeamChat("6f1c-2a9e", "vg-game");
+    noteCodingTeamChat("6f1c", "hivra");
+    expect(startedByCodingTeamChat("app-6f1c-2a9e-r1")).toBe("6f1c-2a9e");
+    expect(startedByCodingTeamChat("app-app-6f1c-2a9e-r1-r2")).toBe("6f1c-2a9e");
+    expect(startedByCodingTeamChat("app-6f1c-r3")).toBe("6f1c");
+    expect(startedByCodingTeamChat("app-other-r1")).toBeUndefined();
+    expect(startedByCodingTeamChat("6f1c-2a9e")).toBeUndefined();
   });
 
   it("sign what they send with the project's short name", () => {

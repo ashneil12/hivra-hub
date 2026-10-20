@@ -107,6 +107,21 @@ export function forgetCodingTeamChat(chatId: string): void {
   save(next);
 }
 
+/**
+ * The coding-team chat that started this worker (`app-<chat>-<request>`), however deep, for a worker whose row has aged
+ * out: the longest chat id it starts with.
+ */
+export function startedByCodingTeamChat(sessionId: string): string | undefined {
+  if (!sessionId.startsWith("app-")) return undefined;
+  let best: string | undefined;
+  for (const chat of Object.keys(load())) {
+    if (sessionId.startsWith(`app-${chat}-`) && (!best || chat.length > best.length)) best = chat;
+  }
+  if (best) return best;
+  // A worker's worker: `app-app-<chat>-<r1>-<r2>`.
+  return startedByCodingTeamChat(sessionId.slice(4));
+}
+
 /** How a coding-team chat signs what it sends ("[MonoCode brief from EXO coding team]"). */
 export function codingTeamName(project: Pick<HubProject, "name" | "shortName"> | undefined): string {
   const name = (project?.shortName || project?.name || "").trim();
