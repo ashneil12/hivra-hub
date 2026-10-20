@@ -21,6 +21,26 @@ it("needs the user when a provider usage limit stops the conversation", () => {
     .toEqual({ status: "idle" });
 });
 
+it("needs the user when its turn stopped resuming after restarts", () => {
+  const stopped: Block = {
+    id: "s",
+    role: "system",
+    text: "MonoCode Hub restarted 3 times while this turn was running.",
+    notice: "resume-stopped",
+  };
+  expect(monoState({ blocks: [stopped], busy: false })).toEqual({
+    status: "needs-you",
+    activity: "Stopped after restarts",
+  });
+  // Once Ash sends a message, it is just working again.
+  expect(
+    monoState({
+      blocks: [stopped, { id: "u", role: "user", text: "carry on" }],
+      busy: true,
+    }).status,
+  ).toBe("working");
+});
+
 it("names the step it is on while working", () => {
   expect(
     monoState({

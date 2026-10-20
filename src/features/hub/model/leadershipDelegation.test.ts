@@ -10,7 +10,7 @@ import { briefsLeads, delegateToLead, formatLeadBrief, leadDelegationReady, lead
 import type { HubProject } from "./types";
 
 const PROJECTS: HubProject[] = [
-  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/p/vg-game" },
+  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/p/vg-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/p/hivra" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/p/nibbii" },
   { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/p/monocode-hub" },

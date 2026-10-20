@@ -341,6 +341,13 @@ function groupTranscriptTurns(
   const turns: Block[][] = [];
   let current: Block[] = [];
   for (const block of blocks) {
+    // A checker's note (hub/model/hubChecks.ts) is a turn of its own, kept whole so the chat can show it as one quiet
+    // card: the note and the answer to it, never as the user's words or folded into the reply above.
+    if (isMonoCheckPrompt(block) && !managed) {
+      if (current.length > 0) turns.push(current);
+      current = [block];
+      continue;
+    }
     // A turn the app wrote to keep an orchestration moving is not a user
     // message. Dropping it here folds the reply into the turn above, so a
     // supervised run reads as one conversation.
@@ -397,6 +404,11 @@ export function isMonoCompletionPrompt(block: Block): boolean {
   );
 }
 
+/** The hidden turn the app writes to hand a chat a checker's note. */
+export function isMonoCheckPrompt(block: Block): boolean {
+  return block.role === "user" && !!block.internal && !!block.monoCheck;
+}
+
 /** A message this long after the one before gets its own day and time. */
 const STRETCH_GAP = 60 * 60 * 1000;
 
@@ -440,6 +452,7 @@ export function groupMonoChatTurns(
     if (
       previous &&
       !previous[0].monoHabit &&
+      !isMonoCheckPrompt(previous[0]) &&
       previous[0].role !== "handoff" &&
       isMonoCompletionPrompt(turn[0]) &&
       (at == null || !opensNewStretch(at, monoTurnLatestStart(previous)))
@@ -471,6 +484,8 @@ export function groupMonoTurns(blocks: Block[], managed = false): Block[][] {
     const previous = groups[groups.length - 1];
     if (
       previous?.[0].role === "user" &&
+      // A message sent while a chat answers the checker is the user's own, never folded into that quiet card.
+      !isMonoCheckPrompt(previous[0]) &&
       turn[0].role === "user" &&
       turn[0].sentAt != null &&
       turn[0].startedAt == null

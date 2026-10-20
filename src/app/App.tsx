@@ -1,4 +1,7 @@
 import { MonoBusyError, setGroupChatRunner, setRoomRouter } from "../features/hub/model/hubChats";
+import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
+import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
+import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
@@ -41,6 +44,8 @@ import {
   waitingActivity,
   type PrWatchTracker,
 } from "../features/pr-watch/model/prWatches";
+import { useHubChecks } from "./hooks/useHubChecks";
+import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -134,6 +139,7 @@ import {
   setHubSelection,
   useHubSelection,
 } from "../features/hub/model/hubNav";
+import { noteChats, setWaitingChatsHost } from "../features/hub/model/waitingChats";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -423,6 +429,7 @@ import {
   type HandoffComposerCard,
   userMessagesAfterHandoff,
   wrapHandoffPrompt,
+  wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
@@ -601,6 +608,7 @@ import {
   listSessionsByProject,
   persistFingerprint,
   rebaseProjectSessions,
+  dropInFlightSession,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
   setSessionArchived,
@@ -669,6 +677,7 @@ import {
   monosSnapshot,
   monoState,
   removeMono,
+  saveMonoName,
   saveOpenMono,
   subscribeMonos,
   type MonoState,
@@ -685,6 +694,7 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
+import { claimVerifyKickoff, pendingVerifyKickoff } from "./model/verifyKickoff";
 import {
   loadShipNote,
   reportShipReady,
@@ -865,11 +875,14 @@ import {
 } from "../features/sessions/data/sessionHistory";
 import {
   CONTINUE_PROMPT,
+  RESUME_STOPPED_MESSAGE,
   canAutoContinue,
   interruptingShip,
-  shipResumePrompt,
   inFlightRefs,
   inFlightSnapshotKey,
+  markResumeStopped,
+  resumeBlocked,
+  resumePrompt,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -969,9 +982,16 @@ type SubmitOptions = ComposerTurnOptions & {
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
   followsUp?: boolean;
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  /** A checker's note for this chat (hub/model/hubChecks.ts): a hidden turn shown as a quiet card. */
+  monoCheck?: Block["monoCheck"];
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
+  /**
+   * An automatic resume after a restart, and which one (1 = the first). Kept on the session (`autoResumes`) and in
+   * its in-flight row; any other turn starts the count again from none.
+   */
+  autoResume?: number;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
@@ -2439,10 +2459,13 @@ function Workspace({
     // The roster is read through its snapshot.
     [monosSnap],
   );
-  // How many replies each Mono has that the user has not read, for the rail.
+  // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one.
+  const replyBusyRef = useRef(busySessionIds);
+  const replyBusy = withoutCheckTurns(busySessionIds, sessions);
+  if (!setsEqual(replyBusyRef.current, replyBusy)) replyBusyRef.current = replyBusy;
   const monoReplies = useUnseenReplyCounts(
     monoSessionIds,
-    busySessionIds,
+    replyBusyRef.current,
     activeSessionId,
   );
 
@@ -7251,12 +7274,15 @@ function Workspace({
         options?.onSettled ||
         options?.managed ||
         options?.monoSessionCompletion ||
+        options?.monoCheck ||
         options?.resendEdited
           ? undefined
           : delegationsRef.current?.resumeMonitor(
               sessionId,
               text,
               !!remote?.busy,
+              // An automatic resume carries a note or a ship's receipt, so its text isn't the bare continue.
+              !!options?.autoResume || text.trim() === CONTINUE_PROMPT,
             );
       if (delegation)
         options = {
@@ -7836,12 +7862,13 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : {}),
         // The orchestrator writes these turns, not the user; hide them.
-        ...(options?.managed || options?.monoSessionCompletion
+        ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck
           ? { internal: true }
           : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
           : {}),
+        ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
       const queuedHandoff =
@@ -7872,6 +7899,9 @@ function Workspace({
               ...selected,
               providerAccountId,
               usageLimit: undefined,
+              autoResumes: options?.autoResume,
+              // A resume carries what was cut forward until Claude has the prompt (claude.ts clears it then).
+              cutWork: options?.autoResume ? selected.cutWork : undefined,
               worktreePreparing: createDraftWorktree
                 ? true
                 : selected.worktreePreparing,
@@ -8218,6 +8248,8 @@ function Workspace({
         const planEventKey = planTurnKey(gen);
         let nativePlanSeen = false;
         let providerFailureSeen = false;
+        // The provider's saved conversation was gone and this turn went on in a fresh one (claude.ts).
+        let providerLost = false;
         const routePlanEvent = (event: HarnessEvent): HarnessEvent | null => {
           if (event.type === "session.error") providerFailureSeen = true;
           if (proposalDraft) {
@@ -8249,6 +8281,7 @@ function Workspace({
 
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
+          if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
             controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
@@ -8423,6 +8456,16 @@ function Workspace({
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
+              // A conversation whose saved transcript is gone starts again from the chat's own brief.
+              resumeFallback: (prompt) =>
+                wrapRecoveredPrompt(
+                  buildDeterministicHandoff(
+                    sessionsRef.current.find((s) => s.id === sessionId) ??
+                      current,
+                    submittedText,
+                  ),
+                  prompt,
+                ),
               onEvent: routeTurnEvent,
             });
           let sendText = orchestrator.prompt(
@@ -8523,7 +8566,9 @@ function Workspace({
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
           await sendTurn(sendText);
-          if (agentFiles) {
+          // A fresh conversation after a lost one never got the soul and memory: leave them unrecorded so the next
+          // turn hands them over again.
+          if (agentFiles && !providerLost) {
             recordAgentContext(
               sessionId,
               sessionsRef.current.find((session) => session.id === sessionId)
@@ -8673,8 +8718,8 @@ function Workspace({
               (s) => s.id === sessionId,
             );
             const visible = sessionId === activeSessionIdRef.current;
-            // A habit's hidden run speaks through its Mono's chat instead.
-            if (finished && !isHabitRun(sessionId))
+            // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
+            if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
               void announceSessionFinished(finished, visible);
           }, 0);
           notifyReviewChanged(sessionId);
@@ -8751,6 +8796,23 @@ function Workspace({
     },
     [submitSession],
   );
+
+  // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
+  // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
+  const verifyKickoffStarted = useRef(false);
+  useEffect(() => {
+    if (verifyKickoffStarted.current || windowTransfer) return;
+    const kickoff = pendingVerifyKickoff();
+    if (!kickoff) return;
+    verifyKickoffStarted.current = true;
+    claimVerifyKickoff(kickoff.runId);
+    const mono = createMono([kickoff.project]);
+    saveMonoName(mono.id, kickoff.monoName);
+    void onOpenMono(mono.id).then(() => {
+      const sessionId = monoViewIdRef.current;
+      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+    });
+  }, [onOpenMono, onSubmit, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -9095,6 +9157,23 @@ function Workspace({
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
+  );
+  // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
+  useHubChecks(
+    {
+      sessions,
+      sessionsRef,
+      openSession: ensureOpenSession,
+      openMono: (monoId) =>
+        ensureMonoSession(monoId, {
+          home: homeDir,
+          load: (id) => ensureOpenSession(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => updateSessionState(sessionsRef, setSessions, (current) => [...current, created]),
+        }),
+      submit: (sessionId, text, options) => submitSession(sessionId, text, [], options),
+    },
+    IS_HUB_BUNDLE,
   );
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
@@ -10680,6 +10759,32 @@ function Workspace({
     .map((session) => session.id)
     .join("\n");
 
+  /**
+   * A turn the app has restarted under too often (`MAX_AUTO_RESUMES`) stops resuming itself: its chat says so and
+   * reads Needs you, it leaves the quit snapshot so the next boot doesn't mark it interrupted again, and a Lead
+   * waiting on it (a delegated worker's row) hears it failed, with why.
+   */
+  const stopResuming = useCallback(
+    (session: Session) => {
+      const stopped = markResumeStopped(session);
+      sessionsRef.current = sessionsRef.current.map((entry) =>
+        entry.id === session.id ? stopped : entry,
+      );
+      setSessions(sessionsRef.current);
+      persistSession(stopped);
+      void dropInFlightSession(session.id).catch(() => undefined);
+      const owed = delegationsRef.current?.resumeMonitor(
+        session.id,
+        CONTINUE_PROMPT,
+        false,
+        true,
+      );
+      owed?.started();
+      owed?.settled({ status: "failed", text: "", error: RESUME_STOPPED_MESSAGE });
+    },
+    [persistSession],
+  );
+
   useEffect(() => {
     // A dev copy shows a cut-off chat as interrupted but never continues it on its own, and a build on trial waits
     // until it has committed (src-tauri/src/ship.rs): if it is rolled back, the old build resumes them instead.
@@ -10697,22 +10802,30 @@ function Workspace({
       for (const id of ids) {
         const session = stillDue(id);
         if (!session) continue;
+        // Cut by restart after restart: stop and wait for Ash instead of looping.
+        if (resumeBlocked(session)) {
+          stopResuming(session);
+          continue;
+        }
+        const autoResume = (session.autoResumes ?? 0) + 1;
         const ship = interruptingShip(session);
         if (!ship) {
-          onSubmit(id, CONTINUE_PROMPT);
+          // With what the restart cut, if anything was running in the background.
+          onSubmit(id, resumePrompt(session), [], { autoResume });
           continue;
         }
         // Cut by a ship's restart: resume once, with what the ship did.
         if (shipResumes.current.has(id)) continue;
         shipResumes.current.add(id);
         void loadShipNote(ship).then((note) => {
-          if (stillDue(id)) onSubmit(id, shipResumePrompt(id, note));
+          const due = stillDue(id);
+          if (due) onSubmit(id, resumePrompt(due, { note }), [], { autoResume });
           shipResumes.current.delete(id);
         });
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoContinueKey, onSubmit, shipHold]);
+  }, [autoContinueKey, onSubmit, shipHold, stopResuming]);
 
   const onCompactContext = useCallback(
     (sessionId: string) => {
@@ -10979,6 +11092,35 @@ function Workspace({
     },
     [],
   );
+
+  // Today's "Waiting on you" (hub/model/waitingChats.ts): the chats whose agent asked Ash something. The store reads the
+  // chats as they change and borrows these hands to answer in place, send his words into a chat, or open it.
+  useEffect(() => {
+    if (IS_HUB_BUNDLE) noteChats(sessions);
+  }, [sessions]);
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    return setWaitingChatsHost({
+      liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
+      respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      send: async (id, text) => {
+        const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
+        if (!session) return false;
+        // Mid-turn it steers or queues, as a message typed in the composer would.
+        if (!(await Promise.resolve(submitSessionRef.current(session.id, text, [], { followsUp: true })))) return false;
+        await upsertSession(sessionsRef.current.find((s) => s.id === session.id) ?? session);
+        return true;
+      },
+      open: (id, projectId) => {
+        const mono = monoForSession(id);
+        if (mono) return void onOpenMono(mono.id);
+        // The hub steps aside for the project's coding view, where the chat opens.
+        const project = hubData().listProjects().find((p) => p.id === projectId && p.folder);
+        if (project) setHubSelection({ project: project.id, item: "coding-team" });
+        void openReminderSession(id).catch(() => undefined);
+      },
+    });
+  }, [onQuestionReply, onOpenMono, openReminderSession]);
 
   const onOpenApprovalSession = useCallback(
     (sessionId: string) => {
@@ -12665,6 +12807,31 @@ function Workspace({
     window.addEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
     return () => window.removeEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
   }, []);
+
+  // Hub: a Sign in on Today opens that connector on Settings > Connectors; a Mono proposal opens Settings > Teams.
+  useEffect(() => {
+    const onConnector = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) focusConnector(id);
+      openSettings("connectors", id ? `connector-${id}` : undefined);
+    };
+    const onTeams = () => openSettings("teams");
+    // A team's room (a hub group chat) opened from Settings > Teams: leave Settings for the hub view.
+    const onOpenHub = (event: Event) => {
+      const target = (event as CustomEvent<{ project: string; item: string }>).detail;
+      if (!target) return;
+      setSettingsOpen(false);
+      setHubSelection(target);
+    };
+    window.addEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+    window.addEventListener(OPEN_TEAMS_EVENT, onTeams);
+    window.addEventListener(OPEN_HUB_EVENT, onOpenHub);
+    return () => {
+      window.removeEventListener(OPEN_CONNECTOR_EVENT, onConnector);
+      window.removeEventListener(OPEN_TEAMS_EVENT, onTeams);
+      window.removeEventListener(OPEN_HUB_EVENT, onOpenHub);
+    };
+  }, [openSettings]);
 
   useEffect(() => {
     const onOpenMcp = () => openSettings("mcp");

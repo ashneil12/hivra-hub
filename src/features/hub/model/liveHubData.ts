@@ -53,6 +53,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
         })),
     listMonos: () => [],
     listOlder: (projectId?: string) => snap().older.filter((n) => (projectId ? n.projectId === projectId : onStrip(n.projectId))),
+    dismissOlder: (olderThanDays: number, projectId?: string) => store.dismissOlder(olderThanDays, projectId),
     markNeedSeen: (id: string) => store.markNeedSeen(id),
     acceptNeed: (id: string) => store.acceptNeed(id),
     question: (needId: string) => store.question(needId),
@@ -69,5 +70,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     markJobsSeen: (jobIds: string[]) => store.markJobsSeen(jobIds),
     connection: store.connection,
     retry: () => store.retry(),
+    todayLayout: () => snap().today,
+    listChanges: () => snap().changes ?? [],
   };
 }

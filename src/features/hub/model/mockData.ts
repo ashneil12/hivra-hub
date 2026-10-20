@@ -6,7 +6,7 @@ import { listChats } from "./hubChats";
 import type { HubDataSource, HubMono, HubProject, Need, ProjectItem, StuckItem } from "./types";
 
 const EXAMPLE_PROJECTS: HubProject[] = [
-  { id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/harness/exo-game" },
+  { id: "exo-game", name: "EXO game", shortName: "EXO", iconShape: "gamepad", folder: "/Users/ash/harness/exo-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/harness/hivra" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/harness/nibbii" },
   { id: "harness", name: "Harness", shortName: "Harness", iconShape: "gauge", folder: "/Users/ash/harness/org" },

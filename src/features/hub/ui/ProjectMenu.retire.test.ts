@@ -34,6 +34,8 @@ async function load() {
   localStorage.clear();
   vi.resetModules();
   const mono = await import("../../monos/model/mono");
+  // No harness service in these tests: the example source, so "Remove from hub" hides it on this Mac.
+  (await import("../model/hubData")).setHubDataSource((await import("../model/mockData")).mockHubData);
   const disk = fakeDisk();
   (await import("../../monos/model/monoArchive")).setMonoArchive(disk);
   for (const m of [{ id: "frank", name: "frank" }, { id: "hivra-lead", name: "Hivra lead", sessionId: "s-hivra" }, { id: "alfred", name: "Alfred" }])

@@ -13,6 +13,7 @@ import {
   markTurnInterrupted,
   quitWhileBusyMessage,
   wasTurnInterrupted,
+  withInFlightState,
   workspaceFromResumed,
   type ResumedWorkspace,
 } from "../../features/sessions/model/inFlight";
@@ -296,6 +297,7 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     listInFlightSessions().catch(() => []),
   ]);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
+  const refById = new Map(refs.map((ref) => [ref.sessionId, ref]));
   const snapshot = parseWorkspaceSnapshot(snapshotRaw);
 
   const ids = new Set<string>();
@@ -326,6 +328,15 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
       sessions.push(markTurnInterrupted(record));
     }
     workspace = workspaceFromResumed(sessions);
+  }
+  // What each cut turn had running in the background, and how often it has resumed itself, ride on its row.
+  if (workspace && refById.size > 0) {
+    workspace = {
+      ...workspace,
+      sessions: workspace.sessions.map((session) =>
+        withInFlightState(session, refById.get(session.id)),
+      ),
+    };
   }
 
   bootingResumed = workspace;
@@ -464,6 +475,8 @@ async function persistBootingResume(workspace: ResumedWorkspace): Promise<void> 
       .map((session) => ({
         sessionId: session.id,
         cwd: session.cwd,
+        ...(session.cutWork?.length ? { background: session.cutWork } : {}),
+        ...(session.autoResumes ? { resumes: session.autoResumes } : {}),
       })),
   ).catch(() => undefined);
 }

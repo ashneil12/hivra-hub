@@ -38,7 +38,7 @@ import type { HubProject } from "./types";
 
 // The four projects (what the live service returned on 15 Oct, with the harness now the project `hub`, 19 Oct).
 const PROJECTS: HubProject[] = [
-  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/Projects/boxin game?/vg-game" },
+  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/ash/Projects/boxin game?/vg-game" },
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/Projects/Hivra-public-canary" },
   { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/ash/Projects/nibbii" },
   { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/Users/ash/Projects/monocode-hub" },

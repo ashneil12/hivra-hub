@@ -583,9 +583,10 @@ export class DelegationTracker {
     sessionId: string,
     text: string,
     busy: boolean,
+    /** The turn resumes a cut-off one (an automatic resume's text carries a note, so the caller says). */
+    resume: boolean = text.trim() === CONTINUE_PROMPT,
   ): ResumeMonitor | undefined {
     if (busy) return undefined;
-    const resume = text.trim() === CONTINUE_PROMPT;
     if (!resume && this.loaded && !this.openChildren.has(sessionId))
       return undefined;
     let attached: Promise<Delegation | null> | undefined;

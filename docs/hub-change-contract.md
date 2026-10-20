@@ -24,6 +24,9 @@ type ChangeSide = { image?: string /* data: URL of the preview build's screensho
 type ChangePreview = { previewId: string; title: string; by: string /* the Mono's name */; now: ChangeSide; preview: ChangeSide };
 ```
 
+- **Waiting and history:** previews send `wait: 30` and show "still building" with Try again. Ash OS's history
+  (`ash-hub-changes`) is the source for the list under the ask box, the last change on Today and Bot changes;
+  Undo / Redo call the studio and re-read `ash-hub-layout` (Today) and `ash-hub-projects` (the strip).
 - **Who may ask:** only a seated Mono, meaning one on the Monos roster. The app turns temporary workers away before calling, and the backend must check too.
 - **The backend's job:** the Mono asks Claude Code to make the change in a separate preview build. It answers with both sides: an `image` of each, or an outline of `sections`.
 - **Errors:** `unreachable`, `timeout`, `unauthorized` or `refused` show **Not connected yet**, with a line saying which flow isn't wired. The flow never pretends.

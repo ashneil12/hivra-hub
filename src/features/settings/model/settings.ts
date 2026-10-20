@@ -27,11 +27,13 @@ export type SettingsSectionId =
   | "mcp"
   | "skills"
   | "monos"
+  | "teams"
   | "inbox"
   | "worktrees"
   | "archive"
   | "changes"
   | "dashboards"
+  | "portable"
   | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -90,8 +92,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "dashboards",
     group: "app",
     label: "Dashboards",
-    description: "Each project's dashboard template, reset to default, and export or restore your whole setup.",
-    keywords: "template dashboard today cards sidebar reset export import restore backup setup",
+    description: "Each project's dashboard template, and reset to default.",
+    keywords: "template dashboard today cards sidebar reset",
+  },
+  {
+    id: "portable",
+    group: "app",
+    label: "Export and import",
+    description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
+    keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
   },
   {
     id: "connectors",
@@ -150,6 +159,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "The resident agent beside your tabs, and which projects have one.",
     keywords: "mono resident agent mascot claim project title bar",
+  },
+  {
+    id: "teams",
+    group: "agents",
+    label: "Teams",
+    description: "Teams of named Monos you work with (Marketing and more), each with its room, and new Monos agents propose for your okay.",
+    keywords: "team marketing named mono agent propose approve room soul engine",
   },
   {
     id: "inbox",

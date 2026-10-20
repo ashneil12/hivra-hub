@@ -99,7 +99,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
     await until(() => rows().length >= 8, "needs");
     // Older (3): one quiet line at the bottom of Today, shut
     const older = container.querySelector("[data-hub-older] > button")!;
-    expect(older.textContent).toBe("Older (3)");
+    expect(older.textContent).toBe("Older questions (3)");
     expect(older.getAttribute("aria-expanded")).toBe("false");
     expect(text()).not.toContain("Recovered from an old chat");
     // not in any badge: Hivra has 2 real Needs (the headline and the given-up job), 2 old ones

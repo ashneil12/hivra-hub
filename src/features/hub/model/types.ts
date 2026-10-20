@@ -2,8 +2,13 @@
 // (SPEC.md, H1b). The frontend only talks to `HubDataSource`; Claude Code
 // replaces the mock source with the real backend.
 
-/** Grey icon shape that tells a project apart. Never a colour. */
-export type ProjectIconShape = "ghost" | "sparkles" | "palette" | "gauge" | "folder";
+/**
+ * Grey icon shape that tells a project apart. Never a colour. Ash OS's set (Ash, 15 Oct: "i want to be able to change
+ * the icon for the projects, i dont like ghost stuff"): no ghost; a stored "ghost" is read as the gamepad.
+ */
+export type ProjectIconShape =
+  | "gamepad" | "sparkles" | "palette" | "gauge" | "folder" | "code" | "rocket"
+  | "chart" | "briefcase" | "megaphone" | "book" | "heart" | "globe" | "bolt";
 
 export type HubProject = {
   id: string;
@@ -111,6 +116,9 @@ export type HubQuestion = {
   heldAnswer?: string;
 };
 
+/** What a sweep of the older questions closed, and one plain line saying so. */
+export type OlderDismissed = { dismissed: number; receipt: string };
+
 /** Ash's answer: an option's index and/or his words, or one quick answer alone. */
 export type HubAnswer = { choice?: number; text?: string; quick?: "agree" | "drop" | "park" };
 
@@ -161,6 +169,39 @@ export type HubMono = {
   projectIds: string[];
 };
 
+/** One section of the Today board, as Ash OS keeps it (`ash-hub-layout`): the shipped board unless a change moved it. */
+export type TodaySectionKind = "since" | "setup" | "needs" | "being-built" | "page";
+export type TodaySection = { id: string; kind: TodaySectionKind; title: string; pageId?: string };
+/** The board Ash OS sends with nothing set (and the app draws while it has no answer). */
+export const TODAY_DEFAULT: readonly TodaySection[] = [
+  { id: "since", kind: "since", title: "Since you were away" },
+  { id: "setup", kind: "setup", title: "Setup" },
+  { id: "needs", kind: "needs", title: "Needs you" },
+  { id: "being-built", kind: "being-built", title: "Being built" },
+];
+
+/** One side of a change's comparison: the hub as it is (`now`) or with the change (`preview`). */
+export type HubChangeSide = { image?: string; sections: { title: string; rows: string[] }[] };
+export type HubChangeState = "preview" | "applied" | "undone" | "discarded";
+/** A Change the hub / Edit Today change from Ash OS's history (`ash-hub-changes`), newest first. Never deleted. */
+export type HubChangeRecord = {
+  previewId: string;
+  title: string;
+  by: string;
+  monoId: string;
+  flow: "hub" | "today" | "connect";
+  projectId: string;
+  state: HubChangeState;
+  prompt: string;
+  createdAt: string;
+  appliedAt?: string;
+  undoneAt?: string;
+  now: HubChangeSide;
+  preview: HubChangeSide;
+  /** What happened to it: previewed, applied, undone, redone, discarded, and refusals with their reason (`note`). */
+  log: { at: string; what: string; by: string; note?: string }[];
+};
+
 export interface HubDataSource {
   listProjects(): HubProject[];
   listProjectItems(projectId: string): ProjectItem[];
@@ -178,6 +219,11 @@ export interface HubDataSource {
   retry(): void;
   /** Older questions (recovered from past chats and the like): not Needs, in no count, shown collapsed. */
   listOlder(projectId?: string): Need[];
+  /**
+   * Sweep the old question queue: close every open older question asked more than `olderThanDays` ago (one project's
+   * when given). Their asks are parked, never dropped. Live source only (`ash-hub-older-dismiss`).
+   */
+  dismissOlder?(olderThanDays: number, projectId?: string): Promise<OlderDismissed>;
   /** Mark a Looks-right row seen. Live source only. */
   markNeedSeen?(id: string): Promise<void>;
   /** A question's options sheet, and Ash's answer (an option's index and/or his own words); the answer's receipt line. */
@@ -198,6 +244,10 @@ export interface HubDataSource {
   markJobsSeen?(jobIds: string[]): void;
   listStuck(projectId?: string): StuckItem[];
   listMonos(projectId?: string): HubMono[];
+  /** The Today board's sections in order (`ash-hub-layout`). Undefined until Ash OS has said (draw the shipped board). */
+  todayLayout?(): TodaySection[] | undefined;
+  /** Change the hub / Edit Today history, newest first (`ash-hub-changes`). Live source only. */
+  listChanges?(): HubChangeRecord[];
 }
 
 /** One message in a group chat. `from` is "ash" or a Mono id. */

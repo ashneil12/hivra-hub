@@ -1,0 +1,272 @@
+// scripts/fake-claude.mjs, driven the way MonoCode's Claude adapter drives the real CLI: stream-json in and out over a
+// real child process. Run with `node --test scripts/fake-claude.test.mjs` (part of `npm run check:scripts`).
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { parseTranscript, transcriptTurns } from "./claude-fixtures.mjs";
+import { FAKE_VERSION, noConversationFrame, parseCliArgs, pickRule } from "./fake-claude.mjs";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const FAKE = path.join(HERE, "fake-claude.mjs");
+const T3 = path.join(HERE, "../src/integrations/harness/providers/claude/fixtures/t3code");
+
+function scratch() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "fake-claude-test-"));
+}
+
+/** A fake Claude process with helpers to send lines and wait for frames. */
+function start(args, env) {
+  const child = spawn(process.execPath, [FAKE, ...args], {
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const frames = [];
+  const raw = [];
+  const waiters = [];
+  readline.createInterface({ input: child.stdout }).on("line", (line) => {
+    raw.push(line);
+    if (!line.startsWith("{")) return;
+    frames.push(JSON.parse(line));
+    for (const waiter of [...waiters]) waiter();
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+  const until = (predicate, label, timeoutMs = 10_000) =>
+    new Promise((resolve, reject) => {
+      const check = () => {
+        const found = frames.find(predicate);
+        if (!found) return false;
+        waiters.splice(waiters.indexOf(check), 1);
+        clearTimeout(timer);
+        resolve(found);
+        return true;
+      };
+      const timer = setTimeout(() => {
+        waiters.splice(waiters.indexOf(check), 1);
+        reject(new Error(`timed out waiting for ${label}; got ${JSON.stringify(frames.map((f) => f.type + ":" + (f.subtype ?? "")))}`));
+      }, timeoutMs);
+      waiters.push(check);
+      check();
+    });
+  const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
+  const initialize = async () => {
+    send({ type: "control_request", request_id: "monocode_2", request: { subtype: "initialize" } });
+    return until((f) => f.type === "control_response", "initialize");
+  };
+  const prompt = (text) =>
+    send({ type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null });
+  const results = () => frames.filter((f) => f.type === "result");
+  return { child, frames, raw, until, send, initialize, prompt, results, exited, stderr: () => stderr };
+}
+
+function rules(dir, list) {
+  const file = path.join(dir, "rules.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, rules: list }));
+  return file;
+}
+
+test("answers --version like Claude Code, so the configured-binary check accepts it", async () => {
+  const fake = start(["--version"], {});
+  assert.equal(await fake.exited, 0);
+  assert.deepEqual(fake.raw, [FAKE_VERSION]);
+  assert.equal(FAKE_VERSION, "2.1.302 (Claude Code)");
+});
+
+test("parses the arguments the adapter passes", () => {
+  assert.deepEqual(parseCliArgs(["--output-format", "stream-json", "--resume", "abc", "--model", "m"]), {
+    version: false,
+    resume: "abc",
+    sessionId: undefined,
+    model: "m",
+    permissionMode: undefined,
+    helper: false,
+  });
+  assert.equal(parseCliArgs(["--no-session-persistence"]).helper, true);
+});
+
+test("picks the first rule that matches, honouring tags and times", () => {
+  const list = [
+    { name: "once", match: "hello", times: 1, steps: [] },
+    { name: "worker", match: "hello", tag: "worker", steps: [] },
+    { name: "any", match: "hello", steps: [] },
+  ];
+  assert.equal(pickRule(list, "hello", [], {}).name, "once");
+  assert.equal(pickRule(list, "hello", [], { once: 1 }).name, "any");
+  assert.equal(pickRule(list, "hello", ["worker"], { once: 1 }).name, "worker");
+  assert.equal(pickRule(list, "bye", [], {}), null);
+});
+
+test("plays rules: says, runs background work, marks progress, and ends with a result", async () => {
+  const dir = scratch();
+  const scenario = rules(dir, [
+    {
+      name: "work",
+      match: "VERIFY-WORKER",
+      setTag: "worker",
+      steps: [
+        { say: "Working." },
+        { background: { id: "agent-1", kind: "subagent", description: "Audit it" } },
+        { mark: "worker-started" },
+        { waitFile: "release" },
+        { finishBackground: "agent-1" },
+        { say: "WORKER-DONE" },
+      ],
+    },
+  ]);
+  const fake = start(["--output-format", "stream-json", "--session-id", "conv-1"], {
+    FAKE_CLAUDE_STATE: dir,
+    FAKE_CLAUDE_SCENARIO: scenario,
+  });
+  await fake.initialize();
+  fake.prompt("VERIFY-WORKER count to three");
+  const started = await fake.until((f) => f.subtype === "task_started", "task_started");
+  assert.equal(started.task_id, "agent-1");
+  assert.equal(started.task_type, "local_agent");
+  const list = fake.frames.find((f) => f.subtype === "background_tasks_changed");
+  assert.deepEqual(list.tasks, [{ task_id: "agent-1", task_type: "local_agent", description: "Audit it" }]);
+  // It waits on the gate: no result yet.
+  for (let i = 0; i < 20 && !fs.existsSync(path.join(dir, "marks/worker-started.json")); i++)
+    await new Promise((r) => setTimeout(r, 50));
+  const mark = JSON.parse(fs.readFileSync(path.join(dir, "marks/worker-started.json"), "utf8"));
+  assert.equal(mark.conversation, "conv-1");
+  assert.match(mark.prompt, /VERIFY-WORKER/);
+  assert.equal(fake.results().length, 0);
+  fs.writeFileSync(path.join(dir, "gates/release"), "");
+  const result = await fake.until((f) => f.type === "result", "result");
+  assert.equal(result.result, "WORKER-DONE");
+  assert.equal(result.session_id, "conv-1");
+  assert.ok(fake.frames.some((f) => f.subtype === "task_notification" && f.task_id === "agent-1"));
+  const conversation = JSON.parse(fs.readFileSync(path.join(dir, "conversations/conv-1.json"), "utf8"));
+  assert.deepEqual(conversation.tags, ["worker"]);
+  fake.child.stdin.end();
+  assert.equal(await fake.exited, 0);
+  const prompts = fs.readFileSync(path.join(dir, "prompts.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(prompts[0].rule, "work");
+});
+
+test("resumes a conversation it has, and answers a missing one exactly like Claude Code 2.1.302", async () => {
+  const dir = scratch();
+  const scenario = rules(dir, [{ name: "hi", match: "hi", steps: [{ say: "hello again" }] }]);
+  const env = { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: scenario };
+  const first = start(["--session-id", "kept"], env);
+  await first.initialize();
+  first.prompt("hi");
+  await first.until((f) => f.type === "result", "first result");
+  first.child.stdin.end();
+  await first.exited;
+
+  const resumed = start(["--resume", "kept"], env);
+  await resumed.initialize();
+  resumed.prompt("hi");
+  assert.equal((await resumed.until((f) => f.type === "result", "resumed result")).result, "hello again");
+  resumed.child.stdin.end();
+  await resumed.exited;
+  const prompts = fs.readFileSync(path.join(dir, "prompts.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(prompts.map((p) => p.resumed), [false, true]);
+
+  const dead = start(["--resume", "gone"], env);
+  assert.equal(await dead.exited, 1);
+  const recorded = JSON.parse(
+    fs.readFileSync(
+      path.join(HERE, "../src/integrations/harness/providers/claude/fixtures/claude-cli-2.1.302/no-conversation-found.ndjson"),
+      "utf8",
+    ),
+  );
+  assert.equal(dead.frames.length, 1);
+  const frame = dead.frames[0];
+  for (const key of ["type", "subtype", "is_error", "num_turns", "stop_reason"]) assert.deepEqual(frame[key], recorded[key], key);
+  assert.deepEqual(frame.errors, ["No conversation found with session ID: gone"]);
+  assert.match(dead.stderr(), /No conversation found with session ID: gone/);
+  assert.deepEqual(noConversationFrame("x").errors, ["No conversation found with session ID: x"]);
+});
+
+test("makes `monocode app` calls over the app's endpoint with the turn's token", async () => {
+  const dir = scratch();
+  const seen = [];
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      if (!buffer.includes("\n")) return;
+      seen.push(JSON.parse(buffer.split("\n")[0]));
+      socket.end(`${JSON.stringify({ ok: true, result: { sessionId: "worker-1" } })}\n`);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const scenario = rules(dir, [
+    { name: "lead", match: "KICKOFF", steps: [{ app: "sessions.start", input: { prompt: "VERIFY-WORKER" } }, { say: "Started." }] },
+  ]);
+  const fake = start(["--session-id", "lead"], {
+    FAKE_CLAUDE_STATE: dir,
+    FAKE_CLAUDE_SCENARIO: scenario,
+    MONOCODE_APP_ENDPOINT: `127.0.0.1:${port}`,
+    MONOCODE_APP_TOKEN: "turn-token",
+  });
+  await fake.initialize();
+  fake.prompt("KICKOFF");
+  await fake.until((f) => f.type === "result", "result");
+  server.close();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].token, "turn-token");
+  assert.equal(seen[0].action, "sessions.start");
+  assert.equal(seen[0].namespace, "app");
+  assert.deepEqual(seen[0].input, { prompt: "VERIFY-WORKER" });
+  assert.match(seen[0].requestId, /^[A-Za-z0-9_-]+$/);
+  const toolUse = fake.frames.find((f) => f.type === "assistant" && f.message.content[0].type === "tool_use");
+  const toolResult = fake.frames.find((f) => f.type === "user");
+  assert.equal(toolResult.message.content[0].tool_use_id, toolUse.message.content[0].id);
+  assert.match(toolResult.message.content[0].content, /worker-1/);
+  const calls = fs.readFileSync(path.join(dir, "app-calls.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls[0].response.result.sessionId, "worker-1");
+  fake.child.stdin.end();
+  await fake.exited;
+});
+
+test("replays a recorded T3 transcript, one recorded turn per prompt", async () => {
+  const dir = scratch();
+  const file = path.join(T3, "claude_result_is_error.ndjson");
+  const turns = transcriptTurns(parseTranscript(fs.readFileSync(file, "utf8")));
+  const fake = start(["--session-id", "replayed"], { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: file });
+  await fake.initialize();
+  fake.prompt(turns[0].prompt);
+  const failed = await fake.until((f) => f.type === "result", "the 401 result");
+  assert.equal(failed.is_error, true);
+  assert.equal(failed.api_error_status, 401);
+  assert.equal(failed.session_id, "replayed");
+  fake.prompt(turns[1].prompt);
+  await fake.until((f) => f.type === "result" && f !== failed, "the recovered result");
+  const second = fake.results()[1];
+  assert.equal(second.is_error, false);
+  fake.child.stdin.end();
+  assert.equal(await fake.exited, 0);
+});
+
+test("a helper call (titles) never plays the rules, and closing stdin ends the process mid-wait", async () => {
+  const dir = scratch();
+  const scenario = rules(dir, [{ name: "lead", match: ".", steps: [{ mark: "should-not" }, { waitFile: "never" }] }]);
+  const helper = start(["--no-session-persistence"], { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: scenario });
+  await helper.initialize();
+  helper.prompt("Write a title for: VERIFY-LEAD-KICKOFF");
+  assert.equal((await helper.until((f) => f.type === "result", "helper result")).result, "Fake reply");
+  helper.child.stdin.end();
+  await helper.exited;
+  assert.equal(fs.existsSync(path.join(dir, "marks/should-not.json")), false);
+
+  const waiting = start(["--session-id", "w"], { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: scenario });
+  await waiting.initialize();
+  waiting.prompt("go");
+  for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, "marks/should-not.json")); i++)
+    await new Promise((r) => setTimeout(r, 50));
+  waiting.child.stdin.end();
+  assert.equal(await waiting.exited, 0);
+  assert.equal(waiting.results().length, 0, "a process whose app went away never answers");
+});

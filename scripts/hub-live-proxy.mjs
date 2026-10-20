@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const LIVE_KEY_FILE = path.join(os.homedir(), ".local/share/exo-cc-studio/token");
-export const READS = new Set(["projects", "needs", "since", "events", "mono-projects", "mono-acts", "jobs", "job-options", "question"]);
+export const READS = new Set(["projects", "needs", "since", "events", "mono-projects", "mono-acts", "jobs", "job-options", "question", "pages", "changes", "layout"]);
 const ACTION = /^ash-hub-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
 
