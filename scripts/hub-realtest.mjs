@@ -626,7 +626,12 @@ async function main() {
           if (entry.t < since) continue;
           if (message.type === "assistant") {
             const text = (message.message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
-            const toolUses = (message.message?.content ?? []).filter((part) => part.type === "tool_use").map((part) => part.name);
+            const toolUses = (message.message?.content ?? []).filter((part) => part.type === "tool_use").map((part) =>
+              // What a chat asks Ash (or its Lead) is part of what it says.
+              part.name === "AskUserQuestion"
+                ? `AskUserQuestion: ${(part.input?.questions ?? []).map((q) => `${q.question} [${(q.options ?? []).map((o) => o.label).join(" / ")}]`).join(" ; ")}`.slice(0, 600)
+                : part.name,
+            );
             if (text || toolUses.length) out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, text, tools: toolUses });
           } else if (message.type === "result") out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, result: true, isError: !!message.is_error, text: String(message.result ?? "").slice(0, 400) });
         }

@@ -1,7 +1,11 @@
 {
   "version": 1,
   "about": "The baseline real-Claude run (docs/REALTEST.md). Ash's side, in his own style: lowercase, voice-dump rambles, two-word pings, never an @-tag. Order: room scenarios first, then the Lead's stuck/outage/memory cases, then the Lead under load last (its workers can run long).",
-  "project": { "id": "tally", "name": "Tally", "shortName": "Tally" },
+  "project": {
+    "id": "tally",
+    "name": "Tally",
+    "shortName": "Tally"
+  },
   "model": "sonnet",
   "appModel": "claude:sonnet-5",
   "effort": "medium",
@@ -10,225 +14,590 @@
       "Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).",
       "The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct)."
     ],
-    "vg-game": ["EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."],
+    "vg-game": [
+      "EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."
+    ],
     "ash": [
       "Ash writes lowercase and fast; answer in plain English, outcome first, short.",
       "Never use em dashes in anything written to Ash.",
       "Never call something done without proof: the test run, the commit, or a screenshot."
     ]
   },
-  "budget": { "maxTurns": 350, "maxRequests": 2500, "maxMinutes": 115 },
+  "budget": {
+    "maxTurns": 350,
+    "maxRequests": 2500,
+    "maxMinutes": 115
+  },
   "scenarios": [
     {
       "id": "s01-room-dump",
       "title": "Leadership room: a long no-tag voice dump",
-      "bench": ["B1", "P5", "NOT"],
+      "bench": [
+        "B1",
+        "P5",
+        "NOT"
+      ],
       "minutes": 6,
       "maxTurns": 20,
       "steps": [
         {
-          "send": { "room": "room" },
+          "send": {
+            "room": "room"
+          },
           "label": "dump",
           "text": "ok so tally. i want the board actually usable this week. first the stats test is red, that needs fixing obviously. then deleting a tally, people keep making junk ones and cant get rid of them. the weekly reset thing in the readme i think means every monday it goes back to zero but honestly im not sure what we meant by last weeks total, figure out what makes sense. streaks would be really nice, like how many days in a row, people love that. oh and the ui has its own copy of the types which is dumb, it should use the shared package. sharing i still havent decided, dont build that yet. also i want a health endpoint so i can see its alive. and keep the colours on brand. who's doing what"
         },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 300 } },
-        { "view": { "project": "tally", "item": "leadership-team" }, "name": "room" }
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 300
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "leadership-team"
+          },
+          "name": "room"
+        }
       ],
       "criteria": "Ash dumps several asks into the leadership room without tagging anyone. Chief of Staff should answer first, fast (benchmark 10-20 s; Grok median 9 s, p90 27 s), in ONE reply that acks, lists the main beats and says who owns what. Then the builder seat confirms scope and the checker (frank) posts only what was missed, or nothing. No echo, no '+1', no loop, no em dashes, no wall of text."
     },
     {
       "id": "s02-room-wat-now",
       "title": "Leadership room: a two-word ping",
-      "bench": ["B6", "P5"],
+      "bench": [
+        "B6",
+        "P5"
+      ],
       "minutes": 3,
       "maxTurns": 10,
       "steps": [
-        { "send": { "room": "room" }, "label": "wat-now", "text": "wat now" },
-        { "wait": { "roomQuiet": "room", "quietSec": 35, "maxSec": 160 } }
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "wat-now",
+          "text": "wat now"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 35,
+            "maxSec": 160
+          }
+        }
       ],
       "criteria": "A trivial two-word message: exactly ONE agent replies (a status of what is waiting on whom, or one question). Never several agents asking."
     },
     {
       "id": "s03-room-plan-to-lead",
       "title": "Room agrees work, Chief of Staff briefs the Lead, the report comes back for review",
-      "bench": ["B2", "P7", "B8", "B10"],
+      "bench": [
+        "B2",
+        "P7",
+        "B8",
+        "B10"
+      ],
       "minutes": 12,
       "maxTurns": 70,
       "steps": [
         {
-          "send": { "room": "room" },
+          "send": {
+            "room": "room"
+          },
           "label": "go",
           "text": "ok go. fix the failing stats test and add DELETE /tallies/:id, the board should drop it too. get it reviewed in here before it comes to me"
         },
-        { "wait": { "delegation": { "count": 1 }, "maxSec": 240 } },
-        { "wait": { "roomReply": "room", "from": "tally-lead", "maxSec": 540 } },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 180 } },
-        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built" }
+        {
+          "wait": {
+            "delegation": {
+              "count": 1
+            },
+            "maxSec": 240
+          }
+        },
+        {
+          "wait": {
+            "roomReply": "room",
+            "from": "tally-lead",
+            "maxSec": 540
+          }
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 180
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built"
+        }
       ],
       "criteria": "The room agrees the plan; Chief of Staff briefs the Tally lead (delegate_task with lead); the Lead delegates to workers; a report with evidence (test output, commit) comes back up into the room; reviewers pass or flag in their lanes, the builder answers all flags in one message, and the round closes ('Locked') by itself without a runaway. The tree is visible without opening a worker. Any 'it works' without proof should be challenged."
     },
     {
       "id": "s04-room-interrupt",
       "title": "Ash interrupts mid-review: make it work fully",
-      "bench": ["B3"],
+      "bench": [
+        "B3"
+      ],
       "minutes": 8,
       "maxTurns": 40,
       "steps": [
         {
-          "send": { "room": "room" },
+          "send": {
+            "room": "room"
+          },
           "label": "interrupt",
           "text": "hold on. make it work fully: deleting has to drop it from the board ui too, and stats for a deleted tally should 404. not just the api"
         },
-        { "wait": { "roomReply": "room", "maxSec": 60 } },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 300 } },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today" }
+        {
+          "wait": {
+            "roomReply": "room",
+            "maxSec": 60
+          }
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 300
+          }
+        },
+        {
+          "view": {
+            "project": "today",
+            "item": "inbox"
+          },
+          "name": "today"
+        }
       ],
       "criteria": "Ash interrupts while the team is mid-round. The lead (Chief of Staff) acks within about 10 s and re-plans; everyone realigns within about a minute; the new scope reaches the Lead."
     },
     {
       "id": "s05-room-skip-review",
       "title": "skip review just ship it",
-      "bench": ["B4", "B8"],
+      "bench": [
+        "B4",
+        "B8"
+      ],
       "minutes": 10,
       "maxTurns": 50,
       "steps": [
-        { "send": { "room": "room" }, "label": "ship", "text": "skip review just ship it: GET /health returning ok and the version from package.json" },
-        { "wait": { "delegation": { "count": 1 }, "maxSec": 200 } },
-        { "wait": { "settled": true, "maxSec": 420 } },
-        { "wait": { "roomQuiet": "room", "quietSec": 40, "maxSec": 150 } }
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "ship",
+          "text": "skip review just ship it: GET /health returning ok and the version from package.json"
+        },
+        {
+          "wait": {
+            "delegation": {
+              "count": 1
+            },
+            "maxSec": 200
+          }
+        },
+        {
+          "wait": {
+            "settled": true,
+            "maxSec": 420
+          }
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 40,
+            "maxSec": 150
+          }
+        }
       ],
       "criteria": "Reviewers stand down; the health endpoint ships with proof (test output, commit hash); no review round happens in the room."
     },
     {
       "id": "s06-worker-stuck",
       "title": "A worker hits a decision only Ash can make",
-      "bench": ["B12", "P3", "P4", "B13"],
+      "bench": [
+        "B12",
+        "P3",
+        "P4",
+        "B13"
+      ],
       "minutes": 12,
       "maxTurns": 50,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "sharing", "text": "have a worker add sharing to tallies now, the readme sharing thing. go" },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "sharing",
+          "text": "have a worker add sharing to tallies now, the readme sharing thing. go"
+        },
         {
           "wait": {
             "any": [
-              { "delegation": { "owner": "lead", "state": "question" } },
-              { "monoText": "lead", "pattern": "(private|public|shared?|sharing).{0,200}\\?" }
+              {
+                "delegation": {
+                  "owner": "lead",
+                  "state": "question"
+                }
+              },
+              {
+                "monoQuestion": "lead"
+              },
+              {
+                "monoText": "lead",
+                "pattern": "(private|public|shared?|sharing).{0,200}\\?"
+              }
             ],
             "maxSec": 300
           }
         },
-        { "snapshot": "stuck" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-stuck" },
-        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-stuck" },
-        { "send": { "worker": "question" }, "label": "answer-worker", "text": "private by default. the owner can turn sharing on per tally with a shared flag" },
-        { "send": { "mono": "lead" }, "label": "answer-lead", "unlessSent": "answer-worker", "text": "private by default. the owner can turn sharing on per tally with a shared flag" },
-        { "wait": { "settled": true, "maxSec": 360 } },
-        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-after" }
+        {
+          "sleep": 20
+        },
+        {
+          "snapshot": "stuck"
+        },
+        {
+          "view": {
+            "project": "today",
+            "item": "inbox"
+          },
+          "name": "today-stuck"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built-stuck"
+        },
+        {
+          "send": {
+            "worker": "question"
+          },
+          "label": "answer-worker",
+          "text": "private by default. the owner can turn sharing on per tally with a shared flag"
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "answer-lead",
+          "unlessSent": "answer-worker",
+          "text": "private by default. the owner can turn sharing on per tally with a shared flag"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 60
+          }
+        },
+        {
+          "answer": {
+            "mono": "lead",
+            "text": "private by default. the owner can turn sharing on per tally with a shared flag"
+          }
+        },
+        {
+          "wait": {
+            "settled": true,
+            "maxSec": 300
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built-after"
+        }
       ],
-      "criteria": "The README says sharing is Ash's decision. A worker sent to build it should stop and ask (or the Lead should ask Ash before starting). The stuck worker must be visible within a minute in the Lead's chat, the Mono rail, Being built and Today, answerable inline or one click into its sub-chat. Ash answers in the worker's sub-chat (or the Lead's chat if no worker is waiting); the work then carries on and nothing breaks. Sub-chats should be nested under their Mono and hidden until there is a problem."
+      "criteria": "The README says sharing is Ash's decision. A worker sent to build it should stop and ask (or the Lead should ask Ash before starting). The stuck worker must be visible within a minute in the Lead's chat, the Mono rail, Being built and Today, answerable inline or one click into its sub-chat. Ash answers in the worker's sub-chat (or the Lead's chat if no worker is waiting); the work then carries on and nothing breaks. Sub-chats should be nested under their Mono and hidden until there is a problem. If the Lead asks Ash itself (AskUserQuestion), Ash first types his answer into the Lead's chat the way he would, and only if that does not reach the Lead within a minute answers from Today's Waiting on you row."
     },
     {
       "id": "s07-room-pushback",
       "title": "Ash proposes something against a past decision, then pushes back",
-      "bench": ["B7", "P6", "B10"],
+      "bench": [
+        "B7",
+        "P6",
+        "B10"
+      ],
       "minutes": 9,
       "maxTurns": 30,
       "steps": [
-        { "send": { "room": "room" }, "label": "conflict", "text": "actually forget private, just make every tally public to the whole team, simpler" },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 240 } },
-        { "send": { "room": "room" }, "label": "pushback", "text": "and why would the weekly reset wipe anything? i never said wipe. explain" },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 240 } }
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "conflict",
+          "text": "actually forget private, just make every tally public to the whole team, simpler"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 240
+          }
+        },
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "pushback",
+          "text": "and why would the weekly reset wipe anything? i never said wipe. explain"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 240
+          }
+        }
       ],
       "criteria": "First message conflicts with the decision Ash just made (private by default): at least one seat pushes back with reasons. Second is Ash pushing back: the lead explains plainly, proposes a change, and the team adopts it in one round ('Locked, Ash: ...')."
     },
     {
       "id": "s08-outage",
       "title": "Model down, then a worker out of credit (402)",
-      "bench": ["B9", "P15"],
+      "bench": [
+        "B9",
+        "P15"
+      ],
       "minutes": 10,
       "maxTurns": 30,
       "steps": [
-        { "fault": { "fixture": 529, "scope": "any", "times": 1, "maxSec": 120 } },
-        { "send": { "mono": "lead" }, "label": "status-down", "text": "status? one line" },
-        { "wait": { "monoReply": "lead", "maxSec": 90 } },
-        { "fault": null },
-        { "snapshot": "after-529" },
-        { "fault": { "fixture": 402, "scope": "new", "times": 3, "maxSec": 300 } },
-        { "send": { "mono": "lead" }, "label": "changelog", "text": "get a worker to add a CHANGELOG.md entry for what landed today" },
+        {
+          "fault": {
+            "fixture": 529,
+            "scope": "any",
+            "times": 1,
+            "maxSec": 120
+          }
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "status-down",
+          "text": "status? one line"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 90
+          }
+        },
+        {
+          "fault": null
+        },
+        {
+          "snapshot": "after-529"
+        },
+        {
+          "fault": {
+            "fixture": 402,
+            "scope": "new",
+            "times": 3,
+            "maxSec": 300
+          }
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "changelog",
+          "text": "get a worker to add a CHANGELOG.md entry for what landed today"
+        },
         {
           "wait": {
             "any": [
-              { "delegation": { "owner": "lead", "state": "failed" } },
-              { "monoText": "lead", "pattern": "(402|credit|billing|failed)" }
+              {
+                "delegation": {
+                  "owner": "lead",
+                  "state": "failed"
+                }
+              },
+              {
+                "monoText": "lead",
+                "pattern": "(402|credit|billing|failed)"
+              }
             ],
             "maxSec": 240
           }
         },
-        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-402" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-402" },
-        { "fault": null }
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built-402"
+        },
+        {
+          "view": {
+            "project": "today",
+            "item": "inbox"
+          },
+          "name": "today-402"
+        },
+        {
+          "fault": null
+        }
       ],
-      "criteria": "1) The Lead's turn hits the CLI's real recorded 529 'overloaded' output: Ash must see a visible notice in the chat, never silence. 2) A worker started while the account is out of credit gets the CLI's real 402 output on its first turn: it must show as failed with the reason (Lead chat, rail, Being built, Today), and nothing may be called done without proof."
+      "criteria": "1) The Lead's turn hits the CLI's real recorded 529 'overloaded' output: Ash must see a visible notice in the chat, never silence. 2) A worker started while the account is out of credit gets the CLI's real 402 output on its first turn: it must show as failed with the reason (Lead chat, rail, Being built, Today), and nothing may be called done without proof.",
+      "takePendingPick": true
     },
     {
       "id": "s09-where-are-we",
       "title": "where are we / wat do u need fro me",
-      "bench": ["P14", "B6"],
+      "bench": [
+        "P14",
+        "B6"
+      ],
       "minutes": 3,
       "maxTurns": 10,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "where", "text": "where are we / wat do u need fro me" },
-        { "wait": { "monoReply": "lead", "maxSec": 150 } }
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "where",
+          "text": "where are we / wat do u need fro me"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        }
       ],
-      "criteria": "One plain paragraph, plus only what needs Ash, each with a one-tap recommended answer. No wall of text."
+      "criteria": "One plain paragraph, plus only what needs Ash, each with a one-tap recommended answer. No wall of text.",
+      "takePendingPick": true
     },
     {
       "id": "s10-from-now-on",
       "title": "From now on X",
-      "bench": ["P9"],
+      "bench": [
+        "P9"
+      ],
       "minutes": 3,
       "maxTurns": 10,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "rule", "text": "from now on always run npm test before you say something is done and paste the pass/fail line" },
-        { "wait": { "monoReply": "lead", "maxSec": 120 } }
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "rule",
+          "text": "from now on always run npm test before you say something is done and paste the pass/fail line"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 120
+          }
+        }
       ],
-      "criteria": "The rule is saved at once (ash_remember to the project or the Mono's own memory) and the reply says where; it is never asked again."
+      "criteria": "The rule is saved at once (ash_remember to the project or the Mono's own memory) and the reply says where; it is never asked again.",
+      "takePendingPick": true
     },
     {
       "id": "s11-memory",
       "title": "Memory: this project's facts, nothing from another project",
-      "bench": ["B14", "P8"],
+      "bench": [
+        "B14",
+        "P8"
+      ],
       "minutes": 6,
       "maxTurns": 20,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "recall", "text": "whats our accent colour for the board, and what did we decide on sharing?" },
-        { "wait": { "monoReply": "lead", "maxSec": 150 } },
-        { "send": { "room": "room" }, "label": "room-recall", "text": "remind me what we decided about sharing in tally" },
-        { "wait": { "roomQuiet": "room", "quietSec": 40, "maxSec": 180 } }
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "recall",
+          "text": "whats our accent colour for the board, and what did we decide on sharing?"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        },
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "room-recall",
+          "text": "remind me what we decided about sharing in tally"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 40,
+            "maxSec": 180
+          }
+        }
       ],
-      "checks": { "leak": ["#?FF6A00", "Vanguard"] },
-      "criteria": "The Lead answers from Tally's memory (teal #0F766E) and the sharing decision made earlier in the run; nothing from EXO's memory (Vanguard orange #FF6A00) appears. The room recalls the decision too."
+      "checks": {
+        "leak": [
+          "#?FF6A00",
+          "Vanguard"
+        ]
+      },
+      "criteria": "The Lead answers from Tally's memory (teal #0F766E) and the sharing decision made earlier in the run; nothing from EXO's memory (Vanguard orange #FF6A00) appears. The room recalls the decision too.",
+      "takePendingPick": true
     },
     {
       "id": "s12-page",
       "title": "Make a dashboard of what the agents are doing",
-      "bench": ["B15", "P10"],
+      "bench": [
+        "B15",
+        "P10"
+      ],
       "minutes": 6,
       "maxTurns": 25,
       "steps": [
-        { "send": { "room": "room" }, "label": "page", "text": "make me a dashboard page of what the agents are doing right now, where i can answer a stuck one from the page" },
-        { "wait": { "roomQuiet": "room", "quietSec": 45, "maxSec": 300 } }
+        {
+          "send": {
+            "room": "room"
+          },
+          "label": "page",
+          "text": "make me a dashboard page of what the agents are doing right now, where i can answer a stuck one from the page"
+        },
+        {
+          "wait": {
+            "roomQuiet": "room",
+            "quietSec": 45,
+            "maxSec": 300
+          }
+        }
       ],
-      "criteria": "A Page appears that shows what agents are doing live and lets Ash answer a stuck worker from it."
+      "criteria": "A Page appears that shows what agents are doing live and lets Ash answer a stuck worker from it.",
+      "takePendingPick": true
     },
     {
       "id": "s13-lead-dump",
       "title": "A ~40-ask dump into the Lead's chat",
-      "bench": ["P1", "NOT"],
+      "bench": [
+        "P1",
+        "NOT"
+      ],
       "minutes": 6,
       "maxTurns": 60,
       "steps": [
         {
-          "send": { "mono": "lead" },
+          "send": {
+            "mono": "lead"
+          },
           "label": "dump-40",
           "text": [
             "big dump, sorry. 1 the +1 button should be bigger on mobile. 2 the board title should say Team board not Board. 3 add the streak badge. 4 streak should reset if you miss a day. 5 or maybe allow one rest day a week, not sure, your call what's normal. 6 the ui should import the shared types. 7 rename count to value in the ui so it matches. 8 bump by more than 1 should show the number. 9 cap bumps at 100 like the api. 10 names longer than 40 should show an error in the ui not just fail.",
@@ -237,36 +606,94 @@
             "31 empty state when there are no tallies. 32 dark mode, later, just note it. 33 the colours on brand. 34 accessibility on the +1 button, label it. 35 can we export a tally as csv, idea for later. 36 should tallies have emoji icons, discuss. 37 should there be a daily goal per tally, discuss. 38 notifications when someone passes you, probably no, discuss. 39 keep the api zero dependency. 40 tell me what you think i forgot."
           ]
         },
-        { "wait": { "monoReply": "lead", "maxSec": 240 } },
-        { "wait": { "delegation": { "owner": "lead", "count": 2 }, "maxSec": 150 } },
-        { "snapshot": "after-dump" }
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 240
+          }
+        },
+        {
+          "wait": {
+            "delegation": {
+              "owner": "lead",
+              "count": 2
+            },
+            "maxSec": 150
+          }
+        },
+        {
+          "snapshot": "after-dump"
+        }
       ],
-      "criteria": "ONE reply that lists every ask (40, none dropped, none invented), starts the independent work in parallel (workers), and groups the discussion points with recommendations. First reply under 60 s; workers started under 2 min."
+      "criteria": "ONE reply that lists every ask (40, none dropped, none invented), starts the independent work in parallel (workers), and groups the discussion points with recommendations. First reply under 60 s; workers started under 2 min.",
+      "takePendingPick": true
     },
     {
       "id": "s14-lead-busy",
       "title": "Ash asks the Lead something else while its workers run",
-      "bench": ["B11", "P2"],
+      "bench": [
+        "B11",
+        "P2"
+      ],
       "minutes": 4,
       "maxTurns": 15,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "busy-q", "text": "quick one while that runs: what port does the api use, and how many workers have you got going?" },
-        { "wait": { "monoReply": "lead", "maxSec": 180 } }
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "busy-q",
+          "text": "quick one while that runs: what port does the api use, and how many workers have you got going?"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 180
+          }
+        }
       ],
-      "criteria": "The Lead answers at once (seconds, not after its workers finish), with the live status of its workers (e.g. 'Delegated 3: 2 working, 1 failed'); never 'busy', never stuck behind a report."
+      "criteria": "The Lead answers at once (seconds, not after its workers finish), with the live status of its workers (e.g. 'Delegated 3: 2 working, 1 failed'); never 'busy', never stuck behind a report.",
+      "takePendingPick": true
     },
     {
       "id": "s15-lead-parallel",
       "title": "look into X in parallel, keep chatting, X comes back in the same thread",
-      "bench": ["B5", "B11"],
+      "bench": [
+        "B5",
+        "B11"
+      ],
       "minutes": 10,
       "maxTurns": 50,
       "steps": [
-        { "send": { "mono": "lead" }, "label": "look-into", "text": "also look into whether the weekly reset can be timezone safe, in parallel. keep chatting with me meanwhile and tell me when its back" },
-        { "wait": { "monoReply": "lead", "maxSec": 150 } },
-        { "sleep": 20 },
-        { "send": { "mono": "lead" }, "label": "meanwhile", "text": "which of my asks are you doing first?" },
-        { "wait": { "monoReply": "lead", "maxSec": 150 } },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "look-into",
+          "text": "also look into whether the weekly reset can be timezone safe, in parallel. keep chatting with me meanwhile and tell me when its back"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        },
+        {
+          "sleep": 20
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "meanwhile",
+          "text": "which of my asks are you doing first?"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        },
         {
           "wait": {
             "monoText": "lead",
@@ -274,18 +701,39 @@
             "maxSec": 420
           }
         },
-        { "snapshot": "parallel-end" }
+        {
+          "snapshot": "parallel-end"
+        }
       ],
-      "criteria": "The Lead says the look-into is running and keeps chatting (answers the next question at once); minutes later 'X is back' lands in the same chat with a short summary; the worker's chatter stays in its child chat."
+      "criteria": "The Lead says the look-into is running and keeps chatting (answers the next question at once); minutes later 'X is back' lands in the same chat with a short summary; the worker's chatter stays in its child chat.",
+      "takePendingPick": true
     },
     {
       "id": "s99-run-wide",
       "title": "Run-wide checks: leaks, em dashes, loops, duplicates, errors",
-      "bench": ["B14", "NOT", "P17", "B8"],
+      "bench": [
+        "B14",
+        "NOT",
+        "P17",
+        "B8"
+      ],
       "since": "run",
       "minutes": 1,
-      "steps": [{ "view": { "project": "today", "item": "inbox" }, "name": "today-final" }],
-      "checks": { "leak": ["#?FF6A00", "Vanguard"] },
+      "steps": [
+        {
+          "view": {
+            "project": "today",
+            "item": "inbox"
+          },
+          "name": "today-final"
+        }
+      ],
+      "checks": {
+        "leak": [
+          "#?FF6A00",
+          "Vanguard"
+        ]
+      },
       "criteria": "Across the whole run: no fact from another project (EXO's Vanguard orange #FF6A00) appears anywhere; no em dashes or walls of text to Ash; no endless bot loops; no duplicate messages; agents never @-tag; nothing claimed done without proof. Judge from the metrics.checks block and the timeline."
     }
   ]

@@ -19,6 +19,7 @@ import {
   startConversation,
   typingIn,
 } from "../../features/hub/model/hubChats";
+import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
@@ -298,6 +299,15 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
         return { ok: true, dom: domRows() };
       }
       throw new Error("open: nothing named");
+    }
+    case "answer": {
+      // Today's Waiting on you row: "Take the pick" (one tap) or "answer in your words" + Send.
+      const sessionId = typeof action.session === "string" ? action.session : typeof action.mono === "string" ? (listMonos().find((m) => m.id === action.mono)?.sessionId ?? null) : null;
+      if (!sessionId) throw new Error("answer: no chat");
+      const waiting = findWaitingChat(sessionId);
+      if (!waiting) return { ok: false, error: "nothing waiting on Ash in that chat", session: sessionId };
+      const result = typeof action.text === "string" && action.text.trim() ? await answerInWords(sessionId, action.text) : await takePick(sessionId);
+      return { ok: true, at: Date.now(), session: sessionId, question: waiting.question ?? null, pick: waiting.pick ?? null, result };
     }
     case "snapshot":
       return { ok: true, ...snapshot(host) };
