@@ -2532,13 +2532,13 @@ async function main() {
       mtEvidence.window.team.ownWorkerNested &&
       !mtEvidence.window.team.leadWorkerThere &&
       !!monoLine &&
-      /2 working/.test(monoLine) &&
+      /2 working/.test(monoLine.text) &&
       mtOwnReport
     )
       pass(
         "mono_own_team",
         "A Mono's own work goes to its own team: a folder in the app's data, its chat pinned on the team's list with the worker under it",
-        `${MT_MONO}'s own worker ${mtOwn.child_session} ran in ${path.relative(home, teamFolder)} (made on its first delegation); the team's Sessions list pinned ${mtChat} with that worker under it and nothing of Verify's; the rail's line read "${monoLine}"; the worker's report came back to the Mono`,
+        `${MT_MONO}'s own worker ${mtOwn.child_session} ran in ${path.relative(home, teamFolder)} (made on its first delegation); the team's Sessions list pinned ${mtChat} with that worker under it and nothing of Verify's; the rail's line read "${monoLine.text}"; the worker's report came back to the Mono`,
         { evidence: mtEvidence },
       );
     else fail("mono_own_team", "A Mono's own work goes to its own team: a folder in the app's data, its chat pinned on the team's list with the worker under it", JSON.stringify({ delegated: !!mtDelegated, ownWorker: !!mtOwnWorker, ...mtEvidence }));
