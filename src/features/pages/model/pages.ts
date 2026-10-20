@@ -39,7 +39,11 @@ export type Page = {
   pinnedBy?: string;
   /** Ash OS already has this page (its build made it, or it was kept there): Keep only marks it kept. */
   inRecord?: boolean;
+  /** A rebuild from Ash's words (his Rebuild, or a Mono's from its chat) waiting on the page for his tap. */
+  newVersion?: NewVersion;
 };
+/** A kept page's new version: `id` is its row in Ash OS's record. */
+export type NewVersion = { id: string; request: string; by: string; monoId?: string; at: number; spec: PageSpec };
 
 /** A preview from a build result. `pageId` is the record's id when Ash OS built it. */
 export function pageFromSpec(spec: PageSpec, request: string, by: string, projectId: string, warnings: DesignIssue[] = [], now = Date.now(), pageId?: string, monoId?: string): Page {
@@ -126,7 +130,17 @@ export function pageFromRecord(raw: unknown): Page | undefined {
     ...(kept !== undefined && (r.state === "kept" || removed) ? { keptAt: kept } : {}),
     ...(removed ? { removed: true } : {}),
     ...(r.pinned === true ? { pinned: true, pinnedBy: typeof r.pinnedBy === "string" ? r.pinnedBy : "you" } : {}),
+    ...(!removed && newVersionFrom(r.newVersion) ? { newVersion: newVersionFrom(r.newVersion) } : {}),
     inRecord: true,
+  };
+}
+function newVersionFrom(raw: unknown): NewVersion | undefined {
+  const v = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const spec = validatePageSpec(v.spec);
+  if (typeof v.id !== "string" || !v.id || !spec.ok) return undefined;
+  return {
+    id: v.id, request: typeof v.request === "string" ? v.request : "", by: typeof v.by === "string" ? v.by : "",
+    ...(typeof v.monoId === "string" ? { monoId: v.monoId } : {}), at: typeof v.at === "number" ? v.at : 0, spec: spec.value,
   };
 }
 
@@ -360,6 +374,41 @@ export async function importPages(list: Page[]): Promise<{ added: number; failed
   }
   return { added, failed };
 }
+/** What a page's new version asks that Ash hasn't allowed the page yet. */
+export function newAsks(page: Page, spec: PageSpec): Capability[] {
+  return spec.kind === "bespoke" ? spec.permissions.filter((a) => !page.permissions.includes(a)) : [];
+}
+/** What the page keeps with a new version: what Ash allowed that it still asks for (and, with allowNew, its new asks). */
+function keptWith(page: Page, spec: PageSpec, allowNew: boolean): Capability[] {
+  if (spec.kind !== "bespoke") return [];
+  return spec.permissions.filter((a) => page.permissions.includes(a) || allowNew);
+}
+/**
+ * "Use this version": the page takes its new version's code in place (same page, pin and place on Today) and keeps what
+ * Ash allowed that it still asks for; `allowNew` (his "Use it and allow") approves its new asks too. A version with an
+ * `id` is Ash OS's (`ash-hub-page-update useVersion`); one without is the example data's, used on this Mac.
+ */
+export function useNewVersion(page: Page, version: { id?: string; spec: PageSpec }, opts: { allowNew?: boolean } = {}): Promise<boolean> {
+  const allowNew = !!opts.allowNew;
+  const permissions = keptWith(page, version.spec, allowNew);
+  const next: Page = { ...page, spec: version.spec, title: version.spec.title, permissions, newVersion: undefined };
+  const b = backend();
+  if (b.kind === "local" || !version.id) {
+    if (b.kind === "record") return write(b.store, page.id, next, "ash-hub-page-update", { pageId: page.id, spec: version.spec, permissions });
+    local = local.map((p) => (p.id === page.id ? next : p));
+    saveLocal(local);
+    changed();
+    return Promise.resolve(true);
+  }
+  return write(b.store, page.id, next, "ash-hub-page-update", { pageId: page.id, useVersion: version.id, ...(allowNew ? { permissions } : {}) });
+}
+/** "Throw away" on a new version: the page stays as it was. */
+export function dropNewVersion(page: Page, versionId: string): Promise<boolean> {
+  const b = backend();
+  if (b.kind === "local") return Promise.resolve(true);
+  return write(b.store, page.id, { ...page, newVersion: undefined }, "ash-hub-page-update", { pageId: page.id, dropVersion: versionId });
+}
+
 /** Ash's pin toggle (by "you"), or a Mono pinning the page it built (by its name). */
 export function setPinned(id: string, on: boolean, by = "you"): void {
   const page = pages().find((p) => p.id === id);

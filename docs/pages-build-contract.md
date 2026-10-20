@@ -63,7 +63,8 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 - **Theme tokens** are injected as CSS variables on `:root`: `--color-background-base`, `--color-content`, `--color-surface`, `--color-surface-raised`, `--color-surface-ring`, `--color-stroke`, `--color-theme-accent`, `--color-status-ok|warn|bad`, `--font-sans`. Pages follow the active theme and scheme by default.
 - **Helper library** (`window.hub`), injected into every page:
   - `hub.call(name, args)` returns a Promise. It is a call through the bridge.
-  - `hub.onData(fn)` receives data the host pushes.
+  - `hub.watch(name, [args], onData, [onError])` receives live data as it changes; it returns a stop function.
+  - `hub.onData(fn)` receives every push (`fn(data, name)`).
   - `hub.block(kind, data)` returns a bundled block element (`status`, `barlist`, `note`) already styled with the tokens.
 - **The bridge:** postMessage is the only way out. The host answers only messages from that frame.
 
@@ -82,6 +83,15 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 | `settings.read` | Read your settings |
 | `settings.write` | Change your settings |
 | `keys.read:<Name>` | Names one key, e.g. `keys.read:Anthropic` |
+| `agents.read` | See your agents, what each is doing and the work they handed out |
+| `jobs.read` | See what's being built |
+| `needs.read` | See what's waiting on you |
+| `rooms.read` | Read your rooms' messages |
+| `agents.answer` | Answer an agent's question when you tap |
+| `agents.pick` | Take an agent's suggested answer when you tap |
+| `agents.message` | Send a Mono a message when you tap |
+| `agents.stop` | Stop an agent's work when you tap |
+| `chats.open` | Open a chat when you tap |
 
 - **Key asks** sit in their own glass card above the list: **Reads your keys**, followed by each key's name. When a key is asked for, **Keep and allow** stays disabled for about one second after the card appears, so a fast click can't approve keys by accident.
 - **Keep and allow** approves every ask. The approved list is stored with the page.
@@ -93,7 +103,42 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 
   A spec asking for either is turned down.
 - **Limits line** on the empty, preview and kept screens: "This can't change the app's core screens, the sidebar, settings, keys or Monos." A page reaches settings or keys only through asks Ash approved.
-- **Not wired yet:** the bridge handlers for each capability are not wired to the backend. An approved call answers "Not connected yet" until the backend adds a `hub.rs` handler for it.
+- **Wired:** the agent capabilities below ("Connected pages"). The older ones (`tasks.*`, `project.*`, `mono.run`,
+  `automation.run`, `settings.*`, `keys.read:*`) still answer "Not connected yet".
+
+## 4b. Connected pages (live data and taps)
+
+Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, and its changes), `pageActions.ts`
+(the taps), `pageBridgeHost.ts` (one frame's side of the bridge).
+
+- **Reads** (`hub.call(name, args)` once, or `hub.watch(name, [args], onData, [onError])` live; `watch` returns a stop
+  function). Live means pushed as it changes, never polled: a burst of changes is one push, the same data is never sent
+  twice, and Undo ends the watch (`onError` hears why).
+  - `agents.read` → `{agents, counts}`. Each agent (the Monos roster: the team, the Leads, any Mono Ash added):
+    `{id, name, role: lead|team|mono, projects, state: asking|stuck|working|paused|idle, doing, reason?, since, chatId?,
+    question?, workers, jobs, waitingOn}`. `workers` is the work it handed out, nested:
+    `{id, title, state: asking|stuck|working|failed|done|stopped, doing, reason?, chatId, startedAt, since, endedAt?,
+    question?, workers}`. A `question` is `{chatId? | needId?, text, pick?, options?, redLine, askedAt?, canAnswer}`.
+    Stuck: a busy chat with no new word for 10 minutes, a worker whose chat ended without reporting (2 minutes), a usage
+    limit, or a stuck Being built job.
+  - `jobs.read` → `{jobs: [{id, projectId, projectName, title, agentId, agentName, state, reason?, startedAt?, lastActiveAt?, finishedAt?}]}`.
+  - `needs.read` → `{needs: [{id, projectId, projectName, title, why, action, isQuestion, since?}], waiting: [{chatId, chatName, projectId, projectName, agentId, question, pick?, redLine, askedAt}]}`.
+  - `rooms.read {projectId?, limit?}` → `{rooms: [{id, projectId, name, members, typing?, conversation: {id, title, when, messages: [{id, from, text}]}}]}`.
+- **Taps** (`await hub.call(name, args)` inside a click handler) go through the same paths as Ash's own taps:
+  - `agents.answer {chatId | needId, text}`: a chat waiting on Ash (Waiting on you's answer), a worker's live question
+    (the answer in its own chat), or an Ash OS question (`ash-hub-answer`).
+  - `agents.pick {chatId | needId}`: the agent's suggested answer (Take the pick; `quick: "agree"` for Ash OS).
+  - `agents.message {agentId | chatId, text}`: the composer's send into that chat (it steers or queues mid-turn).
+  - `agents.stop {workerId | agentId | chatId}`: the delegation tree's own Stop (it and everything it handed out).
+  - `chats.open {workerId | agentId | chatId}`: the app's own Open.
+  - Words a page sends end with "(sent from the <title> page)"; the page shows what it did under itself
+    ("Stopped “Fix the save bug” · from the Agents page · 2m ago").
+- **Rules:** a tap runs only on a kept page, only with its permission approved, and only while Ash's tap inside the
+  page is fresh (the browser's user activation): a page can never act by itself. A preview may read the live data it
+  asked for (so Ash sees what he keeps); its buttons and every other ask wait for Keep and allow.
+- **Size:** the helper tells the host the page's height and the frame follows it (160 to 4000 px).
+- **Navigation:** a frame that loads anything but its own page is cut off and given a fresh frame (the app's CSP
+  `frame-src` already refuses the trip).
 
 ## 5. Design check (bespoke pages, before the preview)
 
@@ -116,6 +161,33 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 > - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "keys.read:Anthropic"). You may embed hub blocks with `hub.block(kind, data)`.
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
+
+Ash OS also tells the Mono how to connect a page (section 4b: `hub.watch`, the data's shape, taps only inside a click
+handler, list every read and tap in `permissions`), and, for a Rebuild, the page as it is now (`ashos/pages.py`,
+`PAGE_RULES` and `REBUILD_RULES`).
+
+## Ready-made pages
+
+`readyPages.ts`. Pages offers them under **Ready-made** (in the list, and on the empty screen) until one is kept. **Add**
+shows its preview with what it asks, and **Keep and allow** keeps it like any page (by "Ready-made", on Today's pages).
+- **Agents**: every agent and what it is doing; the stuck and asking ones (agents and the work they handed out, at any
+  depth) on top with **Take it**, **Answer**, **Open** and **Stop**; then Working (with each agent's recent work) and Idle
+  (with **Message**). It watches `agents.read` and uses only the taps, so it is the pattern for a Mono's own connected
+  page, and Rebuild changes it from Ash's words like any other.
+
+## Rebuild (change a kept page from Ash's words)
+
+- **Rebuild** beside the pin on a kept page: Ash says what should change ("add a column for stuck time") and picks the
+  Mono (the one that built it by default). `rebuildPage({pageId, monoId, prompt})` sends `ash-hub-build-page` with the
+  page's `pageId`; the Mono changes the page as it is now. The answer carries `replaces`.
+- A Mono can do the same from Ash's words in its own chat: the ash-os tool `ash_page_rebuild {page (title or id), prompt}`.
+- Either way the new version **waits on the page** (`newVersion` in `ash-hub-pages`; "New version from frank: “…” · See
+  it"). The page runs as it is until Ash taps:
+  - **Use this version** (`ash-hub-page-update {pageId, useVersion}`): the same page (pin, place on Today) takes the new
+    code and keeps what he allowed that it still asks for. If the new version asks for something new, the button is
+    **Use it and allow** (it sends `permissions`), with the key delay when a key is newly asked for.
+  - **Throw away** (`dropVersion`): the page stays as it was.
+- The new version previews like a new page: dashed border, "Preview" watermark, live data it asked to read, no taps.
 
 ## Pinning
 

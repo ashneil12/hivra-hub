@@ -1,4 +1,4 @@
-import { MonoBusyError, setGroupChatRunner, setRoomRouter } from "../features/hub/model/hubChats";
+import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
@@ -23,7 +23,6 @@ import {
 import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
-  monoRefusesRoomTurn,
 } from "../features/monos/model/monoMessaging";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -170,6 +169,7 @@ import {
   setWaitingChatsHost,
   setWorkerQuestionRouter,
 } from "../features/hub/model/waitingChats";
+import { setPageActionsHost } from "../features/pages/model/pageActions";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -426,7 +426,6 @@ import {
   respondHarnessQuestion,
   keepHarnessQuestionOpen,
   runHarnessTextPrompt,
-  canRunHarnessTextPrompt,
   sendHarnessTurn,
   steerHarnessTurn,
   startHarnessBridge,
@@ -1026,6 +1025,8 @@ type SubmitOptions = ComposerTurnOptions & {
   monoSessionCompletion?: Block["monoSessionCompletion"];
   /** A checker's note for this chat (hub/model/hubChecks.ts): a hidden turn shown as a quiet card. */
   monoCheck?: Block["monoCheck"];
+  /** A room's turn or another Mono's message (hub rooms): a hidden turn shown as a quiet line. */
+  monoNote?: Block["monoNote"];
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
@@ -7549,6 +7550,7 @@ function Workspace({
           !options?.appRequestId &&
           !options?.waitForIdle &&
           !options?.monoCheck &&
+          !options?.monoNote &&
           !options?.managed &&
           !options?.monoSessionCompletion);
       if (
@@ -7658,6 +7660,10 @@ function Workspace({
                   // A steered app brief: its sender's row sees it went in.
                   ...(message.appRequestId
                     ? { appRequestId: message.appRequestId }
+                    : {}),
+                  // A room's wake steered into the work: hidden, a quiet line.
+                  ...(message.monoNote
+                    ? { internal: true, monoNote: message.monoNote }
                     : {}),
                 },
               }),
@@ -7947,9 +7953,10 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : {}),
         // The orchestrator writes these turns, not the user; hide them.
-        ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck
+        ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck || options?.monoNote
           ? { internal: true }
           : {}),
+        ...(options?.monoNote ? { monoNote: options.monoNote } : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
           : {}),
@@ -8942,6 +8949,8 @@ function Workspace({
     return watchVerifyMessages(runId, {
       list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
       send: async (message) => {
+        // Into a group room, as Ash writes there (hub/model/roomConductor.ts).
+        if (message.room) return sendVerifyRoomMessage(message.room, message.prompt);
         await onOpenMono(message.monoId);
         const sessionId = monoViewIdRef.current;
         if (sessionId) onSubmit(sessionId, message.prompt);
@@ -9602,41 +9611,29 @@ function Workspace({
     },
   });
 
-  // Group chat uses the same Mono sessions, selected model, tools and settlement signal as a direct conversation.
-  useEffect(() => setGroupChatRunner(async (monoId, prompt) => {
-    const session = await ensureMonoSession(monoId, {
-      home: homeDir,
-      load: (id) => ensureOpenSessionRef.current(id),
-      create: (path) => newDefaultSession(path),
-      add: (created) => {
-        sessionsRef.current = [...sessionsRef.current, created];
-        setSessions(sessionsRef.current);
-      },
-    });
-    if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
-    if (monoRefusesRoomTurn(sessionsRef.current.find((entry) => entry.id === session.id) ?? session))
-      throw new MonoBusyError("This Mono is already working or has messages waiting. Wait for it to finish before trying again.");
-    return new Promise<string>((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
-      void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
-        managed: true,
-        onSettled: (outcome) => {
-          window.clearTimeout(timer);
-          if (outcome.status === "completed") resolve(outcome.text);
-          else reject(new Error(outcome.error || "The Mono's turn did not complete. Your group message is saved."));
+  // Rooms (group chats) take turns on the same Mono sessions, model, tools and settlement signal as a direct
+  // conversation; a busy Mono gets the room's wake in its queue. Also its router, private messages between Monos, and
+  // work delegated from a room coming back to it (app/hooks/useRoomRunner.ts).
+  const onStopRef = useRef<(sessionId: string, managed?: boolean) => unknown>(() => undefined);
+  const roomsHost = useRoomRunner({
+    sessions,
+    sessionsRef,
+    setSessions,
+    submit: (id, text, options) => submitSessionRef.current(id, text, [], options),
+    openMono: (monoId) =>
+      ensureMonoSession(monoId, {
+        home: homeDir,
+        load: (id) => ensureOpenSessionRef.current(id),
+        create: (path) => newDefaultSession(path),
+        add: (created) => {
+          sessionsRef.current = [...sessionsRef.current, created];
+          setSessions(sessionsRef.current);
         },
-      })).then((accepted) => {
-        if (!accepted) { window.clearTimeout(timer); reject(new Error("The Mono could not accept this message. Your message is saved.")); }
-      }).catch((error: unknown) => { window.clearTimeout(timer); reject(error); });
-    });
-  }), []);
-
-  // The room's cheap router (who answers, who may chime in): one isolated, read-only prompt to the smallest model (the
-  // Claude text child picks Haiku). When Claude can't run one, the room falls back to its lane rules.
-  useEffect(() => setRoomRouter(async (prompt) => {
-    if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
-    return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: 20_000 });
-  }), []);
+      }),
+    stop: (id) => onStopRef.current(id, true),
+  });
+  const roomsHostRef = useRef(roomsHost);
+  roomsHostRef.current = roomsHost;
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -9899,7 +9896,10 @@ function Workspace({
                       monoSessionCompletion: head.monoSessionCompletion,
                       appRequestId: head.id,
                     }
-                  : head.appRequestId
+                  : head.monoNote
+                    ? // A room's wake or another Mono's message goes in hidden, under its id (the room watches for it).
+                      { monoNote: head.monoNote, appRequestId: head.appRequestId ?? head.id, followsUp: true }
+                    : head.appRequestId
                     ? // A queued app brief goes in under its request id (followedBriefs.ts watches for it).
                       { appRequestId: head.appRequestId, followsUp: true }
                     : {}),
@@ -11435,6 +11435,29 @@ function Workspace({
     });
   }, [onQuestionReply, onOpenMono, openReminderSession]);
 
+  // Pages (features/pages/model/pageActions.ts): a kept page's taps borrow the same hands as Ash's own: the question
+  // reply in a chat, the composer's send, a chat's or a Mono's own view.
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    return setPageActionsHost({
+      liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
+      respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      send: async (id, text) => {
+        const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
+        if (!session) return false;
+        if (!(await Promise.resolve(submitSessionRef.current(session.id, text, [], { followsUp: true })))) return false;
+        await upsertSession(sessionsRef.current.find((s) => s.id === session.id) ?? session);
+        return true;
+      },
+      open: (id) => {
+        const mono = monoForSession(id);
+        if (mono) void onOpenMono(mono.id);
+        else if (!focusOpenSession(id)) void onSelectHistorySession(id);
+      },
+      openMono: (monoId) => void onOpenMono(monoId),
+    });
+  }, [onQuestionReply, onOpenMono, focusOpenSession, onSelectHistorySession]);
+
   const onOpenApprovalSession = useCallback(
     (sessionId: string) => {
       const parentId =
@@ -11836,6 +11859,7 @@ function Workspace({
 
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
+  onStopRef.current = onStop;
   const delegationTreeRef = useRef(delegationTree);
   delegationTreeRef.current = delegationTree;
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -12522,6 +12546,7 @@ function Workspace({
                 };
               },
             }),
+            rooms: roomsHostRef.current,
             prs: {
               add: (input) => tauriPrWatches.add(input),
               remove: (input) => tauriPrWatches.remove(input),

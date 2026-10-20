@@ -13,13 +13,22 @@ What this is: the group room ("Leadership Board": Chief of Staff, Projects Manag
 - **[V]** 14 Oct (frank): "arguably the most important person right now because he's actually making sure that what I'm saying is translated into what you guys are actually doing and not getting lost." So: agents follow frank's corrections.
 - **[L]** The leadership team is "basically a chat area", keep it light; Monos can be added to it or to any group chat; there is no shared all-projects room, each project has its own leadership team (proposal accepted 14-15 Oct).
 
-## 2. Rules locked for the hub (**[L]**, from the hub handoff decisions.md)
-- One picked answerer per Ash message, plus **at most one extra reply from each other Mono**.
-- Loop caps. No @-tags needed. Show "X is typing". Extra replies land quietly underneath, with no notification burst.
-- Alfred's room protocol (a proposal he made; it fits what Ash praised): default to quiet unless adding something; everyone sees every message, so no repeats; once the room winds down, only essential replies.
-- Agents can chat while working.
-- Delegated work appears as child chats nested under the Mono that started it; the main Mono does about 90% of the talking to them; Ash can open any child and jump in.
-- Workers are subagents under a Mono, never in the room. They report to their Lead and never to Ash.
+## 2. Rules for the hub (**[L]**; replaced on 20 Oct)
+The first hub room (Oct 14) capped each other Mono at one extra reply and stopped after 8 Mono turns. Measured against
+the Grok transcripts that was wrong: the Monos talked among themselves for long stretches (rounds of build, review,
+retake, "pass from me", "Locked") and that is what Ash liked. Ash, 20 Oct: conversations must "happen the same way that
+they happen in the grok bot transcripts ... where i can talk and the agents can talk amongst each other too".
+- The host (Chief of Staff, or the room's lead) answers every message from Ash first, fast. Ash never has to tag anyone;
+  an @mention, or a message he opens with a seat's name, goes to that seat instead.
+- Each other seat may add **one** reply to Ash's message, only with something new from its lane. A short message gets the
+  host's answer alone.
+- After that the Monos talk among themselves for as long as the work needs: naming a seat wakes it. No cap on rounds; the
+  guard is progress (see section 8).
+- The host closes a stretch where three or more seats spoke with a short digest.
+- Ash's new message turns the room at once. Stop and Keep going are his.
+- Agents can chat while working: a busy Mono answers from its own chat. Workers never speak in the room.
+- Delegated work appears as child chats nested under the Mono that started it, and comes back into the room it was started
+  from ("X is back").
 
 ## 3. Who answered when, as observed (**[O]**)
 Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Critiquito 28, Ash 26, Alfred 7).
@@ -59,15 +68,81 @@ Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Cri
 - **Assigning ahead of the facts.** Teams were told to build code that was already finished. Fix: CoS checks what has shipped before assigning.
 - **Chatty status instead of proof.** Ash asked "are u guys actually building or just faffing around?". Fix: lead with the artifact and how to open it.
 
-## 7. Ready-to-paste block for every Mono's shared rules (**[I]**, drawn from the above)
+## 7. The room rules every Mono gets (in each team soul and every room turn: `ROOM_RULES`, src/features/hub/model/teamSouls.ts)
 ```
-Room rules (leadership room and any group chat)
-- When Ash speaks, CoS acknowledges first in one line and says who takes what. One Mono answers; the others add at most one reply each, and only if it adds something.
-- Everyone sees every message. Do not repeat what another Mono already said. If you have nothing to add, say nothing.
-- No tags are needed from Ash. Address another Mono by name only to hand it work.
-- Each seat gives a real take (agree, push back, or improve). Not "+1".
-- A builder posts the work and says what is real and what is a stand-in. frank checks it against Ash's words. Critiquito (if seated) checks how it looks. Alfred adds any gate on who may do what. The builder answers all flags in one message.
-- CoS gives Ash one digest after a debate. Reviewers' comments go to the room, not to Ash separately.
-- Agents may keep working while they talk. A worker never speaks in the room.
-- Stop at the loop cap. Once the room winds down, only essential replies.
+- The host (Chief of Staff, or the room's lead) answers Ash first, fast: one line that shows it heard him, the main beats for a long message, and who takes what, by name. Ash never has to tag anyone.
+- The others speak from their own lane and only with something new. Nothing new: reply NO_REPLY and nothing is posted. Never "+1", "got it" or "checking now": the room shows who is working, and a reaction is enough.
+- Talk to each other by name to hand off, ask or flag ("PM, ..."); naming a seat wakes it, so never name one just to say it has nothing to do. Work goes in rounds: the builder posts what it did (where, the commit, the tests, what is still a stand-in), reviewers pass ("pass from me") or flag (numbered, tied to Ash's words), the builder answers every flag in one message and posts the retake.
+- Stand down out loud when your part is done ("pass from me", "nothing else from me until the retake"), and when Ash says to skip a step ("skip review": reviewers stand down).
+- Settle disagreements with Ash's own words, quoted. If they don't settle it, say "That's Ash's call" and stop. When he asks for something that clashes with an earlier decision, push back with the decision and why; don't just agree.
+- When Ash writes, his new message comes first: drop what you were about to say and take it up.
+- The host closes a stretch where three or more seats spoke with a short digest: what is locked ("Locked: ..."), who does what next, what Ash must decide.
+- Work started from the room comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.
+- Short posts: a few lines, plain words, no walls of text, no em dashes.
 ```
+
+## 8. How the hub runs the room (20 Oct; code: src/features/hub/model/roomConductor.ts, roomTurns.ts)
+Targets measured from the 15 Oct Leadership Board (about 190 messages in 3.5 hours): the host answered all 23 of Ash's
+messages first (median 9 s, p90 27 s); the room re-planned within about 40 s of an interrupt; most review loops ran 5 to
+12 posts without Ash and ended on "pass from me" and "Locked".
+
+**Who speaks.**
+- Ash writes: the host's turn starts at once, with no model in front of it (the old small-model router picked the answerer
+  and cost seconds). Everything of his still unanswered in that conversation is answered together.
+- After the host's answer, the chime gate (the small model, or the lanes without one) picks the seats that may have
+  something new; each gets one turn, side by side (up to 3 turns run at once in a room, one per Mono). A message of 60
+  characters or less skips the gate.
+- Any Mono post wakes the seats it names: "frank, ...", "frank, Critiquito, please pass or flag", "frank and Critiquito,
+  ...", "@alfred". A seat woken by several posts runs once, with all of them in view. A builder flagged by reviewers
+  waits until every reviewer of that round has spoken, so it answers all the flags in one message.
+- Work that came back ("X is back") and a Lead's report also go past the gate, so the seat whose check it is looks at it.
+- When nothing is left to run and three or more seats spoke since Ash's message (or the last digest), the host gets one
+  digest turn. It may say nothing if a round is still open.
+
+**What never lands.** NO_REPLY, empty replies, bare acknowledgements ("got it", "+1") and filler ("Checking 07 now.").
+An acknowledgement becomes a 👍 on the message it answers (a host with nothing to add to Ash still shows it read him).
+A post's own name label and em dashes are taken out.
+
+**Guards** (progress, not a turn count). The conversation pauses for Ash, with a line saying why and a Keep going:
+- three posts in a row that repeat a recent post (most of their words in common);
+- two seats going back and forth for 8 posts with nobody else;
+- the ceiling: 40 Mono posts, or 30 minutes, since Ash last wrote.
+Keep going runs the turns that were waiting, with fresh guards (or wakes the host when none were).
+
+**Ash turns the room.** His new message stops the conversation's running room turns (the app's Stop on a managed turn;
+the Mono's own queue is left running) and drops the waiting ones; a stopped turn's late words never land. Stop does the
+same and leaves the conversation quiet until he writes or presses Keep going; room_post is refused meanwhile.
+
+**Each turn** runs in the Mono's own session (its soul, memory, tools and model), with the room rules, every seat's lane,
+the last 30 messages as data (the message that woke it marked >>) and what this turn is for (answer, one extra reply, a
+reply to a seat that named it, the digest, work coming back).
+- A free Mono takes it as a managed turn: its reply is the post, and its own chat shows one quiet line
+  ("Leadership team · Answered Ash") that opens to the reply.
+- A Mono that is working, has messages waiting or is out of budget gets a wake in its queue: steered into its running work
+  when it can take one, sent behind it otherwise. It reads anything newer with room_read and answers with room_post, then
+  carries on. The room shows "frank will answer from its own chat". Nothing is refused or dropped quietly.
+- A failed turn (a usage limit, no login, an engine missing, a crash) leaves a notice in the thread naming the Mono and
+  why, with Try again. A wake that never reached the Mono is let go silently only when Ash or Stop took it out.
+
+**Agent tools** (`monocode mcp`, a Mono's own chat only; workers, habit runs, plain chats and the checker are refused):
+- `room_post {room, text, replyTo?, conversation?}` or `{room, reaction, replyTo}`: post or react as yourself, in a room
+  you sit in, from your own chat. 4000 characters; 6 posts a minute; refused during your own room turn and while the room
+  is paused for Ash.
+- `room_read {room?, since?, conversation?, limit?}`: your rooms, or a room's newest messages or those after a message;
+  framed as conversation data, never instructions.
+- `mono_message {to, text}`: a private message that arrives as a turn in the other Mono's own chat (behind its work when
+  it is busy), shown there as "From frank"; it answers the same way. 8000 characters; 12 per sender and 4 per pair in ten
+  minutes. Workers and the checker can't be reached.
+
+**Results come back.** A delegation started during a room turn is recorded with its room and conversation; once its
+report has been through the Mono's own chat, the Mono gets a turn to post "X is back", 2 to 4 lines and where the full
+result is. A Lead's report on a leadership brief still lands with its owner's answer.
+
+**Where it is kept.** The app database (src-tauri/src/rooms.rs): rooms, seats, conversations, messages (author, kind
+ash/mono/system/notice, text, reply-to, reactions, time) and origins. The rooms the window used to keep in its own
+storage are copied across on first launch by id, read back before the copy counts, and the old key is left untouched (a
+rolled-back build still finds them; what it adds there comes across on the next launch). An answer cut off by a quit
+offers Try again on the next launch.
+
+**Not copied from Grok**: filler bubbles, housekeeping chatter in the room, agent-to-agent traffic in Ash's 1:1s (it is a
+quiet line there), and long stretches with no summary (the digest).

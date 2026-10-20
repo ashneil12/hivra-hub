@@ -27,16 +27,15 @@ import {
   simulateReplies,
   replyProblem,
   retryReply,
-  roomPaused,
   roomPick,
-  roomRouting,
-  typingIn,
+  roomWorking,
   useHubChatsVersion,
 } from "../model/hubChats";
 import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import type { GroupChat } from "../model/types";
 import { StatusMark } from "./StatusMark";
+import { RoomMessage, RoomStatusLine } from "./RoomMessage";
 
 function useMonos(): Mono[] {
   const snap = useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
@@ -93,6 +92,19 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
     const mono = monos.find((m) => m.id === from);
     return mono ? monoLook(mono).name : from;
   };
+  // Who is working on a room turn right now: their mascot moves, and the line above the composer says so.
+  const working = new Set(roomWorking(chat.id).map((w) => w.monoId));
+  // The room talks on its own: new messages keep the view at the bottom unless Ash scrolled up to read.
+  const scroller = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const count = conv?.messages.length ?? 0;
+  useEffect(() => {
+    pinned.current = true;
+  }, [conv?.id]);
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && pinned.current && !sel.focus) el.scrollTop = el.scrollHeight;
+  }, [count, conv?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1" data-hub-chat={chat.id}>
@@ -140,8 +152,8 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             {members.map((mono) => {
               const look = monoLook(mono);
               return (
-                <div key={mono.id} className="group flex h-6 items-center gap-2 text-[13px] text-content/80">
-                  <MonoRailMascot name={look.mascot} color={look.color} />
+                <div key={mono.id} className="group flex h-6 items-center gap-2 text-[13px] text-content/80" data-hub-member-working={working.has(mono.id) || undefined}>
+                  <MonoRailMascot name={look.mascot} color={look.color} status={working.has(mono.id) ? "working" : "idle"} />
                   <span className="min-w-0 flex-1 truncate">{look.name}</span>
                   <button
                     type="button"
@@ -251,23 +263,29 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             }}
           />
         ) : (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div
+            ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+            }}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
             <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 py-6 text-[13px] leading-5">
               {conv && conv.messages.length ? (
-                conv.messages.map((msg) =>
-                  msg.from === "ash" ? (
-                    <div key={msg.id} className="flex justify-end">
-                      <div className="agent-chat-user-bubble max-w-[70%] rounded-2xl bg-content/10 px-3 py-1.5 text-content">{msg.text}</div>
-                    </div>
+                conv.messages.map((msg, index) =>
+                  msg.from === "ash" || msg.kind === "notice" || msg.kind === "system" ? (
+                    <RoomMessage key={msg.id} chatId={chat.id} message={msg} previous={conv.messages[index - 1]} messages={conv.messages} nameOf={nameOf} />
                   ) : (
                     <div
                       key={msg.id}
                       data-hub-msg-ref={msg.refId}
                       data-hub-msg-quiet={msg.quiet || undefined}
-                      className={`hub-fade-in -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
+                      className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
-                      <div className="pb-0.5 text-xs text-content/60" title={msg.pick?.why} data-hub-msg-pick={msg.pick?.by}>{nameOf(msg.from)}</div>
-                      <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
+                      <RoomMessage chatId={chat.id} message={msg} previous={conv.messages[index - 1]} messages={conv.messages} nameOf={nameOf}>
+                        <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
+                      </RoomMessage>
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;
                         if (!w?.state) return null;
@@ -296,15 +314,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             </div>
           </div>
         )}
-        <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
-          {typingIn(chat.id)
-            ? `${nameOf(typingIn(chat.id)!)} is typing…`
-            : roomRouting(chat.id)
-              ? "Choosing who answers…"
-              : !drafting && roomPaused(chat.id, conv?.id)
-                ? "The team paused here and is waiting for you."
-                : null}
-        </div>
+        {drafting ? <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8" /> : <RoomStatusLine chatId={chat.id} convId={conv?.id} nameOf={nameOf} />}
         {chatSaveProblem() ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-amber-400" data-hub-chat-save-error>
           {chatSaveProblem()}
         </div> : null}

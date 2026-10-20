@@ -242,6 +242,20 @@ function sanitizeMonoCheck(value: unknown): Block["monoCheck"] {
   };
 }
 
+/** A room's or another Mono's hidden turn (hub rooms): what its quiet line shows, bounded. */
+function sanitizeMonoNote(value: unknown): Block["monoNote"] {
+  if (!value || typeof value !== "object") return undefined;
+  const note = value as Record<string, unknown>;
+  if ((note.kind !== "room" && note.kind !== "message") || typeof note.from !== "string" || !note.from.trim()) return undefined;
+  return {
+    kind: note.kind,
+    from: note.from.slice(0, 200),
+    // A room id ("hub:leadership") or a Mono id.
+    ...(typeof note.ref === "string" && note.ref.length <= 200 && /^[\w.:-]+$/.test(note.ref) ? { ref: note.ref } : {}),
+    ...(typeof note.line === "string" && note.line.trim() ? { line: note.line.slice(0, 300) } : {}),
+  };
+}
+
 function sanitizeMonoSessionCompletion(
   value: unknown,
 ): Block["monoSessionCompletion"] {
@@ -282,6 +296,9 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
     )
       return [];
     seen.add(message.id);
+    // A room's wake belongs to the room's turn that sent it, which a restart ends: it isn't kept.
+    const monoNote = sanitizeMonoNote(message.monoNote);
+    if (monoNote?.kind === "room") return [];
     const attachments = Array.isArray(message.attachments)
       ? message.attachments.flatMap((file) => {
           if (
@@ -348,6 +365,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
           ? { appRequestId: message.appRequestId }
           : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
+        ...(monoNote ? { monoNote } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )
@@ -1102,6 +1120,8 @@ function sanitizeBlock(
     next.monoSessionCompletion = completion;
   const check = sanitizeMonoCheck(block.monoCheck);
   if (block.role === "user" && block.internal && check) next.monoCheck = check;
+  const note = sanitizeMonoNote(block.monoNote);
+  if (block.role === "user" && block.internal && note) next.monoNote = note;
   const spawned = sanitizeMonoSpawnedSessions(block.monoSpawnedSessions);
   if (block.role === "user" && spawned.length)
     next.monoSpawnedSessions = spawned;
