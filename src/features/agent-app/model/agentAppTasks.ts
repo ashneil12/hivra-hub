@@ -17,6 +17,7 @@
 //   the goal and the hub project id.
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
+import { MONO_HOME_FENCE } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import { modelsFor } from "../../sessions/model/models";
 import {
@@ -195,7 +196,7 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
  * server): its own port, never another's process, its own checkout.
  */
 export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n</worker_rules>`;
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
 }
 
 /**

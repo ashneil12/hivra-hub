@@ -10,10 +10,15 @@ import {
   hubMcpArgs,
   MONOCODE_ALLOWED_TOOLS,
   MONOCODE_TOOL_TIMEOUT_MS,
+  MONO_HOME_FENCE,
+  monoHomeDeniedTools,
   registeredHubMcpArgs,
+  setMonoHomeRoot,
   setHubMcpServers,
   type HubChatLookups,
 } from "./hubMcp";
+import { workerRules } from "../../agent-app/model/agentAppTasks";
+import { leadBriefPrompt } from "./leadershipDelegation";
 
 const ASH_OS = {
   command: "/opt/homebrew/bin/python3",
@@ -193,8 +198,10 @@ describe("the delegate tool", () => {
     expect(Object.keys(config(hubMcpArgs("chat-frank", { ashOs: null, cli: CLI }, lookups))!.mcpServers)).toEqual([
       "monocode",
     ]);
-    expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual([]);
-    expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual([]);
+    // Only the fence round the Monos' home, which every hub chat has.
+    const fence = ["--disallowedTools", "Edit(~/agent-memory/monos/**)"];
+    expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual(fence);
+    expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual(fence);
   });
 
   it("is taught to a chat only when its Claude Code session really has it", () => {
@@ -261,3 +268,36 @@ function chatProjectsFor(sessionId: string, lookups: HubChatLookups): string[] {
   setHubMcpServers({ ashOs: null, cli: null }, lookups);
   return chatProjects(sessionId);
 }
+
+describe("the fence round the Monos' home (decided 20 Oct: only the app writes there)", () => {
+  it("denies every hub chat edits under ~/agent-memory/monos, whatever its role", () => {
+    for (const session of ["chat-exo", "chat-frank", "habit-run-1", "app-chat-exo-r1", "plain-1", "chat-checker"]) {
+      const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
+      // One deny list per chat (a second flag could replace the first).
+      expect(args.filter((a) => a === "--disallowedTools")).toHaveLength(1);
+      const denied = args[args.indexOf("--disallowedTools") + 1].split(",");
+      expect(denied).toContain("Edit(~/agent-memory/monos/**)");
+    }
+  });
+
+  it("also fences a dev copy's or the bench's own home, when its path can be a rule", () => {
+    try {
+      setMonoHomeRoot("/tmp/bench-home/monos");
+      expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)", "Edit(//tmp/bench-home/monos/**)"]);
+      // A path with spaces (Application Support) never becomes a rule that might not parse; the daily home isn't doubled.
+      setMonoHomeRoot("/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos");
+      expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)"]);
+      setMonoHomeRoot("/Users/ash/agent-memory/monos");
+      expect(monoHomeDeniedTools()).toEqual(["Edit(~/agent-memory/monos/**)"]);
+    } finally {
+      setMonoHomeRoot(undefined);
+    }
+  });
+
+  it("is in every worker's brief and every brief to a Lead, in plain words", () => {
+    expect(workerRules(41000)).toContain(MONO_HOME_FENCE);
+    expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain(`Fence: ${MONO_HOME_FENCE}`);
+    expect(MONO_HOME_FENCE).toContain("~/agent-memory/monos/");
+    expect(MONO_HOME_FENCE).toMatch(/never write, move or delete/);
+  });
+});

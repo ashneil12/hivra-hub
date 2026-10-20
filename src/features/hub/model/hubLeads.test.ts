@@ -112,7 +112,8 @@ describe("the project Leads", () => {
         },
       },
     });
-    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual([]);
+    // Nothing but the fence round the Monos' home, which every hub chat has.
+    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual(["--disallowedTools", "Edit(~/agent-memory/monos/**)"]);
   });
 
   it("have a soul in Ash's words: orchestrator, full words to workers, sonnet workers, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {

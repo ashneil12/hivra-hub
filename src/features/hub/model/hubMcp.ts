@@ -45,10 +45,33 @@ export function checkerToolArgs(): string[] {
     "--tools",
     CHECKER_TOOLS.join(","),
     "--disallowedTools",
-    CHECKER_DENIED_TOOLS.join(","),
+    [...CHECKER_DENIED_TOOLS, ...monoHomeDeniedTools()].join(","),
     "--allowedTools",
     CHECKER_ALLOWED_TOOLS,
   ];
+}
+
+/**
+ * The Monos' home (src-tauri/src/mono_home.rs): only the app writes there, through its own commands, and checks each
+ * write. Every hub chat may read it but is denied edits under it, whatever its permission mode: a deny rule holds even
+ * with full access. Claude Code can't fence a shell command by the path it touches, so the briefs carry the rule too
+ * (agentAppTasks.ts workerRules, leadershipDelegation.ts) and the app's hash-checked saves refuse to write over a file
+ * that changed under them.
+ */
+export const MONO_HOME = "~/agent-memory/monos";
+export const MONO_HOME_FENCE = `The Monos' home (${MONO_HOME}/) is read-only for you: read a Mono's soul or memory there if it helps, but never write, move or delete anything in it, with any tool or shell command. Only the app changes it.`;
+let extraHome: string | undefined;
+/**
+ * Where this copy's Monos live, when it isn't the daily home (a dev copy's data folder, the bench's throwaway home),
+ * from mono_home_info. Only a path without spaces becomes a rule (absolute: `//path`), so a rule never fails to parse.
+ */
+export function setMonoHomeRoot(root: string | undefined): void {
+  extraHome = root && root.startsWith("/") && !/\s/.test(root) && !root.endsWith("/agent-memory/monos") ? root : undefined;
+}
+export function monoHomeDeniedTools(): string[] {
+  const roots = [MONO_HOME, ...(extraHome ? [`/${extraHome}`] : [])];
+  // Claude Code applies an Edit rule to every built-in tool that edits files (Write and NotebookEdit too).
+  return roots.map((root) => `Edit(${root}/**)`);
 }
 
 /** Just over the longest wait (60 minutes), as T3 Code does. */
@@ -185,15 +208,20 @@ function identityEnv(identity: HubChatIdentity): Record<string, string> {
   };
 }
 
-/** The extra Claude Code arguments for one chat: one --mcp-config, plus the delegate tool's approval. */
+/**
+ * The extra Claude Code arguments for one chat: one --mcp-config, plus the delegate tool's approval, plus the fence
+ * round the Monos' home.
+ */
 export function hubMcpArgs(
   sessionId: string,
   servers: HubMcpServers,
   lookups: HubChatLookups,
 ): string[] {
   const identity = hubChatIdentity(sessionId, lookups);
-  // The checker only reads, whatever else this chat gets.
+  // The checker only reads, whatever else this chat gets (its deny list carries the fence round the Monos' home too).
   const restrict = identity.role === "checker" ? checkerToolArgs() : [];
+  // Every other chat is fenced out of the Monos' home: last, so a chat's own arguments read as they always have.
+  const fence = identity.role === "checker" ? [] : ["--disallowedTools", monoHomeDeniedTools().join(",")];
   const mcpServers: Record<string, unknown> = {};
   // A Mono's connectors go in first, so the hub's own entries below always keep their names.
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
@@ -213,12 +241,13 @@ export function hubMcpArgs(
   }
   const delegate = !!servers.cli && getsDelegateTool(identity);
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
-  if (!Object.keys(mcpServers).length) return restrict;
+  if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [
     ...restrict,
     ...(delegate ? ["--allowedTools", MONOCODE_ALLOWED_TOOLS] : []),
     "--mcp-config",
     JSON.stringify({ mcpServers }),
+    ...fence,
   ];
 }
 
