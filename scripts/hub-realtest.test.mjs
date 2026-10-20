@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import { rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
 import { parseGrade } from "./hub-realtest-grade.mjs";
-import { questionAnswers, roomRounds, runChecks } from "./hub-realtest-scenarios.mjs";
+import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-realtest-scenarios.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -127,4 +127,25 @@ test("the answers the app gave Claude's questions are read from the wrapper's lo
   );
   assert.deepEqual(questionAnswers(undefined), []);
   fs.rmSync(state, { recursive: true, force: true });
+});
+
+test("the coding-team scenarios: each worker's port from its brief, whether they differ, and who had a checkout of its own", () => {
+  const brief = (port) => `[MonoCode brief from Tally coding team]\n\nBuild it.\n\n<worker_rules>\n- Your port is ${port}: PORT=${port}\n</worker_rules>`;
+  const rows = [
+    { child_session: "app-c-r1", brief: brief(41001) },
+    { child_session: "app-c-r2", brief: brief(41002) },
+    // A brief into a Lead's own chat (followed) is not a worker.
+    { child_session: "lead-chat", brief: "[MonoCode brief from Chief of Staff]\n\nx", follow: "lead" },
+  ];
+  const sessions = [{ id: "app-c-r1", worktree: null }, { id: "app-c-r2", worktree: "/w/tally-worktrees/mc-1" }];
+  assert.deepEqual(workerSpread(rows, sessions), { count: 2, ports: [41001, 41002], distinctPorts: true, ownCheckouts: 1 });
+  assert.equal(workerSpread([...rows, { child_session: "app-c-r3", brief: brief(41001) }], sessions).distinctPorts, false);
+  const scenarios = JSON.parse(fs.readFileSync(new URL("../tests/realtest/scenarios/coding-team.json", import.meta.url), "utf8"));
+  // Bounded for Ash's shared account, Sonnet at medium, and every coding-team send names its chat or a new one.
+  assert.ok(scenarios.budget.maxTurns <= 90 && scenarios.budget.maxMinutes <= 40);
+  assert.equal(scenarios.model, "sonnet");
+  assert.equal(scenarios.effort, "medium");
+  for (const scenario of scenarios.scenarios)
+    for (const step of scenario.steps)
+      if (step.send?.codingTeam) assert.ok(step.as, `${scenario.id}: a new coding-team chat is named`);
 });
