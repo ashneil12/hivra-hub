@@ -10,9 +10,11 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   restoredQueue,
+  typedQuestionAnswer,
   waitsOnCutTurn,
   withQueued,
 } from "./messageQueue";
+import { CUSTOM_OPTION_ID, type UserQuestionPrompt } from "./userQuestion";
 import { CONTINUE_PROMPT, markResumeStopped, markTurnInterrupted } from "./inFlight";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -283,5 +285,89 @@ describe("withQueued", () => {
     expect(withQueued([report, queued("ash1")], queued("ash2")).map((m) => m.id)).toEqual(["ash1", "ash2", "r1"]);
     expect(withQueued([queued("ash1")], report).map((m) => m.id)).toEqual(["ash1", "r1"]);
     expect(withQueued([report], brief).map((m) => m.id)).toEqual(["r1", "b1"]);
+  });
+});
+
+describe("typedQuestionAnswer: Ash types while the agent waits on its own question", () => {
+  const prompt = (patch: Partial<UserQuestionPrompt> = {}): UserQuestionPrompt => ({
+    requestId: 7,
+    title: "Sharing",
+    questions: [
+      {
+        id: "Which sharing model?",
+        prompt: "Which sharing model?",
+        multiSelect: false,
+        allowCustom: true,
+        options: [
+          { id: "private", label: "Private unless shared (Recommended)" },
+          { id: "public", label: "Everyone sees everything" },
+        ],
+      },
+    ],
+    ...patch,
+  });
+  const asking = (patch: Partial<Session> = {}) =>
+    chat({ busy: true, turnReady: true, queuedMessages: undefined, pendingQuestion: prompt(), ...patch });
+  const words = "private by default. the owner can turn sharing on per tally";
+
+  it("reproduces the block: his typed message would wait behind the question for good", () => {
+    // What the composer did before: queue it, and the queue never steers past a question with no deadline.
+    const queuedBehind = asking({ queuedMessages: [queued("ash", words)], queueStatus: "active" });
+    expect(canSteerQueuedHead(queuedBehind)).toBe(false);
+    expect(canDispatchQueuedHead(queuedBehind)).toBe(false);
+  });
+
+  it("his words are the typed answer to the question, never a message queued behind it", () => {
+    expect(typedQuestionAnswer(asking(), words, {})).toEqual({
+      kind: "answer",
+      requestId: 7,
+      reply: {
+        kind: "answered",
+        answers: { "Which sharing model?": [CUSTOM_OPTION_ID] },
+        custom: { "Which sharing model?": words },
+      },
+    });
+  });
+
+  it("answers every question of the prompt that takes words with the same words", () => {
+    const two = prompt({
+      questions: [
+        ...prompt().questions,
+        { id: "Who can bump?", prompt: "Who can bump?", multiSelect: false, allowCustom: true, options: [] },
+      ],
+    });
+    const answer = typedQuestionAnswer(asking({ pendingQuestion: two }), words, {});
+    expect(answer?.kind === "answer" && answer.reply.kind === "answered" ? answer.reply.custom : null).toEqual({
+      "Which sharing model?": words,
+      "Who can bump?": words,
+    });
+  });
+
+  it("sets aside a question that takes no words, so his message goes in next (Escape, then typing, in Claude Code)", () => {
+    const closed = prompt({ questions: [{ ...prompt().questions[0], allowCustom: false }] });
+    expect(typedQuestionAnswer(asking({ pendingQuestion: closed }), words, {})).toEqual({ kind: "dismiss", requestId: 7 });
+  });
+
+  it("leaves everything the app sends alone, and a chat with no question", () => {
+    expect(typedQuestionAnswer(asking({ pendingQuestion: undefined }), words, {})).toBeUndefined();
+    // An optional question with its own deadline never blocked the chat: his message steers in as before.
+    expect(typedQuestionAnswer(asking({ pendingQuestion: prompt({ autoResolveAt: 99 }) }), words, {})).toBeUndefined();
+    expect(typedQuestionAnswer(asking({ worktreeRemoved: true }), words, {})).toBeUndefined();
+    expect(typedQuestionAnswer(asking(), "   ", {})).toBeUndefined();
+    for (const app of [
+      { appRequestId: "app-x-1" },
+      { waitForIdle: true },
+      { monoSessionCompletion: { sessionId: "w" } },
+      { monoCheck: { id: "c" } },
+      { monoNote: { from: "frank" } },
+      { managed: true },
+      { autoResume: 1 },
+      { queuedMessageId: "q1" },
+      { resendEdited: true },
+      { intent: "plan" as const },
+    ])
+      expect(typedQuestionAnswer(asking(), words, app as never)).toBeUndefined();
+    // Today's and a Page's words are Ash's own: they answer too.
+    expect(typedQuestionAnswer(asking(), words, { followsUp: true })?.kind).toBe("answer");
   });
 });

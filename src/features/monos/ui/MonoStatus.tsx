@@ -8,17 +8,22 @@ type Props = {
 };
 
 /**
- * The Monos status line: a dot (accent when it needs you, the project color
- * pulsing while it works, grey at rest), the state, and what it is on.
+ * The Monos status line: a dot (accent when it needs you, red or amber when its
+ * last turn failed, the project color pulsing while it works, grey at rest),
+ * the state, and what it is on (for a failure, the plain reason).
  */
 export function MonoStatus({ state, color, className = "" }: Props) {
   const { status, activity } = state;
   const dot =
     status === "needs-you"
       ? "var(--color-accent)"
-      : status === "working"
-        ? color
-        : undefined;
+      : status === "failed"
+        ? state.tone === "red"
+          ? "rgb(248 113 113)"
+          : "rgb(251 191 36)"
+        : status === "working"
+          ? color
+          : undefined;
   return (
     <span
       data-mono-status={status}

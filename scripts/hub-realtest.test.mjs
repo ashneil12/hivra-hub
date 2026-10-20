@@ -5,7 +5,10 @@ import { test } from "node:test";
 
 import { rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
 import { parseGrade } from "./hub-realtest-grade.mjs";
-import { roomRounds, runChecks } from "./hub-realtest-scenarios.mjs";
+import { questionAnswers, roomRounds, runChecks } from "./hub-realtest-scenarios.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { jobsFromDelegations, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
@@ -98,4 +101,30 @@ test("usage counts and the grader's JSON", () => {
   assert.equal(usageOf([{ t: 1, kind: "turn" }], 2).turns, 0);
   assert.deepEqual(parseGrade('```json\n{"grade":"PASS","items":[]}\n```'), { grade: "PASS", items: [] });
   assert.equal(parseGrade("no json here"), null);
+});
+
+test("the answers the app gave Claude's questions are read from the wrapper's logs", () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-answers-"));
+  fs.mkdirSync(path.join(state, "claude"));
+  const answer = (t, response) => JSON.stringify({ t, dir: "control-answer", line: JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "x", response } }) });
+  fs.writeFileSync(
+    path.join(state, "claude", "11.ndjson"),
+    [
+      JSON.stringify({ t: 1, dir: "start" }),
+      answer(5, { behavior: "allow", updatedInput: { questions: [], answers: { "Which model?": "private by default" } } }),
+      answer(7, { behavior: "allow", updatedInput: { command: "ls" } }),
+      answer(9, { behavior: "deny", message: "User cancelled tool execution." }),
+      answer(2, { behavior: "allow", updatedInput: { answers: { old: "x" } } }),
+    ].join("\n"),
+  );
+  const answers = questionAnswers(state, 3);
+  assert.deepEqual(
+    answers.map((a) => [a.t, a.behavior, a.answers, a.message]),
+    [
+      [5, "allow", { "Which model?": "private by default" }, null],
+      [9, "deny", null, "User cancelled tool execution."],
+    ],
+  );
+  assert.deepEqual(questionAnswers(undefined), []);
+  fs.rmSync(state, { recursive: true, force: true });
 });

@@ -427,7 +427,12 @@ export async function persistQuitState(
     sessions.map(async (session) => {
       if (!shouldPersistSession(session)) return;
       const payload = interrupted.has(session.id)
-        ? markTurnInterrupted(session, shipUpdate)
+        ? markTurnInterrupted(
+            session,
+            shipUpdate,
+            // An unload is a reload of the window: the app keeps running and resumes the turn the same way.
+            mode === "unload" ? "reload" : undefined,
+          )
         : session;
       await write(upsertSession(payload));
     }),

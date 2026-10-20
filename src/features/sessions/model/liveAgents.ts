@@ -28,22 +28,38 @@ export function isLiveAgentSession(
   return !session.inboxAsk && !session.orchestrationLeadId;
 }
 
+/**
+ * The Working tray's rows: chats running now, and (unless `runningOnly`, the Hub's rule: Ash, 20 Oct, a finished job
+ * listed there reads as still going) finished ones not yet seen. A delegated worker is named by its task's title
+ * (`taskTitle`), never by the brief's "[MonoCode brief from …]" first line its chat was named from.
+ */
 export function liveAgentsFromSessions(
   sessions: Session[],
   unseenFinishedIds: ReadonlySet<string> = new Set(),
   excludedIds: ReadonlySet<string> = new Set(),
+  options: { runningOnly?: boolean; taskTitle?: (sessionId: string) => string | undefined } = {},
 ): LiveAgent[] {
+  const finished = options.runningOnly ? new Set<string>() : unseenFinishedIds;
   return sessions
     .filter(
       (session) =>
         !excludedIds.has(session.id) &&
         isLiveAgentSession(session) &&
-        (isInFlightSession(session) || unseenFinishedIds.has(session.id)),
+        (isInFlightSession(session) || finished.has(session.id)),
     )
     .map((session) =>
-      toLiveAgent(session, unseenFinishedIds.has(session.id)),
+      toLiveAgent(session, finished.has(session.id), options.taskTitle?.(session.id)),
     )
     .sort(compareLiveAgents);
+}
+
+/** The app's own header on a brief another chat sent ("[MonoCode brief from Chief of Staff]"). */
+const BRIEF_HEADER = /^\s*\[MonoCode (?:brief|report|question|notification)[^\]\n]*\]\s*/i;
+
+/** A chat's title as Ash reads it: without the brief header a delegated chat was named from. */
+export function cleanWorkTitle(title: string): string {
+  const clean = title.replace(BRIEF_HEADER, "").replace(/\s+/g, " ").trim();
+  return clean || "Delegated work";
 }
 
 export function formatLiveElapsed(startedAt: number, now: number): string {
@@ -57,7 +73,11 @@ export function formatLiveElapsed(startedAt: number, now: number): string {
   return minRest ? `${hours}h ${minRest}m` : `${hours}h`;
 }
 
-function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
+function toLiveAgent(
+  session: Session,
+  unseenFinished: boolean,
+  taskTitle: string | undefined,
+): LiveAgent {
   const pending = session.blocks.find(
     (block) => block.approval && !block.approval.decided,
   );
@@ -67,7 +87,7 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
   return {
     id: session.id,
     cwd: session.cwd,
-    title: sessionDisplayTitle(session.title, session.harness),
+    title: taskTitle?.trim() || cleanWorkTitle(sessionDisplayTitle(session.title, session.harness)),
     harness: session.harness,
     activity: done
       ? "Done"

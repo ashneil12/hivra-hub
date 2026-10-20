@@ -22,6 +22,7 @@ import {
   projectMascot,
 } from "../../projects/model/projectMascots";
 import { removeMonoBackground } from "./monoBackground";
+import { lastTurnFailure } from "./turnFailure";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
 export const MONO_COLORS = [
@@ -520,17 +521,23 @@ function plainLine(text: string): string {
 
 /** What the agent is doing right now, as the Monos roster shows it. */
 /** "paused": stopped at a usage limit and resuming by itself at its reset (features/autopilot/model/limitResume). */
-export type MonoStatus = "working" | "needs-you" | "paused" | "idle";
+/** "failed": its last turn failed (out of credits, overloaded, a usage limit): it can't answer until that is dealt with. */
+export type MonoStatus = "working" | "needs-you" | "failed" | "paused" | "idle";
 
 export type MonoState = {
   status: MonoStatus;
-  /** Short present-tense note while working or waiting. */
+  /** Short present-tense note while working or waiting; for "failed", the plain reason ("Out of credits"). */
   activity?: string;
+  /** "failed": red when something has to be fixed first (billing, sign-in), amber when trying again can work. */
+  tone?: "red" | "amber";
+  /** "failed": what the provider said, behind "details". */
+  detail?: string;
 };
 
 export const MONO_STATUS_LABEL: Record<MonoStatus, string> = {
   working: "Working",
   "needs-you": "Needs you",
+  failed: "Can't answer",
   paused: "Paused",
   idle: "Idle",
 };
@@ -562,10 +569,19 @@ export function monoState(
     };
   }
   if (!session.worktreeRemoved && session.usageLimit) {
-    // Armed to resume at the reset: "Paused until 14:10", not Needs you.
+    // Armed to resume at the reset: "Paused until 14:10", not a failure.
     const paused = pausedLabel(session.usageLimit, Date.now());
     if (paused) return { status: "paused", activity: paused };
-    return { status: "needs-you", activity: "Usage limit reached" };
+  }
+  // Its last turn failed (an API error, a usage limit): a state of its own with the plain reason (turnFailure.ts).
+  const failure = lastTurnFailure(session);
+  if (failure) {
+    return {
+      status: "failed",
+      activity: failure.reason,
+      tone: failure.tone,
+      ...(failure.detail ? { detail: failure.detail } : {}),
+    };
   }
   // The app restarted under its turn too often, so it stopped resuming it (sessions/model/inFlight.ts).
   const lastBlock = blocks[blocks.length - 1];

@@ -1391,10 +1391,17 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
       <span
         data-mono-status={state.status}
         className={`shrink-0 text-[12px] ${
-          state.status === "needs-you" ? "text-accent" : "text-content/45"
+          state.status === "needs-you"
+            ? "text-accent"
+            : state.status === "failed"
+              ? state.tone === "red"
+                ? "text-red-400"
+                : "text-amber-400"
+              : "text-content/45"
         }`}
       >
         {MONO_STATUS_LABEL[state.status]}
+        {state.status === "failed" && state.activity ? ` · ${state.activity}` : ""}
       </span>
     </div>
   );

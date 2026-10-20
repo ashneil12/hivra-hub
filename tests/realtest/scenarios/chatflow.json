@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "about": "hub/9-chatflow: short real-Claude checks of the chat-flow fixes, each cheap on the shared account. c1: the Lead asks Ash with AskUserQuestion and Ash types his answer in its chat. c2: the Lead's own turn hits a recorded 402 and then a 529 (no tokens), and Ash taps Try again. c3: the window reloads right after Ash's message and again mid-turn. The Lead is stopped as soon as each check has what it needs.",
+  "project": { "id": "tally", "name": "Tally", "shortName": "Tally" },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": ["Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct)."],
+    "vg-game": ["EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."],
+    "ash": ["Ash writes lowercase and fast; answer in plain English, outcome first, short.", "Never use em dashes in anything written to Ash."]
+  },
+  "budget": { "maxTurns": 30, "maxRequests": 300, "maxMinutes": 35 },
+  "scenarios": [
+    {
+      "id": "c1-typed-answer",
+      "title": "Ash types his answer while the Lead waits on its own question",
+      "minutes": 9,
+      "maxTurns": 8,
+      "steps": [
+        {
+          "send": { "mono": "lead" },
+          "label": "ask-me",
+          "text": "the readme says sharing is my call. ask me which sharing model to build with your question buttons before anyone starts, then get going"
+        },
+        { "wait": { "monoQuestion": "lead", "maxSec": 240 }, "required": true },
+        { "sleep": 5 },
+        { "snapshot": "asked" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today-asked" },
+        {
+          "send": { "mono": "lead" },
+          "label": "typed-answer",
+          "text": "private by default. the owner can turn sharing on per tally with a shared flag"
+        },
+        { "wait": { "monoQuestion": "lead", "gone": true, "maxSec": 60 } },
+        { "wait": { "monoSaid": "lead", "maxSec": 120 } },
+        { "snapshot": "answered" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today-answered" },
+        { "stop": { "mono": "lead" } },
+        { "sleep": 5 }
+      ],
+      "criteria": "The Lead asks Ash with AskUserQuestion. Ash types his answer in the Lead's chat, the way he would. His words must answer the question (the app's answer to the AskUserQuestion carries them), the question must leave the chat and Today, and the Lead must carry on within a minute. Nothing may wait behind the question."
+    },
+    {
+      "id": "c2-lead-outage",
+      "title": "The Lead's own turn fails (402, then 529), and Ash taps Try again",
+      "minutes": 10,
+      "maxTurns": 8,
+      "steps": [
+        { "fault": { "fixture": 402, "scope": "any", "times": 1, "maxSec": 120 } },
+        { "send": { "mono": "lead" }, "label": "status-402", "text": "status? one line" },
+        { "wait": { "monoReply": "lead", "maxSec": 90 } },
+        { "fault": null },
+        { "sleep": 3 },
+        { "snapshot": "after-402" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today-402" },
+        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-402" },
+        { "fault": { "fixture": 529, "scope": "any", "times": 1, "maxSec": 120 } },
+        { "retry": { "mono": "lead" } },
+        { "wait": { "monoReply": "lead", "maxSec": 90 } },
+        { "fault": null },
+        { "sleep": 3 },
+        { "snapshot": "after-529" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today-529" },
+        { "retry": { "mono": "lead" } },
+        { "wait": { "monoReply": "lead", "maxSec": 150 } },
+        { "sleep": 3 },
+        { "snapshot": "after-retry" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today-after-retry" }
+      ],
+      "criteria": "A failed turn is a state, not just a line in the chat: the Mono rail shows the Lead amber or red with a plain reason (out of credits, overloaded), Today says the Lead can't answer and why, Being built shows it, each with Try again; the raw provider text only behind details. Try again sends the turn again; once it answers, every surface is clear."
+    },
+    {
+      "id": "c3-reload",
+      "title": "The window reloads under the Lead's turn",
+      "minutes": 10,
+      "maxTurns": 8,
+      "steps": [
+        { "send": { "mono": "lead" }, "label": "before-reload", "text": "status? one line" },
+        { "reload": { "afterMs": 150 } },
+        { "wait": { "monoAnswered": "lead", "maxSec": 150 } },
+        { "snapshot": "after-first-reload" },
+        { "send": { "mono": "lead" }, "label": "mid-turn", "text": "list the files under packages/api/src, one short line on each" },
+        { "wait": { "monoSaid": "lead", "maxSec": 120 } },
+        { "reload": {} },
+        { "wait": { "monoAnswered": "lead", "maxSec": 180 } },
+        { "snapshot": "after-second-reload" }
+      ],
+      "criteria": "A reload is not a quit: a turn it cuts comes back by itself (resumed with the usual note, or Ash's message sent again when it never reached Claude) and answers, both when the reload lands a moment after Ash's message and when it lands mid-turn."
+    }
+  ]
+}

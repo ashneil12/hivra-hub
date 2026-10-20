@@ -632,6 +632,7 @@ import {
   dequeueQueuedMessage,
   isWaitingBrief,
   queuedMessageForSubmit,
+  typedQuestionAnswer,
   waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
@@ -755,7 +756,12 @@ import {
   watchVerifyMessages,
 } from "./model/verifyKickoff";
 import { tauriHubTransport } from "../features/hub/model/hubTransport";
-import { delegationActions } from "../features/monos/model/delegationStore";
+import {
+  delegationActions,
+  useDelegationRows,
+} from "../features/monos/model/delegationStore";
+import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
+import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
   driverEnabled as verifyDriverEnabled,
   startDriver as startVerifyDriver,
@@ -2569,6 +2575,7 @@ function Workspace({
     activeSessionId,
   );
 
+  const trayDelegationRows = useDelegationRows();
   const liveAgentRows = useMemo(
     () =>
       liveAgentsEnabled
@@ -2580,9 +2587,22 @@ function Workspace({
                 mono.sessionId ? [mono.sessionId] : [],
               ),
             ),
+            {
+              // The Hub's tray is running work only, each worker named by its task (liveAgents.ts).
+              runningOnly: IS_HUB_BUNDLE,
+              taskTitle: (id) =>
+                trayDelegationRows.find((row) => row.childSession === id)
+                  ?.title ?? undefined,
+            },
           )
         : [],
-    [liveAgentsEnabled, promptableSessions, unseenFinishedIds, monosSnap],
+    [
+      liveAgentsEnabled,
+      promptableSessions,
+      unseenFinishedIds,
+      monosSnap,
+      trayDelegationRows,
+    ],
   );
   // Rebuilt for every streamed batch; identity only moves when a row does.
   const liveAgents = useStableValue(liveAgentRows);
@@ -7529,6 +7549,37 @@ function Workspace({
         )
       )
         return false;
+      // Ash typed while the agent waits on its own question (AskUserQuestion): his words answer it, the way Claude
+      // Code's picker takes a typed answer, never a message queued behind the question (messageQueue.ts).
+      const typed = typedQuestionAnswer(storedCurrent, text, options ?? {});
+      if (typed) {
+        const reply: UserQuestionReply =
+          typed.kind === "answer" ? typed.reply : { kind: "skipped" };
+        delegationActions()?.noteAnswer?.(sessionId, typed.requestId, reply);
+        respondHarnessQuestion(
+          storedCurrent.harness,
+          sessionId,
+          typed.requestId,
+          reply,
+        );
+        if (typed.kind === "answer") {
+          const answered = sessionsRef.current.map((session) =>
+            session.id === sessionId ? appendSteerUser(session, text) : session,
+          );
+          sessionsRef.current = answered;
+          setSessions(answered);
+          dismissNoticesForContinuedSession(sessionId);
+          // Files or a card sent with the words follow as his next message, once the question is answered.
+          if (
+            attachments.length ||
+            (options?.noteCard ?? storedCurrent.noteCard) ||
+            (options?.handoffCard ?? storedCurrent.handoffCard)
+          )
+            return submitSessionRef.current(sessionId, "", attachments, options);
+          return true;
+        }
+        // Set aside: his message goes in as usual, right after it.
+      }
       const draftBlock = options?.draftBlockId
         ? storedCurrent.blocks.find(
             (block) =>
@@ -11642,7 +11693,30 @@ function Workspace({
   );
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
+    // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.
+    noteMonoFailures(sessions);
   }, [sessions]);
+  useEffect(
+    () =>
+      setMonoFailuresHost({
+        retry: (id) => {
+          const session = sessionsRef.current.find((entry) => entry.id === id);
+          if (!session || session.busy) return false;
+          // Ash's message held by the failure goes in again; a turn that failed before the agent did anything sends its
+          // message again (a plain "continue" would take up whatever the agent was on before); else it carries on.
+          if (session.queueStatus === "paused" && session.queuedMessages?.length) onResumeQueue(id);
+          else {
+            const unsent = failedTurnMessage(session);
+            if (unsent) return onSubmit(id, unsent.text);
+            if (session.usageLimit) onUsageLimitResume(id);
+            else return onSubmit(id, CONTINUE_PROMPT);
+          }
+          return true;
+        },
+        open: (monoId) => void onOpenMono(monoId),
+      }),
+    [onResumeQueue, onUsageLimitResume, onSubmit, onOpenMono],
+  );
   // Once a launch: a waiting chat whose conversation was deleted (by any path) leaves Today.
   useEffect(() => {
     if (!IS_HUB_BUNDLE) return;

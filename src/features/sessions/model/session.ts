@@ -1,5 +1,6 @@
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
 import type { UserQuestionPrompt } from "./userQuestion";
+import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import type { HandoffComposerCard } from "./handoff";
 import type { InboxComposerCard } from "../../inbox/model/githubTasks";
 import type { InboxAskContext } from "../../inbox/model/inboxAsk";
@@ -487,6 +488,17 @@ export type Block = {
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */
   shipUpdate?: string;
+  /**
+   * On an error notice: why the provider failed the turn, when the adapter could tell (a 402 is billing, a 529 an
+   * overload), whether trying again can work, and when a refused usage window resets. What makes the failure a state
+   * the Monos rail, Today and Being built show (monos/model/turnFailure.ts), not just a line in the chat.
+   */
+  failure?: {
+    errorClass?: ProviderErrorClass;
+    retryable?: boolean;
+    resetsAt?: number;
+    at?: number;
+  };
   statusKey?: string;
   /** Posted to a Mono's chat by one of its habits, outside any turn. */
   monoHabit?: { id: string; name: string; at: number };

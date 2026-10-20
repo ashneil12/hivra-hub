@@ -251,6 +251,9 @@ function main() {
       log({ dir: "control-in", line: rewritten.slice(0, 600) });
       child.stdin.write(`${rewritten}\n`);
       return;
+    } else if (message?.type === "control_response") {
+      // The app's answer to Claude's own request (an AskUserQuestion, a permission): what reached the agent.
+      log({ dir: "control-answer", line: line.slice(0, 2000) });
     }
     child.stdin.write(`${line}\n`);
   });

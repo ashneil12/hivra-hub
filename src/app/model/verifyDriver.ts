@@ -3,7 +3,8 @@
 // scripted actions one at a time and does each through the same calls his typing and clicks use: a message into a
 // project's leadership room (GroupChatView's send), a message to a Mono or a chat (the composer's onSubmit), the Stop
 // button, opening a view. It also answers what the window shows (rooms, chats, the Monos rail, the open view) and keeps
-// a timestamped log of room messages and chat state changes for the run's timings. Nothing here runs without a plan.
+// a timestamped log of room messages and chat state changes for the run's timings, and can reload the window the way a
+// vite full reload does. Nothing here runs without a plan.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -23,6 +24,7 @@ import {
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
+import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
@@ -102,6 +104,13 @@ function sessionRow(session: Session) {
     codingTeam: codingTeamChatProject(session.id) ?? null,
     blocks: session.blocks.length,
     last: lastAssistantText(session),
+    // The last few blocks as the chat shows them (a reply after a cut turn's note, a failure notice).
+    tail: session.blocks.slice(-6).map((block) => ({
+      role: block.role,
+      ...(block.notice ? { notice: block.notice } : {}),
+      ...(block.internal ? { internal: true } : {}),
+      text: clip(block.text ?? "", 240),
+    })),
   };
 }
 
@@ -335,6 +344,19 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       const result = typeof action.text === "string" && action.text.trim() ? await answerInWords(sessionId, action.text) : await takePick(sessionId);
       return { ok: true, at: Date.now(), session: sessionId, question: waiting.question ?? null, pick: waiting.pick ?? null, result };
     }
+    case "retry": {
+      // The Try again button on a Mono whose last turn failed (the rail, Today, Being built).
+      const monoId = String(action.mono ?? "");
+      const failure = monoFailure(monoId);
+      if (!failure) return { ok: false, error: "that Mono's last turn didn't fail", at: Date.now() };
+      const ok = retryMonoFailure(monoId);
+      return { ok, at: Date.now(), reason: failure.reason, tone: failure.tone, ...(ok ? {} : { error: "it couldn't take it right now" }) };
+    }
+    case "reload":
+      // The window reloads the way a vite full reload or View > Reload does (pagehide, then a fresh page), once this
+      // answer is written; the page that comes back starts its own driver.
+      setTimeout(() => window.location.reload(), Number(action.afterMs ?? 300));
+      return { ok: true, at: Date.now() };
     case "snapshot":
       return { ok: true, ...snapshot(host) };
     case "drain":

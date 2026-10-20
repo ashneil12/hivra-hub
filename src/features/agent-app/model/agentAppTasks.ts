@@ -35,6 +35,7 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import type { AgentAppHost } from "./agentApp";
 
@@ -307,6 +308,8 @@ function iso(ms: number | null | undefined): string | undefined {
 function activity(row: Delegation, child: TaskChild | undefined): string {
   if (row.state === "question") return "waiting for your answer";
   if (!isOpenDelegation(row)) return "stopped";
+  // It asked Ash itself (a Lead's own AskUserQuestion): that is why it stands still, not its work.
+  if (child?.pendingQuestion) return waitingOnAshLine(child.pendingQuestion);
   return child?.busy ? "working" : "idle";
 }
 
@@ -533,6 +536,8 @@ async function briefLead(
     askIds: job.asks,
     mode: whenBusy,
   });
+  // A Lead that stopped on its own question to Ash is waiting on him, not busy with work: say so.
+  const asked = out.delivery === "queued" ? tasks.child?.(out.childSessionId)?.pendingQuestion : undefined;
   return {
     taskId: out.row?.id ?? null,
     childSessionId: out.childSessionId,
@@ -540,8 +545,11 @@ async function briefLead(
     title: job.title,
     lead: out.leadName,
     delivery: out.delivery,
+    ...(asked ? { leadState: waitingOnAshLine(asked) } : {}),
     note:
-      out.delivery === "queued"
+      asked
+        ? `${out.leadName} is ${waitingOnAshLine(asked)}. Your brief waits in its chat and goes in as its own turn once Ash answers and ${out.leadName} is free. If you tell anyone where ${out.leadName} is, say it is waiting on Ash for that answer, not busy. Its final report comes back to you as a new turn: say in one line what you handed over and end your turn.`
+        : out.delivery === "queued"
         ? `Queued behind ${out.leadName}'s current work; it goes in as its own turn when ${out.leadName} is idle. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`
         : `Briefed ${out.leadName}${out.delivery === "steered" ? " (steered into its running turn)" : ""}. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`,
     ...(out.row ? {} : { note: "It went in, but its task record could not be stored; its report may not come back." }),

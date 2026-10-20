@@ -3,6 +3,13 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { createStubBridge } from "./hubStubBridge";
+import { configureChildBackend } from "../integrations/harness/core/child";
+import { fakeClaudeBackend } from "./fakeClaudeBackend";
+
+// ?fakeClaude: a stand-in for the Claude CLI behind the real Claude adapter (fakeClaudeBackend.ts), for browser tests.
+// The chats' project folders then count as there, so a message goes in.
+const fakeClaude = new URLSearchParams(location.search).has("fakeClaude");
+if (fakeClaude) configureChildBackend(fakeClaudeBackend());
 
 // Look like the Mac app (traffic-light space, ⌘ shortcuts).
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
@@ -117,6 +124,11 @@ mockIPC(
       return true;
     }
     if (cmd === "plugin:path|resolve_directory" || cmd === "home_dir") return "/Users/ash";
+    if (fakeClaude && cmd === "app_cli_path") return "/fake/monocode";
+    if (fakeClaude && cmd === "resolve_project_location") {
+      const path = String((args as { path?: string } | undefined)?.path ?? "");
+      return { path, identity: `dev:${path}` };
+    }
     if (cmd === "fetch_claude_usage") {
       // Dev only: a plan 3% into its 5-hour window and 99% into its week, so the usage bar shows both words and red.
       const at = (m: number) => new Date(Date.now() + m * 60_000).toISOString();

@@ -37,7 +37,9 @@
 //   15. the API worker's report reaches the Lead while the UI still runs, saying "1 of 2 back";
 //   16. Ash's message, sent while the UI's report waits in the busy Lead's queue, goes in first: it steers into the
 //       running turn and is answered before the report's turn starts;
-//   17. Ash steers into the Lead's last turn on the brief, and leadership still gets the Lead's complete report.
+//   17. Ash steers into the Lead's last turn on the brief, and leadership still gets the Lead's complete report;
+//   17b. the Lead asks Ash a question (AskUserQuestion) and he types his answer in its chat, as he would: his words are
+//       the question's answer in place, never a message queued behind it (the realtest baseline's Lead sat 20+ min).
 //   Then the room (docs/leadership/ROOM.md), in the same launch: Ash writes in the Verify project's Leadership team the
 //   way he types there (a room message from the stub):
 //   18. the host answers him first, then the Monos run a review round among themselves (round, flag, retake, "pass
@@ -103,6 +105,7 @@ export const WALK = [
   "reports_per_worker",
   "ash_first_over_report",
   "leadership_report_complete",
+  "ash_typed_answer",
   "room_agents_talk",
   "room_busy_mono_answers",
   "room_private_message",
@@ -496,6 +499,31 @@ export function scenario({ runId, failGate = false }) {
       ],
     },
     { name: "flow-ash-3", match: said(FLOW_ASH(3)), times: 1, steps: [{ mark: "flow-ash-3-answered" }, { say: "ASH-3-ANSWER: nothing needs you." }] },
+    // 17b. The Lead asks Ash; his typed words must come back as the question's answer, not as a message of their own.
+    {
+      name: "flow-ash-4",
+      match: said(FLOW_ASH(4)),
+      times: 1,
+      steps: [
+        { say: "One question first." },
+        { mark: "flow-lead-asks" },
+        {
+          ask: {
+            questions: [
+              {
+                question: "Which colour should the badge be?",
+                header: "Badge",
+                multiSelect: false,
+                options: [{ label: "Teal (Recommended)" }, { label: "Grey" }],
+              },
+            ],
+            mark: "flow-ask-answered",
+          },
+        },
+        { say: "ASH-4-ANSWER: going with {{answer}}." },
+      ],
+    },
+    { name: "flow-ash-5", match: said(FLOW_ASH(5)), times: 1, steps: [{ mark: "flow-ash-5-as-message" }, { say: "That came in as a message." }] },
     {
       name: "flow-lead-report-request",
       tag: "flow-lead",
@@ -2026,6 +2054,43 @@ async function main() {
         { evidence: reportEvidence },
       );
     else fail("leadership_report_complete", "A message Ash steers into the Lead's last turn never truncates its report to leadership", JSON.stringify(reportEvidence));
+
+    phase();
+    // 17b. The Lead asks Ash with AskUserQuestion; he types his answer into its chat, the way he would. His words are the
+    // question's free-text answer in place (Claude Code's own picker does the same), never a message queued behind it.
+    ashSays(4, "ask me what colour the badge should be");
+    const lead4 = await waitMark("flow-lead-asks", 30_000);
+    // The question reaches the window first (the fake asks right after the mark).
+    await sleep(scale(1_500));
+    const typed = `${FLOW_ASH(5)} run ${id}: orange, like the logo`;
+    const sent5 = ashSays(5, "orange, like the logo");
+    const answered4 = await waitMark("flow-ask-answered", 30_000);
+    const leadSaid4 = flowLeadChat
+      ? await until(async () => ((await blocksOf(flowLeadChat)).some((block) => block.role === "assistant" && String(block.text).startsWith("ASH-4-ANSWER")) ? true : null), scale(15_000))
+      : null;
+    const typedEvidence = {
+      asked: !!lead4,
+      latencyMs: after(answered4, sent5),
+      answered: answered4?.answered ?? null,
+      answers: answered4?.answers ?? null,
+      queuedAsMessage: !!mark("flow-ash-5-as-message"),
+      leadCarriedOn: !!leadSaid4,
+    };
+    if (
+      typedEvidence.asked &&
+      typedEvidence.answered === true &&
+      Object.values(typedEvidence.answers ?? {}).includes(typed) &&
+      !typedEvidence.queuedAsMessage &&
+      typedEvidence.leadCarriedOn &&
+      typedEvidence.latencyMs < scale(15_000)
+    )
+      pass(
+        "ash_typed_answer",
+        "Ash's typed words answer the Lead's open question in place, never wait behind it",
+        `the Lead asked "Which colour should the badge be?"; Ash typed "${typed}" in its chat and it reached the question as its answer ${typedEvidence.latencyMs} ms later; the Lead carried on in the same turn and nothing went in as a separate message`,
+        { evidence: typedEvidence },
+      );
+    else fail("ash_typed_answer", "Ash's typed words answer the Lead's open question in place, never wait behind it", JSON.stringify(typedEvidence));
 
     phase();
     // 18 to 20. The room, in the same launch: Ash writes in the Verify project's Leadership team.

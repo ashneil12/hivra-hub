@@ -5,8 +5,7 @@ import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
 import { moveLocalNamesToAshOs } from "../model/projectActions";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { waitingCount } from "../model/waiting";
-import { useWaitingChatsVersion } from "../model/waitingChats";
+import { attentionCount, useAttentionVersion } from "../model/todayCounts";
 import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
@@ -42,7 +41,8 @@ export function ProjectStrip({
   useConnectorsVersion();
   void onCreateProject;
   useHubBuildsVersion();
-  useWaitingChatsVersion();
+  // The same count as the project's card on Today (todayCounts.ts).
+  useAttentionVersion();
   const data = hubData();
   const projects = data.listProjects();
   // Names Ash gave projects on this Mac before Ash OS kept them go to Ash OS once (it runs only when Ash OS is there).
@@ -79,7 +79,7 @@ export function ProjectStrip({
       />
       <div className="h-2 shrink-0" />
       {projects.map((project) => {
-        const count = waitingCount(project.id);
+        const count = attentionCount(project.id);
         return (
           <StripButton
             key={project.id}

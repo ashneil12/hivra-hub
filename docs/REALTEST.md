@@ -59,6 +59,12 @@ typing and clicks use:
 | `open` a hub view | close the Mono view, then `setHubSelection` (Today, Being built, the room); returns the visible text |
 | `snapshot` | sessions (busy, model, effort, queue, rail state), Monos, rooms with every message, hub localStorage, every `data-hub-*` / `data-mono-*` element |
 | `drain` | the timestamped log: room messages as they land, typing, every chat's busy/question/queue changes, console errors |
+| `reload` | `window.location.reload()` once the answer is written: what a vite full reload or View > Reload does to a running turn |
+| `retry` | the Try again button on a Mono whose last turn failed (rail, Today, Being built: `retryMonoFailure`) |
+
+Snapshots carry each chat's last six blocks (`tail`: role, notice, text), and every scenario's evidence keeps what the
+app answered Claude's own questions with (`answers`, from the `control_response` lines the wrapper logs), so a typed
+answer is proven to reach the agent, not only the screen.
 
 Screenshots: `screencapture -x -o -l <window id>` of the copy's window (found with a tiny Swift CGWindowList script).
 If capture fails (screen locked, window off-Space) the view's text is still kept and the run says why.
@@ -197,7 +203,31 @@ s13-s15 again `20261020-174916-15c6`. Each folder's `report.md` has the grades w
 | Page | FAIL | None possible; CoS said so plainly |
 | 40-ask dump / busy / parallel | PARTIAL | Ack 15 s, one worker for 36 items, no item list; Lead answered in 16 s while working; look-into came back in 90 s |
 
+## Chat-flow round, 20 Oct (hub/9-chatflow)
+
+`tests/realtest/scenarios/chatflow.json`: three short, cheap checks of the fixes for the baseline's chat-flow findings
+(c1 typed answer, c2 the Lead's own 402 then 529 with Try again, c3 a reload right after a message and mid-turn). Run
+once on hub/next 010dfbcf (`evidence/realtest-base/20261020-181905-f391` and `-183508-936b`) and on the branch
+(`evidence/realtest/20261020-184630-53c5`, c2 again in `20261020-191114-3787` after Try again changed). About 5 turns each.
+
+| | hub/next 010dfbcf | hub/9-chatflow |
+| --- | --- | --- |
+| c1 Ash types his answer while the Lead waits on its AskUserQuestion | queued behind it; still pending after 60 s and 120 s; the Stop at +215 s declined the question | the app answered the question with his words in under 1 s (`answers` in the evidence); the Lead carried on; Today's row cleared |
+| Today's Tally card while that question waited | "0 needs" (strip badge 1) | "1 need", the strip badge's number |
+| c2 the Lead's own turn hits the recorded 402 | Mono state idle, raw "API Error: 402 …" only in the chat; Today and Being built silent | rail red "Out of credits"; Today's Stuck: "Tally lead can't answer: Out of credits"; Being built the same; raw text behind Details |
+| c2 Try again into a 529, then again | (no Try again) | "The model is overloaded" (amber), then answered and every surface cleared; Try again sends the failed message again, not a bare continue (the first version's continue made the Lead pick up the sharing task it had been stopped on) |
+| c3 reload 0.15 s after "status? one line" | "Turn interrupted when MonoCode quit."; "Continue from where you left off." went to a fresh conversation that had never seen the message | "Turn interrupted when MonoCode Hub reloaded."; the message went again, whole, and was answered |
+| c3 reload mid-turn | resumed with the continue | the same |
+
+The fake-Claude bench has the typed answer as check 17b (`ash_typed_answer`): 26/26 PASS on the branch, and the only
+FAIL on 010dfbcf (`evidence/verify-live-base/`). The browser proof (`tests/browser/chatflow.spec.ts`, the real app on
+`hub-dev.html?fakeClaude`, a stand-in Claude CLI behind the real adapter) photographs each state.
+
 ## Lessons from the first runs (20 Oct)
+
+- **A copy whose window stays covered never drops its boot splash.** The splash fades on `requestAnimationFrame`, which
+  WebKit doesn't run for a fully hidden window; in one chat-flow run every screenshot was the splash while the view's
+  text (kept in the evidence) was right. Keep the copy's window visible, or read `mainText`.
 
 - **Never edit files in this worktree while a run is going.** vite and Tailwind watch it: saving
   `docs/REALTEST.md` at 17:26:36 reloaded the dev copy's window one second after Ash's message, which cut the Lead's
@@ -225,5 +255,5 @@ s13-s15 again `20261020-174916-15c6`. Each folder's `report.md` has the grades w
 | `src/app/model/verifyDriver.ts` | the window's side of the driver |
 | `src-tauri/src/verify_live.rs` | `driver` in the plan; `verify_live_take` / `verify_live_done` |
 | `tests/realtest/tally/` | the test project |
-| `tests/realtest/scenarios/*.json` | scenario files (`baseline.json`, `smoke.json`) |
+| `tests/realtest/scenarios/*.json` | scenario files (`baseline.json`, `smoke.json`, `chatflow.json`) |
 | `tests/realtest/benchmark.json` | the benchmark items the grader uses |

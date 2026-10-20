@@ -18,7 +18,9 @@ import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
-import { StuckToday, stuckProject } from "./StuckToday";
+import { StuckToday } from "./StuckToday";
+import { attentionCount, failedMonosFor, stuckProject, useAttentionVersion } from "../model/todayCounts";
+import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
@@ -104,6 +106,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   useWaitingChatsVersion();
+  useMonoFailuresVersion();
   const { stuck: stuckWorkersNow } = useStuckWorkers();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
@@ -121,6 +124,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
   const chatsWaiting =
     waitingChats(projectId).length > 0 ||
+    failedMonosFor(projectId).length > 0 ||
     stuckWorkersNow.some((s) => !projectId || stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
@@ -205,7 +209,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
           <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="hover:text-content">{data.listNeeds(p.id).filter((n) => n.state !== "done").length} {data.listNeeds(p.id).filter((n) => n.state !== "done").length === 1 ? "need" : "needs"}</button>
+            <ProjectNeedsCount projectId={p.id} />
             <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
             <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
           </div>
@@ -223,6 +227,20 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   );
 }
 
+/**
+ * The project card's count: everything waiting on Ash for it, as Today lists it (todayCounts.ts): open Needs and stuck
+ * rows, chats waiting on him, stuck workers and Monos that can't answer. The strip badge reads the same number.
+ */
+function ProjectNeedsCount({ projectId }: { projectId: string }) {
+  useAttentionVersion();
+  const count = attentionCount(projectId);
+  return (
+    <button type="button" data-hub-card-needs={count} onClick={() => setHubSelection({ project: projectId, item: "inbox" })} className="hover:text-content">
+      {count} {count === 1 ? "need" : "needs"}
+    </button>
+  );
+}
+
 const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "unknown"]);
 const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Stuck" };
 const jobWord = (j: HubJob) => (j.state === "unknown" ? plainStateWord(j.rawState ?? "") : JOB_WORD[j.state]);
@@ -233,7 +251,10 @@ function BeingBuiltToday({ title }: { title: string }) {
   // This app's own workers under each job: a stuck one makes the job read Stuck, whatever its siblings do.
   const { stuck: stuckNow, now } = useStuckWorkers();
   const delegations = useDelegationRows();
+  useMonoFailuresVersion();
   const word = (j: HubJob) => {
+    // Its Lead's last turn failed: the job can't move until that is dealt with.
+    if (j.lead && monoFailure(j.lead) && j.state !== "lead_gave_up") return "Can't answer";
     const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
     if (!stuck || j.state === "lead_gave_up") return jobWord(j);
     return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : "Stuck";

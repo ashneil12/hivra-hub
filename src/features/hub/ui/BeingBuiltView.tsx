@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { useNow, workersFromJobs } from "../model/liveJobs";
+import { useNow, withFailedLeads, workersFromJobs } from "../model/liveJobs";
 import { openCodingTeam, setHubSelection } from "../model/hubNav";
 import { leadFor } from "../model/hubLeads";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, jobStateWord, markSeen, useWorkVersion } from "../model/hubWork";
@@ -19,6 +19,9 @@ import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
 import { openLead, openStuck } from "../../monos/model/stuckActions";
 import { StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
 import { withStuckWorkers } from "../model/stuckJobs";
+import { failedMonoName, monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
+import { MonoFailureList } from "../../monos/ui/MonoFailureCard";
+import { failedMonosFor } from "../model/todayCounts";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -34,9 +37,16 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   // This app's own rows behind each job: a stuck worker makes its job Stuck, whatever its siblings do (stuckJobs.ts).
   const delegations = useDelegationRows();
   useStuckDismissalsVersion();
+  // A Lead whose last turn failed: listed on top with Try again, and its jobs read Stuck with why.
+  useMonoFailuresVersion();
+  const failed = failedMonosFor(projectId);
+  const leadFailure = (monoId: string) => {
+    const failure = monoFailure(monoId);
+    return failure ? { name: failedMonoName(failure), reason: failure.reason } : undefined;
+  };
   const liveWorkers = live
     ? [
-        ...withStuckWorkers(workersFromJobs(data.listJobs?.(projectId) ?? [], now), delegations, now),
+        ...withFailedLeads(withStuckWorkers(workersFromJobs(data.listJobs?.(projectId) ?? [], now), delegations, now), leadFailure),
         ...prWatchWorkers(prWatches?.all() ?? [], projectId, now),
       ]
     : [];
@@ -88,8 +98,13 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {open ? (
           <Activity worker={open} now={now} />
-        ) : active.length || done.length ? (
+        ) : active.length || done.length || failed.length ? (
           <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-8 py-8">
+            {failed.length ? (
+              <section aria-label="Can't answer" className="flex flex-col gap-0.5" data-hub-failed-monos>
+                <MonoFailureList failures={failed} now={now} />
+              </section>
+            ) : null}
             {active.length ? (
               <div className="flex flex-col gap-4">
                 {byMono(active).map(([mono, jobs]) => (
@@ -99,7 +114,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                   </div>
                 ))}
               </div>
-            ) : (
+            ) : failed.length ? null : (
               <p className="px-3 text-[13px] text-content/60">Nobody's working on {projectName} right now.</p>
             )}
             {done.length ? (

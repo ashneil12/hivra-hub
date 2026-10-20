@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cleanWorkTitle,
   formatLiveElapsed,
   liveAgentsFromSessions,
 } from "./liveAgents";
@@ -49,6 +50,27 @@ describe("liveAgentsFromSessions", () => {
     );
     expect(agents.map((agent) => agent.id)).toEqual([working.id, done.id]);
     expect(agents[1].done).toBe(true);
+    // The Hub's tray lists only running work: a finished job there read as still going (Ash, 20 Oct baseline).
+    const running = liveAgentsFromSessions(
+      [monoWaiting, monoWorking, monoDone, done, working],
+      new Set([monoDone.id, done.id]),
+      new Set([monoWorking.id, monoWaiting.id, monoDone.id]),
+      { runningOnly: true },
+    );
+    expect(running.map((agent) => agent.id)).toEqual([working.id]);
+  });
+
+  it("names a delegated worker by its task title, never the brief's '[MonoCode brief from …]' first line", () => {
+    const brief = "[MonoCode brief from Chief of Staff]\n\nAsh said: \"hold on. make it work fully\". Reading the code, I think both already work.";
+    const worker = chat("/repo", { id: "worker", busy: true, title: `claude · ${brief}` });
+    const taskTitle = (id: string) => (id === "worker" ? "Prove delete end to end, then review" : undefined);
+    expect(liveAgentsFromSessions([worker], new Set(), new Set(), { taskTitle })[0].title).toBe(
+      "Prove delete end to end, then review",
+    );
+    // No task row for it (a plain sessions.start): the header goes and the brief's words remain.
+    expect(liveAgentsFromSessions([worker])[0].title).toBe('Ash said: "hold on. make it work fully". Reading the code, I think both already work.');
+    expect(cleanWorkTitle("[MonoCode brief from Chief of Staff]")).toBe("Delegated work");
+    expect(cleanWorkTitle("Fix the sidebar")).toBe("Fix the sidebar");
   });
 
   it("keeps internal workers in their lead's agent panel", () => {

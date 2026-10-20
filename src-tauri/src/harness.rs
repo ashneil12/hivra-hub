@@ -429,7 +429,10 @@ pub fn harness_runtime_binary_paths(
     if let Some(binary) = crate::verify_live::plan().and_then(|plan| plan.claude_binary.clone()) {
         paths.insert("claude".into(), binary);
     }
-    initialize_runtime_binary_paths(&host.runtime_binary_paths, paths)
+    let paths = initialize_runtime_binary_paths(&host.runtime_binary_paths, paths);
+    // The configured CLIs' identity checks run now, in the background, not on the first chat's turn.
+    warm_configured_binaries(paths.clone());
+    paths
 }
 
 /// Resolve the Claude Code CLI (`claude`).
@@ -1543,7 +1546,16 @@ pub async fn harness_exec(
 }
 
 fn exec_capture(command: &str, args: &[String], cwd: Option<&str>) -> Result<String, String> {
-    let output = exec_output(command, args, cwd, EXEC_TIMEOUT)?;
+    exec_capture_within(command, args, cwd, EXEC_TIMEOUT)
+}
+
+fn exec_capture_within(
+    command: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    timeout: Duration,
+) -> Result<String, String> {
+    let output = exec_output(command, args, cwd, timeout)?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if output.status.success() || !stdout.trim().is_empty() {
         return Ok(stdout);
@@ -2147,6 +2159,33 @@ type ConfiguredBinaryValidationCache = HashMap<(String, String), ConfiguredBinar
 
 static CONFIGURED_BINARY_VALIDATIONS: OnceLock<Mutex<ConfiguredBinaryValidationCache>> =
     OnceLock::new();
+/// One check at a time per configured binary: a turn that arrives while another check of the same binary runs (the
+/// launch warm-up, another chat) waits for its result instead of starting a second `--version` on a busy machine.
+type ConfiguredBinaryChecks = HashMap<(String, String), Arc<Mutex<()>>>;
+static CONFIGURED_BINARY_CHECKS: OnceLock<Mutex<ConfiguredBinaryChecks>> = OnceLock::new();
+
+/// The limit on a configured binary's `--version` check. It runs once per binary per launch, and on a cold, busy Mac a
+/// CLI behind a wrapper took 8-15 s to answer it (realtest, 20 Oct): under the 15 s exec limit that failed the first
+/// chat's turn. A wrong binary still fails, and fast; only a slow start no longer does.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Check every configured binary once, now, so the first chat finds it done (`warm_configured_binaries`).
+fn warm_configured_binaries_now(paths: HashMap<String, String>) {
+    for (provider, path) in paths {
+        if !path.trim().is_empty() {
+            let _ = resolve_harness_binary_override(&provider, &path);
+        }
+    }
+}
+
+/// The launch warm-up: the configured binaries' checks run in the background as the window starts, not on the first
+/// chat's turn.
+fn warm_configured_binaries(paths: HashMap<String, String>) {
+    if paths.values().all(|path| path.trim().is_empty()) {
+        return;
+    }
+    thread::spawn(move || warm_configured_binaries_now(paths));
+}
 
 fn configured_binary_fingerprint(path: &Path) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
@@ -2168,6 +2207,14 @@ fn configured_binary_fingerprint(path: &Path) -> Option<String> {
 }
 
 fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<PathBuf, String> {
+    resolve_harness_binary_override_with(provider, binary_path, VERSION_PROBE_TIMEOUT)
+}
+
+fn resolve_harness_binary_override_with(
+    provider: &str,
+    binary_path: &str,
+    version_timeout: Duration,
+) -> Result<PathBuf, String> {
     if provider == "antigravity" && cfg!(windows) {
         return Err("Antigravity ACP server overrides are not supported on Windows.".into());
     }
@@ -2193,18 +2240,32 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
     let fingerprint = configured_binary_fingerprint(&path);
     let key = (provider.to_string(), binary_path.to_string());
     let cache = CONFIGURED_BINARY_VALIDATIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(fingerprint) = fingerprint.as_deref() {
-        if let Ok(cache) = cache.lock() {
-            if cache
-                .get(&key)
-                .is_some_and(|(cached, _)| Some(cached.as_str()) == Some(fingerprint))
-            {
-                return Ok(path);
-            }
-        }
+    let checked = || {
+        fingerprint.as_deref().is_some_and(|fingerprint| {
+            cache.lock().is_ok_and(|cache| {
+                cache
+                    .get(&key)
+                    .is_some_and(|(cached, _)| cached.as_str() == fingerprint)
+            })
+        })
+    };
+    if checked() {
+        return Ok(path);
+    }
+    let gate = CONFIGURED_BINARY_CHECKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map(|mut gates| gates.entry(key.clone()).or_default().clone())
+        .ok();
+    let _turn = gate
+        .as_ref()
+        .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    // Another check of this binary may have finished while this one waited.
+    if checked() {
+        return Ok(path);
     }
     validate_configured_harness_binary_identity(provider, &path, binary_path)?;
-    validate_harness_binary_version(provider, &path)?;
+    validate_harness_binary_version(provider, &path, version_timeout)?;
     if let Some(fingerprint) = fingerprint {
         if let Ok(mut cache) = cache.lock() {
             if cache.len() >= MAX_CONFIGURED_BINARY_VALIDATIONS {
@@ -2244,11 +2305,20 @@ fn is_supported_harness_version(version: &str) -> bool {
     })
 }
 
-fn validate_harness_binary_version(provider: &str, path: &Path) -> Result<(), String> {
+fn validate_harness_binary_version(
+    provider: &str,
+    path: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
     if provider == "antigravity" {
         return Ok(());
     }
-    let version = exec_capture(&path.to_string_lossy(), &["--version".to_string()], None)?;
+    let version = exec_capture_within(
+        &path.to_string_lossy(),
+        &["--version".to_string()],
+        None,
+        timeout,
+    )?;
     let lower = version.to_ascii_lowercase();
     let has_version = is_supported_harness_version(&version);
     let provider_marker = match provider {
@@ -3749,6 +3819,64 @@ mod tests {
             resolve_harness_binary_override("antigravity", &antigravity_wrapper.to_string_lossy()),
             Ok(antigravity_wrapper.clone())
         );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Cold start (realtest, 20 Oct): a configured CLI's `--version` took 8-15 s on a fresh dev copy under load and the
+    /// 15 s exec limit failed the first chat's turn. The check now has its own longer limit, runs once at launch in the
+    /// background, and a turn that arrives while it runs waits for that one check instead of starting another.
+    #[test]
+    fn a_slow_version_check_runs_once_and_never_fails_a_turn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("monocode-cold-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let claude = dir.join("claude");
+        let log = dir.join("version.log");
+        std::fs::write(
+            &claude,
+            format!(
+                "#!/bin/sh\necho check >> '{}'\nsleep 2\necho '2.1.302 (Claude Code)'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = claude.to_string_lossy().into_owned();
+        let checks = || {
+            std::fs::read_to_string(&log)
+                .map(|text| text.lines().count())
+                .unwrap_or(0)
+        };
+
+        // What failed the turn: the check under a limit shorter than the CLI's slow start.
+        let err = resolve_harness_binary_override_with("claude", &path, Duration::from_secs(1))
+            .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        let _ = std::fs::remove_file(&log);
+
+        // The launch warm-up starts the check; a turn that arrives meanwhile waits for it rather than running another.
+        let warm = thread::spawn({
+            let path = path.clone();
+            move || warm_configured_binaries_now(HashMap::from([("claude".to_string(), path)]))
+        });
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            resolve_harness_binary_override("claude", &path),
+            Ok(claude.clone())
+        );
+        warm.join().unwrap();
+        assert_eq!(checks(), 1);
+        // Later turns use the result.
+        assert_eq!(
+            resolve_harness_binary_override("claude", &path),
+            Ok(claude.clone())
+        );
+        assert_eq!(checks(), 1);
+        assert!(VERSION_PROBE_TIMEOUT >= Duration::from_secs(60));
+        assert!(VERSION_PROBE_TIMEOUT > EXEC_TIMEOUT);
 
         std::fs::remove_dir_all(dir).unwrap();
     }

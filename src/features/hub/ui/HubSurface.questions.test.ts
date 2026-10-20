@@ -14,6 +14,8 @@ import { setHubDataSource } from "../model/hubData";
 import { createLiveHubData } from "../model/liveHubData";
 import { noteChats, resetWaitingChats, setWaitingChatsHost } from "../model/waitingChats";
 import { ProjectStrip } from "./ProjectStrip";
+import { createMono, saveMonoName, saveMonoSessionId } from "../../monos/model/mono";
+import { noteMonoFailures, resetMonoFailures } from "../../monos/model/monoFailures";
 import { HubSurface } from "./HubSurface";
 
 function httpTransport(baseUrl: () => string, token: () => string): HubTransport {
@@ -89,6 +91,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   resetWaitingChats();
+  resetMonoFailures();
   live.clear();
   calls = { respond: [], send: [], open: [] };
   setWaitingChatsHost({
@@ -139,6 +142,37 @@ describe("Waiting on you", () => {
     expect(order.slice(0, 3)).toEqual(["waiting", "needs-heading", "need"]);
     // A waiting chat counts on its project's strip badge (EXO: its playtest gate plus the waiting chat)
     expect(badge("EXO")).toBe("2");
+  });
+
+  it("the project's card on Today counts what Waiting on you shows, the same number as its strip badge", async () => {
+    twoWaitingChats();
+    act(() => root.render(today()));
+    await until(() => waitingRows().length === 2, "waiting rows");
+    const card = (name: string) =>
+      [...container.querySelectorAll("[data-hub-home-projects] > div")].find((c) => c.querySelector("button")?.textContent === name);
+    // EXO: its playtest gate plus the Lead's question (the baseline's card said "0 needs" beside a waiting question).
+    expect(card("EXO")?.querySelector("[data-hub-card-needs]")?.textContent).toBe(`${badge("EXO")} needs`);
+    expect(badge("EXO")).toBe("2");
+    // A Mono of EXO whose last turn failed is in Today's Stuck section: both counts take it too.
+    const mono = createMono(["/Users/example/Projects/vg-game"]);
+    saveMonoName(mono.id, "EXO lead");
+    saveMonoSessionId(mono.id, "exo-lead-chat");
+    act(() =>
+      noteMonoFailures([
+        {
+          id: "exo-lead-chat",
+          busy: false,
+          blocks: [
+            { id: "u", role: "user", text: "status?" },
+            { id: "e", role: "system", notice: "error", text: "Billing refused (402): Insufficient credits", failure: { errorClass: "billing", retryable: false } },
+          ],
+        },
+      ]),
+    );
+    await until(() => q("[data-mono-failure]"), "the failed Mono on Today");
+    expect(q("[data-mono-failure-line]")?.textContent).toContain("EXO lead can't answer: Out of credits");
+    expect(card("EXO")?.querySelector("[data-hub-card-needs]")?.textContent).toBe("3 needs");
+    expect(badge("EXO")).toBe("3");
   });
 
   it("Needs you keeps only gates and failures: ordinary questions moved to Older questions", async () => {
