@@ -240,24 +240,33 @@ pub fn run_main(args: &[String]) -> i32 {
     }
 }
 
-/// Where a local server's program is looked for, and the PATH it runs with: never the caller's.
+/// The system part of where a local server's program is looked for, and the PATH it runs with: never the caller's.
 pub const SAFE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
-/// All a local server gets from the caller's environment, besides [`SAFE_PATH`] and its own login.
+
+/// [`SAFE_PATH`] plus the account's own `~/.local/bin` (where uvx installs), taken from the user database so a caller's
+/// HOME can't point it anywhere else.
+pub fn safe_path() -> String {
+    match crate::instance::real_home() {
+        Some(home) => format!("{SAFE_PATH}:{}", home.join(".local/bin").display()),
+        None => SAFE_PATH.to_string(),
+    }
+}
+/// All a local server gets from the caller's environment, besides [`safe_path`] and its own login.
 const PASSED_ENV: [&str; 4] = ["HOME", "USER", "LANG", "TMPDIR"];
 
-/// `command` on [`SAFE_PATH`] (a full path is taken as it is), or `None`.
+/// `command` on [`safe_path`] (a full path is taken as it is), or `None`.
 pub fn find_on_path(command: &str) -> Option<PathBuf> {
     if command.contains('/') {
         let path = PathBuf::from(command);
         return path.is_file().then_some(path);
     }
-    std::env::split_paths(SAFE_PATH)
+    std::env::split_paths(&safe_path())
         .map(|dir| dir.join(command))
         .find(|candidate| candidate.is_file())
 }
 
 /// How a local server is started: `program` with its arguments, an environment cleared down to [`PASSED_ENV`] and
-/// [`SAFE_PATH`] (so a caller's NODE_OPTIONS, PATH or npm settings never reach it), and its login.
+/// [`safe_path`] (so a caller's NODE_OPTIONS, PATH or npm settings never reach it), and its login.
 pub fn stdio_command(
     program: &Path,
     args: &[String],
@@ -270,7 +279,7 @@ pub fn stdio_command(
             child.env(key, value);
         }
     }
-    child.env("PATH", SAFE_PATH).envs(env.iter().cloned());
+    child.env("PATH", safe_path()).envs(env.iter().cloned());
     child
 }
 
@@ -657,11 +666,21 @@ pub(crate) mod tests {
         for key in seen.keys() {
             assert!(allowed.contains(&key.as_str()), "{key} reached the server");
         }
-        assert_eq!(seen["PATH"], SAFE_PATH);
+        assert_eq!(seen["PATH"], safe_path());
         assert_eq!(seen["SLACK_MCP_XOXP_TOKEN"], "xoxp-SENTINEL");
         assert!(seen.get("HOME").is_some_and(|home| !home.is_empty()));
         assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
         assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
+    }
+
+    #[test]
+    fn the_accounts_own_local_bin_is_on_the_path_never_the_callers_home() {
+        // uvx installs to ~/.local/bin; that folder comes from the user database, so a caller's HOME can't move it.
+        let own = crate::instance::real_home().expect("a home folder in the user database");
+        let path = safe_path();
+        assert!(path.starts_with(SAFE_PATH), "{path}");
+        assert!(path.ends_with(&format!(":{}", own.join(".local/bin").display())), "{path}");
+        assert!(!path.contains("/tmp"), "{path}");
     }
 
     fn oauth_on_everywhere(dir: &Path, id: &str) {
