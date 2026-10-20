@@ -127,6 +127,14 @@ Not covered, on purpose: P11 (changing Today: the stub's "Change the hub" is inv
 (a hub bug fixed and shipped from a Lead: it needs the hub repo as the test project and a ship drill, far past this
 budget), P13/P16/P18 (skipped by the brief). B8 and B10 are graded where they happen to arise.
 
+### The coding team (`tests/realtest/scenarios/coding-team.json`)
+
+`npm run hub:realtest -- --scenarios tests/realtest/scenarios/coding-team.json` starts chats in Tally's coding team the
+way Ash's New session there does (`send: {codingTeam: "project"}`, named with `as`, written to again with
+`{chat: name}`, waited on with `chatReply` / `chatText` and `delegation.ownerChat`). c01: a bug and a question while it
+works; c02: six asks and a rule (listed back, split by area, the rule saved; `metrics.workers` gives each worker's port
+and checkout); c03: a decision saved in a coding-team chat, recalled by the Lead. Bounded at 90 turns and 40 minutes.
+
 ## Budget
 
 The login is **Ash's own Max account, shared with his own work and every other agent**. Before anything starts, one

@@ -1,3 +1,29 @@
+# Update: 20 October 2026, the coding team (branch hub/8-codingteam)
+
+Ash, 20 Oct: "mainly the coding team is the main place i want to talk to", "I don't talk to workers. I only talk to
+orchestrators", "agents should chat as well not just do".
+- **Coding-team chats are orchestrators** (`model/codingTeam.ts`): a top-level chat in a hub project's code folder (not a
+  Mono, habit run, `app-` worker, throwaway, orchestration run, Inbox ask or automation) is noted by id before its
+  turn (`monocode:coding-team-chats`). It gets the delegate tool and ASH_PROJECT (`hubMcp.ts` kind `team`; its workers
+  inherit the project), app access every turn, and once per conversation `codingTeamContext` (`monoFiles.ts`: who it
+  is, ask-Ash, talk, delegate, check and PR rules, the project's memory primer). `tasks.*` and `prs.*` take it, signed
+  "<Project> coding team", on its own project only, never briefing a Lead. Reports, questions, Stop, PR wakes and stuck
+  notifications route to it like a Mono (`monos/model/orchestrators.ts` `isOrchestratorChat`); what only a Mono has
+  (soul, memory files, habits) still asks `isMonoSession`. Its pane shows the stuck cards and "2 working: API" line.
+- **The Sessions list** (`app/shell/Sidebar.tsx` `codingTeam`, `model/codingTeamList.ts`): the project's Lead pinned on top
+  (mascot, "Lead"), Ash's own chats below, every chat a chat started folded under it (`monos/ui/SubChatList.tsx`, shared
+  with the Monos rail: "N sub-chats", opens by itself when one is stuck, asking or failed; one click opens one).
+- **Navigation**: opening a Lead from anywhere lands in its coding team, beside the list (`onOpenMono`); picking a project
+  or "Coding team" opens on the Lead unless Ash was last in another chat there (`codingTeamView`); Being built's "Open in
+  coding team" goes through `hubNav.openCodingTeam`; project items say on hover which is the coding team and which the
+  leadership team's group chat.
+- **Rules**: `TALK_RULES` (Leads and coding-team chats); the delegate rules list every ask back, split work by area and
+  save Ash's decisions at once with ash_remember; every worker's brief carries `<worker_rules>` (its own port
+  `PORT=<n>`, never kill another's process, its own checkout) and a second worker in a busy project gets a worktree.
+- **Proof**: `tests/browser/coding-team.spec.ts`; `hub:verify-live` check 21 (`coding_team_delegates`); realtest
+  `tests/realtest/scenarios/coding-team.json`. The auto-continue effect now claims each restart's resume once
+  (`inFlight.ts claimAutoContinue`).
+
 # Update: 20 October 2026, Phase 4 (branch hub/4-pages-newproject)
 
 Pages, Change the hub, Today's board and New project now go through Ash OS (exo-cc-studio `docs/HUB-BACKEND.md`):
