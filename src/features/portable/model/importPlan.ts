@@ -498,6 +498,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     try {
       const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), { replace: choices.replaceSouls.has(m.mono.id), ...deps.agentFiles });
       if (r.written.length) merged++;
+      for (const problem of r.problems) problems.push(`${m.mono.name}: ${problem}`);
     } catch (e) {
       problems.push(`${m.mono.name}: ${e instanceof Error ? e.message : "its files couldn't be written"}`);
     }
