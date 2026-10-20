@@ -518,8 +518,36 @@ export async function startStub({
     return { id, applied: true, version: v.version, state: v.state, owner, linked: [], moved: [], refused: [] };
   }
 
+  // ---- the memory primer a Lead's or worker's fresh session starts with (ash-hub-memory-primer; exo-cc-studio
+  // ashos/core.py memory_primer): invented lines, in the real answer's shape. A chat that names no project gets ash alone.
+  function memoryPrimerCall(v) {
+    const project = v.project ? String(v.project) : "ash";
+    const known = state.projects.find((p) => p.id === project);
+    if (project !== "ash" && !known) throw new Error(`unknown project ${project}`);
+    const own = project === "ash" ? [] : [
+      `## ${known.name}: never do`,
+      `- Never ship ${known.name} work another session made (invented for the stub) [19 Oct]`,
+      `## ${known.name}: decisions, newest first`,
+      `- ${known.name} work happens in a worktree off its main branch (invented for the stub) [19 Oct]`,
+      "",
+    ];
+    const lines = [
+      `Current memory of ${known?.name ?? "How Ash works"} (${project}), as of today: what holds now. Ash's latest words beat it; it beats the code, docs and plans.`,
+      "",
+      ...own,
+      "## How Ash works (ash: Ash's global memory, every project): never do",
+      "- Codex is for image generation only (invented for the stub) [15 Oct]",
+    ];
+    const text = lines.join("\n");
+    return {
+      project, name: known?.name ?? "How Ash works", text, lines: lines.filter((l) => l.startsWith("- ")).length, more: 0,
+      memory_dir: `/stub/agent-memory/${project}`, global_dir: "/stub/agent-memory/ash", chars: text.length, budget_chars: 8000,
+    };
+  }
+
   async function action(name, v) {
     switch (name) {
+      case "memory-primer": return memoryPrimerCall(v);
       case "delegation": return delegationCall(v);
       case "jobs": return jobsCall(v);
       case "job-options": return jobOptionsCall(v);

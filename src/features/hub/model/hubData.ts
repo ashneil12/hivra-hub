@@ -36,7 +36,13 @@ seedHubBundleDefaults();
  * most a few seconds; then it starts without them).
  */
 function startHubMcp(): void {
-  const lookups = { monoOf: monoForSession, habitRunMono, isLead: (id: string) => !!leadFor(id) };
+  const lookups = {
+    monoOf: monoForSession,
+    habitRunMono,
+    isLead: (id: string) => !!leadFor(id),
+    // A Lead's chat, habit runs and workers carry its project (ASH_PROJECT): they reach only its memory and Ash's global one.
+    leadProject: (id: string) => leadFor(id)?.projectId,
+  };
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);
   const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());

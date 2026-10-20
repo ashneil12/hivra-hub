@@ -237,6 +237,28 @@ describe("tasks.delegate", () => {
     });
   });
 
+  it("gives a Lead's worker its project's memory after the brief, on the worker's own engine", async () => {
+    const { source, host, started, api } = fixture([]);
+    const block = "<project_memory>\n- Never ship work another session made\n</project_memory>";
+    api.memoryBrief = vi.fn(async () => block);
+    await handleAgentApp(source, "r-mem", "tasks.delegate", { brief: "Fix the save bug.", goal: "It saves", model: "sonnet" }, host);
+    expect(api.memoryBrief).toHaveBeenCalledWith("mono-exo", "claude");
+    const [launch] = started[0] as [{ prompt: string }];
+    expect(launch.prompt).toBe(briefPrompt("EXO lead", "Fix the save bug.", "It saves", block));
+    expect(launch.prompt.startsWith("[MonoCode brief from EXO lead]\n\nFix the save bug.\n\nDone when: It saves\n\n<project_memory>")).toBe(true);
+    // a worker on another engine: its own engine decides how the block tells it to read more (no ash-os tools there)
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    await handleAgentApp(source, "r-mem-2", "tasks.delegate", { brief: "Draw it.", model: "codex:gpt-5" }, host);
+    expect(api.memoryBrief).toHaveBeenLastCalledWith("mono-exo", "codex");
+    // a chat with no project (the leadership team) gets the brief alone; a primer that fails never blocks the brief
+    api.memoryBrief = vi.fn(async () => undefined);
+    await handleAgentApp(source, "r-plain", "tasks.delegate", { brief: "Look at CI." }, host);
+    expect((started.at(-1) as [{ prompt: string }])[0].prompt).toBe(briefPrompt("EXO lead", "Look at CI."));
+    api.memoryBrief = vi.fn(async () => Promise.reject(new Error("Ash OS is down")));
+    await handleAgentApp(source, "r-down", "tasks.delegate", { brief: "Look again." }, host);
+    expect((started.at(-1) as [{ prompt: string }])[0].prompt).toBe(briefPrompt("EXO lead", "Look again."));
+  });
+
   it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
     const { source, host, started } = fixture([]);
     probe.probed = false;

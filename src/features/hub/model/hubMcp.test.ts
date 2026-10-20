@@ -2,7 +2,9 @@
 // Mono's own chat only, with its app connection passed as ${VAR} so the token never reaches argv.
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  chatProjects,
   CHECKER_MONO_ID,
+  hasAshOsTools,
   hasDelegateTool,
   hubChatIdentity,
   hubMcpArgs,
@@ -27,6 +29,21 @@ const lookups: HubChatLookups = {
     ],
   habitRunMono: (id) => (id === "habit-run-1" ? "frank" : id === "habit-run-2" ? CHECKER_MONO_ID : undefined),
   isLead: (id) => id.endsWith("-lead"),
+};
+// The app's lookups also say which project a Lead leads (hubData.ts: hubLeads.ts leadFor), and its chats can be UUIDs.
+const LEAD_CHAT = "6f1c2a9e-0b7d-4c55-9a51-3d2e8f0a7b10";
+const withProjects: HubChatLookups = {
+  monoOf: (id) =>
+    ({
+      "chat-exo": { id: "vg-game-lead" },
+      [LEAD_CHAT]: { id: "hivra-lead" },
+      "chat-frank": { id: "frank" },
+      "chat-cos": { id: "chief-of-staff" },
+      "chat-checker": { id: CHECKER_MONO_ID },
+    })[id],
+  habitRunMono: (id) => (id === "habit-run-lead" ? "hivra-lead" : id === "habit-run-1" ? "frank" : undefined),
+  isLead: (id) => id.endsWith("-lead"),
+  leadProject: (id) => ({ "vg-game-lead": "vg-game", "hivra-lead": "hivra" })[id],
 };
 
 function config(args: string[]) {
@@ -61,6 +78,73 @@ describe("a hub chat's identity", () => {
       // A plain chat or worker carries no role or Mono from Ash's config: only what it is.
       expect(entry.env).toEqual({ ASHOS_HOME: "/Users/ash/.ashos", ...env });
     }
+  });
+});
+
+describe("a chat's project (ASH_PROJECT): what memory it may reach", () => {
+  it("is a Lead's own project, for its chat, its habit runs and every worker under it however deep", () => {
+    expect(hubChatIdentity("chat-exo", withProjects)).toEqual({
+      kind: "mono",
+      chat: "chat-exo",
+      monoId: "vg-game-lead",
+      role: "lead",
+      projects: ["vg-game"],
+    });
+    expect(hubChatIdentity("habit-run-lead", withProjects).projects).toEqual(["hivra"]);
+    expect(hubChatIdentity("app-chat-exo-r1", withProjects)).toEqual({
+      kind: "worker",
+      chat: "app-chat-exo-r1",
+      role: "worker",
+      projects: ["vg-game"],
+    });
+    // a worker's worker, and a Lead whose chat id is a UUID (dashes in both the chat and the request)
+    expect(hubChatIdentity("app-app-chat-exo-r1-r2", withProjects).projects).toEqual(["vg-game"]);
+    expect(hubChatIdentity(`app-${LEAD_CHAT}-req-77-a`, withProjects).projects).toEqual(["hivra"]);
+    expect(hubChatIdentity(`app-app-${LEAD_CHAT}-r1-9c2e-11`, withProjects).projects).toEqual(["hivra"]);
+  });
+
+  it("is nobody's for the leadership team, other Monos, the checker, plain chats and their workers", () => {
+    for (const session of [
+      "chat-cos",
+      "app-chat-cos-r1",
+      "chat-frank",
+      "habit-run-1",
+      "app-chat-frank-r1",
+      "chat-checker",
+      "plain-1",
+      "app-plain-1-r1",
+      "app-unknown",
+    ])
+      expect(hubChatIdentity(session, withProjects).projects, session).toBeUndefined();
+    // without the lookup (an older caller) nobody carries a project: nothing is scoped by accident
+    expect(hubChatIdentity("chat-exo", lookups).projects).toBeUndefined();
+  });
+
+  it("goes in the ash-os entry as ASH_PROJECT, and a stray one in Ash's own config never does", () => {
+    const stray = { ...ASH_OS, env: { ...ASH_OS.env, ASH_PROJECT: "nibbii" } };
+    for (const [session, project] of [
+      ["chat-exo", "vg-game"],
+      ["app-chat-exo-r1", "vg-game"],
+      [`app-${LEAD_CHAT}-r1`, "hivra"],
+      ["habit-run-lead", "hivra"],
+      ["chat-cos", undefined],
+      ["app-chat-cos-r1", undefined],
+      ["plain-1", undefined],
+    ] as const) {
+      const env = config(hubMcpArgs(session, { ashOs: stray, cli: null }, withProjects))!.mcpServers["ash-os"]
+        .env as Record<string, string>;
+      expect(env.ASH_PROJECT, session).toBe(project);
+      expect(env.ASHOS_HOME).toBe("/Users/ash/.ashos");
+    }
+  });
+
+  it("is what the registered lookups say, and only Claude Code sessions have the ash-os tools to search further", () => {
+    expect(chatProjects("app-chat-exo-r1")).toEqual([]);
+    setHubMcpServers({ ashOs: null, cli: null }, withProjects);
+    expect(chatProjects("app-chat-exo-r1")).toEqual(["vg-game"]);
+    expect(chatProjects("chat-cos")).toEqual([]);
+    expect(hasAshOsTools("claude")).toBe(true);
+    expect(hasAshOsTools("codex")).toBe(false);
   });
 });
 
