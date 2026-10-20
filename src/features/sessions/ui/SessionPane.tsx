@@ -106,6 +106,7 @@ import {
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
+import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
 import { resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
@@ -647,6 +648,15 @@ const LocalSessionPane = memo(function LocalSessionPane({
     window.addEventListener(ADD_TO_CHAT_EVENT, onAdd);
     return () => window.removeEventListener(ADD_TO_CHAT_EVENT, onAdd);
   }, [addSelectionToChat, addToChatTarget]);
+  // Something typed in for Ash from elsewhere (Bot changes' "Ask Alfred"): into this chat's composer, if it's this chat.
+  useEffect(() => {
+    const onPrefill = (event: Event) => {
+      const detail = (event as CustomEvent<MonoPrefill>).detail;
+      if (detail?.sessionId === session.id && detail.text) addSelectionToChat(detail.text, "plain");
+    };
+    window.addEventListener(MONO_PREFILL_EVENT, onPrefill);
+    return () => window.removeEventListener(MONO_PREFILL_EVENT, onPrefill);
+  }, [addSelectionToChat, session.id]);
   const workCwd = sessionWorkCwd(session);
   const reviewHidden =
     remote ||

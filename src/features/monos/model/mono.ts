@@ -406,6 +406,7 @@ export function saveMonoSessionId(monoId: string, sessionId: string): void {
   updateMono(monoId, (mono) => ({ ...mono, sessionId }));
   // Its chat ids live in its own folder too (chats.json), so a WebView reset can't lose them.
   if (before !== sessionId) void recordMonoChat(monoId, sessionId).catch(() => undefined);
+  void import("./monoPrefill").then((m) => m.takeMonoPrefill(monoId, sessionId)).catch(() => undefined);
 }
 
 export function saveMonoName(monoId: string, name: string): void {

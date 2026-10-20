@@ -1,5 +1,6 @@
 import { pastChanges, undoProposal, useProposalsVersion } from "../model/proposals";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { openMonoChatWith } from "../../monos/model/monoPrefill";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { botChangeRows, redoBotChange, undoAllFrom, undoBotChange, undoneLine, useBotChangesVersion, type BotChangeRow } from "../model/botChanges";
 
@@ -37,18 +38,54 @@ function BotChanges() {
   );
 }
 
-/** One "Undo all from {Mono}" per Mono with changes still standing. */
+/** One "Undo all from…" button; its menu names each Mono with changes still standing. */
 function UndoAllFrom({ rows }: { rows: BotChangeRow[] }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
   const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone && !c.note);
   const bots = [...new Set(standing.map((c) => c.bot))];
   if (!bots.length) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1 px-3 pb-2" data-undo-all-from>
-      {bots.map((b) => (
-        <button key={b} type="button" className={UNDO} onClick={() => void undoAllFrom(b)}>Undo all from {b}</button>
-      ))}
+    <div ref={box} className="relative px-3 pb-2" data-undo-all-from>
+      <button type="button" className={UNDO} aria-haspopup="menu" aria-expanded={open} data-undo-all-from-button onClick={() => setOpen(!open)}>
+        Undo all from…
+      </button>
+      {open ? (
+        <div role="menu" className="absolute left-3 top-full z-10 mt-1 flex min-w-44 flex-col rounded-lg border border-content/10 bg-background-base p-1 shadow-lg" data-undo-all-from-menu>
+          {bots.map((b) => (
+            <button key={b} type="button" role="menuitem" data-undo-all-from-item={b}
+              className="rounded-md px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8"
+              onClick={() => {
+                setOpen(false);
+                void undoAllFrom(b);
+              }}>{b}</button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+/** A line ending "(and N more)" shows that part as the way into the rest (the row opens on the full list). */
+function LineText({ line }: { line: string }) {
+  const m = line.match(/^(.*) \(and (\d+) more\)$/s);
+  if (!m) return <>{line}</>;
+  return <>{m[1]} <span className="text-content/60 underline decoration-content/30 underline-offset-2" data-hub-bot-change-more>and {m[2]} more</span></>;
 }
 
 function BotChangeLine({ row }: { row: BotChangeRow }) {
@@ -58,16 +95,21 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
   const undone = items.every((c) => c.undone);
   return (
     <div className="rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-bot-change>
-      <div className="flex items-center gap-3">
-        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
-          className={`min-w-0 flex-1 truncate text-left text-[13px] ${undone ? "text-content/60" : "text-content"}`}>{line}</button>
+      <div className="flex items-start gap-3">
+        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} data-hub-bot-change-line
+          className={`min-w-0 flex-1 break-words text-left text-[13px] leading-5 ${undone ? "text-content/60" : "text-content"}`}><LineText line={line} /></button>
         {undone ? (
           <span className="flex shrink-0 items-center gap-2 text-xs text-content/60" data-hub-bot-change-undone>
             <span>{row.kind === "one" ? undoneLine(row.change) : "Undone"}</span>
             <button type="button" data-hub-bot-change-redo onClick={() => void redoBotChange(items.map((c) => c.id))}
               className="rounded-md px-1.5 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">Redo</button>
           </span>
-        ) : items.every((c) => c.note) ? null : (
+        ) : items.every((c) => c.note) ? (
+          items[0]?.ask ? (
+            <button type="button" className={UNDO} data-hub-bot-change-ask={items[0].ask.monoId}
+              onClick={() => openMonoChatWith(items[0]!.ask!.monoId, items[0]!.ask!.text)}>{items[0].ask.label}</button>
+          ) : null
+        ) : (
           <button type="button" className={UNDO} onClick={() => void undoBotChange(items.map((c) => c.id))}>Undo</button>
         )}
       </div>
