@@ -21,7 +21,7 @@ import {
   KEY_FAILED,
   REASONING_EFFORTS,
   setCustomModelEfforts,
-  reasoningEfforts,
+  customModelEfforts,
   type ReasoningEffort,
   type CustomModel,
   type CustomModelForm,
@@ -105,7 +105,7 @@ export function OtherModelsSection({
         </div>
         <button type="button" data-model-reasoning={m.id} onClick={() => setEditingEffort(editingEffort === m.id ? null : m.id)}
           className="px-2.5 py-0.5 text-[11px] text-content/50 hover:text-content">Reasoning settings</button>
-        {editingEffort === m.id ? <EffortChoices levels={reasoningEfforts(m.reasoningEfforts)} onChange={(levels) => setCustomModelEfforts(m.id, levels)} /> : null}
+        {editingEffort === m.id ? <EffortChoices levels={customModelEfforts(m.reasoningEfforts)} onChange={(levels) => setCustomModelEfforts(m.id, levels)} /> : null}
         {confirming === m.id ? (
           // The title wraps onto as many lines as it needs (never cut off), with the buttons on their own row below.
           <div data-remove-confirm={m.id} className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-content/80">
@@ -282,7 +282,7 @@ export function AddModelForm({
       </label>
       <details className="text-[11px] text-content/60" data-model-efforts>
         <summary className="cursor-pointer">Reasoning effort (optional)</summary>
-        <EffortChoices levels={reasoningEfforts(form.reasoningEfforts)} onChange={(levels) => set({ reasoningEfforts: levels })} />
+        <EffortChoices levels={customModelEfforts(form.reasoningEfforts)} onChange={(levels) => set({ reasoningEfforts: levels })} />
       </details>
       {keyed ? (
         <label className="flex flex-col gap-1 text-[11px] text-content/55">
@@ -336,7 +336,7 @@ export function AddModelForm({
 
 function EffortChoices({ levels, onChange }: { levels: ReasoningEffort[]; onChange: (levels: ReasoningEffort[]) => void }) {
   return <fieldset className="px-2 py-1 text-[11px] text-content/65" aria-label="Supported reasoning effort levels">
-    <p className="mb-1 leading-4">Enable only levels your model supports. Leave all off for the provider default.</p>
+    <p className="mb-1 leading-4">Every level is on to start. Turn off any your model doesn't support, or turn them all off to leave it to the provider.</p>
     <div className="flex flex-wrap gap-x-3 gap-y-1">{REASONING_EFFORTS.map((level) => <label key={level} className="flex items-center gap-1">
       <input type="checkbox" checked={levels.includes(level)} onChange={(e) => onChange(e.target.checked ? [...levels, level] : levels.filter((v) => v !== level))} />{level}
     </label>)}</div>

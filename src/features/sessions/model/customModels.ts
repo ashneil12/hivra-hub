@@ -55,7 +55,21 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export function reasoningEfforts(value: unknown): ReasoningEffort[] {
   return Array.isArray(value) ? REASONING_EFFORTS.filter((level) => value.includes(level)) : [];
 }
-/** Only levels explicitly enabled for this model are offered or sent. */
+/**
+ * The levels a custom model offers. A model nobody narrowed (no saved list, which is every model added before this
+ * and every new one) offers all of them, None through Max. A saved list is a deliberate choice and is kept as is;
+ * an empty one means "leave effort to the provider".
+ */
+export function customModelEfforts(value: unknown): ReasoningEffort[] {
+  return Array.isArray(value) ? reasoningEfforts(value) : [...REASONING_EFFORTS];
+}
+/** Kept only when narrowed on purpose: no list means every level (customModelEfforts). */
+function savedEfforts(value: unknown): { reasoningEfforts?: ReasoningEffort[] } {
+  if (!Array.isArray(value)) return {};
+  const levels = reasoningEfforts(value);
+  return levels.length === REASONING_EFFORTS.length ? {} : { reasoningEfforts: levels };
+}
+/** Only levels enabled for this model are offered or sent; see customModelEfforts for the default. */
 export type CustomModel = { id: string; name: string; provider: CustomProvider; baseUrl: string; modelId: string; reasoningEfforts?: ReasoningEffort[] };
 
 const KEY = "monocode:custom-models";
@@ -96,7 +110,7 @@ export function subscribeCustomModels(onChange: () => void): () => void {
 
 /** Metadata only: whatever is passed, a key-like field is dropped before anything is written. */
 function writeModels(list: CustomModel[]): void {
-  const clean = list.map(({ id, name, provider, baseUrl, modelId, reasoningEfforts: levels }) => ({ id, name, provider, baseUrl, modelId, ...(reasoningEfforts(levels).length ? { reasoningEfforts: reasoningEfforts(levels) } : {}) }));
+  const clean = list.map(({ id, name, provider, baseUrl, modelId, reasoningEfforts: levels }) => ({ id, name, provider, baseUrl, modelId, ...savedEfforts(levels) }));
   localStorage.setItem(KEY, JSON.stringify(clean));
   version++;
   window.dispatchEvent(new CustomEvent(CHANGED));
@@ -267,7 +281,7 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
     provider: form.provider,
     baseUrl: form.baseUrl.trim() || defaultBaseUrl(form.provider),
     modelId: form.modelId.trim(),
-    ...(reasoningEfforts(form.reasoningEfforts).length ? { reasoningEfforts: reasoningEfforts(form.reasoningEfforts) } : {}),
+    ...savedEfforts(form.reasoningEfforts),
   };
   writeModels([...listCustomModels(), model]);
   return model;
@@ -302,9 +316,12 @@ export function customModelRoute(target: Pick<ModelTarget, "model" | "modelSetti
   if (!isCustomModelId(target.model)) return undefined;
   const saved = findCustomModel(target.model);
   if (saved) {
-    const levels = reasoningEfforts(saved.reasoningEfforts);
-    const effort = target.modelSettings.effort ?? (levels.includes("medium") ? "medium" : levels[0]);
-    return { ...customModelSettings(saved), ...(reasoningEfforts(saved.reasoningEfforts).includes(effort as ReasoningEffort) ? { reasoningEffort: effort as ReasoningEffort } : {}) } as CustomModelRoute;
+    const levels = customModelEfforts(saved.reasoningEfforts);
+    // A chat that never picked a level sends none for a model nobody narrowed: some providers refuse the field,
+    // so the provider's own default stays the default. A narrowed list keeps its old default (medium, else first).
+    const narrowed = Array.isArray(saved.reasoningEfforts);
+    const effort = target.modelSettings.effort ?? (narrowed ? (levels.includes("medium") ? "medium" : levels[0]) : undefined);
+    return { ...customModelSettings(saved), ...(levels.includes(effort as ReasoningEffort) ? { reasoningEffort: effort as ReasoningEffort } : {}) } as CustomModelRoute;
   }
   const s = target.modelSettings;
   return s.customModelId ? { provider: s.provider as CustomProvider, baseUrl: s.baseUrl, modelId: s.modelId, customModelId: s.customModelId } : undefined;

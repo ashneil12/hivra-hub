@@ -324,7 +324,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
     connectors: allConnectors().map(connectorOf),
     pages: allKeptPages().map((p) => ({ ...p, permissions: [] })),
     // Metadata only, whatever an older build left beside it.
-    customModels: listCustomModels().map(({ id, name, provider, baseUrl, modelId, reasoningEfforts }) => ({ id, name, provider, baseUrl, modelId, ...(reasoningEfforts?.length ? { reasoningEfforts } : {}) })),
+    customModels: listCustomModels().map(({ id, name, provider, baseUrl, modelId, reasoningEfforts }) => ({ id, name, provider, baseUrl, modelId, ...(Array.isArray(reasoningEfforts) ? { reasoningEfforts } : {}) })),
     settings: collectSettings().settings,
     ...(input.workspace ? { chats } : {}),
   };
