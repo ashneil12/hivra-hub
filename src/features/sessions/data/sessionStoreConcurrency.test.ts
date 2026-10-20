@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), dropHarnessSession: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("../../../integrations/harness/core/registry", async (original) => ({
+  ...(await original<typeof import("../../../integrations/harness/core/registry")>()),
+  dropHarnessSession: mocks.dropHarnessSession,
+}));
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -38,6 +42,7 @@ function session(id: string) {
 
 afterEach(() => {
   mocks.invoke.mockReset();
+  mocks.dropHarnessSession.mockReset();
 });
 
 describe("session persistence concurrency", () => {
@@ -212,5 +217,15 @@ describe("session persistence concurrency", () => {
         blocks: [{ text: "hello" }, { text: "final buffered output" }],
       },
     });
+  });
+
+  it("a deleted chat's harness state goes with its record, and stays while the delete fails", async () => {
+    const { deleteSession } = await loadStore();
+    mocks.invoke.mockRejectedValueOnce(new Error("disk full"));
+    await expect(deleteSession("s1")).rejects.toThrow("disk full");
+    expect(mocks.dropHarnessSession).not.toHaveBeenCalled();
+    mocks.invoke.mockResolvedValue(undefined);
+    await deleteSession("s1");
+    expect(mocks.dropHarnessSession).toHaveBeenCalledWith("s1");
   });
 });

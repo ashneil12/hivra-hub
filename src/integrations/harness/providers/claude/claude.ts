@@ -757,6 +757,15 @@ export async function forgetClaudeSession(sessionId: string): Promise<void> {
   await stopClaudeSession(sessionId);
 }
 
+/**
+ * The chat was deleted: its goal state goes too. Kept apart from forgetClaudeSession, which a Mono's rotation uses and
+ * whose fresh conversation must get the open goal again.
+ */
+export function dropClaudeSession(sessionId: string): void {
+  goalByThread.delete(sessionId);
+  goalEnded.delete(sessionId);
+}
+
 export function bindClaudeSession(
   threadId: string,
   providerSessionId: string,
@@ -2681,6 +2690,11 @@ function launchOptions(
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
   };
+}
+
+/** Exported for tests: whether the harness still keeps a chat's open goal, or the record of one it finished. */
+export function __claudeGoalState(threadId: string): { open: boolean; ended: boolean } {
+  return { open: goalByThread.has(threadId), ended: goalEnded.has(threadId) };
 }
 
 /** Exported for tests. */

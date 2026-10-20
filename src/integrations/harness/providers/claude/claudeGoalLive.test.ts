@@ -48,6 +48,8 @@ const {
   bindClaudeSession,
   forgetClaudeSession,
   restoreClaudeGoal,
+  dropClaudeSession,
+  __claudeGoalState,
   __claudeTestReset,
 } = await import("./claude");
 const { GOAL_CHECK_CAP } = await import("./claudeGoal");
@@ -469,6 +471,39 @@ describe("/goal through the live adapter", () => {
     onExit!(1);
     await turn.done;
     expect(turn.outcome).toBe("failed");
+  });
+});
+
+describe("a chat's goal state over its life", () => {
+  it("a rotation (forget) keeps the open goal for the fresh conversation; deleting the chat drops it", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 9 consecutive times — overriding and ending turn." });
+    emit(result("", { num_turns: 10 }));
+    await turn.done;
+    await forgetClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: true, ended: false });
+    dropClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: false });
+  });
+
+  it("deleting a chat drops the record of the goal it finished", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    emit(said("Fixed: the save test passes."));
+    emit(result("Fixed: the save test passes.", { num_turns: 2 }));
+    await turn.done;
+    expect(goals(turn).at(-1)).toMatchObject({ status: "met" });
+    await forgetClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: true });
+    dropClaudeSession("worker");
+    expect(__claudeGoalState("worker")).toEqual({ open: false, ended: false });
   });
 });
 

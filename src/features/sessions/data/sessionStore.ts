@@ -8,6 +8,7 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
+import { dropHarnessSession } from "../../../integrations/harness/core/registry";
 import { persistableAttachment } from "../model/attachments";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
@@ -887,6 +888,8 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     monoSavedBlocks.delete(sessionId);
+    // What the harness kept for this chat past forgetting it (a goal for a rotation) has nothing left to serve.
+    dropHarnessSession(sessionId);
     const tombstone = setTimeout(
       () => deletedSessionIds.delete(sessionId),
       60_000,
