@@ -8,7 +8,8 @@
 //   thrown away so nothing restarts the work; then the rows that worker owns for that job, the same way;
 // - it touches only rows owned by a chat it stopped, following `parent_id` (a Lead's rows for other work stay as they
 //   are), and never a row whose report already reached its owner;
-// - a worker that doesn't stop within 15 s, or whose Stop throws, is reported in `stopFailed`.
+// - a worker that doesn't stop within 15 s, or whose Stop throws, or a row that can't be cancelled, is reported in
+//   `stopFailed`; when the rows can't be loaded the chat still stops, and `unloaded` says its workers may still run.
 import { isOpenDelegation, isOwed, type Delegation } from "./delegations";
 
 export type StopTreeHost = {
@@ -46,8 +47,10 @@ export type StopTreeResult = {
   stopped: string[];
   /** Rows cancelled (their reports dropped), in order. */
   cancelled: string[];
-  /** Chats whose Stop failed or timed out. */
+  /** Chats whose Stop failed or timed out, or whose row couldn't be cancelled. */
   stopFailed: string[];
+  /** Chats whose workers couldn't be loaded, so they may still be running (only set when there are any). */
+  unloaded?: string[];
 };
 
 const STOP_TIMEOUT_MS = 15_000;
@@ -67,10 +70,15 @@ class Walk {
     private options: StopTreeOptions,
   ) {}
 
-  /** The rows to walk (loaded while the first chat stops). */
-  use(rows: Map<string, Delegation>): this {
-    this.rows = rows;
+  /** The rows to walk (loaded while the first chat stops); when some couldn't be, what is beneath `under` may run on. */
+  use(loaded: LoadedRows, under: string): this {
+    this.rows = loaded.rows;
+    if (!loaded.complete) this.result.unloaded = [under];
     return this;
+  }
+
+  private failed(id: string): void {
+    if (!this.result.stopFailed.includes(id)) this.result.stopFailed.push(id);
   }
 
   private sorted(filter: (row: Delegation) => boolean): Delegation[] {
@@ -97,7 +105,7 @@ class Walk {
       ]);
       this.result.stopped.push(id);
     } catch {
-      this.result.stopFailed.push(id);
+      this.failed(id);
     } finally {
       clearTimeout(timer);
     }
@@ -112,8 +120,10 @@ class Walk {
     if (owed) {
       const changed = await this.host
         .cancel(row.ownerSession, [row], this.options.reason, this.options.by)
-        .catch(() => [] as Delegation[]);
-      if (changed.some((entry) => entry.id === row.id))
+        .catch(() => undefined);
+      // Still owed: its report could come back and restart the work, so this task didn't stop.
+      if (!changed) this.failed(row.childSession);
+      else if (changed.some((entry) => entry.id === row.id))
         this.result.cancelled.push(row.id);
     }
     // A followed brief went to a chat with work of its own (a Lead's long-running chat, a busy session): it leaves
@@ -133,22 +143,37 @@ class Walk {
   }
 }
 
-/** The rows a Stop may need: every open or owed row, with the whole trees they sit in (finished rows link them). */
+type LoadedRows = { rows: Map<string, Delegation>; complete: boolean };
+
+/**
+ * The rows a Stop may need: every open or owed row, with the whole trees they sit in (finished rows link them). Never
+ * throws: what it couldn't read leaves `complete` false (a missing tree may be the finished row linking the workers).
+ */
 async function loadRows(
   host: StopTreeHost,
   extra: Delegation[] = [],
-): Promise<Map<string, Delegation>> {
-  const open = await host.listOpen();
+): Promise<LoadedRows> {
+  const rows = new Map<string, Delegation>(extra.map((row) => [row.id, row]));
+  let open: Delegation[];
+  try {
+    open = await host.listOpen();
+  } catch {
+    return { rows, complete: false };
+  }
+  let complete = true;
   const trees = new Map<string, string>();
   for (const row of [...extra, ...open])
     if (!trees.has(row.rootId)) trees.set(row.rootId, row.id);
-  const rows = new Map<string, Delegation>();
-  for (const id of trees.values())
-    for (const row of await host.tree(id).catch(() => [] as Delegation[]))
-      rows.set(row.id, row);
+  for (const id of trees.values()) {
+    try {
+      for (const row of await host.tree(id)) rows.set(row.id, row);
+    } catch {
+      complete = false;
+    }
+  }
   // The open list is the freshest copy of what it holds.
   for (const row of [...extra, ...open]) rows.set(row.id, row);
-  return rows;
+  return { rows, complete };
 }
 
 /** Stop a chat and everything beneath it (Ash's Stop on a Mono, `sessions.stop {"cascade":true}`). */
@@ -158,10 +183,10 @@ export async function stopTree(
   options: StopTreeOptions,
 ): Promise<StopTreeResult> {
   // The chat's own Stop doesn't wait for the rows to load; its workers stop only after it has.
-  const rows = loadRows(host).catch(() => new Map<string, Delegation>());
+  const rows = loadRows(host);
   const walk = new Walk(host, options);
   await walk.stopChat(chat);
-  await walk.use(await rows).owned(chat);
+  await walk.use(await rows, chat).owned(chat);
   return walk.result;
 }
 
@@ -171,11 +196,9 @@ export async function stopTask(
   host: StopTreeHost,
   options: StopTreeOptions,
 ): Promise<StopTreeResult> {
-  const rows = await loadRows(host, [row]).catch(
-    () => new Map([[row.id, row]]),
-  );
-  const walk = new Walk(host, options).use(rows);
-  await walk.row(rows.get(row.id) ?? row);
+  const loaded = await loadRows(host, [row]);
+  const walk = new Walk(host, options).use(loaded, row.childSession);
+  await walk.row(loaded.rows.get(row.id) ?? row);
   return walk.result;
 }
 

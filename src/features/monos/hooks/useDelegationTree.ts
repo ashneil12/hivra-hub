@@ -188,7 +188,7 @@ export function useDelegationTree(options: {
       )
         return latest.current.stopSession(sessionId, managed);
       return treeStop(sessionId, ASH_STOP_REASON, "user").then((result) => {
-        noteStopFailures(sessionId, result.stopFailed);
+        noteStopFailures(sessionId, result);
         return result;
       });
     },
@@ -223,7 +223,7 @@ export function useDelegationTree(options: {
         },
         stopTree: (chat) =>
           treeStop(chat, ASH_STOP_REASON, "user").then((result) => {
-            noteStopFailures(chat, result.stopFailed);
+            noteStopFailures(chat, result);
             return result;
           }),
         stopRow: (row) => taskStop(row, ASH_STOP_REASON, "user"),
