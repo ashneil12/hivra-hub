@@ -14,6 +14,7 @@
 //     "new" (only chats started after it was set), times: n}), the next prompt is not sent to the model and the CLI's
 //     own recorded output (fixtures/claude-cli-2.1.302) comes back instead, with this session's id: what Claude Code
 //     prints when the model is down or the account is out of credit;
+//   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it.
@@ -46,8 +47,24 @@ export function pickEffort(asked) {
   return asked && KEEP_EFFORTS.has(asked) ? asked : EFFORT;
 }
 
+/**
+ * A chat on one of Ash's own custom models: the hub pointed Claude Code at its loopback model router
+ * (src-tauri/src/model_router.rs) through ANTHROPIC_BASE_URL. Its model id and effort are the custom model's, not
+ * Anthropic's, so the budget rewrite must leave them alone (it would swap the custom id for sonnet and send the chat
+ * to Anthropic's names through the router). Only loopback counts: any other base URL is not the hub's router.
+ */
+export function isRouted(env = process.env) {
+  try {
+    const url = new URL(String(env.ANTHROPIC_BASE_URL ?? ""));
+    return ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** The CLI's arguments with the model and effort held to the budget (added when missing, except for --version). */
-export function rewriteArgs(args) {
+export function rewriteArgs(args, { routed = false } = {}) {
+  if (routed) return [...args];
   const out = [];
   let model = false;
   let effort = false;
@@ -106,7 +123,8 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
 }
 
 /** One stdin line with live model/effort changes held to the budget. */
-export function rewriteInput(line) {
+export function rewriteInput(line, { routed = false } = {}) {
+  if (routed) return line;
   let message;
   try {
     message = JSON.parse(line);
@@ -162,8 +180,9 @@ function main() {
       // as above
     }
   };
-  const realArgs = withMemory(rewriteArgs(args));
-  log({ dir: "start", cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
+  const routed = isRouted(process.env);
+  const realArgs = withMemory(rewriteArgs(args, { routed }));
+  log({ dir: "start", routed, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
   const child = spawn(REAL, realArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
   const named = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
@@ -245,7 +264,7 @@ function main() {
         usage({ kind: "turn", session, model, cwd: process.cwd() });
       }
     } else if (message?.type === "control_request") {
-      const rewritten = rewriteInput(line);
+      const rewritten = rewriteInput(line, { routed });
       if (rewritten !== line) log({ dir: "rewrote", from: line.slice(0, 300), to: rewritten.slice(0, 300) });
       if (message.request?.subtype === "set_model") model = JSON.parse(rewritten).request.model;
       log({ dir: "control-in", line: rewritten.slice(0, 600) });

@@ -205,7 +205,24 @@ async function main() {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
     return gradeRun(path.resolve(options.gradeOnly), { claudeConfig: DEV_CLAUDE_CONFIG });
   }
-  const spec = readJson(options.scenarios);
+  await runBench(options);
+  return 0;
+}
+
+/**
+ * The bench: a dev copy under a temporary HOME with the test project, the stub Ash OS and the window's driver, then the
+ * scenarios, then the evidence. `hooks` let another runner use the same bench (scripts/hub-realconv.mjs):
+ *  - spec: the run's spec object instead of reading options.scenarios;
+ *  - evidenceDir: where under the repo the run's folder goes (default evidence/realtest);
+ *  - routedAgents: the agents run on a custom model through the hub's router, so the Claude login is only needed for
+ *    the app's helper calls and its account limits don't gate the run (they are still read and logged when reachable);
+ *  - afterReady(ctx): once the hub is ready and its defaults are set (add a custom model, pick it);
+ *  - play(ctx, {runScenario, stopped}): replaces the scenario loop and returns the results; the realtest grader is not
+ *    run (the caller judges).
+ * Resolves with {id, evidence, results, stopReason}.
+ */
+export async function runBench(options, hooks = {}) {
+  const spec = hooks.spec ?? readJson(options.scenarios);
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
     maxMinutes: options.maxMinutes ?? spec.budget?.maxMinutes ?? 110,
@@ -215,9 +232,9 @@ async function main() {
     stopAtFiveHour: spec.budget?.stopAtFiveHour ?? 0.85,
     stopAtSevenDay: spec.budget?.stopAtSevenDay ?? 0.7,
   };
-  const scenarios = spec.scenarios.filter((s) => !options.only.length || options.only.includes(s.id));
+  const scenarios = hooks.play ? [] : spec.scenarios.filter((s) => !options.only.length || options.only.includes(s.id));
   const id = runId();
-  const evidence = path.join(ROOT, "evidence/realtest", id);
+  const evidence = path.resolve(ROOT, hooks.evidenceDir ?? "evidence/realtest", id);
   const state = path.join(evidence, "claude");
   fs.mkdirSync(state, { recursive: true });
   // Canonical (macOS's /var is /private/var): the app, git and Claude all report real paths, and the stub's project
@@ -232,7 +249,7 @@ async function main() {
   const started = Date.now();
   const deadline = started + budget.maxMinutes * 60_000;
   const log = (line) => {
-    const text = `[realtest ${new Date().toISOString().slice(11, 19)}] ${line}`;
+    const text = `[${hooks.label ?? "realtest"} ${new Date().toISOString().slice(11, 19)}] ${line}`;
     console.log(text);
     fs.appendFileSync(path.join(evidence, "run.log"), `${text}\n`);
   };
@@ -245,6 +262,7 @@ async function main() {
   let jobsTimer = null;
   let pumpTimer = null;
   let stopReason = null;
+  let results = [];
 
   const cleanup = async () => {
     clearInterval(jobsTimer);
@@ -336,7 +354,7 @@ async function main() {
     dataDir = path.join(home, "Library/Application Support", slot.identifier);
     db = path.join(dataDir, "monocode.db");
     log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
-    log(`budget: ${budget.maxTurns} model turns, ${budget.maxRequests} model requests, ${budget.maxMinutes} min; ${scenarios.length} scenarios`);
+    log(`budget: ${budget.maxTurns} model turns, ${budget.maxRequests} model requests, ${budget.maxMinutes} min; ${hooks.play ? "the caller's scenes" : `${scenarios.length} scenarios`}`);
 
     // -- the temporary HOME: the dev copies' Claude login and git identity, nothing of the real home's ---------------------
     if (!fs.existsSync(DEV_CLAUDE_CONFIG)) throw new Error(`${DEV_CLAUDE_CONFIG} is missing: sign a dev copy's Claude in first`);
@@ -363,15 +381,19 @@ async function main() {
         return {};
       }
     })();
-    if (!status.loggedIn) throw new Error("the dev Claude login isn't reachable under the temporary HOME (claude auth status says logged out)");
-    log(`claude login reachable under the temporary HOME (${status.authMethod}, ${status.subscriptionType})`);
-    // The login is Ash's own account, shared with his work: don't start a run it can't afford.
-    const use = accountUse(home);
+    if (!status.loggedIn && !hooks.routedAgents) throw new Error("the dev Claude login isn't reachable under the temporary HOME (claude auth status says logged out)");
+    if (status.loggedIn) log(`claude login reachable under the temporary HOME (${status.authMethod}, ${status.subscriptionType})`);
+    else log("the dev Claude login isn't reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
+    // The login is Ash's own account, shared with his work: don't start a run it can't afford. A run whose agents are on
+    // a custom model only spends it on helper calls, so its limits are logged, not enforced.
+    const use = status.loggedIn ? accountUse(home) : { at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     fs.writeFileSync(path.join(evidence, "account-before.json"), JSON.stringify(use, null, 2));
     log(`account use: 5-hour ${pctOf(use.fiveHour)}, 7-day ${pctOf(use.sevenDay)}${use.status ? ` (${use.status})` : ""}`);
-    if (use.status === "rejected") throw new Error("the account is at its limit right now; try after it resets");
-    if (use.fiveHour != null && use.fiveHour >= budget.startBelowFiveHour)
-      throw new Error(`the account's 5-hour use is ${pctOf(use.fiveHour)} (run needs it under ${pctOf(budget.startBelowFiveHour)}); Ash's own work shares it`);
+    if (!hooks.routedAgents) {
+      if (use.status === "rejected") throw new Error("the account is at its limit right now; try after it resets");
+      if (use.fiveHour != null && use.fiveHour >= budget.startBelowFiveHour)
+        throw new Error(`the account's 5-hour use is ${pctOf(use.fiveHour)} (run needs it under ${pctOf(budget.startBelowFiveHour)}); Ash's own work shares it`);
+    }
 
     // -- the test project ------------------------------------------------------------------------------------------------
     fs.cpSync(TEMPLATE, project, { recursive: true });
@@ -556,8 +578,8 @@ async function main() {
       const limited = fs.existsSync(path.join(state, "limited"));
       const why =
         limited ? `the account hit its limit (${fs.readFileSync(path.join(state, "limited"), "utf8").trim()})`
-        : fiveHour != null && fiveHour >= budget.stopAtFiveHour ? `the account's 5-hour use reached ${pctOf(fiveHour)}`
-        : sevenDay != null && sevenDay >= budget.stopAtSevenDay ? `the account's 7-day use reached ${pctOf(sevenDay)}`
+        : !hooks.routedAgents && fiveHour != null && fiveHour >= budget.stopAtFiveHour ? `the account's 5-hour use reached ${pctOf(fiveHour)}`
+        : !hooks.routedAgents && sevenDay != null && sevenDay >= budget.stopAtSevenDay ? `the account's 7-day use reached ${pctOf(sevenDay)}`
         : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
         : Date.now() > deadline ? "time budget spent" : null;
       if (why && !fs.existsSync(path.join(state, "stop"))) {
@@ -656,7 +678,11 @@ async function main() {
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
-    const results = [];
+    if (hooks.afterReady) await hooks.afterReady(ctx);
+    if (hooks.play) {
+      results = await hooks.play(ctx, { runScenario, stopped: () => stopReason });
+      fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
+    }
     for (const scenario of scenarios) {
       if (stopReason && scenario.since !== "run") {
         results.push({ id: scenario.id, title: scenario.title, skipped: stopReason });
@@ -699,11 +725,11 @@ async function main() {
     await ending.finish();
     ending.dispose();
   }
-  if (options.grade) {
+  if (options.grade && !hooks.play) {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
     await gradeRun(evidence, { claudeConfig: DEV_CLAUDE_CONFIG });
   }
-  return 0;
+  return { id, evidence, results, stopReason };
 }
 
 const pctOf = (value) => (value == null ? "?" : `${Math.round(value * 100)}%`);

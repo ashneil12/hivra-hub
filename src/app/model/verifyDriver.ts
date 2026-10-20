@@ -27,6 +27,7 @@ import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
 import { openSubChats } from "../../features/monos/model/subChats";
 import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
+import { customModelEfforts, importCustomModels, listCustomModels } from "../../features/sessions/model/customModels";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
@@ -303,6 +304,20 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
   switch (action.op) {
     case "ping":
       return { ok: true, at: Date.now() };
+    case "customModel": {
+      // One of Ash's custom models for a run on it (scripts/hub-realconv.mjs --agents custom:<id>): metadata only,
+      // through the same import a setup file uses. A key never comes this way: the router reads the one Ash saved in
+      // the dev copies' Keychain item for this model id.
+      const model = action.model as Record<string, unknown> | undefined;
+      if (!model || typeof model !== "object") throw new Error("customModel: no model");
+      if (Object.keys(model).some((field) => /key|token|secret|password/i.test(field)))
+        return { ok: false, error: "customModel: the driver never takes a key; Ash saves it in the app" };
+      const skipped: string[] = [];
+      const added = importCustomModels([model], (reason) => skipped.push(reason));
+      const id = typeof model.id === "string" ? model.id : "";
+      const saved = listCustomModels().find((m) => m.id === id);
+      return { ok: !!saved, added, skipped, model: saved ? { id: saved.id, name: saved.name, provider: saved.provider, modelId: saved.modelId, efforts: customModelEfforts(saved.reasoningEfforts) } : null };
+    }
     case "defaults":
       host.setDefaults(String(action.model ?? "claude:sonnet-5"), String(action.effort ?? "medium"));
       return { ok: true };

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
+import { isRouted, rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
 import { parseGrade } from "./hub-realtest-grade.mjs";
 import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-realtest-scenarios.mjs";
 import fs from "node:fs";
@@ -148,4 +148,16 @@ test("the coding-team scenarios: each worker's port from its brief, whether they
   for (const scenario of scenarios.scenarios)
     for (const step of scenario.steps)
       if (step.send?.codingTeam) assert.ok(step.as, `${scenario.id}: a new coding-team chat is named`);
+});
+
+test("a chat routed to a custom model keeps its own model and effort through the bench's claude", () => {
+  assert.equal(isRouted({ ANTHROPIC_BASE_URL: "http://127.0.0.1:51234" }), true);
+  assert.equal(isRouted({ ANTHROPIC_BASE_URL: "https://api.anthropic.com" }), false);
+  assert.equal(isRouted({}), false);
+  const args = ["--input-format", "stream-json", "--model", "grok-4", "--effort", "max"];
+  assert.deepEqual(rewriteArgs(args, { routed: true }), args);
+  assert.deepEqual(rewriteArgs(args).slice(2), ["--model", "sonnet", "--effort", "medium"]);
+  const live = JSON.stringify({ type: "control_request", request: { subtype: "set_model", model: "grok-4" } });
+  assert.equal(rewriteInput(live, { routed: true }), live);
+  assert.notEqual(rewriteInput(live), live);
 });
