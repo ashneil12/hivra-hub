@@ -64,7 +64,12 @@ export function PortablePage() {
         setInfo(next);
         setMemoryFolders(new Set(next.memory.map((m) => m.name)));
       })
-      .catch(() => live && setInfo({ memoryRoot: "", memory: [], dev: false }));
+      .catch((e: unknown) => {
+        if (!live) return;
+        // The page still works without it; say why no memory folders are listed rather than implying there are none.
+        setInfo({ memoryRoot: "", memory: [], dev: false });
+        setProblem(`This copy's memory folders couldn't be read: ${e instanceof Error ? e.message : String(e)}`);
+      });
     return () => {
       live = false;
     };

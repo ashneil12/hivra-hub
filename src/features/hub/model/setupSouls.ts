@@ -111,23 +111,30 @@ export function soulFiles(soul: Pick<SetupSoul, "rules" | "memory" | "workflows"
   return out;
 }
 
+export type SoulFilesResult = { written: AgentFilePath[]; kept: AgentFilePath[]; problems: string[] };
+
 /**
  * Writes a soul's files into a Mono's folder without overwriting: a file that is already there with text stays, unless
- * `replace` (Ash ticked "use the file's" in the preview). Returns the paths written and the ones kept.
+ * `replace` (Ash ticked "use the file's" in the preview). A file that can't be read is kept as it is and reported: a
+ * failed read is not a missing file. Returns the paths written, the ones kept, and each problem in plain words.
  */
 export async function writeSoulFiles(
   monoId: string,
   files: [AgentFilePath, string][],
   { write = writeAgentFile as Writer, read = readAgentFile as Read, replace = false }: { write?: Writer; read?: Read; replace?: boolean } = {},
-): Promise<{ written: AgentFilePath[]; kept: AgentFilePath[] }> {
+): Promise<SoulFilesResult> {
   const written: AgentFilePath[] = [];
   const kept: AgentFilePath[] = [];
+  const problems: string[] = [];
   for (const [path, text] of files) {
-    let current: string | null = null;
+    let current: string | null;
     try {
+      // `text: null` is a file that isn't there; a throw is one that is there but couldn't be read.
       current = (await read(monoId, path)).text;
-    } catch {
-      current = null;
+    } catch (e) {
+      kept.push(path);
+      problems.push(`${path} couldn't be read (${e instanceof Error ? e.message : String(e)}), so it was left as it is.`);
+      continue;
     }
     if (current === text) continue;
     if (current?.trim() && !replace) {
@@ -137,16 +144,17 @@ export async function writeSoulFiles(
     await write(monoId, path, text);
     written.push(path);
   }
-  return { written, kept };
+  return { written, kept, problems };
 }
 
 /**
  * Ash's OK: seats the Mono with its look, projects and engine, and writes its rules, memory and workflows. A Mono that
- * left files behind here before keeps them: only missing files are written.
+ * left files behind here before keeps them: only missing files are written. When one of its files couldn't be read,
+ * it stays waiting (seated, nothing overwritten), so OK can try again; the problems are returned.
  */
-export async function seatWaitingSoul(monoId: string, write: Writer = writeAgentFile, folders?: string[], read: Read = readAgentFile): Promise<void> {
+export async function seatWaitingSoul(monoId: string, write: Writer = writeAgentFile, folders?: string[], read: Read = readAgentFile): Promise<string[]> {
   const soul = readWaiting().find((s) => s.monoId === monoId);
-  if (!soul) return;
+  if (!soul) return [];
   if (!isSeated(monoId)) {
     addMono({
       id: soul.monoId,
@@ -158,8 +166,9 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       ...engineFieldsOf(soul.engine),
     });
   }
-  await writeSoulFiles(monoId, soulFiles(soul), { write, read });
-  saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
+  const { problems } = await writeSoulFiles(monoId, soulFiles(soul), { write, read });
+  if (!problems.length) saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
+  return problems;
 }
 
 /**
@@ -169,9 +178,9 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
 export async function mergeIntoSeated(
   soul: SetupSoul,
   { replace = false, write, read }: { replace?: boolean; write?: Writer; read?: Read } = {},
-): Promise<{ written: AgentFilePath[]; kept: AgentFilePath[] }> {
+): Promise<SoulFilesResult> {
   const mono = findMono(soul.monoId);
-  if (!mono) return { written: [], kept: [] };
+  if (!mono) return { written: [], kept: [], problems: [] };
   const engine = engineFieldsOf(soul.engine);
   updateMono(mono.id, (m) => ({
     ...m,
