@@ -531,6 +531,8 @@ export function actionsListing(listing: ActionsListing) {
       ...(action.description ? { description: action.description } : {}),
       ...(action.runOnWorktreeCreate ? { runOnWorktreeCreate: true } : {}),
       ...(action.longRunning ? { longRunning: true } : {}),
+      // It asks Ash before it runs (Ship): actions.run refuses it; ask him in your chat.
+      ...(action.confirm ? { confirm: true } : {}),
     })),
     runs: listing.runs.slice(0, 10).map(actionRunSummary),
     ...(note ? { note } : {}),
@@ -1476,6 +1478,14 @@ export async function handleAgentApp(
         (waitSeconds as number) > 25
       )
         throw new Error("waitSeconds must be an integer from 0 to 25");
+      // An action that asks before it runs (`confirm`, like Ship) runs only from Ash's own tap, never for an agent.
+      if (!host.projectActions)
+        throw new Error("Project actions aren't available in this app");
+      const listed = (await host.projectActions(cwd)).actions.find(
+        (action) => action.id === actionId,
+      );
+      if (listed?.confirm)
+        throw new Error(`${listed.name} asks Ash first; ask him in your chat`);
       // A session working in its own worktree runs actions there by default.
       let checkout =
         !host.monoOf?.(source.id) &&
