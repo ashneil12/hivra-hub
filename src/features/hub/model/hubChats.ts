@@ -113,14 +113,37 @@ if (!examplesOn()) {
   } catch { /* keep a clean roster if storage is unavailable */ }
 }
 
+/** How many of a conversation's newest messages are stored (the whole roster shares one storage key). */
+export const STORED_MESSAGES = 500;
+/** Why the last save failed, until one works (GroupChatView shows it). */
+let saveProblem: string | undefined;
+
 const EVENT = "monocode:hub-chats-changed";
 let version = 0;
 function changed(): void {
   if (!examplesOn()) {
-    try { localStorage.setItem(CHAT_KEY, JSON.stringify(chats)); } catch { /* browser storage unavailable */ }
+    try {
+      const stored = chats.map((c) => ({
+        ...c,
+        conversations: c.conversations.map((x) =>
+          x.messages.length > STORED_MESSAGES ? { ...x, messages: x.messages.slice(-STORED_MESSAGES) } : x),
+      }));
+      localStorage.setItem(CHAT_KEY, JSON.stringify(stored));
+      saveProblem = undefined;
+    } catch (error) {
+      // Said once per run of failures, not on every message.
+      if (!saveProblem) console.error("Could not save the group chats", error);
+      const why = error instanceof Error && error.message ? ` (${error.message.replace(/\.$/, "")})` : "";
+      saveProblem = `Group chats couldn't be saved${why}. New messages may be gone after a restart.`;
+    }
   }
   version++;
   window.dispatchEvent(new CustomEvent(EVENT));
+}
+
+/** Why the group chats couldn't be saved, while they can't. */
+export function chatSaveProblem(): string | undefined {
+  return saveProblem;
 }
 function subscribe(cb: () => void): () => void {
   window.addEventListener(EVENT, cb);
