@@ -4078,7 +4078,15 @@ function SubagentRow({
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? toolCallState(block) === "rejected";
   if (isWorkflowBlock(block)) {
-    return <WorkflowRunPanel block={block} live={live} onStop={onStopWorkflow} />;
+    return (
+      <WorkflowRunPanel
+        block={block}
+        live={live}
+        onStop={onStopWorkflow}
+        cwd={cwd}
+        onOpenFile={onOpenFile}
+      />
+    );
   }
   return (
     <SubagentPanel

@@ -3,6 +3,7 @@ import { ChevronRight, Square, Ungroup } from "../../../shared/ui/icons";
 import { Shimmer } from "../../../shared/ui/Shimmer";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { formatTokens } from "../model/contextUsage";
+import { AgentMarkdown } from "./AgentMarkdown";
 import type { Block } from "../model/session";
 import {
   WORKFLOW_AGENT_STATE_LABEL,
@@ -16,17 +17,23 @@ import {
  * One row for a whole workflow run, pinned like a subagent while it works:
  * its name, the phase it is in and how many agents are done, with one Stop
  * for the run. Opened, it lists each phase and every agent's state, so a
- * busy run reads as busy and a stalled one as stalled.
+ * busy run reads as busy and a stalled one as stalled. An agent's row opens
+ * like a subagent's onto what the provider says of it: what it was asked, how
+ * far it has got, and what it handed back or why it failed.
  */
 export function WorkflowRunPanel({
   block,
   live = false,
   onStop,
+  cwd,
+  onOpenFile,
 }: {
   block: Block;
   live?: boolean;
   /** Stops the whole run, every agent in it. */
   onStop?: (taskId: string) => void;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
 }) {
   const run = block.workflowRun;
   const running = live && (run ? run.status === "running" : true);
@@ -108,13 +115,25 @@ export function WorkflowRunPanel({
         ) : null}
       </div>
       <div className="zen-phase-body" data-open={open}>
-        {open && run ? <WorkflowPhases run={run} live={running} /> : null}
+        {open && run ? (
+          <WorkflowPhases run={run} live={running} cwd={cwd} onOpenFile={onOpenFile} />
+        ) : null}
       </div>
     </div>
   );
 }
 
-function WorkflowPhases({ run, live }: { run: WorkflowRunMeta; live: boolean }) {
+function WorkflowPhases({
+  run,
+  live,
+  cwd,
+  onOpenFile,
+}: {
+  run: WorkflowRunMeta;
+  live: boolean;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
+}) {
   const groups = phaseGroups(run);
   if (groups.length === 0) {
     return (
@@ -137,7 +156,13 @@ function WorkflowPhases({ run, live }: { run: WorkflowRunMeta; live: boolean }) 
             ) : null}
           </div>
           {agents.map((agent) => (
-            <WorkflowAgentRow key={agent.index} agent={agent} live={live} />
+            <WorkflowAgentRow
+              key={agent.index}
+              agent={agent}
+              live={live}
+              cwd={cwd}
+              onOpenFile={onOpenFile}
+            />
           ))}
         </div>
       ))}
@@ -148,22 +173,34 @@ function WorkflowPhases({ run, live }: { run: WorkflowRunMeta; live: boolean }) 
   );
 }
 
-function WorkflowAgentRow({ agent, live }: { agent: WorkflowAgent; live: boolean }) {
+/**
+ * One agent of the run, opening like a subagent's row. An agent that failed
+ * opens itself, so its reason shows; a click takes the row over from there.
+ */
+function WorkflowAgentRow({
+  agent,
+  live,
+  cwd,
+  onOpenFile,
+}: {
+  agent: WorkflowAgent;
+  live: boolean;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const [override, setOverride] = useState<boolean | null>(null);
   const working = live && agent.state === "working";
   const failed = agent.state === "failed";
+  const open = override ?? (failed && !!agent.error);
+  const opens = !!(agent.prompt || agent.result || agent.error);
   const meta = [
     agent.tokens ? `${formatTokens(agent.tokens)} tokens` : undefined,
     agent.durationMs ? `${Math.max(1, Math.round(agent.durationMs / 1000))}s` : undefined,
   ]
     .filter(Boolean)
     .join(" · ");
-  return (
-    <div
-      className="flex min-w-0 items-center gap-2 py-0.5"
-      title={agent.error ?? agent.result ?? agent.label}
-      data-workflow-agent={agent.label}
-      data-workflow-agent-state={agent.state}
-    >
+  const row = (
+    <>
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         <ProjectMascot
           project={agent.label}
@@ -187,8 +224,119 @@ function WorkflowAgentRow({ agent, live }: { agent: WorkflowAgent; live: boolean
       >
         {WORKFLOW_AGENT_STATE_LABEL[agent.state]}
       </span>
+    </>
+  );
+  if (!opens) {
+    return (
+      <div
+        className="flex min-w-0 items-center gap-2 py-0.5"
+        title={agent.label}
+        data-workflow-agent={agent.label}
+        data-workflow-agent-state={agent.state}
+      >
+        {row}
+        <span className="size-3.5 shrink-0" />
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-w-0 flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={open ? `Hide ${agent.label}'s work` : `Show ${agent.label}'s work`}
+        title={agent.label}
+        onClick={() => setOverride(!open)}
+        data-workflow-agent={agent.label}
+        data-workflow-agent-state={agent.state}
+        className={`group -mx-1.5 flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5 text-left transition-colors duration-200 hover:bg-content/8 ${
+          open ? "bg-content/8" : ""
+        }`}
+      >
+        {row}
+        <ChevronRight
+          className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${open ? "rotate-90" : ""}`}
+          strokeWidth={1.75}
+        />
+      </button>
+      <div className="zen-phase-body" data-open={open}>
+        {open ? (
+          <WorkflowAgentWork agent={agent} live={live} cwd={cwd} onOpenFile={onOpenFile} />
+        ) : null}
+      </div>
     </div>
   );
+}
+
+/**
+ * What the provider says of one agent, all it says: Claude Code streams an
+ * agent's brief, its counts and its report, not the steps between them.
+ */
+function WorkflowAgentWork({
+  agent,
+  live,
+  cwd,
+  onOpenFile,
+}: {
+  agent: WorkflowAgent;
+  live: boolean;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const progress = live ? agentProgress(agent, Date.now()) : undefined;
+  return (
+    <div className="flex min-w-0 flex-col pb-1" data-workflow-agent-work={agent.label}>
+      {agent.prompt ? (
+        <div
+          className="zen-phase-step whitespace-pre-wrap break-words py-1 font-sans text-[12px] leading-5 text-content/50"
+          data-workflow-agent-prompt
+        >
+          {agent.prompt}
+        </div>
+      ) : null}
+      {progress ? (
+        <div
+          className="zen-phase-step py-1 font-sans text-[12px] text-content/45"
+          data-workflow-agent-progress
+        >
+          {progress}
+        </div>
+      ) : null}
+      {agent.state === "failed" && agent.error ? (
+        <div className="zen-phase-step py-1" data-workflow-agent-report>
+          <pre className="min-w-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-red-400/80">
+            {agent.error}
+          </pre>
+        </div>
+      ) : agent.result ? (
+        <div className="zen-phase-step py-1" data-workflow-agent-report>
+          <AgentMarkdown text={agent.result} cwd={cwd} onOpenFile={onOpenFile} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** How far a running agent has got, by the counts it reports: "3 tool calls · active 12s ago". */
+function agentProgress(agent: WorkflowAgent, now: number): string | undefined {
+  if (agent.state === "queued") return "Waiting to start";
+  if (agent.state !== "working") return undefined;
+  const parts: string[] = [];
+  if (agent.toolCalls) parts.push(`${agent.toolCalls} tool call${agent.toolCalls === 1 ? "" : "s"}`);
+  if (agent.lastProgressAt !== undefined) {
+    const seconds = Math.max(0, Math.round((now - agent.lastProgressAt) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    parts.push(
+      seconds < 5
+        ? "active just now"
+        : seconds < 120
+          ? `active ${seconds}s ago`
+          : minutes < 120
+            ? `active ${minutes}m ago`
+            : `active ${Math.floor(minutes / 60)}h ago`,
+    );
+  }
+  return parts.length ? parts.join(" · ") : "Working";
 }
 
 /** Phases in order with their agents; agents with no phase go last. */

@@ -29,7 +29,12 @@ export type WorkflowAgent = {
   durationMs?: number;
   /** Epoch ms of the agent's newest activity, when the provider says. */
   lastProgressAt?: number;
-  /** The start of what it handed back. */
+  /**
+   * What it was asked to do, as far as the provider shows it. Claude Code
+   * streams this, the agent's counts and what it handed back, never its steps.
+   */
+  prompt?: string;
+  /** What it handed back, as far as the provider shows it. */
   result?: string;
   /** Why it failed. */
   error?: string;
@@ -60,15 +65,16 @@ export type WorkflowRunMeta = {
   summary?: string;
 };
 
-/** Past this an agent's preview is a paragraph, not a line. */
-const PREVIEW_CHARS = 280;
+/** What an agent was asked or handed back, kept to read in full when its row is opened. */
+export const AGENT_TEXT_CHARS = 4000;
 
-export function clipPreview(text: string | undefined): string | undefined {
-  const flat = text?.replace(/\s+/g, " ").trim();
-  if (!flat) return undefined;
-  return flat.length <= PREVIEW_CHARS
-    ? flat
-    : `${flat.slice(0, PREVIEW_CHARS - 1).trimEnd()}…`;
+/** An agent's prompt or report as written (its lines kept), up to what a row opens onto. */
+export function agentText(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= AGENT_TEXT_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, AGENT_TEXT_CHARS - 1).trimEnd()}…`;
 }
 
 function finished(state: WorkflowAgentState): boolean {
@@ -278,8 +284,12 @@ export function parseWorkflowRun(
     const agent: WorkflowAgent = { index, label, state };
     const phaseIndex = num(row?.phaseIndex);
     if (phaseIndex !== undefined) agent.phaseIndex = phaseIndex;
-    for (const key of ["phaseTitle", "model", "result", "error"] as const) {
+    for (const key of ["phaseTitle", "model"] as const) {
       const text = str(row?.[key]);
+      if (text) agent[key] = text;
+    }
+    for (const key of ["prompt", "result", "error"] as const) {
+      const text = agentText(str(row?.[key], AGENT_TEXT_CHARS + 1));
       if (text) agent[key] = text;
     }
     for (const key of ["attempt", "tokens", "toolCalls", "durationMs", "lastProgressAt"] as const) {

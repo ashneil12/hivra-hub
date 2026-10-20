@@ -15,7 +15,10 @@ const proof = (page: Page) =>
 
 const SHOTS = process.env.WORKFLOW_PROOF_DIR;
 const shot = async (page: Page, name: string) => {
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png` });
+  if (!SHOTS) return;
+  // Rows open and close over 320 ms (.zen-phase-body); picture them settled.
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
 test.use({ viewport: { width: 1500, height: 760 } });
@@ -55,4 +58,38 @@ test("one Stop ends the whole run", async ({ page }) => {
     "Stopped · 0 of 2 agents done · 2 skipped",
   );
   await shot(page, "workflow-3-stopped");
+});
+
+test("an agent in the run opens onto what Claude Code streams for it: its brief, progress and report", async ({ page }) => {
+  // Claude Code 2.1.302 streams each workflow agent's prompt preview, counts and result preview (or error), and none
+  // of its own messages or tool calls, so that is what an agent's row opens onto.
+  await page.goto("/tests/browser/workflow-run.html?scenario=run");
+  await expect.poll(async () => (await proof(page)).held).toBe(true);
+  const done = page.locator('[data-workflow-agent="Read parser"]');
+  await expect(done).toHaveAttribute("data-workflow-agent-state", "done");
+  await done.click();
+  const doneWork = page.locator('[data-workflow-agent-work="Read parser"]');
+  await expect(doneWork.locator("[data-workflow-agent-prompt]")).toHaveText("AGENT-A read the parser");
+  await expect(doneWork.locator("[data-workflow-agent-report]")).toHaveText("Read it; nothing wrong.");
+  await expect(doneWork.locator("[data-workflow-agent-progress]")).toHaveCount(0);
+
+  const working = page.locator('[data-workflow-agent="Read adapter"]');
+  await working.click();
+  const workingWork = page.locator('[data-workflow-agent-work="Read adapter"]');
+  await expect(workingWork.locator("[data-workflow-agent-prompt]")).toHaveText("AGENT-B read the adapter");
+  await expect(workingWork.locator("[data-workflow-agent-prompt]")).toBeVisible();
+  await expect(workingWork.locator("[data-workflow-agent-progress]")).toContainText("active");
+  await expect(workingWork.locator("[data-workflow-agent-report]")).toHaveCount(0);
+  await shot(page, "workflow-4-agent-open");
+
+  // Clicking again folds it away.
+  await done.click();
+  await expect(doneWork).toHaveCount(0);
+
+  // A failed agent opens itself on its error once the run ends.
+  await page.evaluate(() => (window as unknown as { proof: Proof }).proof.resume());
+  const failed = page.locator('[data-workflow-agent-work="Verify findings"]');
+  await expect(failed.locator("[data-workflow-agent-report]")).toHaveText("API Error: 400 fixture: this agent fails");
+  await expect(failed.locator("[data-workflow-agent-prompt]")).toHaveText("FAIL-ME AGENT-C verify findings");
+  await shot(page, "workflow-5-agent-failed");
 });

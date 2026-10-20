@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_TEXT_CHARS,
   currentPhase,
   mergeWorkflowFrame,
   parseWorkflowRun,
@@ -115,5 +116,24 @@ describe("parseWorkflowRun", () => {
     const loaded = parseWorkflowRun(saved, { hydrate: true });
     expect(loaded?.status).toBe("stopped");
     expect(loaded?.agents.map((agent) => agent.state)).toEqual(["done", "skipped"]);
+  });
+});
+
+describe("an agent's brief and report", () => {
+  it("survive a restart as written, lines kept, up to what a row opens onto", () => {
+    const long = "x".repeat(AGENT_TEXT_CHARS + 50);
+    const saved = parseWorkflowRun({
+      taskId: "w1",
+      status: "completed",
+      phases: [],
+      agents: [
+        { index: 1, label: "Read parser", state: "done", prompt: "Read the parser.\n\nList what breaks.", result: "## Found\n- two bugs" },
+        { index: 2, label: "Verify", state: "failed", prompt: long, error: "API Error: 400" },
+      ],
+    });
+    expect(saved?.agents[0]).toMatchObject({ prompt: "Read the parser.\n\nList what breaks.", result: "## Found\n- two bugs" });
+    expect(saved?.agents[1].prompt).toHaveLength(AGENT_TEXT_CHARS);
+    expect(saved?.agents[1].prompt?.endsWith("…")).toBe(true);
+    expect(saved?.agents[1].error).toBe("API Error: 400");
   });
 });

@@ -1,5 +1,5 @@
 import {
-  clipPreview,
+  agentText,
   mergeWorkflowFrame,
   type WorkflowAgent,
   type WorkflowAgentState,
@@ -19,9 +19,12 @@ import { asRecord, stringField } from "./claudeProtocol";
  *   `workflow_name` (the script's meta.name), keyed to the launching tool call.
  * - `system/task_progress` frames carry `workflow_progress`: a snapshot list of
  *   `{type: "workflow_phase", index, title}` and `{type: "workflow_agent",
- *   index, label, phaseIndex, phaseTitle, state, attempt, tokens, toolCalls,
- *   durationMs, lastProgressAt, queuedAt, startedAt, resultPreview, error}`
- *   entries (plus `workflow_log` lines, ignored). Agent `state` is `start`
+ *   index, label, phaseIndex, phaseTitle, agentId, model, state, attempt,
+ *   tokens, toolCalls, durationMs, lastProgressAt, queuedAt, startedAt,
+ *   promptPreview, resultPreview, error}` entries (plus `workflow_log` lines,
+ *   ignored). That is all the stream says about an agent: no message or tool
+ *   call of its own is streamed (its transcript is only written under the
+ *   run's "Transcript dir" on disk). Agent `state` is `start`
  *   (queued while it has `queuedAt` but no `startedAt`), `done` or `error`
  *   (`skipped: true` when the user skipped it). Some frames repeat only usage.
  * - The end is `system/task_updated` `patch.status` (`completed`, `failed`,
@@ -88,8 +91,9 @@ function parseAgent(entry: Record<string, unknown>): WorkflowAgent | null {
   const toolCalls = count(entry.toolCalls);
   const durationMs = count(entry.durationMs);
   const lastProgressAt = count(entry.lastProgressAt);
-  const result = clipPreview(stringField(entry, "resultPreview"));
-  const error = clipPreview(stringField(entry, "error"));
+  const prompt = agentText(stringField(entry, "promptPreview"));
+  const result = agentText(stringField(entry, "resultPreview"));
+  const error = agentText(stringField(entry, "error"));
   return {
     index,
     label,
@@ -102,6 +106,7 @@ function parseAgent(entry: Record<string, unknown>): WorkflowAgent | null {
     ...(toolCalls !== undefined ? { toolCalls } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(lastProgressAt !== undefined ? { lastProgressAt } : {}),
+    ...(prompt ? { prompt } : {}),
     ...(result ? { result } : {}),
     ...(error ? { error } : {}),
   };

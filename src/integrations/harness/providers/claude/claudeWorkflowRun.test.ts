@@ -171,6 +171,27 @@ describe("a Claude Code workflow run (recorded from CLI 2.1.302)", () => {
     expect(final.blocks.some((block) => block.role === "assistant" && block.text === "Workflow finished.")).toBe(true);
   });
 
+  it("keeps what the stream says of each agent: its brief, counts and report, and nothing else", async () => {
+    const lines = recorded("workflow-run");
+    // CLI 2.1.302 streams no message or tool call of a workflow agent's own: every line belongs to the Lead.
+    expect(lines.every((rec) => !rec.parent_tool_use_id)).toBe(true);
+    const { events, turn } = await startTurn();
+    for (const rec of lines) emit(rec);
+    await turn;
+    const agents = session(events).blocks.find(isWorkflowBlock)?.workflowRun?.agents ?? [];
+    expect(agents.map(({ label, prompt, result, error, tokens }) => ({ label, prompt, result, error, tokens }))).toEqual([
+      { label: "Read parser", prompt: "AGENT-A read the parser", result: "Read it; nothing wrong.", error: undefined, tokens: 2169 },
+      { label: "Read adapter", prompt: "AGENT-B read the adapter", result: "Read it; nothing wrong.", error: undefined, tokens: 2169 },
+      {
+        label: "Verify findings",
+        prompt: "FAIL-ME AGENT-C verify findings",
+        result: undefined,
+        error: "API Error: 400 fixture: this agent fails",
+        tokens: 0,
+      },
+    ]);
+  });
+
   it("keeps the run pinned as its own row while the turn is live", async () => {
     const lines = recorded("workflow-run");
     const { events } = await startTurn();
