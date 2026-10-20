@@ -660,6 +660,34 @@ export function isReplayedTaskNotificationResult(
   );
 }
 
+/** What kind of background work a Claude task is, for the resume note after a restart. */
+export function cutWorkKind(
+  taskType: string | undefined,
+): "subagent" | "shell" | "monitor" | "task" {
+  const key = (taskType ?? "").toLowerCase();
+  if (isAgentTaskType(key)) return "subagent";
+  if (key.includes("monitor")) return "monitor";
+  if (key.includes("bash") || key.includes("shell")) return "shell";
+  return "task";
+}
+
+/**
+ * What Claude Code 2.1.302 answers `--resume <id>` with when it has no transcript for that id (deleted, or saved
+ * under another folder): a `result` with no turns, `is_error`, and "No conversation found with session ID: <id>" in
+ * `errors`, then it exits 1. Recorded in fixtures/claude-cli-2.1.302/no-conversation-found.ndjson. The text, or null.
+ */
+export function deadConversationFromResult(
+  rec: Record<string, unknown>,
+): string | null {
+  if (stringField(rec, "type") !== "result") return null;
+  if (typeof rec.num_turns === "number" && rec.num_turns > 0) return null;
+  const texts = [
+    ...(Array.isArray(rec.errors) ? rec.errors : []),
+    rec.result,
+  ].filter((value): value is string => typeof value === "string");
+  return texts.find((text) => /no conversation found/i.test(text)) ?? null;
+}
+
 export function isAgentTaskType(taskType: string | undefined): boolean {
   const key = (taskType ?? "").toLowerCase();
   return key === "local_agent" || key === "remote_agent";

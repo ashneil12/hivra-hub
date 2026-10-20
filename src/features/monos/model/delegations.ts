@@ -10,6 +10,7 @@
 // - a resumed turn (auto-continue, a usage-limit resume, a later message in a cut-off child) re-attaches to the
 //   child's row and bumps its generation, so its report has its own receipt (`mono-completion-<request>-g<n>`).
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   failedReason,
   isProviderErrorClass,
@@ -114,8 +115,15 @@ export type ChatBindInput = {
   providerSession: string;
   chatId: string;
   monoId?: string;
-  role?: "lead" | "mono" | "worker";
+  role?: "lead" | "mono" | "worker" | "checker";
   delegationId?: string;
+};
+
+/** A chat's own rows (the task tools, H3): by id or request, or (neither) the ones still running or owed. */
+export type OwnedQuery = {
+  ownerSession: string;
+  ids?: string[];
+  requestIds?: string[];
 };
 
 export type Change = { applied: boolean; row: Delegation | null };
@@ -135,6 +143,7 @@ export type DelegationsBackend = {
   refuse(id: string, by?: string): Promise<Change>;
   listOpen(): Promise<Delegation[]>;
   tree(id: string): Promise<Delegation[]>;
+  owned(query: OwnedQuery): Promise<Delegation[]>;
   reportsSeen(ownerSession: string, messageIds: string[]): Promise<string[]>;
   bindChat(input: ChatBindInput): Promise<boolean>;
 };
@@ -151,10 +160,36 @@ export const tauriDelegations: DelegationsBackend = {
   refuse: (id, by) => invoke("delegations_refuse", { id, by }),
   listOpen: () => invoke("delegations_list_open"),
   tree: (id) => invoke("delegations_tree", { id }),
+  owned: (input) => invoke("delegations_owned", { input }),
   reportsSeen: (ownerSession, messageIds) =>
     invoke("delegations_reports_seen", { ownerSession, messageIds }),
   bindChat: (input) => invoke("delegations_bind_chat", { input }),
 };
+
+/** delegations.rs's event after any change to a row. */
+export const DELEGATIONS_CHANGED = "monocode:delegations-changed";
+
+/** Resolves on the next change to any row, or after `ms`, whichever comes first. */
+export function nextDelegationChange(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let off: (() => void) | undefined;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      off?.();
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    void listen(DELEGATIONS_CHANGED, finish)
+      .then((unlisten) => {
+        if (done) unlisten();
+        else off = unlisten;
+      })
+      .catch(() => undefined);
+  });
+}
 
 export function isOpenDelegation(row: Pick<Delegation, "state">): boolean {
   return row.state === "running" || row.state === "question";
@@ -210,7 +245,8 @@ export function storedResult(
       : undefined;
   return {
     sessionId: row.childSession,
-    project: row.project ?? child?.cwd ?? "",
+    // Where the work ran: the row's project is the hub project id when there is one (for Ash OS).
+    project: child?.cwd ?? row.project ?? "",
     title: child?.title || row.title || "Agent session",
     status,
     originalPrompt: prompt.slice(0, 12_000),
@@ -241,7 +277,7 @@ export function transcriptResult(
   return monoSessionCompletionResult({
     requestId: row.requestId,
     sessionId: child.id,
-    project: row.project ?? child.cwd,
+    project: child.cwd,
     prompt: row.brief ?? "",
     outcome,
     session: child,
@@ -480,9 +516,13 @@ export class DelegationTracker {
     }).catch(() => undefined);
   }
 
-  /** The owner stopped, archived or deleted its child: the work is cancelled and no report follows. */
-  stopOwned(ownerId: string, childSession: string): void {
-    void this.serial(async () => {
+  /** The owner stopped, archived or deleted its child (or cancelled its task): the work is cancelled and no report follows. */
+  stopOwned(
+    ownerId: string,
+    childSession: string,
+    reason = "Stopped by its owner.",
+  ): Promise<void> {
+    return this.serial(async () => {
       const ids = [...this.rows.values()]
         .filter(
           (row) =>
@@ -494,11 +534,45 @@ export class DelegationTracker {
       if (!ids.length) return;
       for (const row of await this.backend.cancel(
         ids,
-        "Stopped by its owner.",
+        reason,
         `owner:${ownerId}`,
       ))
         this.remember(row);
     }).catch(() => undefined);
+  }
+
+  /** The owner cancelled these tasks (task_cancel): what is still owed is cancelled, with its reason. */
+  cancelOwned(
+    ownerId: string,
+    rows: Delegation[],
+    reason: string,
+  ): Promise<Delegation[]> {
+    return this.serial(async () => {
+      const ids = rows
+        .filter((row) => row.ownerSession === ownerId && isOwed(row))
+        .map((row) => row.id);
+      if (!ids.length) return [];
+      const changed = await this.backend.cancel(ids, reason, `owner:${ownerId}`);
+      changed.forEach((row) => this.remember(row));
+      return changed;
+    });
+  }
+
+  /**
+   * The owner read these finished results inside its own turn (task_status, a wait-mode delegate_task): they count as
+   * received, so no report turn follows for them (T3's "a status read acknowledges").
+   */
+  acknowledge(ownerId: string, ids: string[]): Promise<Delegation[]> {
+    if (!ids.length) return Promise.resolve([]);
+    return this.serial(async () => {
+      const changed = await this.backend.setDelivery({
+        ids,
+        delivery: "acknowledged",
+        by: `owner:${ownerId}`,
+      });
+      changed.forEach((row) => this.remember(row));
+      return changed;
+    });
   }
 
   /**
@@ -509,9 +583,10 @@ export class DelegationTracker {
     sessionId: string,
     text: string,
     busy: boolean,
+    /** The turn resumes a cut-off one (an automatic resume's text carries a note, so the caller says). */
+    resume: boolean = text.trim() === CONTINUE_PROMPT,
   ): ResumeMonitor | undefined {
     if (busy) return undefined;
-    const resume = text.trim() === CONTINUE_PROMPT;
     if (!resume && this.loaded && !this.openChildren.has(sessionId))
       return undefined;
     let attached: Promise<Delegation | null> | undefined;
@@ -540,7 +615,8 @@ export class DelegationTracker {
           const result = monoSessionCompletionResult({
             requestId: row.requestId,
             sessionId: row.childSession,
-            project: row.project ?? "",
+            project:
+              this.host.session(row.childSession)?.cwd ?? row.project ?? "",
             prompt: row.brief ?? "",
             outcome,
             session: this.host.session(row.childSession),

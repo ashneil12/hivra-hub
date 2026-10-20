@@ -1,6 +1,7 @@
 import type {
   AgentStepKind,
   Attachment,
+  CutWork,
   InterjectionMeta,
   RuntimeMode,
   TaskListItem,
@@ -37,6 +38,11 @@ export type HarnessEvent =
       resetsAt?: number;
     }
   | { type: "session.providerBound"; providerSessionId: string }
+  /**
+   * The provider's saved conversation is gone (its transcript was deleted): the stored id is dropped and the turn
+   * goes on in a fresh conversation started from the chat's brief. `text` is the note the chat shows.
+   */
+  | { type: "session.providerLost"; providerSessionId: string; text: string }
   | { type: "turn.started"; providerTurnId: string }
   | { type: "turn.ready" }
   | {
@@ -77,6 +83,11 @@ export type HarnessEvent =
    * running and will wake it again. Empty once it is back at work.
    */
   | { type: "background.updated"; tasks: string[] }
+  /**
+   * Everything the turn has running in the background, with ids, whenever it changes (empty when nothing is). Saved
+   * with the in-flight row, so a resume after a quit or crash can say what was cut.
+   */
+  | { type: "background.work"; work: CutWork[] }
   | ({ type: "interjection"; text: string } & InterjectionMeta)
   | { type: "message.delta"; text: string }
   | { type: "message.completed" }
@@ -238,6 +249,11 @@ export type SendTurnInput = HarnessSessionInput & {
   attachments?: Attachment[];
   /** Called once the provider has accepted the user turn. */
   onAccepted?: () => void;
+  /**
+   * The prompt for a fresh provider conversation when the saved one is gone: the chat's deterministic brief wrapped
+   * around `text`. Without it the fresh conversation gets `text` alone.
+   */
+  resumeFallback?: (text: string) => string;
 };
 
 export type CompactContextInput = HarnessSessionInput;

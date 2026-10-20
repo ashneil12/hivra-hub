@@ -15,12 +15,17 @@ fn main() {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("control") => std::process::exit(monocode_lib::control_cli::run(rest())),
         Some("app") => std::process::exit(monocode_lib::control_cli::run_app(rest())),
+        // The delegate tool: a stdio MCP server for a Mono's chat (src/mcp_server.rs).
+        Some("mcp") => std::process::exit(monocode_lib::mcp_server::run(rest())),
         // This binary's identity and build stamp; no window, no data access.
         Some("version") => std::process::exit(monocode_lib::instance::version_main(&rest())),
         // Migrate a copy of the live database with no window (src/instance.rs).
         Some("healthcheck") => {
             std::process::exit(monocode_lib::instance::healthcheck_main(&rest()))
         }
+        // A connector for a Claude Code session: checks it is allowed, reads its login from the Keychain and serves it
+        // over stdio (src/connectors/launch.rs). No window, no database.
+        Some("connector-run") => std::process::exit(monocode_lib::connectors::run_main(&rest())),
         // The worktree clean-up report: reads only, no window, no app data (src/worktree_janitor.rs).
         Some("worktrees-report") => {
             std::process::exit(monocode_lib::worktree_janitor::report_main(&rest()))

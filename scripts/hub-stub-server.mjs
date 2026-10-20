@@ -15,6 +15,8 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createStudio } from "./hub-stub-studio.mjs";
+import { createChecks } from "./hub-stub-checks.mjs";
 
 const IDLE_SECONDS = 1800;
 const NEEDS_SHOWN = 5;
@@ -32,6 +34,10 @@ const TOPICS = [
   [/^hub\.lead\./, ["lead"]],
   [/^hub\.job\./, ["jobs"]],
   [/^hub\.code\./, ["service"]],
+  [/^hub\.page\./, ["pages"]],
+  [/^hub\.change\./, ["changes"]],
+  [/^hub\.layout\./, ["layout"]],
+  [/^check\./, ["checks"]],
 ];
 const topicsOf = (kind) => (TOPICS.find(([re]) => re.test(kind)) || [null, []])[1];
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -49,10 +55,10 @@ export function seedState(now = Date.now()) {
   const h = 3600_000;
   return {
     projects: [
-      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/example/Projects/vg-game", workOwner: "ash_os", status: "active" },
-      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
-      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "folder", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
-      { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "folder", folder: "/Users/example/Projects/monocode-hub", workOwner: "ash_os", status: "active" },
+      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/example/Projects/vg-game", workOwner: "ash_os", status: "active" },
+      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/example/Projects/hivra", workOwner: "ash_os", status: "active" },
+      { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "palette", folder: "/Users/example/Projects/nibbii", workOwner: "ash_os", status: "active" },
+      { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/Users/example/Projects/monocode-hub", workOwner: "ash_os", status: "active" },
     ],
     needs: [
       { id: "q1", projectId: "vg-game", title: "Example: play Areas 1 and 2", why: "The new level changed how these play. It needs your hands on it.", actionType: "start", actionTarget: "gate:project:playtests", rank: 1, since: now - 5 * h },
@@ -123,6 +129,37 @@ export function jobsScenario(now = Date.now()) {
   return { jobs, needs };
 }
 
+/**
+ * The retired question queue (`startStub({ questions: true })`, MONOCODE_HUB_STUB_SCENARIO=questions): what Ash OS sends
+ * once agents ask in their own chats (branch ash-os-questions). An ordinary question is no longer a Need: it is an older
+ * question, with the old queue's backlog of the same kind behind it. Needs keep only the real gates and failures: a
+ * red-line question and a failure that is still failing.
+ */
+export function retiredQueueScenario(needs, now = Date.now()) {
+  const day = 86_400_000;
+  for (const n of needs) {
+    if (String(n.actionTarget).startsWith("question:")) Object.assign(n, { older: true, later: false, id: n.id.startsWith("q:") ? n.id : `q:${n.id}` });
+  }
+  const backlog = [
+    ["b1", "hivra", "Example: keep the old pricing page live for a while?", 2],
+    ["b2", "vg-game", "Example: is the second boss still wanted?", 4],
+    ["b3", "hub", "Example: should the runner retry the footer fix?", 6],
+    ["b4", "nibbii", "Example: which notch pet colour is the default?", 9],
+    ["b5", "hivra", "Example: which Hivra folder is the real one?", 12],
+    ["b6", "vg-game", "Example: rename Area 3 to the Furnace?", 20],
+    ["b7", "hub", "Example: archive the old Grok bot handoff?", 33],
+  ].map(([id, projectId, title, days]) => ({
+    id: `q:${id}`, projectId, title, why: "From the old question queue.", actionType: "see_options", actionTarget: `question:${id}`, rank: 9,
+    since: now - days * day, state: "open", later: false, older: true,
+  }));
+  return [
+    ...needs,
+    ...backlog,
+    { id: "q:r1", projectId: "hivra", title: "Example: email the waitlist about the delay?", why: "My suggestion: wait until Friday, when the fix is live.", actionType: "see_options", actionTarget: "question:r1", rank: 0, since: now - 3 * 3600_000, state: "open", later: false },
+    { id: "q:f1", projectId: "hub", title: "Example: the harness deploy was rolled back twice", why: "This failed and needs your call: have an agent read the failing check, then say go.", actionType: "see_options", actionTarget: "question:f1", rank: 1, since: now - 5 * 3600_000, state: "open", later: false },
+  ];
+}
+
 /** Start a stub. Returns {port, url, token, state, calls, ...moves, close()}. */
 export async function startStub({
   port = 0,
@@ -132,9 +169,12 @@ export async function startStub({
   pingMs = 15_000,
   pendingSinceOnce = false,
   jobs: withJobs = false,
+  questions: retiredQueue = false,
   answerDelayMs = 0,
   seq = 100,
   now = () => Date.now(),
+  /** How long a page or change preview takes to "build" (HUB_STUB_BUILD_MS, default 1.5 s): longer than the app's wait shows "still building". */
+  buildMs = Number(process.env.HUB_STUB_BUILD_MS ?? 1500),
 } = {}) {
   const state = seedState(now());
   state.jobs = [];
@@ -143,6 +183,7 @@ export async function startStub({
     state.jobs = extra.jobs;
     state.needs.push(...extra.needs);
   }
+  if (retiredQueue) state.needs = retiredQueueScenario(state.needs, now());
   const events = [];
   let latest = seq;
   const calls = [];
@@ -194,6 +235,11 @@ export async function startStub({
       waiters.add(check);
     });
   }
+
+  // Pages, Change the hub and the project calls (scripts/hub-stub-studio.mjs).
+  const { studio, calls: studioCalls } = createStudio({ state, emit, now, iso, buildMs, latest: () => latest });
+  // The checker's calls and the checks it opens (scripts/hub-stub-checks.mjs).
+  const { calls: checkCalls, checks, addDump, addCheck } = createChecks({ emit, now, iso });
 
   // ---- the calls ---------------------------------------------------------------------------------------------------
   const openNeeds = () => state.needs.filter((n) => n.state === "open" && !n.older);
@@ -407,6 +453,25 @@ export async function startStub({
       recommendation: { text: q.rec, optionIndex: q.optionIndex }, quickAnswers: quickAnswersFor(q.rec), asks: [{ id: `a_${qid}`, title: n.title }], askedAt: iso(n.since),
     };
   }
+  // ---- sweeping the older questions (ash-hub-older-dismiss; branch ash-os-questions) ---------------------------------
+  // Ash only. Every open older question asked more than N days ago closes ("dismissed"); their asks are parked.
+  function olderDismissCall(v) {
+    const days = Number(v.older_than_days);
+    if (!Number.isFinite(days) || days < 1) throw new Error("older_than_days: a whole number of days, at least 1.");
+    if (v.project && !state.projects.some((p) => p.id === v.project)) throw new Error(`Unknown project: ${v.project}`);
+    const cut = now() - days * 86_400_000;
+    const closing = state.needs.filter((n) => n.older && n.state === "open" && n.since < cut && (!v.project || n.projectId === v.project));
+    for (const n of closing) {
+      Object.assign(n, { state: "done", doneAt: now(), doneReason: "dismissed" });
+      emit("question.expired", n.actionTarget.replace(/^question:/, ""), n.projectId);
+    }
+    const left = state.needs.filter((n) => n.older && n.state === "open").length;
+    const receipt = closing.length
+      ? `Dismissed ${closing.length} older question${closing.length === 1 ? "" : "s"}. Their asks are parked: saying one again brings it back.${left ? ` ${left} still waiting.` : ""}`
+      : "Nothing that old was waiting.";
+    return { dismissed: closing.length, ids: closing.map((n) => n.id), left, receipt };
+  }
+
   const RECEIPTS = { agree: "Going ahead: it is checked before an agent starts it, and anything about production, money, messages sent as you or keys waits for you.", drop: "Dropped. Nothing will be done on it.", park: "Parked for later. It comes back when you mention it again." };
   async function answerCall(v) {
     const n = questionNeed(v.id);
@@ -463,6 +528,7 @@ export async function startStub({
       case "need-seen": return needSeenCall(v);
       case "need-accept": return needAcceptCall(v);
       case "question": return questionCall(v);
+      case "older-dismiss": return olderDismissCall(v);
       case "answer": return answerCall(v);
       case "projects": return projectsCall(v);
       case "needs": return needsCall(v);
@@ -470,7 +536,10 @@ export async function startStub({
       case "since": return sinceCall(v);
       case "events": return waitEvents(Number(v.after || 0), Number(v.timeout || 0), v.topics);
       case "mono-projects": return monoProjectsCall(v);
-      default: throw new Error("Unknown hub action");
+      default:
+        if (Object.hasOwn(studioCalls, name)) return studioCalls[name](v);
+        if (Object.hasOwn(checkCalls, name)) return checkCalls[name](v);
+        throw new Error("Unknown hub action");
     }
   }
 
@@ -640,6 +709,10 @@ export async function startStub({
       return currentToken;
     },
     state,
+    studio,
+    checks,
+    addDump,
+    addCheck,
     calls,
     events,
     delegations,

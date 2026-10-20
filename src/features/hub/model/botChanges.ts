@@ -40,6 +40,26 @@ let hubChangeHooks: HubChangeHooks | undefined;
 export function setHubChangeHooks(next: HubChangeHooks): void {
   hubChangeHooks = next;
 }
+/**
+ * Change the hub / Edit Today rows come from Ash OS's history when the hub reads it (undefined: no history to read,
+ * then the rows kept here are shown). Undo and Redo on them go through the hooks; the next read shows the new state.
+ */
+let hubChangeSource: (() => BotChange[] | undefined) | undefined;
+export function setHubChangeSource(next: () => BotChange[] | undefined): void {
+  hubChangeSource = next;
+}
+/** Why the last Undo or Redo of a record row did nothing, by row id (the record itself has no "problem" field). */
+const recordProblems = new Map<string, string>();
+function fromRecord(): BotChange[] {
+  const rows = hubChangeSource?.();
+  return rows ? rows.map((r) => (recordProblems.has(r.id) ? { ...r, problem: recordProblems.get(r.id) } : r)) : [];
+}
+/** Every row: the record's changes first, then the ones kept here (a kept copy of a record row is left out). */
+function all(): BotChange[] {
+  const record = fromRecord();
+  const ids = new Set(record.map((r) => r.id));
+  return [...record, ...list.filter((c) => !ids.has(c.id))];
+}
 /** An applied hub change: a Bot changes row whose Undo reverts it through the backend. */
 export function recordHubChange(id: string, by: string, line: string, after: string): void {
   list = [{ id: `hub:${id}`, bot: by, day: "Today", line, now: "As it was", after, hubChangeId: id }, ...list.filter((c) => c.id !== `hub:${id}`)];
@@ -47,8 +67,11 @@ export function recordHubChange(id: string, by: string, line: string, after: str
   changed();
 }
 
-/** Pages registers how its kept pages come and go, so Undo here doesn't import the Pages store. */
-type PageHooks = { remove(pageId: string): void; restore(pageId: string): void };
+/**
+ * Pages registers how its kept pages come and go, so Undo here doesn't import the Pages store. Each resolves to Ash
+ * OS's refusal in plain words, if it refused.
+ */
+type PageHooks = { remove(pageId: string): Promise<string | undefined>; restore(pageId: string): Promise<string | undefined> };
 let pageHooks: PageHooks | undefined;
 export function setPageHooks(next: PageHooks): void {
   pageHooks = next;
@@ -60,9 +83,10 @@ export function recordPageChange(pageId: string, by: string, title: string): voi
   changed();
 }
 
-/** Pages registers how a page's pin is set, for Undo and Redo of a Mono's pin. */
-let pinHook: ((pageId: string, pinned: boolean) => void) | undefined;
-export function setPinHook(next: (pageId: string, pinned: boolean) => void): void {
+/** Pages registers how a page's pin is set, for Undo and Redo of a Mono's pin (resolving to a refusal, if any). */
+type PinHook = (pageId: string, pinned: boolean) => Promise<string | undefined>;
+let pinHook: PinHook | undefined;
+export function setPinHook(next: PinHook): void {
   pinHook = next;
 }
 /** A Mono pinned or unpinned a page: a Bot changes row under that Mono. */
@@ -75,7 +99,7 @@ export function recordPinChange(pageId: string, by: string, title: string, pinne
 
 /** Undo all from one Mono: every change of theirs that isn't undone yet. */
 export async function undoAllFrom(bot: string): Promise<void> {
-  await undoBotChange(list.filter((c) => c.bot === bot && !c.undone).map((c) => c.id));
+  await undoBotChange(all().filter((c) => c.bot === bot && !c.undone).map((c) => c.id));
 }
 
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
@@ -132,7 +156,7 @@ export type BotChangeRow =
 export function botChangeRows(): BotChangeRow[] {
   const rows: BotChangeRow[] = [];
   const bundles = new Map<string, BotChange[]>();
-  for (const c of list) {
+  for (const c of all()) {
     if (!c.small) { rows.push({ kind: "one", change: c }); continue; }
     const k = `${c.bot}|${c.day}`;
     if (!bundles.has(k)) {
@@ -171,7 +195,13 @@ export function recordRetirement(r: RetiredMono, projectName: string): string {
  * stays, marked undone. Example rows (no file) only mark themselves undone.
  */
 export async function undoBotChange(ids: string[]): Promise<void> {
+  const record = new Map(fromRecord().map((r) => [r.id, r]));
   for (const id of ids) {
+    const r = record.get(id);
+    if (r) {
+      if (!r.undone) await recordStep(r, "undo");
+      continue;
+    }
     const c = list.find((x) => x.id === id);
     if (!c || c.undone) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
@@ -183,11 +213,11 @@ export async function undoBotChange(ids: string[]): Promise<void> {
         next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
       }
     } else if (c.pin) {
-      if (pinHook) pinHook(c.pin.pageId, !c.pin.pinned);
-      else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
+      const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Pages isn't open yet, so nothing was undone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.pageId) {
-      if (pageHooks) pageHooks.remove(c.pageId);
-      else next = { ...c, problem: "Pages isn't open yet, so nothing was undone." };
+      const refused = pageHooks ? await pageHooks.remove(c.pageId) : "Pages isn't open yet, so nothing was undone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.retired) {
       try {
         await restoreRetiredMono(c.retired);
@@ -214,6 +244,18 @@ export async function undoBotChange(ids: string[]): Promise<void> {
   changed();
 }
 
+/** Undo or Redo a change Ash OS keeps: through the hooks; the record's next read shows the new state. */
+async function recordStep(r: BotChange, step: "undo" | "redo"): Promise<void> {
+  try {
+    if (!hubChangeHooks || !r.hubChangeId) throw new Error(`Not connected yet, so nothing was ${step === "undo" ? "undone" : "redone"}.`);
+    await hubChangeHooks[step](r.hubChangeId);
+    recordProblems.delete(r.id);
+  } catch (e) {
+    recordProblems.set(r.id, e instanceof Error ? e.message : `That ${step === "undo" ? "Undo" : "Redo"} didn't go through.`);
+  }
+  changed();
+}
+
 /** "Back to 12 steps (was 8 steps)": what an undone change reads like. */
 export function undoneLine(c: Pick<BotChange, "now" | "after">): string {
   return `Back to ${c.now} (was ${c.after})`;
@@ -224,7 +266,13 @@ export function undoneLine(c: Pick<BotChange, "now" | "after">): string {
  * hash it was read at, then read back. The row is no longer undone.
  */
 export async function redoBotChange(ids: string[]): Promise<void> {
+  const record = new Map(fromRecord().map((r) => [r.id, r]));
   for (const id of ids) {
+    const r = record.get(id);
+    if (r) {
+      if (r.undone) await recordStep(r, "redo");
+      continue;
+    }
     const c = list.find((x) => x.id === id);
     if (!c || !c.undone) continue;
     let next: BotChange = { ...c, undone: false, problem: undefined };
@@ -236,11 +284,11 @@ export async function redoBotChange(ids: string[]): Promise<void> {
         next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
     } else if (c.pin) {
-      if (pinHook) pinHook(c.pin.pageId, c.pin.pinned);
-      else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
+      const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Pages isn't open yet, so nothing was redone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.pageId) {
-      if (pageHooks) pageHooks.restore(c.pageId);
-      else next = { ...c, problem: "Pages isn't open yet, so nothing was redone." };
+      const refused = pageHooks ? await pageHooks.restore(c.pageId) : "Pages isn't open yet, so nothing was redone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.retired) {
       try {
         const again = await retireMono(c.retired.mono.id);

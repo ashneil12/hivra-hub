@@ -28,6 +28,15 @@ export type AppPolicy = {
   globalShortcut: boolean;
 };
 
+/**
+ * The fake-Claude test bench's plan (scripts/hub-verify-live.mjs, src-tauri/src/verify_live.rs). Only a dev copy under
+ * a temporary HOME ever has one: open a Mono on a scratch project and send its first message, once per run.
+ */
+export type VerifyPlan = {
+  runId: string;
+  kickoff?: { project: string; monoName: string; prompt: string };
+};
+
 export type AppIdentity = {
   product: string;
   version: string;
@@ -37,7 +46,28 @@ export type AppIdentity = {
   stamp: AppStamp;
   schemaVersion: number;
   policy: AppPolicy;
+  verify?: VerifyPlan;
 };
+
+function readVerifyPlan(value: unknown): VerifyPlan | undefined {
+  if (!isRecord(value) || typeof value.runId !== "string" || !value.runId) return undefined;
+  const kickoff = value.kickoff;
+  return {
+    runId: value.runId,
+    ...(isRecord(kickoff) &&
+    typeof kickoff.project === "string" &&
+    typeof kickoff.monoName === "string" &&
+    typeof kickoff.prompt === "string"
+      ? {
+          kickoff: {
+            project: kickoff.project,
+            monoName: kickoff.monoName,
+            prompt: kickoff.prompt,
+          },
+        }
+      : {}),
+  };
+}
 
 const GLOBAL = "__MONOCODE_APP__";
 
@@ -89,6 +119,10 @@ export function readAppIdentity(source: unknown): AppIdentity | null {
     schemaVersion:
       typeof source.schemaVersion === "number" ? source.schemaVersion : 0,
     policy: flags,
+    // Never on the daily app, whatever the window was handed.
+    ...(source.kind === "dev" && readVerifyPlan(source.verify)
+      ? { verify: readVerifyPlan(source.verify) }
+      : {}),
   };
 }
 

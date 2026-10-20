@@ -62,7 +62,10 @@ A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOC
 `MONOCODE_HUB_TOKEN_FILE` point at the stub or the read-only proxy (never port 18767 or the live key), Keychain
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
-made). The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
+only reaches that copy's own control port. A proof that needs ash-os tools in a dev copy can opt in to a stand-in that
+only talks to that slot's stub: start it with `VITE_MONOCODE_DEV_ASH_OS` set to the entry
+`node scripts/hub-stub-ash-os-mcp.mjs --entry --url <stub url> --token-file <slot token file>` prints. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
@@ -258,6 +261,18 @@ Upstream CI passes its own `signingIdentity` through `tauri.release.conf.json`, 
 packaged release builds.
 
 
+## Restart-safe resume and the fake-Claude bench (Phase 1b WP5)
+
+- A turn cut by a quit, crash or ship resumes by itself with a note naming the background work that was cut (ids
+  included) and, for a ship, the receipt. It resumes at most 3 times in a row; then the chat shows a resume-stopped
+  note (Needs you) and a waiting Lead hears it failed. A chat whose Claude transcript is gone starts fresh from its
+  brief (a "recovered" note) instead of failing every message.
+- **`npm run hub:verify-live`** proves the delegation chain through real restarts with a fake Claude
+  (`scripts/fake-claude.mjs`): a throwaway dev slot under a temporary HOME, the stub, `SIGKILL` between phases,
+  `evidence/<run>/verdict.json`. `-- --fail-gate` is its negative control and must exit non-zero. It never touches the
+  daily app, its data, `~/.claude` or a real Claude login; it runs in the background (no focus) and closes the copy at
+  the end. Launch it for a final proof, not to iterate: the unit tests and `claudeFakeCli.test.ts` cover the parts.
+
 ## Improvement loop and isolated test copy
 
 For a reported bug, record the failure before changing it and keep every ask in a checklist. Work through:
@@ -273,3 +288,11 @@ use a test worktree and avoid real external actions. The old MonoCode Test copy 
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
+
+## Export and import (Phase 5, docs/PORTABLE.md)
+
+Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
+`.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
+connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
+its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.

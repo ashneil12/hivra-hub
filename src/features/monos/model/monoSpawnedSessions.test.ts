@@ -249,6 +249,13 @@ it("reads a launched session's state for its card", () => {
       { id: "i", role: "system", text: "Stopped", notice: "interrupt" },
     ]),
   ).toBe("stopped");
+  // Stopped resuming itself after restarts: someone has to look.
+  expect(
+    ran([
+      prompt,
+      { id: "s", role: "system", text: "Restarted 3 times", notice: "resume-stopped" },
+    ]),
+  ).toBe("input");
   expect(ran([prompt, { id: "r", role: "assistant", text: "Done." }])).toBe(
     "done",
   );

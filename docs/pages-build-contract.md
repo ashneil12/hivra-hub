@@ -18,6 +18,11 @@ buildPage({ projectId, monoId, prompt }): Promise<BuildPageResult>
 - **The backend's job:**
   1. Run that Mono with the system instructions in section 5.
   2. Return a `PageSpec` (section 2) as the call's `result`.
+- **Waiting:** the app sends `wait: 30` (seconds Ash OS may wait for the build; hub.rs adds it to the call's 15 s).
+  A build not done by then answers "<Mono> is still building this page. Press Try again…" and the app shows a
+  still-building card; Try again sends the same request and collects the finished page. The answer carries
+  `pageId` (the record's preview); Keep sends `ash-hub-page-update {pageId, kept: true, permissions}`.
+- **Where kept pages live:** Ash OS's record (`ash-hub-pages`, `-page-update`, `-page-remove`), not localStorage.
 - **Errors:** reject with `{ kind, message }` as `hub.rs` already does.
   - `unreachable`, `timeout`, `unauthorized` or `refused`: the app shows **Not connected yet**.
   - Anything else: the app shows the message with Try again.

@@ -67,6 +67,26 @@ export function applyProjectPrefs(projects: HubProject[]): HubProject[] {
   return shown.map((x, i) => ({ x, i })).sort((a, b) => rank(a.x.id) - rank(b.x.id) || a.i - b.i).map((v) => v.x);
 }
 
+/** Names Ash gave projects on this Mac (before Ash OS kept them). */
+export function localProjectNames(): Record<string, string> {
+  return { ...load().names };
+}
+/** Ash OS has the name now: this Mac's copy goes. */
+export function clearLocalProjectName(id: string): void {
+  if (!(id in load().names)) return;
+  save((p) => {
+    delete p.names[id];
+  });
+}
+
+/** Ash OS has the order now (an applied Change the hub moved the sidebar): this Mac's own order goes. */
+export function clearLocalProjectOrder(): void {
+  if (!load().order.length) return;
+  save((p) => {
+    p.order = [];
+  });
+}
+
 export function renameProject(id: string, name: string): void {
   const n = name.trim();
   save((p) => {
@@ -116,26 +136,35 @@ export function pendingUndo(now = Date.now()): { project: HubProject; undo: () =
   return lastRemoval && lastRemoval.until > now ? lastRemoval : undefined;
 }
 
+/** How a project leaves the hub and comes back: Ash OS's archive when it is there, else this Mac's own hidden list. */
+export type HubHide = { hide(): Promise<void>; unhide(): Promise<void> };
+const localHide = (id: string): HubHide => ({
+  hide: async () => save((p) => {
+    if (!p.hidden.includes(id)) p.hidden.push(id);
+  }),
+  unhide: async () => save((p) => {
+    p.hidden = p.hidden.filter((x) => x !== id);
+  }),
+});
+
 /**
  * Takes the project off the hub. Its files and Ash OS's record stay. With "Retire <Project> Lead too" its Lead is
  * retired: folder archived, logged in Changes → Bot changes with Undo. Never deleted. Undo here puts everything back.
+ * If taking it off fails (Ash OS refused), nothing else happens and the error comes back.
  */
-export async function removeFromHub(project: HubProject, opts: { retireLead: boolean } = { retireLead: false }): Promise<() => Promise<void>> {
+export async function removeFromHub(project: HubProject, opts: { retireLead: boolean; hide?: HubHide } = { retireLead: false }): Promise<() => Promise<void>> {
+  const how = opts.hide ?? localHide(project.id);
+  await how.hide();
   let changeId: string | undefined;
   if (opts.retireLead) {
     const found = projectLead(project);
     const retired = found ? await retireMono(found.id) : undefined;
     if (retired) changeId = recordRetirement(retired, project.name);
   }
-  save((p) => {
-    if (!p.hidden.includes(project.id)) p.hidden.push(project.id);
-  });
   const undo = async () => {
     lastRemoval = undefined;
     if (changeId) await undoBotChange([changeId]);
-    save((p) => {
-      p.hidden = p.hidden.filter((id) => id !== project.id);
-    });
+    await how.unhide();
   };
   lastRemoval = { project, until: Date.now() + UNDO_MS, undo };
   version++;

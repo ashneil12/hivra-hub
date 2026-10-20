@@ -22,6 +22,8 @@ export type ProjectAction = {
 export type ProjectFile = {
   version: number;
   name?: string;
+  /** The mainline the worktree janitor checks "merged" against; else the main checkout's branch. */
+  mainBranch?: string;
   actions: ProjectAction[];
   worktrees?: { buildOutput?: string[]; regenerable?: string[] };
 };
