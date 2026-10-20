@@ -15177,6 +15177,12 @@ function Workspace({
   const hubSel = useHubSelection();
   useHubDataVersion();
   useMonoTeamsVersion();
+  // A Mono's team selected while it is off (Ash took it back, or a selection kept across a reload): Today instead, never
+  // an empty workspace (monoTeams.ts).
+  const teamSelectedOff = !!monoTeamInView(hubSel) && !monoTeam(monoTeamInView(hubSel)!);
+  useEffect(() => {
+    if (teamSelectedOff) setHubSelection({ project: "today", item: "inbox" });
+  }, [teamSelectedOff]);
   const hubProject = hubData()
     .listProjects()
     .find((project) => project.id === hubSel.project);

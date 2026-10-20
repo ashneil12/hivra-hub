@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { StuckMark } from "../../features/monos/ui/SubChatList";
+import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
 import { dismissWaitingSoul, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
@@ -9,14 +9,16 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
-import { useDelegationRows } from "../../features/monos/model/delegationStore";
+import { ChevronDown, CircleAlert, Clock, CornerDownRight, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
+import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
 import { countWork, shortSplit, useStuckDismissalsVersion, workSplit, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
-import { subChatAttention } from "../../features/monos/model/subChats";
+import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
-import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
-import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
+import { leadFor } from "../../features/hub/model/hubLeads";
+import { CHECKER_MONO_ID } from "../../features/hub/model/hubMcp";
+import { monoTeamInView, openMonoTeam, setHubSelection, useHubSelection } from "../../features/hub/model/hubNav";
+import { monoTeamName, setMonoTeam, teamFor, useMonoTeamsVersion } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
@@ -95,10 +97,21 @@ export function railMonos<M extends { id: string; name?: string; projects: strin
   return eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
 }
 
-/** Open a Mono's team (monoTeams.ts): a Lead's coding team on the Lead, or a Mono's own team on its chat. */
-export function openTeam(team: TeamTarget): void {
-  if (team.kind === "coding") openCodingTeam(team.projectId, { lead: true });
-  else openMonoTeam(team.monoId, { owner: true });
+/** A Mono's own team while Ash has it on (monoTeams.ts): its name, and opening it on the Mono's chat. */
+type OwnTeam = { monoId: string; name: string };
+
+function ownTeamOf(mono: { id: string }, name: string): OwnTeam | undefined {
+  const team = teamFor({ id: mono.id, name }, hubData().listProjects());
+  return team?.kind === "mono" ? { monoId: team.monoId, name: team.name } : undefined;
+}
+
+function openOwnTeam(team: OwnTeam): void {
+  openMonoTeam(team.monoId, { owner: true });
+}
+
+/** Whether Ash can give this Mono a team of its own: any Mono in the hub but a project's Lead and the checker. */
+function canHaveOwnTeam(monoId: string): boolean {
+  return monoId !== CHECKER_MONO_ID && !leadFor(monoId);
 }
 
 /**
@@ -106,9 +119,9 @@ export function openTeam(team: TeamTarget): void {
  * into its conversation; none belongs to a project, so they get a section of
  * their own and the shaded mascot rather than a project's flat one.
  *
- * The hub's rail shows people, not work (Ash, 20 Oct: "monos shouldn't really have sub chats"): a Mono's workers live in
- * its team (monoTeams.ts), so its row says only what it has out ("2 working · 1 stuck", with the red or amber mark) on
- * one line under it, and opens its team.
+ * Each Mono's delegated work nests under it as sub-chats (Ash, 19-20 Oct), folded under a count unless one is stuck. A
+ * Mono Ash gave its own team (monoTeams.ts; optional, from its menu) keeps that work in the team instead: its row says
+ * what it has out on one line ("2 working · 1 stuck") and opens the team.
  */
 export function MonoRailSection({
   activeId,
@@ -129,10 +142,11 @@ export function MonoRailSection({
   project?: string;
 }) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
-  // What each Mono has out, from the work it delegated (its workers live in its team, never here: Ash, 20 Oct).
+  // Delegated work nests under the Mono that started it (Ash, 19 Oct); a Mono with work out reads "Waiting on N".
   const delegationRows = useDelegationRows();
   const now = useClock();
   useStuckDismissalsVersion();
+  useSubChatFolds();
   useMonoTeamsVersion();
   useHubDataVersion();
   const hubSel = useHubSelection();
@@ -185,7 +199,11 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
-  const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
+  // The hub's menu gives a Mono its own team or takes it back (monoTeams.ts); never a Lead's or the checker's.
+  const menuTeam =
+    rank && menuMono && canHaveOwnTeam(menuMono.id)
+      ? { name: monoTeamName(monoLook(menuMono).name), on: !!ownTeamOf(menuMono, monoLook(menuMono).name) }
+      : undefined;
 
   // Hub: a clean first launch starts with the default team in normal rows, not Monocode's intro card.
   useEffect(() => {
@@ -304,8 +322,8 @@ export function MonoRailSection({
           const state = states.get(mono.id) ?? IDLE;
           // A Mono's chat in view, else the Mono whose own team is (a worker's chat open in it).
           const selected = activeId ? mono.id === activeId : mono.id === teamInView;
-          // Its team, in the hub: a Lead's coding team, or its own once it has one.
-          const team = rank ? teamFor({ id: mono.id, name: look.name }, hubData().listProjects()) : undefined;
+          // Its own team, in the hub, while Ash has it on: its work lives there rather than under it here.
+          const team = rank ? ownTeamOf(mono, look.name) : undefined;
           const unseen = selected ? 0 : (unseenCounts?.get(mono.id) ?? 0);
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
@@ -422,7 +440,7 @@ export function MonoRailSection({
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
-                    openTeam(team);
+                    openOwnTeam(team);
                   }}
                   className="absolute right-7 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[button:focus-visible]:grid"
                 >
@@ -446,16 +464,28 @@ export function MonoRailSection({
               </button>
             </div>
             {state.status === "failed" ? <MonoFailedLine monoId={mono.id} state={state} onOpen={() => onOpen(mono.id)} /> : null}
-            {workSplit(counts) ? (
-              <MonoWorkLine
-                monoId={mono.id}
-                name={look.name}
-                counts={counts}
-                stuck={[...attention.stuck.values()]}
-                team={team}
-                // The work lives in its team; a Mono with none (it only briefed coding teams) opens its chat, where
-                // each brief has its line.
-                onOpen={() => (team ? openTeam(team) : onOpen(mono.id))}
+            {team ? (
+              // Its work lives in its own team: one line says what is out there and opens it.
+              workSplit(counts) ? (
+                <MonoWorkLine
+                  monoId={mono.id}
+                  counts={counts}
+                  stuck={[...attention.stuck.values()]}
+                  team={team}
+                  onOpen={() => openOwnTeam(team)}
+                />
+              ) : null
+            ) : children.length ? (
+              <SubChatList
+                foldKey={mono.id}
+                owner={mono.id}
+                children={children}
+                attention={attention}
+                stuckSplit={stuckSplit}
+                now={now}
+                variant="rail"
+                // One click on a sub-chat opens it under its Mono.
+                onOpen={(chat) => delegationActions()?.openChild(chat.ownerSession, chat.sessionId)}
               />
             ) : null}
             </Fragment>
@@ -468,9 +498,22 @@ export function MonoRailSection({
           monoId={menu.id}
           anchor={menu.anchor}
           team={menuTeam}
-          onOpenTeam={(team) => {
+          onOpenTeam={() => {
             setMenu(undefined);
-            openTeam(team);
+            openMonoTeam(menu.id, { owner: true });
+          }}
+          onSetTeam={async (on) => {
+            const monoId = menu.id;
+            await setMonoTeam(monoId, on);
+            setMenu(undefined);
+            if (on) {
+              // Given a team, it opens at once: the Mono's chat pinned on top, its work under it.
+              openMonoTeam(monoId, { owner: true });
+            } else if (monoTeamInView(hubSel) === monoId) {
+              // Its team was open: Ash lands on its chat, its sub-chats back under it here.
+              setHubSelection({ project: "today", item: "inbox" });
+              onOpen(monoId);
+            }
           }}
           onBackground={() => {
             setMenu(undefined);
@@ -496,24 +539,21 @@ export function MonoRailSection({
 }
 
 /**
- * What a Mono has out, on one line under its row, in place of the sub-chats it used to list (Ash, 20 Oct: the rail shows
- * people, not work): "2 working · 1 stuck" (asking counts as stuck, as on Today; the full split is on hover), the stuck
- * part amber, or red once one failed; the row keeps its own mark. One click opens its team, where the work and its
- * sub-chats are.
+ * What a Mono with its own team has out, on one line under its row in the sub-chats' place (they live in its team):
+ * "2 working · 1 stuck" (asking counts as stuck, as on Today; the full split is on hover), the stuck part amber, or red
+ * once one failed; the row keeps its own mark. One click opens its team.
  */
 function MonoWorkLine({
   monoId,
-  name,
   counts,
   stuck,
   team,
   onOpen,
 }: {
   monoId: string;
-  name: string;
   counts: WorkCounts;
   stuck: readonly StuckWorker[];
-  team?: TeamTarget;
+  team: OwnTeam;
   onOpen: () => void;
 }) {
   const failed = stuck.some((s) => s.kind === "failed");
@@ -531,8 +571,8 @@ function MonoWorkLine({
     >
       <button
         type="button"
-        title={[workSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
-        aria-label={`${workSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
+        title={[workSplit(counts), `Open ${team.name}`].filter(Boolean).join("\n")}
+        aria-label={`${workSplit(counts) ?? short.text}. Open ${team.name}`}
         onClick={onOpen}
         className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/45 hover:bg-content/6 hover:text-content"
       >
@@ -603,15 +643,21 @@ function MonoMenu({
   anchor,
   team,
   onOpenTeam,
+  onSetTeam,
   onBackground,
   onDelete,
   onClose,
 }: {
   monoId: string;
   anchor: PopoverAnchor;
-  /** Its team, if it has one: "Open team" opens it. */
-  team?: TeamTarget;
-  onOpenTeam: (team: TeamTarget) => void;
+  /**
+   * Its own team (hub/model/monoTeams.ts), for a Mono that can have one: its name and whether Ash has it on. On, "Open
+   * team" opens it and "Use sub-chats instead" takes it back; off, "Give <Mono> its own team".
+   */
+  team?: { name: string; on: boolean };
+  onOpenTeam: () => void;
+  /** Switch its team on or off; the menu stays open, saying why, if it couldn't. */
+  onSetTeam: (on: boolean) => Promise<void>;
   onBackground: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -620,6 +666,8 @@ function MonoMenu({
   const mono = findMono(monoId);
   const input = useRef<HTMLInputElement>(null);
   const [name, setName] = useState(mono?.name ?? "");
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string>();
 
   useEffect(() => {
     input.current?.focus();
@@ -632,6 +680,16 @@ function MonoMenu({
     const next = name.trim().slice(0, 40);
     if (next !== (findMono(monoId)?.name ?? "")) saveMonoName(monoId, next);
   };
+  const switchTeam = (on: boolean) => {
+    commitName();
+    setSwitching(true);
+    setSwitchError(undefined);
+    onSetTeam(on).catch((error: unknown) => {
+      setSwitching(false);
+      setSwitchError(error instanceof Error ? error.message : String(error));
+    });
+  };
+  const item = "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8 disabled:opacity-60";
 
   return (
     <Popover
@@ -679,20 +737,52 @@ function MonoMenu({
         />
       </div>
       <div role="separator" className="my-1 h-px bg-content/10" />
-      {team ? (
+      {team?.on ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            data-mono-menu-open-team
+            onClick={() => {
+              commitName();
+              onOpenTeam();
+            }}
+            className={item}
+          >
+            <UserGroup className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open {team.name}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-mono-menu-sub-chats
+            disabled={switching}
+            title={`${look.name}'s work nests under it here again. ${team.name}'s folder and chats stay.`}
+            onClick={() => switchTeam(false)}
+            className={item}
+          >
+            <CornerDownRight className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Use sub-chats instead
+          </button>
+        </>
+      ) : team ? (
         <button
           type="button"
           role="menuitem"
-          data-mono-menu-open-team
-          onClick={() => {
-            commitName();
-            onOpenTeam(team);
-          }}
-          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8"
+          data-mono-menu-give-team
+          disabled={switching}
+          title={`${look.name}'s own work opens in a team of its own, like a coding team, instead of nesting under it here.`}
+          onClick={() => switchTeam(true)}
+          className={item}
         >
           <UserGroup className="size-3.5 shrink-0" strokeWidth={1.75} />
-          Open {team.name}
+          Give {look.name} its own team
         </button>
+      ) : null}
+      {switchError ? (
+        <p role="alert" data-mono-menu-team-error className="px-2.5 pb-1 text-[12px] text-red-400">
+          {switchError}
+        </p>
       ) : null}
       <button
         type="button"

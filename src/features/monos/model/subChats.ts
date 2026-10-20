@@ -1,8 +1,7 @@
-// A chat's sub-chats in a team's Sessions list (a project's coding team or a Mono's own team; never the Monos rail),
-// like Claude Code's grouped sessions but usually hidden (Ash, 20 Oct): folded under a count ("3 sub-chats") unless Ash
-// opened them, opened by themselves when one is stuck, asking or failed, and six at a time with "Show N more". The fold
-// is remembered per chat on this Mac. Folding a chat whose sub-chats opened for a stuck one keeps it folded until
-// something else gets stuck. A Mono's own row reads its stuck mark from the same attention (MonoRailSection.tsx).
+// A Mono's sub-chats in the Monos rail (and a chat's in a team's Sessions list), like Claude Code's grouped sessions but
+// usually hidden (Ash, 20 Oct): folded under a count ("3 sub-chats") unless Ash opened them, opened by themselves when
+// one is stuck, asking or failed, and six at a time with "Show N more". The fold is remembered per Mono (or `chat:<id>`)
+// on this Mac. Folding a Mono whose sub-chats opened for a stuck one keeps it folded until something else gets stuck.
 import { useSyncExternalStore } from "react";
 import type { ChildChat } from "./delegationView";
 import { stuckOf, type StuckWorker } from "./workerStuck";
@@ -71,7 +70,7 @@ export function subChatsOpen(monoId: string, attentionKey: string): boolean {
   return fold.open === true || (!!attentionKey && attentionKey !== fold.seen);
 }
 
-/** Open a chat's sub-chats, as Ash's click on a folded count does (the bench's driver opens one this way to read it). */
+/** Open a fold's sub-chats, as Ash's click on a folded count does (the bench's driver opens one this way to read it). */
 export function openSubChats(foldKey: string): void {
   if (load()[foldKey]?.open !== true) save(foldKey, { open: true });
 }
