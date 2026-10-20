@@ -21,6 +21,7 @@
 //!   `disposed`), and recovered at boot like a delegation's report.
 //! - **The poller** is a thread in this process, so a hidden or closed window never pauses it.
 
+pub mod bounded;
 pub mod checkout;
 pub mod eval;
 pub mod github;
@@ -1042,6 +1043,7 @@ fn apply(
                     worktree,
                     repo_root,
                     create: needs_fix,
+                    fetch_timeout: checkout::FETCH_TIMEOUT,
                 },
                 maker,
             )

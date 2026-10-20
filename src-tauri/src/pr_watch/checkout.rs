@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Where a wake's checkout stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +49,12 @@ pub struct Plan<'a> {
     pub repo_root: Option<&'a Path>,
     /// Make `mc/pr-<n>` when nothing is registered (a wake that needs a fix).
     pub create: bool,
+    /// How long the fetch from GitHub may take ([`FETCH_TIMEOUT`]).
+    pub fetch_timeout: Duration,
 }
+
+/// A fetch that hasn't finished by then is stopped: one stalled remote must not hold up every other watch.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Making a worktree (worktrees.rs, with the project's setup), as a seam for tests.
 pub trait Maker {
@@ -61,24 +67,39 @@ pub trait Maker {
     ) -> Result<(PathBuf, Option<String>), String>;
 }
 
+/// Local git work (status, merge, rev-parse) gets this long; the fetch from GitHub has its own [`FETCH_TIMEOUT`].
+const GIT_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    git_within(dir, args, GIT_TIMEOUT)
+}
+
+/// git in `dir`, stopped (with what it started) if it hasn't finished within `timeout`.
+fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
-    let output = command
+    command
         .arg("-C")
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("PATH", crate::harness::cached_gui_search_path())
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .env("PATH", crate::harness::cached_gui_search_path());
+    let what = args.first().unwrap_or(&"");
+    let ran = super::bounded::run(command, timeout).map_err(|failed| match failed {
+        super::bounded::Failed::TimedOut => format!(
+            "git {what} didn't finish within {}, so it was stopped",
+            super::bounded::words(timeout)
+        ),
+        super::bounded::Failed::NotFound => "git isn't installed".to_string(),
+        super::bounded::Failed::Other(error) => error,
+    })?;
+    if ran.status.success() {
+        Ok(ran.stdout.trim().to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = ran.stderr.trim().to_string();
         Err(if stderr.is_empty() {
-            format!("git {} failed", args.first().unwrap_or(&""))
+            format!("git {what} failed")
         } else {
             stderr.chars().take(400).collect()
         })
@@ -124,10 +145,14 @@ pub fn is_checkout_of(dir: &Path, repo: &str) -> bool {
 
 /// Fetch the pull request's head into FETCH_HEAD: from the repository's remote, or by its URL when the checkout has
 /// none for it (a fork's clone). Returns the fetched commit.
-fn fetch_head(dir: &Path, repo: &str, number: u64) -> Result<String, String> {
+fn fetch_head(dir: &Path, repo: &str, number: u64, timeout: Duration) -> Result<String, String> {
     let refspec = format!("refs/pull/{number}/head");
     let source = remote_for(dir, repo).unwrap_or_else(|| format!("https://github.com/{repo}.git"));
-    git(dir, &["fetch", "--no-tags", "--quiet", &source, &refspec])?;
+    git_within(
+        dir,
+        &["fetch", "--no-tags", "--quiet", &source, &refspec],
+        timeout,
+    )?;
     git(dir, &["rev-parse", "FETCH_HEAD^{commit}"])
 }
 
@@ -170,7 +195,7 @@ fn sync(dir: &Path, plan: &Plan, ours: bool) -> Outcome {
         Err(error) => return left(error),
         _ => {}
     }
-    let target = match fetch_head(dir, plan.repo, plan.number) {
+    let target = match fetch_head(dir, plan.repo, plan.number, plan.fetch_timeout) {
         Ok(target) => target,
         Err(error) => {
             return left(format!(
@@ -224,7 +249,7 @@ fn make(root: &Path, plan: &Plan, maker: &dyn Maker) -> Result<Outcome, String> 
     if let Some(tree) = existing {
         return Ok(sync(Path::new(&tree.path), plan, true));
     }
-    let commit = fetch_head(root, plan.repo, plan.number)?;
+    let commit = fetch_head(root, plan.repo, plan.number, plan.fetch_timeout)?;
     let (path, setup) = maker.make(root, &branch, &commit)?;
     Ok(Outcome::Ready {
         path: display(&path),
@@ -459,6 +484,7 @@ pub(crate) mod tests {
             worktree,
             repo_root: Some(&repos.clone),
             create: true,
+            fetch_timeout: FETCH_TIMEOUT,
         }
     }
 
@@ -620,6 +646,46 @@ pub(crate) mod tests {
         let setup = setup.as_deref().unwrap_or("");
         assert!(setup.contains("setup was not run"), "{setup}");
         let _ = std::fs::remove_dir_all(repos.dir.join("clone-worktrees"));
+    }
+
+    #[test]
+    fn a_stalled_fetch_is_cut_off_and_the_checkout_left_as_it_was() {
+        let repos = Repos::new("stall");
+        let head = repos.push_pr(7, "fix", "b.txt", "two");
+        run(&repos.clone, &["fetch", "-q", "origin"]);
+        run(
+            &repos.clone,
+            &["checkout", "-q", "-b", "fix", "origin/main"],
+        );
+        let before = run(&repos.clone, &["rev-parse", "HEAD"]);
+        // GitHub stops answering: the remote is a program that never speaks git's protocol.
+        let rewrite = format!("url.{}.insteadOf", repos.bare.to_str().unwrap());
+        run(&repos.clone, &["config", "--unset", &rewrite]);
+        run(&repos.clone, &["config", "protocol.ext.allow", "always"]);
+        run(
+            &repos.clone,
+            &[
+                "config",
+                "url.ext::sleep 20.insteadOf",
+                "https://github.com/Owner/Repo.git",
+            ],
+        );
+        let started = std::time::Instant::now();
+        let stalled = Plan {
+            fetch_timeout: std::time::Duration::from_secs(2),
+            ..plan(&repos, &head, Some(&repos.clone))
+        };
+        let (outcome, _) = prepare(&stalled, &NoMaker);
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(10),
+            "the fetch held the watch for {took:?}"
+        );
+        assert!(
+            matches!(&outcome, Outcome::Left { reason, .. } if reason.contains("didn't finish within 2 s")),
+            "{outcome:?}"
+        );
+        assert_eq!(run(&repos.clone, &["rev-parse", "HEAD"]), before);
     }
 
     #[test]

@@ -3,10 +3,9 @@
 //! comments, reviews and review comments, who `gh` is signed in as, and the rate limit left. A head commit with more
 //! than 100 checks takes a few more calls for the rest. Reads only: nothing here writes to GitHub.
 
-use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -152,10 +151,7 @@ impl Gh for CliGh {
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_PAGER", "cat")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env("NO_COLOR", "1");
         for (key, value) in vars {
             command.arg("-F").arg(format!("{key}={value}"));
         }
@@ -164,54 +160,25 @@ impl Gh for CliGh {
     }
 }
 
-/// Run a command to its end, or kill it after `timeout` (a hung network call must not stall every watch).
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<String, String> {
-    let mut child = command.spawn().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
+/// Run `gh` to its end, or stop it after `timeout` (a hung network call must not stall every watch).
+fn run_with_timeout(command: Command, timeout: Duration) -> Result<String, String> {
+    let ran = super::bounded::run(command, timeout).map_err(|failed| match failed {
+        super::bounded::Failed::NotFound => {
             "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
-        } else {
-            error.to_string()
         }
+        super::bounded::Failed::TimedOut => {
+            format!("gh didn't answer within {}", super::bounded::words(timeout))
+        }
+        super::bounded::Failed::Other(error) => error,
     })?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let out = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(pipe) = stdout.as_mut() {
-            let _ = pipe.read_to_string(&mut text);
-        }
-        text
-    });
-    let err = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(pipe) = stderr.as_mut() {
-            let _ = pipe.read_to_string(&mut text);
-        }
-        text
-    });
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("gh took over a minute to answer".into());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(error) => return Err(error.to_string()),
-        }
-    };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    if status.success() {
-        return Ok(stdout);
+    if ran.status.success() {
+        return Ok(ran.stdout);
     }
     // gh prints GraphQL errors on stderr; a partial answer may still carry `errors` on stdout.
-    let detail = if stderr.trim().is_empty() {
-        stdout
+    let detail = if ran.stderr.trim().is_empty() {
+        ran.stdout
     } else {
-        stderr
+        ran.stderr
     };
     Err(detail.trim().chars().take(600).collect())
 }
