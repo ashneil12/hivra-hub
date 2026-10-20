@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 41] = [
+const APP_ACTIONS: [&str; 44] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -124,6 +124,9 @@ const APP_ACTIONS: [&str; 41] = [
     "tasks.wait",
     "tasks.cancel",
     "tasks.answer",
+    "prs.watch",
+    "prs.unwatch",
+    "prs.status",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -315,6 +318,15 @@ Actions:
   tasks.cancel   {"taskId":"t-...","reason":"..."}  Stop a task and drop its report.
   tasks.answer   {"taskId":"t-...","requestId":7,"answers":{"<questionId>":["<optionId>"]}}
                   Answer your worker's open question, or pass "skip":true.
+  prs.watch      {"repo":"owner/name","number":42,"worktree":"/path/to/checkout","asks":["a_..."]}
+                  Mono only. MonoCode reads the pull request from GitHub every few
+                  minutes and wakes you as a new turn only when a required check
+                  fails or all pass, someone else comments or reviews, the branch
+                  conflicts, or it merges or closes (the watch then ends). The
+                  head is checked out in worktree (or a made mc/pr-<n>) first.
+                  The monocode MCP tools pr_watch, pr_unwatch, pr_watches call these.
+  prs.unwatch    {"repo":"owner/name","number":42}  Stop watching it.
+  prs.status     {}  Your watched pull requests and their checks.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.
@@ -822,5 +834,16 @@ mod tests {
             assert!(app_help().contains(action), "help omits {action}");
         }
         assert!(app_help().contains("Mono only. Hand a job to a worker chat"));
+    }
+
+    #[test]
+    fn app_mode_exposes_the_pr_watch_actions() {
+        for action in ["prs.watch", "prs.unwatch", "prs.status"] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", "{}"]), true),
+                Ok(Parsed::Call(parsed, _, _)) if parsed == action
+            ));
+            assert!(app_help().contains(action), "help omits {action}");
+        }
     }
 }

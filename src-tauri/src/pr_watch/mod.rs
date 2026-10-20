@@ -23,6 +23,7 @@
 pub mod checkout;
 pub mod eval;
 pub mod github;
+pub mod mcp;
 pub mod wake;
 
 use std::sync::{Condvar, Mutex, OnceLock};
