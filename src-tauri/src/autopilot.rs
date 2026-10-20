@@ -997,6 +997,8 @@ pub fn agent_plist(plan: &AgentPlan) -> String {
 pub trait Launchd: Send + Sync {
     fn bootstrap(&self, domain: &str, plist: &Path) -> Result<(), String>;
     fn bootout(&self, domain: &str, label: &str);
+    /// Whether launchd has the label loaded now.
+    fn loaded(&self, domain: &str, label: &str) -> bool;
 }
 
 pub struct SystemLaunchd;
@@ -1024,6 +1026,16 @@ impl Launchd for SystemLaunchd {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+
+    fn loaded(&self, domain: &str, label: &str) -> bool {
+        Command::new("/bin/launchctl")
+            .args(["print", &format!("{domain}/{label}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
@@ -1056,25 +1068,51 @@ pub fn install_agent(launchd: &dyn Launchd, plan: &AgentPlan, until_ms: i64) -> 
         if let Some(parent) = plan.plist.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        if current.is_some() {
+        // A changed watcher: the old one comes out before the new one goes in.
+        if launchd.loaded(&plan.domain, &plan.label) {
             launchd.bootout(&plan.domain, &plan.label);
         }
         std::fs::write(&plan.plist, text).map_err(|e| e.to_string())?;
+    } else if launchd.loaded(&plan.domain, &plan.label) {
+        // The same watcher, already loaded: only its end time moved (the watch file). Bootstrapping a loaded label
+        // fails (5 on current macOS, 17 or 37 on older ones), so it isn't tried.
+        return Ok(());
     }
-    launchd.bootstrap(&plan.domain, &plan.plist)
+    match launchd.bootstrap(&plan.domain, &plan.plist) {
+        Ok(()) => Ok(()),
+        // Loaded after all (another sync got there first): what we want.
+        Err(_) if launchd.loaded(&plan.domain, &plan.label) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-/// Take the watcher away. Safe to call when it isn't there.
+/// Take the watcher away. Safe to call when it isn't there. The files go first, whatever launchd says (without its watch
+/// file the watcher does nothing; without its plist it doesn't come back at login; and a watcher retiring itself is
+/// stopped by its own bootout); it is gone only once launchd no longer has it loaded and both files are gone.
 pub fn remove_agent(
     launchd: &dyn Launchd,
     label: &str,
     domain: &str,
     plist: &Path,
     data_dir: &Path,
-) {
+) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for file in [plist.to_path_buf(), data_dir.join(DIR).join(WATCH_FILE)] {
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => problems.push(format!("{}: {error}", file.display())),
+        }
+    }
     launchd.bootout(domain, label);
-    let _ = std::fs::remove_file(plist);
-    let _ = std::fs::remove_file(data_dir.join(DIR).join(WATCH_FILE));
+    if launchd.loaded(domain, label) {
+        problems.push(format!("launchd still has {label} loaded"));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -1237,13 +1275,15 @@ pub fn watch_main(args: &[String]) -> i32 {
         Verdict::Idle(_) => 0,
         Verdict::Retire => {
             println!("autopilot-watch: autopilot ended; removing {}", watch.label);
-            remove_agent(
+            if let Err(error) = remove_agent(
                 &SystemLaunchd,
                 &watch.label,
                 &watch.domain,
                 &watch.plist,
                 &data_dir,
-            );
+            ) {
+                eprintln!("autopilot-watch: {error}");
+            }
             0
         }
         Verdict::GiveUp => {
@@ -1453,29 +1493,47 @@ fn sync(app: &AppHandle, what: &str) {
         }
     }
     if let (Ok(plan), Ok(mut installed)) = (&state.relaunch, state.installed.lock()) {
-        match last_end(&switches) {
-            Some(until) => match install_agent(state.launchd.as_ref(), plan, until) {
-                Ok(()) => *installed = true,
-                Err(error) => {
-                    eprintln!("Autopilot: couldn't install the relaunch watcher: {error}");
-                    *installed = false;
-                }
-            },
-            None if *installed => {
-                remove_agent(
-                    state.launchd.as_ref(),
-                    &plan.label,
-                    &plan.domain,
-                    &plan.plist,
-                    &plan.data_dir,
-                );
-                *installed = false;
-            }
-            None => {}
-        }
+        sync_agent(
+            state.launchd.as_ref(),
+            plan,
+            &mut installed,
+            last_end(&switches),
+        );
     }
     state.poke();
     let _ = app.emit(CHANGED, json!({ "what": what }));
+}
+
+/// The relaunch watcher in line with the switches: in place until `until` while one is on, gone when none is.
+/// `installed` says it may be in place. Only a removal that worked clears it, so a failed install never hides a watcher
+/// that is still loaded from an earlier one, and switching off always takes it away; a half-done install (its plist
+/// written) is taken away too.
+fn sync_agent(launchd: &dyn Launchd, plan: &AgentPlan, installed: &mut bool, until: Option<i64>) {
+    match until {
+        Some(until) => match install_agent(launchd, plan, until) {
+            Ok(()) => *installed = true,
+            Err(error) => {
+                eprintln!("Autopilot: couldn't install the relaunch watcher: {error}");
+                if launchd.loaded(&plan.domain, &plan.label) {
+                    *installed = true;
+                }
+            }
+        },
+        None if *installed || plan.plist.exists() => match remove_agent(
+            launchd,
+            &plan.label,
+            &plan.domain,
+            &plan.plist,
+            &plan.data_dir,
+        ) {
+            Ok(()) => *installed = false,
+            Err(error) => {
+                eprintln!("Autopilot: couldn't remove the relaunch watcher (tried again): {error}");
+                *installed = true;
+            }
+        },
+        None => {}
+    }
 }
 
 /// Ends each switch at its end time, even if no window is open.
@@ -1503,7 +1561,12 @@ fn spawn_timer(app: AppHandle, signal: Arc<(Mutex<u64>, Condvar)>) {
                     |g| *g == seen,
                 );
             }
-            if next.is_some_and(|until| until <= now_millis()) {
+            // A watcher still on the books with nothing on (its removal failed) is tried again each minute.
+            let removal_due = next.is_none()
+                && app
+                    .try_state::<Autopilot>()
+                    .is_some_and(|state| state.installed.lock().is_ok_and(|i| *i));
+            if next.is_some_and(|until| until <= now_millis()) || removal_due {
                 sync(&app, "switches");
             }
         });
@@ -2154,9 +2217,21 @@ mod tests {
         assert!(!text.contains("KeepAlive"));
     }
 
+    /// launchd as current macOS behaves: bootstrapping a label that is already loaded fails with 5.
     #[derive(Default)]
     struct FakeLaunchd {
         calls: Mutex<Vec<String>>,
+        loaded: Mutex<bool>,
+        /// bootstrap fails without loading anything.
+        broken: Mutex<bool>,
+        /// bootout leaves it loaded.
+        stuck: Mutex<bool>,
+    }
+
+    impl FakeLaunchd {
+        fn is_loaded(&self) -> bool {
+            *self.loaded.lock().unwrap()
+        }
     }
 
     impl Launchd for FakeLaunchd {
@@ -2165,6 +2240,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("bootstrap {domain} {}", plist.display()));
+            let mut loaded = self.loaded.lock().unwrap();
+            if *self.broken.lock().unwrap() || *loaded {
+                return Err("Bootstrap failed: 5: Input/output error".into());
+            }
+            *loaded = true;
             Ok(())
         }
         fn bootout(&self, domain: &str, label: &str) {
@@ -2172,7 +2252,69 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("bootout {domain}/{label}"));
+            if !*self.stuck.lock().unwrap() {
+                *self.loaded.lock().unwrap() = false;
+            }
         }
+        fn loaded(&self, _domain: &str, _label: &str) -> bool {
+            self.is_loaded()
+        }
+    }
+
+    #[test]
+    fn switching_off_removes_the_watcher_even_after_a_later_install_failed_on_a_loaded_label() {
+        let dir = std::env::temp_dir().join(format!("ap-sync-{}", uuid::Uuid::new_v4()));
+        let plan = plan(&dir);
+        let launchd = FakeLaunchd::default();
+        let mut installed = false;
+        sync_agent(&launchd, &plan, &mut installed, Some(T0 + HOUR));
+        assert!(installed && launchd.is_loaded());
+        // A new end time: the label is loaded, which a second bootstrap can't take (exit 5).
+        sync_agent(&launchd, &plan, &mut installed, Some(T0 + 2 * HOUR));
+        assert!(installed);
+        let watch: WatchFile = read_json(&plan.data_dir.join(DIR).join(WATCH_FILE)).unwrap();
+        assert_eq!(watch.until_ms, T0 + 2 * HOUR);
+        // Autopilot off: the watcher goes, launchd and files.
+        sync_agent(&launchd, &plan, &mut installed, None);
+        assert!(!installed);
+        assert!(!launchd.is_loaded());
+        assert!(!plan.plist.exists());
+        assert!(!plan.data_dir.join(DIR).join(WATCH_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_removal_that_fails_keeps_the_watcher_on_the_books_until_one_works() {
+        let dir = std::env::temp_dir().join(format!("ap-stuck-{}", uuid::Uuid::new_v4()));
+        let plan = plan(&dir);
+        let launchd = FakeLaunchd::default();
+        let mut installed = false;
+        sync_agent(&launchd, &plan, &mut installed, Some(T0 + HOUR));
+        *launchd.stuck.lock().unwrap() = true;
+        sync_agent(&launchd, &plan, &mut installed, None);
+        assert!(installed, "still loaded, so still on the books");
+        // Without its watch file the watcher does nothing meanwhile.
+        assert!(!plan.data_dir.join(DIR).join(WATCH_FILE).exists());
+        *launchd.stuck.lock().unwrap() = false;
+        sync_agent(&launchd, &plan, &mut installed, None);
+        assert!(!installed && !launchd.is_loaded());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_half_done_install_is_cleaned_up_when_autopilot_ends() {
+        let dir = std::env::temp_dir().join(format!("ap-half-{}", uuid::Uuid::new_v4()));
+        let plan = plan(&dir);
+        let launchd = FakeLaunchd::default();
+        *launchd.broken.lock().unwrap() = true;
+        let mut installed = false;
+        sync_agent(&launchd, &plan, &mut installed, Some(T0 + HOUR));
+        assert!(!installed);
+        assert!(plan.plist.exists());
+        sync_agent(&launchd, &plan, &mut installed, None);
+        assert!(!plan.plist.exists());
+        assert!(!plan.data_dir.join(DIR).join(WATCH_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2200,7 +2342,9 @@ mod tests {
             &plan.domain,
             &plan.plist,
             &plan.data_dir,
-        );
+        )
+        .unwrap();
+        assert!(!launchd.is_loaded());
         assert!(!plan.plist.exists());
         assert!(!plan.data_dir.join(DIR).join(WATCH_FILE).exists());
         assert_eq!(
