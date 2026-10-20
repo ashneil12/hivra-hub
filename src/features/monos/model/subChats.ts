@@ -71,6 +71,11 @@ export function subChatsOpen(monoId: string, attentionKey: string): boolean {
   return fold.open === true || (!!attentionKey && attentionKey !== fold.seen);
 }
 
+/** Open a chat's sub-chats, as Ash's click on a folded count does (the bench's driver opens one this way to read it). */
+export function openSubChats(foldKey: string): void {
+  if (load()[foldKey]?.open !== true) save(foldKey, { open: true });
+}
+
 /** Ash's click on the fold: folding records what was stuck then, so only something new opens it again. */
 export function toggleSubChats(monoId: string, attentionKey: string): void {
   if (subChatsOpen(monoId, attentionKey)) save(monoId, { open: false, ...(attentionKey ? { seen: attentionKey } : {}) });

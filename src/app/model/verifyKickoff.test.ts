@@ -148,6 +148,23 @@ describe("Ash's messages the bench sends mid-run", () => {
     ]);
   });
 
+  it("can make a new Mono of Ash's, on a project folder or none, and write to it", () => {
+    const storage = new Map<string, string>();
+    const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v) };
+    const fresh = {
+      messages: [
+        { id: "mt-ash-1", newMono: { name: " Verify Marketing ", project: "/tmp/verify/project" }, prompt: "VERIFY-MT-KICKOFF: fix the copy" },
+        { id: "mt-ash-2", newMono: { name: "Writer", project: "relative/path" }, prompt: "draft it" },
+        { id: "bad-mono", newMono: { name: "" }, prompt: "x" },
+        { id: "long-mono", newMono: { name: "x".repeat(41) }, prompt: "x" },
+      ],
+    };
+    expect(unsentVerifyMessages("run-14", fresh, store)).toEqual([
+      { id: "mt-ash-1", monoId: "", newMono: { name: "Verify Marketing", project: "/tmp/verify/project" }, prompt: "VERIFY-MT-KICKOFF: fix the copy" },
+      { id: "mt-ash-2", monoId: "", newMono: { name: "Writer" }, prompt: "draft it" },
+    ]);
+  });
+
   it("are looked for every second and sent in order, one pass at a time", async () => {
     vi.useFakeTimers();
     try {

@@ -24,6 +24,8 @@ import {
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
+import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
+import { openSubChats } from "../../features/monos/model/subChats";
 import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
@@ -147,10 +149,16 @@ function storageRows(): Record<string, string> {
   return out;
 }
 
-/** What the window shows: every element the hub marks with a data-hub-* or data-mono-* attribute, and the main text. */
-function domRows() {
+/** What marks an element worth reporting: the hub's and the Monos' own, a brief's line, a team's pinned owner and sub-chats. */
+const DOM_MARKS = ["data-hub-", "data-mono-", "data-briefed-", "data-coding-team-", "data-team-", "data-sub-chat"];
+
+/**
+ * What the window shows: every element the hub marks (DOM_MARKS: data-hub-*, data-mono-*, a brief's line, a team's list),
+ * and the main text.
+ */
+export function domRows() {
   const marked = [...document.querySelectorAll<HTMLElement>("*")].filter((element) =>
-    [...element.attributes].some((attr) => attr.name.startsWith("data-hub-") || attr.name.startsWith("data-mono-")),
+    [...element.attributes].some((attr) => DOM_MARKS.some((mark) => attr.name.startsWith(mark))),
   );
   const elements = marked.slice(0, 600).map((element) => ({
     tag: element.tagName.toLowerCase(),
@@ -330,6 +338,20 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       const hub = action.hub as { project: string; item: string } | undefined;
       if (hub) {
         host.showHub(hub);
+        await wait(Number(action.settleMs ?? 1500));
+        return { ok: true, dom: domRows() };
+      }
+      // A team, as its Open team does (hub/model/monoTeams.ts): a project's coding team on its Lead, or a Mono's own.
+      // `unfold` opens these chats' folded sub-chats first, as Ash's click on the count does, so they can be read.
+      for (const chat of Array.isArray(action.unfold) ? action.unfold : [])
+        if (typeof chat === "string" && chat) openSubChats(`chat:${chat}`);
+      if (typeof action.codingTeam === "string") {
+        openCodingTeam(action.codingTeam, { lead: true });
+        await wait(Number(action.settleMs ?? 1500));
+        return { ok: true, dom: domRows() };
+      }
+      if (typeof action.team === "string") {
+        openMonoTeam(action.team, { owner: true });
         await wait(Number(action.settleMs ?? 1500));
         return { ok: true, dom: domRows() };
       }

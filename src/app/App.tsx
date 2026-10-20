@@ -9243,6 +9243,15 @@ function Workspace({
           onSubmit(sessionId, message.prompt);
           return;
         }
+        // A new Mono of Ash's own (New mono), on a project or none, and its first message.
+        if (message.newMono) {
+          const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
+          saveMonoName(mono.id, message.newMono.name);
+          await onOpenMono(mono.id);
+          const sessionId = monoViewIdRef.current;
+          if (sessionId) onSubmit(sessionId, message.prompt);
+          return;
+        }
         await onOpenMono(message.monoId);
         const sessionId = monoViewIdRef.current;
         if (sessionId) onSubmit(sessionId, message.prompt);

@@ -30,6 +30,11 @@ import {
   GOAL_B_WORKER,
   HELPER,
   KICKOFF,
+  MT_KICKOFF,
+  MT_LEAD_BRIEF,
+  MT_LEAD_WORKER,
+  MT_MONO,
+  MT_OWN,
   PICK,
   QUESTION,
   QUEUED,
@@ -292,7 +297,51 @@ test("the coding team: Ash's new chat, its worker and the report reach their own
   // None of the earlier phases' prompts reach the coding team's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, `${ROOM_BUSY} run r1`])
     assert.equal(pick(prompt, ["lead", "tree-lead", "flow-cos"])?.startsWith("ct") ?? false, false, prompt);
-  assert.deepEqual(WALK.slice(-1), ["coding_team_delegates"]);
+  assert.equal(WALK.at(-3), "coding_team_delegates");
+});
+
+// Teams, not sub-chats (Ash, 20 Oct): a Mono of Ash's own briefs Verify's coding team and keeps its own work in its own
+// team (checks 22 and 23).
+test("teams: the new Mono's message, its brief, the Lead's worker, its own worker and both reports reach their own rules", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const fired = {};
+  const pick = (prompt, tags = []) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  const context = "<monocode_context>\n<team_rules>...</team_rules>\n<lead_brief_rules>[MonoCode report] ... [MonoCode brief from you]</lead_brief_rules>\n</monocode_context>\n\n";
+  assert.equal(pick(`${context}${MT_KICKOFF} run r1: get it fixed, and find me three good examples.`), "mt-kickoff");
+  const kickoff = rules.find((rule) => rule.name === "mt-kickoff");
+  const calls = kickoff.steps.filter((step) => step.app === "tasks.delegate");
+  // A worker of its own in Verify (refused: the coding team's work), the brief to the Lead, then its own worker (no project).
+  assert.deepEqual(calls.map((call) => call.save), ["mt-refused", "mt-brief", "mt-own"]);
+  assert.equal(calls[0].input.project, "verify");
+  assert.equal(calls[1].input.lead, TREE_LEAD);
+  assert.ok(calls[1].input.brief.startsWith(MT_LEAD_BRIEF));
+  assert.equal(calls[2].input.project, undefined);
+  assert.ok(calls[2].input.brief.startsWith(MT_OWN));
+  // The Lead's chat carries every earlier phase's tag: the brief still reaches its own rule.
+  const leadTags = ["tree-lead", "durable-lead", "flow-lead"];
+  assert.equal(pick(`${context}[MonoCode brief from ${MT_MONO}]\n\n${calls[1].input.brief}\n\nHow: you are this project's Lead.`, leadTags), "mt-lead-brief");
+  const lead = rules.find((rule) => rule.name === "mt-lead-brief");
+  assert.ok(lead.steps.find((step) => step.app === "tasks.delegate").input.brief.startsWith(MT_LEAD_WORKER));
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${MT_LEAD_WORKER} run r1: fix the widget copy.\n\n<worker_rules>\n</worker_rules>`), "mt-lead-worker");
+  assert.equal(pick(`[MonoCode brief from ${MT_MONO}]\n\n${calls[2].input.brief}\n\n<worker_rules>\n</worker_rules>`), "mt-own");
+  // Its own worker's report reaches the Mono; the Lead's worker's report reaches the Lead (whatever its tags), and the
+  // Lead's report (which quotes its worker's) reaches the Mono.
+  assert.equal(pick("[MonoCode report] MonoCode completion notification: MT-OWN-DONE run r1", ["mt-mono"]), "mt-mono-own-report");
+  assert.equal(pick("[MonoCode report] MonoCode completion notification: MT-LEAD-WORKER-DONE run r1", leadTags), "mt-lead-report");
+  assert.equal(pick("[MonoCode report] MT-LEAD-REPORT run r1: fixed; evidence MT-LEAD-WORKER-DONE.", ["mt-mono"]), "mt-mono-lead-report");
+  assert.equal(pick("[MonoCode check] anything missed?", ["mt-mono"]), "mt-mono-other");
+  // None of the earlier phases' prompts reach these rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, `${CT_KICKOFF} run r1`])
+    assert.equal(pick(prompt, ["lead", "tree-lead", "flow-cos", "ct-chat"])?.startsWith("mt") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-2), ["mono_briefs_coding_team", "mono_own_team"]);
+});
+
+test("restart durability: Chief of Staff's goal workers are its own work, so they name no project (its own team)", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const cos = rules.find((rule) => rule.name === "durable-cos-kickoff");
+  const workers = cos.steps.filter((step) => step.app === "tasks.delegate" && !step.input.lead);
+  assert.equal(workers.length, 2);
+  for (const step of workers) assert.equal(step.input.project, undefined);
 });
 
 test("the negative control plants a failure the walk must notice", () => {

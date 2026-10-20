@@ -80,6 +80,12 @@ export type VerifyMessage = {
   room?: string;
   /** Instead of a Mono's chat: a new chat in this project's coding team (its project id), as Ash starts one there. */
   codingTeam?: string;
+  /**
+   * Instead of an existing Mono's chat: a new Mono Ash makes (New mono) with this name, on this project folder if one is
+   * given, and its first message. Every Mono briefs coding teams and keeps its own team (hub/model/monoTeams.ts), not
+   * only the built-in team, so the bench proves it with one of Ash's own.
+   */
+  newMono?: { name: string; project?: string };
 };
 
 /** The run whose messages this window sends: a dev copy's plan only (the daily app never has one). */
@@ -110,10 +116,20 @@ export function unsentVerifyMessages(
     const room = typeof m?.room === "string" && /^[A-Za-z0-9:_-]{1,200}$/.test(m.room) ? m.room : undefined;
     const codingTeam =
       typeof m?.codingTeam === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.codingTeam) ? m.codingTeam : undefined;
+    const asked = m?.newMono as { name?: unknown; project?: unknown } | undefined;
+    const newMono =
+      asked && typeof asked.name === "string" && asked.name.trim() && asked.name.length <= 40
+        ? {
+            name: asked.name.trim(),
+            ...(typeof asked.project === "string" && asked.project.startsWith("/") && asked.project.length <= 4096
+              ? { project: asked.project }
+              : {}),
+          }
+        : undefined;
     return m &&
       typeof m.id === "string" &&
       /^[A-Za-z0-9_-]{1,64}$/.test(m.id) &&
-      ((typeof m.monoId === "string" && m.monoId) || room || codingTeam) &&
+      ((typeof m.monoId === "string" && m.monoId) || room || codingTeam || newMono) &&
       typeof m.prompt === "string" &&
       m.prompt.trim() &&
       m.prompt.length <= 20_000 &&
@@ -125,6 +141,7 @@ export function unsentVerifyMessages(
             prompt: m.prompt,
             ...(room ? { room } : {}),
             ...(codingTeam ? { codingTeam } : {}),
+            ...(newMono ? { newMono } : {}),
           },
         ]
       : [];
