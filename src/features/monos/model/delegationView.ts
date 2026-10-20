@@ -131,6 +131,8 @@ export type ChildChat = {
   title: string;
   state: DelegationState;
   createdAt: number;
+  /** The row it was read from (how it is stuck, if it is: workerStuck.ts). */
+  row: Delegation;
 };
 
 export const CHILD_CHATS_RECENT_MS = 6 * 60 * 60 * 1000;
@@ -168,6 +170,7 @@ export function childChatsByMono(
       title: row.title?.trim() || "Delegated work",
       state: row.state,
       createdAt: row.createdAt,
+      row,
     });
     byMono.set(mono, list);
   }

@@ -206,8 +206,16 @@ export type WorkCounts = { working: number; asking: number; stuck: number };
 
 /** What a chat has out: working, asking its Lead, and stuck (stalled or failed). */
 export function workCounts(ownerSession: string, rows: readonly Delegation[], now: number): WorkCounts {
+  return countWork(
+    rows.filter((entry) => entry.ownerSession === ownerSession),
+    now,
+  );
+}
+
+/** The same count over any set of rows (a Mono's, across the chats it has had). */
+export function countWork(rows: readonly Delegation[], now: number): WorkCounts {
   const counts: WorkCounts = { working: 0, asking: 0, stuck: 0 };
-  for (const row of newestPerChild(rows.filter((entry) => entry.ownerSession === ownerSession))) {
+  for (const row of newestPerChild(rows)) {
     const stuck = stuckOf(row, now);
     if (stuck?.kind === "asking") counts.asking++;
     else if (stuck) counts.stuck++;
