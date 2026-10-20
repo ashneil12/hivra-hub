@@ -10,6 +10,7 @@ import {
 import type { Delegation } from "../../monos/model/delegations";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import { briefPrompt, type AgentAppTasksHost } from "./agentAppTasks";
+import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 vi.mock("../../../integrations/harness/core/availability", () => ({
@@ -249,6 +250,8 @@ describe("tasks.delegate", () => {
     const [launch] = started[0] as [{ prompt: string }];
     expect(launch.prompt).toBe(briefPrompt("EXO lead", "Fix the save bug.", "It saves", block));
     expect(launch.prompt.startsWith("[MonoCode brief from EXO lead]\n\nFix the save bug.\n\nDone when: It saves\n\n<project_memory>")).toBe(true);
+    // The memory after it is not part of the finish line the worker's /goal is set to (claudeGoal.ts).
+    expect(goalFromBrief(launch.prompt)).toBe("It saves");
     // a worker on another engine: its own engine decides how the block tells it to read more (no ash-os tools there)
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     await handleAgentApp(source, "r-mem-2", "tasks.delegate", { brief: "Draw it.", model: "codex:gpt-5" }, host);

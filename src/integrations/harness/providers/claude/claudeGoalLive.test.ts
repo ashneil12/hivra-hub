@@ -175,6 +175,44 @@ describe("/goal through the live adapter", () => {
     expect(turn.events).toContainEqual({ type: "status", text: `Goal set: ${GOAL}` });
   });
 
+  it("the /goal is owed from the start: a brief answered before its own write returns doesn't end the turn", async () => {
+    // hub:verify-live 20261020-153810-9bc5: on a busy window Claude's quick answer to the brief (a stdout event) ran
+    // ahead of the brief's write call returning, while the /goal behind it wasn't counted yet. The turn ended under the
+    // goal's loop: the worker read idle, its queued brief went in early, and a restart neither resumed it nor its goal.
+    const { writeChild } = await import("../../core/child");
+    const original = vi.mocked(writeChild).getMockImplementation()!;
+    let returned: (() => void) | undefined;
+    vi.mocked(writeChild).mockImplementation(async (id: string, line: string) => {
+      await original(id, line);
+      // The brief is in Claude's hands; its write call returns only when `returned` says so.
+      if (line.includes("Fix the save bug.")) await new Promise<void>((resolve) => (returned = resolve));
+    });
+    try {
+      const turn = await start(BRIEF);
+      emit(said("Started on the brief."));
+      emit(result("Started on the brief."));
+      await tick();
+      returned!();
+      await waitFor(() => prompts().length === 2, "the /goal behind the brief");
+      await tick();
+      expect(prompts()).toEqual([BRIEF, `/goal ${GOAL}`]);
+      expect(turn.outcome).toBe("open");
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(synthetic(`Goal set: ${GOAL}`));
+      emit(said("Working on it."));
+      emit(feedback("the test still fails"));
+      await tick();
+      expect(turn.outcome).toBe("open");
+      emit(said("Fixed: the save test passes."));
+      emit(result("Fixed: the save test passes.", { num_turns: 2 }));
+      await turn.done;
+      expect(turn.outcome).toBe("completed");
+      expect(goals(turn).at(-1)).toMatchObject({ status: "met", checks: 2 });
+    } finally {
+      vi.mocked(writeChild).mockImplementation(original);
+    }
+  });
+
   it("no /goal while Claude's hooks are off (the CLI refuses it then), or for a prompt that isn't a MonoCode brief", async () => {
     hooks.on = false;
     const turn = await start(BRIEF);

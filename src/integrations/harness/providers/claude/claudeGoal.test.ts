@@ -43,6 +43,16 @@ describe("goalFromBrief", () => {
     expect(goalFromBrief("[MonoCode brief from x]\n\nb\n\nDone when: " + "y".repeat(2_000))).toHaveLength(GOAL_MAX);
     expect(goalCommand("  all   checks\npass ")).toBe("/goal all checks pass");
   });
+
+  it("stops at the project memory a Lead's worker gets after the finish line (agentAppTasks.briefPrompt)", () => {
+    const memory =
+      "<project_memory>\nAsh OS loaded this at the start of this conversation: what holds now for Verify.\n\n- Never ship work another session made [19 Oct]\n</project_memory>";
+    const brief = `[MonoCode brief from Verify lead]\n\nBuild the API.\n\nDone when: the API test passes\nin CI\n\n${memory}`;
+    expect(goalFromBrief(brief)).toBe("the API test passes in CI");
+    // A brief that quotes the tag itself keeps its finish line: only the trailing block is the primer.
+    const quoting = `[MonoCode brief from Verify lead]\n\n<project_memory> blocks: explain them in the docs.\n\nDone when: the docs say it\n\n${memory}`;
+    expect(goalFromBrief(quoting)).toBe("the docs say it");
+  });
 });
 
 describe("nextGoal over Claude Code 2.1.302's own output", () => {
