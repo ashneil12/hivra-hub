@@ -163,7 +163,9 @@ import {
   useHubSelection,
 } from "../features/hub/model/hubNav";
 import {
+  forgetWaitingChat,
   noteChats,
+  pruneWaitingChats,
   setWaitingChatsHost,
   setWorkerQuestionRouter,
 } from "../features/hub/model/waitingChats";
@@ -5978,6 +5980,8 @@ function Workspace({
           stop: stopSessionForRemoval,
         });
         const removed = await remover.remove(sessionId);
+        // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
+        if (removed) forgetWaitingChat(sessionId);
         if (removed && deleteWorktreePath && seed) {
           try {
             await onRemoveWorktree(seed.cwd, deleteWorktreePath, false);
@@ -11368,6 +11372,13 @@ function Workspace({
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
   }, [sessions]);
+  // Once a launch: a waiting chat whose conversation was deleted (by any path) leaves Today.
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    void pruneWaitingChats(async (id) =>
+      sessionsRef.current.some((s) => s.id === id) || (await readSession(id)) !== null,
+    );
+  }, []);
   useEffect(() => {
     if (!IS_HUB_BUNDLE) return;
     return setWaitingChatsHost({
