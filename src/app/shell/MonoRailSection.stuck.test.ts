@@ -168,7 +168,8 @@ describe("the Monos section folds (A9)", () => {
     mount();
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
-    expect(summary.textContent).toBe("1 working·2 stuck");
+    expect(summary.textContent).toBe("1·2 stuck");
+    expect(summary.querySelector('[aria-label="1 working"]')).not.toBeNull();
     expect(summary.getAttribute("title")).toBe("1 working · 2 stuck");
     expect(summary.dataset.monoWorkKind).toBe("failed");
     // Open again, and that sticks too.

@@ -31,7 +31,7 @@ export function StuckPanel({
       side="right"
       align="start"
       gap={6}
-      width={360}
+      width={380}
       maxHeight={480}
       onDismiss={onClose}
       // Its own trigger toggles it; a press there is not "outside".
