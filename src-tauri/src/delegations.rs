@@ -639,7 +639,8 @@ pub fn reattach(
 }
 
 /// A worker's question to its owner (H4): running → question with the question, or back to running once answered
-/// (`question` empty). Only an open row moves.
+/// (`question` empty). Only an open row moves. The app writes through `set_question_with`, which logs a detail too.
+#[cfg(test)]
 pub fn set_question(
     conn: &mut Connection,
     id: &str,
