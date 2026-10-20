@@ -213,9 +213,11 @@ export function reviewChimes(postText: string, seats: readonly Seat[], poster: s
 }
 
 /**
- * Members a Mono's reply addresses: an @mention anywhere, or names opening a line or sentence and followed by a comma
- * or colon ("frank, please check…", "PM: put that in the contract", "frank, Critiquito, please pass or flag", "frank and
- * Critiquito, re-check 07"). In order, without the speaker.
+ * Members a Mono's reply addresses: an @mention anywhere ("@frank", "@Projects Manager"), or a name or a list of names
+ * opening a line, a sentence or what follows a colon, closed by a comma or colon or followed by a please ("frank,
+ * please check…", "PM: put that in the contract", "frank, Critiquito, please pass or flag", "Projects Manager, frank,
+ * and Alfred, check in", "frank and Critiquito please re-check 07", "**PM:** the board"). Any case; bold or italic
+ * around a name is fine. In order, without the speaker.
  */
 export function addressedIn(reply: string, seats: readonly Seat[], speaker: string): string[] {
   const others = seats.filter((s) => s.id !== speaker);
@@ -226,18 +228,19 @@ export function addressedIn(reply: string, seats: readonly Seat[], speaker: stri
   const note = (id: string, at: number) => {
     if (!found.has(id) || found.get(id)! > at) found.set(id, at);
   };
-  /** The seat whose name starts at `at` (longest name first), and where the name ends. */
+  /** The seat whose name starts at `at` (longest name first, past an @ or emphasis), and where it ends (past emphasis). */
   const nameAt = (at: number): { seat: Seat; end: number } | undefined => {
-    const rest = reply.slice(at).replace(/^@/, "");
-    const skip = reply.length - at - rest.length;
+    const lead = /^(?:@|[*_]{1,2})?/.exec(reply.slice(at))![0].length;
+    const rest = reply.slice(at + lead).toLowerCase();
     for (const { seat, name } of names)
-      if (rest.toLowerCase().startsWith(name) && !/[\p{L}\p{N}]/u.test(rest.charAt(name.length))) return { seat, end: at + skip + name.length };
+      if (rest.startsWith(name) && !/[\p{L}\p{N}]/u.test(rest.charAt(name.length))) {
+        const end = at + lead + name.length;
+        return { seat, end: end + /^[*_]{0,2}/.exec(reply.slice(end))![0].length };
+      }
     return undefined;
   };
-  // Every place a sentence or line starts: a run of names joined by "," "and" "&" and closed by "," or ":".
-  const starts = [/^\s*/.exec(reply)![0].length, ...[...reply.matchAll(/(?:\n|[.!?])\s*(?:[-*]\s+)?/g)].map((m) => m.index! + m[0].length)];
-  const bullet = /^\s*[-*]\s+/.exec(reply);
-  if (bullet) starts.push(bullet[0].length);
+  // Every place a sentence, line, list item or colon's sequel starts.
+  const starts = [/^\s*(?:[-*]\s+)?/.exec(reply)![0].length, ...[...reply.matchAll(/(?:\n|[.!?:;])\s*(?:[-*]\s+|\d+[.)]\s+)?/g)].map((m) => m.index! + m[0].length)];
   for (const start of starts) {
     const run: { id: string; at: number }[] = [];
     let at = start;
@@ -246,19 +249,20 @@ export function addressedIn(reply: string, seats: readonly Seat[], speaker: stri
       if (!hit) break;
       run.push({ id: hit.seat.id, at });
       const tail = reply.slice(hit.end);
-      const join = /^\s*(?:,|and\b|&)\s*/i.exec(tail);
-      const closes = /^\s*[,:]/.test(tail);
+      // "," "and" "&" ", and" ", &" join names; a comma or colon after the last one, or a please, closes the run.
+      const join = /^\s*(?:,\s*(?:and\b|&)?|and\b|&)\s*/i.exec(tail);
       if (join && nameAt(hit.end + join[0].length)) {
         at = hit.end + join[0].length;
         continue;
       }
-      if (closes) for (const r of run) note(r.id, r.at);
+      if (/^\s*[,:]/.test(tail) || /^\s+(?:please|pls|plz|can you|could you|would you|will you)\b/i.test(tail)) for (const r of run) note(r.id, r.at);
       break;
     }
   }
   for (const seat of others)
     for (const name of allNames(seat)) {
-      const mention = new RegExp(`@${escape(compact(name))}(?![\\p{L}\\p{N}])|@${escape(seat.id)}(?![\\p{L}\\p{N}-])`, "iu").exec(reply);
+      const spaced = escape(name).replace(/\s+/g, "\\s+");
+      const mention = new RegExp(`@(?:${spaced}|${escape(compact(name))})(?![\\p{L}\\p{N}])|@${escape(seat.id)}(?![\\p{L}\\p{N}-])`, "iu").exec(reply);
       if (mention) note(seat.id, mention.index);
     }
   return [...found.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);

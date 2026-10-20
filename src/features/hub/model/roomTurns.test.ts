@@ -93,6 +93,22 @@ describe("who else may speak", () => {
     expect(addressedIn("PM, frank: the board moves to Fridays.", TEAM, "chief-of-staff")).toEqual(["projects-manager", "frank"]);
   });
 
+  it("a list of full names, in any case, with 'and', an Oxford comma, bold or a please, addresses all of them", () => {
+    const LEAD: Seat = { id: "tally-lead", name: "Tally lead", aliases: ["Tally", "Tally lead"] };
+    const all = ["projects-manager", "frank", "alfred"];
+    // The baseline's miss (20 Oct): the host asked three seats to check in by name.
+    expect(addressedIn("Here, Ash. Chief of Staff: I take your asks. Projects Manager, frank and Alfred, please check in with your own line.", TEAM, "chief-of-staff")).toEqual(all);
+    expect(addressedIn("projects manager, frank and alfred: one line each", TEAM, "chief-of-staff")).toEqual(all);
+    expect(addressedIn("Projects Manager, frank, and Alfred, please check in.", TEAM, "chief-of-staff")).toEqual(all);
+    expect(addressedIn("Projects Manager, frank and Alfred please check in with your own line.", TEAM, "chief-of-staff")).toEqual(all);
+    expect(addressedIn("PM & frank, can you confirm?", TEAM, "chief-of-staff")).toEqual(["projects-manager", "frank"]);
+    expect(addressedIn("**frank**, please check items 3 and 4.", TEAM, "chief-of-staff")).toEqual(["frank"]);
+    expect(addressedIn("- **PM:** put these seven on the board", TEAM, "chief-of-staff")).toEqual(["projects-manager"]);
+    expect(addressedIn("Next: frank and Alfred, check it against Ash's words.", TEAM, "chief-of-staff")).toEqual(["frank", "alfred"]);
+    expect(addressedIn("Ping @Projects Manager when it's on the board.", TEAM, "chief-of-staff")).toEqual(["projects-manager"]);
+    expect(addressedIn("Tally lead, please confirm scope.", [...TEAM, LEAD], "chief-of-staff")).toEqual(["tally-lead"]);
+  });
+
   it("talking about a Mono is not addressing it, and nobody addresses themselves", () => {
     expect(addressedIn("Frank's point stands, and Alfred agreed.", TEAM, "chief-of-staff")).toEqual([]);
     expect(addressedIn("frank and alfred disagree on this", TEAM, "chief-of-staff")).toEqual([]);
