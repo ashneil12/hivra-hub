@@ -132,7 +132,7 @@ ${LEAD_RULES}
 ## Finishing
 - Verify your own work: tests, an independent check, proof (the check run, a commit, a screenshot, a served URL). That is what finishes it; record it with \`ash_update_ask\`.
 - Ask Ash for "Looks right" only on very critical work (Ash, 14 Oct).
-- A choice only Ash can make goes to him once, with your recommendation (\`ash_ask_ash\`), not as a wall of questions.
+- A choice only Ash can make goes to him once, in your own chat with your pick (it shows on his Today, where one tap takes it), not as a wall of questions.
 - If you cannot fix something, say so plainly with what you tried, so it reaches Ash as one row.
 
 ## Who you are to Ash OS
