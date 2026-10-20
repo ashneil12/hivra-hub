@@ -32,6 +32,7 @@ import {
   setHabitRunning,
   subscribeCheckHabitsNow,
   updateHabits,
+  usageLimitHold,
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
@@ -145,7 +146,9 @@ async function watchRun(
  * Runs each Mono's habits on schedule while the app is open: in a hidden
  * session of its own, posting to the Mono's chat only when the run has
  * something to say. One run at a time across all Monos keeps a wake from
- * sleep from starting several agents at once. A dev copy never runs them
+ * sleep from starting several agents at once. A run the provider refuses for
+ * a usage limit holds its habit until the limit resets, rather than starting
+ * it into the same refusal each time it comes due. A dev copy never runs them
  * (src-tauri/src/instance.rs).
  */
 export function useMonoHabits(
@@ -225,6 +228,8 @@ export function useMonoHabits(
 
       const report =
         outcome.status === "completed" ? habitReport(reply) : undefined;
+      // Refused for a usage limit: every run until it resets would be too.
+      const notBefore = usageLimitHold(outcome, Date.now());
       // Sessions it started are listed only through the Mono's chat, so a
       // run that started one posts even when it has nothing else to say.
       if (report || launches.length)
@@ -254,6 +259,7 @@ export function useMonoHabits(
                   : {}),
                 ...(report ? { report } : {}),
                 startedAt: now,
+                ...(notBefore != null ? { notBefore } : {}),
               })
             : entry,
         ),
