@@ -391,11 +391,9 @@ async function delegate(
     harness: launch.harness,
     model: launch.model,
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
-    ...(row
-      ? {}
-      : {
-          note: "It started, but its task record could not be stored; its report still comes back to you.",
-        }),
+    note: row
+      ? "Running. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once."
+      : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }
 
