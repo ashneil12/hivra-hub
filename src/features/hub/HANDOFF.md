@@ -170,7 +170,9 @@ not count as leaving). Stuck jobs also appear on Today and the Inbox as amber
 rows with no button (`StuckItem.quiet`); a given-up job is not among them, it is
 the red Needs row. Clicking a job opens a small story built from what Ash OS
 says (started, tried, sent, "got it"); there is no step log to show yet.
-A service without `ash-hub-jobs` just means nothing is being built.
+A service without `ash-hub-jobs` just means nothing is being built. Watched pull requests (`features/pr-watch`, a
+Mono's `pr_watch`) are this app's own rows, not Ash OS's: each live watch is a "Waiting on CI" job under its Mono
+(`prWatchJobs.ts`), with the pull request's state on a second line and Stop watching in its story.
 
 **Project Leads (`hubLeads.ts`).** In the Hub bundle (and on the dev page with a
 stub or the live proxy), once Ash OS has listed the projects, each gets its Lead

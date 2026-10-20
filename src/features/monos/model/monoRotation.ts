@@ -1,5 +1,8 @@
 import type { Block, Session } from "../../sessions/model/session";
-import { contextRatio } from "../../sessions/model/contextUsage";
+import {
+  contextCeilingFor,
+  effectiveContextWindow,
+} from "../../sessions/model/contextCeiling";
 
 /**
  * A Mono's chat never ends, but the provider session behind it does. Every
@@ -12,7 +15,11 @@ import { contextRatio } from "../../sessions/model/contextUsage";
  * summary; the full transcript stays in the chat for the Mono to read.
  */
 
-/** Rotate at 80% of the reported window, leaving room for the next turn. */
+/**
+ * Rotate at 80% of the room the chat has: the reported window, capped by its
+ * compaction ceiling (see `contextCeiling`). Below the ceiling, so the brief
+ * rotation runs before Claude Code would compact the chat on its own.
+ */
 export const ROTATE_RATIO = 0.8;
 
 /** Recent exchanges carried word for word. */
@@ -50,13 +57,20 @@ type Exchange = {
 
 /** Whether the next turn should start a fresh provider session, and why. */
 export function rotationReason(
-  session: Pick<Session, "providerSessionId" | "context" | "blocks">,
+  session: Pick<Session, "providerSessionId" | "context" | "blocks"> &
+    Partial<Pick<Session, "harness" | "model">>,
 ): RotationReason | undefined {
   // Nothing to rotate: the next turn already starts a new session.
   if (!session.providerSessionId) return undefined;
+  const ceiling =
+    session.harness && session.model
+      ? contextCeilingFor({ harness: session.harness, model: session.model })
+      : undefined;
   // With no reported window, leave compaction to the provider.
-  const ratio = contextRatio(session.context);
-  return ratio !== null && ratio >= ROTATE_RATIO ? "context" : undefined;
+  const room = effectiveContextWindow(session.context?.window, ceiling);
+  const used = session.context?.used;
+  if (!room || used === undefined || !Number.isFinite(used)) return undefined;
+  return used >= room * ROTATE_RATIO ? "context" : undefined;
 }
 
 /** The user's turns and what the Mono finally said in each. */

@@ -768,7 +768,11 @@ describe("the delegate tool's tasks on the rows (H3)", () => {
     await expect(tasks.answer!(MONO, open, 8, { kind: "skipped" })).rejects.toThrow("no longer open");
     await tasks.answer!(MONO, open, 7, { kind: "answered", answers: { slot: ["two"] } });
     expect(answered).toEqual([["app-mono-exo-q", 7, { kind: "answered", answers: { slot: ["two"] } }]]);
-    expect(setQuestion).toHaveBeenCalledWith(open.id, null, "owner:mono-exo");
+    // Who answered, and what (H4).
+    expect(setQuestion).toHaveBeenCalledWith(open.id, null, "owner:mono-exo", {
+      requestId: 7,
+      answers: { slot: ["two"] },
+    });
   });
 
   it("a report rebuilt from a row names where the work ran, not the hub project id the row keeps for Ash OS", async () => {

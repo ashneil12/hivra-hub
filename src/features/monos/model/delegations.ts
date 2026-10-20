@@ -148,12 +148,20 @@ export type DelegationsBackend = {
     resume: boolean,
     by?: string,
   ): Promise<Delegation | null>;
-  setQuestion(id: string, question: string | null, by?: string): Promise<Change>;
+  /** A worker's question on its row, or (null) its answer; `detail` goes on the row's log (request id, the answer). */
+  setQuestion(
+    id: string,
+    question: string | null,
+    by?: string,
+    detail?: Record<string, unknown>,
+  ): Promise<Change>;
   setDelivery(input: DeliveryInput): Promise<Delegation[]>;
   cancel(ids: string[], reason?: string, by?: string): Promise<Delegation[]>;
   refuse(id: string, by?: string): Promise<Change>;
   listOpen(): Promise<Delegation[]>;
   tree(id: string): Promise<Delegation[]>;
+  /** Every row still running or owed, and the ones changed since `since` (epoch ms), newest first (H4's tree view). */
+  recent?(since: number): Promise<Delegation[]>;
   owned(query: OwnedQuery): Promise<Delegation[]>;
   reportsSeen(ownerSession: string, messageIds: string[]): Promise<string[]>;
   bindChat(input: ChatBindInput): Promise<boolean>;
@@ -164,13 +172,14 @@ export const tauriDelegations: DelegationsBackend = {
   settle: (input) => invoke("delegations_settle", { input }),
   reattach: (childSession, resume, by) =>
     invoke("delegations_reattach", { childSession, resume, by }),
-  setQuestion: (id, question, by) =>
-    invoke("delegations_set_question", { id, question, by }),
+  setQuestion: (id, question, by, detail) =>
+    invoke("delegations_set_question", { id, question, by, detail }),
   setDelivery: (input) => invoke("delegations_set_delivery", { input }),
   cancel: (ids, reason, by) => invoke("delegations_cancel", { ids, reason, by }),
   refuse: (id, by) => invoke("delegations_refuse", { id, by }),
   listOpen: () => invoke("delegations_list_open"),
   tree: (id) => invoke("delegations_tree", { id }),
+  recent: (since) => invoke("delegations_recent", { since }),
   owned: (input) => invoke("delegations_owned", { input }),
   reportsSeen: (ownerSession, messageIds) =>
     invoke("delegations_reports_seen", { ownerSession, messageIds }),
@@ -592,20 +601,41 @@ export class DelegationTracker {
     }).catch(() => undefined);
   }
 
-  /** The owner cancelled these tasks (task_cancel): what is still owed is cancelled, with its reason. */
+  /**
+   * The owner cancelled these tasks (task_cancel), or a Stop reached them (stopTree.ts): what is still owed is
+   * cancelled, with its reason and who acted (the owner unless `by` says, such as `user` for Ash's Stop).
+   */
   cancelOwned(
     ownerId: string,
     rows: Delegation[],
     reason: string,
+    by = `owner:${ownerId}`,
   ): Promise<Delegation[]> {
     return this.serial(async () => {
       const ids = rows
         .filter((row) => row.ownerSession === ownerId && isOwed(row))
         .map((row) => row.id);
       if (!ids.length) return [];
-      const changed = await this.backend.cancel(ids, reason, `owner:${ownerId}`);
+      const changed = await this.backend.cancel(ids, reason, by);
       changed.forEach((row) => this.remember(row));
       return changed;
+    });
+  }
+
+  /**
+   * A worker's question reached its row (state question, with the question), or it was answered (null): through the
+   * tracker, so this window's open rows stay in step. Only an open row moves (delegations.rs).
+   */
+  setQuestion(
+    row: Pick<Delegation, "id">,
+    question: string | null,
+    by: string,
+    detail?: Record<string, unknown>,
+  ): Promise<Change> {
+    return this.serial(async () => {
+      const change = await this.backend.setQuestion(row.id, question, by, detail);
+      this.remember(change.row);
+      return change;
     });
   }
 

@@ -55,6 +55,17 @@ import {
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { JiraSettings } from "./JiraSettings";
+import {
+  CONTEXT_CEILING_CHOICES,
+  DEFAULT_CONTEXT_CEILING,
+  MODEL_CONTEXT_CEILINGS,
+  loadContextCeilingChoice,
+  loadIdleCompact,
+  saveContextCeilingChoice,
+  saveIdleCompact,
+  type ContextCeilingChoice,
+} from "../../sessions/model/contextCeiling";
+import { formatTokens } from "../../sessions/model/contextUsage";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
@@ -3509,6 +3520,8 @@ function ProvidersPage({
   const [choice, setChoice] = useState(loadLastModelChoice);
   const [defaultModels, setDefaultModels] = useState(loadDefaultModels);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
+  const [contextCeiling, setContextCeiling] = useState(loadContextCeilingChoice);
+  const [idleCompact, setIdleCompact] = useState(loadIdleCompact);
   const [idleAgentLimit, setIdleAgentLimit] =
     useState<IdleAgentLimit>(loadIdleAgentLimit);
   const [scope, setScope] = useState<string>(GLOBAL_PROVIDER_SCOPE);
@@ -3568,6 +3581,18 @@ function ProvidersPage({
   const onClaudeHooks = (next: boolean) => {
     saveClaudeHooks(next);
     setClaudeHooks(next);
+  };
+
+  const onContextCeiling = (next: string) => {
+    const choice: ContextCeilingChoice =
+      next === "model" || next === "off" ? next : Number(next);
+    saveContextCeilingChoice(choice);
+    setContextCeiling(choice);
+  };
+
+  const onIdleCompact = (next: boolean) => {
+    saveIdleCompact(next);
+    setIdleCompact(next);
   };
 
   const onIdleAgentLimit = (next: string) => {
@@ -3703,6 +3728,37 @@ function ProvidersPage({
             label="Claude Code hooks"
             on={claudeHooks}
             onChange={onClaudeHooks}
+          />
+        </Row>
+        <Row
+          id="context-ceiling"
+          label="Compact long chats at"
+          description={`Every turn resends the whole conversation, so a Lead that runs for days and only compacts near a 1M window spends most of the usage limit re-reading itself. Claude Code compacts at this size instead (or at the model's window, if that is smaller). Model default: ${MODEL_CONTEXT_CEILINGS.map((entry) => `${entry.family} ${formatTokens(entry.tokens)}`).join(", ")}, others ${formatTokens(DEFAULT_CONTEXT_CEILING)}. Monos start their fresh session a little before it. Applies to running chats without a restart.`}
+        >
+          <Select
+            label="Compact long chats at"
+            value={String(contextCeiling)}
+            options={CONTEXT_CEILING_CHOICES.map((choice) => ({
+              value: String(choice),
+              label:
+                choice === "model"
+                  ? "Model default"
+                  : choice === "off"
+                    ? "Claude Code default"
+                    : formatTokens(choice),
+            }))}
+            onChange={onContextCeiling}
+          />
+        </Row>
+        <Row
+          id="idle-compact"
+          label="Compact idle chats first"
+          description="A chat that sat idle longer than its prompt cache lives (an hour on most plans) would have its whole context cached again, at full price, by your next message. When it is over 100K tokens, Claude Code compacts it first, and the chat says so."
+        >
+          <Toggle
+            label="Compact idle chats first"
+            on={idleCompact}
+            onChange={onIdleCompact}
           />
         </Row>
       </Group>

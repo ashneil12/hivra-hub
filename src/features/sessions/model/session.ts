@@ -269,6 +269,11 @@ export type MonoSessionCompletion = {
   status: "completed" | "failed" | "cancelled";
   /** A single report covering several sessions launched in one Mono turn. */
   sessionCount?: number;
+  /**
+   * Not a report: a worker the Mono delegated to asked it a question (delegationQuestions.ts). It waits for an idle
+   * Mono like a report and is withdrawn once the question is answered.
+   */
+  question?: true;
 };
 
 /**
@@ -329,6 +334,10 @@ export type UsageLimit = {
   resetsAt?: number;
   /** Send a continue turn once the window resets. */
   resumeAtReset?: boolean;
+  /** When to send it, when later than the reset (auto-resume spreads chats out; features/autopilot/model/limitResume). */
+  resumeAt?: number;
+  /** Armed by auto-resume rather than by the user's own toggle. */
+  auto?: boolean;
 };
 
 /** Provider/model provenance captured when a user turn is submitted. */
@@ -395,6 +404,8 @@ export type Block = {
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
+  /** A workflow run's phases and agents. Present on the tool block that launched it. */
+  workflowRun?: import("./workflowRun").WorkflowRunMeta;
   taskList?: TaskListMeta;
   plan?: PlanBlockMeta;
   orchestration?: OrchestrationProposal;

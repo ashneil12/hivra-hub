@@ -8,7 +8,8 @@ import {
 } from "../model/pixelMascots";
 
 /** What a mascot's agent is doing: idle bobs, working hops, waiting gets an idea. */
-export type PixelMascotStatus = "idle" | "working" | "needs-you";
+/** "paused" (a usage limit that resumes by itself) rests like idle. */
+export type PixelMascotStatus = "idle" | "working" | "needs-you" | "paused";
 
 type Props = {
   /** Project mascot name; see `projectMascots`. */

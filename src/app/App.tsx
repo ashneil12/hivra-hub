@@ -57,8 +57,16 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { postLeadReport } from "../features/hub/model/roomReports";
+import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
+import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
+import {
+  tauriPrWatches,
+  waitingActivity,
+  type PrWatchTracker,
+} from "../features/pr-watch/model/prWatches";
 import { useHubChecks } from "./hooks/useHubChecks";
 import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
+import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -152,7 +160,11 @@ import {
   setHubSelection,
   useHubSelection,
 } from "../features/hub/model/hubNav";
-import { noteChats, setWaitingChatsHost } from "../features/hub/model/waitingChats";
+import {
+  noteChats,
+  setWaitingChatsHost,
+  setWorkerQuestionRouter,
+} from "../features/hub/model/waitingChats";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -601,6 +613,7 @@ import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
+  usageLimitResumeAt,
   usageLimitResumeDue,
   withUsageLimitAccount,
 } from "../features/sessions/model/usageLimit";
@@ -643,6 +656,7 @@ import { hiddenApprovalNotices } from "../features/notifications/model/approvalT
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
 import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenFinishedSessions";
+import { useLiveHarnessSettings } from "../features/sessions/hooks/useLiveHarnessSettings";
 import { useUnseenReplyCounts } from "../features/sessions/hooks/useUnseenReplyCounts";
 import {
   loadNotificationsEnabled,
@@ -1881,6 +1895,8 @@ function Workspace({
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
+  const prWatchesRef = useRef<PrWatchTracker | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -2454,6 +2470,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // Model, effort and permission changes reach a running turn's CLI now.
+  useLiveHarnessSettings(sessions);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -9279,6 +9297,16 @@ function Workspace({
       }),
     [],
   );
+  const prWatches = usePrWatches({
+    sessionsRef,
+    queueWake: (monoId, message) =>
+      queueMonoSessionCompletionRef.current(monoId, message),
+  });
+  prWatchesRef.current = prWatches;
+  const prWatchVersion = useSyncExternalStore(
+    prWatches.subscribe,
+    prWatches.snapshot,
+  );
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {
@@ -9769,8 +9797,10 @@ function Workspace({
                     : {}),
               },
             );
-            if (accepted && head.monoSessionCompletion)
+            if (accepted && head.monoSessionCompletion) {
               delegationsRef.current?.delivered(head.id);
+              prWatchesRef.current?.delivered(head.id);
+            }
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
@@ -9852,6 +9882,7 @@ function Workspace({
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
       delegationsRef.current?.discarded(messageId);
+      prWatchesRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -10111,7 +10142,8 @@ function Workspace({
       if (!usageLimitResumeDue(session, now)) {
         nextCheck = Math.min(
           nextCheck,
-          limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS - now,
+          (usageLimitResumeAt(limit) ??
+            limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS) - now,
         );
         continue;
       }
@@ -11098,6 +11130,23 @@ function Workspace({
     },
     [flushHarnessEvents],
   );
+  // The delegation tree (H4): workers' questions go to the Mono that delegated them, and Ash's Stop on a Mono with
+  // work out stops everything beneath it (monos/hooks/useDelegationTree.ts).
+  const delegationTree = useDelegationTree({
+    sessions,
+    sessionsRef,
+    setSessions,
+    tracker: () => delegationsRef.current,
+    batches: () => monoCompletionBatches.current,
+    queueWake: (owner, message) =>
+      queueMonoSessionCompletionRef.current(owner, message),
+    stopSession: (id, managed) => onStop(id, managed),
+    openMono: onOpenMono,
+    monoView: () => monoViewIdRef.current,
+    showLaunched: showMonoLaunchedSession,
+    openSession: openReminderSession,
+  });
+  const onStopFromUser = delegationTree.stopFromUser;
 
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
@@ -11141,12 +11190,12 @@ function Workspace({
         ) {
           return;
         }
-        onStop(sessionId);
+        onStopFromUser(sessionId);
       });
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [onStop]);
+  }, [onStopFromUser]);
 
   const onApproval = useCallback(
     (sessionId: string, requestId: number, decision: ApprovalDecision) => {
@@ -11204,6 +11253,25 @@ function Workspace({
     [],
   );
 
+  // Autopilot: covered chats take their own recommendation (red list waits for Ash), agents resume at a limit's
+  // reset, and armed resumes come back after a restart (features/autopilot).
+  useAutopilot({
+    sessions,
+    sessionsRef,
+    updateSession: (id, change) =>
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) => (entry.id === id ? change(entry) : entry)),
+      ),
+    approve: onApproval,
+    openSession: ensureOpenSession,
+    isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
+    openChat: (id) => {
+      const mono = monoForSession(id);
+      if (mono) void onOpenMono(mono.id);
+      else if (!focusOpenSession(id)) void onSelectHistorySession(id);
+    },
+  });
+
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
@@ -11216,6 +11284,15 @@ function Workspace({
 
   // Today's "Waiting on you" (hub/model/waitingChats.ts): the chats whose agent asked Ash something. The store reads the
   // chats as they change and borrows these hands to answer in place, send his words into a chat, or open it.
+  // A worker's question is its Lead's, never Today's (H4): the delegation tree's router decides which.
+  const delegationQuestions = delegationTree.questions;
+  useEffect(
+    () =>
+      IS_HUB_BUNDLE
+        ? setWorkerQuestionRouter(delegationQuestions.routes)
+        : undefined,
+    [delegationQuestions],
+  );
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
   }, [sessions]);
@@ -11644,6 +11721,8 @@ function Workspace({
 
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
+  const delegationTreeRef = useRef(delegationTree);
+  delegationTreeRef.current = delegationTree;
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -12153,6 +12232,35 @@ function Workspace({
               flushHarnessEvents();
               dismissCompletion(id);
             },
+            // sessions.stop {"cascade":true}: the session, then everything beneath it (H4).
+            stopTree: async (id) => {
+              if (
+                removingSessionIds.current.has(id) ||
+                switchingWorktrees.current.has(id)
+              )
+                throw new Error(
+                  "Session is being removed or changing worktrees",
+                );
+              const target = sessionsRef.current.find(
+                (session) => session.id === id,
+              );
+              if (
+                target &&
+                (target.orchestrationLeadId ||
+                  !canAccessProject(target.cwd) ||
+                  isMonoSession(id) ||
+                  isHabitRun(id))
+              )
+                throw new Error("Session is unavailable in this project");
+              const result = await delegationTreeRef.current.stopTree(
+                id,
+                "Stopped by its owner.",
+                `owner:${source.id}`,
+              );
+              flushHarnessEvents();
+              dismissCompletion(id);
+              return result;
+            },
             remove: async (id, mode) => {
               const target = await ensureOpenSessionRef.current(id);
               if (
@@ -12256,6 +12364,10 @@ function Workspace({
               dropReport,
               respond: (child, requestId, reply) =>
                 respondHarnessQuestion(child.harness, child.id, requestId, reply),
+              stopTask: (row, reason, by) =>
+                delegationTreeRef.current.stopTask(row, reason, by),
+              waits: delegationTreeRef.current.waits,
+              questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
               unqueue: (childSession, requestId) => {
@@ -12294,6 +12406,12 @@ function Workspace({
                 };
               },
             }),
+            prs: {
+              add: (input) => tauriPrWatches.add(input),
+              remove: (input) => tauriPrWatches.remove(input),
+              list: (ownerSession) => tauriPrWatches.list(ownerSession),
+              hubProjectId: hubProjectIdFor,
+            },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
@@ -14131,7 +14249,7 @@ function Workspace({
         },
       }),
     submit: onSubmit,
-    stop: onStop,
+    stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
     questionInteraction: onQuestionInteraction,
@@ -14167,7 +14285,7 @@ function Workspace({
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
-    onStop,
+    onStop: onStopFromUser,
     onCompactContext,
     onPlaceSessionInFolder,
     onDeleteQueuedMessage,
@@ -14439,7 +14557,15 @@ function Workspace({
       const session = mono.sessionId
         ? sessions.find((entry) => entry.id === mono.sessionId)
         : undefined;
-      if (session) states.set(mono.id, monoState(session));
+      if (session) {
+        // An idle Mono that is waiting on a pull request says so instead of nothing.
+        const state = monoState(session);
+        const waiting =
+          state.status === "idle"
+            ? waitingActivity(prWatches.watchingFor(session.id))
+            : undefined;
+        states.set(mono.id, waiting ? { ...state, activity: waiting } : state);
+      }
       const count = mono.sessionId
         ? monoReplies.counts.get(mono.sessionId)
         : undefined;
@@ -14447,7 +14573,7 @@ function Workspace({
     }
     return { states, unseen };
     // The roster is read through its snapshot.
-  }, [monosSnap, sessions, monoReplies.counts]);
+  }, [monosSnap, sessions, monoReplies.counts, prWatches, prWatchVersion]);
   const monoRail = useStableValue(monoRailState);
   const busyProjectPaths = useStableValue(
     promptableSessions.flatMap((session) =>

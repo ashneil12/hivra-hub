@@ -696,12 +696,45 @@ pub fn reattach(
 }
 
 /// A worker's question to its owner (H4): running → question with the question, or back to running once answered
-/// (`question` empty). Only an open row moves.
+/// (`question` empty). Only an open row moves. The app writes through `set_question_with`, which logs a detail too.
+#[cfg(test)]
 pub fn set_question(
     conn: &mut Connection,
     id: &str,
     question: Option<String>,
     by: Option<String>,
+    now: i64,
+) -> Result<Change, String> {
+    set_question_with(conn, id, question, by, None, now)
+}
+
+/// What a question's log line may carry (H4): the question's request id, and for an answer what it was (`answers`, or
+/// `skipped`). Anything else is dropped, and the whole detail is capped.
+fn question_detail(detail: Option<Value>) -> Value {
+    let Some(Value::Object(detail)) = detail else {
+        return json!({});
+    };
+    let mut kept = serde_json::Map::new();
+    for key in ["requestId", "answers", "skipped"] {
+        if let Some(value) = detail.get(key) {
+            kept.insert(key.into(), value.clone());
+        }
+    }
+    let kept = Value::Object(kept);
+    if kept.to_string().len() > QUESTION_MAX {
+        return json!({ "requestId": detail.get("requestId").cloned().unwrap_or(Value::Null) });
+    }
+    kept
+}
+
+/// `set_question` with a detail for the row's log: who asked or answered is `by`; the first answer is the one logged,
+/// since a repeated answer to a row already running changes nothing.
+pub fn set_question_with(
+    conn: &mut Connection,
+    id: &str,
+    question: Option<String>,
+    by: Option<String>,
+    detail: Option<Value>,
     now: i64,
 ) -> Result<Change, String> {
     let by = actor(by);
@@ -733,7 +766,7 @@ pub fn set_question(
         "answered"
     };
     row.pending_question = question;
-    row.note(now, &by, event, json!({}));
+    row.note(now, &by, event, question_detail(detail));
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1034,6 +1067,19 @@ pub fn tree(conn: &Connection, id: &str) -> Result<Vec<Delegation>, String> {
         conn,
         "WHERE root_id = ?1 ORDER BY created_at, rowid",
         &[&row.root_id],
+    )
+}
+
+const RECENT_MAX: i64 = 200;
+
+/// What the delegation tree in the app shows (H4: child chats under the Mono that started them, a Lead's "Waiting on
+/// N"): every row still running or owed, and the ones that changed since `since` (epoch ms), newest first.
+pub fn recent(conn: &Connection, since: i64) -> Result<Vec<Delegation>, String> {
+    query(
+        conn,
+        "WHERE state IN ('running', 'question') OR delivery IN ('pending', 'queued') OR updated_at >= ?1
+         ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+        &[&since, &RECENT_MAX],
     )
 }
 
@@ -1451,8 +1497,16 @@ pub fn delegations_set_question(
     id: String,
     question: Option<String>,
     by: Option<String>,
+    detail: Option<Value>,
 ) -> Result<Change, String> {
-    let change = set_question(&mut *store.lock_conn()?, &id, question, by, now_millis())?;
+    let change = set_question_with(
+        &mut *store.lock_conn()?,
+        &id,
+        question,
+        by,
+        detail,
+        now_millis(),
+    )?;
     if let (true, Some(row)) = (change.applied, &change.row) {
         changed(&app, &[row]);
     }
@@ -1525,6 +1579,14 @@ pub fn delegations_tree(
     id: String,
 ) -> Result<Vec<Delegation>, String> {
     tree(&*store.lock_conn()?, &id)
+}
+
+#[tauri::command(async)]
+pub fn delegations_recent(
+    store: State<'_, SessionStore>,
+    since: i64,
+) -> Result<Vec<Delegation>, String> {
+    recent(&*store.lock_conn()?, since)
 }
 
 #[tauri::command(async)]
@@ -2102,6 +2164,96 @@ mod tests {
             get(&conn, &row.id).unwrap().unwrap().follow.as_deref(),
             Some("lead")
         );
+    }
+
+    #[test]
+    fn a_question_and_its_first_answer_are_logged_with_who_and_what() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        set_question_with(
+            &mut conn,
+            &row.id,
+            Some("Which branch? [main | next]".into()),
+            Some("worker:worker".into()),
+            Some(json!({ "requestId": 3, "secret": "dropped" })),
+            11,
+        )
+        .unwrap();
+        let first = set_question_with(
+            &mut conn,
+            &row.id,
+            None,
+            Some("owner:lead".into()),
+            Some(json!({ "requestId": 3, "answers": { "q1": ["main"] } })),
+            12,
+        )
+        .unwrap();
+        assert!(first.applied);
+        // A second answer to the same question (Ash in the worker's chat, a retry) finds it running: not logged.
+        let second = set_question_with(
+            &mut conn,
+            &row.id,
+            None,
+            Some("chat:worker".into()),
+            Some(json!({ "requestId": 3, "skipped": true })),
+            13,
+        )
+        .unwrap();
+        assert!(!second.applied);
+        let log = get(&conn, &row.id).unwrap().unwrap().log;
+        let asked = log.iter().find(|e| e["event"] == "asked").unwrap();
+        assert_eq!(asked["by"], "worker:worker");
+        assert_eq!(asked["requestId"], 3);
+        assert!(asked.get("secret").is_none());
+        let answered: Vec<&Value> = log.iter().filter(|e| e["event"] == "answered").collect();
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0]["by"], "owner:lead");
+        assert_eq!(answered[0]["answers"], json!({ "q1": ["main"] }));
+        // An oversized answer keeps only its request id.
+        set_question(&mut conn, &row.id, Some("Again?".into()), None, 14).unwrap();
+        set_question_with(
+            &mut conn,
+            &row.id,
+            None,
+            None,
+            Some(json!({ "requestId": 4, "answers": { "q": ["x".repeat(5_000)] } })),
+            15,
+        )
+        .unwrap();
+        let last = get(&conn, &row.id).unwrap().unwrap().log.pop().unwrap();
+        assert_eq!(last["requestId"], 4);
+        assert!(last.get("answers").is_none());
+    }
+
+    #[test]
+    fn recent_lists_what_is_open_or_owed_and_what_changed_since() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "a"), 10).unwrap();
+        settle(&mut conn, finish(&old.id, 1, COMPLETED, "done"), 11).unwrap();
+        set_delivery(
+            &mut conn,
+            DeliveryInput {
+                ids: vec![old.id.clone()],
+                delivery: ACKNOWLEDGED.into(),
+                ..Default::default()
+            },
+            12,
+        )
+        .unwrap();
+        let fresh = record(&mut conn, launch("lead", "r2", "b"), 20).unwrap();
+        let owed = record(&mut conn, launch("lead", "r3", "c"), 21).unwrap();
+        settle(&mut conn, finish(&owed.id, 1, FAILED, ""), 22).unwrap();
+        let ids = |since| -> Vec<String> {
+            recent(&conn, since)
+                .unwrap()
+                .into_iter()
+                .map(|d| d.id)
+                .collect()
+        };
+        assert_eq!(ids(100), vec![owed.id.clone(), fresh.id.clone()]);
+        assert_eq!(ids(0), vec![owed.id, fresh.id, old.id]);
     }
 
     #[test]

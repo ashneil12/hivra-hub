@@ -3,6 +3,7 @@ import {
   failedReason,
   isProviderErrorClass,
 } from "../../../integrations/harness/core/providerFailure";
+import { autoResumeReason } from "../../autopilot/model/limitResume";
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import type {
   MonoSessionCompletion,
@@ -90,7 +91,7 @@ export function monoSessionCompletionResult(
     result: result.slice(0, RESULT_MAX_CHARS),
     truncated: result.length > RESULT_MAX_CHARS,
     ...(outcome.error ? { error: outcome.error } : {}),
-    ...failureReport(outcome),
+    ...failureReport(outcome, session),
   };
 }
 
@@ -105,6 +106,7 @@ function lastUserTurn(session: Session): number {
 /** A provider's refusal in the report's words; nothing for other outcomes. */
 function failureReport(
   outcome: ControlOutcome,
+  session?: Session,
 ): Pick<
   MonoSessionCompletionResult,
   "errorClass" | "retryable" | "resetsAt" | "reason"
@@ -114,8 +116,13 @@ function failureReport(
   // Past ±8.64e15 ms a Date is invalid and toISOString throws.
   const validReset =
     resetsAt != null && Number.isFinite(resetsAt) && Math.abs(resetsAt) <= 8.64e15;
+  // A worker that resumes by itself at the reset: its Lead hears "paused until 14:10", not just "failed" (autopilot).
+  const paused =
+    outcome.errorClass === "usage_limit" && validReset
+      ? autoResumeReason(session, resetsAt)
+      : undefined;
   return {
-    reason: failedReason(outcome.errorClass),
+    reason: paused ?? failedReason(outcome.errorClass),
     errorClass: outcome.errorClass,
     ...(outcome.retryable !== undefined
       ? { retryable: outcome.retryable }

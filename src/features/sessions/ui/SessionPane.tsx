@@ -69,6 +69,11 @@ import {
   subscribeMonos,
 } from "../../monos/model/mono";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
+import { useDelegationPane } from "../../monos/hooks/useDelegationPane";
+import {
+  DelegatedChatNotice,
+  DelegationWaitingLine,
+} from "../../monos/ui/DelegationNotices";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
@@ -423,6 +428,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const mono = monoForSession(session.id);
   const agent = mono ? monoLook(mono) : undefined;
+  // A worker's chat runs on its own; a Mono with work out reads "Waiting on N" (H4).
+  const delegationPane = useDelegationPane(session.id, !!mono);
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -1187,6 +1194,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       }
                     />
                   ) : null}
+                  {delegationPane?.kind === "lead" ? (
+                    <DelegationWaitingLine
+                      count={delegationPane.count}
+                      failed={delegationPane.failed}
+                      onStopAll={delegationPane.onStopAll}
+                    />
+                  ) : null}
                   <MonoComposer
                     key={session.id}
                     sessionId={session.id}
@@ -1264,6 +1278,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                   />
                 </>
+              ) : delegationPane?.kind === "worker" ? (
+                <DelegatedChatNotice
+                  ownerName={delegationPane.ownerName}
+                  state={delegationPane.state}
+                  onOpenOwner={delegationPane.onOpenOwner}
+                  onJumpIn={delegationPane.onJumpIn}
+                />
               ) : (
                 <>
                   {session.goal ? <GoalRow goal={session.goal} /> : null}

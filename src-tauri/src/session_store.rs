@@ -1231,6 +1231,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
     crate::delegations::ensure_tables(conn)?;
+    crate::autopilot::ensure_tables(conn)?;
+    crate::pr_watch::ensure_tables(conn)?;
     Ok(())
 }
 

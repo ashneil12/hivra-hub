@@ -76,12 +76,14 @@ export type AgentAppTasksHost = {
   acknowledge(owner: string, rows: Delegation[]): Promise<void>;
   /** Resolves on the next change to any row, or after `ms`. */
   nextChange(ms: number): Promise<void>;
-  /** Stop a task's worker and cancel what is still owed. */
+  /** Stop a task and everything beneath it (H4's stopTree), cancelling what is still owed. */
   cancel(
     owner: string,
     row: Delegation,
     reason: string,
-  ): Promise<{ stopFailed: string[] }>;
+  ): Promise<{ stopFailed: string[]; stopped?: string[]; cancelled?: string[] }>;
+  /** The chat started (true) or finished (false) a tasks.wait call: its workers' questions come back through the wait. */
+  waiting?(owner: string, on: boolean): void;
   /** Answer the worker's open question (and log it on the row). */
   answer?(
     owner: string,
@@ -130,6 +132,9 @@ export type TaskHelpers = {
   /** Files a started session into the Mono's sidebar folder, as sessions.start does. */
   fileStarted(source: Session, launch: QuickLaunch, id: string, host: AgentAppHost): void;
 };
+
+/** A delegated worker's permission mode (H4): full access, so no approval prompt strands it. */
+export const WORKER_RUNTIME_MODE = "full-access";
 
 const BRIEF_MAX = 60_000;
 const ASKS_MAX = 50;
@@ -359,6 +364,9 @@ async function delegate(
         : {}),
       ...(model ? { harness: model.harness, model: model.model } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
+      // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
+      runtimeMode: WORKER_RUNTIME_MODE,
       workspaceMode: isolation === "worktree" ? "worktree" : "current",
     },
     host,
@@ -484,22 +492,29 @@ async function wait(source: Session, input: Record<string, unknown>, host: Agent
     throw new Error(`timeoutSeconds must be a whole number from 0 to ${WAIT_MAX_SECONDS}`);
   const now = tasks.now ?? Date.now;
   const deadline = now() + timeout * 1_000;
-  let rows = ids ? await ownRows(source, tasks, ids) : await tasks.owned(source.id, {});
-  const watched = ids ?? rows.filter(isOpenDelegation).map((row) => row.id);
-  for (;;) {
-    const mine = watched.flatMap((id) => rows.filter((row) => row.id === id));
-    const settled = mine.filter((row) => row.state !== "running").map((row) => row.id);
-    const running = mine.length - settled.length;
-    const left = deadline - now();
-    if (settled.length || !running || left <= 0)
-      return {
-        tasks: mine.map((row) => statusView(row, tasks.child?.(row.childSession))),
-        settled,
-        running,
-        timedOut: !settled.length && running > 0,
-      };
-    await tasks.nextChange(Math.min(left, WAIT_POLL_MS));
-    rows = await tasks.owned(source.id, { ids: watched });
+  // While the chat waits, a worker's question ends the wait (hasPendingQuestion) instead of waking it (H4).
+  tasks.waiting?.(source.id, true);
+  try {
+    let rows = ids ? await ownRows(source, tasks, ids) : await tasks.owned(source.id, {});
+    const watched = ids ?? rows.filter(isOpenDelegation).map((row) => row.id);
+    for (;;) {
+      const mine = watched.flatMap((id) => rows.filter((row) => row.id === id));
+      const settled = mine.filter((row) => row.state !== "running").map((row) => row.id);
+      const running = mine.length - settled.length;
+      const left = deadline - now();
+      if (settled.length || !running || left <= 0)
+        return {
+          tasks: mine.map((row) => statusView(row, tasks.child?.(row.childSession))),
+          settled,
+          running,
+          timedOut: !settled.length && running > 0,
+          ...(mine.some((row) => row.state === "question") ? { hasPendingQuestion: true } : {}),
+        };
+      await tasks.nextChange(Math.min(left, WAIT_POLL_MS));
+      rows = await tasks.owned(source.id, { ids: watched });
+    }
+  } finally {
+    tasks.waiting?.(source.id, false);
   }
 }
 
@@ -509,9 +524,15 @@ async function cancel(source: Session, input: Record<string, unknown>, host: Age
   const reason =
     input.reason === undefined ? "Cancelled by its owner." : text(input.reason, "reason", 500);
   const [row] = await ownRows(source, tasks, [id]);
-  const { stopFailed } = await tasks.cancel(source.id, row, reason);
+  const { stopFailed, cancelled } = await tasks.cancel(source.id, row, reason);
   const [after] = await tasks.owned(source.id, { ids: [id] });
-  return { taskId: id, status: (after ?? row).state, stopFailed };
+  return {
+    taskId: id,
+    status: (after ?? row).state,
+    // What it had delegated in turn was stopped with it.
+    ...(cancelled ? { cancelledBeneath: cancelled.filter((entry) => entry !== id).length } : {}),
+    stopFailed,
+  };
 }
 
 function answers(value: unknown): Record<string, string[]> {

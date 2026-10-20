@@ -30,6 +30,7 @@ import { useProposalsVersion } from "../model/proposals";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { markShipSeen, restartForUpdate, shipCardView, useShipStatus } from "../../../app/model/ship";
 import { revealPath } from "../../../platform/tauri/fs";
+import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 
 
 /**
@@ -47,6 +48,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   useHubBuildsVersion();
   if (selection.item === "new-project") return <NewProjectView />;
   if (selection.item === "restore") return <RestorePreview />;
+  if (selection.item === "autopilot") return <AutopilotView />;
   const data = hubData();
   if (selection.project !== "today") {
     if (selection.item === "leadership-team")

@@ -6,6 +6,7 @@ import {
 } from "@hugeicons/react";
 import Add01Icon from "@hugeicons/core-free-icons/Add01Icon";
 import AddSquareIcon from "@hugeicons/core-free-icons/AddSquareIcon";
+import Airplane01Icon from "@hugeicons/core-free-icons/Airplane01Icon";
 import AlertCircleIcon from "@hugeicons/core-free-icons/AlertCircleIcon";
 import AppWindowIcon from "@hugeicons/core-free-icons/AppWindowIcon";
 import Archive02Icon from "@hugeicons/core-free-icons/Archive02Icon";
@@ -204,6 +205,7 @@ export const CursorMagicSelection = wrap(
 );
 export const DashboardSquare = wrap(DashboardSquare01Icon, "DashboardSquare");
 export const ExternalLink = wrap(LinkSquare02Icon, "ExternalLink");
+export const Airplane = wrap(Airplane01Icon, "Airplane");
 export const File = wrap(File01Icon, "File");
 export const FileDiff = wrap(FileDiffIcon, "FileDiff");
 export const FilePlus = wrap(FileAddIcon, "FilePlus");

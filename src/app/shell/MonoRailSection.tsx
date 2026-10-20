@@ -8,7 +8,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ChevronDown, ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, ImagePlus, Loader, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
+import { childChatsByMono, waitingLabel, waitingOn, type ChildChat } from "../../features/monos/model/delegationView";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
@@ -38,6 +40,7 @@ import {
   saveMonoName,
   subscribeMonos,
   updateMono,
+  monoForSession,
   type MonoState,
 } from "../../features/monos/model/mono";
 
@@ -59,6 +62,25 @@ export type MonoRailProps = {
 };
 
 const IDLE: MonoState = { status: "idle" };
+
+/** A child chat's state as a small mark: working, asking its Lead, done, failed or stopped. */
+function ChildChatMark({ state }: { state: ChildChat["state"] }) {
+  const props = { className: "size-3.5 shrink-0", strokeWidth: 1.75 };
+  if (state === "running")
+    return <Loader {...props} className={`${props.className} animate-spin text-content/50 motion-reduce:animate-none`} />;
+  if (state === "question") return <Clock {...props} className={`${props.className} text-amber-400`} />;
+  if (state === "completed") return <CheckCircle {...props} className={`${props.className} text-emerald-400/90`} />;
+  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-red-400`} />;
+  return <CircleX {...props} className={`${props.className} text-content/40`} />;
+}
+
+const CHILD_STATE_LABEL: Record<ChildChat["state"], string> = {
+  running: "working",
+  question: "asking its Lead",
+  completed: "done",
+  failed: "failed",
+  cancelled: "stopped",
+};
 
 /** A Mono's unread count as its badge shows it. */
 export function unreadBadge(count: number): string {
@@ -108,6 +130,12 @@ export function MonoRailSection({
   project?: string;
 }) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
+  // Delegated work nests under the Mono that started it (Ash, 19 Oct); a Mono with work out reads "Waiting on N".
+  const delegationRows = useDelegationRows();
+  const childChats = useMemo(
+    () => childChatsByMono(delegationRows, (row) => row.ownerMono ?? monoForSession(row.ownerSession)?.id, Date.now()),
+    [delegationRows],
+  );
   useRoleNamesVersion();
   useWaitingSoulsVersion();
   const waiting = rank ? waitingSouls() : [];
@@ -245,10 +273,12 @@ export function MonoRailSection({
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
             : "No projects yet";
+          // Idle shows nothing, unless it is waiting on something (a watched pull request's CI).
           const status =
             state.status === "idle"
-              ? undefined
+              ? (state.activity ?? waitingLabel(mono.sessionId ? waitingOn(mono.sessionId, delegationRows) : 0))
               : (state.activity ?? MONO_STATUS_LABEL[state.status]);
+          const children = childChats.get(mono.id) ?? [];
           return (
             <Fragment key={mono.id}>
             <div
@@ -351,6 +381,25 @@ export function MonoRailSection({
                 <MoreHorizontal className="size-4" strokeWidth={1.75} />
               </button>
             </div>
+            {children.length ? (
+              <div data-mono-children={mono.id} className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">
+                {children.map((chat) => (
+                  <button
+                    key={chat.sessionId}
+                    type="button"
+                    data-mono-child={chat.sessionId}
+                    data-state={chat.state}
+                    title={`${chat.title}, ${CHILD_STATE_LABEL[chat.state]}`}
+                    aria-label={`Open ${chat.title}, ${CHILD_STATE_LABEL[chat.state]}`}
+                    onClick={() => delegationActions()?.openChild(chat.ownerSession, chat.sessionId)}
+                    className="flex h-6 min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/60 hover:bg-content/6 hover:text-content"
+                  >
+                    <ChildChatMark state={chat.state} />
+                    <span className="min-w-0 truncate">{chat.title}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             </Fragment>
           );
         })}

@@ -1,6 +1,6 @@
 import { TurnNotReadyError } from "../../core/types";
 import { claudeExtraArgs } from "./claudeExtraArgs";
-import { nativeModelId } from "../../../../features/sessions/model/models";
+import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
 import { customModelRoute, modelKeyStore } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
@@ -32,7 +32,6 @@ import {
   buildClaudeUserMessage,
   buildControlRequest,
   buildControlResponse,
-  claudeSettingsKey,
   cutWorkKind,
   deadConversationFromResult,
   extractAskUserQuestionTitle,
@@ -73,7 +72,9 @@ import {
   tryParseJsonRecord,
   turnStatusFromResult,
   usageLimitFromRateLimitEvent,
+  parseControlResponse,
   type ClaudeAgentTaskNotification,
+  type ClaudeControlResponse,
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
@@ -89,6 +90,39 @@ import {
   nextGoal,
   type GoalTrack,
 } from "./claudeGoal";
+import {
+  claudeLaunchDelta,
+  joinLabels,
+  type ClaudeLaunch,
+  type ClaudeLiveRequest,
+} from "./claudeLaunch";
+import {
+  forgetPromptCache,
+  promptCacheTtlFromUsage,
+  recallPromptCache,
+  rememberPromptCache,
+} from "./claudePromptCache";
+import {
+  contextCeilingFor,
+  formatDuration,
+  idleCompactionDue,
+} from "../../../../features/sessions/model/contextCeiling";
+import { formatTokens } from "../../../../features/sessions/model/contextUsage";
+import { RUNTIME_MODE_LABEL } from "../../../../features/sessions/model/session";
+import {
+  applyWorkflowProgress,
+  endWorkflowRun,
+  isClaudeWorkflowTaskType,
+  isClaudeWorkflowTool,
+  isWorkflowLaunchAck,
+  startWorkflowRun,
+  workflowEndStatus,
+  workflowFrame,
+} from "./claudeWorkflow";
+import type {
+  WorkflowRunMeta,
+  WorkflowRunStatus,
+} from "../../../../features/sessions/model/workflowRun";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -101,6 +135,8 @@ import type {
   CompactContextInput,
   HarnessEvent,
   HarnessSessionInput,
+  LiveSettingsInput,
+  LiveSettingsOutcome,
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
@@ -145,13 +181,24 @@ type BackgroundTask = {
   kind: CutWork["kind"];
 };
 
+/** A workflow run in this turn and the tool call its row hangs off. */
+type LiveWorkflow = {
+  callId: string;
+  run: WorkflowRunMeta;
+};
+
 type Live = {
+  /** MonoCode session id this process serves. */
+  threadId: string;
   cwd: string;
   claudeSessionId: string;
   providerAccountId?: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
-  settingsKey: string;
+  /** What this process was started with, as changed live since. */
+  launch: ClaudeLaunch;
+  /** Control requests waiting on their answer, by request id. */
+  pendingControls: Map<string, (response: ClaudeControlResponse) => void>;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
   questions: Map<number, PendingQuestion>;
@@ -161,6 +208,8 @@ type Live = {
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
   agentTasks: Map<string, LiveAgentTask>;
+  /** Workflow runs by task id. */
+  workflows: Map<string, LiveWorkflow>;
   /**
    * Every task Claude still runs for this session, by id: subagents, shells it
    * backgrounded, monitors. Each one ends in a notification that wakes Claude
@@ -214,6 +263,10 @@ type Live = {
   pendingAssistantBoundary: boolean;
   manualCompaction: boolean;
   compactionConfirmed: boolean;
+  /** A compaction the app started on its own: its failure is a note, not an error. */
+  quietCompaction: boolean;
+  /** Latest main-thread context level, for the prompt-cache record. */
+  contextUsed?: number;
 };
 
 type Resume = {
@@ -305,6 +358,7 @@ function forgetDeadConversation(
   if (resumeByThread.get(input.sessionId)?.sessionId === error.providerSessionId)
     resumeByThread.delete(input.sessionId);
   tasksByThread.delete(input.sessionId);
+  forgetPromptCache(input.sessionId);
   briefOwed.add(input.sessionId);
   input.onEvent({
     type: "session.providerLost",
@@ -335,6 +389,8 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        await compactIfIdle(live, input);
+        if (live.cancelled) return;
         await runTurn(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -344,20 +400,74 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
   await live.turns;
 }
 
+/**
+ * A big chat idle past its prompt cache would have its whole context written
+ * to the cache again, at full price, by this message and then kept that size.
+ * Compacting first costs one read and leaves every later turn small. The
+ * CLI's own resume prompt does the same above 100K tokens; this runs it by
+ * policy, before the user's message, through the normal compaction path.
+ */
+async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
+  if (input.text.trim().startsWith("/")) return;
+  const state = recallPromptCache(input.sessionId);
+  if (!state || state.providerSessionId !== live.claudeSessionId) return;
+  const due = idleCompactionDue(state, Date.now());
+  if (!due) return;
+  live.onEvent({
+    type: "status",
+    text: `Idle ${formatDuration(due.idleMs)}, past the ${formatDuration(due.ttlMs)} prompt cache: compacting ${formatTokens(due.used)} tokens before sending, so the cache is not rebuilt at full size`,
+  });
+  live.manualCompaction = true;
+  live.quietCompaction = true;
+  live.compactionConfirmed = false;
+  try {
+    await runTurn(
+      live,
+      {
+        ...input,
+        modelSettings: undefined,
+        text: "/compact",
+        attachments: [],
+        onAccepted: undefined,
+      },
+      { reportErrors: false },
+    );
+    if (!live.compactionConfirmed) {
+      throw new Error("Claude Code did not confirm the compaction");
+    }
+    live.contextUsed = undefined;
+    rememberPromptCache(input.sessionId, {
+      providerSessionId: live.claudeSessionId,
+      lastTurnAt: Date.now(),
+      contextUsed: 0,
+    });
+  } catch (error) {
+    if (live.cancelled) return;
+    // A conversation that is gone is not a compaction failure: the dead
+    // conversation path starts a fresh one, which has nothing to compact.
+    if (error instanceof DeadConversationError) throw error;
+    live.onEvent({
+      type: "notice",
+      level: "warning",
+      text: `Could not compact first (${error instanceof Error ? error.message : String(error)}); sending as is.`,
+    });
+  } finally {
+    live.manualCompaction = false;
+    live.quietCompaction = false;
+  }
+}
+
 export async function compactClaudeContext(
   input: CompactContextInput,
 ): Promise<void> {
-  const settingsKey = settingsKeyFor(input);
-  let live = liveByThread.get(input.sessionId);
-  if (!live || live.cwd !== input.cwd || live.settingsKey !== settingsKey) {
-    try {
-      live = await ensureLive(input);
-    } catch (error) {
-      // Nothing to compact in a conversation that is gone; the next turn starts fresh from the brief.
-      if (!(error instanceof DeadConversationError)) throw error;
-      forgetDeadConversation(input, error);
-      return;
-    }
+  let live: Live;
+  try {
+    live = await ensureLive(input);
+  } catch (error) {
+    // Nothing to compact in a conversation that is gone; the next turn starts fresh from the brief.
+    if (!(error instanceof DeadConversationError)) throw error;
+    forgetDeadConversation(input, error);
+    return;
   }
   if (cancelledThreads.delete(input.sessionId)) return;
 
@@ -516,6 +626,9 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     cancelledThreads.add(sessionId);
     return;
   }
+  // A stopped run's last frames arrive after the stop and are muted, so its
+  // row is settled here or it would read as working for good.
+  settleWorkflows(live, "stopped");
   live.cancelled = true;
   live.muteUpdates = true;
   for (const [, pending] of live.approvals) pending.resolve("deny");
@@ -549,6 +662,7 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   const live = liveByThread.get(sessionId);
   liveByThread.delete(sessionId);
   if (live) {
+    settleWorkflows(live, "stopped");
     live.muteUpdates = true;
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
@@ -570,6 +684,7 @@ export async function forgetClaudeSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   tasksByThread.delete(sessionId);
   briefOwed.delete(sessionId);
+  forgetPromptCache(sessionId);
   await stopClaudeSession(sessionId);
 }
 
@@ -615,18 +730,39 @@ export function restoreClaudeTaskLists(
 }
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
-  const settingsKey = settingsKeyFor(input);
   const planning = input.intent === "plan";
+  const launchNext = claudeLaunchFor(input);
   const existing = liveByThread.get(input.sessionId);
   if (
     existing &&
     existing.cwd === input.cwd &&
-    existing.settingsKey === settingsKey &&
-    existing.planning === planning
+    sameProviderAccountId(existing.providerAccountId, input.providerAccountId)
   ) {
     existing.onEvent = input.onEvent;
-    existing.runtimeMode = input.runtimeMode;
-    return existing;
+    const delta = claudeLaunchDelta(existing.launch, launchNext);
+    if (delta.restart.length === 0) {
+      const applied =
+        delta.requests.length === 0 ||
+        (await applyLiveRequests(input.sessionId, existing, delta.requests));
+      if (applied) {
+        if (delta.requests.length > 0) {
+          noteAppliedLive(existing, delta.requests, input);
+        }
+        existing.launch = launchNext;
+        existing.planning = planning;
+        existing.runtimeMode = input.runtimeMode;
+        return existing;
+      }
+      input.onEvent({
+        type: "notice",
+        text: `Claude Code could not change its ${joinLabels(delta.requests.map((r) => r.label))} live; restarting it with the new settings.`,
+      });
+    } else {
+      input.onEvent({
+        type: "notice",
+        text: `Restarting Claude Code for the ${joinLabels(delta.restart)} change; the conversation carries on.`,
+      });
+    }
   }
   if (existing) {
     // Model and launch-setting changes require a fresh Claude process, but
@@ -668,12 +804,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   );
 
   const live: Live = {
+    threadId: input.sessionId,
     cwd: input.cwd,
     claudeSessionId,
     providerAccountId: input.providerAccountId,
     runtimeMode: input.runtimeMode,
     planning,
-    settingsKey,
+    launch: launchNext,
+    pendingControls: new Map(),
     onEvent: input.onEvent,
     approvals: new Map(),
     questions: new Map(),
@@ -683,6 +821,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     toolsByIndex: new Map(),
     toolsById: new Map(),
     agentTasks: new Map(),
+    workflows: new Map(),
     backgroundTasks: new Map(),
     backgroundRows: new Map(),
     awaitingResume: null,
@@ -712,6 +851,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     pendingAssistantBoundary: false,
     manualCompaction: false,
     compactionConfirmed: false,
+    quietCompaction: false,
   };
   liveRef.current = live;
 
@@ -726,6 +866,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
       if (current) clearAwaitingResume(current);
+      if (current && !current.muteUpdates) settleWorkflows(current, "failed");
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
@@ -742,7 +883,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   await spawnChild(
     input.sessionId,
     path,
-    [...buildClaudeSpawnArgs(launch), ...(await claudeExtraArgs(input.sessionId))],
+    [
+      // Allowing bypass at launch lets a later switch to Full access apply
+      // live; only this app can ask for it, over the control channel.
+      ...buildClaudeSpawnArgs({ ...launch, allowBypass: true }),
+      ...(await claudeExtraArgs(input.sessionId)),
+    ],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",
@@ -789,7 +935,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   }
 }
 
-async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
+async function runTurn(
+  live: Live,
+  input: SendTurnInput,
+  options: { reportErrors?: boolean } = {},
+): Promise<void> {
   const effort = input.modelSettings?.effort;
   const message = buildClaudeUserMessage({
     text: input.text,
@@ -805,6 +955,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.toolsByIndex.clear();
   live.toolsById.clear();
   live.agentTasks.clear();
+  live.workflows.clear();
   live.backgroundTasks.clear();
   live.backgroundRows.clear();
   clearAwaitingResume(live);
@@ -842,10 +993,12 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     if (live.cancelled) return;
     // Not a failure of the turn: sendClaudeTurn starts it again in a fresh conversation.
     if (error instanceof DeadConversationError) throw error;
-    live.onEvent({
-      type: "session.error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    if (options.reportErrors !== false) {
+      live.onEvent({
+        type: "session.error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     throw error;
   } finally {
     live.turnDone = null;
@@ -888,6 +1041,13 @@ function handleLine(sessionId: string, live: Live, line: string): void {
         live.questions.delete(uiId);
       }
     }
+    return;
+  }
+
+  if (type === "control_response") {
+    markInitialized(live);
+    const answer = parseControlResponse(rec);
+    if (answer) live.pendingControls.get(answer.requestId)?.(answer);
     return;
   }
 
@@ -946,11 +1106,6 @@ function handleLine(sessionId: string, live: Live, line: string): void {
   ) {
     markInitialized(live);
     if (stringField(rec, "subtype") === "init") noteClaudeTurnStarted(live);
-  }
-
-  if (type === "control_response") {
-    markInitialized(live);
-    return;
   }
 
   if (live.manualCompaction && type !== "system" && type !== "result") {
@@ -1119,7 +1274,10 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
 
   live.assistantError = stringField(rec, "error");
   const used = contextUsedFromAssistant(rec);
-  if (used !== undefined) live.onEvent({ type: "context", used });
+  if (used !== undefined) {
+    live.contextUsed = used;
+    live.onEvent({ type: "context", used });
+  }
 
   const snapshot = assistantTextBlocks(rec).join("");
   if (snapshot) closePendingAssistantMessage(live);
@@ -1207,6 +1365,15 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
     if (isAgentToolName(tool.name) && isBackgroundedAgentTool(live, tool.id)) {
       continue;
     }
+    // The Workflow tool answers at once that the run went to the background;
+    // the run, not that answer, decides when its row is done.
+    if (
+      isClaudeWorkflowTool(tool.name) &&
+      !result.isError &&
+      (isWorkflowLaunchAck(result.text) || workflowForCall(live, tool.id))
+    ) {
+      continue;
+    }
     live.onEvent({
       type: "tool.updated",
       callId: tool.id,
@@ -1273,10 +1440,22 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   }
   // A /compact result reports the summarizer call's usage, not the rebuilt
   // conversation level. The next real turn will provide the fresh reading.
+  // A confirmed compaction leaves a small context; its own result reports
+  // the summarizer's usage, not that level.
+  if (live.manualCompaction && live.compactionConfirmed) live.contextUsed = 0;
   if (!live.manualCompaction) {
     const context = contextFromResult(rec);
     if (context) live.onEvent({ type: "context", ...context });
+    if (context?.used !== undefined) live.contextUsed = context.used;
   }
+  // When this conversation last used its cache and how long that lives, so a
+  // message after a long idle can compact first (see compactIfIdle).
+  rememberPromptCache(live.threadId, {
+    providerSessionId: live.claudeSessionId,
+    lastTurnAt: Date.now(),
+    cacheTtlMs: promptCacheTtlFromUsage(rec.usage),
+    contextUsed: live.contextUsed,
+  });
   const metrics = turnMetricsFromResult(rec);
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
 
@@ -1289,7 +1468,7 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   live.usageLimit = null;
   live.assistantError = undefined;
   const failure = result.failure;
-  if (result.status === "failed" && !live.cancelled) {
+  if (result.status === "failed" && !live.cancelled && !live.quietCompaction) {
     live.onEvent({
       type: "session.error",
       message: result.error ?? "Claude turn failed.",
@@ -1529,6 +1708,17 @@ function handleAgentLifecycle(
       kind: cutWorkKind(started.taskType),
     });
     syncBackgroundWait(live);
+    if (isClaudeWorkflowTaskType(started.taskType)) {
+      const run = startWorkflowRun(rec, Date.now());
+      if (run) {
+        trackWorkflow(
+          live,
+          started.toolUseId ?? `workflow:${started.taskId}`,
+          run,
+        );
+      }
+      return true;
+    }
     if (!isAgentTaskType(started.taskType)) return true;
     live.agentTasks.set(started.taskId, {
       taskId: started.taskId,
@@ -1547,6 +1737,26 @@ function handleAgentLifecycle(
 
   const progress = parseTaskProgress(rec);
   if (progress) {
+    const workflow = live.workflows.get(progress.taskId);
+    if (workflow) {
+      const next = applyWorkflowProgress(workflow.run, rec, Date.now());
+      if (next) trackWorkflow(live, workflow.callId, next);
+      return true;
+    }
+    // A run whose start this process never saw (a resumed conversation):
+    // its own frame says it is a workflow.
+    if (workflowFrame(rec)) {
+      const run = startWorkflowRun(rec, Date.now());
+      const next = run && applyWorkflowProgress(run, rec, Date.now());
+      if (next) {
+        trackWorkflow(
+          live,
+          progress.toolUseId ?? `workflow:${progress.taskId}`,
+          next,
+        );
+      }
+      return true;
+    }
     const task = live.agentTasks.get(progress.taskId);
     const title = progress.description || task?.description || "Subagent";
     const detail =
@@ -1577,6 +1787,7 @@ function handleAgentLifecycle(
       background.description = updated.description;
     }
     if (isTerminalAgentTaskStatus(updated.status)) {
+      endWorkflow(live, updated.taskId, workflowEndStatus(updated.status));
       settleBackgroundRow(
         live,
         updated.taskId,
@@ -1597,6 +1808,12 @@ function handleAgentLifecycle(
   const notice = parseTaskNotification(rec);
   if (notice) {
     if (!notice.ambient) {
+      endWorkflow(
+        live,
+        notice.taskId,
+        workflowEndStatus(notice.status),
+        notice.summary || undefined,
+      );
       noteTaskNotification(live, notice);
       finishBackgroundTask(live, notice.taskId);
       completeAgentTask(
@@ -1614,6 +1831,7 @@ function handleAgentLifecycle(
   const next = new Set(allTasks.map((task) => task.taskId));
   for (const id of [...live.backgroundTasks.keys()]) {
     if (next.has(id)) continue;
+    endWorkflow(live, id, "completed");
     settleBackgroundRow(live, id, "completed");
     finishBackgroundTask(live, id);
   }
@@ -1644,6 +1862,78 @@ function handleAgentLifecycle(
   }
   maybeFinishTurn(live);
   syncBackgroundWait(live);
+  return true;
+}
+
+/** Keep the run and tell the transcript; its row hangs off `callId`. */
+function trackWorkflow(
+  live: Live,
+  callId: string,
+  run: WorkflowRunMeta,
+): void {
+  live.workflows.set(run.taskId, { callId, run });
+  if (live.muteUpdates) return;
+  live.onEvent({ type: "workflow.progress", callId, run });
+}
+
+/**
+ * End a run once. `task_updated` usually ends it first; the notification that
+ * follows only adds what the CLI said about it.
+ */
+function endWorkflow(
+  live: Live,
+  taskId: string,
+  status: WorkflowRunStatus,
+  summary?: string,
+): void {
+  const workflow = live.workflows.get(taskId);
+  if (!workflow) return;
+  if (workflow.run.status !== "running") {
+    if (summary && !workflow.run.summary) {
+      trackWorkflow(live, workflow.callId, { ...workflow.run, summary });
+    }
+    return;
+  }
+  trackWorkflow(
+    live,
+    workflow.callId,
+    endWorkflowRun(workflow.run, status, Date.now(), summary),
+  );
+}
+
+function settleWorkflows(live: Live, status: WorkflowRunStatus): void {
+  for (const taskId of [...live.workflows.keys()]) {
+    endWorkflow(live, taskId, status);
+  }
+}
+
+function workflowForCall(
+  live: Live,
+  callId: string,
+): LiveWorkflow | undefined {
+  for (const workflow of live.workflows.values()) {
+    if (workflow.callId === callId) return workflow;
+  }
+  return undefined;
+}
+
+/**
+ * Stop one background task Claude runs for this session: a whole workflow
+ * run, with every agent in it. False when no live process has that task.
+ */
+export async function stopClaudeTask(
+  sessionId: string,
+  taskId: string,
+): Promise<boolean> {
+  const live = liveByThread.get(sessionId);
+  if (!live || !live.backgroundTasks.has(taskId)) return false;
+  await writeJson(
+    sessionId,
+    buildControlRequest(nextControlId(live), {
+      subtype: "stop_task",
+      task_id: taskId,
+    }),
+  );
   return true;
 }
 
@@ -1933,12 +2223,21 @@ function noteClaudeTurnStarted(live: Live): void {
 function showBackgroundRows(live: Live): void {
   if (!live.activeTurn || live.cancelled) return;
   for (const [taskId, task] of live.backgroundTasks) {
-    if (live.backgroundRows.has(taskId) || live.agentTasks.has(taskId))
+    if (
+      live.backgroundRows.has(taskId) ||
+      live.agentTasks.has(taskId) ||
+      live.workflows.has(taskId)
+    )
       continue;
     const source = task.toolUseId
       ? live.toolsById.get(task.toolUseId)
       : undefined;
-    if (source && isAgentToolName(source.name)) continue;
+    // Subagents and workflow runs already have a row of their own.
+    if (
+      source &&
+      (isAgentToolName(source.name) || isClaudeWorkflowTool(source.name))
+    )
+      continue;
     const callId = `background:${taskId}`;
     live.backgroundRows.set(taskId, callId);
     live.onEvent({
@@ -2106,22 +2405,149 @@ function writeJson(
   return writeChild(sessionId, JSON.stringify(payload));
 }
 
-function settingsKeyFor(input: HarnessSessionInput): string {
-  return `${input.providerAccountId ?? "default"}:${claudeSettingsKey({
-    model: nativeModelId(input.model),
-    effort: input.modelSettings?.effort,
-    fast: input.modelSettings?.fast,
-    thinking: input.modelSettings?.thinking,
-    context: input.modelSettings?.context,
+/** What a process for this input would be started with. */
+function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
+  const options = launchOptions(input);
+  const route = customModelRoute({
+    model: input.model,
+    modelSettings: input.modelSettings ?? {},
+  });
+  return {
+    model: options.model,
+    ...(route
+      ? { route: JSON.stringify([route.provider, route.baseUrl, route.modelId]) }
+      : {}),
+    effort: options.effort,
+    permissionMode: options.permissionMode ?? "default",
+    thinking: options.settings?.alwaysThinkingEnabled === true,
+    fast: options.settings?.fastMode === true,
+    ultracode: options.settings?.ultracode === true,
+    hooks: options.settings?.disableAllHooks !== true,
+    autoCompactWindow: options.settings?.autoCompactWindow,
+  };
+}
+
+/**
+ * Send each request and wait for its answer. False on the first refusal or
+ * silence, so the caller falls back to a restart; whatever was applied before
+ * it is replaced by the new process anyway.
+ */
+async function applyLiveRequests(
+  sessionId: string,
+  live: Live,
+  requests: ClaudeLiveRequest[],
+): Promise<boolean> {
+  for (const { request } of requests) {
+    const answer = await controlRoundTrip(sessionId, live, request);
+    if (!answer?.ok) return false;
+  }
+  return true;
+}
+
+/** `set_model` checks the model with one request first, so allow for that. */
+const LIVE_CONTROL_TIMEOUT_MS = 20_000;
+
+function controlRoundTrip(
+  sessionId: string,
+  live: Live,
+  request: Record<string, unknown>,
+): Promise<ClaudeControlResponse | null> {
+  const requestId = nextControlId(live);
+  return new Promise<ClaudeControlResponse | null>((resolve) => {
+    const timer = setTimeout(() => {
+      live.pendingControls.delete(requestId);
+      resolve(null);
+    }, LIVE_CONTROL_TIMEOUT_MS);
+    live.pendingControls.set(requestId, (answer) => {
+      clearTimeout(timer);
+      live.pendingControls.delete(requestId);
+      resolve(answer);
+    });
+    writeJson(sessionId, buildControlRequest(requestId, request)).catch(() => {
+      clearTimeout(timer);
+      live.pendingControls.delete(requestId);
+      resolve(null);
+    });
+  });
+}
+
+/** One quiet line saying what changed without a restart. */
+function noteAppliedLive(
+  live: Live,
+  requests: ClaudeLiveRequest[],
+  input: Pick<LiveSettingsInput, "model" | "runtimeMode">,
+): void {
+  const parts = requests.map(({ label, request }) => {
+    if (request.subtype === "set_model") {
+      return `model ${resolveModel("claude", input.model).name}`;
+    }
+    if (request.subtype === "set_permission_mode") {
+      return request.mode === "plan"
+        ? "plan mode"
+        : `${RUNTIME_MODE_LABEL[input.runtimeMode]} permissions`;
+    }
+    return label;
+  });
+  live.onEvent({
+    type: "status",
+    key: "claude-live-settings",
+    text: `Changed ${joinLabels(parts)} without restarting Claude Code`,
+  });
+}
+
+/**
+ * Model, effort or permission changes made while a turn runs (autopilot
+ * switching on, the picker): applied to the running process at once where
+ * Claude Code can take them, otherwise from the next message, said in the
+ * chat. A process with no turn running takes them when the next one starts.
+ */
+export async function applyClaudeSettings(
+  input: LiveSettingsInput,
+): Promise<LiveSettingsOutcome> {
+  const live = liveByThread.get(input.sessionId);
+  if (!live) return "idle";
+  const next = claudeLaunchFor({
+    sessionId: input.sessionId,
+    cwd: live.cwd,
+    model: input.model,
+    modelSettings: input.modelSettings,
+    providerAccountId: live.providerAccountId,
     runtimeMode: input.runtimeMode,
-    hooks: loadClaudeHooks(),
-  })}`;
+    intent: live.planning ? "plan" : undefined,
+    onEvent: live.onEvent,
+  });
+  const delta = claudeLaunchDelta(live.launch, next);
+  if (delta.restart.length === 0 && delta.requests.length === 0) {
+    live.runtimeMode = input.runtimeMode;
+    return "unchanged";
+  }
+  if (!live.activeTurn) return "idle";
+  const later = (what: string) => {
+    if (live.muteUpdates) return;
+    live.onEvent({
+      type: "notice",
+      key: "claude-live-settings",
+      text: `The ${what} change applies from your next message; Claude Code restarts for it then.`,
+    });
+  };
+  if (delta.restart.length > 0) {
+    later(joinLabels(delta.restart));
+    return "next-turn";
+  }
+  if (!(await applyLiveRequests(input.sessionId, live, delta.requests))) {
+    later(joinLabels(delta.requests.map((request) => request.label)));
+    return "next-turn";
+  }
+  live.launch = next;
+  live.runtimeMode = input.runtimeMode;
+  if (!live.muteUpdates) noteAppliedLive(live, delta.requests, input);
+  return "applied";
 }
 
 function launchOptions(
   input: HarnessSessionInput,
-  resume: string | undefined,
-  sessionId: string,
+  resume?: string,
+  sessionId?: string,
 ): {
   model?: string;
   effort?: string;
@@ -2147,6 +2573,9 @@ function launchOptions(
   if (!loadClaudeHooks()) {
     settings.disableAllHooks = true;
   }
+  // Long-running chats compact at their ceiling instead of near the window.
+  const ceiling = contextCeilingFor({ harness: "claude", model: input.model });
+  if (ceiling) settings.autoCompactWindow = ceiling;
   return {
     model: route ? route.modelId : resolveClaudeApiModelId(native, context),
     effort: route ? undefined : normalizeClaudeCliEffort(effortRaw, native),
@@ -2162,6 +2591,9 @@ function launchOptions(
 
 /** Exported for tests. */
 export function __claudeTestReset(): void {
+  for (const threadId of [...liveByThread.keys(), ...resumeByThread.keys()]) {
+    forgetPromptCache(threadId);
+  }
   liveByThread.clear();
   resumeByThread.clear();
   tasksByThread.clear();

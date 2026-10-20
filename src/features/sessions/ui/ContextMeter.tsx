@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   contextRatio,
   contextTooltip,
+  formatTokens,
   type ContextUsage,
 } from "../model/contextUsage";
 import { Popover } from "../../../shared/ui/Popover";
@@ -31,12 +32,15 @@ export function ContextMeter({
   onCompact,
   compactDisabled = false,
   empty = false,
+  ceiling,
 }: {
   usage?: ContextUsage;
   onCompact?: () => void;
   compactDisabled?: boolean;
   /** The conversation has no messages yet. */
   empty?: boolean;
+  /** Size the provider compacts at, when it is below the window (Settings > Compact long chats at). */
+  ceiling?: number;
 }) {
   const [hovered, setHovered] = useState(false);
   const [open, setOpen] = useState(false);
@@ -86,6 +90,11 @@ export function ContextMeter({
           <div className="text-[12px] leading-4 text-content">{headline}</div>
           <div className="text-[11px] leading-4 text-content/50">{detail}</div>
           <div className="text-[11px] leading-4 text-content/50">Last reported by the provider</div>
+          {ceiling && usage.window && ceiling < usage.window ? (
+            <div className="text-[11px] leading-4 text-content/50" data-context-ceiling>
+              Compacts at {formatTokens(ceiling)}
+            </div>
+          ) : null}
           {note ? (
             <div className="max-w-[15rem] text-[11px] leading-4 text-content/50">
               {note}

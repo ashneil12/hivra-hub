@@ -33,7 +33,7 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, task_status, task_wait, task_cancel, \
-task_answer) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_answer, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat that shows nested \
@@ -41,7 +41,11 @@ under yours and is stored as a task: it reports back to you as a new turn ([Mono
 across restarts. Put Ash's own words and the full context in brief, the Ash OS ask ids it covers in asks, and the \
 finish line in goal. After an async delegation, say in one line what you started and end your turn instead of polling. \
 task_status reads results (a result read here is not reported again), task_wait blocks until a task finishes or asks \
-a question, task_cancel stops a task and drops its report, task_answer answers your worker's question.";
+a question, task_cancel stops a task and everything beneath it, task_answer answers your worker's question. A \
+worker's question reaches you as a [MonoCode question] turn (or task_wait returns hasPendingQuestion): answer it from \
+the brief or Ash's words; only a real choice goes to Ash, asked in your own chat with your pick. pr_watch has \
+MonoCode watch a pull request you opened and wake you only when a required check fails or they all pass, someone else \
+comments, the branch conflicts, or it merges: register every pull request, then end your turn instead of polling.";
 
 /// One app call (`monocode app ACTION`), as the app answered it: its result, or why it refused.
 pub(crate) trait App: Send + Sync {
@@ -108,7 +112,7 @@ impl App for LiveApp {
     }
 }
 
-fn new_request_id() -> String {
+pub(crate) fn new_request_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
@@ -121,7 +125,10 @@ fn valid_request_id(value: &str) -> bool {
 }
 
 /// The tool's arguments: an object with only these keys (a typo is refused, never ignored).
-fn arguments<'a>(args: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Value>, String> {
+pub(crate) fn arguments<'a>(
+    args: &'a Value,
+    allowed: &[&str],
+) -> Result<&'a Map<String, Value>, String> {
     let Some(object) = args.as_object() else {
         return Err("Arguments must be a JSON object".into());
     };
@@ -140,7 +147,7 @@ fn arguments<'a>(args: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Va
     Ok(object)
 }
 
-fn pick(object: &Map<String, Value>, keys: &[&str]) -> Value {
+pub(crate) fn pick(object: &Map<String, Value>, keys: &[&str]) -> Value {
     Value::Object(
         keys.iter()
             .filter_map(|key| {
@@ -190,7 +197,7 @@ fn tools() -> Value {
         "default": WAIT_DEFAULT_MINUTES,
         "description": "How long to wait at most. It only ends the wait; the task keeps running."
     });
-    json!([
+    let mut tools = json!([
         {
             "name": "delegate_task",
             "title": "Delegate a task",
@@ -242,7 +249,7 @@ fn tools() -> Value {
         {
             "name": "task_cancel",
             "title": "Cancel a task",
-            "description": "Stop one of your tasks: its worker's turn is stopped and the report still owed is dropped. A finished task keeps its result.",
+            "description": "Stop one of your tasks and everything it delegated in turn: each worker's turn is stopped, depth first, and the reports still owed are dropped. stopFailed lists any worker that would not stop. A finished task keeps its result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -271,7 +278,11 @@ fn tools() -> Value {
             },
             "annotations": { "title": "Answer your worker", "destructiveHint": false }
         }
-    ])
+    ]);
+    if let Value::Array(list) = &mut tools {
+        list.extend(crate::pr_watch::mcp::tools());
+    }
+    tools
 }
 
 const DELEGATE_APP_FIELDS: [&str; 10] = [
@@ -314,8 +325,12 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             call.app
                 .call("tasks.answer", &pick(object, &fields), &new_request_id())
         }
+        name if crate::pr_watch::mcp::NAMES.contains(&name) => {
+            crate::pr_watch::mcp::call(call.app, name, args)
+        }
         _ => Err(format!(
-            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel or task_answer."
+            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_answer, pr_watch, \
+             pr_unwatch or pr_watches."
         )),
     }
 }
@@ -804,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn it_answers_initialize_and_lists_the_five_tools() {
+    fn it_answers_initialize_and_lists_the_tools() {
         let clock = Arc::new(FakeClock::default());
         let app = Arc::new(FakeApp::new(clock.clone(), |_, _, _| Ok(json!({}))));
         let out = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -843,7 +858,10 @@ mod tests {
                 "task_status",
                 "task_wait",
                 "task_cancel",
-                "task_answer"
+                "task_answer",
+                "pr_watch",
+                "pr_unwatch",
+                "pr_watches"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {

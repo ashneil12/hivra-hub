@@ -101,6 +101,7 @@ import {
 import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
+import { contextCeilingFor } from "../model/contextCeiling";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
@@ -1826,6 +1827,7 @@ export function Composer({
             compactSupported && !worktreeRemoved ? onCompactContext : undefined
           }
           compactDisabled={busy}
+          ceiling={contextCeilingFor({ harness, model })}
         />
       </div>
     </div>

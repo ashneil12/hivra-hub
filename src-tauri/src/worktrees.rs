@@ -159,7 +159,12 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
     })
 }
 
-fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Worktree, String> {
+pub(crate) fn create(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {
         return Err("Enter a valid branch name".into());
@@ -236,7 +241,7 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
 
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
 /// holds its turn on `setup.hold` and shows the log (src/app/App.tsx). `run_setup: false` skips it.
-fn with_setup(app: &AppHandle, mut tree: Worktree, run_setup: Option<bool>) -> Worktree {
+pub(crate) fn with_setup(app: &AppHandle, mut tree: Worktree, run_setup: Option<bool>) -> Worktree {
     if run_setup != Some(false) {
         tree.setup = crate::project_actions::start_worktree_setup(app, Path::new(&tree.path));
     }

@@ -1003,3 +1003,22 @@ it("saves the exact CI context alongside the compact user message", () => {
     ciContext: context,
   });
 });
+
+it("keeps a workflow run with its tool block, and drops a malformed one", () => {
+  const session = newSession("claude", "/tmp");
+  const run = {
+    taskId: "w1",
+    name: "review",
+    status: "completed" as const,
+    phases: [{ index: 1, title: "Scan" }],
+    agents: [{ index: 1, label: "Read parser", state: "failed" as const, phaseIndex: 1, error: "API Error: 400" }],
+    summary: "done",
+  };
+  session.blocks = [
+    { id: "t", role: "tool", text: "Workflow", tool: { callId: "toolu_1", kind: "workflow", status: "completed" }, workflowRun: run },
+    { id: "bad", role: "tool", text: "Workflow", tool: { kind: "workflow" }, workflowRun: { taskId: "", status: "nope" } as never },
+  ];
+  const saved = sanitizeSessionForPersist(session).blocks;
+  expect(saved[0].workflowRun).toEqual(run);
+  expect(saved[1].workflowRun).toBeUndefined();
+});

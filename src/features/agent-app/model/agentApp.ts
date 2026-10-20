@@ -105,7 +105,12 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import {
+  AUTOPILOT_FIELDS,
+  handleAutopilotApp,
+} from "../../autopilot/model/autopilotApp";
 
 export type AppSessionListing = {
   id: string;
@@ -164,6 +169,11 @@ export type AgentAppHost = {
     requestId: string,
   ): Promise<{ alreadySaved: boolean; draft: boolean }>;
   stop(id: string): Promise<void>;
+  /**
+   * `sessions.stop {"cascade":true}` (H4, monos/model/stopTree.ts): stop the session, then everything beneath it,
+   * depth first, touching only rows owned by a chat it stopped. Returns the chats that would not stop.
+   */
+  stopTree?(id: string): Promise<{ stopFailed: string[]; stopped: string[]; cancelled: string[] }>;
   remove(id: string, mode: "archive" | "delete"): Promise<void>;
   worktrees(cwd: string): Promise<Worktrees>;
   createWorktree(
@@ -240,6 +250,8 @@ export type AgentAppHost = {
   shipStatus?(): unknown;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat only. */
   tasks?: AgentAppTasksHost;
+  /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat only. */
+  prs?: AgentAppPrsHost;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -251,7 +263,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["sessions.send", ["sessionId", "prompt", "project", "notifyOnComplete", "mode"]],
   ["sessions.queue", ["sessionId", "project", "cancel"]],
   ["sessions.draft", ["sessionId", "prompt", "project"]],
-  ["sessions.stop", ["sessionId", "project"]],
+  ["sessions.stop", ["sessionId", "project", "cascade"]],
   ["sessions.archive", ["sessionId", "project"]],
   ["sessions.delete", ["sessionId", "project"]],
   [
@@ -301,6 +313,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["chat.card", [...CARD_FIELDS]],
   ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
+  ...AUTOPILOT_FIELDS,
+  ...PR_FIELDS,
 ]);
 
 /**
@@ -1126,6 +1140,7 @@ export async function handleAgentApp(
   checkerLane(source, action, host);
   if (action.startsWith("tasks."))
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+  if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1134,6 +1149,8 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
+  if (action.startsWith("autopilot."))
+    return handleAutopilotApp(source, requestId, action, input, host);
   if (action === "chat.card") {
     if (
       !host.postCard ||
@@ -1330,6 +1347,20 @@ export async function handleAgentApp(
       )
         throw new Error("Only regular project sessions can be managed here");
       if (action === "sessions.stop") {
+        if (input.cascade !== undefined && typeof input.cascade !== "boolean")
+          throw new Error("cascade must be a boolean");
+        if (input.cascade === true) {
+          if (!host.stopTree)
+            throw new Error("This build can't stop a session's tree; stop each session instead");
+          const { stopFailed, cancelled } = await host.stopTree(id);
+          return {
+            sessionId: id,
+            stopped: !stopFailed.includes(id),
+            cascade: true,
+            cancelled: cancelled.length,
+            stopFailed,
+          };
+        }
         await host.stop(id);
         return { sessionId: id, stopped: true };
       }

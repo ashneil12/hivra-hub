@@ -4363,7 +4363,14 @@ mod reap_logic_tests {
 
 /// MonoCode's own per-session Claude settings (`ClaudeCliSettings` in claudeProtocol.ts). A dev copy keeps these and
 /// drops anything else a `--settings` value carries: hooks, helpers that run commands, env.
-const DEV_CLAUDE_SETTINGS: [&str; 3] = ["alwaysThinkingEnabled", "fastMode", "ultracode"];
+/// The settings MonoCode itself passes a session (`ClaudeCliSettings` in claudeProtocol.ts), kept in a dev copy so it
+/// runs like the daily app: thinking, fast mode, ultracode and the long-chat compaction ceiling.
+const DEV_CLAUDE_SETTINGS: [&str; 4] = [
+    "alwaysThinkingEnabled",
+    "fastMode",
+    "ultracode",
+    "autoCompactWindow",
+];
 
 /// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
 /// only ever reaches this copy's own control port. It is kept only exactly as the app writes it
@@ -4547,7 +4554,7 @@ mod dev_claude_tests {
             "stream-json",
             "--setting-sources=user,project,local",
             "--settings",
-            "{\"alwaysThinkingEnabled\":true,\"fastMode\":false,\"statusLine\":{\"command\":\"x\"},\"apiKeyHelper\":\"y\"}",
+            "{\"alwaysThinkingEnabled\":true,\"fastMode\":false,\"autoCompactWindow\":350000,\"statusLine\":{\"command\":\"x\"},\"apiKeyHelper\":\"y\"}",
             "--settings={\"ultracode\":true,\"env\":{\"A\":\"1\"}}",
             "--mcp-config={\"mcpServers\":{\"ash-os\":{}}}",
             "--strict-mcp-config",
@@ -4568,6 +4575,7 @@ mod dev_claude_tests {
             serde_json::json!({
                 "alwaysThinkingEnabled": true,
                 "fastMode": false,
+                "autoCompactWindow": 350000,
                 "ultracode": true,
                 "disableAllHooks": true,
             })

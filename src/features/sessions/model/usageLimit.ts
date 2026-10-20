@@ -68,11 +68,17 @@ export function formatUsageLimitReset(resetsAt: number, now: number): string {
   return `${when} · in ${formatResetDuration(resetsAt - now)}`;
 }
 
+/** When an armed limit sends its continue turn: its own time when auto-resume set one, else the reset plus grace. */
+export function usageLimitResumeAt(limit: UsageLimit): number | undefined {
+  if (limit.resetsAt == null) return undefined;
+  return Math.max(limit.resumeAt ?? 0, limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS);
+}
+
 /** Idle, armed, and past its reset: time to send the continue turn. */
 export function usageLimitResumeDue(session: Session, now: number): boolean {
   const limit = session.usageLimit;
   if (!limit?.resumeAtReset || limit.resetsAt == null || session.busy) {
     return false;
   }
-  return now >= limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS;
+  return now >= (usageLimitResumeAt(limit) ?? Infinity);
 }

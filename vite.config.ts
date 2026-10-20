@@ -19,6 +19,10 @@ export default defineConfig(async ({ mode }) => {
   return {
     ...(cacheDir ? { cacheDir } : {}),
     plugins: [react(), tailwindcss()],
+    // Each checkout keeps its own pre-bundled deps. Worktrees link node_modules from the main checkout
+    // (scripts/setup-worktree.mjs), so the default node_modules/.vite is shared: one slot's re-optimize answered every
+    // other slot's page with "504 Outdated Optimize Dep" and left their windows on the boot splash.
+    cacheDir: "target/vite",
     worker: { format: "es" },
     resolve: {
       alias: [
