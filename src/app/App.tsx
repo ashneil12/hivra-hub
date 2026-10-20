@@ -1013,7 +1013,6 @@ type SubmitOptions = ComposerTurnOptions & {
   planBlockId?: string;
   buildTarget?: PlanBuildTarget;
   managed?: boolean;
-  controlTextLimit?: number;
   orchestrationRetry?: OrchestrationProposal;
   appRequestId?: string;
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
@@ -8375,7 +8374,7 @@ function Workspace({
           if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
-            controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
+            controlText = (controlText + event.text).slice(-20_000);
           if (options?.onSettled && event.type === "message.completed")
             controlText += "\n";
           if (event.type === "session.error")
@@ -9570,7 +9569,7 @@ function Workspace({
   });
 
   // Group chat uses the same Mono sessions, selected model, tools and settlement signal as a direct conversation.
-  useEffect(() => setGroupChatRunner(async (monoId, prompt, runnerOptions) => {
+  useEffect(() => setGroupChatRunner(async (monoId, prompt) => {
     const session = await ensureMonoSession(monoId, {
       home: homeDir,
       load: (id) => ensureOpenSessionRef.current(id),
@@ -9587,7 +9586,6 @@ function Workspace({
       const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
       void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
         managed: true,
-        controlTextLimit: runnerOptions?.maxReplyChars,
         onSettled: (outcome) => {
           window.clearTimeout(timer);
           if (outcome.status === "completed") resolve(outcome.text);

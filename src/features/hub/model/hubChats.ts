@@ -349,7 +349,7 @@ export function simulateReplies(chatId: string, convId?: string): void {
   }, 1800);
 }
 
-export type GroupChatRunner = (monoId: string, prompt: string, options?: { maxReplyChars: number }) => Promise<string>;
+export type GroupChatRunner = (monoId: string, prompt: string) => Promise<string>;
 let runner: GroupChatRunner | undefined;
 /** The app supplies its normal Mono session engine; the store never invents an answer. */
 export function setGroupChatRunner(next: GroupChatRunner): () => void {
@@ -692,9 +692,3 @@ export function importChats(imported: GroupChat[], { mergeConversations = false 
   return { chats: additions.length, conversations };
 }
 export function exportChats(): GroupChat[] { return structuredClone(chats); }
-
-export function monoTaskRunnerConnected(): boolean { return !!runner; }
-export function runMonoTask(monoId: string, prompt: string, options?: { maxReplyChars: number }): Promise<string> {
-  if (!runner) return Promise.reject(new Error("Open the desktop app to run a Mono."));
-  return runner(monoId, prompt, options);
-}
