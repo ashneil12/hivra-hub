@@ -56,13 +56,11 @@ import {
 } from "../features/hub/model/codingTeam";
 import {
   codingTeamNamed,
-  ensureMonoWorkFolder,
+  ensureMonoTeam,
   forgetMonoTeam,
-  isMonoWorkFolder,
+  isMonoTeamFolder,
   monoTeam,
   monoTeamName,
-  monoTeamOn,
-  monoWorkFolder,
   nameMonoTeam,
   teamFor,
   useMonoTeamsVersion,
@@ -5301,8 +5299,8 @@ function Workspace({
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
       const team = leadCodingTeam(monoId);
-      // Any other Mono opens on its own, or inside its own team (monoTeams.ts) when it has one and that is asked for:
-      // its chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
+      // Any other Mono opens on its own (people, not work), or inside its own team (monoTeams.ts) when asked: its
+      // chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
       const own = !team && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
       if (team?.folder) {
         setHubSelection({ project: team.id, item: "coding-team" });
@@ -6362,8 +6360,7 @@ function Workspace({
         }
       }
       removeMono(monoId);
-      // Its own work and team go with it from the hub; the folder stays on disk with whatever its workers made
-      // (monoTeams.ts).
+      // Its team goes with it from the hub; the folder stays on disk with whatever its workers made (monoTeams.ts).
       forgetMonoTeam(monoId);
       if (lastMonoIdRef.current === monoId) lastMonoIdRef.current = undefined;
     },
@@ -6810,9 +6807,9 @@ function Workspace({
           // `onCwdChange` already moved to it.
           break;
       }
-      // Every project opened is remembered, the one chosen last most recently. A Mono's own folder is no project of
-      // Ash's (monoTeams.ts): its team opens from its Mono, never from the recent list.
-      for (const step of steps) if (!isMonoWorkFolder(step.path)) setRecents(rememberProject(step.path));
+      // Every project opened is remembered, the one chosen last most recently. A Mono's team folder is no project of
+      // Ash's (monoTeams.ts): it opens from its Mono, never from the recent list.
+      for (const step of steps) if (!isMonoTeamFolder(step.path)) setRecents(rememberProject(step.path));
     },
     [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
   );
@@ -8867,16 +8864,14 @@ function Workspace({
             : undefined;
           // Who it is counts as part of its soul: a rename or a change to its
           // projects is handed over too, and so is a change to the fixed rules.
-          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again, and so
-          // does Ash giving the Mono its own team or taking it back (monoTeams.ts: where its own work shows changes).
+          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again.
           const delegateTool = mono && hasDelegateTool(sessionId, current.harness);
-          const ownTeamOn = !!monoRecord && codingTeamsOn() && monoTeamOn(monoRecord.id);
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}${ownTeamOn ? ":team" : ""}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -8913,11 +8908,11 @@ function Workspace({
                 // A project's Lead is an orchestrator Ash talks to: it talks back like a colleague (TALK_RULES).
                 talk: !!leadFor(monoRecord!.id),
                 ...(projectMemory ? { projectMemory } : {}),
-                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work as its
-                // sub-chats, or in its own team when Ash gave it one (monoTeams.ts).
+                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work in its own
+                // team (monoTeams.ts): no sub-chats of its own.
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
-                      work: ownTeamOn ? { team: monoTeamName(agentLook.name) } : {},
+                      teams: true,
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
                         (target) => `${target.leadName} (lead "${target.projectId}")`,
                       ),
@@ -12294,13 +12289,13 @@ function Workspace({
         }
         const sourceMono =
           monoForSession(source.id) ?? findMono(habitRunMono(source.id) ?? "");
-        // A Mono's own folder is its own too (monoTeams.ts): its own workers run there, its team on or off.
-        const sourceOwnFolder = sourceMono && codingTeamsOn() ? monoWorkFolder(sourceMono.id) : undefined;
+        // A Mono's own team's folder is its own too (monoTeams.ts): its workers run there.
+        const sourceTeam = sourceMono && codingTeamsOn() ? monoTeam(sourceMono.id) : undefined;
         const canAccessProject = (cwd: string) =>
           canAccessAgentAppProject(
             source,
             cwd,
-            sourceMono ? [...sourceMono.projects, ...(sourceOwnFolder ? [sourceOwnFolder] : [])] : undefined,
+            sourceMono ? [...sourceMono.projects, ...(sourceTeam ? [sourceTeam.folder] : [])] : undefined,
           );
         const sourceTurn = turnGen.current.get(source.id) ?? 0;
         const sourceTurns = isMonoSession(source.id)
@@ -12893,9 +12888,9 @@ function Workspace({
                         },
                       }
                     : {}),
-                  // Its own work's folder, once it has one (monoTeams.ts).
-                  ...(codingTeamsOn() && monoWorkFolder(mono.id)
-                    ? { ownFolder: monoWorkFolder(mono.id)! }
+                  // Its own team's folder, once it has one (monoTeams.ts).
+                  ...(codingTeamsOn() && monoTeam(mono.id)
+                    ? { team: monoTeam(mono.id)!.folder }
                     : {}),
                 }
               );
@@ -12928,16 +12923,16 @@ function Workspace({
                 sessionsRef.current = next;
                 flushSync(() => setSessions(next));
               },
-              // Where a Mono's work goes (monoTeams.ts): a project's work to its coding team, its own work to its own
-              // folder (its sub-chats, or its team's when Ash gave it one). A hub thing: plain MonoCode has no teams.
+              // Sub-chats only ever live in a team (monoTeams.ts): a Mono hands a project's work to its coding team and
+              // starts workers of its own only in its own team's folder. A hub thing: plain MonoCode has no teams.
               ...(codingTeamsOn()
                 ? {
                     monoWork: {
                       isLead: (monoId: string) => !!leadFor(monoId),
                       codingTeam: (named: string) => codingTeamNamed(named, hubData().listProjects()),
-                      ownWork: async (mono: { id: string; name?: string }) => {
-                        const work = await ensureMonoWorkFolder(mono.id);
-                        return { folder: work.folder, ...(work.on ? { team: monoTeamName(mono.name) } : {}) };
+                      ownTeam: async (mono: { id: string; name?: string }) => {
+                        const team = await ensureMonoTeam(mono.id);
+                        return { folder: team.folder, name: monoTeamName(mono.name) };
                       },
                     },
                   }
@@ -15180,12 +15175,6 @@ function Workspace({
   const hubSel = useHubSelection();
   useHubDataVersion();
   useMonoTeamsVersion();
-  // A Mono's team selected while it is off (Ash took it back, or a selection kept across a reload): Today instead, never
-  // an empty workspace (monoTeams.ts).
-  const teamSelectedOff = !!monoTeamInView(hubSel) && !monoTeam(monoTeamInView(hubSel)!);
-  useEffect(() => {
-    if (teamSelectedOff) setHubSelection({ project: "today", item: "inbox" });
-  }, [teamSelectedOff]);
   const hubProject = hubData()
     .listProjects()
     .find((project) => project.id === hubSel.project);

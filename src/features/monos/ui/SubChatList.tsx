@@ -1,8 +1,8 @@
 // The chats a chat started, folded under it (Ash, 20 Oct: "if need be it can be setup sort of like claude code with sub
 // chats if needed but usually hidden"): a count that opens them, by itself when one is stuck, asking or failed
-// (subChats.ts), and one row per chat with its state's mark. The Monos rail nests a Mono's sub-chats with it (unless
-// Ash gave it its own team: hub/model/monoTeams.ts), and a team's Sessions list nests every chat's
-// (hub/model/codingTeamList.ts), so both read the same.
+// (subChats.ts), and one row per chat with its state's mark. Sub-chats only ever live in a team's Sessions list (a
+// project's coding team or a Mono's own team: hub/model/codingTeamList.ts, monoTeams.ts), never in the Monos rail,
+// which shows people, not work (Ash, 20 Oct).
 import { useState } from "react";
 import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
@@ -44,14 +44,11 @@ function childLine(chat: ChildChat, now: number): string {
   return chat.state === "running" ? "working" : chat.state === "completed" ? "done" : chat.state === "failed" ? "failed" : "stopped";
 }
 
-const ATTRS = {
-  rail: { toggle: "data-mono-children-toggle", list: "data-mono-children", child: "data-mono-child", more: "data-mono-children-more" },
-  sessions: { toggle: "data-sub-chats-toggle", list: "data-sub-chats", child: "data-sub-chat", more: "data-sub-chats-more" },
-} as const;
+const ATTRS = { toggle: "data-sub-chats-toggle", list: "data-sub-chats", child: "data-sub-chat", more: "data-sub-chats-more" } as const;
 
 /**
- * A chat's (or a Mono's) sub-chats, folded under a count unless Ash opened them or one is stuck, six at a time. One
- * click on a sub-chat opens it.
+ * A chat's sub-chats, folded under a count unless Ash opened them or one is stuck, six at a time. One click on a
+ * sub-chat opens it.
  */
 export function SubChatList({
   foldKey,
@@ -60,10 +57,9 @@ export function SubChatList({
   attention,
   stuckSplit,
   now,
-  variant,
   onOpen,
 }: {
-  /** Whose fold this is (subChats.ts): a Mono's id on the rail, `chat:<id>` in the Sessions list. */
+  /** Whose fold this is (subChats.ts): `chat:<id>`. */
   foldKey: string;
   /** Its owner, as its data attributes name it. */
   owner: string;
@@ -72,14 +68,13 @@ export function SubChatList({
   /** "1 working · 2 stuck", said to a screen reader on the fold. */
   stuckSplit?: string;
   now: number;
-  variant: keyof typeof ATTRS;
   onOpen: (chat: ChildChat) => void;
 }) {
   const [all, setAll] = useState(false);
   const open = subChatsOpen(foldKey, attention.key);
   const { shown, more } = shownSubChats(children, attention.stuck, all);
   const count = `${children.length} ${children.length === 1 ? "sub-chat" : "sub-chats"}`;
-  const attrs = ATTRS[variant];
+  const attrs = ATTRS;
   return (
     <div className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">
       <button

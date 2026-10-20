@@ -305,7 +305,7 @@ describe("Being built, live", () => {
 
 describe("point 13, item 3: a big job's workers show only in Being built, and only while it runs", () => {
   const ROSTER = ["Chief of Staff", "Projects Manager", "frank", "Alfred", "Hivra lead"];
-  // Each Mono's own row (not its hover buttons: options, and Open team for a Mono with a team of its own).
+  // Each Mono's own row (not its hover buttons: options, and Open team for a Lead).
   const sidebar = () => [...container.querySelectorAll("[data-mono-rail] [data-mono-status] > button[title]:not([data-no-drag])")].map((b) => b.getAttribute("title")!.split("\n")[0]);
   const rowsNow = () => [...container.querySelectorAll("[data-hub-worker]")].map((r) => r.getAttribute("data-hub-worker"));
   const page = () =>

@@ -55,19 +55,14 @@
 //       who it is, the talk and delegate rules and the project's memory; it delegates a worker, whose chat is
 //       `app-<that chat>-<request>` in the project's folder (so the coding team's list nests it under the chat), whose
 //       brief is signed by the coding team with its worker rules, and whose report comes back to that chat.
-//   Then where a Mono's work goes (Ash, 20 Oct: a project's work "should either do it itself or pick it up with the
-//   coding team"; "the mono sub chat setup is good too ... so team can be optional"), in the same launch: Ash makes a
+//   Then teams, not sub-chats (Ash, 20 Oct: "monos shouldn't really have sub chats"), in the same launch: Ash makes a
 //   Mono of his own on the Verify project (not the built-in team, not a Lead) and asks it for a fix there and for
 //   examples for himself. While their workers run, the window is read through the driver (verifyDriver.ts):
 //   22. the fix goes to Verify's coding team: a worker of its own in the project is refused, its brief goes to the Lead,
-//       whose worker sits under the brief and nests under the Lead in the coding team and in the rail (never under the
-//       Mono); the Mono's chat shows one "Briefed Verify coding team" line, and the Lead's report comes back to it;
-//   23. its own work, with no team of its own (the default), is its sub-chat: the worker runs in its own folder,
-//       <app data>/mono-teams/<mono id>, and nests under the Mono in the Monos rail with the brief; no team opens for
-//       it; its report comes back to the Mono;
-//   24. Ash gives it its own team (the switch in its menu): its next turn is handed the team's rules, its next worker runs
-//       in that folder, the team's Sessions list pins the Mono's chat with its workers under it (nothing of Verify's),
-//       the rail lists none of its sub-chats but one line, and the report comes back.
+//       whose worker sits under the brief and nests under the Lead in the coding team; the Mono's chat shows one
+//       "Briefed Verify coding team" line, the Monos rail lists no sub-chats, and the Lead's report comes back to it;
+//   23. its own work goes to its own team: the worker runs in <app data>/mono-teams/<mono id>, whose Sessions list pins
+//       the Mono's chat with that worker under it (and nothing of Verify's), and its report comes back to the Mono.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -124,7 +119,6 @@ export const WALK = [
   "room_private_message",
   "coding_team_delegates",
   "mono_briefs_coding_team",
-  "mono_sub_chats",
   "mono_own_team",
 ];
 
@@ -168,17 +162,14 @@ export const ROOM_DM = "VERIFY-ROOM-DM";
 export const CT_KICKOFF = "VERIFY-CT-KICKOFF";
 export const CT_WORKER = "VERIFY-CT-WORKER";
 /**
- * Where a Mono's work goes (checks 22 to 24): a Mono Ash makes on the Verify project, his message to it, its brief to the
- * Verify lead, the Lead's worker for it, the Mono's own worker (its sub-chat), then, once Ash gave it its own team, his
- * second message and the worker it starts in that team.
+ * Teams, not sub-chats (checks 22 and 23): a Mono Ash makes on the Verify project, his message to it, its brief to the
+ * Verify lead, the Lead's worker for it, and the Mono's own worker (in its own team).
  */
 export const MT_MONO = "Verify Marketing";
 export const MT_KICKOFF = "VERIFY-MT-KICKOFF";
 export const MT_LEAD_BRIEF = "VERIFY-MT-LEAD-BRIEF";
 export const MT_LEAD_WORKER = "VERIFY-MT-LEAD-WORKER";
 export const MT_OWN = "VERIFY-MT-OWN";
-export const MT_TEAM_KICKOFF = "VERIFY-MT-TEAM-KICKOFF";
-export const MT_TEAMWORK = "VERIFY-MT-TEAMWORK";
 /** A room turn's prompt for one Mono (roomTurns.ts turnPrompt opens with it). */
 export const roomTurn = (name) => `(?:^|</monocode_context>\\s*)\\[MonoCode room\\] You are ${name},`;
 /** A worker's finish line: what the brief's "Done when" says, and so what MonoCode sends as `/goal`. */
@@ -340,8 +331,7 @@ export function scenario({ runId, failGate = false }) {
       times: 1,
       steps: [
         { say: "Two workers with a finish line, then briefs for the Verify lead." },
-        // Its own work (no project): Verify's work goes to its coding team, so these run in Chief of Staff's own folder
-        // (its sub-chats: it has no team of its own).
+        // Its own work (no project): Verify's work goes to its coding team, so these run in Chief of Staff's own team.
         {
           app: "tasks.delegate",
           input: { title: "Goal A", brief: `${GOAL_A_WORKER} run ${runId}: work until the goal is met.`, goal: goalA },
@@ -362,7 +352,7 @@ export function scenario({ runId, failGate = false }) {
           app: "sessions.send",
           input: {
             sessionId: "{{saved.goal-a.response.result.childSessionId}}",
-            // Chief of Staff works on several projects and its own folder: it names the worker's.
+            // Chief of Staff works on several projects and its own team: it names the worker's folder.
             project: "{{saved.goal-a.response.result.cwd}}",
             prompt: `${QUEUED_A} run ${runId}: one more thing after your goal.`,
             notifyOnComplete: true,
@@ -658,8 +648,8 @@ export function scenario({ runId, failGate = false }) {
       steps: [{ mark: "ct-got-report" }, { say: "The check is back: the widget is fine." }],
     },
   ];
-  // Where a Mono's work goes: a Mono of Ash's own. First of all: the Verify lead's conversation carries earlier tags
-  // whose catch-all rules would otherwise take its prompts.
+  // Teams, not sub-chats: a Mono of Ash's own. First of all: the Verify lead's conversation carries earlier tags whose
+  // catch-all rules would otherwise take its prompts.
   const monoTeams = [
     {
       name: "mt-kickoff",
@@ -668,13 +658,12 @@ export function scenario({ runId, failGate = false }) {
       times: 1,
       steps: [
         { say: "Got it: the copy fix goes to the Verify coding team, the examples are mine." },
-
         // A worker of its own in a project with a coding team is refused: that work is the coding team's.
         { app: "tasks.delegate", input: { title: "Fix the widget copy", project: TREE_PROJECT.id, brief: `${MT_LEAD_WORKER} run ${runId}: fix it here.` }, save: "mt-refused" },
         { app: "tasks.delegate", input: { lead: TREE_LEAD, title: "Fix the widget copy", brief: `${MT_LEAD_BRIEF} run ${runId}: the verify widget's copy is wrong; fix it.` }, save: "mt-brief" },
         { app: "tasks.delegate", input: { title: "Find copy examples", brief: `${MT_OWN} run ${runId}: find three good examples of widget copy.` }, save: "mt-own" },
         { mark: "mt-delegated" },
-        { say: "Briefed the Verify coding team on the fix; my own worker is finding examples." },
+        { say: "Briefed the Verify coding team on the fix; my own worker is finding examples in my team." },
       ],
     },
     {
@@ -709,26 +698,6 @@ export function scenario({ runId, failGate = false }) {
       steps: [{ mark: "mt-own-started" }, { waitFile: "mt-own-go", timeoutMs: 900_000 }, { say: `MT-OWN-DONE run ${runId}: three examples found.` }],
     },
     { name: "mt-mono-own-report", tag: "mt-mono", match: reportWith("MT-OWN-DONE"), times: 1, steps: [{ mark: "mt-got-own-report" }, { say: "The examples are back." }] },
-    // Ash gave it its own team: his next message, the worker it starts there, and its report.
-    {
-      name: "mt-team-kickoff",
-      tag: "mt-mono",
-      match: said(MT_TEAM_KICKOFF),
-      times: 1,
-      steps: [
-        { say: "On it, in my team." },
-        { app: "tasks.delegate", input: { title: "Draft the copy", brief: `${MT_TEAMWORK} run ${runId}: draft the widget copy from the examples.` }, save: "mt-team-own" },
-        { mark: "mt-team-delegated" },
-        { say: "My worker is drafting it in my team." },
-      ],
-    },
-    {
-      name: "mt-teamwork",
-      match: brief(MT_TEAMWORK),
-      times: 1,
-      steps: [{ mark: "mt-teamwork-started" }, { waitFile: "mt-teamwork-go", timeoutMs: 900_000 }, { say: `MT-TEAMWORK-DONE run ${runId}: copy drafted.` }],
-    },
-    { name: "mt-mono-team-report", tag: "mt-mono", match: reportWith("MT-TEAMWORK-DONE"), times: 1, steps: [{ mark: "mt-got-team-report" }, { say: "The draft is back." }] },
     { name: "mt-mono-lead-report", tag: "mt-mono", match: reportWith("MT-LEAD-REPORT"), times: 1, steps: [{ mark: "mt-got-lead-report" }, { say: "The copy is fixed, noted." }] },
     { name: "mt-mono-other", tag: "mt-mono", match: said("\\[MonoCode "), steps: [{ say: "Noted." }] },
   ];
@@ -2426,9 +2395,9 @@ async function main() {
     else fail("coding_team_delegates", "A chat Ash starts in a project's coding team (not a Mono) is an orchestrator: it delegates, its worker nests under it, and the report comes back to it", JSON.stringify({ delegated: !!ctDelegated, worker: !!ctWorker, report: !!ctReport, ...ctEvidence }));
 
     phase();
-    // 22 to 24. Where a Mono's work goes (Ash, 20 Oct: a project's work "should either do it itself or pick it up with
-    // the coding team"; "the mono sub chat setup is good too the one i saw, so team can be optional"). Ash makes a Mono of
-    // his own on the Verify project and asks it for a fix there and examples for him.
+    // 22 and 23. Teams, not sub-chats (Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it
+    // should either do it itself or pick it up with the coding team ... something like coding team should be created for
+    // that mono"). Ash makes a Mono of his own on the Verify project and asks it for a fix there and examples for him.
     stub.state.verifyMessages = [
       ...(stub.state.verifyMessages ?? []),
       {
@@ -2454,39 +2423,43 @@ async function main() {
     const mtMonoId = mtBrief?.owner_mono ?? null;
     const mtChat = mtBrief?.owner_session ?? null;
     const mtLeadChat = mtLead?.owner_session ?? null;
-    const mtLeadMono = mtLead?.owner_mono ?? null;
     const teamFolder = mtMonoId ? path.join(dataDir, "mono-teams", mtMonoId) : null;
-    const sessionCwds = async (...ids) =>
-      query(db, `SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (${ids.map(() => "?").join(", ")})`, ...ids.map((x) => x ?? "?"));
-    const mtSessions = await sessionCwds(mtOwn?.child_session, mtLead?.child_session);
+    const mtSessions = await query(
+      db,
+      "SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (?, ?)",
+      mtOwn?.child_session ?? "?",
+      mtLead?.child_session ?? "?",
+    );
     const sessionCwd = (sessionId) => mtSessions.find((row) => row.id === sessionId)?.cwd ?? null;
-    // The window while both workers run, through the driver: the Mono's chat with the Monos rail beside it (both Monos'
-    // folded sub-chats opened, as Ash's click on the count does), then Verify's coding team on its Lead.
+    // The window while both workers run, through the driver: the Mono's chat (and the rail beside it), Verify's coding
+    // team on its Lead, the Mono's own team; each list's folded sub-chats opened as Ash's click does.
     const shown = (dom, attr, value) =>
       (dom?.elements ?? []).filter((element) => element.visible && attr in element.attrs && (value === undefined || element.attrs[attr] === value));
     let chatDom = null;
     let codingDom = null;
+    let teamDom = null;
     let driverError = null;
     try {
       await act("ping", {}, 60_000);
-      // Each list read whole: the Lead has had many workers by now, and a list shows six at a time until "Show more".
-      await act("open", { mono: mtMonoId, unfoldMonos: [mtMonoId, mtLeadMono] });
+      await act("open", { mono: mtMonoId });
       await sleep(scale(1_500));
-      chatDom = (await act("expand"))?.dom ?? null;
-      await act("open", { codingTeam: TREE_PROJECT.id, unfold: [mtLeadChat], settleMs: scale(2_500) });
-      codingDom = (await act("expand"))?.dom ?? null;
+      chatDom = (await act("snapshot"))?.dom ?? null;
+      codingDom = (await act("open", { codingTeam: TREE_PROJECT.id, unfold: [mtLeadChat], settleMs: scale(2_500) }))?.dom ?? null;
+      teamDom = (await act("open", { team: mtMonoId, unfold: [mtChat], settleMs: scale(2_500) }))?.dom ?? null;
     } catch (error) {
       driverError = error.message;
     }
     const briefLine = shown(chatDom, "data-briefed-team", mtBrief?.id ?? "?")[0] ?? null;
+    const monoLine = shown(chatDom, "data-mono-work", mtMonoId ?? "?")[0] ?? null;
+    const railSubChats = [...shown(chatDom, "data-mono-children"), ...shown(chatDom, "data-mono-child")].length;
     const codingOwner = shown(codingDom, "data-coding-team-lead")[0] ?? null;
+    const teamOwner = shown(teamDom, "data-coding-team-lead")[0] ?? null;
     // Release the Mono's own worker first, then the Lead's, so each report is a turn of its own.
     open("mt-own-go");
     const mtOwnReport = await waitMark("mt-got-own-report", 120_000);
     open("mt-lead-worker-go");
     const mtLeadReport = await waitMark("mt-got-lead-report", 120_000);
     const builtIn = ["chief-of-staff", "projects-manager", "frank", "alfred", "checker"];
-    const ashsOwn = !!mtMonoId && !builtIn.includes(mtMonoId) && !mtMonoId.endsWith("-lead");
     const mtEvidence = {
       mono: mtMonoId,
       chat: mtChat,
@@ -2494,32 +2467,25 @@ async function main() {
       brief: mtBrief,
       leadWorker: mtLead && { ...mtLead, cwd: sessionCwd(mtLead.child_session), call: { cwd: mtLeadCall?.result?.cwd ?? null, isolation: mtLeadCall?.result?.isolation ?? null } },
       own: mtOwn && { ...mtOwn, cwd: sessionCwd(mtOwn.child_session), hidden: mtSessions.find((row) => row.id === mtOwn.child_session)?.hidden ?? null, team: mtOwnCall?.result?.team ?? null },
-      ownFolder: teamFolder && { path: teamFolder, exists: fs.existsSync(teamFolder) },
+      teamFolder: teamFolder && { path: teamFolder, exists: fs.existsSync(teamFolder) },
       window: {
         driverError,
         briefLine: briefLine && { text: briefLine.text, kind: briefLine.attrs["data-briefed-kind"] ?? null, project: briefLine.attrs["data-briefed-project"] ?? null },
-        rail: {
-          // The Mono's fold and what it lists; the Lead's, and whether the Lead's worker ever shows under the Mono.
-          monoFold: shown(chatDom, "data-mono-children-toggle", mtMonoId ?? "?")[0]?.text ?? null,
-          monoList: shown(chatDom, "data-mono-children", mtMonoId ?? "?")[0]?.text ?? null,
-          briefNested: shown(chatDom, "data-mono-child", mtLeadChat ?? "?").length > 0,
-          ownNested: shown(chatDom, "data-mono-child", mtOwn?.child_session ?? "?").length > 0,
-          leadList: shown(chatDom, "data-mono-children", mtLeadMono ?? "?")[0]?.text ?? null,
-          leadWorkerNested: shown(chatDom, "data-mono-child", mtLead?.child_session ?? "?").length > 0,
-          teamLine: shown(chatDom, "data-mono-work", mtMonoId ?? "?").length,
-          openTeam: (chatDom?.elements ?? []).filter((element) => element.attrs["data-mono-open-team"] === mtMonoId).length,
-        },
+        monoLine: monoLine && monoLine.text,
+        railSubChats,
         coding: {
           owner: codingOwner && { chat: codingOwner.attrs["data-coding-team-lead"], kind: codingOwner.attrs["data-team-kind"] ?? null },
-          leadWorkerNested: shown(codingDom, "data-sub-chats", mtLeadChat ?? "?").length > 0 && shown(codingDom, "data-sub-chat", mtLead?.child_session ?? "?").length > 0,
+          leadWorkerNested: shown(codingDom, "data-sub-chats", leadChat ?? "?").length > 0 && shown(codingDom, "data-sub-chat", mtLead?.child_session ?? "?").length > 0,
+        },
+        team: {
+          owner: teamOwner && { chat: teamOwner.attrs["data-coding-team-lead"], kind: teamOwner.attrs["data-team-kind"] ?? null, text: teamOwner.text },
+          ownWorkerNested: shown(teamDom, "data-sub-chats", mtChat ?? "?").length > 0 && shown(teamDom, "data-sub-chat", mtOwn?.child_session ?? "?").length > 0,
+          leadWorkerThere: shown(teamDom, "data-sub-chat", mtLead?.child_session ?? "?").length > 0,
         },
       },
       reports: { own: !!mtOwnReport, lead: !!mtLeadReport },
     };
-    const rail = mtEvidence.window.rail;
-    // A rail list's lines are its sub-chats' titles: the Mono's names the brief and its own worker, the Lead's its worker.
-    const listed = (list, title) => (list ?? "").split("\n").map((line) => line.trim()).includes(title);
-    const listedUnderMono = (title) => listed(rail.monoList, title);
+    const ashsOwn = !!mtMonoId && !builtIn.includes(mtMonoId) && !mtMonoId.endsWith("-lead");
     if (
       mtDelegated &&
       ashsOwn &&
@@ -2535,9 +2501,7 @@ async function main() {
       briefLine.text.startsWith("Briefed Verify coding team: Fix the widget copy") &&
       /1 working/.test(briefLine.text) &&
       briefLine.attrs["data-briefed-project"] === TREE_PROJECT.id &&
-      rail.leadWorkerNested &&
-      listed(rail.leadList, "Widget copy") &&
-      !listedUnderMono("Widget copy") &&
+      railSubChats === 0 &&
       mtEvidence.window.coding.owner?.chat === leadChat &&
       mtEvidence.window.coding.owner?.kind === "coding" &&
       mtEvidence.window.coding.leadWorkerNested &&
@@ -2545,11 +2509,11 @@ async function main() {
     )
       pass(
         "mono_briefs_coding_team",
-        "A Mono of Ash's own hands a project's work to its coding team: the work nests under the Lead there and in the rail, its chat shows one line, its report comes back",
-        `${MT_MONO} (${mtMonoId}, Ash's own) was refused a worker in Verify ("${mtRefused.error}") and briefed the Verify lead (row ${mtBrief.id}, follow lead); the Lead's worker ${mtLead.child_session} sits under that brief and nests under the Lead in Verify's coding team and in the rail, never under the Mono; the Mono's chat showed "${briefLine.text}", and the Lead's report came back to the Mono`,
+        "A Mono of Ash's own hands a project's work to its coding team: the work and its sub-chat nest under the Lead there, its chat shows one line, its report comes back",
+        `${MT_MONO} (${mtMonoId}, Ash's own) was refused a worker in Verify ("${mtRefused.error}") and briefed the Verify lead (row ${mtBrief.id}, follow lead); the Lead's worker ${mtLead.child_session} sits under that brief and nests under the Lead in Verify's coding team; the Mono's chat showed "${briefLine.text}", the Monos rail listed no sub-chats, and the Lead's report came back to the Mono`,
         { evidence: mtEvidence },
       );
-    else fail("mono_briefs_coding_team", "A Mono of Ash's own hands a project's work to its coding team: the work nests under the Lead there and in the rail, its chat shows one line, its report comes back", JSON.stringify({ delegated: !!mtDelegated, leadWorker: !!mtLeadWorker, ...mtEvidence }));
+    else fail("mono_briefs_coding_team", "A Mono of Ash's own hands a project's work to its coding team: the work and its sub-chat nest under the Lead there, its chat shows one line, its report comes back", JSON.stringify({ delegated: !!mtDelegated, leadWorker: !!mtLeadWorker, ...mtEvidence }));
     if (
       mtDelegated &&
       mtOwnWorker &&
@@ -2557,109 +2521,25 @@ async function main() {
       !!mtOwn &&
       mtOwn.owner_session === mtChat &&
       mtOwn.child_session?.startsWith(`app-${mtChat}-`) &&
-      // Its own folder, no hub project.
-      mtOwn.project !== TREE_PROJECT.id &&
+      !mtOwn.project &&
       mtEvidence.own?.cwd === teamFolder &&
-      mtEvidence.ownFolder?.exists &&
-      mtEvidence.own?.team === null &&
-      // The rail: its sub-chats under it, the brief and its own worker, "2 sub-chats"; no team, no one-line summary.
-      rail.monoFold === "2 sub-chats" &&
-      rail.briefNested &&
-      rail.ownNested &&
-      listedUnderMono("Fix the widget copy") &&
-      listedUnderMono("Find copy examples") &&
-      rail.teamLine === 0 &&
-      rail.openTeam === 0 &&
+      mtEvidence.teamFolder?.exists &&
+      mtEvidence.own?.team === `${MT_MONO}'s team` &&
+      mtEvidence.window.team.owner?.chat === mtChat &&
+      mtEvidence.window.team.owner?.kind === "mono" &&
+      mtEvidence.window.team.ownWorkerNested &&
+      !mtEvidence.window.team.leadWorkerThere &&
+      !!monoLine &&
+      /2 working/.test(monoLine) &&
       mtOwnReport
     )
       pass(
-        "mono_sub_chats",
-        "A Mono with no team of its own (the default) keeps its own work as sub-chats nested under it in the Monos rail, in a folder of its own",
-        `${MT_MONO}'s own worker ${mtOwn.child_session} ran in ${path.relative(home, teamFolder)} (made on its first delegation, no hub project); the rail nested it under the Mono with the brief ("${rail.monoFold}"), with no team and no summary line; its report came back to the Mono`,
+        "mono_own_team",
+        "A Mono's own work goes to its own team: a folder in the app's data, its chat pinned on the team's list with the worker under it",
+        `${MT_MONO}'s own worker ${mtOwn.child_session} ran in ${path.relative(home, teamFolder)} (made on its first delegation); the team's Sessions list pinned ${mtChat} with that worker under it and nothing of Verify's; the rail's line read "${monoLine}"; the worker's report came back to the Mono`,
         { evidence: mtEvidence },
       );
-    else fail("mono_sub_chats", "A Mono with no team of its own (the default) keeps its own work as sub-chats nested under it in the Monos rail, in a folder of its own", JSON.stringify({ delegated: !!mtDelegated, ownWorker: !!mtOwnWorker, ...mtEvidence }));
-
-    phase();
-    // 24. Ash gives the Mono its own team (the switch in its menu, through the driver): its next turn is handed the
-    // team's rules, and the work it starts there nests in that team, not in the rail.
-    let teamSwitch = null;
-    let teamDom = null;
-    let teamError = null;
-    try {
-      // Its window is busy with the Mono's reports just before: room to answer on a loaded Mac.
-      teamSwitch = await act("team", { mono: mtMonoId, on: true }, 120_000);
-    } catch (error) {
-      teamError = error.message;
-    }
-    stub.state.verifyMessages = [
-      ...(stub.state.verifyMessages ?? []),
-      { id: "mt-ash-2", monoId: mtMonoId ?? "missing", prompt: `${MT_TEAM_KICKOFF} run ${id}: now draft the widget copy from those examples.` },
-    ];
-    const mtTeamDelegated = await waitMark("mt-team-delegated", 90_000);
-    const mtTeamWorker = await waitMark("mt-teamwork-started", 90_000);
-    const mtTeamCall = savedCall("mt-team-own")?.response ?? null;
-    const mtTeamRow = await mtRow(mtTeamCall?.result?.taskId);
-    const [mtTeamSession] = await sessionCwds(mtTeamRow?.child_session);
-    try {
-      await act("open", { team: mtMonoId, unfold: [mtChat], settleMs: scale(2_500) });
-      teamDom = (await act("expand"))?.dom ?? null;
-    } catch (error) {
-      teamError = teamError ?? error.message;
-    }
-    open("mt-teamwork-go");
-    const mtTeamReport = await waitMark("mt-got-team-report", 120_000);
-    const teamPrompt = promptsOf("mt-team-kickoff")[0]?.prompt ?? "";
-    const teamOwner = shown(teamDom, "data-coding-team-lead")[0] ?? null;
-    const teamEvidence = {
-      mono: mtMonoId,
-      switch: teamSwitch && { ok: teamSwitch.ok, on: teamSwitch.on, folder: teamSwitch.folder, error: teamSwitch.error ?? null },
-      teamError,
-      rules: {
-        handedTeamRules: teamPrompt.includes(`You have your own team, ${MT_MONO}'s team`),
-        stillSubChatRules: teamPrompt.includes("show as your sub-chats, nested under you"),
-      },
-      worker: mtTeamRow && { ...mtTeamRow, cwd: mtTeamSession?.cwd ?? null, team: mtTeamCall?.result?.team ?? null },
-      window: {
-        owner: teamOwner && { chat: teamOwner.attrs["data-coding-team-lead"], kind: teamOwner.attrs["data-team-kind"] ?? null, text: teamOwner.text },
-        teamWorkerNested: shown(teamDom, "data-sub-chats", mtChat ?? "?").length > 0 && shown(teamDom, "data-sub-chat", mtTeamRow?.child_session ?? "?").length > 0,
-        firstWorkerThere: shown(teamDom, "data-sub-chat", mtOwn?.child_session ?? "?").length > 0,
-        leadWorkerThere: shown(teamDom, "data-sub-chat", mtLead?.child_session ?? "?").length > 0,
-        teamButton: shown(teamDom, "data-mono-view-team").map((element) => element.attrs["aria-pressed"] ?? null),
-        // The rail beside it: no sub-chats under the Mono now, one line instead.
-        railFold: shown(teamDom, "data-mono-children-toggle", mtMonoId ?? "?").length,
-        railLine: shown(teamDom, "data-mono-work", mtMonoId ?? "?")[0]?.text ?? null,
-      },
-      report: !!mtTeamReport,
-    };
-    if (
-      teamSwitch?.ok &&
-      teamSwitch.on === true &&
-      teamSwitch.folder === teamFolder &&
-      mtTeamDelegated &&
-      mtTeamWorker &&
-      teamEvidence.rules.handedTeamRules &&
-      !teamEvidence.rules.stillSubChatRules &&
-      mtTeamRow?.owner_session === mtChat &&
-      teamEvidence.worker?.cwd === teamFolder &&
-      teamEvidence.worker?.team === `${MT_MONO}'s team` &&
-      teamEvidence.window.owner?.chat === mtChat &&
-      teamEvidence.window.owner?.kind === "mono" &&
-      teamEvidence.window.teamButton.includes("true") &&
-      teamEvidence.window.teamWorkerNested &&
-      teamEvidence.window.firstWorkerThere &&
-      !teamEvidence.window.leadWorkerThere &&
-      teamEvidence.window.railFold === 0 &&
-      /1 working/.test(teamEvidence.window.railLine ?? "") &&
-      mtTeamReport
-    )
-      pass(
-        "mono_own_team",
-        "Given its own team (Ash's switch), a Mono's own work nests in that team: its chat pinned on the team's list with its workers under it, one line in the rail",
-        `Ash switched ${MT_MONO}'s team on; its next turn was handed the team's rules; its worker ${mtTeamRow.child_session} ran in ${path.relative(home, teamFolder)} ("${teamEvidence.worker.team}"); the team's Sessions list pinned ${mtChat} with that worker and the earlier one under it and nothing of Verify's, the rail listed none of its sub-chats but "${teamEvidence.window.railLine}"; the report came back to the Mono`,
-        { evidence: teamEvidence },
-      );
-    else fail("mono_own_team", "Given its own team (Ash's switch), a Mono's own work nests in that team: its chat pinned on the team's list with its workers under it, one line in the rail", JSON.stringify({ delegated: !!mtTeamDelegated, worker: !!mtTeamWorker, ...teamEvidence }));
+    else fail("mono_own_team", "A Mono's own work goes to its own team: a folder in the app's data, its chat pinned on the team's list with the worker under it", JSON.stringify({ delegated: !!mtDelegated, ownWorker: !!mtOwnWorker, ...mtEvidence }));
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))

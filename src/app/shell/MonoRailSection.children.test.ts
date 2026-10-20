@@ -1,19 +1,11 @@
 // @vitest-environment happy-dom
-// Delegated work shows as child chats nested under the Mono that started them (Ash, 19 Oct; H4): each opens under its
-// Mono, and a Mono with work out says what it waits on ("1 working · 1 asking"). Like Claude Code's grouped sessions they
-// are usually hidden (Ash, 20 Oct): folded under a count, opened by a stuck, asking or failed one, six at a time.
-// A Mono's own team is optional (Ash, 20 Oct: "the mono sub chat setup is good too ... so team can be optional"): Ash
-// gives one from its menu; then its work lives in that team, and its row says what it has out and opens it.
+// The Monos rail shows people, not work (Ash, 20 Oct: "monos shouldn't really have sub chats"): a Mono's delegated work
+// lives in its team (a Lead's coding team, or its own: monoTeams.ts), so its row lists no sub-chats. One line under it
+// says what it has out ("2 working · 1 stuck", with the red or amber mark) and opens its team; "Open team" sits on the
+// row (on hover) and in its menu.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// The app's folder for a Mono's own work (mono.rs mono_team_dir), as the menu's switch asks for it.
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string, args?: { mono?: string }) =>
-    cmd === "mono_team_dir" ? `/data/mono-teams/${args?.mono}` : null,
-  ),
-}));
 import type { Delegation } from "../../features/monos/model/delegations";
 import {
   resetDelegationStore,
@@ -23,10 +15,10 @@ import {
 import { createMono, updateMono } from "../../features/monos/model/mono";
 import { resetSubChatFolds } from "../../features/monos/model/subChats";
 import { resetStuckDismissals } from "../../features/monos/model/workerStuck";
-import { hubData, setHubDataSource } from "../../features/hub/model/hubData";
+import { setHubDataSource, hubData } from "../../features/hub/model/hubData";
 import { ensureProjectLeads } from "../../features/hub/model/hubLeads";
 import { setCodingTeamOpener, setHubSelection, setMonoTeamOpener } from "../../features/hub/model/hubNav";
-import { monoTeamOn, resetMonoTeams, setMonoTeam } from "../../features/hub/model/monoTeams";
+import { ensureMonoTeam, resetMonoTeams } from "../../features/hub/model/monoTeams";
 import type { HubProject } from "../../features/hub/model/types";
 import { MonoRailSection } from "./MonoRailSection";
 
@@ -100,61 +92,17 @@ function row(
   };
 }
 
-it("nests each Mono's child chats under it, opens one under its Mono, and says what the Mono waits on", () => {
-  const lead = createMono(["/code/vg-game"]);
-  updateMono(lead.id, (mono) => ({ ...mono, sessionId: "lead-chat" }));
-  const other = createMono();
-  setDelegationRows([
-    row("t-1", "w1", lead.id, "lead-chat", "running"),
-    row("t-2", "w2", lead.id, "lead-chat", "question"),
-  ]);
-  const openChild = vi.fn();
-  setDelegationActions({
-    openOwner: vi.fn(),
-    openChild,
-    stopTree: vi.fn(),
-    stopRow: vi.fn(),
-  });
-  act(() =>
-    root.render(
-      createElement(MonoRailSection, {
-        states: new Map(),
-        onOpen: () => {},
-        onCreate: () => {},
-        onDelete: () => {},
-      }),
-    ),
-  );
-  const nested = container.querySelector(`[data-mono-children="${lead.id}"]`);
-  expect(
-    [...nested!.querySelectorAll<HTMLElement>("[data-mono-child]")].map((b) => [
-      b.dataset.monoChild,
-      b.dataset.state,
-    ]),
-  ).toEqual([
-    ["w1", "running"],
-    ["w2", "question"],
-  ]);
-  expect(
-    container.querySelector(`[data-mono-children="${other.id}"]`),
-  ).toBeNull();
-  expect(
-    container.querySelector('[aria-label*="1 working · 1 asking"]'),
-  ).not.toBeNull();
-  act(() =>
-    nested!.querySelector<HTMLButtonElement>('[data-mono-child="w2"]')!.click(),
-  );
-  expect(openChild).toHaveBeenCalledWith("lead-chat", "w2");
-});
 
-function mount(states: Map<string, { status: "idle" | "working" }> = new Map()) {
+function mount(states: Map<string, { status: "idle" | "working" }> = new Map(), hub = false, onOpen: (id: string) => void = () => {}) {
   act(() =>
     root.render(
       createElement(MonoRailSection, {
         states: states as never,
-        onOpen: () => {},
+        onOpen,
         onCreate: () => {},
         onDelete: () => {},
+        // The hub's rail (a rank): it knows each Mono's team.
+        ...(hub ? { rank: () => 0 } : {}),
       }),
     ),
   );
@@ -164,26 +112,32 @@ const lead = () => {
   updateMono(mono.id, (m) => ({ ...m, sessionId: "lead-chat" }));
   return mono;
 };
-const toggle = (id: string) => container.querySelector<HTMLButtonElement>(`[data-mono-children-toggle="${id}"]`);
-const shown = (id: string) =>
-  [...container.querySelectorAll<HTMLElement>(`[data-mono-children="${id}"] [data-mono-child]`)].map((b) => b.dataset.monoChild);
+const work = (id: string) => container.querySelector<HTMLElement>(`[data-mono-work="${id}"]`);
 
-it("folds a Mono's sub-chats under a count by default, opens them with one click, and remembers that per Mono", () => {
+it("lists no sub-chats under a Mono: one line says what it has out, the row's label too", () => {
   const mono = lead();
-  setDelegationRows([1, 2, 3].map((n) => row(`t-${n}`, `w${n}`, mono.id, "lead-chat", "running")));
+  const other = createMono();
+  setDelegationRows([
+    row("t-1", "w1", mono.id, "lead-chat", "running"),
+    row("t-2", "w2", mono.id, "lead-chat", "question"),
+    row("t-3", "w3", mono.id, "lead-chat", "completed", { settledAt: Date.now() }),
+  ]);
   mount();
-  expect(toggle(mono.id)?.textContent).toBe("3 sub-chats");
-  expect(toggle(mono.id)?.getAttribute("aria-expanded")).toBe("false");
-  expect(shown(mono.id)).toEqual([]);
-  act(() => toggle(mono.id)!.click());
-  expect(shown(mono.id)).toEqual(["w1", "w2", "w3"]);
-  act(() => root.unmount());
-  root = createRoot(container);
-  mount();
-  expect(shown(mono.id)).toEqual(["w1", "w2", "w3"]);
+  // People, not work: no sub-chat lists, no fold.
+  expect(container.querySelector("[data-mono-children]")).toBeNull();
+  expect(container.querySelector("[data-mono-child]")).toBeNull();
+  expect(container.querySelector("[data-mono-children-toggle]")).toBeNull();
+  // Short, as the rail has little room: asking counts as stuck (as on Today); the full split is the row's label and the
+  // line's hover.
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("asking");
+  expect(work(mono.id)?.querySelector("button")?.getAttribute("title")).toContain("1 working · 1 asking");
+  expect(container.querySelector('button[aria-label*="1 working · 1 asking"]')).not.toBeNull();
+  // A Mono with nothing out has no line.
+  expect(work(other.id)).toBeNull();
 });
 
-it("opens the fold by itself when a sub-chat is stuck, marks the Mono, and folding it again holds until something new is stuck", () => {
+it("marks stuck work amber, or red once one failed, on the line as on the row", () => {
   const mono = lead();
   const rows = [
     row("t-1", "w1", mono.id, "lead-chat", "running"),
@@ -191,36 +145,15 @@ it("opens the fold by itself when a sub-chat is stuck, marks the Mono, and foldi
   ];
   setDelegationRows(rows);
   mount();
-  expect(shown(mono.id)).toEqual(["w1", "w2"]);
-  const stalled = container.querySelector<HTMLElement>('[data-mono-child="w2"]')!;
-  expect(stalled.dataset.state).toBe("stalled");
-  expect(stalled.getAttribute("aria-label")).toBe("Open Job w2, No output for 9 min");
-  expect(container.querySelector(`[data-mono-stuck]`)?.getAttribute("data-mono-stuck")).toBe("1");
-  expect(container.querySelector('[aria-label*="1 working · 1 stuck"]')).not.toBeNull();
-  // Ash folds it: it stays folded, still saying one is stuck.
-  act(() => toggle(mono.id)!.click());
-  expect(shown(mono.id)).toEqual([]);
-  expect(toggle(mono.id)?.textContent).toBe("2 sub-chats · 1 stuck");
-  // Another one fails: it opens again.
-  act(() =>
-    setDelegationRows([...rows, row("t-3", "w3", mono.id, "lead-chat", "failed", { settledAt: Date.now(), error: "Disk full." })]),
-  );
-  expect(shown(mono.id)).toEqual(["w1", "w2", "w3"]);
-  expect(container.querySelector('[data-mono-child="w3"]')?.getAttribute("aria-label")).toBe("Open Job w3, Failed: disk full");
-});
-
-it("shows six sub-chats at a time with Show more, always including the stuck ones", () => {
-  const mono = lead();
-  setDelegationRows([
-    ...[1, 2, 3, 4, 5, 6, 7].map((n) => row(`t-${n}`, `w${n}`, mono.id, "lead-chat", "running")),
-    row("t-8", "w8", mono.id, "lead-chat", "question", { pendingQuestion: "Which?" }),
-  ]);
-  mount();
-  expect(shown(mono.id)).toEqual(["w1", "w2", "w3", "w4", "w5", "w8"]);
-  const more = container.querySelector<HTMLButtonElement>(`[data-mono-children-more="${mono.id}"]`)!;
-  expect(more.textContent).toBe("Show 2 more");
-  act(() => more.click());
-  expect(shown(mono.id)).toEqual(["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"]);
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("stuck");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-amber-400")?.textContent).toBe("1 stuck");
+  expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("stalled");
+  act(() => setDelegationRows([...rows, row("t-3", "w3", mono.id, "lead-chat", "failed", { settledAt: Date.now(), error: "Disk full." })]));
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 2 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("failed");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-red-400")?.textContent).toBe("2 stuck");
+  expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("failed");
 });
 
 it("says a working Mono has a stuck worker too", () => {
@@ -231,7 +164,7 @@ it("says a working Mono has a stuck worker too", () => {
   expect(container.querySelector('[data-mono-stuck="1"]')?.getAttribute("data-mono-stuck-kind")).toBe("failed");
 });
 
-describe("a Mono's own team (the hub): optional, off until Ash gives it one", () => {
+describe("Open team (the hub)", () => {
   const PROJECTS: HubProject[] = [{ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/code/vg-game" }];
   const opened: unknown[][] = [];
   let undo: Array<() => void> = [];
@@ -247,114 +180,50 @@ describe("a Mono's own team (the hub): optional, off until Ash gives it one", ()
     ];
   });
   afterEach(() => undo.forEach((u) => u()));
-  const hubRail = (onOpen: (id: string) => void = () => {}) =>
-    act(() =>
-      root.render(
-        createElement(MonoRailSection, {
-          states: new Map(),
-          onOpen,
-          onCreate: () => {},
-          onDelete: () => {},
-          // The hub's rail (a rank): it knows each Mono's team.
-          rank: () => 0,
-        }),
-      ),
-    );
-  const alfred = () => {
-    const mono = createMono();
-    updateMono(mono.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
-    return mono;
-  };
-  const toggle = (id: string) => container.querySelector<HTMLButtonElement>(`[data-mono-children-toggle="${id}"]`);
-  const work = (id: string) => container.querySelector<HTMLElement>(`[data-mono-work="${id}"]`);
-  const openTeam = (id: string) => container.querySelector<HTMLButtonElement>(`[data-mono-open-team="${id}"]`);
-  const menuItem = (attr: string) => document.querySelector<HTMLButtonElement>(`[${attr}]`);
-  const openMenu = (name: string) =>
-    act(() => container.querySelector<HTMLButtonElement>(`button[aria-label="${name} options"]`)!.click());
 
-  it("keeps every Mono's sub-chats in the rail by default, a Lead's and a briefing Mono's included, with no Open team", () => {
-    const mono = alfred();
-    updateMono("vg-game-lead", (m) => ({ ...m, sessionId: "lead-chat" }));
-    setDelegationRows([
-      row("t-1", "w1", mono.id, "alfred-chat", "running"),
-      // A brief to the EXO lead (follow "lead") is one of its sub-chats, as shipped.
-      row("t-2", "lead-chat", mono.id, "alfred-chat", "running", { follow: "lead" }),
-      row("t-3", "w3", "vg-game-lead", "lead-chat", "running", { parentId: "t-2", rootId: "t-2" }),
-    ]);
-    hubRail();
-    expect(toggle(mono.id)?.textContent).toBe("2 sub-chats");
-    expect(toggle("vg-game-lead")?.textContent).toBe("1 sub-chat");
-    // No team: no Open team, no work line (the fold already says it), a Lead's row opening its coding team itself.
-    expect(container.querySelector("[data-mono-open-team]")).toBeNull();
-    expect(container.querySelector("[data-mono-work]")).toBeNull();
-  });
-
-  it("with its team on lists no sub-chats under it: one line says what it has out and opens its team, as does Open team", async () => {
-    const mono = alfred();
-    await setMonoTeam(mono.id, true);
-    setDelegationRows([
-      row("t-1", "w1", mono.id, "alfred-chat", "running"),
-      row("t-2", "w2", mono.id, "alfred-chat", "running", { stallKind: "quiet", stallReason: "No output", stalledAt: Date.now() - 9 * 60_000 }),
-    ]);
+  it("opens a Lead's coding team and a Mono's own team from the row, the line and the menu; a Mono with none has none", async () => {
+    const exo = "vg-game-lead";
+    updateMono(exo, (m) => ({ ...m, sessionId: "lead-chat" }));
+    const alfred = createMono();
+    updateMono(alfred.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
+    const plain = createMono();
+    await ensureMonoTeam(alfred.id, async (id) => `/data/mono-teams/${id}`);
+    setDelegationRows([row("t-1", "w1", exo, "lead-chat", "running"), row("t-2", "w2", alfred.id, "alfred-chat", "running")]);
     const onOpen = vi.fn();
-    hubRail(onOpen);
-    expect(toggle(mono.id)).toBeNull();
-    expect(container.querySelector(`[data-mono-children="${mono.id}"]`)).toBeNull();
-    expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
-    expect(work(mono.id)?.dataset.monoWorkKind).toBe("stuck");
-    // The row still carries the stuck mark and the full split.
-    expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("stalled");
-    expect(container.querySelector('button[aria-label*="1 working · 1 stuck"]')).not.toBeNull();
-    expect(openTeam(mono.id)?.getAttribute("aria-label")).toBe("Open Alfred's team");
-    act(() => openTeam(mono.id)!.click());
-    act(() => work(mono.id)!.querySelector("button")!.click());
+    mount(new Map(), true, onOpen);
+    const openTeam = (id: string) => container.querySelector<HTMLButtonElement>(`[data-mono-open-team="${id}"]`);
+    expect(openTeam(exo)?.getAttribute("aria-label")).toBe("Open EXO coding team");
+    expect(openTeam(alfred.id)?.getAttribute("aria-label")).toBe("Open Alfred's team");
+    expect(openTeam(plain.id)).toBeNull();
+    act(() => openTeam(exo)!.click());
+    act(() => openTeam(alfred.id)!.click());
     expect(opened).toEqual([
-      ["mono", mono.id, { owner: true }],
-      ["mono", mono.id, { owner: true }],
+      ["coding", "vg-game", { lead: true }],
+      ["mono", alfred.id, { owner: true }],
     ]);
+    // The line opens the team too, never the Mono's chat.
+    act(() => work(alfred.id)!.querySelector("button")!.click());
+    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
     expect(onOpen).not.toHaveBeenCalled();
-    // Its team in view: its row is the current one (no project is).
-    act(() => setHubSelection({ project: "today", item: `team:${mono.id}` }));
-    expect(container.querySelector("[data-selected][data-mono-status]")?.querySelector("[data-mono-primary-name]")?.textContent).toBe("Alfred");
+    // A Mono's team in view: its row is the current one (no project is).
+    act(() => setHubSelection({ project: "today", item: `team:${alfred.id}` }));
+    expect(container.querySelector(`[data-selected][data-mono-status]`)?.querySelector("[data-mono-primary-name]")?.textContent).toBe("Alfred");
+    // The menu offers it as well.
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Alfred options"]')!.click());
+    const item = document.querySelector<HTMLButtonElement>("[data-mono-menu-open-team]");
+    expect(item?.textContent).toBe("Open Alfred's team");
+    act(() => item!.click());
+    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
   });
 
-  it("is given and taken back from the Mono's menu: on opens the team, off puts its sub-chats back under it", async () => {
-    const mono = alfred();
-    setDelegationRows([row("t-1", "w1", mono.id, "alfred-chat", "running")]);
+  it("a Mono with work out but no team (it only briefed coding teams) opens its chat from the line", () => {
+    const cos = createMono(["/code/vg-game"]);
+    updateMono(cos.id, (m) => ({ ...m, sessionId: "cos-chat" }));
+    setDelegationRows([row("t-1", "lead-chat", cos.id, "cos-chat", "running", { follow: "lead" } as Partial<Delegation>)]);
     const onOpen = vi.fn();
-    hubRail(onOpen);
-    expect(toggle(mono.id)?.textContent).toBe("1 sub-chat");
-    openMenu("Alfred");
-    expect(menuItem("data-mono-menu-open-team")).toBeNull();
-    expect(menuItem("data-mono-menu-sub-chats")).toBeNull();
-    const give = menuItem("data-mono-menu-give-team")!;
-    expect(give.textContent).toBe("Give Alfred its own team");
-    await act(async () => give.click());
-    expect(monoTeamOn(mono.id)).toBe(true);
-    // It opens at once, on Alfred's chat pinned on top of the team; the menu is gone.
-    expect(opened).toEqual([["mono", mono.id, { owner: true }]]);
-    expect(menuItem("data-mono-menu-give-team")).toBeNull();
-    expect(toggle(mono.id)).toBeNull();
-    expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working");
-    // Back: the menu opens its team or takes it back.
-    act(() => setHubSelection({ project: "today", item: `team:${mono.id}` }));
-    openMenu("Alfred");
-    expect(menuItem("data-mono-menu-open-team")?.textContent).toBe("Open Alfred's team");
-    const back = menuItem("data-mono-menu-sub-chats")!;
-    expect(back.textContent).toBe("Use sub-chats instead");
-    await act(async () => back.click());
-    expect(monoTeamOn(mono.id)).toBe(false);
-    expect(toggle(mono.id)?.textContent).toBe("1 sub-chat");
-    expect(work(mono.id)).toBeNull();
-    expect(openTeam(mono.id)).toBeNull();
-    // Its team was in view: Ash lands on its chat instead.
-    expect(onOpen).toHaveBeenCalledWith(mono.id);
-  });
-
-  it("offers no team to a Lead, whose work is its coding team's", () => {
-    hubRail();
-    openMenu("EXO lead");
-    expect(menuItem("data-mono-menu-give-team")).toBeNull();
-    expect(menuItem("data-mono-menu-open-team")).toBeNull();
+    mount(new Map(), true, onOpen);
+    expect(container.querySelector(`[data-mono-open-team="${cos.id}"]`)).toBeNull();
+    act(() => work(cos.id)!.querySelector("button")!.click());
+    expect(onOpen).toHaveBeenCalledWith(cos.id);
   });
 });

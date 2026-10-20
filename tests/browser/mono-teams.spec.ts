@@ -3,16 +3,16 @@ import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
 
-// Where a Mono's work goes (Ash, 20 Oct): a project's work "should either do it itself or pick it up with the coding
-// team", and "the mono sub chat setup is good too the one i saw, so team can be optional". The real app in a browser
-// (hub-dev.html reading the stub through its real transport), with delegation rows as delegations.rs returns them and
-// chats as session_list_by_project does:
-// - the Monos rail nests every Mono's sub-chats under it, as shipped: folded under a count, open when one is stuck;
+// Teams, not sub-chats (Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it
+// itself or pick it up with the coding team. IF they do need to do work ... something like coding team should be created
+// for that mono"). The real app in a browser (hub-dev.html reading the stub through its real transport), with
+// delegation rows as delegations.rs returns them and chats as session_list_by_project does:
+// - the Monos rail lists people: no sub-chats under any Mono, a Lead's included; one line says what each has out
+//   ("2 working · 1 stuck", red or amber), and Open team on the row;
 // - Chief of Staff briefed EXO's coding team: its chat shows ONE live line for it, which opens the coding team on the
 //   Lead, where the brief's workers nest under the Lead;
-// - Alfred did work of its own: its sub-chats nest under it in the rail until Ash gives it its own team from its menu;
-//   then that team opens (Alfred's chat pinned on top, its workers under it), the rail keeps one line and Open team for
-//   it, and "Use sub-chats instead" puts them back under it.
+// - Alfred did work of its own: its own team, a workspace like a coding team, with Alfred's chat pinned on top and its
+//   workers under it, opened from its row or the Team button in its chat.
 // Each step is photographed.
 //
 //   STUCK_PROOF_PORT=1523 PROOF_SPEC=mono-teams.spec.ts npx playwright test -c tests/browser/stuck-workers.config.ts
@@ -35,7 +35,7 @@ test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const EXO = "/Users/example/Projects/vg-game";
-/** Where this browser page's app data is (browserTauriMock.ts DEV_DATA), and so Alfred's own folder (its team's, once on). */
+/** Where this browser page's app data is (browserTauriMock.ts DEV_DATA), and so Alfred's team folder. */
 const TEAM = "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.browser/mono-teams/alfred";
 
 const rail = (page: Page) => page.locator("[data-mono-rail]").first();
@@ -74,7 +74,7 @@ function rows(chats: { cos: string; lead: string; alfred: string }, now: number)
     leadWorker("t-1", "Find the save path"),
     leadWorker("t-2", "Write the save test"),
     leadWorker("t-3", "Run the save tests", { stallKind: "quiet", stallReason: "Still running npm test", stalledAt: now - 9 * 60_000 }),
-    // Alfred's own work: research and a draft, in its own folder; one failed on a usage limit.
+    // Alfred's own work: research and a draft, in its own team; one failed on a usage limit.
     row("a-1", chats.alfred, "alfred", "Research launch posts", { project: null }),
     row("a-2", chats.alfred, "alfred", "Draft the launch thread", { project: null }),
     row("a-3", chats.alfred, "alfred", "Collect competitor pricing", {
@@ -100,14 +100,14 @@ function sessions(chats: { alfred: string; lead: string }, now: number) {
   ];
 }
 
-test("Monos keep their sub-chats; a brief lives in its coding team; a Mono's own team is Ash's switch", async ({ page }) => {
+test("Monos show people, not work: briefs live in coding teams, a Mono's own work in its own team", async ({ page }) => {
   const now = Date.now();
   await page.addInitScript(
     ({ team }) => {
       if (sessionStorage.getItem("seeded")) return;
       sessionStorage.setItem("seeded", "1");
-      // Alfred's own folder, made the first time it handed out work of its own (monoTeams.ts); its team is off.
-      localStorage.setItem("monocode:mono-teams", JSON.stringify({ alfred: { monoId: "alfred", folder: team, createdAt: Date.now() - 3_600_000, on: false } }));
+      // Alfred made its team the first time it handed out work of its own (monoTeams.ts).
+      localStorage.setItem("monocode:mono-teams", JSON.stringify({ alfred: { monoId: "alfred", folder: team, createdAt: Date.now() - 3_600_000 } }));
     },
     { team: TEAM },
   );
@@ -132,21 +132,26 @@ test("Monos keep their sub-chats; a brief lives in its coding team; a Mono's own
   await page.getByRole("button", { name: "Today" }).first().click();
   await page.mouse.move(900, 500);
 
-  // 1. The rail, as shipped: each Mono's sub-chats under it, opened by themselves where one is stuck, folded elsewhere.
-  const toggle = (id: string) => rail(page).locator(`[data-mono-children-toggle="${id}"]`);
-  const nested = (id: string) => rail(page).locator(`[data-mono-children="${id}"] [data-mono-child]`);
-  await expect(toggle("vg-game-lead")).toHaveAttribute("aria-expanded", "true");
-  await expect(nested("vg-game-lead")).toHaveCount(3);
-  await expect(rail(page).locator(`[data-mono-child="app-${chats.lead}-t-3"]`)).toHaveAttribute("data-state", "stalled");
-  await expect(toggle("alfred")).toHaveAttribute("aria-expanded", "true");
-  await expect(nested("alfred")).toHaveCount(3);
-  await expect(rail(page).locator(`[data-mono-child="app-${chats.alfred}-a-3"]`)).toHaveAttribute("data-state", "failed");
-  // Chief of Staff's brief is its one sub-chat (the Lead's chat), folded; the Lead's workers never nest under it.
-  await expect(toggle("chief-of-staff")).toHaveText("1 sub-chat");
-  await expect(toggle("chief-of-staff")).toHaveAttribute("aria-expanded", "false");
-  // No team for anyone yet: no Open team, no one-line summary.
-  await expect(rail(page).locator("[data-mono-open-team], [data-mono-work]")).toHaveCount(0);
-  await shot(page, "1-rail-sub-chats");
+  // 1. The rail: no sub-chats under anyone, a Lead included; one line each says what it has out.
+  await expect(rail(page).locator("[data-mono-children], [data-mono-child], [data-mono-children-toggle]")).toHaveCount(0);
+  const work = (id: string) => rail(page).locator(`[data-mono-work="${id}"]`);
+  await expect(work("vg-game-lead").locator("[data-mono-work-split]")).toHaveText("2 working · 1 stuck");
+  await expect(work("vg-game-lead")).toHaveAttribute("data-mono-work-kind", "stuck");
+  await expect(work("alfred").locator("[data-mono-work-split]")).toHaveText("2 working · 1 stuck");
+  await expect(work("alfred")).toHaveAttribute("data-mono-work-kind", "failed");
+  await expect(work("chief-of-staff").locator("[data-mono-work-split]")).toHaveText("1 working");
+  await expect(work("frank")).toHaveCount(0);
+  await expect(rail(page).locator('[data-mono-stuck-kind="failed"]')).toHaveCount(1);
+  await shot(page, "1-rail-people-not-work");
+  // Open team on hover: a Lead's coding team, Alfred's own; Chief of Staff has none (it only briefs).
+  await railRow(page, "Alfred").hover();
+  await expect(rail(page).locator('[data-mono-open-team="alfred"]')).toBeVisible();
+  await expect(rail(page).locator('[data-mono-open-team="alfred"]')).toHaveAttribute("aria-label", "Open Alfred's team");
+  await expect(rail(page).locator('[data-mono-open-team="chief-of-staff"]')).toHaveCount(0);
+  await expect(rail(page).locator('[data-mono-open-team="vg-game-lead"]')).toHaveAttribute("aria-label", "Open EXO coding team");
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: `${SHOTS}/1b-rail-open-team-on-hover.png` });
+  await page.mouse.move(900, 500);
 
   // 2. Chief of Staff's chat: one live line for its brief, never the Lead's workers.
   await railRow(page, "Chief of Staff").click();
@@ -166,20 +171,9 @@ test("Monos keep their sub-chats; a brief lives in its coding team; a Mono's own
   await expect(page.locator(`[data-sub-chat="app-${chats.lead}-t-3"]`)).toHaveAttribute("data-state", "stalled");
   await shot(page, "3-coding-team-from-the-brief");
 
-  // 4. The switch: Alfred's menu gives it its own team (a Lead's menu offers none).
-  await page.getByRole("button", { name: "Today" }).first().click();
-  await railRow(page, "EXO lead").click({ button: "right" });
-  await expect(page.locator("[data-mono-menu-give-team]")).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  await railRow(page, "Alfred").click({ button: "right" });
-  const give = page.locator("[data-mono-menu-give-team]");
-  await expect(give).toHaveText("Give Alfred its own team");
-  await expect(page.locator("[data-mono-menu-open-team], [data-mono-menu-sub-chats]")).toHaveCount(0);
-  await shot(page, "4-menu-give-alfred-its-own-team");
-
-  // 5. On: the team opens at once, Alfred pinned on top ("Owner"), its workers under it, the failed one open; the rail
-  // lists none of Alfred's sub-chats now, one line in their place.
-  await give.click();
+  // 4. Alfred's own team, from its row: Alfred pinned on top ("Owner"), its workers under it, the failed one open.
+  await railRow(page, "Alfred").hover();
+  await rail(page).locator('[data-mono-open-team="alfred"]').click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("monocode:hub-nav"))).toContain('"item":"team:alfred"');
   const owner = page.locator('[data-coding-team-lead][data-team-kind="mono"]');
   await expect(owner).toBeVisible({ timeout: 15_000 });
@@ -190,58 +184,34 @@ test("Monos keep their sub-chats; a brief lives in its coding team; a Mono's own
   const subs = page.locator(`[data-sub-chats="${chats.alfred}"] [data-sub-chat]`);
   await expect(subs).toHaveCount(3);
   await expect(page.locator(`[data-sub-chat="app-${chats.alfred}-a-3"]`)).toHaveAttribute("data-state", "failed");
-  // Chief of Staff's brief and the Lead's workers are EXO's, never in Alfred's team.
+  // Chief of Staff's brief and the Lead's workers are EXO's, never in Alfred's team or anyone else's.
   await expect(page.locator(`[data-sub-chat="app-${chats.lead}-t-1"]`)).toHaveCount(0);
+  // The Team button in Alfred's chat is pressed; the strip highlights no project, the rail marks Alfred.
   await expect(page.locator("[data-mono-view-team]:visible")).toHaveAttribute("aria-pressed", "true");
   await expect(railRow(page, "Alfred")).toHaveAttribute("aria-current", "true");
-  await expect(toggle("alfred")).toHaveCount(0);
-  const work = rail(page).locator('[data-mono-work="alfred"]');
-  await expect(work.locator("[data-mono-work-split]")).toHaveText("2 working · 1 stuck");
-  await expect(work).toHaveAttribute("data-mono-work-kind", "failed");
-  // Everyone else keeps their sub-chats.
-  await expect(nested("vg-game-lead")).toHaveCount(3);
   await page.mouse.move(900, 500);
-  await shot(page, "5-alfreds-team-on");
+  await shot(page, "4-alfreds-team");
 
-  // 6. One click on a worker opens it in the team; Alfred's row stays marked, the list stays.
+  // 5. One click on a worker opens it in the team; Alfred's row stays marked, the list stays.
   await page.locator(`[data-sub-chat="app-${chats.alfred}-a-1"]`).click();
   await expect.poll(() => monoViewShown(page)).toBe(false);
   await expect(owner).toBeVisible();
   await expect(page.locator("[data-delegated-chat]:visible").first()).toContainText("Open Alfred", { timeout: 10_000 });
   await expect(railRow(page, "Alfred")).toHaveAttribute("aria-current", "true");
-  await shot(page, "6-alfreds-worker-in-its-team");
+  await shot(page, "5-alfreds-worker-in-its-team");
 
-  // 7. From Today, the rail's Open team (on hover) and its line open the team; Team in Alfred's chat toggles it.
-  await page.getByRole("button", { name: "Today" }).first().click();
-  await railRow(page, "Alfred").hover();
-  const openTeam = rail(page).locator('[data-mono-open-team="alfred"]');
-  await expect(openTeam).toBeVisible();
-  await expect(openTeam).toHaveAttribute("aria-label", "Open Alfred's team");
-  await expect(rail(page).locator('[data-mono-open-team="vg-game-lead"], [data-mono-open-team="chief-of-staff"]')).toHaveCount(0);
-  fs.mkdirSync(SHOTS, { recursive: true });
-  await page.screenshot({ path: `${SHOTS}/7-rail-open-team-on-hover.png` });
-  await openTeam.click();
-  await expect(owner).toBeVisible({ timeout: 15_000 });
+  // 6. From Alfred's chat on its own, the Team button opens the team; pressed again, the chat stands alone.
   await page.getByRole("button", { name: "Today" }).first().click();
   await railRow(page, "Alfred").click();
   await expect.poll(() => monoViewShown(page)).toBe(true);
   const teamButton = page.locator("[data-mono-view-team]:visible");
   await expect(teamButton).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('[data-coding-team-lead][data-team-kind="mono"]')).toHaveCount(0);
+  await shot(page, "6-alfred-chat-team-button");
   await teamButton.click();
-  await expect(owner).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-coding-team-lead][data-team-kind="mono"]')).toBeVisible({ timeout: 15_000 });
   await expect(teamButton).toHaveAttribute("aria-pressed", "true");
-
-  // 8. Off again from the menu: Alfred's sub-chats are back under it in the rail, Ash lands on its chat, no Team button.
-  await railRow(page, "Alfred").click({ button: "right" });
-  await expect(page.locator("[data-mono-menu-open-team]")).toHaveText("Open Alfred's team");
-  const back = page.locator("[data-mono-menu-sub-chats]");
-  await expect(back).toHaveText("Use sub-chats instead");
-  await back.click();
-  await expect(owner).toHaveCount(0);
+  await teamButton.click();
+  await expect(page.locator('[data-coding-team-lead][data-team-kind="mono"]')).toHaveCount(0);
   await expect.poll(() => monoViewShown(page)).toBe(true);
-  await expect(page.locator("[data-mono-view-team]")).toHaveCount(0);
-  await expect(nested("alfred")).toHaveCount(3);
-  await expect(rail(page).locator("[data-mono-open-team], [data-mono-work]")).toHaveCount(0);
-  await page.mouse.move(900, 500);
-  await shot(page, "8-back-to-sub-chats");
 });

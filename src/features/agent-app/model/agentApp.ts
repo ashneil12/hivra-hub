@@ -220,10 +220,10 @@ export type AgentAppHost = {
     /** Files the sessions it starts into a folder named after it. */
     folder?: { name: string; color: string };
     /**
-     * The folder its own work runs in (hub/model/monoTeams.ts; its team's, when Ash gave it one), once it has one: its
-     * own workers run there, so it may start, read and steer sessions there as in its projects.
+     * Its own team's folder (hub/model/monoTeams.ts), once it has one: its own workers run there, so it may start, read
+     * and steer sessions there as in its projects.
      */
-    ownFolder?: string;
+    team?: string;
   } | undefined;
   /** A hidden run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
@@ -483,7 +483,7 @@ function requireProject(
       ? mono.projects.map((path) => `${projectName(path)} (${path})`).join(", ")
       : "none yet; the user adds them from your details panel";
   if (named) {
-    if (mono.ownFolder && pathKey(mono.ownFolder) === pathKey(named)) return mono.ownFolder;
+    if (mono.team && pathKey(mono.team) === pathKey(named)) return mono.team;
     const byPath = mono.projects.find(
       (path) => pathKey(path) === pathKey(named),
     );

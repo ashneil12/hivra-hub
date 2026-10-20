@@ -1,9 +1,8 @@
 // What the delegation tree looks like in the app (docs/PHASE-2-DESIGN.md H4; T3's agentSpawnSummary): the counted
 // line on a Lead's batch ("Delegated 3: 2 working, 1 failed"), a Lead's "Waiting on N", which Mono a worker's chat
-// belongs to, and the child chats the Monos sidebar nests under the Mono that started them (Ash, 19 Oct: delegated
-// work shows as child chats nested under the agent that started them), or counts on one line for a Mono whose own team
-// is on (hub/model/monoTeams.ts: they nest in its team's Sessions list instead). Being built never lists workers: it gets
-// counts only, from Ash OS's copy of the rows (HANDOFF Unit 7).
+// belongs to, and each Mono's child chats, which the Monos rail counts ("2 working · 1 stuck") but never lists: they
+// live in its team's Sessions list (Ash, 20 Oct: "monos shouldn't really have sub chats"; hub/model/monoTeams.ts).
+// Being built never lists workers: it gets counts only, from Ash OS's copy of the rows (HANDOFF Unit 7).
 import {
   isOpenDelegation,
   isOwed,
@@ -125,7 +124,7 @@ export function startedByMono<M extends { id: string; sessionId?: string }>(
   return best;
 }
 
-/** A child chat as the Monos sidebar nests it under its Mono (and a team's Sessions list under its chat). */
+/** A child chat: what the Monos rail counts for its Mono, and what a team's Sessions list nests under its chat. */
 export type ChildChat = {
   sessionId: string;
   ownerSession: string;
