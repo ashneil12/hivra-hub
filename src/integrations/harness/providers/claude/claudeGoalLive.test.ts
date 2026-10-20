@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../core/types";
 import type { SessionGoal } from "../../../../features/sessions/model/session";
@@ -335,6 +336,43 @@ describe("/goal through the live adapter", () => {
       expect(goals(next).filter((goal) => goal?.status === "met")).toEqual([]);
     });
   }
+
+  it("a brief whose conversation was gone still gets its /goal, behind the chat's brief", async () => {
+    // What Claude Code 2.1.302 answers `--resume` with for a conversation it has no transcript for.
+    const dead = JSON.parse(
+      readFileSync(new URL("./fixtures/claude-cli-2.1.302/no-conversation-found.ndjson", import.meta.url), "utf8").trim(),
+    ) as Record<string, unknown>;
+    bindClaudeSession("worker", dead.session_id as string, "/repo");
+    const initializes = () =>
+      parse().filter((m) => (m.request as { subtype?: string } | undefined)?.subtype === "initialize").length;
+    const events: HarnessEvent[] = [];
+    const turn = sendClaudeTurn({
+      sessionId: "worker",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      text: BRIEF,
+      attachments: [],
+      resumeFallback: (prompt) => `CHAT SO FAR\n\n${prompt}`,
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => initializes() === 1, "the first initialize");
+    emit(dead);
+    onExit!(1);
+    await waitFor(() => initializes() === 2, "a fresh process");
+    emit({ type: "control_response", response: { subtype: "success", request_id: "monocode_2" } });
+    await waitFor(() => prompts().length === 2, "the brief and its /goal");
+    expect(prompts()).toEqual([`CHAT SO FAR\n\n${BRIEF}`, `/goal ${GOAL}`]);
+    expect(events.filter((e) => e.type === "session.providerLost")).toHaveLength(1);
+    emit({ ...said("Read it."), session_id: "sess_2" });
+    emit({ ...result("Read it."), session_id: "sess_2" });
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_2" });
+    emit({ ...said("Done."), session_id: "sess_2" });
+    emit({ ...result("Done."), session_id: "sess_2" });
+    await turn;
+  });
 
   it("a turn waiting on a /goal that never starts is let go after the grace period", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

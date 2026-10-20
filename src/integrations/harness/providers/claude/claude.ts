@@ -382,6 +382,8 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
     throw error;
   }
   if (cancelledThreads.delete(input.sessionId)) return;
+  // Read before any wrapping below: a wrapped brief no longer starts as one, and its finish line would be lost.
+  const briefGoal = goalFromBrief(input.text);
   // The first turn of a fresh conversation after a dead one: the chat so far comes with it.
   if (briefOwed.delete(input.sessionId) && input.resumeFallback) {
     input = { ...input, text: input.resumeFallback(input.text) };
@@ -397,7 +399,7 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
       try {
         await compactIfIdle(live, input);
         if (live.cancelled) return;
-        await runTurn(live, input);
+        await runTurn(live, input, { briefGoal });
       } catch (error) {
         if (live.cancelled) return;
         throw error;
@@ -535,13 +537,14 @@ export function goalsAllowed(): boolean {
 }
 
 /**
- * The /goal this turn sets, if any: a MonoCode brief's "Done when: …", or the goal this chat had in a conversation it
- * no longer has (a rotation, a dead conversation started again, a restart that found its transcript gone). None when
- * this copy sends no /goal (goalsAllowed), or for /compact.
+ * The /goal this turn sets, if any: a MonoCode brief's "Done when: …" (read from the text as it was sent, before any
+ * recovery wrapping), or the goal this chat had in a conversation it no longer has (a rotation, a dead conversation
+ * started again, a restart that found its transcript gone). None when this copy sends no /goal (goalsAllowed), or for
+ * /compact.
  */
-function goalToSet(live: Live, input: SendTurnInput): string | undefined {
+function goalToSet(live: Live, input: SendTurnInput, briefGoal: string | undefined): string | undefined {
   if (live.manualCompaction || !goalsAllowed()) return undefined;
-  const fresh = goalFromBrief(input.text);
+  const fresh = briefGoal ?? goalFromBrief(input.text);
   if (fresh) return fresh;
   const carried = goalByThread.get(input.sessionId);
   return goalOpen(carried) && carried.providerSessionId !== live.claudeSessionId
@@ -981,7 +984,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 async function runTurn(
   live: Live,
   input: SendTurnInput,
-  options: { reportErrors?: boolean } = {},
+  options: {
+    reportErrors?: boolean;
+    /** The finish line of the brief this turn sends, read before the text was wrapped. */
+    briefGoal?: string;
+  } = {},
 ): Promise<void> {
   const effort = input.modelSettings?.effort;
   const message = buildClaudeUserMessage({
@@ -1020,7 +1027,7 @@ async function runTurn(
     await writeJson(input.sessionId, message);
     // A brief's finish line goes in right behind it, so Claude reads the brief first and then keeps going until
     // Claude Code's own evaluator says the condition holds; the turn ends when both are answered.
-    const goal = goalToSet(live, input);
+    const goal = goalToSet(live, input, options.briefGoal);
     if (goal) {
       live.promptsOwed += 1;
       await writeJson(input.sessionId, buildClaudeUserMessage({ text: goalCommand(goal) }));
