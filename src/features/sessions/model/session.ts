@@ -277,6 +277,21 @@ export type MonoSessionCompletion = {
 };
 
 /**
+ * A hidden app turn from a group room or from another Mono (hub rooms, docs/leadership/ROOM.md): the chat shows it as
+ * one quiet line ("Leadership team · Answered Ash", "From frank"), never as Ash's words.
+ */
+export type MonoNote = {
+  /** room: the room woke this Mono (its reply is a room post); message: another Mono's private message (mono_message). */
+  kind: "room" | "message";
+  /** The room's name, or the sending Mono's name. */
+  from: string;
+  /** The room id, or the sending Mono's id. */
+  ref?: string;
+  /** One line for the card: what the room asked, or the message's first line. */
+  line?: string;
+};
+
+/**
  * A `[MonoCode check]` turn: the checker's private note to the chat that owns one of Ash's messages
  * (hub/model/hubChecks.ts). The chat shows it as a quiet collapsed card, never as Ash's words.
  */
@@ -307,6 +322,8 @@ export type QueuedMessage = {
   appRequestId?: string;
   /** The sender asked for it to wait behind the current work: sent as its own turn once the chat is idle, never steered. */
   waitForIdle?: boolean;
+  /** A room's wake or another Mono's message: goes in hidden, as a quiet line, and never shows as a pending bubble. */
+  monoNote?: MonoNote;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
 };
@@ -438,6 +455,8 @@ export type Block = {
   monoSessionCompletion?: MonoSessionCompletion;
   /** Hidden app prompt that hands this chat a checker's note (an internal user turn). */
   monoCheck?: MonoCheck;
+  /** Hidden app prompt from a room or another Mono (an internal user turn), shown as a quiet line. */
+  monoNote?: MonoNote;
   /** Accepted session launches, kept on the originating user turn. */
   monoSpawnedSessions?: MonoSpawnedSession[];
   handoff?: HandoffMeta;

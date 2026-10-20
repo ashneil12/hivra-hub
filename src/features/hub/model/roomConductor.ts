@@ -296,7 +296,7 @@ export function roomIdle(chatId: string, convId?: string): Promise<void> {
 export function roomTurnOf(monoId: string): { chatId: string; convId: string } | undefined {
   for (const [chatId, r] of rooms) {
     const run = r.running.get(monoId);
-    if (run) return { chatId, convId: run.wake.convId };
+    if (run?.mode === "turn") return { chatId, convId: run.wake.convId };
   }
   return undefined;
 }

@@ -75,6 +75,7 @@ import {
 import type { MonoSpawnedSession } from "../model/session";
 import { DelegationBatchRow } from "../../monos/ui/DelegationBatchRow";
 import { CheckTurnCard } from "../../hub/ui/CheckTurnCard";
+import { RoomNoteCard } from "../../hub/ui/RoomNoteCard";
 import type { MessageDelivery } from "../../monos/model/monoMessaging";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
@@ -147,6 +148,7 @@ import {
   lastActivityIndex,
   isProseBlock,
   isMonoCheckPrompt,
+  isMonoNotePrompt,
   needsApproval,
   nestedScrollAbsorbsWheel,
   proseSummary,
@@ -1207,6 +1209,17 @@ function AgentTranscriptComponent({
           if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
             return (
               <CheckTurnCard
+                key={turn[0].id}
+                turn={turn}
+                live={!!busy && firstVisibleTurn + turnIndex === activeTurnIndex}
+                agentName={agentName}
+              />
+            );
+          // A room's turn, or another Mono's private message, and the answer: one quiet line (Ash, 19 Oct: what the AIs
+          // say between themselves stays out of his chat).
+          if (isMonoNotePrompt(turn[0]) && !turn.some(needsApproval))
+            return (
+              <RoomNoteCard
                 key={turn[0].id}
                 turn={turn}
                 live={!!busy && firstVisibleTurn + turnIndex === activeTurnIndex}

@@ -48,13 +48,38 @@ export function enqueueMonoMessage(
 }
 
 /**
- * A room (group chat) turn runs managed: its reply settles the room's wait. A message that waits in the outbox loses
- * that (`enqueueMonoMessage` keeps only what Ash would see), so the hidden room prompt would land in the Mono's chat as
- * a visible message and the room would wait out its timer. A Mono that is working, or has messages waiting (a queue Stop
- * paused included: the submit path queues behind them), refuses the room turn instead.
+ * A room (group chat) turn runs managed when the Mono is free: its reply is the room post. A Mono that is working, or
+ * has messages waiting (a queue Stop paused included), takes the room's turn as a wake in its queue instead
+ * (`queueRoomWake`): steered into its work, or sent behind it, and answered with room_post. Never refused.
  */
-export function monoRefusesRoomTurn(session: Session): boolean {
-  return !!session.busy || !!session.queuedMessages?.length;
+export function monoTakesRoomTurnNow(session: Session): boolean {
+  return !session.busy && !session.queuedMessages?.length && !session.pendingSwitch && !session.usageLimit;
+}
+
+/**
+ * A room's wake or another Mono's private message in a Mono's queue: hidden (no pending bubble), shown once it goes in
+ * as one quiet line. A wake may steer into the running work; a private message waits for an idle chat.
+ */
+export function queueMonoNote(
+  session: Session,
+  message: { id: string; text: string; note: NonNullable<QueuedMessage["monoNote"]>; waitForIdle?: boolean },
+): Session {
+  if (session.queuedMessages?.some((m) => m.id === message.id) || session.blocks.some((b) => b.appRequestId === message.id)) return session;
+  return {
+    ...session,
+    queuedMessages: [
+      ...(session.queuedMessages ?? []),
+      {
+        id: message.id,
+        text: message.text,
+        attachments: [],
+        appRequestId: message.id,
+        monoNote: message.note,
+        ...(message.waitForIdle ? { waitForIdle: true } : {}),
+      },
+    ],
+    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+  };
 }
 
 /** Acknowledgement updates the existing bubble instead of appending it again. */
@@ -99,7 +124,7 @@ export function monoMessageDeliveries(
 ): ReadonlyMap<string, MessageDelivery> {
   return new Map(
     (session.queuedMessages ?? [])
-      .filter((message) => !message.monoSessionCompletion)
+      .filter((message) => !message.monoSessionCompletion && !message.monoNote)
       .map((message) => [
         message.blockId ?? message.id,
         {
@@ -131,7 +156,7 @@ export function monoPendingTranscriptBlocks(
   blocks: Block[],
 ): Block[] {
   const messages = session.queuedMessages?.filter(
-    (message) => !message.monoSessionCompletion,
+    (message) => !message.monoSessionCompletion && !message.monoNote,
   );
   if (!messages?.length) return blocks;
   const byBlock = new Map(
