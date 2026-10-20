@@ -179,7 +179,7 @@ stub or the live proxy), once Ash OS has listed the projects, each gets its Lead
 Mono if missing: `vg-game-lead` "EXO lead", `hivra-lead`, `nibbii-lead`,
 `ash-lead` "Harness lead". Each is tied to its project's folder (so the Coding
 team's Monos rail shows it), gets a soul in Ash's words (orchestrator, his full
-words to workers, `sonnet` workers, `ash_recall` first, `ash_dump` verbatim,
+words to workers, `sonnet` workers, its memory loads by itself, `ash_dump` verbatim,
 verify, Looks right only when critical, its identity), is written to
 `<app data>/monos/<id>/SOUL.md` right away, and is registered in Ash OS as the
 project's Lead (`ash-hub-mono-project-add`, role lead). Never re-made, renamed or
@@ -190,7 +190,14 @@ registers nothing there): Ash's own `ash-os` entry (read in Rust,
 `hub_ash_os_mcp`, only that entry from `~/.claude.json`) with the chat's identity
 (`ASH_CHAT` always; `ASH_MONO_ID` / `ASH_ROLE` lead, mono or checker for a Mono's
 chat and its habit runs; `ASH_ROLE=worker` for a chat started through the app
-CLI), and for a Mono's own chat the delegate tool (`monocode mcp`, Phase 2 H3).
+CLI; `ASH_PROJECT` for a Lead's chat, its habit runs and every worker under it,
+however deep, so Ash OS lets them reach only that project's memory and `ash`;
+none for the leadership team, other Monos and plain chats), and for a Mono's own
+chat the delegate tool (`monocode mcp`, Phase 2 H3). A Lead's fresh conversation
+(a new or rotated session) and its workers' briefs start with the project's
+memory primer (`model/hubMemoryPrimer.ts`, `ash-hub-memory-primer`: its current
+never-do rules and decisions and Ash's global ones, bounded), in the prompt, so
+an engine with no ash-os tools gets it too.
 Checked with Claude Code 2.1.302 on 19 Oct: a `--mcp-config` entry replaces the
 user-scope server of the same name, `${VAR}` in its env and args is expanded from
 Claude Code's own environment (an unset one stays literal), and a stdio server

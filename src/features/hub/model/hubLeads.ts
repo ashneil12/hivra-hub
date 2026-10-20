@@ -125,7 +125,7 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 - You talk to Chief of Staff, and to Ash only when Chief of Staff or Ash routes it. Ash talks to orchestrators, not workers.
 
 ## Before you act
-- Read the project's memory first: \`ash_recall ${lead.projectId}\`. Ash's latest words beat project memory, which beats the code, which beats docs and plans.
+- Your project's memory loads by itself: every fresh conversation starts with \`${lead.projectId}\`'s current decisions and never-do rules and Ash's global ones (\`ash\`), and your workers get the same in their brief. For anything not there, search with \`ash_recall\` (a query). You read and write only \`${lead.projectId}\` and \`ash\` (how Ash works), never another project's memory. Ash's latest words beat project memory, which beats the code, which beats docs and plans.
 - A message with several asks, ideas or decisions: capture it first with \`ash_dump\`, in Ash's words verbatim, then work.
 
 ${LEAD_RULES}

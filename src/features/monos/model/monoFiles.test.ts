@@ -219,6 +219,19 @@ it("teaches the PR watch with the delegate tool: register, end the turn, act on 
     expect(taught).toContain(step);
 });
 
+it("starts a Lead's fresh conversation on its project's memory, handed with the soul and never again mid-session", () => {
+  const look = { name: "Hivra lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/hivra", name: "hivra" }] };
+  const projectMemory = "<project_memory>\n- Never delete a customer VM as a fix\n</project_memory>";
+  const fresh = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, projectMemory });
+  expect(fresh).toContain(projectMemory);
+  // before its own MEMORY.md block, after the rules
+  expect(fresh.indexOf(projectMemory)).toBeGreaterThan(fresh.indexOf("<delegate_rules>"));
+  expect(fresh.indexOf(projectMemory)).toBeLessThan(fresh.indexOf("<memory>"));
+  // a turn that only hands a changed MEMORY.md, or a chat with no project, carries none
+  expect(monoContext(look, files(), { soul: false, memory: true }, { projectMemory })).not.toContain("<project_memory>");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { projectMemory: " " })).not.toContain("<project_memory>");
+});
+
 it("seeds SOUL.md once, moving the old instructions into it", async () => {
   const { id } = createMono(["/code/app"]);
   updateMono(id, (mono) => ({ ...mono, instructions: "Ship on Fridays" }));

@@ -47,6 +47,7 @@ import {
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
+import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
 import {
@@ -8638,9 +8639,14 @@ function Workspace({
             agentPlan &&
             (agentPlan.soul || agentPlan.memory)
           ) {
+            // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
+            const projectMemory = agentPlan.soul
+              ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
+              : undefined;
             appContext.push(
               monoContext(agentLook, agentFiles, agentPlan, {
                 delegate: delegateTool,
+                ...(projectMemory ? { projectMemory } : {}),
                 // The leadership team briefs project Leads (double delegation).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {

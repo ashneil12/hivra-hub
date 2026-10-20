@@ -310,8 +310,8 @@ export function forgetAgentContext(sessionId: string): void {
   }
 }
 
-/** Bumped when the fixed rules below change, so live chats get them again. */
-export const MONO_PROMPT_VERSION = 24;
+/** Bumped when the fixed rules below change, so live chats get them again (25: a Lead's project memory primer). */
+export const MONO_PROMPT_VERSION = 25;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -358,12 +358,16 @@ export function leadBriefRules(leads: readonly string[]): string {
   return `<lead_brief_rules>\nYou are on the leadership team: you hand a project's work to its Lead, not to a worker of your own. Brief one with delegate_task and "lead" set to the project (the Leads you can brief: ${leads.join(", ")}): Ash's own words and the outcome in brief, what done looks like in goal, the ask ids in asks. The brief goes into the Lead's own long-running chat; if the Lead is mid-turn it waits behind that work (whenBusy "steer" puts it into the running turn instead, only when it can't wait). The Lead delegates to its workers; its final report comes back to you as one [MonoCode report] turn, and it also shows in that project's Leadership room with your answer, so answer it as you would Ash there. task_status and task_cancel work on these like any task.\n</lead_brief_rules>`;
 }
 
-/** The blocks this turn adds to the user's message. `delegate`: this chat has the delegate tool. */
+/**
+ * The blocks this turn adds to the user's message. `delegate`: this chat has the delegate tool. `projectMemory`: a
+ * project Lead's memory primer (hub/model/hubMemoryPrimer.ts: its project's current memory and Ash's global one), handed
+ * with the soul, so a fresh conversation (a new or rotated session) starts on what holds now.
+ */
 export function monoContext(
   look: MonoLook,
   files: MonoFiles,
   plan: AgentContextPlan,
-  options: { delegate?: boolean; leads?: readonly string[] } = {},
+  options: { delegate?: boolean; leads?: readonly string[]; projectMemory?: string } = {},
 ): string {
   const parts: string[] = [];
   if (plan.soul) {
@@ -396,6 +400,7 @@ export function monoContext(
     // A chat that owns Ash's asks also hears from the checker, and answers it (hub/model/checkerRules.ts).
     if (options.delegate) parts.push(DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES);
     if (options.delegate && options.leads?.length) parts.push(leadBriefRules(options.leads));
+    if (options.projectMemory?.trim()) parts.push(options.projectMemory.trim());
   }
   return withMemory(parts, files, plan);
 }
