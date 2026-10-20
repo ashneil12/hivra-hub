@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   modelsForClaudeVersion,
@@ -11,6 +12,7 @@ import {
   buildClaudeUserMessage,
   contextFromResult,
   contextUsedFromAssistant,
+  deadConversationFromResult,
   extractExitPlanModePlan,
   isClaudeInitMessage,
   isSubagentMessage,
@@ -1078,5 +1080,44 @@ describe("isReplayedTaskNotificationResult", () => {
     expect(
       isReplayedTaskNotificationResult({ type: "result", num_turns: 0 }),
     ).toBe(false);
+  });
+});
+
+describe("deadConversationFromResult", () => {
+  // Claude Code 2.1.302's own lines (fixtures/claude-cli-2.1.302).
+  const recorded = (name: string) =>
+    readFileSync(new URL(`./fixtures/claude-cli-2.1.302/${name}`, import.meta.url), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((rec) => !("probe" in rec));
+
+  it("reads the recorded refusal of `--resume <unknown id>`", () => {
+    const [dead] = recorded("no-conversation-found.ndjson");
+    expect(deadConversationFromResult(dead)).toBe(
+      "No conversation found with session ID: 3f0d2c1a-0000-4000-8000-00000000dead",
+    );
+  });
+
+  it("never reads a live conversation's zero-turn success, whatever its text repeats", () => {
+    // `/goal` with no argument answers with a zero-turn success that repeats the goal; so does `/goal clear`.
+    const status = recorded("goal-block-cap-status.ndjson").filter((rec) => rec.type === "result").at(-1)!;
+    expect(status).toMatchObject({ subtype: "success", is_error: false, num_turns: 0 });
+    const goal = "the log says no conversation found";
+    const said = (status.result as string).replace("some condition that stays unmet", goal);
+    expect(said).toContain("no conversation found");
+    expect(deadConversationFromResult({ ...status, result: said })).toBeNull();
+    expect(deadConversationFromResult({ ...status, result: `Goal cleared: ${goal}` })).toBeNull();
+  });
+
+  it("reads only `errors`, and only on an error result", () => {
+    const [dead] = recorded("no-conversation-found.ndjson");
+    // The same words in `result` of an error result are Claude's own text, not the CLI's refusal.
+    expect(
+      deadConversationFromResult({ ...dead, errors: [], result: "No conversation found with session ID: x" }),
+    ).toBeNull();
+    // An error flagged success is not the refusal either.
+    expect(deadConversationFromResult({ ...dead, is_error: false })).toBeNull();
+    expect(deadConversationFromResult({ ...dead, subtype: "success" })).toBeNull();
   });
 });
