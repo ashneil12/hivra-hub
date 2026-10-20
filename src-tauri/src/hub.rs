@@ -893,8 +893,7 @@ mod tests {
             Some(temporary.clone()),
             Some(home.clone()),
         )
-        .err()
-        .expect("the real home's key is refused");
+        .expect_err("the real home's key is refused");
         assert_eq!(error.kind, "refused");
         let stub = Endpoint::resolve(
             false,
