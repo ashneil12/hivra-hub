@@ -309,3 +309,45 @@ async function notifyProjectSession(
     return false;
   }
 }
+
+/**
+ * A stuck worker's banner (stuckNotifications.ts): its project's "Agent approvals and questions" rule, the same OS
+ * policy as any other request, and a click opens the worker's chat. Without a banner the in-app cue plays.
+ */
+export async function announceStuckWorker(notice: {
+  sessionId: string;
+  cwd: string;
+  title: string;
+  subtitle: string;
+  body: string;
+}): Promise<void> {
+  const project = knownNotificationProject(notice.cwd);
+  if (!project) return;
+  const subject: NotificationSubject = {
+    projectId: project.id,
+    category: "agentInput",
+    occurredAt: Date.now(),
+  };
+  if (!allowsProjectNotification(subject)) return;
+  const decision = shouldNotify({
+    enabled: loadNotificationsEnabled(),
+    permission,
+    windowFocused,
+    sessionVisible: false,
+  });
+  if (decision) {
+    try {
+      await invoke("show_notification", {
+        sessionId: notice.sessionId,
+        title: notice.title,
+        subtitle: notice.subtitle,
+        body: notice.body,
+        sound: loadSoundsEnabled(),
+      });
+      return;
+    } catch {
+      /* the cue below */
+    }
+  }
+  playCue("inputRequested", subject);
+}
