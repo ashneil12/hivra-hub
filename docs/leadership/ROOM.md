@@ -27,9 +27,9 @@ they happen in the grok bot transcripts ... where i can talk and the agents can 
 - The host closes a stretch where three or more seats spoke with a short digest.
 - Ash's new message turns the room at once. Stop and Keep going are his.
 - Agents can chat while working: a busy Mono answers from its own chat. Workers never speak in the room.
-- Delegated work lives in a team, never under the Mono in the Monos list (Ash, 20 Oct): a project's work in that project's
-  coding team (a brief to its Lead, whose workers nest under it there), a Mono's own work in its own team (its chat pinned
-  on top, its workers under it). It comes back into the room it was started from ("X is back").
+- Delegated work appears as child chats nested under the Mono that started it, and comes back into the room it was started
+  from ("X is back"). A project's work goes to that project's coding team (a brief to its Lead, whose workers nest under
+  the Lead); a Mono Ash gave its own team keeps its own work there instead (Ash, 20 Oct: "team can be optional").
 
 ## 3. Who answered when, as observed (**[O]**)
 Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Critiquito 28, Ash 26, Alfred 7).
@@ -81,7 +81,7 @@ Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Cri
 - When Ash writes, his new message comes first: drop what you were about to say and take it up.
 - The host closes a stretch where three or more seats spoke with a short digest: what is locked ("Locked: ..."), who does what next, what Ash must decide. A round is locked only when every reviewer has passed.
 - Ask Ash only what is truly his call (his own open decision, money, something that can't be undone), once, with your pick; never while the team can still settle it or a review round is open. If he hasn't answered, never ask it again. A question to him doesn't hold up the rest: work that doesn't depend on his answer goes ahead.
-- Work started from the room goes to a team, never a sub-chat of yours: a project's work to that project's coding team (a brief to its Lead), your own work to your own team, a small fix you do yourself. It comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.
+- Work started from the room: a small fix you do yourself, a project's work goes to that project's coding team (a brief to its Lead), your own work to your own workers (your sub-chats, or your team if you have one). It comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.
 ```
 
 ## 8. How the hub runs the room (20 Oct; code: src/features/hub/model/roomConductor.ts, roomTurns.ts)

@@ -61,6 +61,7 @@ import {
   isMonoWorkFolder,
   monoTeam,
   monoTeamName,
+  monoTeamOn,
   monoWorkFolder,
   nameMonoTeam,
   teamFor,
@@ -8866,14 +8867,16 @@ function Workspace({
             : undefined;
           // Who it is counts as part of its soul: a rename or a change to its
           // projects is handed over too, and so is a change to the fixed rules.
-          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again.
+          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again, and so
+          // does Ash giving the Mono its own team or taking it back (monoTeams.ts: where its own work shows changes).
           const delegateTool = mono && hasDelegateTool(sessionId, current.harness);
+          const ownTeamOn = !!monoRecord && codingTeamsOn() && monoTeamOn(monoRecord.id);
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}${ownTeamOn ? ":team" : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -8910,11 +8913,11 @@ function Workspace({
                 // A project's Lead is an orchestrator Ash talks to: it talks back like a colleague (TALK_RULES).
                 talk: !!leadFor(monoRecord!.id),
                 ...(projectMemory ? { projectMemory } : {}),
-                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work in its own
-                // team (monoTeams.ts): no sub-chats of its own.
+                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work as its
+                // sub-chats, or in its own team when Ash gave it one (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
-                      teams: true,
+                      work: ownTeamOn ? { team: monoTeamName(agentLook.name) } : {},
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
                         (target) => `${target.leadName} (lead "${target.projectId}")`,
                       ),

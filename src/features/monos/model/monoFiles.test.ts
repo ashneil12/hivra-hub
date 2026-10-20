@@ -17,7 +17,7 @@ import {
   monoContext,
   monoTurn,
   recordAgentContext,
-  MONO_TEAM_RULES,
+  monoWorkRules,
   resetMonoDefaults,
   TALK_RULES,
 } from "./monoFiles";
@@ -258,31 +258,42 @@ it("teaches a Mono to brief Leads (lead_brief_rules), only with the delegate too
   expect(monoContext(look, files(), { soul: true, memory: true }, { leads })).not.toContain("<lead_brief_rules>");
 });
 
-// Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
-// with the coding team. IF they do need to do work ... something like coding team should be created for that mono".
-it("teaches a Mono that isn't a Lead where its work goes (team_rules): itself, a coding team, or its own team", () => {
+// Ash, 20 Oct: a project's work "should either do it itself or pick it up with the coding team"; and "the mono sub chat
+// setup is good too ... so team can be optional".
+it("teaches a Mono that isn't a Lead where its work goes (team_rules): itself, a coding team, its sub-chats or its team", () => {
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
-  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['EXO lead (lead "vg-game")'] });
-  expect(taught).toContain(MONO_TEAM_RULES);
+  const leads = ['EXO lead (lead "vg-game")'];
+  // No team of its own (the default): its own work is its sub-chats, nested under it in the Monos list.
+  const subChats = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, work: {}, leads });
+  expect(subChats).toContain(monoWorkRules());
   for (const rule of [
-    "You keep no sub-chats of your own",
     "A small fix or a quick look: do it yourself, here in your chat",
     "Never start a worker for something you can finish in a few minutes",
     "pick it up with that project's coding team by briefing its Lead",
     "Never start a worker in a project's folder yourself, with delegate_task or app sessions.start",
     "Real work of your own, outside any project",
     "delegate_task with no project",
-    "Your workers run in your own team, made the first time you delegate there",
-    "Sessions list shows your chat on top and their chats under it",
+    "Your workers run in a folder of your own and show as your sub-chats, nested under you in Ash's Monos list",
+  ])
+    expect(monoWorkRules()).toContain(rule);
+  expect(monoWorkRules()).not.toContain("Team button");
+  // With its own team (Ash gave it one): the same, but its workers show in that team.
+  const team = monoWorkRules("Alfred's team");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true, work: { team: "Alfred's team" }, leads })).toContain(team);
+  for (const rule of [
+    "pick it up with that project's coding team by briefing its Lead",
+    "You have your own team, Alfred's team",
+    "its Sessions list shows your chat on top with their chats under it",
     "the Team button in your chat",
   ])
-    expect(MONO_TEAM_RULES).toContain(rule);
-  expect(MONO_TEAM_RULES).not.toMatch(/\u2014/);
-  // Only with the delegate tool; a Lead (teams unset) works in its coding team instead.
-  expect(monoContext(look, files(), { soul: true, memory: true }, { teams: true })).not.toContain("<team_rules>");
+    expect(team).toContain(rule);
+  expect(team).not.toContain("nested under you in Ash's Monos list");
+  for (const text of [monoWorkRules(), team]) expect(text).not.toMatch(/\u2014/);
+  // Only with the delegate tool; a Lead (no work option) works in its coding team instead.
+  expect(monoContext(look, files(), { soul: true, memory: true }, { work: {} })).not.toContain("<team_rules>");
   expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true })).not.toContain("<team_rules>");
-  // A worker's chat shows in the team's Sessions list, never in the Monos list.
-  expect(DELEGATE_RULES).toContain("its worker's chat shows nested under yours in the team's Sessions list");
+  // A worker's chat shows nested under the chat that started it, wherever that is.
+  expect(DELEGATE_RULES).toContain("its worker's chat shows nested under yours, and its report reaches you");
 });
 
 it("teaches the PR watch with the delegate tool: register, end the turn, act on the wake, close with evidence", () => {
