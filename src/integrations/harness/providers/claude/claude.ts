@@ -581,19 +581,10 @@ function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): 
   if (next && !live.goal && carried && carried.objective === next.objective && next.checks === 0)
     next = { ...next, checks: carried.checks, setAt: carried.setAt, ...(carried.lastCheck ? { lastCheck: carried.lastCheck } : {}) };
   if (next) next = { ...next, providerSessionId: live.claudeSessionId };
-  if (goalOpen(next) && next.checks >= GOAL_CHECK_CAP && !next.clearing) {
-    next = { ...next, clearing: true, status: "stopped" };
-    if (live.activeTurn) live.promptsOwed += 1;
-    void writeJson(sessionId, buildClaudeUserMessage({ text: GOAL_CLEAR })).catch(() => undefined);
-  }
-  live.goal = next;
-  if (goalOpen(next)) goalByThread.set(sessionId, next);
-  else {
-    goalByThread.delete(sessionId);
-    if (next) goalEnded.set(sessionId, goalKey(next));
-  }
-  const view = goalView(next);
-  if (JSON.stringify(view) !== JSON.stringify(before)) live.onEvent({ type: "goal.updated", goal: view });
+  const capped = goalOpen(next) && next.checks >= GOAL_CHECK_CAP && !next.clearing;
+  if (capped) next = { ...next!, clearing: true };
+  setGoal(sessionId, live, next, before);
+  if (capped) clearCappedGoal(sessionId, live, next!);
   if (stringField(rec, "type") !== "assistant") return false;
   if ((rec.message as { model?: unknown } | undefined)?.model !== "<synthetic>") return false;
   const said = assistantTextBlocks(rec).join("").trim();
@@ -609,6 +600,49 @@ function dropPendingGoalCheck(sessionId: string, live: Live): void {
   if (live.goal?.pendingCheck) live.goal = { ...live.goal, pendingCheck: false };
   const carried = goalByThread.get(sessionId);
   if (carried?.pendingCheck) goalByThread.set(sessionId, { ...carried, pendingCheck: false });
+}
+
+/** Keep the chat's goal and tell the chat when what it shows changed. */
+function setGoal(sessionId: string, live: Live, next: GoalTrack | null, before = goalView(live.goal)): void {
+  live.goal = next;
+  if (goalOpen(next)) goalByThread.set(sessionId, next);
+  else {
+    goalByThread.delete(sessionId);
+    if (next) goalEnded.set(sessionId, goalKey(next));
+  }
+  const view = goalView(next);
+  if (JSON.stringify(view) !== JSON.stringify(before)) live.onEvent({ type: "goal.updated", goal: view });
+}
+
+/**
+ * Past GOAL_CHECK_CAP checks MonoCode clears the goal itself. It reads stopped once `/goal clear` has gone in, and the
+ * turn waits for that prompt's answer too; a clear that can't be written leaves the goal open (the next check tries
+ * again), owes nothing, and says so.
+ */
+function clearCappedGoal(sessionId: string, live: Live, goal: GoalTrack): void {
+  const owed = live.activeTurn;
+  if (owed) live.promptsOwed += 1;
+  const same = (current: GoalTrack | null): current is GoalTrack =>
+    !!current && goalKey(current) === goalKey(goal);
+  writeJson(sessionId, buildClaudeUserMessage({ text: GOAL_CLEAR })).then(
+    () => {
+      if (same(live.goal) && goalOpen(live.goal)) setGoal(sessionId, live, { ...live.goal, status: "stopped" });
+    },
+    (error: unknown) => {
+      if (owed) live.promptsOwed = Math.max(0, live.promptsOwed - 1);
+      if (same(live.goal) && live.goal.clearing) {
+        const { clearing: _clearing, ...open } = live.goal;
+        setGoal(sessionId, live, open);
+      }
+      if (live.muteUpdates) return;
+      live.onEvent({
+        type: "notice",
+        key: "claude-goal-clear",
+        level: "warning",
+        text: `Could not clear the goal after ${GOAL_CHECK_CAP} checks (${error instanceof Error ? error.message : String(error)}); Claude Code still holds it.`,
+      });
+    },
+  );
 }
 
 /** A result for a background wake Claude ran by itself (a task finished), not for a prompt MonoCode wrote. */

@@ -228,6 +228,77 @@ describe("/goal through the live adapter", () => {
     expect(goals(turn).at(-1)).toMatchObject({ status: "stopped" });
   });
 
+  it(`at the cap the goal reads stopped only once \`/goal clear\` has gone in`, async () => {
+    const { writeChild } = await import("../../core/child");
+    let deliver!: () => void;
+    const turn = await start(BRIEF);
+    // The next write is MonoCode's `/goal clear`; it goes in only when `deliver` says so.
+    vi.mocked(writeChild).mockImplementationOnce(
+      (_id: string, line: string) =>
+        new Promise<void>((resolve) => {
+          sent.push(line);
+          deliver = resolve;
+        }),
+    );
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    for (let i = 0; i < GOAL_CHECK_CAP; i++) {
+      emit(said(`try ${i}`));
+      emit(feedback(`still failing ${i}`));
+    }
+    await tick();
+    expect(prompts().at(-1)).toBe("/goal clear");
+    expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+    deliver();
+    await tick();
+    expect(goals(turn).at(-1)).toMatchObject({ status: "stopped", checks: GOAL_CHECK_CAP });
+    emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 21 consecutive times — overriding and ending turn." });
+    emit(result("", { num_turns: 22 }));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal cleared: ${GOAL}`));
+    emit(result(`Goal cleared: ${GOAL}`, { num_turns: 0 }));
+    await turn.done;
+    expect(goals(turn).filter((goal) => goal?.status === "stopped")).toHaveLength(1);
+  });
+
+  it("at the cap, a `/goal clear` that can't be written says so, keeps the goal open and owes nothing for it", async () => {
+    const { writeChild } = await import("../../core/child");
+    const original = vi.mocked(writeChild).getMockImplementation()!;
+    // Every `/goal clear` fails to go in (each later goal line tries again); everything else is written.
+    vi.mocked(writeChild).mockImplementation(async (id: string, line: string) => {
+      if (line.includes("/goal clear")) throw new Error("broken pipe");
+      return original(id, line);
+    });
+    try {
+      const turn = await start(BRIEF);
+      emit(said("Started."));
+      emit(result("Started."));
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(synthetic(`Goal set: ${GOAL}`));
+      for (let i = 0; i < GOAL_CHECK_CAP; i++) {
+        emit(said(`try ${i}`));
+        emit(feedback(`still failing ${i}`));
+      }
+      await tick();
+      expect(turn.events).toContainEqual(
+        expect.objectContaining({ type: "notice", level: "warning", text: expect.stringContaining("broken pipe") }),
+      );
+      expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+      // The CLI's own per-turn cap ends the goal's turn; with no clear owed, the MonoCode turn ends with it.
+      emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 21 consecutive times — overriding and ending turn." });
+      await tick();
+      emit(result("", { num_turns: 22 }));
+      await tick();
+      expect(turn.outcome).toBe("completed");
+      expect(goals(turn).at(-1)).toMatchObject({ status: "paused", checks: GOAL_CHECK_CAP });
+      expect(goals(turn).some((goal) => goal?.status === "stopped")).toBe(false);
+    } finally {
+      vi.mocked(writeChild).mockImplementation(original);
+    }
+  });
+
   it("a fresh conversation gets the open goal again with its next turn; a resumed one keeps it", async () => {
     const first = await start(BRIEF);
     emit(said("Started."));
