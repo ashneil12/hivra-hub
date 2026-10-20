@@ -31,6 +31,8 @@ export type StopTreeHost = {
   dropReport(owner: string, childSession: string): void;
   /** How long one Stop may take before it counts as failed (tests shorten it). */
   stopTimeoutMs?: number;
+  /** Take a followed brief (followedBriefs.ts) back out of its chat's queue if it still waits there. */
+  unqueue?(childSession: string, requestId: string): void;
 };
 
 export type StopTreeOptions = {
@@ -114,7 +116,10 @@ class Walk {
       if (changed.some((entry) => entry.id === row.id))
         this.result.cancelled.push(row.id);
     }
-    if (open) await this.stopChat(row.childSession);
+    // A followed brief went to a chat with work of its own (a Lead's long-running chat, a busy session): it leaves
+    // that chat's queue if it still waits there, and the chat is never stopped for it; the walk goes on beneath it.
+    if (row.follow) this.host.unqueue?.(row.childSession, row.requestId);
+    else if (open) await this.stopChat(row.childSession);
     // After the Stop too: a settle that raced it may have queued the report.
     if (owed) this.host.dropReport(row.ownerSession, row.childSession);
     for (const child of this.sorted((entry) => entry.parentId === row.id))

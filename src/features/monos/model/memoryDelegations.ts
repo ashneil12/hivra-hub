@@ -55,7 +55,7 @@ export class MemoryDelegations implements DelegationsBackend {
     const parents = [...this.rows.values()].filter(
       (row) => row.childSession === input.ownerSession && isOpenDelegation(row),
     );
-    const parent = parents[parents.length - 1];
+    const parent = parents.find((row) => row.id === input.parentId) ?? parents[parents.length - 1];
     const id = `t-${++this.seq}`;
     const row: Delegation = {
       id,
@@ -88,6 +88,7 @@ export class MemoryDelegations implements DelegationsBackend {
       version: 1,
       mirroredVersion: 0,
       mirrorError: null,
+      ...(input.follow ? { follow: input.follow } : {}),
     };
     this.rows.set(id, row);
     return this.copy(row);

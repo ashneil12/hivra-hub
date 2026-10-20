@@ -70,6 +70,24 @@ function host(
 const stops = (events: string[]) =>
   events.filter((e) => e.startsWith("stop:")).map((e) => e.slice(5));
 
+describe("a Lead briefed by the leadership team (a followed brief)", () => {
+  it("Stop on Chief of Staff takes a queued brief out of the Lead's queue and never stops the Lead's own chat; its workers stop", async () => {
+    const store = new MemoryDelegations();
+    const brief = await store.record({ ownerSession: "cos", requestId: "app-cos-b1", childSession: "lead", follow: "lead" });
+    const waiting = await store.record({ ownerSession: "cos", requestId: "app-cos-b2", childSession: "lead", follow: "lead" });
+    const w1 = await store.record({ ownerSession: "lead", requestId: "w1", childSession: "w1", parentId: brief.id });
+    expect(w1.parentId).toBe(brief.id);
+    const { api, events } = host(store, ["cos", "lead", "w1"]);
+    const unqueued: string[] = [];
+    api.unqueue = (child, request) => void unqueued.push(`${child}/${request}`);
+    const result = await stopTree("cos", api, { reason: "Stopped by Ash.", by: "user" });
+    expect(stops(events)).toEqual(["cos", "w1"]);
+    expect(unqueued).toEqual(["lead/app-cos-b1", "lead/app-cos-b2"]);
+    // Depth first: the first brief, the worker beneath it, then the brief still waiting.
+    expect(result.cancelled).toEqual([brief.id, w1.id, waiting.id]);
+  });
+});
+
 describe("stopTree", () => {
   let t: Awaited<ReturnType<typeof tree>>;
   beforeEach(async () => {

@@ -30,6 +30,7 @@ import {
   type DelegationTracker,
 } from "../model/delegations";
 import { delegationOf } from "../model/delegationView";
+import { briefWaiting, withoutQueuedBrief } from "../model/followedBriefs";
 import { isMonoSession, monoForSession } from "../model/mono";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -138,6 +139,17 @@ export function useDelegationTree(options: {
         ?.busy,
     stop: async (id) => {
       await latest.current.stopSession(id);
+    },
+    unqueue: (childSession, requestId) => {
+      flushSync(() =>
+        latest.current.setSessions((previous) =>
+          previous.map((session) => {
+            if (session.id !== childSession) return session;
+            const waiting = briefWaiting({ requestId }, session);
+            return waiting ? withoutQueuedBrief(session, waiting) : session;
+          }),
+        ),
+      );
     },
     // The owner doesn't need this child's report or question any more: out of the batch cache and its queue.
     dropReport: (owner, child) => {

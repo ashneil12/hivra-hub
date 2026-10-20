@@ -61,6 +61,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     },
     nextChange: deps.nextChange ?? nextDelegationChange,
     cancel: async (owner, row, reason) => {
+      // The cascade (H4) takes a followed brief out of its chat's queue and never stops that chat for it.
       if (deps.stopTask) {
         const result = await deps.stopTask(row, reason, `owner:${owner}`);
         return {
