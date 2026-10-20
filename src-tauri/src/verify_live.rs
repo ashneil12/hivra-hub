@@ -48,6 +48,10 @@ pub struct Plan {
     /// it then). Only with `claudeBinary`, so only ever to the fake Claude, which keeps a goal the way 2.1.302 does.
     #[serde(default)]
     pub goals: bool,
+    /// How long a worker may be silent before the window marks it stalled (monos/model/workerStall.ts), so the bench
+    /// sees a stall in seconds instead of minutes. 1 s to 10 min.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kickoff: Option<Kickoff>,
 }
@@ -81,6 +85,12 @@ pub fn parse(text: &str) -> Result<Plan, String> {
         return Err(
             "verify plan: goals needs claudeBinary (only the fake Claude gets /goal)".into(),
         );
+    }
+    if plan
+        .stall_ms
+        .is_some_and(|ms| !(1_000..=600_000).contains(&ms))
+    {
+        return Err("verify plan: stallMs must be 1000-600000".into());
     }
     if let Some(kickoff) = &plan.kickoff {
         if !Path::new(&kickoff.project).is_absolute() || !Path::new(&kickoff.project).is_dir() {
@@ -155,6 +165,9 @@ pub fn window_info(plan: &Plan) -> Value {
     if plan.goals {
         info["goals"] = Value::Bool(true);
     }
+    if let Some(ms) = plan.stall_ms {
+        info["stallMs"] = Value::from(ms);
+    }
     info
 }
 
@@ -199,6 +212,9 @@ mod tests {
                 .unwrap();
         assert!(goals.goals);
         assert_eq!(window_info(&goals)["goals"], true);
+        assert!(window_info(&plan).get("stallMs").is_none());
+        let stall = parse(r#"{"version":1,"runId":"a","stallMs":10000}"#).unwrap();
+        assert_eq!(window_info(&stall)["stallMs"], 10_000);
         assert_eq!(plan.kickoff.as_ref().unwrap().mono_name, "Verify Lead");
         assert_eq!(window_info(&plan)["runId"], "20261019-a1");
         assert_eq!(plan.kickoff.as_ref().unwrap().mono_id, None);
@@ -241,6 +257,7 @@ mod tests {
                 "monoId",
             ),
             (r#"{"version":1,"runId":"a","goals":true}"#.to_string(), "goals"),
+            (r#"{"version":1,"runId":"a","stallMs":5}"#.to_string(), "stallMs"),
             (r#"{"version":1,"runId":"a","extra":1}"#.to_string(), "unknown field"),
         ];
         for (text, expected) in cases {

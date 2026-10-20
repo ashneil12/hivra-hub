@@ -120,7 +120,10 @@ test("double delegation: each prompt reaches its role, and the wakes only as the
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${QUEUED} run r1`])
     assert.equal(rules.find((rule) => rule.name === pick(prompt))?.name.startsWith("tree") ?? false, false, prompt);
   const at = WALK.indexOf("question_routed");
-  assert.deepEqual(WALK.slice(at, at + 2), ["question_routed", "cascade_stop"]);
+  assert.deepEqual(WALK.slice(at, at + 3), ["question_routed", "worker_stalled", "cascade_stop"]);
+  // The helper goes silent mid-turn (a gate that never opens): the stall the walk waits for.
+  const silent = rules.find((rule) => rule.name === "tree-helper");
+  assert.deepEqual(silent.steps.at(-1), { waitFile: "never" });
 });
 
 test("restart durability: goal workers, the Lead's waiting briefs and the recovered worker each reach their own rule", () => {

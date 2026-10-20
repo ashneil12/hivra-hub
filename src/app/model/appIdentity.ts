@@ -38,6 +38,8 @@ export type VerifyPlan = {
   kickoff?: { project: string; monoName: string; prompt: string; monoId?: string };
   /** The bench's fake Claude takes /goal (a dev copy otherwise never sends it: claude.ts goalsAllowed). */
   goals?: boolean;
+  /** How long a worker may be silent before it is marked stalled (the bench's seconds, not minutes). */
+  stallMs?: number;
 };
 
 export type AppIdentity = {
@@ -58,6 +60,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
   return {
     runId: value.runId,
     ...(value.goals === true ? { goals: true } : {}),
+    ...(typeof value.stallMs === "number" && value.stallMs >= 1_000 && value.stallMs <= 600_000 ? { stallMs: value.stallMs } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

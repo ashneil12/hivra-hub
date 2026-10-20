@@ -7,6 +7,7 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Session } from "../../sessions/model/session";
 import { isOpenDelegation, type DelegationTracker } from "../model/delegations";
 import { StallWatch } from "../model/workerStall";
+import { appIdentity } from "../../../app/model/appIdentity";
 import { useStuckNotifications } from "../../notifications/hooks/useStuckNotifications";
 
 export const STALL_LOOK_MS = 30_000;
@@ -48,7 +49,10 @@ export function useStallWatch(options: {
 
   useEffect(() => {
     if (!main.current) return;
-    const timer = setInterval(() => watch.current!.tick(), STALL_LOOK_MS);
+    // The fake-Claude bench stalls in seconds: it looks twice per stall time.
+    const bench = appIdentity()?.verify?.stallMs;
+    const every = bench ? Math.max(1_000, Math.min(STALL_LOOK_MS, bench / 2)) : STALL_LOOK_MS;
+    const timer = setInterval(() => watch.current!.tick(), every);
     return () => clearInterval(timer);
   }, []);
 }

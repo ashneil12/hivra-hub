@@ -16,9 +16,10 @@
 //   7. the Lead's worker asks a question (AskUserQuestion): it reaches the Lead as a [MonoCode question] turn, not
 //      Chief of Staff and not Ash's Waiting on you; the Lead answers with task_answer and the worker's turn carries on
 //      with that answer;
-//   8. the Lead delegates another worker for the same brief, and Chief of Staff cancels its brief (task_cancel): the
-//      worker beneath the Lead is stopped, both rows end cancelled with their reports dropped, and the Lead's own
-//      long-running chat is not stopped for it.
+//   8. the Lead delegates another worker for the same brief, which goes silent mid-turn: the window marks its row
+//      stalled (quiet) within seconds (the plan's stallMs), and Chief of Staff cancels its brief (task_cancel): the
+//      worker beneath the Lead is stopped, both rows end cancelled with their reports dropped (the stall with them), and
+//      the Lead's own long-running chat is not stopped for it.
 //   Then restarts, on a third plan whose fake Claude takes /goal (verify_live.rs `goals`): Chief of Staff starts two
 //   workers with a finish line (delegate_task `goal`), briefs the Verify lead, queues two more briefs behind the Lead's
 //   work and one behind worker A's, and cancels one of the Lead's waiting briefs; the app is killed with all of them
@@ -67,6 +68,7 @@ export const WALK = [
   "dead_session_recovered",
   "crash_loop_capped",
   "question_routed",
+  "worker_stalled",
   "cascade_stop",
   "goal_survives_restart",
   "queued_brief_after_restart",
@@ -1065,6 +1067,8 @@ async function main() {
     const treePlan = {
       ...plan,
       runId: `${id}-tree`,
+      // A worker silent this long is stalled (workerStall.ts): seconds here, minutes in the app.
+      stallMs: 10_000,
       kickoff: {
         project,
         monoName: "Chief of Staff",
@@ -1092,7 +1096,7 @@ async function main() {
         ? ((
             await query(
               db,
-              "SELECT id, owner_session, child_session, parent_id, root_id, follow, state, delivery, result, pending_question, log FROM delegations WHERE id = ?",
+              "SELECT id, owner_session, child_session, parent_id, root_id, follow, state, delivery, result, pending_question, stall_kind, log FROM delegations WHERE id = ?",
               taskId,
             )
           )[0] ?? null)
@@ -1191,6 +1195,26 @@ async function main() {
       const busy = (await inFlight()).some((entry) => entry.session_id === helperChat);
       return row?.state === "running" && row.parent_id === cosTaskId && busy ? row : null;
     }, scale(20_000));
+    // The helper went silent mid-turn (it waits on a gate that never opens): its row is marked stalled, quiet, since its
+    // last activity, while it still runs; the window found it by itself.
+    const stalledRow = await until(async () => {
+      const rows = await query(db, "SELECT state, stall_kind, stall_reason, stalled_at, log FROM delegations WHERE id = ?", helperTaskId ?? "");
+      return rows[0]?.stall_kind === "quiet" ? rows[0] : null;
+    }, scale(90_000));
+    if (stalledRow?.state === "running" && stalledRow.stalled_at > 0 && String(stalledRow.log).includes('"event":"stalled"'))
+      pass(
+        "worker_stalled",
+        "A worker that goes silent mid-turn is marked stalled on its row",
+        `task ${helperTaskId}: still running, stall_kind quiet since ${new Date(stalledRow.stalled_at).toISOString()}, logged "stalled"`,
+        { evidence: { state: stalledRow.state, stall: stalledRow.stall_kind, since: stalledRow.stalled_at } },
+      );
+    else
+      fail(
+        "worker_stalled",
+        "A worker that goes silent mid-turn is marked stalled on its row",
+        JSON.stringify({ helperTaskId, row: brief(await rowById(helperTaskId)), stalled: stalledRow ?? null }),
+      );
+    phase();
     const before = { top: brief(await rowById(cosTaskId)), helper: brief(beneath) };
     open("tree-cancel");
     const cancelled = await waitMark("cos-cancelled", 60_000);
@@ -1227,6 +1251,7 @@ async function main() {
       Array.isArray(result.stopFailed) &&
       !result.stopFailed.length &&
       ended &&
+      !ended.helper.stall_kind &&
       helperStopped &&
       !leadStopped &&
       carriedOn &&

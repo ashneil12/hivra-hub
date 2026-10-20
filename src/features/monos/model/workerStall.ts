@@ -17,6 +17,7 @@
 // - idle: not busy, nothing holding it (a question, a queued message, a limit it waits out), its row still running, for
 //   `idleMs`: it stopped without reporting back.
 // A chat that waits on its own workers is never stalled: its workers are judged instead.
+import { appIdentity } from "../../../app/model/appIdentity";
 import { toolCallLabel, toolCallState } from "../../sessions/model/transcriptActivity";
 import type { Block, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation, type DelegationTracker, type StallKind } from "./delegations";
@@ -43,6 +44,9 @@ export const STALL_DEFAULTS: StallOptions = {
 export const STALL_MINUTES_KEY = "monocode:stall-minutes";
 
 export function stallOptions(): StallOptions {
+  // The fake-Claude bench (hub:verify-live) asks for seconds: only a dev copy under a temporary HOME has a plan.
+  const bench = appIdentity()?.kind === "dev" ? appIdentity()?.verify?.stallMs : undefined;
+  if (bench) return { ...STALL_DEFAULTS, quietMs: bench, idleMs: bench, longToolMs: 3 * bench };
   let minutes: number | undefined;
   try {
     const raw = Number(localStorage.getItem(STALL_MINUTES_KEY));
