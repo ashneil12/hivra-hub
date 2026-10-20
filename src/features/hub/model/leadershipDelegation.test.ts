@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ensureBuiltInMonos } from "./builtInMonos";
 import { ensureProjectLeads } from "./hubLeads";
 import { tieTeamToProjects } from "./hubTeam";
-import { listMonos, removeMonoProject } from "../../monos/model/mono";
+import { addMono, createMono, listMonos, removeMonoProject } from "../../monos/model/mono";
 import {
   briefsLeads,
   delegateToLead,
@@ -47,7 +47,8 @@ describe("leadership -> Lead", () => {
     await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't connected yet");
     const undo = setLeadDelegator(async () => ({ taskId: "t1" }));
     await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).resolves.toEqual({ taskId: "t1" });
-    await expect(delegateToLead("someone", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("Only the leadership team");
+    await expect(delegateToLead("someone", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't here");
+    await expect(delegateToLead("hivra-lead", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("doesn't brief another Lead");
     await expect(delegateToLead("chief-of-staff", { ...target, projectId: "elsewhere" }, "x", PROJECTS)).rejects.toThrow("isn't in one of your projects");
     undo();
   });
@@ -90,11 +91,21 @@ describe("leadership -> Lead", () => {
   });
 
 
-  it("only the leadership team briefs Leads", () => {
+  it("every Mono briefs Leads (Ash, 20 Oct), not only the leadership team; a Lead and the checker never do", async () => {
     ensureBuiltInMonos();
     ensureProjectLeads(PROJECTS);
     expect(briefsLeads("chief-of-staff")).toBe(true);
     expect(briefsLeads("hivra-lead")).toBe(false);
     expect(briefsLeads("nobody")).toBe(false);
+    // A Mono Ash made himself (a marketing Mono), once it is a member of EXO, briefs EXO's coding team like the team does.
+    const marketing = createMono(["/p/vg-game"]);
+    expect(briefsLeads(marketing.id)).toBe(true);
+    expect(leadTargetsFor(marketing.id, PROJECTS).map((t) => t.projectId)).toEqual(["vg-game"]);
+    const undo = setLeadDelegator(async () => ({ taskId: "t9" }));
+    await expect(delegateToLead(marketing.id, leadTargetsFor(marketing.id, PROJECTS)[0], "fix it", PROJECTS)).resolves.toEqual({ taskId: "t9" });
+    undo();
+    // The checker only reads.
+    addMono({ id: "checker", name: "Checker", mascot: "ghost", color: "#888", projects: ["/p/vg-game"] });
+    expect(briefsLeads("checker")).toBe(false);
   });
 });

@@ -54,6 +54,13 @@ import {
   forgetCodingTeamChat,
   noteCodingTeamChat,
 } from "../features/hub/model/codingTeam";
+import {
+  codingTeamNamed,
+  ensureMonoTeam,
+  forgetMonoTeam,
+  monoTeam,
+  monoTeamName,
+} from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
@@ -6333,6 +6340,8 @@ function Workspace({
         }
       }
       removeMono(monoId);
+      // Its team goes with it from the hub; the folder stays on disk with whatever its workers made (monoTeams.ts).
+      forgetMonoTeam(monoId);
       if (lastMonoIdRef.current === monoId) lastMonoIdRef.current = undefined;
     },
     [closeMonoView, history, onRemoveHistorySession],
@@ -12218,8 +12227,14 @@ function Workspace({
         }
         const sourceMono =
           monoForSession(source.id) ?? findMono(habitRunMono(source.id) ?? "");
+        // A Mono's own team's folder is its own too (monoTeams.ts): its workers run there.
+        const sourceTeam = sourceMono && codingTeamsOn() ? monoTeam(sourceMono.id) : undefined;
         const canAccessProject = (cwd: string) =>
-          canAccessAgentAppProject(source, cwd, sourceMono?.projects);
+          canAccessAgentAppProject(
+            source,
+            cwd,
+            sourceMono ? [...sourceMono.projects, ...(sourceTeam ? [sourceTeam.folder] : [])] : undefined,
+          );
         const sourceTurn = turnGen.current.get(source.id) ?? 0;
         const sourceTurns = isMonoSession(source.id)
           ? groupMonoTurns(source.blocks)
@@ -12811,6 +12826,10 @@ function Workspace({
                         },
                       }
                     : {}),
+                  // Its own team's folder, once it has one (monoTeams.ts).
+                  ...(codingTeamsOn() && monoTeam(mono.id)
+                    ? { team: monoTeam(mono.id)!.folder }
+                    : {}),
                 }
               );
             },
@@ -12842,6 +12861,20 @@ function Workspace({
                 sessionsRef.current = next;
                 flushSync(() => setSessions(next));
               },
+              // Sub-chats only ever live in a team (monoTeams.ts): a Mono hands a project's work to its coding team and
+              // starts workers of its own only in its own team's folder. A hub thing: plain MonoCode has no teams.
+              ...(codingTeamsOn()
+                ? {
+                    monoWork: {
+                      isLead: (monoId: string) => !!leadFor(monoId),
+                      codingTeam: (named: string) => codingTeamNamed(named, hubData().listProjects()),
+                      ownTeam: async (mono: { id: string; name?: string }) => {
+                        const team = await ensureMonoTeam(mono.id);
+                        return { folder: team.folder, name: monoTeamName(mono.name) };
+                      },
+                    },
+                  }
+                : {}),
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

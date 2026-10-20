@@ -1,19 +1,22 @@
 // Double delegation (HUB-PLAN phase 3; Ash 19 Oct: "the leadership team will delegate to a coding hub, and then the
 // coding hub would actually do the delegation ... just report back to the leadership team"):
-// leadership team -> project Lead -> workers, with the Lead's report coming back.
-// - who a leadership Mono may brief (`leadTargetsFor`): the Lead of each project both of them are members of. Team
-//   membership is set by hubTeam.tieTeamToProjects, so this is also the allowlist the app control already enforces
-//   (a Mono only reaches sessions in its own projects);
+// a Mono -> project Lead -> workers, with the Lead's report coming back. Every Mono but a Lead works this way (Ash,
+// 20 Oct: "if its stuff to fix it should either do it itself or pick it up with the coding team"), not only the
+// leadership team: a project's work and its sub-chats live in that project's coding team (monoTeams.ts).
+// - who a Mono may brief (`leadTargetsFor`): the Lead of each project both of them are members of. Team
+//   membership is set by hubTeam.tieTeamToProjects (and by Ash, for any other Mono), so this is also the allowlist the
+//   app control already enforces (a Mono only reaches sessions in its own projects);
 // - the brief's shape (`LeadBrief` / `formatLeadBrief` as Chief of Staff's soul describes it, or `leadBriefPrompt` for
 //   a brief written through the delegate tool);
 // - one registration point (`setLeadDelegator`): the app's implementation (App.tsx) sends the brief into the Lead's own
 //   long-running chat (queued behind its work, or steered into it) as a stored delegation row with the leadership Mono
 //   as owner (follow "lead", monos/model/followedBriefs.ts), and the Lead's final report returns through the H2
-//   report-back path to the briefing Mono's chat and its project's Leadership room (roomReports.ts).
+//   report-back path to the briefing Mono's chat and its project's Leadership room (roomReports.ts). Meanwhile the
+//   briefing Mono's chat shows one live line for the brief (monos/model/briefedTeams.ts), never the Lead's workers.
 // The delegate tool reaches it with `delegate_task {lead}` (agent-app/model/agentAppTasks.ts).
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
-import { isDefaultTeamMono } from "./builtInMonos";
-import { leadMono, leadSpecFor } from "./hubLeads";
+import { CHECKER_MONO_ID } from "./hubMcp";
+import { leadFor, leadMono, leadSpecFor } from "./hubLeads";
 import { isGlobalProject } from "./hubProjects";
 import type { HubProject } from "./types";
 
@@ -44,10 +47,13 @@ export function leadTargetsFor(monoId: string, projects: readonly HubProject[]):
   });
 }
 
-/** Whether a Mono is one of the leadership team, which briefs Leads (the Leads themselves brief only workers). */
+/**
+ * Whether a Mono briefs project Leads: every Mono (Ash, 20 Oct: a project's work is picked up with its coding team),
+ * except a Lead, which hands its own project's work to its workers, and the checker, which only reads.
+ */
 export function briefsLeads(monoId: string): boolean {
   const mono = listMonos().find((m) => m.id === monoId);
-  return !!mono && isDefaultTeamMono(mono);
+  return !!mono && mono.id !== CHECKER_MONO_ID && !leadFor(mono.id);
 }
 
 /** A brief from the leadership team to a Lead (Chief of Staff's soul, "How I hand work to a project Lead"). */
@@ -139,7 +145,15 @@ export function delegateToLead(
 ): ReturnType<LeadDelegator> {
   if (!delegator) return Promise.reject(new Error("Delegating to a Lead isn't connected yet."));
   if (!briefsLeads(fromMonoId))
-    return Promise.reject(new Error("Only the leadership team briefs a project's Lead. A Lead hands work to its own workers."));
+    return Promise.reject(
+      new Error(
+        fromMonoId === CHECKER_MONO_ID
+          ? "The checker only reads. It never briefs a Lead."
+          : leadFor(fromMonoId)
+            ? "A Lead hands its project's work to its own workers; it doesn't brief another Lead."
+            : "That Mono isn't here.",
+      ),
+    );
   if (!leadTargetsFor(fromMonoId, projects).some((t) => t.leadId === target.leadId && t.projectId === target.projectId))
     return Promise.reject(new Error("That Lead isn't in one of your projects."));
   return delegator({ fromMonoId, target, brief, ...extra });

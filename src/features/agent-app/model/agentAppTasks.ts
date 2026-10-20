@@ -5,6 +5,9 @@
 //
 // - Only the chats Ash talks to have tasks: a Mono's own chat and a chat in a project's coding team (hub/model/
 //   codingTeam.ts). Not a habit run, a worker, another plain chat or the checker (it only reads).
+// - Sub-chats only ever live in a team (hub/model/monoTeams.ts; Ash, 20 Oct): a project's Lead and a coding-team chat
+//   start workers in their project, while any other Mono hands a project's work to that project's coding team (a brief
+//   to its Lead, `lead`) and starts workers only for work of its own, in its own team's folder.
 // - A chat sees and moves only its own rows. control.rs ties the app token to the chat it was made for and the store
 //   answers by owner, so a model that knows another chat's task id still gets "no task of yours".
 // - Calls work only inside the caller's active turn (control.rs), and each one answers within control.rs's 35 s:
@@ -106,9 +109,21 @@ export type AgentAppTasksHost = {
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
   /**
-   * Leadership team: brief a project's Lead in its own long-running chat instead of starting a worker (double
-   * delegation, hub/model/leadershipDelegation.ts). `lead` is what the Mono named; the host finds it among the Leads
-   * this Mono may brief, records the row (owner: this chat, child: the Lead's chat) and sends the brief in.
+   * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
+   * projects as before.
+   */
+  monoWork?: {
+    /** A project's Lead: its workers are its coding team's, in its project's folder. */
+    isLead(monoId: string): boolean;
+    /** The coding team a project the Mono named is (it has a Lead): its work goes there as a brief to that Lead. */
+    codingTeam(named: string): { projectId: string; leadName: string; name: string } | undefined;
+    /** The Mono's own team, made the first time it hands out work of its own: its folder and name. */
+    ownTeam(mono: { id: string; name?: string }): Promise<{ folder: string; name: string }>;
+  };
+  /**
+   * A Mono briefs a project's Lead in its own long-running chat instead of starting a worker (double delegation,
+   * hub/model/leadershipDelegation.ts). `lead` is what the Mono named; the host finds it among the Leads this Mono may
+   * brief, records the row (owner: this chat, child: the Lead's chat) and sends the brief in.
    */
   briefLead?(
     owner: Session,
@@ -414,7 +429,7 @@ async function delegate(
   if (input.lead !== undefined) {
     if (!owner.mono)
       throw new Error(
-        "A coding-team chat hands its work to its own workers; only the leadership team briefs a project's Lead. Leave out lead.",
+        "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
     return briefLead(source, owner.mono, tasks, { requestId, brief, title, asks, goal, input });
   }
@@ -428,6 +443,17 @@ async function delegate(
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
   if (owner.team && named !== undefined && named !== owner.team.project && (tasks.hubProjectFolder?.(named) ?? named) !== owner.team.folder)
     throw new Error(`A coding-team chat delegates on its own project (${owner.team.project}). Leave out project.`);
+  // Every Mono but a Lead works through teams (hub/model/monoTeams.ts): a project's work goes to its coding team as a
+  // brief to its Lead, and its own work to a worker in its own team's folder, made the first time.
+  let ownTeam: { folder: string; name: string } | undefined;
+  if (owner.mono && tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id)) {
+    const team = named !== undefined ? tasks.monoWork.codingTeam(named) : undefined;
+    if (team)
+      throw new Error(
+        `${named} has a coding team: hand its work to ${team.name} instead, with delegate_task and lead "${team.projectId}" (the brief goes to ${team.leadName}, its workers show in ${team.name}, and its report comes back to you). A small fix you can make yourself, here.`,
+      );
+    if (named === undefined) ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+  }
   const model = taskModel(input.model, source);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
@@ -445,9 +471,11 @@ async function delegate(
       source,
       {
         prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
-        ...(named !== undefined && !owner.team
-          ? { project: tasks.hubProjectFolder?.(named) ?? named }
-          : {}),
+        ...(ownTeam
+          ? { project: ownTeam.folder }
+          : named !== undefined && !owner.team
+            ? { project: tasks.hubProjectFolder?.(named) ?? named }
+            : {}),
         ...(model ? { harness: model.harness, model: model.model } : {}),
         ...(input.effort !== undefined ? { effort: input.effort } : {}),
         // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
@@ -495,13 +523,15 @@ async function delegate(
       : {}),
     // Its port, which its brief tells it to use for any server it starts.
     port,
+    // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
+    ...(ownTeam ? { team: ownTeam.name } : {}),
     note: row
-      ? "Running. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once."
+      ? `Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
       : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }
 
-/** delegate_task {lead}: the leadership team briefs a project's Lead (double delegation); its report comes back later. */
+/** delegate_task {lead}: a Mono briefs a project's Lead (double delegation); its report comes back later. */
 async function briefLead(
   source: Session,
   mono: { id: string; name?: string },

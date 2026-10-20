@@ -39,8 +39,10 @@ export type DelegationTasksDeps = {
   now?(): number;
   /** Take a followed brief back out of its chat's queue, if it still waits there (followedBriefs.ts). */
   unqueue?(childSession: string, requestId: string): void;
-  /** Leadership team: brief a project's Lead (App.tsx, through leadershipDelegation.ts). */
+  /** A Mono briefs a project's Lead (App.tsx, through leadershipDelegation.ts). */
   briefLead?: AgentAppTasksHost["briefLead"];
+  /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
+  monoWork?: AgentAppTasksHost["monoWork"];
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -123,6 +125,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       };
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
+    ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.now ? { now: deps.now } : {}),
