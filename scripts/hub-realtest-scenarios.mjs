@@ -104,7 +104,8 @@ export async function runScenario(scenario, ctx) {
       const match = rows.filter(
         (row) =>
           (!cond.delegation.owner || row.owner_mono === resolveMono(cond.delegation.owner)) &&
-          (!cond.delegation.state || [].concat(cond.delegation.state).includes(row.state)),
+          (!cond.delegation.state || [].concat(cond.delegation.state).includes(row.state)) &&
+          (!cond.delegation.title || new RegExp(cond.delegation.title, "i").test(`${row.title ?? ""} ${row.brief ?? ""}`)),
       );
       return match.length >= (cond.delegation.count ?? 1);
     }
@@ -159,7 +160,7 @@ export async function runScenario(scenario, ctx) {
           record.notes.push(`${to.mono} had a question pending for Ash when he wrote "${text.slice(0, 40)}"`);
           if (scenario.takePendingPick) {
             const taken = await act("answer", { mono: to.mono }).catch((error) => ({ ok: false, error: error.message }));
-            record.sends.push({ t: Date.now(), answer: { mono: to.mono, auto: true }, result: taken });
+            record.sends.push({ t: Date.now(), todayAnswer: { mono: to.mono, auto: true }, result: taken });
             log(`  (${to.mono} was waiting on a question; Ash tapped Take the pick first: ${taken.ok ? "ok" : taken.error})`);
             await sleep(3000);
           }
@@ -210,7 +211,7 @@ export async function runScenario(scenario, ctx) {
       }
     } else if (step.answer) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text }).catch((error) => ({ ok: false, error: error.message }));
-      record.sends.push({ t: Date.now(), answer: step.answer, result: answer });
+      record.sends.push({ t: Date.now(), todayAnswer: step.answer, result: answer });
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.view) await view(step);
     else if (step.snapshot) {
@@ -313,8 +314,8 @@ export function transcript(scenario, result, t0) {
   const timeline = [];
   for (const send of result.sends) {
     if (send.stop) timeline.push({ t: send.t, line: `**Ash pressed Stop** on ${JSON.stringify(send.stop)}` });
-    else if (send.answer)
-      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.answer.text ? `in his words: "${send.answer.text}"` : "Take the pick"}${send.answer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}", pick "${send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
+    else if (send.todayAnswer)
+      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}", pick "${send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
     else if (send.skipped) timeline.push({ t: send.t, line: `(Ash's message "${send.label}" could not be sent: ${send.skipped})` });
     else
       timeline.push({

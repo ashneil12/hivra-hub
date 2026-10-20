@@ -662,7 +662,7 @@
         "B5",
         "B11"
       ],
-      "minutes": 10,
+      "minutes": 12,
       "maxTurns": 50,
       "steps": [
         {
@@ -696,10 +696,16 @@
         },
         {
           "wait": {
-            "monoText": "lead",
-            "pattern": "(back|found|findings|result|verdict|came back).{0,160}(time ?zone|reset|london|utc)|(time ?zone|reset|london|utc).{0,160}(is back|came back|findings|found that)",
-            "maxSec": 420
+            "delegation": {
+              "owner": "lead",
+              "state": "completed",
+              "title": "time ?zone|reset"
+            },
+            "maxSec": 480
           }
+        },
+        {
+          "sleep": 60
         },
         {
           "snapshot": "parallel-end"

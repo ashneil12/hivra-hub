@@ -54,6 +54,7 @@ typing and clicks use:
 | `send` to a Mono | `onOpenMono` (the rail click) then the composer's `onSubmit` (queues or steers when busy) |
 | `send` to a worker | the rail's `openChild` (owner's Mono, then the sub-chat), then `onSubmit` |
 | `stop` | the Stop button (`delegationTree.stopFromUser`) |
+| `answer` | Today's Waiting on you row: "Take the pick" (`takePick`) or "answer in your words" + Send (`answerInWords`) |
 | `open` a hub view | close the Mono view, then `setHubSelection` (Today, Being built, the room); returns the visible text |
 | `snapshot` | sessions (busy, model, effort, queue, rail state), Monos, rooms with every message, hub localStorage, every `data-hub-*` / `data-mono-*` element |
 | `drain` | the timestamped log: room messages as they land, typing, every chat's busy/question/queue changes, console errors |
@@ -127,10 +128,22 @@ budget), P13/P16/P18 (skipped by the brief). B8 and B10 are graded where they ha
 
 ## Budget
 
+The login is **Ash's own Max account, shared with his own work and every other agent**. Before anything starts, one
+tiny Haiku call reads the account's use from the CLI's `rate_limit_event` (`account-before.json`); the run refuses to
+start when the 5-hour window is above 60% (`budget.startBelowFiveHour`) or the account is already limited.
+
 Defaults (scenario file `budget`, overridable with flags): **350 model turns** (a turn = one prompt into a real chat),
-**2,500 model requests** (each assistant message), **115 minutes**. The run checks every 1.5 s; when a cap is hit it
-writes `claude/stop` and the wrapper refuses every new turn ("Realtest budget spent") while the run winds down. Helper
-calls (the room's Haiku router, chat titles) are counted separately. The grader is one Sonnet medium call per scenario.
+**2,500 model requests** (each assistant message), **115 minutes**, and the account guard: stop when the 5-hour window
+passes **85%** (`stopAtFiveHour`) or the 7-day passes **70%** (`stopAtSevenDay`), or the moment a chat is refused
+("You've hit your session limit", a `rejected` rate_limit_event). The run checks every 1.5 s; when any cap is hit it
+writes `claude/stop`, the wrapper refuses every new turn ("Realtest budget spent"), and the remaining scenarios are
+skipped with the reason. Helper calls (the room's Haiku router, chat titles) are counted separately. The grader is one
+Sonnet medium call per scenario. Rough cost of the baseline: about 40 model turns and 200-400 model requests per
+hour of scenarios, most of it the Lead's workers; a 40-ask dump or a "do it all" in the room makes the most.
+
+Scenarios that talk to the Lead after s06 set `takePendingPick`: when the Lead is waiting on a question for Ash, he
+taps "Take the pick" on Today before writing (recorded in the timeline). Without it, one unanswered question blocks
+every later message to that Lead (see the baseline findings).
 
 ## Evidence (`evidence/realtest/<run>/`, git-ignored)
 
