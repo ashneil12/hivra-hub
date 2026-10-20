@@ -111,6 +111,10 @@ test("a typed answer reaches the question; Today counts it; a failed turn shows 
   await page.locator('[data-mono-failure="vg-game-lead"] [data-mono-failure-retry]').click();
   await expect(page.locator('[data-mono-failure="vg-game-lead"]')).toHaveCount(0, { timeout: 15_000 });
   await expect(rail(page).locator('[data-mono-failed="vg-game-lead"]')).toHaveCount(0);
+  // It sent the failed message again, not a bare "continue" (which takes up whatever the Lead was on before).
+  const last = await fake<string>(page, "prompts.at(-1).text");
+  expect(last.trim().endsWith("status? one line")).toBe(true);
+  expect(last).not.toContain("Continue from where you left off");
   await shot(page, "7-after-try-again");
 });
 
