@@ -30,7 +30,7 @@ const OLD = "# Soul\n\n## Your job\n- You are mainly an orchestrator.\n";
 const NEW = "# Soul\n\n## Your job\n- You are mainly an orchestrator.\n- Ask before handing work to Ash.\n\n## Finishing\n- Prove it.\n";
 
 it("shows the refresh as plain sentences with Undo, no Apply or Dismiss, no file text; Undo restores the soul", async () => {
-  const files = new Map<string, string>([["nibbii-lead/SOUL.md", OLD]]);
+  const files = new Map<string, string>([["nibbii-lead/SOUL.md", OLD], ["nibbii-lead/soul-template.md", OLD]]);
   const read = async (id: string, path: AgentFilePath) => ({ text: files.get(`${id}/${path}`) ?? null, hash: `h:${files.get(`${id}/${path}`) ?? ""}` });
   const write = async (id: string, path: AgentFilePath, text: string, expected?: string) => {
     if (expected !== undefined && `h:${files.get(`${id}/${path}`) ?? ""}` !== expected) throw "conflict";

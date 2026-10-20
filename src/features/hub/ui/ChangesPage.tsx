@@ -39,7 +39,7 @@ function BotChanges() {
 
 /** One "Undo all from {Mono}" per Mono with changes still standing. */
 function UndoAllFrom({ rows }: { rows: BotChangeRow[] }) {
-  const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone);
+  const standing = rows.flatMap((r) => (r.kind === "one" ? [r.change] : r.items)).filter((c) => !c.undone && !c.note);
   const bots = [...new Set(standing.map((c) => c.bot))];
   if (!bots.length) return null;
   return (
@@ -67,7 +67,7 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
             <button type="button" data-hub-bot-change-redo onClick={() => void redoBotChange(items.map((c) => c.id))}
               className="rounded-md px-1.5 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">Redo</button>
           </span>
-        ) : (
+        ) : items.every((c) => c.note) ? null : (
           <button type="button" className={UNDO} onClick={() => void undoBotChange(items.map((c) => c.id))}>Undo</button>
         )}
       </div>

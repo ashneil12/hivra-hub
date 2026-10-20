@@ -16,7 +16,10 @@ soul, chat ids only in WebView storage).
 - **Soul refresh** (`model/soulRefresh.ts`): a soul behind the app's template takes it on its own (Ash, 14 Oct: bigger bot
   changes apply themselves and never wait for a click), with the whole old soul saved in its memory first and a Bot changes
   row with Undo. His hand edits win. The row reads as one plain sentence per changed part (`SECTION_SENTENCES`, "Hivra
-  lead will now ...") plus what was skipped for his edits; no diff, no paths.
+  lead will now ...") plus what was skipped for his edits; no diff, no paths. A soul with no recorded template (the
+  live 15 Oct leads) is swapped only when it is exactly a soul the app once seeded (`knownSouls.generated.ts`, SHA-256s
+  from git history: `node scripts/known-souls.mjs`, `--check` to verify); otherwise it is left alone with a plain row
+  and no Undo ("Hivra lead's soul has your own changes, so the app's update was skipped. Ask me to merge it if you want it.").
 - **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
 - **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
   leadership can oversee it and set tasks, but isn't required."

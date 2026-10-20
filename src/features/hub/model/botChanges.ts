@@ -38,6 +38,8 @@ export type BotChange = {
    * opened. Never a diff or a file path.
    */
   details?: string[];
+  /** Only a note of something a bot left alone on purpose: nothing changed, so there is no Undo. */
+  note?: boolean;
 };
 
 type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
@@ -104,7 +106,7 @@ export function recordPinChange(pageId: string, by: string, title: string, pinne
 
 /** Undo all from one Mono: every change of theirs that isn't undone yet. */
 export async function undoAllFrom(bot: string): Promise<void> {
-  await undoBotChange(all().filter((c) => c.bot === bot && !c.undone).map((c) => c.id));
+  await undoBotChange(all().filter((c) => c.bot === bot && !c.undone && !c.note).map((c) => c.id));
 }
 
 /** The door to a Mono's own files (SOUL.md = its rules). Tests and proofs swap it. */
@@ -120,14 +122,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || (c.note && c.monoId)));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin)));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || (c.note && c.monoId))));
   } catch {
     /* best effort */
   }
@@ -184,6 +186,13 @@ export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & 
   changed();
 }
 
+/** Something a bot left alone on purpose, said in plain words: a row with no Undo (there is nothing to put back). */
+export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now" | "after" | "details" | "monoId">): void {
+  list = [{ ...note, day: "Today", note: true }, ...list.filter((c) => c.id !== note.id)];
+  saveReal();
+  changed();
+}
+
 /** A change kept here, by id (a fix checks whether Ash undid it, so it isn't made again). */
 export function findBotChange(id: string): BotChange | undefined {
   return list.find((c) => c.id === id);
@@ -213,7 +222,7 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       continue;
     }
     const c = list.find((x) => x.id === id);
-    if (!c || c.undone) continue;
+    if (!c || c.undone || c.note) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
     if (c.hubChangeId) {
       try {
