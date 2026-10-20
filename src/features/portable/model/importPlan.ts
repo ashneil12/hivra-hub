@@ -527,8 +527,9 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   addConnectors(connectors.map(({ connector }) => ({ id: connector.id, name: connector.name, projectId: connector.projectId })));
   if (connectors.length) lines.push(`${plural(connectors.length, "connector")} added: sign in to each again in Setup.`);
 
-  const pages = importPages(plan.pages.filter((x) => choices.pages.has(x.page.id)).map((x) => x.page));
-  if (pages) lines.push(`${plural(pages, "Page")} added, with no permissions until you allow them again.`);
+  const pages = await importPages(plan.pages.filter((x) => choices.pages.has(x.page.id)).map((x) => x.page));
+  if (pages.added) lines.push(`${plural(pages.added, "Page")} added, with no permissions until you allow them again.`);
+  for (const why of pages.failed) problems.push(`Page not added: ${why}`);
 
   const models = importCustomModels(plan.customModels.filter((x) => choices.customModels.has(x.model.id)).map((x) => x.model));
   if (models) lines.push(`${plural(models, "custom model")} added: enter each key again.`);
