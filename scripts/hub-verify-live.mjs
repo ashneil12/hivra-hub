@@ -10,7 +10,15 @@
 //   4. the worker's report wakes the Lead;
 //   5. the Lead's Claude transcript is deleted while the app is down: it starts fresh from its brief;
 //   6. the app is killed under the Lead's turn again and again: it resumes three times, then stops in Needs you.
-//   Not built yet, so reported as skipped: a worker's question routed to its Lead, and a cascade Stop.
+//   Then double delegation, in one more launch with a second plan: Ash OS (the stub) lists a scratch project, so the hub
+//   makes that project's Lead and ties its built-in leadership team to it, and the kickoff goes to Chief of Staff, which
+//   briefs the Lead with `delegate_task {lead}`:
+//   7. the Lead's worker asks a question (AskUserQuestion): it reaches the Lead as a [MonoCode question] turn, not
+//      Chief of Staff and not Ash's Waiting on you; the Lead answers with task_answer and the worker's turn carries on
+//      with that answer;
+//   8. the Lead delegates another worker for the same brief, and Chief of Staff cancels its brief (task_cancel): the
+//      worker beneath the Lead is stopped, both rows end cancelled with their reports dropped, and the Lead's own
+//      long-running chat is not stopped for it.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -37,7 +45,7 @@ import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotC
 
 export const MAX_RESUMES = 3;
 
-/** Every check the walk can record, in order (the not-built ones are recorded as skipped). */
+/** Every check the walk can record, in order (the negative control records the ones it never reaches as skipped). */
 export const WALK = [
   "isolated",
   "lead_delegated",
@@ -49,6 +57,8 @@ export const WALK = [
   "report_woke_lead",
   "dead_session_recovered",
   "crash_loop_capped",
+  "question_routed",
+  "cascade_stop",
 ];
 
 /** Thrown between phases when the negative control has already caught its failure: no more launches needed. */
@@ -58,6 +68,18 @@ export const KICKOFF = "VERIFY-LEAD-KICKOFF";
 export const WORKER = "VERIFY-WORKER";
 export const QUEUED = "VERIFY-QUEUED-BRIEF";
 export const CONTINUE = "Continue from where you left off";
+/** Double delegation (checks 7 and 8): the built-in team Mono the second plan's kickoff opens, and the stub's project. */
+export const TEAM_MONO = "chief-of-staff";
+export const TREE_PROJECT = { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket" };
+export const TREE_LEAD = "verify";
+export const TREE_KICKOFF = "VERIFY-TREE-KICKOFF";
+export const TREE_BRIEF = "VERIFY-TREE-BRIEF";
+export const ASKER = "VERIFY-ASKER";
+export const HELPER = "VERIFY-TREE-HELPER";
+export const QUESTION = "Which colour should the verify widget be?";
+export const PICK = "Green";
+/** An app notification as the turn's own message: first in the prompt, or right after the Mono's context block. */
+export const said = (prefix) => `(?:^|</monocode_context>\\s*)${prefix}`;
 
 /** The fake Claude's rules for the walk. `failGate` plants the failure the negative control must catch. */
 export function scenario({ runId, failGate = false }) {
@@ -73,7 +95,135 @@ export function scenario({ runId, failGate = false }) {
       { say: "WORKER-DONE (first try)" },
     ],
   };
+  // Double delegation. Every prompt matches only as the turn's own message (first, or right after a Mono's context
+  // block): that context quotes the delegate rules, which name [MonoCode question] and [MonoCode report], and a report
+  // quotes its worker's brief.
+  const brief = (marker) => said(`\\[MonoCode brief from [^\\]]*\\]\\s+${marker}`);
+  const tree = [
+    {
+      name: "tree-cos-kickoff",
+      match: said(TREE_KICKOFF),
+      setTag: "tree-cos",
+      times: 1,
+      steps: [
+        { say: "Briefing the Verify lead." },
+        {
+          app: "tasks.delegate",
+          input: {
+            lead: TREE_LEAD,
+            title: "Verify tree",
+            brief: `${TREE_BRIEF} run ${runId}: have one worker pick a colour with you, then another do a long job.`,
+          },
+          save: "cos-brief",
+        },
+        { mark: "cos-briefed" },
+        // The walk opens this once the Lead's second worker is busy: one cancel at the top of the tree.
+        { waitFile: "tree-cancel", timeoutMs: 300_000 },
+        {
+          app: "tasks.cancel",
+          input: { taskId: "{{saved.cos-brief.response.result.taskId}}", reason: "Verify: cancelled from the top." },
+          save: "cos-cancel",
+        },
+        { mark: "cos-cancelled" },
+        { say: "Cancelled the Verify lead's brief and everything beneath it." },
+      ],
+    },
+    {
+      name: "tree-lead-question",
+      tag: "tree-lead",
+      match: said("\\[MonoCode question\\]"),
+      steps: [
+        { mark: "tree-lead-got-question" },
+        { say: "My worker asked; the brief says green." },
+        // The walk looks at Ash's Waiting on you while the question is open, then lets the Lead answer.
+        { waitFile: "answer-go", timeoutMs: 120_000 },
+        {
+          app: "tasks.answer",
+          input: {
+            taskId: "{{prompt.taskId}}",
+            requestId: "{{prompt.requestId}}",
+            answers: { "{{prompt.questions.0.id}}": ["{{prompt.questions.0.options.1.id}}"] },
+          },
+          save: "lead-answer",
+        },
+        { mark: "tree-lead-answered" },
+        { say: "Answered it." },
+      ],
+    },
+    {
+      name: "tree-lead-report",
+      tag: "tree-lead",
+      match: said("\\[MonoCode report\\]"),
+      times: 1,
+      steps: [
+        { mark: "tree-lead-got-report" },
+        { say: "The asker is done. One more worker for this brief." },
+        {
+          app: "tasks.delegate",
+          input: { title: "Verify helper", brief: `${HELPER} run ${runId}: a long job; keep at it until you are stopped.` },
+          save: "helper-task",
+        },
+        { mark: "tree-lead-delegated-helper" },
+        // Still mid-turn when the brief above it is cancelled: the cancel must not stop this chat.
+        { waitFile: "lead-hold", timeoutMs: 300_000 },
+        { mark: "tree-lead-carried-on" },
+        { say: "LEAD-CARRIED-ON" },
+      ],
+    },
+    { name: "tree-lead-late-report", tag: "tree-lead", match: said("\\[MonoCode report\\]"), steps: [{ mark: "tree-lead-late-report" }, { say: "Noted." }] },
+    {
+      name: "tree-lead-brief",
+      match: brief(TREE_BRIEF),
+      setTag: "tree-lead",
+      times: 1,
+      steps: [
+        { say: "Start-ack: handing the colour question to a worker." },
+        {
+          app: "tasks.delegate",
+          input: { title: "Verify asker", brief: `${ASKER} run ${runId}: ask me which colour to use, then report it.` },
+          save: "asker-task",
+        },
+        { mark: "tree-lead-delegated-asker" },
+        { say: "Started the asker." },
+      ],
+    },
+    {
+      name: "tree-asker",
+      match: brief(ASKER),
+      setTag: "asker",
+      times: 1,
+      steps: [
+        { say: "I need one decision from my Lead." },
+        { mark: "asker-asking" },
+        {
+          ask: {
+            questions: [
+              {
+                question: QUESTION,
+                header: "Colour",
+                multiSelect: false,
+                options: [
+                  { label: "Blue", description: "The usual" },
+                  { label: PICK, description: "What the brief asks for" },
+                ],
+              },
+            ],
+            mark: "asker-answered",
+          },
+        },
+        { say: "ASKER-DONE: going with {{answer}}." },
+      ],
+    },
+    {
+      name: "tree-helper",
+      match: brief(HELPER),
+      setTag: "helper",
+      times: 1,
+      steps: [{ say: "On it." }, { mark: "helper-started" }, { waitFile: "never" }],
+    },
+  ];
   const rules = [
+    ...tree,
     // The Lead after its transcript was lost: a fresh conversation whose first prompt carries the chat's brief.
     { name: "lead-recovered", match: "<chat_brief>", setTag: "lead", steps: [{ mark: "lead-recovered" }, { waitFile: "never" }] },
     ...(failGate
@@ -241,6 +391,69 @@ async function query(file, sql, ...params) {
       // closed
     }
   }
+}
+
+/** WebKit's local storage files under a HOME (the window's: the kickoff claim, Ash's Waiting on you). */
+function localStorageFiles(dir, depth = 0, found = []) {
+  if (depth > 10) return found;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) localStorageFiles(full, depth + 1, found);
+    else if (entry.isFile() && (entry.name === "localstorage.sqlite3" || entry.name.endsWith(".localstorage"))) found.push(full);
+  }
+  return found;
+}
+
+/** Every key of the window's local storage, read from a copy (WAL and all) so the running app's files are untouched. */
+async function localStorageOf(home, scratch) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const items = {};
+  const files = localStorageFiles(path.join(home, "Library"));
+  for (const [index, file] of files.entries()) {
+    const copy = path.join(scratch, "localstorage-copy", String(index));
+    fs.rmSync(copy, { recursive: true, force: true });
+    fs.mkdirSync(copy, { recursive: true });
+    let db;
+    try {
+      for (const suffix of ["", "-wal", "-shm"])
+        if (fs.existsSync(`${file}${suffix}`)) fs.copyFileSync(`${file}${suffix}`, path.join(copy, `db${suffix}`));
+      db = new DatabaseSync(path.join(copy, "db"));
+      for (const row of db.prepare("SELECT key, value FROM ItemTable").all())
+        items[row.key] = typeof row.value === "string" ? row.value : new TextDecoder("utf-16le").decode(row.value);
+    } catch {
+      // not a local storage database, or mid-write: the next look reads it again
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // closed
+      }
+    }
+  }
+  return { files: files.length, items };
+}
+
+/**
+ * A chat's entry on Ash's Waiting on you (hub/model/waitingChats.ts keeps it in local storage), or null while it has
+ * none. `final`: describe what was read even without one (found: the store this window writes, by its kickoff claim).
+ */
+export async function waitingEntry(home, chat, scratch, final = false) {
+  const { files, items } = await localStorageOf(home, scratch);
+  let entry = null;
+  try {
+    entry = JSON.parse(items["monocode:hub-waiting-chats"] ?? "{}")[chat] ?? null;
+  } catch {
+    entry = null;
+  }
+  const found = "monocode:verify-live-kickoff" in items;
+  if (entry) return { found, files, entry: { routedToLead: entry.routedToLead ?? false, source: entry.source, question: entry.question } };
+  return final ? { found, files, entry: null } : null;
 }
 
 async function main() {
@@ -646,6 +859,210 @@ async function main() {
         );
     }
 
+    phase();
+    // 7 and 8. Double delegation, in a fresh launch with a second plan. Ash OS (the stub) now lists a project on the
+    // scratch folder, so the hub makes its Lead ("Verify lead") and ties the built-in team to it; the kickoff waits for
+    // Chief of Staff to work on that folder and sends it the brief.
+    stub.state.projects.push({ ...TREE_PROJECT, folder: project, workOwner: "ash_os", status: "active" });
+    await kill("for the double-delegation plan");
+    const treePlan = {
+      ...plan,
+      runId: `${id}-tree`,
+      kickoff: {
+        project,
+        monoName: "Chief of Staff",
+        monoId: TEAM_MONO,
+        prompt: `${TREE_KICKOFF} run ${id}: brief the Verify lead, then cancel that brief when told.`,
+      },
+    };
+    fs.writeFileSync(planFile, `${JSON.stringify(treePlan, null, 2)}\n`);
+    fs.writeFileSync(path.join(evidence, "plan-tree.json"), `${JSON.stringify(treePlan, null, 2)}\n`);
+    await launch();
+
+    const savedCall = (name) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(fake, "saved", `${name}.json`), "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const open = (name) => {
+      fs.mkdirSync(path.join(fake, "gates"), { recursive: true });
+      fs.writeFileSync(path.join(fake, "gates", name), "");
+    };
+    const rowById = async (taskId) =>
+      taskId
+        ? ((
+            await query(
+              db,
+              "SELECT id, owner_session, child_session, parent_id, root_id, follow, state, delivery, result, pending_question, log FROM delegations WHERE id = ?",
+              taskId,
+            )
+          )[0] ?? null)
+        : null;
+    const brief = (row) => row && { ...row, log: undefined, events: JSON.parse(row.log || "[]").map((entry) => `${entry.event} by ${entry.by}`) };
+    const events = () => readNdjson(path.join(fake, "events.ndjson"));
+    const interruptedIn = (conversation) =>
+      !!conversation && events().some((event) => event.conversation === conversation && event.dir === "in" && /"subtype":"interrupt"/.test(event.line ?? ""));
+    const turnsOf = (conversation, prefix) =>
+      prompts().filter((entry) => entry.conversation === conversation && new RegExp(said(prefix)).test(entry.prompt));
+
+    // 7. The Lead's worker asks; the question goes to the Lead.
+    const cosBriefed = await waitMark("cos-briefed", 120_000);
+    const cosBrief = savedCall("cos-brief");
+    const cosTaskId = cosBrief?.response?.result?.taskId;
+    const leadChat = cosBrief?.response?.result?.childSessionId;
+    const asking = await waitMark("asker-asking", 90_000);
+    const askerTask = savedCall("asker-task");
+    const askerTaskId = askerTask?.response?.result?.taskId;
+    const askerChat = askerTask?.response?.result?.childSessionId;
+    const asked = await until(async () => {
+      const row = await rowById(askerTaskId);
+      return row?.state === "question" ? row : null;
+    }, scale(20_000));
+    const woken = await waitMark("tree-lead-got-question", 30_000);
+    // While it is open: Ash's Waiting on you (the window's local storage) must not list the worker as his.
+    const listing = asked ? await until(() => waitingEntry(home, askerChat, scratch), scale(10_000), 500) : null;
+    const store = listing ?? (await waitingEntry(home, askerChat, scratch, true));
+    open("answer-go");
+    const answered = await waitMark("asker-answered", 30_000);
+    const leadAnswer = savedCall("lead-answer");
+    const askerDone = await until(async () => {
+      const row = await rowById(askerTaskId);
+      return row?.state === "completed" ? row : null;
+    }, scale(30_000));
+    const cosConversation = cosBriefed?.conversation;
+    const askerConversation = asking?.conversation;
+    const leadConversation = woken?.conversation;
+    const notAsh = store?.found && (!store.entry || store.entry.routedToLead === true);
+    const question = {
+      wake: woken && woken.prompt.slice(woken.prompt.lastIndexOf("[MonoCode question]"), woken.prompt.lastIndexOf("[MonoCode question]") + 160),
+      cosQuestions: turnsOf(cosConversation, "\\[MonoCode question\\]").length,
+      askerPrompts: prompts().filter((entry) => entry.conversation === askerConversation).length,
+    };
+    if (
+      cosBrief?.response?.ok &&
+      cosBrief.response.result?.lead &&
+      asked?.owner_session === leadChat &&
+      asked.pending_question?.includes(QUESTION) &&
+      woken &&
+      leadConversation !== cosConversation &&
+      woken.prompt.includes(askerTaskId) &&
+      woken.prompt.includes(QUESTION) &&
+      question.cosQuestions === 0 &&
+      notAsh &&
+      leadAnswer?.response?.ok &&
+      leadAnswer.response.result?.answered === true &&
+      answered?.answered &&
+      answered.conversation === askerConversation &&
+      answered.answers?.[QUESTION] === PICK &&
+      question.askerPrompts === 1 &&
+      askerDone?.result?.includes(`going with ${PICK}`)
+    )
+      pass(
+        "question_routed",
+        "A delegated worker's question goes to its Lead, not Ash, and its turn carries on with the Lead's answer",
+        `Chief of Staff briefed ${cosBrief.response.result.lead} (task ${cosTaskId}); its worker asked "${QUESTION}" -> row ${askerTaskId} in question, the Lead woke with [MonoCode question] (Chief of Staff got none), Ash's Waiting on you ${store.entry ? "lists it as routed to the Lead" : "does not list it"}; task_answer ${PICK} -> the worker's same turn went on: "${askerDone.result.slice(0, 120)}"`,
+        { evidence: { asked: brief(asked), answered: brief(askerDone), waitingOnYou: store, question } },
+      );
+    else
+      fail(
+        "question_routed",
+        "A delegated worker's question goes to its Lead, not Ash, and its turn carries on with the Lead's answer",
+        JSON.stringify({
+          brief: cosBrief?.response ?? null,
+          asking: !!asking,
+          asked: brief(asked),
+          woken: !!woken,
+          sameAsCos: leadConversation === cosConversation,
+          question,
+          waitingOnYou: store,
+          answer: leadAnswer?.response ?? null,
+          answered: answered && { conversation: answered.conversation === askerConversation, answers: answered.answers },
+          done: brief(askerDone ?? (await rowById(askerTaskId))),
+        }),
+      );
+
+    phase();
+    // 8. One cancel at the top: Chief of Staff cancels its brief while the Lead's second worker is busy.
+    const helperStarted = await waitMark("helper-started", 60_000);
+    const helperTask = savedCall("helper-task");
+    const helperTaskId = helperTask?.response?.result?.taskId;
+    const helperChat = helperTask?.response?.result?.childSessionId;
+    const beneath = await until(async () => {
+      const row = await rowById(helperTaskId);
+      const busy = (await inFlight()).some((entry) => entry.session_id === helperChat);
+      return row?.state === "running" && row.parent_id === cosTaskId && busy ? row : null;
+    }, scale(20_000));
+    const before = { top: brief(await rowById(cosTaskId)), helper: brief(beneath) };
+    open("tree-cancel");
+    const cancelled = await waitMark("cos-cancelled", 60_000);
+    const cancelCall = savedCall("cos-cancel");
+    const ended = await until(async () => {
+      const top = await rowById(cosTaskId);
+      const helper = await rowById(helperTaskId);
+      return [top, helper].every((row) => row?.state === "cancelled" && row.delivery === "disposed") ? { top, helper } : null;
+    }, scale(15_000));
+    const helperConversation = helperStarted?.conversation;
+    const helperStopped = await until(
+      async () => interruptedIn(helperConversation) && !(await inFlight()).some((entry) => entry.session_id === helperChat),
+      scale(15_000),
+    );
+    const leadStopped = interruptedIn(leadConversation);
+    open("lead-hold");
+    const carriedOn = await waitMark("tree-lead-carried-on", 30_000);
+    // Time for a report that should never come (the cancelled brief's, or its worker's).
+    await sleep(scale(6_000));
+    const askerRow = await rowById(askerTaskId);
+    const late = {
+      toCos: turnsOf(cosConversation, "\\[MonoCode report\\]").length,
+      helperToLead: turnsOf(leadConversation, "\\[MonoCode report\\]").filter((entry) => helperChat && entry.prompt.includes(helperChat)).length,
+      helperPrompts: prompts().filter((entry) => entry.conversation === helperConversation).length,
+    };
+    const result = cancelCall?.response?.result;
+    if (
+      beneath &&
+      before.top?.follow === "lead" &&
+      cancelled &&
+      cancelCall?.response?.ok &&
+      result?.status === "cancelled" &&
+      result.cancelledBeneath >= 1 &&
+      Array.isArray(result.stopFailed) &&
+      !result.stopFailed.length &&
+      ended &&
+      helperStopped &&
+      !leadStopped &&
+      carriedOn &&
+      askerRow?.state === "completed" &&
+      !late.toCos &&
+      !late.helperToLead &&
+      late.helperPrompts === 1
+    )
+      pass(
+        "cascade_stop",
+        "One cancel at the top of a double delegation stops everything beneath it",
+        `Chief of Staff -> Verify lead (task ${cosTaskId}, follow lead) -> worker (task ${helperTaskId}, parent ${beneath.parent_id}); task_cancel -> ${result.status}, cancelledBeneath ${result.cancelledBeneath}, stopFailed []; both rows cancelled and disposed, the worker's turn interrupted, the Lead's own turn not stopped (it carried on), no report to Chief of Staff or the Lead; the finished asker's row stays completed`,
+        { evidence: { before, after: { top: brief(ended.top), helper: brief(ended.helper), asker: brief(askerRow) }, cancel: cancelCall.response } },
+      );
+    else
+      fail(
+        "cascade_stop",
+        "One cancel at the top of a double delegation stops everything beneath it",
+        JSON.stringify({
+          beneath: !!beneath,
+          before,
+          cancelled: !!cancelled,
+          cancel: cancelCall?.response ?? null,
+          after: ended
+            ? { top: brief(ended.top), helper: brief(ended.helper) }
+            : { top: brief(await rowById(cosTaskId)), helper: brief(await rowById(helperTaskId)) },
+          helperStopped: !!helperStopped,
+          leadStopped,
+          carriedOn: !!carriedOn,
+          asker: askerRow?.state,
+          late,
+        }),
+      );
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))
@@ -666,16 +1083,6 @@ async function main() {
     if (!options.keep) fs.rmSync(scratch, { recursive: true, force: true });
   }
 
-  skip(
-    "question_routed",
-    "A worker's question is routed to its Lead",
-    "not built yet: the app control has no sessions.pending / sessions.answer (docs/T3-HARVEST.md, Workers ask their Lead)",
-  );
-  skip(
-    "cascade_stop",
-    "One Stop on the Lead stops everything beneath it",
-    "not built yet: sessions.stop has no cascade (docs/T3-HARVEST.md, A delegation tree you can see and stop)",
-  );
   const verdict = verdictOf(checks);
   const result = {
     run: id,

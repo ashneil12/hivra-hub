@@ -67,6 +67,20 @@ describe("leadership -> Lead", () => {
     expect(leadTargetsFor("chief-of-staff", PROJECTS).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii"]);
   });
 
+  it("a project beyond the four (one Ash made with New project) has a Lead the team can brief too", () => {
+    const more: HubProject[] = [...PROJECTS, { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket", folder: "/p/verify" }];
+    ensureBuiltInMonos();
+    ensureProjectLeads(more);
+    tieTeamToProjects(more);
+    const target = findLeadTarget("chief-of-staff", more, "verify");
+    expect(target).toMatchObject({ leadId: "verify-lead", leadName: "Verify lead", projectId: "verify", folder: "/p/verify" });
+    expect(leadTargetsFor("chief-of-staff", more).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii", "hub", "verify"]);
+    // Still only through membership, and never the global memory.
+    expect(leadTargetsFor("chief-of-staff", [...more, { id: "ash", name: "Ash", shortName: "Ash", iconShape: "folder", folder: "/p/ash" }]).map((t) => t.projectId)).not.toContain("ash");
+    removeMonoProject("chief-of-staff", "/p/verify");
+    expect(findLeadTarget("chief-of-staff", more, "verify")).toBeUndefined();
+  });
+
   it("a delegate-tool brief to a Lead says how a Lead works it, with no Done when (no /goal in a Lead's chat)", () => {
     const text = leadBriefPrompt("Chief of Staff", "Ash said: \"ship the room\".", "the room shows the report");
     expect(text.split("\n")[0]).toBe("[MonoCode brief from Chief of Staff]");

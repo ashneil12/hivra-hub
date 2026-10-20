@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readAppIdentity } from "./appIdentity";
-import { claimVerifyKickoff, pendingVerifyKickoff } from "./verifyKickoff";
+import { claimVerifyKickoff, pendingVerifyKickoff, verifyKickoffMono } from "./verifyKickoff";
 
 const base = {
   product: "MonoCode Hub",
@@ -51,5 +51,35 @@ describe("the fake-Claude test bench's kickoff", () => {
     expect(daily?.verify).toBeUndefined();
     expect(pendingVerifyKickoff(daily, memory())).toBeNull();
     expect(pendingVerifyKickoff(null, memory())).toBeNull();
+  });
+
+  it("carries an existing Mono's id through, and waits until that Mono works on the project", async () => {
+    const team = { ...kickoff, monoName: "Chief of Staff", monoId: "chief-of-staff" };
+    const dev = readAppIdentity({
+      ...base,
+      kind: "dev",
+      identifier: "com.ash.monocode-hub.dev.verify",
+      verify: { runId: "run-3", kickoff: team },
+    });
+    expect(pendingVerifyKickoff(dev, memory())?.monoId).toBe("chief-of-staff");
+
+    let clock = 0;
+    let tiedAt = 2_000;
+    const created: string[] = [];
+    const host = {
+      create: (project: string, name: string) => (created.push(`${name}@${project}`), "new-mono"),
+      ready: (id: string, project: string) => id === "chief-of-staff" && project === kickoff.project && clock >= tiedAt,
+      sleep: async (ms: number) => void (clock += ms),
+      now: () => clock,
+    };
+    expect(await verifyKickoffMono(team, host)).toBe("chief-of-staff");
+    expect(clock).toBe(2_000);
+    tiedAt = Infinity;
+    clock = 0;
+    expect(await verifyKickoffMono(team, host, 5_000)).toBeNull();
+    expect(created).toEqual([]);
+    // Without monoId: a new Mono on the project, with the plan's name.
+    expect(await verifyKickoffMono(kickoff, host)).toBe("new-mono");
+    expect(created).toEqual(["Verify Lead@/tmp/verify/repo"]);
   });
 });

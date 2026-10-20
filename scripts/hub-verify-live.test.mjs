@@ -4,12 +4,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { pickRule, withLastStarted } from "./fake-claude.mjs";
+import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
+  ASKER,
   CONTINUE,
+  HELPER,
   KICKOFF,
+  PICK,
+  QUESTION,
   QUEUED,
   SUBAGENT_ID,
+  TREE_BRIEF,
+  TREE_KICKOFF,
+  TREE_LEAD,
+  WALK,
   WORKER,
   exitCode,
   mergePatch,
@@ -52,6 +60,53 @@ test("the Lead's second brief goes to the worker it started, once the worker is 
   assert.ok(send.input.prompt.startsWith(QUEUED));
   assert.equal(pickRule(rules, send.input.prompt, [], {})?.name ?? null, null);
   assert.equal(withLastStarted({ a: ["{{lastStarted}}"] }, null).a[0], "{{lastStarted}}", "nothing started: left as is");
+});
+
+test("double delegation: each prompt reaches its role, and the wakes only as the turn's own message", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const pick = (prompt, tags = [], fired = {}) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  // A Mono's fresh conversation opens with its context, which quotes the delegate rules' [MonoCode question/report].
+  const context = "<monocode_context>\nEach arrives as a [MonoCode question] turn; reports start with [MonoCode report].\n</monocode_context>\n\n";
+  assert.equal(pick(`${context}${TREE_KICKOFF} run r1: brief the Verify lead`), "tree-cos-kickoff");
+  const cos = rules.find((rule) => rule.name === "tree-cos-kickoff");
+  const delegate = cos.steps.find((step) => step.app === "tasks.delegate");
+  assert.equal(delegate.input.lead, TREE_LEAD);
+  const leadBrief = `${context}[MonoCode brief from Chief of Staff]\n\n${delegate.input.brief}\n\nHow: you are this project's Lead.`;
+  assert.equal(pick(leadBrief), "tree-lead-brief");
+  assert.equal(pick(leadBrief, ["tree-lead"], { "tree-lead-brief": 1 }), null, "the context's quoted wakes start nothing");
+  const lead = rules.find((rule) => rule.name === "tree-lead-brief");
+  const askerBrief = lead.steps.find((step) => step.app === "tasks.delegate").input.brief;
+  assert.ok(askerBrief.startsWith(ASKER));
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${askerBrief}`), "tree-asker");
+  // The asker's report quotes its brief: the Lead's chat takes it as a report, never as the asker.
+  const report = `[MonoCode report] MonoCode completion notification\n\n{"originalPrompt":"${askerBrief}"}`;
+  assert.equal(pick(report, ["tree-lead"]), "tree-lead-report");
+  assert.equal(pick(report, ["tree-lead"], { "tree-lead-report": 1 }), "tree-lead-late-report");
+  assert.equal(pick(`${context}${report}`, ["tree-lead"]), "tree-lead-report");
+  assert.equal(pick(report, ["lead"]), "lead-report", "the first Lead's report rule is unchanged");
+  const helper = rules.find((rule) => rule.name === "tree-lead-report").steps.find((step) => step.app === "tasks.delegate");
+  assert.ok(helper.input.brief.startsWith(HELPER));
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${helper.input.brief}`), "tree-helper");
+  // The question wake, as delegationQuestions.ts writes it, and the Lead's answer filled from its payload.
+  const wake = `[MonoCode question] MonoCode notification: task t-9 is blocked on a question.\n\n${JSON.stringify({
+    taskId: "t-9",
+    childSessionId: "app-lead-1",
+    requestId: 0,
+    questions: [{ id: QUESTION, prompt: QUESTION, multiSelect: false, options: [{ id: "Blue", label: "Blue" }, { id: PICK, label: PICK }] }],
+  })}`;
+  assert.equal(pick(wake, ["tree-lead"]), "tree-lead-question");
+  assert.equal(pick(wake, ["tree-cos"]), null, "Chief of Staff has no question rule: it never gets one");
+  const answer = rules.find((rule) => rule.name === "tree-lead-question").steps.find((step) => step.app === "tasks.answer");
+  const payload = promptPayload(wake);
+  assert.deepEqual(fillTemplate(answer.input, (name) => (name.startsWith("prompt.") ? dig(payload, name.slice(7)) : undefined)), {
+    taskId: "t-9",
+    requestId: 0,
+    answers: { [QUESTION]: [PICK] },
+  });
+  // None of the first walk's prompts reach the new rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${QUEUED} run r1`])
+    assert.equal(rules.find((rule) => rule.name === pick(prompt))?.name.startsWith("tree") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-2), ["question_routed", "cascade_stop"]);
 });
 
 test("the negative control plants a failure the walk must notice", () => {

@@ -721,7 +721,11 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
-import { claimVerifyKickoff, pendingVerifyKickoff } from "./model/verifyKickoff";
+import {
+  claimVerifyKickoff,
+  pendingVerifyKickoff,
+  verifyKickoffMono,
+} from "./model/verifyKickoff";
 import {
   loadShipNote,
   reportShipReady,
@@ -8869,9 +8873,23 @@ function Workspace({
     if (!kickoff) return;
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
-    const mono = createMono([kickoff.project]);
-    saveMonoName(mono.id, kickoff.monoName);
-    void onOpenMono(mono.id).then(() => {
+    void verifyKickoffMono(kickoff, {
+      create: (project, name) => {
+        const mono = createMono([project]);
+        saveMonoName(mono.id, name);
+        return mono.id;
+      },
+      // A plan naming an existing Mono (the built-in Chief of Staff) waits until the hub has tied it to the project.
+      ready: (monoId, project) => {
+        const mono = findMono(monoId);
+        return !!mono && monoWorksOn(mono, project);
+      },
+    }).then(async (monoId) => {
+      if (!monoId) {
+        console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
+        return;
+      }
+      await onOpenMono(monoId);
       const sessionId = monoViewIdRef.current;
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
     });

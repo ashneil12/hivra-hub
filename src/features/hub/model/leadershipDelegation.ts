@@ -13,7 +13,7 @@
 // The delegate tool reaches it with `delegate_task {lead}` (agent-app/model/agentAppTasks.ts).
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { isDefaultTeamMono } from "./builtInMonos";
-import { LEADS, leadMono } from "./hubLeads";
+import { leadMono, leadSpecFor } from "./hubLeads";
 import { isGlobalProject } from "./hubProjects";
 import type { HubProject } from "./types";
 
@@ -29,16 +29,16 @@ export type LeadTarget = {
 
 /**
  * The Leads a Mono may brief: one per project it is a member of (by folder), whose Lead is a member of it too, never
- * the global memory.
+ * the global memory. Every project's Lead counts, the four and any beyond them (one Ash made with New project).
  */
 export function leadTargetsFor(monoId: string, projects: readonly HubProject[]): LeadTarget[] {
   const from = listMonos().find((m) => m.id === monoId);
   if (!from) return [];
-  return LEADS.flatMap((spec) => {
-    if (isGlobalProject(spec.projectId)) return [];
-    const project = projects.find((p) => p.id === spec.projectId);
+  return projects.flatMap((project) => {
+    if (isGlobalProject(project.id)) return [];
+    const spec = leadSpecFor(project);
     const lead = leadMono(spec);
-    if (!project?.folder || !lead || lead.id === monoId || !monoWorksOn(from, project.folder)) return [];
+    if (!project.folder || !lead || lead.id === monoId || !monoWorksOn(from, project.folder)) return [];
     if (!monoWorksOn(lead, project.folder)) return [];
     return [{ leadId: lead.id, leadName: lead.name?.trim() || spec.name, projectId: spec.projectId, folder: project.folder, ...(lead.sessionId ? { sessionId: lead.sessionId } : {}) }];
   });

@@ -34,7 +34,8 @@ export type AppPolicy = {
  */
 export type VerifyPlan = {
   runId: string;
-  kickoff?: { project: string; monoName: string; prompt: string };
+  /** monoId: open that existing Mono (a built-in team Mono) once it works on project, instead of making a new one. */
+  kickoff?: { project: string; monoName: string; prompt: string; monoId?: string };
 };
 
 export type AppIdentity = {
@@ -63,6 +64,9 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
             project: kickoff.project,
             monoName: kickoff.monoName,
             prompt: kickoff.prompt,
+            ...(typeof kickoff.monoId === "string" && kickoff.monoId
+              ? { monoId: kickoff.monoId }
+              : {}),
           },
         }
       : {}),

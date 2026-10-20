@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseTranscript, transcriptTurns } from "./claude-fixtures.mjs";
-import { FAKE_VERSION, noConversationFrame, parseCliArgs, pickRule } from "./fake-claude.mjs";
+import { FAKE_VERSION, fillTemplate, noConversationFrame, parseCliArgs, pickRule, promptPayload } from "./fake-claude.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(HERE, "fake-claude.mjs");
@@ -269,4 +269,72 @@ test("a helper call (titles) never plays the rules, and closing stdin ends the p
   waiting.child.stdin.end();
   assert.equal(await waiting.exited, 0);
   assert.equal(waiting.results().length, 0, "a process whose app went away never answers");
+});
+
+test("asks through the client like Claude Code (AskUserQuestion), and its turn goes on with the answer it gets", async () => {
+  const dir = scratch();
+  const question = { question: "Which colour?", header: "Colour", multiSelect: false, options: [{ label: "Blue" }, { label: "Green" }] };
+  const scenario = rules(dir, [
+    {
+      name: "asker",
+      match: "ASK",
+      steps: [{ say: "One question." }, { ask: { questions: [question], mark: "answered" } }, { say: "DONE: going with {{answer}}." }],
+    },
+  ]);
+  const fake = start(["--session-id", "asker"], { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: scenario });
+  await fake.initialize();
+  fake.prompt("ASK me");
+  const asked = await fake.until((f) => f.type === "control_request", "can_use_tool");
+  assert.equal(asked.request.subtype, "can_use_tool");
+  assert.equal(asked.request.tool_name, "AskUserQuestion");
+  assert.deepEqual(asked.request.input, { questions: [question] });
+  const toolUse = fake.frames.find((f) => f.type === "assistant" && f.message.content[0].name === "AskUserQuestion");
+  assert.equal(asked.request.tool_use_id, toolUse.message.content[0].id);
+  // No answer yet: the turn waits.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(fake.results().length, 0);
+  // The app's answer, shaped like claude.ts's buildControlResponse + askUserQuestionAllowInput.
+  fake.send({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: asked.request_id,
+      response: { behavior: "allow", updatedInput: { questions: [question], answers: { "Which colour?": "Green" } } },
+    },
+  });
+  const result = await fake.until((f) => f.type === "result", "result");
+  assert.equal(result.result, "DONE: going with Green.");
+  const toolResult = fake.frames.find((f) => f.type === "user" && f.message.content[0].tool_use_id === toolUse.message.content[0].id);
+  assert.match(toolResult.message.content[0].content, /"Which colour\?"="Green"/);
+  assert.equal(toolResult.message.content[0].is_error, false);
+  const mark = JSON.parse(fs.readFileSync(path.join(dir, "marks/answered.json"), "utf8"));
+  assert.deepEqual([mark.conversation, mark.answered, mark.answers], ["asker", true, { "Which colour?": "Green" }]);
+  fake.child.stdin.end();
+  assert.equal(await fake.exited, 0);
+});
+
+test("fills {{...}} from a wake's payload and saved calls, keeping a lone value's type", () => {
+  const wake = `<monocode_context>\n{"not":"this"} prose\n</monocode_context>\n\n[MonoCode question] text\n\n${JSON.stringify({ taskId: "t-1", requestId: 7, questions: [{ id: "q1", options: [{ id: "Blue" }, { id: "Green" }] }] })}`;
+  const payload = promptPayload(wake);
+  assert.equal(payload.taskId, "t-1");
+  assert.equal(promptPayload("no json here"), null);
+  const saved = { "cos-brief": { response: { result: { taskId: "t-top" } } } };
+  const lookup = (name) => {
+    if (name.startsWith("prompt.")) return name.slice(7).split(".").reduce((at, key) => at?.[key], payload);
+    if (name.startsWith("saved.")) return name.slice(6).split(".").reduce((at, key) => at?.[key], saved);
+    return undefined;
+  };
+  assert.deepEqual(
+    fillTemplate(
+      {
+        taskId: "{{prompt.taskId}}",
+        requestId: "{{prompt.requestId}}",
+        answers: { "{{prompt.questions.0.id}}": ["{{prompt.questions.0.options.1.id}}"] },
+        top: "{{saved.cos-brief.response.result.taskId}}",
+        note: "task {{prompt.taskId}} / {{nope}}",
+      },
+      lookup,
+    ),
+    { taskId: "t-1", requestId: 7, answers: { q1: ["Green"] }, top: "t-top", note: "task t-1 / {{nope}}" },
+  );
 });

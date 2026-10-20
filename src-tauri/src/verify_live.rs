@@ -3,7 +3,8 @@
 //! A **dev copy running under a temporary HOME** that is started with `MONOCODE_VERIFY_LIVE=<plan.json>` reads one
 //! plan: the fake Claude CLI to run instead of the installed one (`scripts/fake-claude.mjs` behind a `claude`
 //! wrapper), auto-resume switched on so a restart midway is exercised like the daily app's, and a kickoff the window
-//! sends once (a Mono on a scratch project, and its first message). Nothing else changes.
+//! sends once (a Mono on a scratch project, and its first message; or, with `monoId`, an existing Mono such as the
+//! built-in Chief of Staff, once it works on that project). Nothing else changes.
 //!
 //! The daily app never reads it, and neither does a dev copy on the real HOME: both conditions are checked before the
 //! file is opened, so a stray variable can't point a real copy at a fake Claude.
@@ -27,6 +28,10 @@ pub struct Kickoff {
     pub project: String,
     pub mono_name: String,
     pub prompt: String,
+    /// Open this existing Mono (a built-in team Mono, e.g. `chief-of-staff`) instead of making one: the window waits
+    /// until it works on `project`, then sends `prompt` in its chat. `monoName` is then only a label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mono_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +85,16 @@ pub fn parse(text: &str) -> Result<Plan, String> {
         let name = kickoff.mono_name.trim();
         if name.is_empty() || name.chars().count() > 60 || name.chars().any(char::is_control) {
             return Err("verify plan: kickoff.monoName must be one line of 1-60 characters".into());
+        }
+        if let Some(id) = &kickoff.mono_id {
+            if id.is_empty()
+                || id.len() > 64
+                || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err(
+                    "verify plan: kickoff.monoId must be 1-64 letters, digits or '-'".into(),
+                );
+            }
         }
     }
     Ok(plan)
@@ -166,6 +181,20 @@ mod tests {
         assert!(plan.auto_resume);
         assert_eq!(plan.kickoff.as_ref().unwrap().mono_name, "Verify Lead");
         assert_eq!(window_info(&plan)["runId"], "20261019-a1");
+        assert_eq!(plan.kickoff.as_ref().unwrap().mono_id, None);
+        assert!(window_info(&plan)["kickoff"].get("monoId").is_none());
+
+        // An existing Mono (the built-in Chief of Staff) instead of a new one.
+        let team = parse(&format!(
+            r#"{{"version":1,"runId":"20261019-a1-tree","kickoff":{{"project":"{project}","monoName":"Chief of Staff",
+               "monoId":"chief-of-staff","prompt":"VERIFY-TREE-KICKOFF"}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            team.kickoff.as_ref().unwrap().mono_id.as_deref(),
+            Some("chief-of-staff")
+        );
+        assert_eq!(window_info(&team)["kickoff"]["monoId"], "chief-of-staff");
 
         let cases = [
             (r#"{"version":2,"runId":"a"}"#.to_string(), "version"),
@@ -186,6 +215,10 @@ mod tests {
             (
                 format!(r#"{{"version":1,"runId":"a","kickoff":{{"project":"{project}","monoName":"x","prompt":"  "}}}}"#),
                 "prompt",
+            ),
+            (
+                format!(r#"{{"version":1,"runId":"a","kickoff":{{"project":"{project}","monoName":"x","prompt":"y","monoId":"no such/id"}}}}"#),
+                "monoId",
             ),
             (r#"{"version":1,"runId":"a","extra":1}"#.to_string(), "unknown field"),
         ];

@@ -13,15 +13,19 @@
 //   FAKE_CLAUDE_STATE     a folder it keeps between processes: conversations/<id>.json (so --resume works across app
 //                         restarts, and a deleted one answers "No conversation found" exactly like Claude Code 2.1.302),
 //                         events.ndjson (every line in and out), prompts.ndjson, app-calls.ndjson, marks/<name>.json,
-//                         and gates/<name> files a step can wait for.
+//                         saved/<name>.json (app calls a step kept) and gates/<name> files a step can wait for.
 //
 // A rules file: {"version": 1, "rules": [{ "name", "match": "<regex on the prompt>", "tag"?, "notTag"?, "setTag"?,
 // "times"?, "steps": [...] }]}. The first rule that matches (and still has times left) plays its steps:
 //   {"say": "text"}                                   an assistant message
-//   {"app": "sessions.start", "input": {...}}         a `monocode app` call over MONOCODE_APP_ENDPOINT with the turn's
+//   {"app": "sessions.start", "input": {...}, "save"?: "name"}
+//                                                     a `monocode app` call over MONOCODE_APP_ENDPOINT with the turn's
 //                                                     MONOCODE_APP_TOKEN, shown as a Bash tool call and its result;
-//                                                     "{{lastStarted}}" in an input string is the id the last
-//                                                     sessions.start in this process returned
+//                                                     `save` keeps {action, input, response} as saved/<name>.json
+//   {"ask": {"questions": [...], "mark"?: "name"}}    an AskUserQuestion: the tool call, then a can_use_tool
+//                                                     control_request, then it waits for the app's control_response
+//                                                     (Ash, or a Lead's task_answer) and plays the tool result the way
+//                                                     Claude Code does; `mark` writes marks/<name>.json with the answers
 //   {"background": {"id", "kind": "subagent"|"shell", "description"}}   start background work (task_started)
 //   {"finishBackground": "id"}                        it finishes (task_updated, task_notification)
 //   {"mark": "name"}                                  write marks/<name>.json (when, which conversation, the prompt)
@@ -29,6 +33,15 @@
 //   {"sleep": ms}, {"exit": code}
 // then a `result`. A prompt no rule matches gets a one-line reply. Helper calls (titles: --no-session-persistence)
 // never run rules.
+//
+// Strings in `say` and in an app step's input (keys too) may hold {{...}}, filled in when the step plays; a string that
+// is only one of them takes the value's own type (a number stays a number):
+//   {{lastStarted}}         the id the last sessions.start in this process returned
+//   {{answer}}              the answers the last `ask` step got, joined
+//   {{prompt.<path>}}       a field of the JSON object on the prompt's last JSON line (a [MonoCode question] wake's
+//                           payload, say: {{prompt.taskId}}, {{prompt.questions.0.options.1.id}})
+//   {{saved.<name>.<path>}} a field of a saved app call ({{saved.tree-task.response.result.taskId}})
+// One that can't be filled is left as it is.
 
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -42,13 +55,62 @@ import { parseTranscript, promptText, transcriptTurns } from "./claude-fixtures.
 
 export const FAKE_VERSION = "2.1.302 (Claude Code)";
 
+/** A value's {{path}} placeholders filled from `lookup` (strings and keys at any depth); unknown ones are left as is. */
+export function fillTemplate(value, lookup) {
+  if (typeof value === "string") {
+    const whole = /^\{\{([^{}]+)\}\}$/.exec(value);
+    if (whole) {
+      const found = lookup(whole[1].trim());
+      return found === undefined ? value : found;
+    }
+    return value.replace(/\{\{([^{}]+)\}\}/g, (text, name) => {
+      const found = lookup(name.trim());
+      return found === undefined ? text : typeof found === "string" ? found : JSON.stringify(found);
+    });
+  }
+  if (Array.isArray(value)) return value.map((item) => fillTemplate(item, lookup));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [String(fillTemplate(key, lookup)), fillTemplate(item, lookup)]),
+    );
+  return value;
+}
+
 /** An app step's input with "{{lastStarted}}" replaced by the last started session's id (strings at any depth). */
 export function withLastStarted(value, lastStarted) {
-  if (typeof value === "string") return lastStarted ? value.replaceAll("{{lastStarted}}", lastStarted) : value;
-  if (Array.isArray(value)) return value.map((item) => withLastStarted(item, lastStarted));
-  if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withLastStarted(item, lastStarted)]));
-  return value;
+  return fillTemplate(value, (name) => (name === "lastStarted" && lastStarted ? lastStarted : undefined));
+}
+
+/** One field of a value by a dotted path ("questions.0.id"); undefined when it isn't there. */
+export function dig(value, dotted) {
+  let at = value;
+  for (const key of dotted.split(".")) {
+    if (at === null || typeof at !== "object") return undefined;
+    at = Array.isArray(at) && /^\d+$/.test(key) ? at[Number(key)] : at[key];
+  }
+  return at;
+}
+
+/** The JSON object on a prompt's last line that holds one (an app notification's payload), or null. */
+export function promptPayload(prompt) {
+  const lines = String(prompt).split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // not this line
+    }
+  }
+  return null;
+}
+
+/** What Claude Code's AskUserQuestion tool returns once the user (here: the app) answered. */
+export function askToolResult(answers) {
+  const pairs = Object.entries(answers ?? {}).map(([question, answer]) => `"${question}"="${answer}"`);
+  return `User has answered your questions: ${pairs.join(", ")}. You can now continue with the user's answers in mind.`;
 }
 
 /** The command line as far as the fake cares. */
@@ -116,7 +178,7 @@ export function pickRule(rules, prompt, tags, fired = {}) {
 
 function stateDir() {
   const dir = process.env.FAKE_CLAUDE_STATE || path.join(os.tmpdir(), "fake-claude");
-  for (const sub of ["conversations", "marks", "gates"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+  for (const sub of ["conversations", "marks", "gates", "saved"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
   return dir;
 }
 
@@ -243,6 +305,9 @@ export async function main(argv = process.argv.slice(2)) {
   const queue = [];
   let running = null;
   let lastStarted = null;
+  let lastAnswer;
+  /** The app's control_responses to this process's own control_requests (an AskUserQuestion's answer), by request id. */
+  const responses = new Map();
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const assistant = (content) => {
@@ -294,15 +359,26 @@ export async function main(argv = process.argv.slice(2)) {
         tags: [...new Set([...(value.tags ?? []), rule.setTag])],
       }));
     let last = "";
+    const lookup = (name) => {
+      if (name === "lastStarted") return lastStarted ?? undefined;
+      if (name === "answer") return lastAnswer;
+      if (name.startsWith("prompt.")) return dig(promptPayload(prompt), name.slice("prompt.".length));
+      if (name.startsWith("saved.")) {
+        const [saved, ...rest] = name.slice("saved.".length).split(".");
+        const record = readJson(path.join(dir, "saved", `${safeName(saved)}.json`), undefined);
+        return rest.length ? dig(record, rest.join(".")) : record;
+      }
+      return undefined;
+    };
     for (const step of rule.steps ?? []) {
       if (closed || interrupted) break;
       if (typeof step.say === "string") {
-        last = step.say;
-        assistant([{ type: "text", text: step.say }]);
+        last = fillTemplate(step.say, lookup);
+        assistant([{ type: "text", text: last }]);
       } else if (typeof step.app === "string") {
         messages += 1;
         const toolId = `toolu_fake_${process.pid}_${messages}`;
-        const input = withLastStarted(step.input ?? {}, lastStarted);
+        const input = fillTemplate(step.input ?? {}, lookup);
         const json = JSON.stringify(input);
         assistant([
           {
@@ -322,6 +398,8 @@ export async function main(argv = process.argv.slice(2)) {
           input,
           response,
         });
+        if (step.save)
+          writeJson(path.join(dir, "saved", `${safeName(step.save)}.json`), { action: step.app, input, response });
         out({
           type: "user",
           session_id: conversationId,
@@ -334,6 +412,57 @@ export async function main(argv = process.argv.slice(2)) {
             ],
           },
         });
+      } else if (step.ask) {
+        // Claude Code asks through the client: the tool call, then can_use_tool, then the tool result once answered.
+        messages += 1;
+        const toolId = `toolu_fake_${process.pid}_${messages}`;
+        const input = { questions: fillTemplate(step.ask.questions ?? [], lookup) };
+        assistant([{ type: "tool_use", id: toolId, name: "AskUserQuestion", input }]);
+        const requestId = `fake-ask-${randomUUID()}`;
+        out({
+          type: "control_request",
+          request_id: requestId,
+          request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input, tool_use_id: toolId },
+        });
+        const deadline = Date.now() + (step.ask.timeoutMs ?? 30 * 60_000);
+        while (!responses.has(requestId) && !closed && !interrupted && Date.now() < deadline) await sleep(50);
+        const response = responses.get(requestId) ?? null;
+        responses.delete(requestId);
+        const answered = response?.behavior === "allow";
+        const answers =
+          answered && response.updatedInput?.answers && typeof response.updatedInput.answers === "object"
+            ? response.updatedInput.answers
+            : {};
+        lastAnswer = Object.values(answers).map(String).join(", ");
+        if (step.ask.mark)
+          writeJson(path.join(dir, "marks", `${safeName(step.ask.mark)}.json`), {
+            at: new Date().toISOString(),
+            pid: process.pid,
+            conversation: conversationId,
+            rule: rule.name,
+            prompt,
+            answered,
+            answers,
+            response,
+          });
+        if (response)
+          out({
+            type: "user",
+            session_id: conversationId,
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: toolId,
+                  content: answered ? askToolResult(answers) : String(response.message ?? "User declined to answer questions"),
+                  is_error: !answered,
+                },
+              ],
+            },
+          });
       } else if (step.background) {
         const task = {
           id: String(step.background.id),
@@ -477,6 +606,11 @@ export async function main(argv = process.argv.slice(2)) {
     try {
       message = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (message.type === "control_response") {
+      const reply = message.response ?? {};
+      if (reply.request_id != null) responses.set(String(reply.request_id), reply.response ?? {});
       return;
     }
     if (message.type === "control_request") {
