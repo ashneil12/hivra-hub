@@ -167,11 +167,8 @@ export const addModelEscRef: { current: ((event?: Event) => boolean) | null } = 
 // More than one window listener sees the same Esc (the picker's and its popover's); each press acts once.
 const seenEsc = new WeakSet<Event>();
 
-export type AuthMode = "key" | "oauth";
-export const OAUTH_NOT_CONNECTED = "Not connected yet. Signing in with your provider account isn't built. Use an API key for now.";
-
 /**
- * Name, provider, how to sign in, address, model id and a masked key. The provider list opens in the form's own flow
+ * Name, provider, address, model id and a masked key. The provider list opens in the form's own flow
  * (it pushes the fields down, never covers them), closes on a pick, and Esc closes it. Back and Esc return to the list.
  * The key goes to the key store, never settings.
  */
@@ -196,7 +193,6 @@ export function AddModelForm({
   const valid = Object.keys(errors).length === 0;
   const passed = test !== null && test !== "testing" && test.ok;
   const keyed = needsKey(form.provider);
-  const oauth = false;
   const set = (patch: Partial<CustomModelForm>) => {
     setForm((f) => ({ ...f, ...patch }));
     setTest(null);
@@ -288,9 +284,7 @@ export function AddModelForm({
         <summary className="cursor-pointer">Reasoning effort (optional)</summary>
         <EffortChoices levels={reasoningEfforts(form.reasoningEfforts)} onChange={(levels) => set({ reasoningEfforts: levels })} />
       </details>
-      {oauth ? (
-        <div data-oauth-not-connected className="rounded-md bg-content/5 px-2.5 py-2 text-[12px] text-content/70">{OAUTH_NOT_CONNECTED}</div>
-      ) : keyed ? (
+      {keyed ? (
         <label className="flex flex-col gap-1 text-[11px] text-content/55">
           Key
           <input className={input} type="password" autoComplete="off" spellCheck={false} value={form.key}
@@ -298,7 +292,7 @@ export function AddModelForm({
           {field("key")}
         </label>
       ) : null}
-      {oauth ? null : test === "testing" ? (
+      {test === "testing" ? (
         <div className="text-[12px] text-content/55" data-key-test="testing">Testing…</div>
       ) : test ? (
         <div className="flex items-center gap-1.5 text-[12px] text-content/70" data-key-test={test.ok ? "ok" : test.code === CLAUDE_KEY_ERROR ? "guidance" : "failed"}>
@@ -310,14 +304,14 @@ export function AddModelForm({
         <button type="button" data-add-model-cancel onClick={onCancel} className="rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8">
           Cancel
         </button>
-        <button type="button" data-test-key disabled={test === "testing" || oauth} onClick={() => void runTest()}
+        <button type="button" data-test-key disabled={test === "testing"} onClick={() => void runTest()}
           className="rounded-md bg-content/8 px-2.5 py-1 text-[12px] text-content/85 hover:bg-content/12 disabled:opacity-40">
           {test === "testing" ? "Testing…" : keyed ? "Test key" : "Test connection"}
         </button>
         <button
           type="button"
           data-save-model
-          disabled={!valid || oauth || saving || test === "testing"}
+          disabled={!valid || saving || test === "testing"}
           onClick={async () => {
             // Save tests first when it hasn't been tested, and only keeps a model that answered.
             if (!passed && !(await runTest())) return;
