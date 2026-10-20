@@ -86,6 +86,9 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
       }),
     );
   await seed(page, ownerSession);
+  // The pointer leaves the Lead's row it clicked (the rail stays put now that the Lead opens in its coding team): a
+  // hovered row trades its mark for its options button.
+  await page.mouse.move(800, 300);
 
   // The rail: the Mono carries the most urgent mark (red: a failure), its sub-chats opened by themselves (something is
   // stuck), and its status splits what is out.
