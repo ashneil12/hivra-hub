@@ -171,6 +171,23 @@ describe("project choices through lifecycle saves", () => {
     expect([...(lastSavedMemory() ?? [])]).toEqual([...state.memory]);
   });
 
+  it("a reload marks the turn it cuts as cut by a reload, and a quit as a quit", async () => {
+    const { persistQuitState } = await import("./appLifecycle");
+    const { RELOAD_INTERRUPT_MESSAGE, INTERRUPT_MESSAGE } = await import("../../features/sessions/model/inFlight");
+    const savedNote = () => {
+      const call = vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_upsert").at(-1);
+      const blocks = (call?.[1] as { session: { blocks: { text: string; notice?: string }[] } } | undefined)?.session.blocks ?? [];
+      return blocks.at(-1);
+    };
+    for (const [mode, text] of [["unload", RELOAD_INTERRUPT_MESSAGE], ["quit", INTERRUPT_MESSAGE]] as const) {
+      vi.mocked(invoke).mockClear();
+      const state = workspace();
+      state.sessions[0] = { ...state.sessions[0], busy: true, blocks: [{ id: "u", role: "user", text: "go" }] };
+      await persistQuitState(state.sessions, state.tabs, state.activeTabId, state.projectCwd, state.memory, mode);
+      expect(savedNote()).toMatchObject({ notice: "interrupt", text });
+    }
+  });
+
   it("preserves choices when closing a busy window", async () => {
     const state = workspace();
     state.sessions[3].busy = true;

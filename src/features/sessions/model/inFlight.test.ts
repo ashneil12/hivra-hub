@@ -6,6 +6,8 @@ import {
   CUT_NOTE_MAX_LABEL,
   INTERRUPT_MESSAGE,
   MAX_AUTO_RESUMES,
+  RELOAD_INTERRUPT_MESSAGE,
+  cutBeforeAnyOutput,
   RESUME_STOPPED_MESSAGE,
   UPDATE_INTERRUPT_MESSAGE,
   canAutoContinue,
@@ -252,9 +254,20 @@ describe("canAutoContinue", () => {
     expect(canAutoContinue(chat("/tmp/a", { providerSessionId: "p1" }))).toBe(
       false,
     );
-    expect(canAutoContinue(markTurnInterrupted(chat("/tmp/a", { busy: true })))).toBe(
-      false,
-    );
+    // No provider thread and the turn already had output: nothing to continue.
+    expect(
+      canAutoContinue(
+        markTurnInterrupted(
+          chat("/tmp/a", {
+            busy: true,
+            blocks: [
+              { id: "u1", role: "user", text: "hello" },
+              { id: "a1", role: "assistant", text: "Hi" },
+            ],
+          }),
+        ),
+      ),
+    ).toBe(false);
     expect(
       canAutoContinue({
         ...interrupted,
@@ -515,5 +528,65 @@ describe("restart-safe resume (Phase 1b WP5)", () => {
         pendingQuestion: { requestId: 1, questions: [] },
       }),
     ).toBe(false);
+  });
+});
+
+describe("a reload cuts a turn (the realtest baseline: cut 1 s after Ash's message, never resumed)", () => {
+  const sent = (patch: Partial<Session> = {}) =>
+    chat("/p/tally", {
+      busy: true,
+      blocks: [
+        { id: "a0", role: "assistant", text: "Earlier reply." },
+        { id: "u1", role: "user", text: "have a worker add sharing to tallies now. go" },
+      ],
+      ...patch,
+    });
+
+  it("reproduces the baseline: a chat with no provider thread yet was never resumed", () => {
+    // Before: canAutoContinue needed a provider thread, so a turn cut before Claude bound one waited for good.
+    const cut = markTurnInterrupted(sent(), undefined, "reload");
+    expect(cut.providerSessionId).toBeUndefined();
+    expect(canAutoContinue(cut)).toBe(true);
+  });
+
+  it("says it was a reload, not a quit", () => {
+    const cut = markTurnInterrupted(sent({ providerSessionId: "p1" }), undefined, "reload");
+    expect(cut.blocks.at(-1)).toMatchObject({ role: "system", notice: "interrupt", text: RELOAD_INTERRUPT_MESSAGE });
+    expect(canAutoContinue(cut)).toBe(true);
+  });
+
+  it("a message that never reached the agent is sent again, whole, with a note; one it had begun on continues", () => {
+    const early = markTurnInterrupted(sent({ providerSessionId: "p1" }), undefined, "reload");
+    expect(cutBeforeAnyOutput(early)).toBe(true);
+    expect(resumePrompt(early)).toBe(
+      "MonoCode Hub restarted before this message reached you, so it is sent again:\n\nhave a worker add sharing to tallies now. go",
+    );
+    const midTurn = markTurnInterrupted(
+      sent({
+        providerSessionId: "p1",
+        blocks: [...sent().blocks, { id: "a1", role: "assistant", text: "Let me look at the code first." }],
+      }),
+      undefined,
+      "reload",
+    );
+    expect(cutBeforeAnyOutput(midTurn)).toBe(false);
+    expect(resumePrompt(midTurn)).toBe(CONTINUE_PROMPT);
+    // Without a provider thread only a message it never got can come back.
+    expect(canAutoContinue({ ...midTurn, providerSessionId: undefined })).toBe(false);
+  });
+
+  it("a message still waiting in the queue is not the cut turn; an app's hidden turn keeps the old rule", () => {
+    const queuedBubble = sent({
+      providerSessionId: "p1",
+      blocks: [...sent().blocks, { id: "a1", role: "assistant", text: "On it." }, { id: "q1", role: "user", text: "and this" }],
+      queuedMessages: [{ id: "q1", text: "and this", attachments: [], blockId: "q1" }],
+    });
+    expect(cutBeforeAnyOutput(markTurnInterrupted(queuedBubble))).toBe(false);
+    const hidden = sent({
+      providerSessionId: "p1",
+      blocks: [{ id: "r1", role: "user", text: "[MonoCode report] ...", internal: true }],
+    });
+    expect(cutBeforeAnyOutput(markTurnInterrupted(hidden))).toBe(false);
+    expect(resumePrompt(markTurnInterrupted(hidden))).toBe(CONTINUE_PROMPT);
   });
 });

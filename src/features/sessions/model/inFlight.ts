@@ -1,6 +1,6 @@
 import { leafIds, newTab, type WorkspaceTab } from "../../workspace/model/layout";
 import type { DockSide, ProjectTerminalDock } from "../../projects/model/projectTerminal";
-import { sessionNeedsInput, type CutWork, type Session } from "./session";
+import { sessionNeedsInput, type Block, type CutWork, type Session } from "./session";
 import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 
@@ -11,7 +11,13 @@ export const INTERRUPT_MESSAGE =
 export const UPDATE_INTERRUPT_MESSAGE =
   "Turn interrupted when MonoCode Hub restarted for an update.";
 
+/** The note on a turn cut by a window reload (View > Reload, a vite full reload): the app itself kept running. */
+export const RELOAD_INTERRUPT_MESSAGE = "Turn interrupted when MonoCode Hub reloaded.";
+
 export const CONTINUE_PROMPT = "Continue from where you left off.";
+
+/** Before a message sent again because the cut came before the agent had it (`cutBeforeAnyOutput`). */
+export const RESEND_NOTE = "MonoCode Hub restarted before this message reached you, so it is sent again:";
 
 /**
  * A turn resumes itself after a restart at most this many times in a row. One that keeps taking the app down (or is
@@ -107,6 +113,8 @@ export function quitWhileBusyMessage(count: number): string {
 export function markTurnInterrupted(
   session: Session,
   shipUpdate?: string,
+  /** "reload": the window reloaded (the app kept running), so the note says so. */
+  cause?: "reload",
 ): Session {
   const sealed = { ...sealOpenWork(stopStreaming(session)), busy: false };
   if (lastBlockIsInterrupt(sealed)) return sealed;
@@ -117,7 +125,11 @@ export function markTurnInterrupted(
       {
         id: crypto.randomUUID(),
         role: "system",
-        text: shipUpdate ? UPDATE_INTERRUPT_MESSAGE : INTERRUPT_MESSAGE,
+        text: shipUpdate
+          ? UPDATE_INTERRUPT_MESSAGE
+          : cause === "reload"
+            ? RELOAD_INTERRUPT_MESSAGE
+            : INTERRUPT_MESSAGE,
         notice: "interrupt",
         ...(shipUpdate ? { shipUpdate } : {}),
       },
@@ -195,12 +207,37 @@ export function wasTurnInterrupted(session: Session): boolean {
 export function canAutoContinue(session: Session): boolean {
   return (
     !session.worktreeRemoved &&
-    !!session.providerSessionId &&
+    // A provider thread to continue, or a message it never got, which goes again whole (a fresh chat cut a moment
+    // after Ash wrote has no thread yet: the realtest baseline's Lead, cut 1 s after his message, waited for good).
+    (!!session.providerSessionId || cutBeforeAnyOutput(session)) &&
     !session.busy &&
     // A question still on screen is Ash's to answer; resuming would talk over it.
     !session.pendingQuestion &&
     lastBlockIsInterrupt(session)
   );
+}
+
+/**
+ * The message of the turn a restart or reload cut, when the agent had produced nothing for it yet: it may never have
+ * reached the agent (the window reloaded a moment after Ash wrote), so "continue" would continue the turn before it.
+ * Only a message someone sent (Ash's, or a brief); a hidden app turn (a report, a room wake) keeps the plain continue.
+ */
+export function cutMessageBeforeOutput(session: Pick<Session, "blocks" | "queuedMessages">): Block | undefined {
+  if (!lastBlockIsInterrupt(session)) return undefined;
+  const queued = new Set((session.queuedMessages ?? []).map((message) => message.blockId ?? message.id));
+  for (let i = session.blocks.length - 2; i >= 0; i -= 1) {
+    const block = session.blocks[i];
+    if (block.role === "system") continue;
+    if (block.role !== "user") return undefined;
+    // A bubble still waiting in its queue was never this turn's message.
+    if (block.draft || queued.has(block.id)) continue;
+    return !block.internal && block.text.trim() ? block : undefined;
+  }
+  return undefined;
+}
+
+export function cutBeforeAnyOutput(session: Pick<Session, "blocks" | "queuedMessages">): boolean {
+  return !!cutMessageBeforeOutput(session);
 }
 
 /** This turn has resumed itself after restarts as often as it may: it stops and waits for Ash instead. */
@@ -288,9 +325,12 @@ export function cutWorkNote(work: CutWork[]): string | null {
  * (`shipResumePrompt`), else the plain continue.
  */
 export function resumePrompt(
-  session: Pick<Session, "id" | "cutWork">,
+  session: Pick<Session, "id" | "cutWork" | "blocks" | "queuedMessages">,
   ship?: { note: ShipNote | null },
 ): string {
+  // Cut before the agent had the message: it goes again, whole (it carries any what-was-cut note it had itself).
+  const unsent = cutMessageBeforeOutput(session);
+  if (unsent) return `${RESEND_NOTE}\n\n${unsent.text.trim()}`;
   const base = ship ? shipResumePrompt(session.id, ship.note) : CONTINUE_PROMPT;
   const note = cutWorkNote(session.cutWork ?? []);
   return note ? `${note}\n\n${base}` : base;
@@ -313,11 +353,13 @@ export function withInFlightState(
   };
 }
 
-function lastBlockIsInterrupt(session: Session): boolean {
+function lastBlockIsInterrupt(session: Pick<Session, "blocks">): boolean {
   const last = session.blocks[session.blocks.length - 1];
   return (
     last?.role === "system" &&
-    (last.text === INTERRUPT_MESSAGE || last.text === UPDATE_INTERRUPT_MESSAGE)
+    (last.text === INTERRUPT_MESSAGE ||
+      last.text === UPDATE_INTERRUPT_MESSAGE ||
+      last.text === RELOAD_INTERRUPT_MESSAGE)
   );
 }
 
