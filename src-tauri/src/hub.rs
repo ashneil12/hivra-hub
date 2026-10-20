@@ -80,16 +80,19 @@ impl Endpoint {
             std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
                 .map(PathBuf::from),
+            crate::instance::real_home(),
         )
     }
 
     /// `live`: whether this copy may use the live Ash OS (the daily app). A dev copy needs both overrides, and never
-    /// gets the live port or the live key file.
+    /// gets the live port or the live key file: the one under HOME, nor the one under the user's real home folder (a
+    /// dev copy under a temporary HOME still runs as Ash).
     fn resolve(
         live: bool,
         port: Option<String>,
         token_file: Option<PathBuf>,
         home: Option<PathBuf>,
+        real_home: Option<PathBuf>,
     ) -> Result<Self, HubError> {
         let port = port
             .map(|raw| {
@@ -109,7 +112,12 @@ impl Endpoint {
                     "A dev copy never talks to the live Ash OS on port 18767.",
                 ));
             }
-            if live_key.is_some_and(|key| same_file(&key, &token_path)) {
+            let real_key = real_home.map(|home| home.join(TOKEN_SUBPATH));
+            if [&live_key, &real_key]
+                .into_iter()
+                .flatten()
+                .any(|key| same_file(key, &token_path))
+            {
                 return Err(HubError::new(
                     "refused",
                     "A dev copy never reads the live Ash OS key.",
@@ -739,7 +747,7 @@ mod tests {
     #[test]
     fn the_daily_app_uses_the_live_ash_os_unless_told_otherwise() {
         let home = PathBuf::from("/Users/someone");
-        let live = Endpoint::resolve(true, None, None, Some(home.clone())).unwrap();
+        let live = Endpoint::resolve(true, None, None, Some(home.clone()), None).unwrap();
         assert_eq!(live.port, DEFAULT_PORT);
         assert_eq!(live.token_path, home.join(TOKEN_SUBPATH));
         let stub = Endpoint::resolve(
@@ -747,6 +755,7 @@ mod tests {
             Some(" 18868 ".into()),
             Some("/tmp/stub/token".into()),
             Some(home),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -754,7 +763,7 @@ mod tests {
             (18868, PathBuf::from("/tmp/stub/token"))
         );
         assert_eq!(
-            Endpoint::resolve(true, Some("x".into()), None, None)
+            Endpoint::resolve(true, Some("x".into()), None, None, None)
                 .unwrap_err()
                 .kind,
             "error"
@@ -777,8 +786,14 @@ mod tests {
             (Some("18868"), None),
             (None, Some(stub_key.clone())),
         ] {
-            let error = Endpoint::resolve(false, port.map(str::to_string), key, Some(home.clone()))
-                .expect_err("a dev copy without a stub is off");
+            let error = Endpoint::resolve(
+                false,
+                port.map(str::to_string),
+                key,
+                Some(home.clone()),
+                None,
+            )
+            .expect_err("a dev copy without a stub is off");
             assert_eq!(error.kind, "unreachable");
             assert!(error.message.contains("dev copy"), "{}", error.message);
         }
@@ -788,6 +803,7 @@ mod tests {
             Some("18767".into()),
             Some(stub_key.clone()),
             Some(home.clone()),
+            None,
         )
         .err()
         .unwrap();
@@ -802,6 +818,7 @@ mod tests {
                 Some("18868".into()),
                 Some(spelling),
                 Some(home.clone()),
+                None,
             )
             .err()
             .unwrap();
@@ -812,10 +829,34 @@ mod tests {
             false,
             Some("18868".into()),
             Some(stub_key.clone()),
+            Some(home.clone()),
+            None,
+        )
+        .unwrap();
+        assert_eq!((stub.port, stub.token_path), (18868, stub_key.clone()));
+
+        // Under a temporary HOME the live key is still the one in the real home folder: never that either.
+        let temporary = dir.path().join("temporary-home");
+        std::fs::create_dir_all(&temporary).unwrap();
+        let error = Endpoint::resolve(
+            false,
+            Some("18868".into()),
+            Some(live_key.clone()),
+            Some(temporary.clone()),
+            Some(home.clone()),
+        )
+        .err()
+        .expect("the real home's key is refused");
+        assert_eq!(error.kind, "refused");
+        let stub = Endpoint::resolve(
+            false,
+            Some("18868".into()),
+            Some(stub_key.clone()),
+            Some(temporary),
             Some(home),
         )
         .unwrap();
-        assert_eq!((stub.port, stub.token_path), (18868, stub_key));
+        assert_eq!(stub.token_path, stub_key);
     }
 
     #[test]
