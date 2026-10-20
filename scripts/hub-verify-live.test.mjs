@@ -12,6 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
   ASKER,
+  CT_KICKOFF,
+  CT_WORKER,
   CONTINUE,
   DURABLE_KICKOFF,
   FLOW_API,
@@ -267,7 +269,30 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   // None of the earlier phases' prompts reach the room's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, "[MonoCode report] done"])
     assert.equal(pick(prompt, ["lead", "tree-lead", "durable-lead", "flow-cos"])?.startsWith("room") ?? false, false, prompt);
-  assert.deepEqual(WALK.slice(-3), ["room_agents_talk", "room_busy_mono_answers", "room_private_message"]);
+  const roomAt = WALK.indexOf("room_agents_talk");
+  assert.deepEqual(WALK.slice(roomAt, roomAt + 3), ["room_agents_talk", "room_busy_mono_answers", "room_private_message"]);
+});
+
+test("the coding team: Ash's new chat, its worker and the report reach their own rules, and nothing else does", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const fired = {};
+  const pick = (prompt, tags = []) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  const context = "<monocode_context>\n<coding_team>...</coding_team>\n<delegate_rules>Reports start with [MonoCode report]; a [MonoCode brief from you] ...</delegate_rules>\n</monocode_context>\n\n";
+  // A coding-team chat reads who it is ahead of Ash's message.
+  assert.equal(pick(`${context}${CT_KICKOFF} run r1: have one worker check the verify widget.`), "ct-kickoff");
+  const kickoff = rules.find((rule) => rule.name === "ct-kickoff");
+  const call = kickoff.steps.find((s) => s.app === "tasks.delegate");
+  assert.ok(call.input.brief.startsWith(CT_WORKER));
+  assert.equal(call.save, "ct-task");
+  // Its worker's brief, signed by the coding team, with its worker rules before the finish line.
+  assert.equal(pick(`[MonoCode brief from Verify coding team]\n\n${CT_WORKER} run r1: check the verify widget.\n\n<worker_rules>\n</worker_rules>`), "ct-worker");
+  // Its report comes back to the chat; another chat's report never takes the coding team's rule.
+  assert.equal(pick("[MonoCode report] MonoCode completion notification: CT-WORKER-DONE run r1", ["ct-chat"]), "ct-report");
+  assert.equal(pick("[MonoCode report] done", ["flow-cos"])?.startsWith("ct") ?? false, false);
+  // None of the earlier phases' prompts reach the coding team's rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, `${ROOM_BUSY} run r1`])
+    assert.equal(pick(prompt, ["lead", "tree-lead", "flow-cos"])?.startsWith("ct") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-1), ["coding_team_delegates"]);
 });
 
 test("the negative control plants a failure the walk must notice", () => {
