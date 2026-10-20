@@ -231,6 +231,8 @@ fn seed(env: &Env) {
         fs::write(dir.join("MEMORY.md"), format!("# {name}\n- {extra}\n")).unwrap();
         fs::write(dir.join("decisions.md"), "- Keep it simple\n").unwrap();
         fs::write(dir.join("topics/deploy.md"), "Deploy notes\n").unwrap();
+        // A hidden file in the history is an ordinary file: it comes back with it.
+        fs::write(dir.join(".gitignore"), ".DS_Store\n").unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-q", "-m", "memory"]);
@@ -575,6 +577,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 1,
                 "{name}'s history came back"
             );
+            assert!(target.memory_root.join(name).join(".gitignore").is_file());
             let remotes = Command::new("git")
                 .arg("-C")
                 .arg(target.memory_root.join(name))

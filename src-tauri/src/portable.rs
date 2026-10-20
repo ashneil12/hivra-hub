@@ -2281,11 +2281,12 @@ fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
     if !listing.status.success() {
         return Err(HistoryRefusal::Failed);
     }
+    // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`).
     for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
         let mode = meta.split(' ').next().unwrap_or("");
-        if !matches!(mode, "100644" | "100755") || safe_relative(path).is_none() {
+        if !matches!(mode, "100644" | "100755") {
             return Err(HistoryRefusal::Link(path.to_string()));
         }
     }
