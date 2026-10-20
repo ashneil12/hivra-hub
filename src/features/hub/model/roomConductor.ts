@@ -67,6 +67,8 @@ export type RoomTurnRequest = {
   monoId: string;
   chatId: string;
   convId: string;
+  /** The room's project: the runner gives the seat that project's memory (roomMemory.ts). */
+  projectId: string;
   /** The turn's id: a waiting wake's queue id, and what stop() names. */
   wakeId: string;
   /** The managed turn's prompt: its reply is the post. */
@@ -569,6 +571,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       monoId: me.id,
       chatId,
       convId: wake.convId,
+      projectId: chat.projectId,
       wakeId: wake.id,
       prompt: turnPrompt(base),
       wakePrompt: turnPrompt({ ...base, viaTool: true }),

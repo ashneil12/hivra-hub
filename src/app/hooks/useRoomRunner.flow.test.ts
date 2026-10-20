@@ -14,6 +14,17 @@ vi.mock("../../integrations/harness", () => ({
   runHarnessTextPrompt: async () => "",
 }));
 vi.mock("../../platform/tauri/fs", () => ({ homeDir: async () => "/Users/ash" }));
+// Ash OS, as the room turns read it: the room's project's memory primer.
+const primerCalls: Record<string, unknown>[] = [];
+vi.mock("../../features/hub/model/hubTransport", () => ({
+  tauriHubTransport: {
+    call: async (action: string, payload: Record<string, unknown>) => {
+      if (action !== "ash-hub-memory-primer") throw new Error(`no ${action} here`);
+      primerCalls.push(payload);
+      return { project: String(payload.project), name: "MonoCode Hub", text: "Current memory of MonoCode Hub (hub).\n- Rooms are per project [14 Oct]" };
+    },
+  },
+}));
 
 let root: Root;
 let container: HTMLElement;
@@ -143,6 +154,26 @@ it("the host's words show in the room while its managed turn writes them, then t
   await chat.roomIdle(room.id);
   expect(chat.roomDrafts(room.id)).toEqual([]);
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
+});
+
+it("each seat's room turn starts on the room's project memory, once per conversation of its chat", async () => {
+  const { chat, room, submitted, settle, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  expect(primerCalls.at(-1)).toEqual({ project: "hub" });
+  expect(submitted[0].text).toMatch(/^\[MonoCode room\] You are Chief of Staff/);
+  expect(submitted[0].text).toContain("This room is the hub project's.");
+  expect(submitted[0].text).toContain("<project_memory>");
+  expect(submitted[0].text).toContain("- Rooms are per project [14 Oct]");
+  settle.get(chatOf("chief-of-staff"))!("Nothing needs you.");
+  await chat.roomIdle(room.id);
+  chat.sendMessage(room.id, "and now?", conv);
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(2));
+  expect(submitted[1].text).not.toContain("<project_memory>");
+  settle.get(chatOf("chief-of-staff"))!("Still nothing.");
+  await chat.roomIdle(room.id);
 });
 
 it("work delegated during a room turn comes back to that room as 'X is back' once its report turn is over", async () => {

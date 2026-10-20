@@ -10,6 +10,8 @@
 // - Work a Mono delegated during a room turn comes back to that room: once the Mono has had its report turn, the room
 //   gets "X is back" from it (roomConductor.postBack).
 // - The room's cheap router: one isolated prompt to the smallest model.
+// - A room belongs to a project: each seat's room turn carries that project's memory primer, once per conversation of
+//   its chat (hub/model/roomMemory.ts).
 import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { canRunHarnessTextPrompt, canSteerHarness, runHarnessTextPrompt } from "../../integrations/harness";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
@@ -28,6 +30,7 @@ import {
   type RoomWakeEnd,
 } from "../../features/hub/model/roomConductor";
 import { getChat, leadershipChatId, requestReply, sendMessage } from "../../features/hub/model/hubChats";
+import { roomMemory } from "../../features/hub/model/roomMemory";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
 import { homeDir } from "../../platform/tauri/fs";
@@ -168,6 +171,11 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
         if (current.usageLimit && !current.busy)
           throw new Error(`${name} is out of its usage limit${resetsAt(current)}. Your message is saved.`);
+        // The room's project memory, after the turn (so the turn still opens "[MonoCode room]"), when this conversation
+        // of the seat's chat hasn't had it.
+        const memory = await roomMemory(current, request.projectId).catch(() => undefined);
+        const prompt = memory ? `${request.prompt}\n\n${memory.block}` : request.prompt;
+        const wakePrompt = memory ? `${request.wakePrompt}\n\n${memory.block}` : request.wakePrompt;
         if (monoTakesRoomTurnNow(current)) {
           const reply = await new Promise<string | undefined>((resolve, reject) => {
             const timer = window.setTimeout(
@@ -191,16 +199,17 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
               fn();
             };
             void Promise.resolve(
-              h.submit(session.id, request.prompt, {
+              h.submit(session.id, prompt, {
                 managed: true,
                 monoNote: note,
                 appRequestId: request.wakeId,
                 onSettled: (outcome) =>
-                  done(() =>
-                    outcome.status === "completed"
-                      ? resolve(outcome.text)
-                      : reject(new Error(outcome.error || (outcome.status === "cancelled" ? "The turn was stopped." : "Its turn did not finish."))),
-                  ),
+                  done(() => {
+                    if (outcome.status === "completed") {
+                      memory?.delivered();
+                      resolve(outcome.text);
+                    } else reject(new Error(outcome.error || (outcome.status === "cancelled" ? "The turn was stopped." : "Its turn did not finish.")));
+                  }),
               }),
             )
               .then((accepted) => {
@@ -211,7 +220,10 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
           });
           if (reply !== undefined) return { kind: "reply", text: reply };
         }
-        return wake(session, request.wakeId, request.wakePrompt, note);
+        const queued = wake(session, request.wakeId, wakePrompt, note);
+        // A wake that went in carried the memory; one taken back out didn't.
+        if (memory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && memory.delivered());
+        return queued;
       },
       async stop(monoId, wakeId) {
         const h = latest.current;

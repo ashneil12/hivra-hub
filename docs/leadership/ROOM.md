@@ -105,7 +105,8 @@ messages first (median 9 s, p90 27 s); the room re-planned within about 40 s of 
   digest turn. It may say nothing if a round is still open.
 
 **Shape.** Posts are 2 to 5 short lines (rules above); the room shows a longer one folded to its first lines with Show
-more, so a wall never fills the screen. Measured on 010dfbcf (B1, B6, B3): median room post about 890 characters, longest 2,013.
+more, so a wall never fills the screen. Measured on 010dfbcf (B1, B6, B3): median room post about 890 characters,
+longest 2,013.
 
 **What never lands.** NO_REPLY, empty replies, bare acknowledgements ("got it", "+1") and filler ("Checking 07 now.").
 An acknowledgement becomes a 👍 on the message it answers (a host with nothing to add to Ash still shows it read him).
@@ -123,7 +124,10 @@ same and leaves the conversation quiet until he writes or presses Keep going; ro
 
 **Each turn** runs in the Mono's own session (its soul, memory, tools and model), with the room rules, every seat's lane,
 the last 30 messages as data (the message that woke it marked >>) and what this turn is for (answer, one extra reply, a
-reply to a seat that named it, the digest, work coming back).
+reply to a seat that named it, the digest, work coming back). A room belongs to a project, so a seat's turn also carries
+that project's memory primer, the same `<project_memory>` its Lead starts with (Ash OS `ash-hub-memory-primer`,
+hub/model/roomMemory.ts): once per conversation of the seat's chat, again when the memory changed, nothing when Ash OS
+can't say (the turn never waits more than 1.5 s for it).
 - A free Mono takes it as a managed turn: its reply is the post, and its own chat shows one quiet line
   ("Leadership team · Answered Ash") that opens to the reply. Its words show in the room as it writes them (a live
   message marked "writing…", read from its chat every 300 ms), and the post takes that message's place when the turn
