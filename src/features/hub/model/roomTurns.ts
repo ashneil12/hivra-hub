@@ -429,7 +429,7 @@ function task(input: TurnInput): string {
     case "answer": {
       const several = input.batch && input.batch > 1 ? ` (${input.batch} messages; answer them together)` : "";
       return hosting
-        ? `Ash just wrote${several}. You host this room, so you answer first, now. Start with one line that shows you heard him (for a long message, how many asks and anything parked). Then who takes what, by name ("PM, ..."), one short line each, which wakes that seat; leave out seats with nothing to do. Don't list his asks back or explain each one: the owner gets the detail in its brief. If what he asks clashes with something already decided, say so with the decision. If something is truly his call, ask it once, last, with your pick. A short or simple message gets a short answer and wakes nobody.`
+        ? `Ash just wrote${several}. You host this room, so you answer first, now. Start with one line that shows you heard him (for a long message, how many asks and anything parked). Write that first line before you call any tool (a brief to a Lead, a memory read): the room shows your words as you write them, so Ash sees you start at once. Then who takes what, by name ("PM, ..."), one short line each, which wakes that seat; leave out seats with nothing to do. Don't list his asks back or explain each one: the owner gets the detail in its brief. If what he asks clashes with something already decided, say so with the decision. If something is truly his call, ask it once, last, with your pick. A short or simple message gets a short answer and wakes nobody.`
         : `Ash just wrote to you${several}. Answer him first, from your lane. Name a seat ("CoS, ...") only if it should act.`;
     }
     case "chime":

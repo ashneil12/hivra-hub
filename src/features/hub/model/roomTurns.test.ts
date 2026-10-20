@@ -210,6 +210,8 @@ describe("the gate and the prompts", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const host = turnPrompt({ ...base, me: COS, kind: "answer" });
     expect(host).toContain("one short line each");
+    // Ash sees the host's words as they are written: its first line comes before any tool call (a brief to a Lead).
+    expect(host).toContain("Write that first line before you call any tool");
     expect(host).toContain("Don't list his asks back");
     expect(host).toContain("2 to 5 short lines");
     const reviewer = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
