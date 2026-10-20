@@ -449,6 +449,7 @@ pub fn run() {
             delegations::delegations_refuse,
             delegations::delegations_list_open,
             delegations::delegations_tree,
+            delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
