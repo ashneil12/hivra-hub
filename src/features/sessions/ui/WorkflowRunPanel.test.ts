@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Block } from "../model/session";
 import type { WorkflowRunMeta } from "../model/workflowRun";
 import { WorkflowRunPanel } from "./WorkflowRunPanel";
@@ -71,4 +71,47 @@ it("opens a failed agent on its own, on the provider's reason", () => {
   const failed = q('[data-workflow-agent-work="Verify"]')!;
   expect(failed.querySelector("[data-workflow-agent-report] pre")?.textContent).toBe("API Error: 400");
   expect(failed.querySelector("[data-workflow-agent-progress]")).toBeNull();
+});
+
+describe("its Stop", () => {
+  const working = () => run([{ index: 1, label: "Read parser", state: "working", phaseIndex: 1 }]);
+  const renderWith = (onStop: (taskId: string) => Promise<boolean> | void) =>
+    act(() => root.render(createElement(WorkflowRunPanel, { block: working(), live: true, onStop })));
+  const settle = () => act(async () => await new Promise((r) => setTimeout(r, 0)));
+
+  it("says Stopping… while the stop is on its way, and keeps it once Claude Code took it", async () => {
+    let answer!: (stopped: boolean) => void;
+    const onStop = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    renderWith(onStop);
+    act(() => q("[data-workflow-stop]")!.click());
+    expect(onStop).toHaveBeenCalledWith("w1");
+    expect(q("[data-workflow-stop]")).toBeNull();
+    expect(container.textContent).toContain("Stopping…");
+    answer(true);
+    await settle();
+    expect(container.textContent).toContain("Stopping…");
+    expect(q("[data-workflow-stop-failed]")).toBeNull();
+  });
+
+  it("comes back with a note when nothing took the stop", async () => {
+    renderWith(async () => false);
+    act(() => q("[data-workflow-stop]")!.click());
+    await settle();
+    expect(container.textContent).not.toContain("Stopping…");
+    expect(q("[data-workflow-stop]")).not.toBeNull();
+    expect(q("[data-workflow-stop-failed]")?.textContent).toMatch(/Couldn't stop/);
+  });
+
+  it("comes back with the reason when the stop failed", async () => {
+    renderWith(async () => {
+      throw new Error("Claude Code exited");
+    });
+    act(() => q("[data-workflow-stop]")!.click());
+    await settle();
+    expect(q("[data-workflow-stop]")).not.toBeNull();
+    expect(q("[data-workflow-stop-failed]")?.textContent).toContain("Claude Code exited");
+    // A second try clears the note while it goes.
+    act(() => q("[data-workflow-stop]")!.click());
+    expect(q("[data-workflow-stop-failed]")).toBeNull();
+  });
 });

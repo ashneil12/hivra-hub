@@ -112,6 +112,7 @@ import {
 import { formatTokens } from "../../../../features/sessions/model/contextUsage";
 import { RUNTIME_MODE_LABEL } from "../../../../features/sessions/model/session";
 import {
+  CLAUDE_WORKFLOW_TASK_TYPE,
   applyWorkflowProgress,
   endWorkflowRun,
   isClaudeWorkflowTaskType,
@@ -1791,6 +1792,16 @@ function handleAgentLifecycle(
       const run = startWorkflowRun(rec, Date.now());
       const next = run && applyWorkflowProgress(run, rec, Date.now());
       if (next) {
+        // Tracked like a run whose start was seen, so its Stop (and the
+        // turn's) reaches it and the turn waits for it to end.
+        if (!live.backgroundTasks.has(progress.taskId)) {
+          live.backgroundTasks.set(progress.taskId, {
+            description: progress.description || "Workflow",
+            toolUseId: progress.toolUseId,
+            kind: cutWorkKind(CLAUDE_WORKFLOW_TASK_TYPE),
+          });
+          syncBackgroundWait(live);
+        }
         trackWorkflow(
           live,
           progress.toolUseId ?? `workflow:${progress.taskId}`,
