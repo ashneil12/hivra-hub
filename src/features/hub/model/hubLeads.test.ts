@@ -32,7 +32,7 @@ import { loadMonoFiles } from "../../monos/model/monoFiles";
 import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
 import { defaultSoul } from "../../monos/model/monoFiles";
-import { ensureProjectLeads, leadFor, LEADS, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
+import { completeLeadAdoption, ensureProjectLeads, leadFor, LEADS, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
 import { hubMcpArgs } from "./hubMcp";
 import type { HubProject } from "./types";
 
@@ -171,7 +171,7 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
     expect(listMonos().map((m) => m.id)).toEqual(["vg-game-lead", "hivra-lead", "nibbii-lead", "hub-lead"]);
   });
 
-  it("an existing Harness lead becomes it in place: same id and chat, new name, the hub's folder first, old binding dropped in Ash OS", () => {
+  it("an existing Harness lead becomes it in place: same id and chat, new name, the hub's folder first, old binding dropped in Ash OS", async () => {
     addMono(HARNESS_LEAD);
     const register = vi.fn(async () => undefined);
     const unregister = vi.fn(async () => undefined);
@@ -193,9 +193,36 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
       isLead: (id) => !!leadFor(id),
     });
     expect(JSON.parse(adopted[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead", ASH_CHAT: "s-harness-chat" });
-    // once: a second launch changes nothing and makes no second Lead
-    expect(ensureProjectLeads(PROJECTS, register, unregister)).toEqual({ created: [], tied: [], adopted: [] });
+    await completeLeadAdoption("ash-lead", async () => {});
     expect(unregister).toHaveBeenCalledTimes(1);
+    // once its soul is written: a second launch changes nothing and makes no second Lead
+    expect(ensureProjectLeads(PROJECTS, register, unregister)).toEqual({ created: [], tied: [], adopted: [] });
+  });
+
+  it("records the adoption only once its soul was written; a reseed that keeps failing leaves it to adopt again", async () => {
+    addMono(HARNESS_LEAD);
+    const unregister = vi.fn(async () => undefined);
+    expect(ensureProjectLeads(PROJECTS, undefined, unregister).adopted).toEqual(["ash-lead"]);
+    expect(localStorage.getItem("monocode:hub-lead-adopted")).toBeNull();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const waits: number[] = [];
+    const never = vi.fn(async () => {
+      throw new Error("SOUL.md changed under us");
+    });
+    expect(await completeLeadAdoption("ash-lead", never, { wait: async (ms) => void waits.push(ms) })).toBe(false);
+    expect(never).toHaveBeenCalledTimes(4);
+    expect(waits).toEqual([5_000, 30_000, 120_000]);
+    expect(localStorage.getItem("monocode:hub-lead-adopted")).toBeNull();
+    // Not recorded: the next pass adopts it again, and this time the reseed works.
+    expect(ensureProjectLeads(PROJECTS, undefined, unregister).adopted).toEqual(["ash-lead"]);
+    let tries = 0;
+    const flaky = async () => {
+      if (tries++ === 0) throw new Error("busy");
+    };
+    expect(await completeLeadAdoption("ash-lead", flaky, { wait: async () => {} })).toBe(true);
+    error.mockRestore();
+    expect(JSON.parse(localStorage.getItem("monocode:hub-lead-adopted")!)).toEqual(["ash-lead"]);
+    expect(ensureProjectLeads(PROJECTS, undefined, unregister).adopted).toEqual([]);
   });
 
   it("keeps a name Ash gave the old seat", () => {

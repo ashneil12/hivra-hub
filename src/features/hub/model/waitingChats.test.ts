@@ -11,8 +11,10 @@ import {
   answerInWords,
   autopilotMayTake,
   findWaitingChat,
+  forgetWaitingChat,
   noteChats,
   openWaitingChat,
+  pruneWaitingChats,
   resetWaitingChats,
   setWaitingChatsHost,
   setWorkerQuestionRouter,
@@ -117,6 +119,29 @@ describe("which chats are waiting", () => {
     noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() })], 1000);
     noteChats([chat({ id: "s1", busy: false })], 2000);
     expect(waitingChats()).toEqual([]);
+  });
+});
+
+describe("a chat that is gone", () => {
+  it("leaves Today when it is archived or deleted, and stays gone after a restart", () => {
+    noteChats([markerChat("s1", "Needs Ash: Ship it?\nMy pick: Yes."), markerChat("s2", "Needs Ash: Rename it?\nMy pick: No.")]);
+    forgetWaitingChat("s1");
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["s2"]);
+    resetWaitingChats();
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["s2"]);
+  });
+
+  it("is pruned when its saved conversation no longer exists; one that couldn't be looked up stays", async () => {
+    noteChats([
+      markerChat("gone", "Needs Ash: Ship it?\nMy pick: Yes."),
+      markerChat("here", "Needs Ash: Rename it?\nMy pick: No."),
+      markerChat("unknown", "Needs Ash: Merge it?\nMy pick: Yes."),
+    ]);
+    await pruneWaitingChats(async (id) => {
+      if (id === "unknown") throw new Error("database is locked");
+      return id === "here";
+    });
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["here", "unknown"]);
   });
 });
 

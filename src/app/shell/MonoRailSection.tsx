@@ -139,6 +139,23 @@ export function MonoRailSection({
   useRoleNamesVersion();
   useWaitingSoulsVersion();
   const waiting = rank ? waitingSouls() : [];
+  // Why OK on a waiting Mono couldn't finish (a file it couldn't read, or a failure), by Mono id: it keeps waiting.
+  const [soulProblems, setSoulProblems] = useState<ReadonlyMap<string, readonly string[]>>(new Map());
+  const noteSoulProblems = (monoId: string, problems: readonly string[]) =>
+    setSoulProblems((current) => {
+      const next = new Map(current);
+      if (problems.length) next.set(monoId, problems);
+      else next.delete(monoId);
+      return next;
+    });
+  const seatSoul = (monoId: string, name: string) => {
+    noteSoulProblems(monoId, []);
+    void seatWaitingSoul(monoId).then(
+      (problems) => noteSoulProblems(monoId, problems),
+      (error: unknown) =>
+        noteSoulProblems(monoId, [`Couldn't seat ${name}: ${error instanceof Error ? error.message : String(error)}`]),
+    );
+  };
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
   const shown = (name: string) => (rank ? plainName(name) : { primary: name });
   const monos = useMemo(
@@ -242,10 +259,16 @@ export function MonoRailSection({
             <div key={w.monoId} className="rounded-md border border-dashed border-content/25 px-2 py-1 text-[13px] leading-tight">
               <span className="flex items-center gap-1">
                 <span className="min-w-0 flex-1 truncate text-content/80">{w.name}</span>
-                <button type="button" onClick={() => void seatWaitingSoul(w.monoId)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
+                <button type="button" onClick={() => seatSoul(w.monoId, w.name)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
                 <button type="button" onClick={() => dismissWaitingSoul(w.monoId)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">Not now</button>
               </span>
               <span className="block text-[11px] text-content/50">Waiting for your OK</span>
+              {soulProblems.get(w.monoId)?.length ? (
+                <span role="alert" className="mt-0.5 flex items-start gap-1 text-[11px] leading-4 text-red-400">
+                  <CircleAlert className="mt-px size-3 shrink-0" strokeWidth={1.75} />
+                  <span className="min-w-0">{soulProblems.get(w.monoId)!.join(" ")}</span>
+                </span>
+              ) : null}
             </div>
           ))}
         </div>

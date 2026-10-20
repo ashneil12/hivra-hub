@@ -23,6 +23,7 @@ import {
 import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
+  monoRefusesRoomTurn,
 } from "../features/monos/model/monoMessaging";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -162,7 +163,9 @@ import {
   useHubSelection,
 } from "../features/hub/model/hubNav";
 import {
+  forgetWaitingChat,
   noteChats,
+  pruneWaitingChats,
   setWaitingChatsHost,
   setWorkerQuestionRouter,
 } from "../features/hub/model/waitingChats";
@@ -1010,7 +1013,6 @@ type SubmitOptions = ComposerTurnOptions & {
   planBlockId?: string;
   buildTarget?: PlanBuildTarget;
   managed?: boolean;
-  controlTextLimit?: number;
   orchestrationRetry?: OrchestrationProposal;
   appRequestId?: string;
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
@@ -5977,6 +5979,8 @@ function Workspace({
           stop: stopSessionForRemoval,
         });
         const removed = await remover.remove(sessionId);
+        // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
+        if (removed) forgetWaitingChat(sessionId);
         if (removed && deleteWorktreePath && seed) {
           try {
             await onRemoveWorktree(seed.cwd, deleteWorktreePath, false);
@@ -8370,7 +8374,7 @@ function Workspace({
           if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
-            controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
+            controlText = (controlText + event.text).slice(-20_000);
           if (options?.onSettled && event.type === "message.completed")
             controlText += "\n";
           if (event.type === "session.error")
@@ -9565,7 +9569,7 @@ function Workspace({
   });
 
   // Group chat uses the same Mono sessions, selected model, tools and settlement signal as a direct conversation.
-  useEffect(() => setGroupChatRunner(async (monoId, prompt, runnerOptions) => {
+  useEffect(() => setGroupChatRunner(async (monoId, prompt) => {
     const session = await ensureMonoSession(monoId, {
       home: homeDir,
       load: (id) => ensureOpenSessionRef.current(id),
@@ -9576,12 +9580,12 @@ function Workspace({
       },
     });
     if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
-    if (session.busy) throw new MonoBusyError("This Mono is already working. Wait for it to finish before trying again.");
+    if (monoRefusesRoomTurn(sessionsRef.current.find((entry) => entry.id === session.id) ?? session))
+      throw new MonoBusyError("This Mono is already working or has messages waiting. Wait for it to finish before trying again.");
     return new Promise<string>((resolve, reject) => {
       const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
       void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {
         managed: true,
-        controlTextLimit: runnerOptions?.maxReplyChars,
         onSettled: (outcome) => {
           window.clearTimeout(timer);
           if (outcome.status === "completed") resolve(outcome.text);
@@ -11366,6 +11370,13 @@ function Workspace({
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
   }, [sessions]);
+  // Once a launch: a waiting chat whose conversation was deleted (by any path) leaves Today.
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    void pruneWaitingChats(async (id) =>
+      sessionsRef.current.some((s) => s.id === id) || (await readSession(id)) !== null,
+    );
+  }, []);
   useEffect(() => {
     if (!IS_HUB_BUNDLE) return;
     return setWaitingChatsHost({

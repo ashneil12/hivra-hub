@@ -8,7 +8,7 @@ import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
-import { ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
+import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
@@ -106,7 +106,9 @@ function startHubBundleLeads(store: HubStore): void {
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
-      void reseedAdoptedLeadSoul(id, findMono(id)?.projects[0] ?? null, defaultSoul, readAgentFile, writeAgentFile).catch(() => undefined);
+      void completeLeadAdoption(id, () =>
+        reseedAdoptedLeadSoul(id, findMono(id)?.projects[0] ?? null, defaultSoul, readAgentFile, writeAgentFile),
+      );
     // The team is normally on the roster already (the rail repairs it on render); make sure before tying and seating.
     ensureBuiltInMonos();
     tieTeamToProjects(strip, (monoId, projectId) =>

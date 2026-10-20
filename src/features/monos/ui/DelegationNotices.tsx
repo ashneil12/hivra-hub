@@ -60,15 +60,18 @@ export function DelegatedChatNotice({
 export function DelegationWaitingLine({
   count,
   failed = [],
+  unloaded = [],
   onStopAll,
 }: {
   count: number;
   /** Chats the last Stop couldn't stop, by title. */
   failed?: readonly string[];
+  /** Chats whose workers the last Stop couldn't load (they may still be running), by title. */
+  unloaded?: readonly string[];
   onStopAll?: () => Promise<unknown> | void;
 }) {
   const [stopping, setStopping] = useState(false);
-  if (count <= 0 && !failed.length) return null;
+  if (count <= 0 && !failed.length && !unloaded.length) return null;
   return (
     <div
       data-delegation-waiting={count}
@@ -82,6 +85,17 @@ export function DelegationWaitingLine({
         >
           Couldn&apos;t stop{" "}
           {failed.length === 1 ? failed[0] : `${failed.length} chats`}
+        </span>
+      ) : null}
+      {unloaded.length ? (
+        <span
+          data-delegation-unloaded
+          className="min-w-0 truncate text-amber-400"
+          title={unloaded.join(", ")}
+        >
+          Couldn&apos;t load the workers under{" "}
+          {unloaded.length === 1 ? unloaded[0] : `${unloaded.length} chats`};
+          they may still be running
         </span>
       ) : null}
       {onStopAll && count > 0 ? (
