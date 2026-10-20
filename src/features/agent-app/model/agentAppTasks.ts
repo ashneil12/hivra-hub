@@ -452,7 +452,14 @@ async function delegate(
       throw new Error(
         `${named} has a coding team: hand its work to ${team.name} instead, with delegate_task and lead "${team.projectId}" (the brief goes to ${team.leadName}, its workers show in ${team.name}, and its report comes back to you). A small fix you can make yourself, here.`,
       );
-    if (named === undefined) ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+    if (named === undefined) {
+      // A team's folder is no repository: its workers share it, never a checkout of their own.
+      if (asked === "worktree")
+        throw new Error(
+          "Your own team's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
+        );
+      ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+    }
   }
   const model = taskModel(input.model, source);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
@@ -489,7 +496,8 @@ async function delegate(
   // Several workers in one repo at once each get a checkout of their own unless the chat said "shared": the baseline
   // (20 Oct) had two in one checkout stopping each other's dev server.
   const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
-  const auto = asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+  // Never in a Mono's own team: its folder is no repository (the checkout would never be made, and the worker never run).
+  const auto = !ownTeam && asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
   const meta = {

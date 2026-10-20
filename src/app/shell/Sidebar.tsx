@@ -2846,7 +2846,8 @@ function SidebarComponent({
                   data-team-kind={codingTeam?.kind}
                   className={`flex flex-col ${inset ? "gap-px px-2 pt-1" : "gap-0.5 p-1.5 pb-0"}`}
                 >
-                  <li>{renderLeadCard(teamLead)}</li>
+                  {/* Keyed by its chat: another team's owner is another row, not this one's title changing. */}
+                  <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>
                 </ul>
               ) : null}
               {/*

@@ -155,8 +155,17 @@ function fixture(
         string,
         { title: string },
       ];
+      // As the app records it: the hub project id, else the folder the worker runs in.
       rows.push(
-        row({ id: `t-${rows.length + 1}`, ownerSession: notify, childSession: id, requestId: id, title: meta.title, brief: launch.prompt }),
+        row({
+          id: `t-${rows.length + 1}`,
+          ownerSession: notify,
+          childSession: id,
+          requestId: id,
+          title: meta.title,
+          brief: launch.prompt,
+          project: (meta as { project?: string }).project ?? (launch as { cwd?: string }).cwd ?? null,
+        }),
       );
     }),
     sessions: vi.fn(async () => []),
@@ -485,9 +494,15 @@ describe("tasks.delegate", () => {
       expect(meta).toEqual({ title: "Launch copy", askIds: [] });
       expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-own", cwd: TEAM, team: "Alfred's team" });
       expect((result as { note: string }).note).toContain("Running in Alfred's team, where its chat shows under yours");
-      // A second worker there shares the folder: it isn't a repository, so there is no checkout of its own to make.
-      await handleAgentApp(source, "r-own-2", "tasks.delegate", { brief: "Draft the post." }, host);
+      // A second worker there shares the folder: it isn't a repository, so there is no checkout of its own to make (the
+      // bench, 20 Oct: one was asked for, never made, and the worker never ran). Asking for one is refused.
+      expect(rows[0].project).toBe(TEAM);
+      const second = await handleAgentApp(source, "r-own-2", "tasks.delegate", { brief: "Draft the post." }, host);
       expect((started[1] as [Record<string, unknown>])[0]).toMatchObject({ cwd: TEAM, workspaceMode: "current" });
+      expect(second).not.toHaveProperty("isolation");
+      await expect(
+        handleAgentApp(source, "r-own-wt", "tasks.delegate", { brief: "Draft it again.", isolation: "worktree" }, host),
+      ).rejects.toThrow("isn't a repository");
       // Naming its own team's folder is the same.
       await handleAgentApp(source, "r-own-3", "tasks.delegate", { brief: "Check the draft.", project: TEAM }, host);
       expect((started[2] as [Record<string, unknown>])[0]).toMatchObject({ cwd: TEAM });
