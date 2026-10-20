@@ -18,7 +18,7 @@ import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
-import { isRunning, readJson, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { isRunning, readJson, restoreData, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -243,6 +243,25 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   };
   const env = { ...process.env, HOME: home, MONOCODE_SHIP_CODESIGN: codesign, HUB_SHIP_TEST_OWNER: String(process.pid) };
   return { root, home, repo, sha, app, bundle, data, before, env, git };
+}
+
+/** A new commit in the fixture checkout, the bundle rebuilt from it (behaving as told) and a check pass for it. */
+function nextBuild(w, behavior) {
+  fs.writeFileSync(path.join(w.repo, `change-${crypto.randomBytes(4).toString("hex")}.txt`), "a change\n");
+  w.git("add", ".");
+  w.git("commit", "-q", "-m", "a change");
+  const sha = w.git("rev-parse", "HEAD");
+  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  bundleAt(w.bundle, { sha, behavior, root: w.root });
+  return sha;
+}
+
+function rollbackCli(w, id, args = [], env = {}) {
+  return spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-rollback.mjs"), id, "--json", "--launcher", "spawn", ...args],
+    { env: { ...w.env, ...env }, encoding: "utf8" },
+  );
 }
 
 function ship(w, args = [], env = {}) {
@@ -504,6 +523,70 @@ test("hub:rollback puts back the build a committed ship replaced, with that ship
   assert.equal(state.launch.env.HOME, w.home, "opened the same way as the ship it undoes");
   // A committed ship can't be rolled back twice.
   assert.equal(rollback(["--confirm"]).status, 1);
+});
+
+test("SH-1: hub:rollback of a ship with two newer ship folders after it puts that ship's database back", async () => {
+  const w = world();
+  const shipped = ship(w);
+  assert.equal(shipped.code, 0, JSON.stringify(shipped.answer));
+  await until("the commit", settled(shipped.answer.shipDir, "committed"));
+  remember(shipped.answer.shipDir);
+  const committed = w.sha;
+  // Two more ships after it, both rolled back: the installed app is still the one it committed.
+  for (const n of [1, 2]) {
+    nextBuild(w, "crash");
+    const later = ship(w);
+    assert.equal(later.code, 0, `ship ${n}: ${JSON.stringify(later.answer)}`);
+    await until(`ship ${n} rolled back`, settled(later.answer.shipDir, "rolled-back"));
+    remember(later.answer.shipDir);
+    await until(`the committed build back after ship ${n}`, () => {
+      const running = readJson(path.join(w.data, "running.json"));
+      return running?.sha === committed && isRunning(running.pid, running.startTime);
+    });
+  }
+  assert.equal(stampOf(w.app).sha, committed);
+  fs.appendFileSync(path.join(w.data, "monocode.db"), "a newer chat");
+  const done = rollbackCli(w, shipped.answer.id, ["--confirm"]);
+  assert.equal(done.status, 0, done.stderr || done.stdout);
+  const answer = JSON.parse(done.stdout.trim());
+  // Staging the rollback (4 ship folders now) must not archive the ship it restores from.
+  assert.ok(fs.existsSync(path.join(shipped.answer.shipDir, "backup/monocode.db")), "the rolled-back ship's copy stays put");
+  const state = await until("the rollback's commit", settled(answer.shipDir, "committed"));
+  remember(answer.shipDir);
+  assert.equal(stampOf(w.app).sha, SHA_A, "the replaced build is back");
+  // That ship's copy, which the old build has opened (and, being a fake, appended to) since.
+  const liveDb = fs.readFileSync(path.join(w.data, "monocode.db"));
+  assert.equal(crypto.createHash("sha256").update(liveDb.subarray(0, 64 * 1024)).digest("hex"), w.before.db, "the live database is that ship's copy");
+  assert.equal(sha256File(path.join(w.data, "monocode.db-wal")), w.before.wal);
+  assert.equal(fs.readFileSync(path.join(w.data, "monos/frank/SOUL.md"), "utf8"), "the old soul\n");
+  assert.equal(state.db.replacedWith["monocode.db"], w.before.db);
+});
+
+test("SH-1: a restore whose backup is missing throws and leaves the live files alone", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const data = path.join(root, "data");
+  fs.mkdirSync(path.join(data, "monos/frank"), { recursive: true });
+  fs.writeFileSync(path.join(data, "monocode.db"), "live db");
+  fs.writeFileSync(path.join(data, "monocode.db-wal"), "live wal");
+  fs.writeFileSync(path.join(data, "monos/frank/SOUL.md"), "live soul");
+  const live = () =>
+    ["monocode.db", "monocode.db-wal", "monos/frank/SOUL.md"].map((name) => fs.readFileSync(path.join(data, name), "utf8"));
+  const before = live();
+  const aside = path.join(root, "aside");
+  // The whole backup folder is gone (an archived ship).
+  assert.throws(() => restoreData(path.join(root, "gone"), data, { "monocode.db": "x" }, aside), /missing/);
+  assert.deepEqual(live(), before);
+  // A file the backup says it took isn't there.
+  const backup = path.join(root, "backup");
+  fs.mkdirSync(backup);
+  fs.writeFileSync(path.join(backup, "monocode.db-wal"), "old wal");
+  assert.throws(
+    () => restoreData(backup, data, { "monocode.db": "0".repeat(64), "monocode.db-wal": sha256File(path.join(backup, "monocode.db-wal")) }, aside),
+    /monocode\.db is missing/,
+  );
+  assert.deepEqual(live(), before);
+  assert.equal(fs.existsSync(aside), false, "monos/ wasn't moved aside");
 });
 
 test("hub:install (--legacy) keeps the old app instead of deleting it", () => {

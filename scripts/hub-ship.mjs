@@ -379,7 +379,8 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
   if (supersedes) supersede(paths, supersedes, id);
   writeJson(path.join(paths.ships, "current.json"), { id });
   try {
-    retainShips(paths.ships, paths.archive, id);
+    // Never the ship a rollback restores from: its backup is what this ship puts back.
+    retainShips(paths.ships, paths.archive, [id, requestedBy?.rollsBack]);
   } catch {
     // archiving old ships is housekeeping; it never blocks a ship
   }

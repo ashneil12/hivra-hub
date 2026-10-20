@@ -241,8 +241,12 @@ export function receiptFor(ship, dir, by) {
   };
 }
 
-/** Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. */
-export function retainShips(shipRoot, archive, currentId, keep = KEEP_SHIPS) {
+/**
+ * Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. `keepIds` (one id or a
+ * list) are never moved: the ship being staged, and the ship a rollback restores from.
+ */
+export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
+  const protectedIds = new Set([keepIds].flat().filter(Boolean));
   let names;
   try {
     names = fs
@@ -255,7 +259,7 @@ export function retainShips(shipRoot, archive, currentId, keep = KEEP_SHIPS) {
   }
   const moved = [];
   for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-    if (name === currentId) continue;
+    if (protectedIds.has(name)) continue;
     const doc = readJson(path.join(shipRoot, name, STATE));
     if (doc && !FINAL.has(doc.phase)) continue;
     moveDir(path.join(shipRoot, name), path.join(archive, name));
@@ -289,8 +293,14 @@ export function backupData(data, backup) {
 /**
  * Put `backup`'s database files back byte for byte (a file it doesn't have is removed), check them against `expected`,
  * and swap monos/ back (the live one goes to `aside`). Same steps as ship.rs `restore_db`.
+ *
+ * Nothing changes unless the backup is all there: a backup folder that is gone (an archived ship), or a file `expected`
+ * names that isn't in it, throws first. Otherwise "a file it doesn't have is removed" would empty the live database.
  */
 export function restoreData(backup, data, expected, aside) {
+  if (!exists(backup)) throw new Error(`the database copy ${backup} is missing`);
+  for (const name of DB_FILES)
+    if (expected?.[name] && !exists(path.join(backup, name))) throw new Error(`${name} is missing from the database copy in ${backup}`);
   const restored = {};
   for (const name of DB_FILES) {
     const saved = path.join(backup, name);
@@ -451,6 +461,10 @@ async function swap(ctx, ship) {
       saveShip(ctx.dir, ship);
       testCrash(ship);
     }
+  } catch (error) {
+    return cancel(ship, `Backing up the database failed, so nothing changed: ${error.message}`);
+  }
+  try {
     if (ship.restoreDb && !step(ship, "dbReplaced")) {
       // hub:rollback: the older build comes back with the database from before its replacement.
       ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS));
@@ -458,7 +472,7 @@ async function swap(ctx, ship) {
       saveShip(ctx.dir, ship);
     }
   } catch (error) {
-    return cancel(ship, `Backing up the database failed, so nothing changed: ${error.message}`);
+    return cancel(ship, `The database copy to roll back to can't be used, so nothing changed: ${error.message}`);
   }
   try {
     if (!step(ship, "oldMoved")) {
