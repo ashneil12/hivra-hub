@@ -9,7 +9,15 @@ import {
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
-import { briefPrompt, type AgentAppTasksHost } from "./agentAppTasks";
+import {
+  briefPrompt,
+  portOfBrief,
+  WORKER_PORT_BASE,
+  WORKER_PORT_SPAN,
+  workerPort,
+  workerRules,
+  type AgentAppTasksHost,
+} from "./agentAppTasks";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
@@ -221,6 +229,8 @@ describe("tasks.delegate", () => {
         "EXO lead",
         "Ash: \"the save bug on mission two\". Fix it and prove it with a restart.",
         "Saving survives a restart",
+        undefined,
+        workerRules(workerPort("app-mono-exo-r1")),
       ),
     );
     expect(String(launch.prompt).startsWith("[MonoCode brief from EXO lead]\n\n")).toBe(true);
@@ -236,7 +246,10 @@ describe("tasks.delegate", () => {
       childSessionId: "app-mono-exo-r1",
       status: "running",
       isolation: "worktree",
+      port: workerPort("app-mono-exo-r1"),
     });
+    // Asked for, not chosen for it: no reason given.
+    expect(result).not.toHaveProperty("isolationWhy");
     // The Mono hears it doesn't wait: the report comes as its own turn, and Ash gets answers meanwhile.
     expect((result as { note: string }).note).toContain("soon after it finishes");
     expect((result as { note: string }).note).toContain("answer him at once");
@@ -249,8 +262,9 @@ describe("tasks.delegate", () => {
     await handleAgentApp(source, "r-mem", "tasks.delegate", { brief: "Fix the save bug.", goal: "It saves", model: "sonnet" }, host);
     expect(api.memoryBrief).toHaveBeenCalledWith("mono-exo", "claude");
     const [launch] = started[0] as [{ prompt: string }];
-    expect(launch.prompt).toBe(briefPrompt("EXO lead", "Fix the save bug.", "It saves", block));
-    expect(launch.prompt.startsWith("[MonoCode brief from EXO lead]\n\nFix the save bug.\n\nDone when: It saves\n\n<project_memory>")).toBe(true);
+    const rules = workerRules(portOfBrief(launch.prompt)!);
+    expect(launch.prompt).toBe(briefPrompt("EXO lead", "Fix the save bug.", "It saves", block, rules));
+    expect(launch.prompt.startsWith(`[MonoCode brief from EXO lead]\n\nFix the save bug.\n\n${rules}\n\nDone when: It saves\n\n<project_memory>`)).toBe(true);
     // The memory after it is not part of the finish line the worker's /goal is set to (claudeGoal.ts).
     expect(goalFromBrief(launch.prompt)).toBe("It saves");
     // a worker on another engine: its own engine decides how the block tells it to read more (no ash-os tools there)
@@ -260,10 +274,12 @@ describe("tasks.delegate", () => {
     // a chat with no project (the leadership team) gets the brief alone; a primer that fails never blocks the brief
     api.memoryBrief = vi.fn(async () => undefined);
     await handleAgentApp(source, "r-plain", "tasks.delegate", { brief: "Look at CI." }, host);
-    expect((started.at(-1) as [{ prompt: string }])[0].prompt).toBe(briefPrompt("EXO lead", "Look at CI."));
+    const plain = (started.at(-1) as [{ prompt: string }])[0].prompt;
+    expect(plain).toBe(briefPrompt("EXO lead", "Look at CI.", undefined, undefined, workerRules(portOfBrief(plain)!)));
     api.memoryBrief = vi.fn(async () => Promise.reject(new Error("Ash OS is down")));
     await handleAgentApp(source, "r-down", "tasks.delegate", { brief: "Look again." }, host);
-    expect((started.at(-1) as [{ prompt: string }])[0].prompt).toBe(briefPrompt("EXO lead", "Look again."));
+    const down = (started.at(-1) as [{ prompt: string }])[0].prompt;
+    expect(down).toBe(briefPrompt("EXO lead", "Look again.", undefined, undefined, workerRules(portOfBrief(down)!)));
   });
 
   it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
@@ -338,7 +354,13 @@ describe("tasks.delegate", () => {
     expect(launch).toMatchObject({ cwd: PROJECT, workspaceMode: "worktree", reveal: false });
     expect(launch.project).toBeUndefined();
     expect(launch.prompt).toBe(
-      briefPrompt("EXO coding team", "Fix the save bug.", "It saves", "<project_memory>\n- EXO is dark blue\n</project_memory>"),
+      briefPrompt(
+        "EXO coding team",
+        "Fix the save bug.",
+        "It saves",
+        "<project_memory>\n- EXO is dark blue\n</project_memory>",
+        workerRules(workerPort("app-team-exo-r1")),
+      ),
     );
     expect(api.memoryBrief).toHaveBeenCalledWith("team-exo", "claude");
     expect(meta).toMatchObject({ title: "Save bug", project: "vg-game" });
@@ -347,6 +369,64 @@ describe("tasks.delegate", () => {
     expect(await handleAgentApp(source, "r2", "tasks.status", {}, host)).toMatchObject({
       tasks: [{ taskId: "t-1", childSessionId: "app-team-exo-r1" }],
     });
+  });
+
+  // Baseline, 20 Oct: two workers on the test project shared port 4317 and one ran pkill on the other's dev server.
+  it("gives every worker its own port and rules, and a second worker in the same project its own checkout", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started } = fixture(rows);
+    const first = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build the API." }, host)) as Record<string, unknown>;
+    const second = (await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Build the UI." }, host)) as Record<string, unknown>;
+    const [launch1] = started[0] as [{ prompt: string; workspaceMode: string }];
+    const [launch2] = started[1] as [{ prompt: string; workspaceMode: string }];
+    // The first works in the project's checkout; the second, while the first still runs there, in one of its own.
+    expect(launch1.workspaceMode).toBe("current");
+    expect(first).not.toHaveProperty("isolation");
+    expect(launch2.workspaceMode).toBe("worktree");
+    expect(second).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("Another of your workers") });
+    // Each has a port of its own, named in its brief with the rules it works by.
+    expect(first.port).not.toBe(second.port);
+    expect(portOfBrief(launch1.prompt)).toBe(first.port);
+    expect(portOfBrief(launch2.prompt)).toBe(second.port);
+    for (const prompt of [launch1.prompt, launch2.prompt]) {
+      expect(prompt).toContain("<worker_rules>");
+      expect(prompt).toContain("Never stop, kill or restart a process you didn't start");
+      expect(prompt).toContain("never on the project's default port");
+    }
+    // Asked to share, it shares.
+    await handleAgentApp(source, "r3", "tasks.delegate", { brief: "Read the docs.", isolation: "shared" }, host);
+    expect((started[2] as [{ workspaceMode: string }])[0].workspaceMode).toBe("current");
+    // Once the others are done, the next one works in the project's checkout again.
+    for (const row of rows) row.state = "completed";
+    await handleAgentApp(source, "r4", "tasks.delegate", { brief: "One more." }, host);
+    expect((started[3] as [{ workspaceMode: string }])[0].workspaceMode).toBe("current");
+  });
+
+  it("falls back to the shared checkout when one of its own can't be made", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started } = fixture(rows);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build the API." }, host);
+    const start = host.start as ReturnType<typeof vi.fn>;
+    const real = start.getMockImplementation()!;
+    start.mockImplementationOnce(async () => {
+      throw new Error("not a git repository");
+    });
+    start.mockImplementation(real);
+    const result = await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Build the UI." }, host);
+    expect((started.at(-1) as [{ workspaceMode: string }])[0].workspaceMode).toBe("current");
+    expect(result).not.toHaveProperty("isolation");
+  });
+
+  it("picks a worker's port from its chat id, the same every time, past the ones its siblings hold", () => {
+    const port = workerPort("app-mono-exo-r1");
+    expect(port).toBe(workerPort("app-mono-exo-r1"));
+    expect(port).toBeGreaterThanOrEqual(WORKER_PORT_BASE);
+    expect(port).toBeLessThan(WORKER_PORT_BASE + WORKER_PORT_SPAN);
+    const next = workerPort("app-mono-exo-r1", new Set([port]));
+    expect(next).not.toBe(port);
+    expect(next).toBe(port + 1 === WORKER_PORT_BASE + WORKER_PORT_SPAN ? WORKER_PORT_BASE : port + 1);
+    expect(portOfBrief(workerRules(next))).toBe(next);
+    expect(portOfBrief("no port here")).toBeUndefined();
   });
 
   it("keeps a coding-team chat on its own project and away from briefing Leads", async () => {

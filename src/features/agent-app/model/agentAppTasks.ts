@@ -150,15 +150,49 @@ const WAIT_MAX_SECONDS = 25;
 /** How often a wait looks again even without a change event (one can slip between a read and the listener). */
 const WAIT_POLL_MS = 2_000;
 
+/** The ports workers are given, one each (workerPort), away from the usual dev ports. */
+export const WORKER_PORT_BASE = 41_000;
+export const WORKER_PORT_SPAN = 2_000;
+
 /**
- * Every brief opens with this, so nothing mistakes it for Ash's own words (the studio's sweep skips such chats). A worker
- * of a project's Lead also gets that project's memory and Ash's global one after the brief (`memory`), so it starts on
- * what holds now without calling ash_recall.
+ * A worker's own port: from its chat id, so it is the same every time, moved on past any port a running sibling holds.
+ * Baseline, 20 Oct: two workers on the test project shared port 4317 and one stopped the other's dev server.
  */
-export function briefPrompt(owner: string, brief: string, goal?: string, memory?: string): string {
+export function workerPort(childSession: string, taken: ReadonlySet<number> = new Set()): number {
+  let hash = 0;
+  for (const char of childSession) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  for (let step = 0; step < WORKER_PORT_SPAN; step++) {
+    const port = WORKER_PORT_BASE + ((hash + step) % WORKER_PORT_SPAN);
+    if (!taken.has(port)) return port;
+  }
+  return WORKER_PORT_BASE + (hash % WORKER_PORT_SPAN);
+}
+
+/** The port a brief gave its worker (workerRules), if any. */
+export function portOfBrief(brief: string | null | undefined): number | undefined {
+  const found = /\bPORT=(\d{4,5})\b/.exec(brief ?? "");
+  return found ? Number(found[1]) : undefined;
+}
+
+/**
+ * What every worker works by, in its brief (baseline, 20 Oct: two workers shared a port and one killed the other's dev
+ * server): its own port, never another's process, its own checkout.
+ */
+export function workerRules(port: number): string {
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n</worker_rules>`;
+}
+
+/**
+ * Every brief opens with this, so nothing mistakes it for Ash's own words (the studio's sweep skips such chats). A
+ * worker's own rules (`rules`: workerRules) come after the brief, then its finish line, then (for a worker of a chat on
+ * a project) that project's memory and Ash's global one (`memory`), so it starts on what holds now without calling
+ * ash_recall. The finish line stays the last paragraph before the memory: it is what /goal is set to (claudeGoal.ts).
+ */
+export function briefPrompt(owner: string, brief: string, goal?: string, memory?: string, rules?: string): string {
   return [
     `[MonoCode brief from ${owner}]`,
     brief,
+    ...(rules?.trim() ? [rules.trim()] : []),
     ...(goal ? [`Done when: ${goal}`] : []),
     ...(memory?.trim() ? [memory.trim()] : []),
   ].join("\n\n");
@@ -383,8 +417,8 @@ async function delegate(
   }
   if (input.whenBusy !== undefined)
     throw new Error("whenBusy is for a brief to a Lead (lead); a worker starts in a chat of its own");
-  const isolation = input.isolation ?? "shared";
-  if (isolation !== "shared" && isolation !== "worktree")
+  const asked = input.isolation;
+  if (asked !== undefined && asked !== "shared" && asked !== "worktree")
     throw new Error('isolation must be "shared" or "worktree"');
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
@@ -396,31 +430,52 @@ async function delegate(
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
     () => undefined,
   );
-  const launch = helpers.startLaunch(
-    source,
-    {
-      prompt: briefPrompt(owner.name, brief, goal, memory),
-      ...(named !== undefined && !owner.team
-        ? { project: tasks.hubProjectFolder?.(named) ?? named }
-        : {}),
-      ...(model ? { harness: model.harness, model: model.model } : {}),
-      ...(input.effort !== undefined ? { effort: input.effort } : {}),
-      // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
-      // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
-      runtimeMode: WORKER_RUNTIME_MODE,
-      workspaceMode: isolation === "worktree" ? "worktree" : "current",
-    },
-    host,
-  );
   const id = `app-${source.id}-${requestId}`;
+  // The workers this chat still has out: each holds a port, and one working in the same project shares its repo.
+  const out = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+  const port = workerPort(
+    id,
+    new Set(out.flatMap((row) => (row.brief ? [portOfBrief(row.brief)].filter((p): p is number => !!p) : []))),
+  );
+  const launchWith = (workspaceMode: "worktree" | "current") =>
+    helpers.startLaunch(
+      source,
+      {
+        prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
+        ...(named !== undefined && !owner.team
+          ? { project: tasks.hubProjectFolder?.(named) ?? named }
+          : {}),
+        ...(model ? { harness: model.harness, model: model.model } : {}),
+        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
+        // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
+        runtimeMode: WORKER_RUNTIME_MODE,
+        workspaceMode,
+      },
+      host,
+    );
+  let launch = launchWith(asked === "worktree" ? "worktree" : "current");
+  // Several workers in one repo at once each get a checkout of their own unless the chat said "shared": the baseline
+  // (20 Oct) had two in one checkout stopping each other's dev server.
+  const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
+  const auto = asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+  if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
-  // Always monitored: a task reports back to the Mono that delegated it.
-  await host.start(launch, id, undefined, source.id, {
+  const meta = {
     title,
     askIds: asks,
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
-  });
+  };
+  // Always monitored: a task reports back to the chat that delegated it.
+  try {
+    await host.start(launch, id, undefined, source.id, meta);
+  } catch (error) {
+    // A checkout of its own couldn't be made (a folder that isn't a git repository): the shared one, as asked for.
+    if (!auto) throw error;
+    launch = launchWith("current");
+    await host.start(launch, id, undefined, source.id, meta);
+  }
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
   return {
@@ -432,6 +487,11 @@ async function delegate(
     harness: launch.harness,
     model: launch.model,
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
+    ...(auto && launch.workspaceMode === "worktree"
+      ? { isolationWhy: "Another of your workers is working in this project, so this one has a checkout of its own." }
+      : {}),
+    // Its port, which its brief tells it to use for any server it starts.
+    port,
     note: row
       ? "Running. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once."
       : "It started, but its task record could not be stored; its report still comes back to you.",
