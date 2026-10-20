@@ -107,6 +107,8 @@ import {
 } from "./agentAppTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
+import { leadFor } from "../../hub/model/hubLeads";
 import {
   AUTOPILOT_FIELDS,
   handleAutopilotApp,
@@ -341,6 +343,25 @@ function checkerLane(source: Session, action: string, host: AgentAppHost): void 
   if (host.monoOf?.(source.id)?.id === CHECKER_MONO_ID && !CHECKER_ACTIONS.has(action))
     throw new Error(
       `The checker only reads: it may use ${[...CHECKER_ACTIONS].join(", ")}. It never starts, sends to or delegates to a session.`,
+    );
+}
+
+/**
+ * Who may ship the daily app (`app.ship`): a Mono's own chat, when that Mono is a project's Lead or on the leadership
+ * team. Never a delegated worker's chat, a habit run or the checker (dev copies are refused by their identity).
+ */
+function shipCaller(source: Session, host: AgentAppHost): void {
+  const mono =
+    host.isMono(source.id) && !host.isHabitRun?.(source.id)
+      ? host.monoOf?.(source.id)
+      : undefined;
+  if (
+    !mono ||
+    mono.id === CHECKER_MONO_ID ||
+    !(DEFAULT_TEAM_IDS.includes(mono.id) || leadFor(mono.id))
+  )
+    throw new Error(
+      "Only a project's Lead or the leadership team ships, from its own chat. Report that it's ready to ship instead.",
     );
 }
 
@@ -1203,6 +1224,7 @@ export async function handleAgentApp(
     case "app.ship": {
       // The daily app replaces itself with the build in this checkout, safely (src-tauri/src/ship.rs). This turn is
       // cut by the restart and resumes once, with the receipt.
+      shipCaller(source, host);
       const identity = host.identity ? host.identity() : appIdentity();
       if (identity?.kind === "dev")
         throw new Error(
@@ -1210,8 +1232,13 @@ export async function handleAgentApp(
         );
       if (!host.ship) throw new Error("This build can't ship");
       const whenBusy = input.whenBusy;
-      if (whenBusy !== undefined && whenBusy !== "wait" && whenBusy !== "restart")
-        throw new Error('whenBusy must be "wait" or "restart"');
+      // "restart" quits the app over chats still running: only Ash's Restart now tap does that.
+      if (whenBusy === "restart")
+        throw new Error(
+          'Only Ash\'s Restart now (in Today) restarts the app over running chats. Ship with whenBusy "wait" (the default): it restarts when they are quiet.',
+        );
+      if (whenBusy !== undefined && whenBusy !== "wait")
+        throw new Error('whenBusy must be "wait"');
       const cwd = requireProject(source, input, host);
       const named = optionalString(input.worktree, "worktree", 4096);
       const own = source.worktreeCwd || source.cwd;
