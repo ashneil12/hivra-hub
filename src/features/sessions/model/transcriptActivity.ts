@@ -533,7 +533,9 @@ export function groupTurnItems(
     // where it opens itself onto the reason rather than folding out of sight.
     if (
       isSubagentBlock(block) &&
-      (!settled || toolCallState(block) === "rejected")
+      (!settled ||
+        toolCallState(block) === "rejected" ||
+        workflowKeepsRow(block))
     ) {
       flush();
       const last = items[items.length - 1];
@@ -740,8 +742,31 @@ export function isSubagentBlock(block: Block): boolean {
   return (
     isToolBlock(block) &&
     !needsApproval(block) &&
-    isAgentTool(block.tool?.kind, block.text || block.tool?.title)
+    (isWorkflowBlock(block) ||
+      isAgentTool(block.tool?.kind, block.text || block.tool?.title))
   );
+}
+
+/**
+ * A workflow run: one row for the whole fan-out, pinned like a subagent while
+ * it works, with its phases and agents underneath.
+ */
+export function isWorkflowBlock(block: Block): boolean {
+  return (
+    isToolBlock(block) &&
+    (block.workflowRun != null || block.tool?.kind === "workflow")
+  );
+}
+
+/**
+ * A workflow run that keeps its own row once the turn is over: one that
+ * failed or was stopped, or finished with an agent that failed. A clean run
+ * folds into the turn's work like any other call.
+ */
+export function workflowKeepsRow(block: Block): boolean {
+  if (!isWorkflowBlock(block)) return false;
+  if (toolCallState(block) === "rejected") return true;
+  return !!block.workflowRun?.agents.some((agent) => agent.state === "failed");
 }
 
 /**
@@ -847,7 +872,7 @@ export function toolCategory(block: Block): ActivityWorkKind {
   const title = block.text || block.tool?.title;
   const preview = block.tool?.preview;
   const label = toolCallLabel(block);
-  if (isAgentTool(kind, title)) return "agent";
+  if (isAgentTool(kind, title) || kind === "workflow") return "agent";
   if (isEditTool(kind, title, preview)) return "edit";
   if (isSearchTool(kind, title, preview)) return "research";
   if (isReadTool(kind, title, preview)) return "research";

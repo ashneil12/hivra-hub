@@ -1,0 +1,15 @@
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"set_permission_mode","mode":"acceptEdits"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_2","response":{"mode":"acceptEdits"}}}}
+{"launch":"--allow-dangerously-skip-permissions","event":{"type":"system","subtype":"status","status":null,"permissionMode":"acceptEdits"}}
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_3","response":{"mode":"bypassPermissions"}}}}
+{"launch":"--allow-dangerously-skip-permissions","event":{"type":"system","subtype":"status","status":null,"permissionMode":"bypassPermissions"}}
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"apply_flag_settings","settings":{"effortLevel":null}},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_8"}}}
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"set_model","model":"claude-opus-4-6"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_4"}}}
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"set_model","model":"claude-opus-4-6[1m]"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_5"}}}
+{"launch":"--allow-dangerously-skip-permissions","request":{"subtype":"apply_flag_settings","settings":{"effortLevel":"high","fastMode":null,"autoCompactWindow":400000}},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_6"}}}
+{"launch":"default","request":{"subtype":"set_permission_mode","mode":"acceptEdits"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_2","response":{"mode":"acceptEdits"}}}}
+{"launch":"default","event":{"type":"system","subtype":"status","status":null,"permissionMode":"acceptEdits"}}
+{"launch":"default","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"},"response":{"type":"control_response","response":{"subtype":"error","request_id":"drv_3","error":"Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions","error_code":"bypass_not_launched"}}}
+{"launch":"default","request":{"subtype":"apply_flag_settings","settings":{"effortLevel":null}},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_8"}}}
+{"launch":"default","request":{"subtype":"set_model","model":"claude-opus-4-6"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_4"}}}
+{"launch":"default","request":{"subtype":"set_model","model":"claude-opus-4-6[1m]"},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_5"}}}
+{"launch":"default","request":{"subtype":"apply_flag_settings","settings":{"effortLevel":"high","fastMode":null,"autoCompactWindow":400000}},"response":{"type":"control_response","response":{"subtype":"success","request_id":"drv_6"}}}

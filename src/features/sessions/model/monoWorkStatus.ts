@@ -1,5 +1,6 @@
 import { isReadTool } from "../../../integrations/harness/core/preview";
 import type { Block } from "./session";
+import { workflowActivityLine, workflowCounts } from "./workflowRun";
 import {
   isProseBlock,
   isThinkingBlock,
@@ -45,6 +46,20 @@ export function monoWorkStatus(
       key: `approval:${waiting.id}`,
       label: "Waiting for approval…",
       kind: toolCategory(waiting),
+      active: true,
+    };
+  }
+  // A workflow run says where it is, so a long fan-out reads as progress.
+  const workflow = [...blocks]
+    .reverse()
+    .find((block) => block.workflowRun?.status === "running")?.workflowRun;
+  if (workflow) {
+    const counts = workflowCounts(workflow);
+    const line = workflowActivityLine(workflow);
+    return {
+      key: `workflow:${workflow.taskId}:${counts.done}/${counts.total}`,
+      label: `${line.charAt(0).toUpperCase()}${line.slice(1)}`,
+      kind: "agent",
       active: true,
     };
   }

@@ -56,6 +56,35 @@ function emit(rec: Record<string, unknown>) {
   onLine!(JSON.stringify(rec));
 }
 
+/**
+ * Wait for the adapter's next control request of this kind and answer it the
+ * way CLI 2.1.302 does (fixtures/claude-cli-2.1.302/live-settings-control.ndjson).
+ */
+async function answerControl(
+  subtype: string,
+  answer: Record<string, unknown> = { subtype: "success", response: {} },
+): Promise<{ requestId: string; request: Record<string, unknown> }> {
+  const answered = new Set(answeredControls);
+  let found: { requestId: string; request: Record<string, unknown> } | undefined;
+  await waitFor(() => {
+    found = parse()
+      .filter((m) => m.type === "control_request")
+      .map((m) => ({
+        requestId: m.request_id as string,
+        request: m.request as Record<string, unknown>,
+      }))
+      .find((m) => m.request.subtype === subtype && !answered.has(m.requestId));
+    return !!found;
+  }, `${subtype} control request`);
+  answeredControls.add(found!.requestId);
+  emit({
+    type: "control_response",
+    response: { ...answer, request_id: found!.requestId },
+  });
+  return found!;
+}
+const answeredControls = new Set<string>();
+
 const waitFor = async (pred: () => boolean, label: string) => {
   for (let i = 0; i < 200; i++) {
     if (pred()) return;
@@ -258,6 +287,7 @@ function backgroundUpdates(events: HarnessEvent[]): string[][] {
 beforeEach(() => {
   sent.length = 0;
   spawned.length = 0;
+  answeredControls.clear();
   onLine = undefined;
   onExit = undefined;
   writeChild.mockClear();
@@ -430,11 +460,12 @@ describe("claude task tools", () => {
     const userCount = parse().filter(
       (message) => message.type === "user",
     ).length;
+    // Thinking is a launch setting, so this turn needs a new process.
     const second = sendClaudeTurn({
       sessionId: "s1",
       cwd: "/repo",
       model: "claude:opus-5",
-      modelSettings: {},
+      modelSettings: { thinking: "true" },
       runtimeMode: "supervised",
       text: "finish it",
       attachments: [],
@@ -540,7 +571,7 @@ describe("claude task tools", () => {
     ]);
   });
 
-  it("keeps earlier tasks across a plan to build restart", async () => {
+  it("keeps earlier tasks when plan switches to build without a restart", async () => {
     const first = await startTurn("s1", { intent: "plan" });
     emitTaskTool(
       "toolu_c1",
@@ -552,8 +583,25 @@ describe("claude task tools", () => {
     await first.turn;
 
     const events: HarnessEvent[] = [...first.events];
-    const { turn: second } = await restartedTurn(events, { intent: "build" });
-    expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", "sess_1"]));
+    const userCount = parse().filter((message) => message.type === "user").length;
+    const second = sendClaudeTurn({
+      sessionId: "s1",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      intent: "build",
+      text: "finish it",
+      attachments: [],
+      onEvent: (event) => events.push(event),
+    });
+    const switched = await answerControl("set_permission_mode");
+    expect(switched.request).toEqual({ subtype: "set_permission_mode", mode: "default" });
+    await waitFor(
+      () => parse().filter((message) => message.type === "user").length > userCount,
+      "follow-up prompt",
+    );
+    expect(spawned).toHaveLength(1);
     emitTaskTool(
       "toolu_u1",
       "TaskUpdate",
@@ -894,7 +942,8 @@ describe("claude model switching", () => {
       sessionId: "s1",
       cwd: "/repo",
       model: "claude:opus-5",
-      modelSettings: {},
+      // With thinking, the model change cannot be applied live.
+      modelSettings: { thinking: "true" },
       runtimeMode: "supervised",
       providerAccountId: "account-work",
       text: "what did I ask before?",

@@ -99,6 +99,8 @@ export function applyHarnessEvent(
       });
     case "agent.step":
       return recordAgentStep(session, event);
+    case "workflow.progress":
+      return recordWorkflowRun(session, event);
     case "approval.requested":
       return attachApproval(session, event);
     case "approval.resolved": {
@@ -1154,6 +1156,53 @@ const MAX_AGENT_STEP_CHARS = 2_000;
  * provider id, so a call that starts pending and later completes stays one row
  * instead of appearing twice.
  */
+/**
+ * A workflow run's snapshot onto the tool call that launched it. A run whose
+ * launching call never reached the transcript still gets a row of its own, so
+ * a busy Lead never looks idle.
+ */
+function recordWorkflowRun(
+  session: Session,
+  event: Extract<HarnessEvent, { type: "workflow.progress" }>,
+): Session {
+  const index = session.blocks.findIndex(
+    (block) => block.tool?.callId === event.callId,
+  );
+  const running = event.run.status === "running";
+  const status = running
+    ? "in_progress"
+    : event.run.status === "completed"
+      ? "completed"
+      : event.run.status === "stopped"
+        ? "cancelled"
+        : "failed";
+  const title = event.run.name ?? event.run.description ?? "Workflow";
+  if (index < 0) {
+    return appendBlock(session, {
+      id: crypto.randomUUID(),
+      role: "tool",
+      text: title,
+      streaming: running,
+      workflowRun: event.run,
+      tool: { callId: event.callId, title, kind: "workflow", status },
+    });
+  }
+  const prev = session.blocks[index];
+  const blocks = session.blocks.slice();
+  blocks[index] = {
+    ...prev,
+    streaming: running,
+    workflowRun: event.run,
+    tool: {
+      ...prev.tool,
+      kind: "workflow",
+      status,
+      ...(event.run.summary && !running ? { detail: event.run.summary } : {}),
+    },
+  };
+  return { ...session, blocks };
+}
+
 function recordAgentStep(
   session: Session,
   event: Extract<HarnessEvent, { type: "agent.step" }>,

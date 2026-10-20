@@ -545,6 +545,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "memory ram cpu performance process warm park background",
   },
   {
+    id: "context-ceiling",
+    section: "providers",
+    label: "Compact long chats at",
+    keywords: "context window compaction autocompact tokens lead long running usage limit 1m",
+  },
+  {
+    id: "idle-compact",
+    section: "providers",
+    label: "Compact idle chats first",
+    keywords: "prompt cache idle compaction tokens cost resume",
+  },
+  {
     id: "project-notifications",
     section: "inbox",
     label: "Project notifications",

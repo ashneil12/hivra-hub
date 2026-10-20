@@ -11,10 +11,16 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import {
+  clearWorkflowRuns,
+  noteWorkflowRun,
+} from "../../../features/sessions/model/workflowActivity";
 import type {
   ApprovalDecision,
   CompactContextInput,
   HarnessEvent,
+  LiveSettingsInput,
+  LiveSettingsOutcome,
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
@@ -60,6 +66,10 @@ export type HarnessAdapter = {
   sendTurn(input: SendTurnInput): Promise<void>;
   /** Trigger provider-owned compaction outside MonoCode's normal user-turn path. */
   compactContext?(input: CompactContextInput): Promise<void>;
+  /** Stop one background task (a whole workflow run) and leave the turn going. */
+  stopTask?(sessionId: string, taskId: string): Promise<boolean>;
+  /** Apply model, effort or permission changes to the running session now. */
+  applySettings?(input: LiveSettingsInput): Promise<LiveSettingsOutcome>;
   /** Rewind provider state so the last user turn can be replaced. */
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
   steerTurn(input: SteerTurnInput): Promise<void>;
@@ -288,18 +298,50 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     try {
       await adapter.sendTurn({
         ...input,
+        // Workflow runs also feed views outside the chat (Being built).
+        onEvent: (event) => {
+          if (event.type === "workflow.progress") {
+            noteWorkflowRun(input.sessionId, event.run);
+          }
+          input.onEvent(event);
+        },
         onAccepted: () => {
           input.onEvent({ type: "turn.ready" });
           input.onAccepted?.();
         },
       });
     } finally {
+      clearWorkflowRuns(input.sessionId);
       activeTurnSessions.delete(input.sessionId);
       if (controlled)
         await invoke("control_turn_finished", { sessionId: input.sessionId });
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });
+}
+
+/** Stop one workflow run (or other background task) inside a live turn. */
+export async function stopHarnessTask(
+  harness: HarnessId,
+  sessionId: string,
+  taskId: string,
+): Promise<boolean> {
+  const adapter = getHarness(harness);
+  if (!adapter?.live || !adapter.stopTask) return false;
+  return adapter.stopTask(sessionId, taskId);
+}
+
+/**
+ * Hand a running session its new model, effort or permission mode now rather
+ * than at the next message. Not queued behind the running turn: that is the
+ * point. Harnesses without live changes pick them up on the next message.
+ */
+export async function applyHarnessSettings(
+  input: LiveSettingsInput & { harness: HarnessId },
+): Promise<LiveSettingsOutcome> {
+  const adapter = getHarness(input.harness);
+  if (!adapter?.live || !adapter.applySettings) return "idle";
+  return adapter.applySettings(input);
 }
 
 export function canCompactHarnessContext(id: HarnessId): boolean {

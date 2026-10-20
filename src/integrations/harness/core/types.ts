@@ -10,6 +10,7 @@ import type {
   TurnMetrics,
 } from "../../../features/sessions/model/session";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
+import type { WorkflowRunMeta } from "../../../features/sessions/model/workflowRun";
 
 /**
  * Why a provider refused or failed a turn. It travels with the error into the
@@ -205,6 +206,11 @@ export type HarnessEvent =
       /** False marks the plan ready for review. */
       streaming?: boolean;
     }
+  /**
+   * A workflow run's phases and agents, as a whole snapshot. `callId` is the
+   * tool call that launched it; the run's row hangs off that call.
+   */
+  | { type: "workflow.progress"; callId: string; run: WorkflowRunMeta }
   /** Context-window level after the harness's latest request. */
   | { type: "context"; used?: number; window?: number }
   /** Provider token accounting for the active user turn. */
@@ -251,6 +257,24 @@ export type SendTurnInput = HarnessSessionInput & {
 };
 
 export type CompactContextInput = HarnessSessionInput;
+
+/**
+ * Launch settings a running session can take without a restart, where its
+ * CLI supports it: model, effort, fast mode, permission mode.
+ */
+export type LiveSettingsInput = {
+  sessionId: string;
+  model: string;
+  modelSettings?: Record<string, string>;
+  runtimeMode: RuntimeMode;
+};
+
+/**
+ * `applied`: the running CLI took it. `next-turn`: it needs a restart, which
+ * happens on the next message (the adapter says so in the chat). `unchanged`:
+ * nothing differed. `idle`: no running CLI; the next message starts with it.
+ */
+export type LiveSettingsOutcome = "applied" | "next-turn" | "unchanged" | "idle";
 
 export type SteerTurnInput = {
   sessionId: string;
