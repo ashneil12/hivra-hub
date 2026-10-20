@@ -157,6 +157,16 @@ describe("a Claude Code workflow run (recorded from CLI 2.1.302)", () => {
     ]);
     expect(done?.workflowRun?.agents[2].error).toBe("API Error: 400 fixture: this agent fails");
     expect(done?.workflowRun?.summary).toContain("completed");
+    // A run that finished with a failed agent keeps its own row once the turn
+    // is over; a clean one folds into the turn's work.
+    const settledItems = groupTurnItems(final.blocks, { settled: true });
+    expect(settledItems.some((item) => item.type === "subagents" && item.blocks.some(isWorkflowBlock))).toBe(true);
+    const clean = final.blocks.map((block) =>
+      block.workflowRun
+        ? { ...block, workflowRun: { ...block.workflowRun, agents: block.workflowRun.agents.filter((a) => a.state !== "failed") } }
+        : block,
+    );
+    expect(groupTurnItems(clean, { settled: true }).some((item) => item.type === "subagents")).toBe(false);
     // The reply after the run lands as its own message.
     expect(final.blocks.some((block) => block.role === "assistant" && block.text === "Workflow finished.")).toBe(true);
   });

@@ -141,6 +141,7 @@ import {
   isIncompleteTool,
   isSubagentBlock,
   isWorkflowBlock,
+  workflowKeepsRow,
   isThinkingBlock,
   lastActivityIndex,
   isProseBlock,
@@ -1593,12 +1594,19 @@ function AgentTranscriptComponent({
               {stampAt != null ? <DaySeparator at={stampAt} /> : null}
               {items
                 .flatMap((item, itemIndex) => {
-                  // The header carries the process; only approvals need a row
-                  // in the chat. The full turn remains in the activity sidebar.
+                  // The header carries the process; only approvals, and a
+                  // workflow run while it works (or once something in it
+                  // failed), need a row in the chat. The full turn remains in the activity
+                  // sidebar.
                   if (
                     inlineWork &&
                     item.type !== "block" &&
-                    !item.blocks.some(needsApproval)
+                    !item.blocks.some(
+                      (block) =>
+                        needsApproval(block) ||
+                        (isWorkflowBlock(block) &&
+                          (live || workflowKeepsRow(block))),
+                    )
                   )
                     return itemIndex === foldLineAt ? [foldLineRow] : [];
                   const inFold =
@@ -3565,8 +3573,7 @@ const MonoWorkApprovals = memo(
         {blocks
           .filter(
             (block) =>
-              isWorkflowBlock(block) &&
-              (live || toolCallState(block) === "rejected"),
+              isWorkflowBlock(block) && (live || workflowKeepsRow(block)),
           )
           .map((block) => (
             <WorkflowRunPanel

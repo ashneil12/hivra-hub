@@ -59,7 +59,8 @@ describe("what a run says about itself", () => {
   const busy = run([agent(1, "done"), agent(2, "done"), agent(3, "working", 2), agent(4, "failed", 2), agent(5, "queued", 2)]);
 
   it("counts agents by state", () => {
-    expect(workflowCounts(busy)).toEqual({ total: 5, done: 2, working: 1, queued: 1, failed: 1 });
+    expect(workflowCounts(busy)).toEqual({ total: 5, done: 2, working: 1, queued: 1, failed: 1, skipped: 0 });
+    expect(workflowCounts(run([agent(1, "skipped")]))).toMatchObject({ failed: 0, skipped: 1 });
   });
 
   it("is in the newest phase that still has an agent at work", () => {
@@ -74,6 +75,9 @@ describe("what a run says about itself", () => {
     expect(workflowStatusLine(busy)).toBe("Verify · 2 of 5 agents done · 1 failed");
     expect(workflowStatusLine({ ...busy, status: "stopped" })).toBe("Stopped · 2 of 5 agents done · 1 failed");
     expect(workflowStatusLine(run())).toBe("Find · starting");
+    expect(workflowStatusLine({ ...run([agent(1, "done"), agent(2, "skipped")]), status: "stopped" })).toBe(
+      "Stopped · 1 of 2 agents done · 1 skipped",
+    );
   });
 
   it("knows its newest activity", () => {

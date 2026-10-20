@@ -128,6 +128,8 @@ export type WorkflowCounts = {
   working: number;
   queued: number;
   failed: number;
+  /** Skipped by the user, or left unrun when the run was stopped. */
+  skipped: number;
 };
 
 export function workflowCounts(run: WorkflowRunMeta): WorkflowCounts {
@@ -137,11 +139,13 @@ export function workflowCounts(run: WorkflowRunMeta): WorkflowCounts {
     working: 0,
     queued: 0,
     failed: 0,
+    skipped: 0,
   };
   for (const agent of run.agents) {
     if (agent.state === "done") counts.done += 1;
     else if (agent.state === "working") counts.working += 1;
     else if (agent.state === "queued") counts.queued += 1;
+    else if (agent.state === "skipped") counts.skipped += 1;
     else counts.failed += 1;
   }
   return counts;
@@ -212,6 +216,7 @@ export function workflowStatusLine(run: WorkflowRunMeta): string {
     parts.push("starting");
   }
   if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+  if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
   return parts.join(" · ");
 }
 

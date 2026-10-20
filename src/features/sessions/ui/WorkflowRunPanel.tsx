@@ -32,7 +32,13 @@ export function WorkflowRunPanel({
   const running = live && (run ? run.status === "running" : true);
   const [override, setOverride] = useState<boolean | null>(null);
   const [stopping, setStopping] = useState(false);
-  const open = override ?? (running || run?.status === "failed");
+  // A run that went wrong anywhere opens on its own, so the failure shows.
+  const attention =
+    !!run &&
+    (run.status === "failed" ||
+      run.status === "stopped" ||
+      run.agents.some((agent) => agent.state === "failed"));
+  const open = override ?? (running || attention);
   const name =
     run?.name ?? run?.description ?? block.tool?.title ?? block.text ?? "Workflow";
   const status = run ? workflowStatusLine(run) : "starting";

@@ -518,7 +518,9 @@ export function groupTurnItems(
     // where it opens itself onto the reason rather than folding out of sight.
     if (
       isSubagentBlock(block) &&
-      (!settled || toolCallState(block) === "rejected")
+      (!settled ||
+        toolCallState(block) === "rejected" ||
+        workflowKeepsRow(block))
     ) {
       flush();
       const last = items[items.length - 1];
@@ -739,6 +741,17 @@ export function isWorkflowBlock(block: Block): boolean {
     isToolBlock(block) &&
     (block.workflowRun != null || block.tool?.kind === "workflow")
   );
+}
+
+/**
+ * A workflow run that keeps its own row once the turn is over: one that
+ * failed or was stopped, or finished with an agent that failed. A clean run
+ * folds into the turn's work like any other call.
+ */
+export function workflowKeepsRow(block: Block): boolean {
+  if (!isWorkflowBlock(block)) return false;
+  if (toolCallState(block) === "rejected") return true;
+  return !!block.workflowRun?.agents.some((agent) => agent.state === "failed");
 }
 
 /**
