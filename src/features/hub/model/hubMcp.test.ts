@@ -210,3 +210,54 @@ describe("the delegate tool", () => {
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
   });
 });
+
+// Ash, 20 Oct: "mainly the coding team is the main place i want to talk to" and "I don't talk to workers. I only talk to
+// orchestrators": a chat Ash starts in a project's coding team is an orchestrator like the Lead (codingTeam.ts).
+describe("a coding-team chat", () => {
+  const TEAM_CHAT = "9a7e1c2b-4d3f-4e5a-8b6c-0d1e2f3a4b5c";
+  const team: HubChatLookups = {
+    ...withProjects,
+    codingTeamProject: (id) => (id === TEAM_CHAT ? "vg-game" : id === "team-hivra" ? "hivra" : undefined),
+  };
+
+  it("works on its project, with no Mono or role of its own", () => {
+    expect(hubChatIdentity(TEAM_CHAT, team)).toEqual({ kind: "team", chat: TEAM_CHAT, projects: ["vg-game"] });
+    expect(chatProjectsFor(TEAM_CHAT, team)).toEqual(["vg-game"]);
+    // Any other plain chat is still just itself.
+    expect(hubChatIdentity("plain-1", team)).toEqual({ kind: "chat", chat: "plain-1" });
+  });
+
+  it("gets the delegate tool and ASH_PROJECT, and no connectors (those are a Mono's)", () => {
+    const args = hubMcpArgs(TEAM_CHAT, { ashOs: ASH_OS, cli: CLI, connectors: () => ({ github: { command: "x" } }) }, team);
+    const servers = config(args)!.mcpServers;
+    expect(Object.keys(servers).sort()).toEqual(["ash-os", "monocode"]);
+    expect(servers["ash-os"].env).toEqual({ ASHOS_HOME: "/Users/ash/.ashos", ASH_CHAT: TEAM_CHAT, ASH_PROJECT: "vg-game" });
+    expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
+    setHubMcpServers({ ashOs: ASH_OS, cli: CLI }, team);
+    expect(hasDelegateTool(TEAM_CHAT, "claude")).toBe(true);
+    expect(hasDelegateTool(TEAM_CHAT, "codex")).toBe(false);
+    expect(hasDelegateTool("plain-1", "claude")).toBe(false);
+  });
+
+  it("hands its project to its workers however deep, and they stay workers with no delegate tool", () => {
+    const worker = `app-${TEAM_CHAT}-r1`;
+    const deeper = `app-${worker}-r2`;
+    expect(hubChatIdentity(worker, team)).toEqual({ kind: "worker", chat: worker, role: "worker", projects: ["vg-game"] });
+    expect(hubChatIdentity(deeper, team)).toEqual({ kind: "worker", chat: deeper, role: "worker", projects: ["vg-game"] });
+    const servers = config(hubMcpArgs(worker, { ashOs: ASH_OS, cli: CLI }, team))!.mcpServers;
+    expect(servers.monocode).toBeUndefined();
+    expect(servers["ash-os"].env).toMatchObject({ ASH_ROLE: "worker", ASH_PROJECT: "vg-game" });
+  });
+
+  it("never turns a Mono's chat, a habit run or a worker into one, whatever the lookup says", () => {
+    const everything: HubChatLookups = { ...withProjects, codingTeamProject: () => "nibbii" };
+    expect(hubChatIdentity("chat-exo", everything)).toMatchObject({ kind: "mono", projects: ["vg-game"] });
+    expect(hubChatIdentity("habit-run-1", everything)).toMatchObject({ kind: "habit", monoId: "frank" });
+    expect(hubChatIdentity("app-chat-exo-r1", everything)).toMatchObject({ kind: "worker", projects: ["vg-game"] });
+  });
+});
+
+function chatProjectsFor(sessionId: string, lookups: HubChatLookups): string[] {
+  setHubMcpServers({ ashOs: null, cli: null }, lookups);
+  return chatProjects(sessionId);
+}

@@ -1,8 +1,9 @@
 // The PR watch's app side (src-tauri/src/pr_watch): the `prs.*` app actions. The `monocode` MCP server maps pr_watch,
 // pr_unwatch and pr_watches onto these (src-tauri/src/pr_watch/mcp.rs); `monocode app prs.*` reaches them too.
 //
-// - Only a Mono's own chat watches: not a habit run, a worker, a plain chat or the checker. A worker reports to the chat
-//   that delegated it, and that chat owns the pull request (T3: "a subagent cannot watch").
+// - Only a Mono's own chat or a coding-team chat watches: not a habit run, a worker, another plain chat or the checker.
+//   A worker reports to the chat that delegated it, and that chat owns the pull request (T3: "a subagent cannot
+//   watch").
 // - A chat sees and ends only its own watches: control.rs ties the app token to the chat it was made for.
 // - prs.watch reads the pull request first (in Rust, through the user's gh) and answers with what it shows now, so the
 //   Mono can act on old news in this turn; only later changes wake it.
@@ -66,18 +67,23 @@ function worktreeOf(value: unknown): string | undefined {
   return value.trim();
 }
 
-/** Only a Mono's own chat watches pull requests. */
+/** Only a Mono's own chat or a coding-team chat watches pull requests (they are the chats Ash talks to). */
 function watcher(source: Session, host: AgentAppHost) {
-  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
-  if (!mono)
+  const found = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  const team = found ? undefined : host.codingTeamOf?.(source.id);
+  if (!found && !team)
     throw new Error(
       host.isHabitRun?.(source.id)
         ? "A habit run can't watch a pull request. Post what you found; the Mono watches from its own chat."
-        : "Only a Mono's own chat can watch pull requests. A worker reports its pull request to the chat that delegated it, and that chat watches it.",
+        : "Only a Mono's own chat or a chat in a project's coding team can watch pull requests. A worker reports its pull request to the chat that delegated it, and that chat watches it.",
     );
-  if (mono.id === CHECKER_MONO_ID)
+  if (found?.id === CHECKER_MONO_ID)
     throw new Error("The checker only reads. It never watches or changes work.");
   if (!host.prs) throw new Error("PR watch is unavailable in this build");
+  // A coding-team chat has no Mono: it watches as "<Project> coding team", on its own project's folder.
+  const mono = found
+    ? { id: found.id as string | undefined, name: found.name, projects: found.projects }
+    : { id: undefined, name: team!.name, projects: [team!.folder] };
   return { mono, prs: host.prs };
 }
 
@@ -120,7 +126,7 @@ async function watch(source: Session, input: Record<string, unknown>, host: Agen
   const worktree = worktreeOf(input.worktree);
   const added = await prs.add({
     ownerSession: source.id,
-    ownerMono: mono.id,
+    ...(mono.id ? { ownerMono: mono.id } : {}),
     ...(mono.name ? { ownerName: mono.name } : {}),
     repo,
     number,

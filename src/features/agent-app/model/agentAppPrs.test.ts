@@ -98,18 +98,19 @@ function prsHost(watches: PrWatch[]) {
 
 function fixture(
   watches: PrWatch[] = [],
-  who: "mono" | "plain" | "habit" | "checker" | "worker" = "mono",
+  who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono",
 ) {
   const source: Session = {
     ...newSession("claude", PROJECT, "claude:opus-5-5"),
-    id: who === "worker" ? "app-mono-hivra-r0" : who === "checker" ? "mono-checker" : "mono-hivra",
+    id: who === "worker" ? "app-mono-hivra-r0" : who === "checker" ? "mono-checker" : who === "team" ? "team-hivra" : "mono-hivra",
   };
   const prs = prsHost(watches);
   const host = {
     isMono: () => who === "mono" || who === "checker",
     isHabitRun: () => who === "habit",
+    codingTeamOf: () => (who === "team" ? { project: "hivra", name: "Hivra coding team", folder: PROJECT } : undefined),
     monoOf: () =>
-      who === "plain" || who === "worker"
+      who === "plain" || who === "worker" || who === "team"
         ? undefined
         : {
             id: who === "checker" ? "checker" : "hivra-lead",
@@ -156,6 +157,20 @@ describe("prs.watch", () => {
     expect(result.note).not.toContain("already needs a fix");
   });
 
+  it("registers it for a coding-team chat too, as its coding team, on its own project", async () => {
+    const { source, host, added } = fixture([], "team");
+    await handleAgentApp(source, "r1", "prs.watch", { repo: "ashneil12/hivra", number: 42 }, host);
+    expect(added).toEqual([
+      {
+        ownerSession: "team-hivra",
+        ownerName: "Hivra coding team",
+        repo: "ashneil12/hivra",
+        number: 42,
+        projects: [{ folder: PROJECT, hubId: "hivra" }],
+      },
+    ]);
+  });
+
   it("says when what the pull request shows now already needs a fix", async () => {
     const red = watchRow({
       ownerSession: "mono-hivra",
@@ -175,7 +190,7 @@ describe("prs.watch", () => {
   it("refuses a worker, a habit run, a plain chat and the checker", async () => {
     for (const [who, words] of [
       ["worker", "A worker reports its pull request to the chat that delegated it"],
-      ["plain", "Only a Mono's own chat can watch pull requests"],
+      ["plain", "Only a Mono's own chat or a chat in a project's coding team can watch pull requests"],
       ["habit", "A habit run can't watch a pull request"],
       ["checker", "The checker only reads"],
     ] as const) {

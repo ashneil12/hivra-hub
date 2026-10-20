@@ -4,15 +4,17 @@
 // - `ash-os`: Ash's own ash-os entry (read in Rust, `hub_ash_os_mcp`; none in a dev copy) with the chat's identity in its
 //   env, for every hub chat: ASH_CHAT always; a Mono's chat and its habit runs also ASH_MONO_ID and ASH_ROLE (lead,
 //   mono, or checker for the checker); a worker (a chat a Mono or another chat started) ASH_ROLE=worker. A project's
-//   Lead, its habit runs and every worker under it (however deep) also carry ASH_PROJECT, so Ash OS lets them read and
-//   write only that project's memory and Ash's global memory, `ash` (Ash, 19 Oct: a project never reads another
-//   project's memory). The leadership team, other Monos, plain chats and their workers carry none. Claude Code
+//   Lead, its habit runs, a chat in its coding team (codingTeam.ts) and every worker under them (however deep) also
+//   carry ASH_PROJECT, so Ash OS lets them read and write only that project's memory and Ash's global memory, `ash`
+//   (Ash, 19 Oct: a project never reads another project's memory). The leadership team, other Monos, plain chats and
+//   their workers carry none. Claude Code
 //   doesn't hand MCP servers the chat's identity, so it has to be in the entry. This entry replaces a user-scope
 //   `ash-os` of the same name (checked with Claude Code 2.1.302 on 19 Oct: only the --mcp-config one started). The
 //   entry's own env arrives from Rust as `${MONOCODE_ASH_OS_<KEY>}` references that harness_spawn fills in the child's
 //   environment (hub.rs ash_os_server_from), so Ash's values never go in argv; only the identity is literal.
-// - `monocode`: the delegate tool (`monocode mcp`, src-tauri/src/mcp_server.rs), for a Mono's own chat only (never a
-//   habit run, a worker, a plain chat or the checker), pre-approved with `--allowedTools mcp__monocode__*`. Its app
+// - `monocode`: the delegate tool (`monocode mcp`, src-tauri/src/mcp_server.rs), for the chats Ash talks to: a Mono's
+//   own chat and a chat in a project's coding team (never a habit run, a worker, another plain chat or the checker),
+//   pre-approved with `--allowedTools mcp__monocode__*`. Its app
 //   connection is written as "${MONOCODE_APP_ENDPOINT}" / "${MONOCODE_APP_TOKEN}": Claude Code expands `${VAR}` in a
 //   --mcp-config entry from its own environment, where MonoCode put them for this chat (control.rs configure_child),
 //   so the token never appears in argv (checked with 2.1.302 on 19 Oct; an unset variable stays the literal text,
@@ -57,15 +59,16 @@ export type HubRole = "lead" | "mono" | "worker" | "checker";
 
 /** Who a chat is to Ash OS. */
 export type HubChatIdentity = {
-  /** A Mono's own chat, one of its habit runs, a worker, or a plain hub chat. */
-  kind: "mono" | "habit" | "worker" | "chat";
+  /** A Mono's own chat, one of its habit runs, a chat in a project's coding team, a worker, or a plain hub chat. */
+  kind: "mono" | "habit" | "team" | "worker" | "chat";
   /** The hub chat (ASH_CHAT): what a chat with no Mono records is its own. */
   chat: string;
   monoId?: string;
   role?: HubRole;
   /**
    * The Ash OS projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
-   * under it. Absent for everyone else (the leadership team reads every project, and names one when an ask does).
+   * under it, and a coding-team chat's project, for it and its workers. Absent for everyone else (the leadership team
+   * reads every project, and names one when an ask does).
    */
   projects?: string[];
 };
@@ -79,6 +82,8 @@ export type HubChatLookups = {
   isLead(monoId: string): boolean;
   /** The Ash OS project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
   leadProject?(monoId: string): string | undefined;
+  /** The hub project whose coding team this chat is in (codingTeam.ts); undefined for any other chat. */
+  codingTeamProject?(sessionId: string): string | undefined;
 };
 
 function monoRole(monoId: string, lookups: HubChatLookups): HubRole {
@@ -93,17 +98,22 @@ function projectsOf(monoId: string, role: HubRole, lookups: HubChatLookups): { p
 }
 
 /**
- * The Mono chat a worker was started under, however deep (`app-<caller>-<request>`, where the caller may itself be a
- * worker: `app-app-<Mono's chat>-<r1>-<r2>`): the longest prefix of what follows the `app-`s that is a Mono's own chat.
+ * The chat Ash talks to that a worker was started under, however deep (`app-<caller>-<request>`, where the caller may
+ * itself be a worker: `app-app-<Mono's chat>-<r1>-<r2>`): the longest prefix of what follows the `app-`s that is a
+ * Mono's own chat or a coding-team chat.
  */
-function rootMonoChat(sessionId: string, lookups: HubChatLookups): string | undefined {
+function rootOwnerChat(sessionId: string, lookups: HubChatLookups): string | undefined {
   let rest = sessionId;
   let best: string | undefined;
   while (rest.startsWith("app-")) {
     rest = rest.slice(4);
     for (let at = rest.indexOf("-"); at > 0; at = rest.indexOf("-", at + 1)) {
       const candidate = rest.slice(0, at);
-      if ((!best || candidate.length > best.length) && lookups.monoOf(candidate)) best = candidate;
+      if (
+        (!best || candidate.length > best.length) &&
+        (lookups.monoOf(candidate) || lookups.codingTeamProject?.(candidate))
+      )
+        best = candidate;
     }
   }
   return best;
@@ -111,8 +121,9 @@ function rootMonoChat(sessionId: string, lookups: HubChatLookups): string | unde
 
 /**
  * A Mono's chat is the Mono; a habit run works as its Mono; a chat started through the app CLI (`app-<caller>-<request>`,
- * every delegated worker) is a worker, and works on its Lead's project when the chat it was started under is a Lead's;
- * anything else is a plain hub chat, known by its id alone.
+ * every delegated worker) is a worker, and works on its Lead's or coding team's project when the chat it was started
+ * under has one; a chat in a project's coding team works on that project; anything else is a plain hub chat, known by
+ * its id alone.
  */
 export function hubChatIdentity(sessionId: string, lookups: HubChatLookups): HubChatIdentity {
   const own = lookups.monoOf(sessionId)?.id;
@@ -126,16 +137,21 @@ export function hubChatIdentity(sessionId: string, lookups: HubChatLookups): Hub
     return { kind: "habit", chat: sessionId, monoId: habit, role, ...projectsOf(habit, role, lookups) };
   }
   if (sessionId.startsWith("app-")) {
-    const root = rootMonoChat(sessionId, lookups);
+    const root = rootOwnerChat(sessionId, lookups);
     const parent = root ? hubChatIdentity(root, lookups) : undefined;
     return { kind: "worker", chat: sessionId, role: "worker", ...(parent?.projects ? { projects: parent.projects } : {}) };
   }
+  const team = lookups.codingTeamProject?.(sessionId);
+  if (team) return { kind: "team", chat: sessionId, projects: [team] };
   return { kind: "chat", chat: sessionId };
 }
 
-/** Whether this chat gets the delegate tool: a Mono's own chat, and not the checker's (it only reads). */
+/**
+ * Whether this chat gets the delegate tool: the chats Ash talks to, a Mono's own chat (not the checker's: it only
+ * reads) and a coding-team chat.
+ */
 export function getsDelegateTool(identity: HubChatIdentity): boolean {
-  return identity.kind === "mono" && identity.role !== "checker";
+  return (identity.kind === "mono" && identity.role !== "checker") || identity.kind === "team";
 }
 
 /** The `monocode` entry. `cli` is this app's own executable (`app_cli_path`). */
@@ -232,7 +248,8 @@ export function hasDelegateTool(sessionId: string, harness: string): boolean {
 
 /**
  * The Ash OS projects a chat works on (its ASH_PROJECT): a Lead's chat, its habit runs and its workers get their Lead's
- * project; anyone else none. What its memory primer (hubMemoryPrimer.ts) and its workers' briefs are about.
+ * project, a coding-team chat and its workers that team's project; anyone else none. What its memory primer
+ * (hubMemoryPrimer.ts) and its workers' briefs are about.
  */
 export function chatProjects(sessionId: string): string[] {
   return registered ? (hubChatIdentity(sessionId, registered.lookups).projects ?? []) : [];

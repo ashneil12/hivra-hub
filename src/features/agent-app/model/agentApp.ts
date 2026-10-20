@@ -257,9 +257,14 @@ export type AgentAppHost = {
   }): Promise<unknown>;
   /** The newest ship and its receipt, reported by app.version. */
   shipStatus?(): unknown;
-  /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat only. */
+  /**
+   * The project whose coding team this chat is in (hub/model/codingTeam.ts): an orchestrator like the project's Lead,
+   * which delegates and watches pull requests from its own chat. Undefined for a Mono's chat, a worker or another chat.
+   */
+  codingTeamOf?(sessionId: string): { project: string; name: string; folder: string } | undefined;
+  /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat or a coding-team chat only. */
   tasks?: AgentAppTasksHost;
-  /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat only. */
+  /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
   /**
    * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work

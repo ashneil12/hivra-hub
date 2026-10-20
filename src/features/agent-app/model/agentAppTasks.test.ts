@@ -129,18 +129,18 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
 
 function fixture(
   rows: Delegation[] = [],
-  who: "mono" | "plain" | "habit" | "checker" | "worker" = "mono",
+  who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono",
 ) {
   const source: Session = {
     ...newSession("claude", PROJECT, "claude:opus-5-5"),
-    id: who === "worker" ? "app-mono-exo-r0" : who === "checker" ? "mono-checker" : "mono-exo",
+    id: who === "worker" ? "app-mono-exo-r0" : who === "checker" ? "mono-checker" : who === "team" ? "team-exo" : "mono-exo",
   };
   const tasks = tasksHost(rows);
   const started: unknown[][] = [];
   const host: AgentAppHost = {
     start: vi.fn(async (...args: unknown[]) => {
       started.push(args);
-      const [launch, id, , , meta] = args as [
+      const [launch, id, , notify, meta] = args as [
         { prompt: string },
         string,
         unknown,
@@ -148,7 +148,7 @@ function fixture(
         { title: string },
       ];
       rows.push(
-        row({ id: `t-${rows.length + 1}`, childSession: id, requestId: id, title: meta.title, brief: launch.prompt }),
+        row({ id: `t-${rows.length + 1}`, ownerSession: notify, childSession: id, requestId: id, title: meta.title, brief: launch.prompt }),
       );
     }),
     sessions: vi.fn(async () => []),
@@ -167,8 +167,9 @@ function fixture(
     writeAgentFile: vi.fn(),
     isMono: () => who === "mono" || who === "checker",
     isHabitRun: () => who === "habit",
+    codingTeamOf: () => (who === "team" ? { project: "vg-game", name: "EXO coding team", folder: PROJECT } : undefined),
     monoOf: () =>
-      who === "plain" || who === "worker"
+      who === "plain" || who === "worker" || who === "team"
         ? undefined
         : {
             id: who === "checker" ? "checker" : "vg-game-lead",
@@ -300,10 +301,10 @@ describe("tasks.delegate", () => {
     expect(meta).toEqual({ title: "CI", askIds: [], project: "vg-game" });
   });
 
-  it("is refused for anything but a Mono's own chat, and the checker", async () => {
+  it("is refused for anything but a Mono's own chat or a coding-team chat, and the checker", async () => {
     for (const [who, message] of [
-      ["plain", "Only a Mono's own chat can delegate"],
-      ["worker", "Only a Mono's own chat can delegate"],
+      ["plain", "Only a Mono's own chat or a chat in a project's coding team can delegate"],
+      ["worker", "Only a Mono's own chat or a chat in a project's coding team can delegate"],
       ["habit", "A habit run can't delegate"],
       ["checker", "The checker only reads"],
     ] as const) {
@@ -316,6 +317,47 @@ describe("tasks.delegate", () => {
       );
       expect(started).toHaveLength(0);
     }
+  });
+
+  // Ash, 20 Oct: the coding team is the main place he talks, and its chats delegate like the Lead (codingTeam.ts).
+  it("lets a coding-team chat delegate on its own project, signed as its coding team, nested under it", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, api } = fixture(rows, "team");
+    api.memoryBrief = vi.fn(async () => "<project_memory>\n- EXO is dark blue\n</project_memory>");
+    const result = await handleAgentApp(
+      source,
+      "r1",
+      "tasks.delegate",
+      { brief: "Fix the save bug.", title: "Save bug", goal: "It saves", project: "vg-game", isolation: "worktree" },
+      host,
+    );
+    const [launch, id, , notify, meta] = started[0] as [Record<string, unknown>, string, unknown, string, Record<string, unknown>];
+    // The worker's chat is `app-<this chat>-<request>`: the coding team's Sessions list nests it under this chat.
+    expect(id).toBe("app-team-exo-r1");
+    expect(notify).toBe("team-exo");
+    expect(launch).toMatchObject({ cwd: PROJECT, workspaceMode: "worktree", reveal: false });
+    expect(launch.project).toBeUndefined();
+    expect(launch.prompt).toBe(
+      briefPrompt("EXO coding team", "Fix the save bug.", "It saves", "<project_memory>\n- EXO is dark blue\n</project_memory>"),
+    );
+    expect(api.memoryBrief).toHaveBeenCalledWith("team-exo", "claude");
+    expect(meta).toMatchObject({ title: "Save bug", project: "vg-game" });
+    expect(result).toMatchObject({ taskId: "t-1", childSessionId: "app-team-exo-r1", status: "running" });
+    // Its rows are its own: task_status reads them.
+    expect(await handleAgentApp(source, "r2", "tasks.status", {}, host)).toMatchObject({
+      tasks: [{ taskId: "t-1", childSessionId: "app-team-exo-r1" }],
+    });
+  });
+
+  it("keeps a coding-team chat on its own project and away from briefing Leads", async () => {
+    const { source, host, started } = fixture([], "team");
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", { brief: "x", project: "hivra" }, host),
+    ).rejects.toThrow("delegates on its own project (vg-game)");
+    await expect(
+      handleAgentApp(source, "r2", "tasks.delegate", { brief: "x", lead: "hivra" }, host),
+    ).rejects.toThrow("only the leadership team briefs a project's Lead");
+    expect(started).toHaveLength(0);
   });
 
   it("refuses bad input before anything starts", async () => {

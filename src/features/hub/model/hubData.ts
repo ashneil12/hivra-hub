@@ -10,6 +10,7 @@ import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { codingTeamChatProject } from "./codingTeam";
 import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
@@ -42,6 +43,8 @@ function startHubMcp(): void {
     isLead: (id: string) => !!leadFor(id),
     // A Lead's chat, habit runs and workers carry its project (ASH_PROJECT): they reach only its memory and Ash's global one.
     leadProject: (id: string) => leadFor(id)?.projectId,
+    // So does a chat in a project's coding team, and its workers: they are orchestrators like the Lead (codingTeam.ts).
+    codingTeamProject: codingTeamChatProject,
   };
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);

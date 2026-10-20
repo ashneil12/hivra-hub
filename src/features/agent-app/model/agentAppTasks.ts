@@ -3,7 +3,8 @@
 // mcp_server.rs) maps delegate_task / task_status / task_wait / task_cancel / task_answer onto these; `monocode app
 // tasks.*` reaches them too.
 //
-// - Only a Mono's own chat has tasks: not a habit run, a worker, a plain chat or the checker (it only reads).
+// - Only the chats Ash talks to have tasks: a Mono's own chat and a chat in a project's coding team (hub/model/
+//   codingTeam.ts). Not a habit run, a worker, another plain chat or the checker (it only reads).
 // - A chat sees and moves only its own rows. control.rs ties the app token to the chat it was made for and the store
 //   answers by owner, so a model that knows another chat's task id still gets "no task of yours".
 // - Calls work only inside the caller's active turn (control.rs), and each one answers within control.rs's 35 s:
@@ -226,19 +227,26 @@ function taskModel(
   );
 }
 
-/** Only a Mono's own chat has tasks; the checker only reads. */
-function taskOwner(source: Session, host: AgentAppHost) {
+/** Who delegates: a Mono's own chat (signed with its name), or a coding-team chat (signed "<Project> coding team"). */
+type TaskOwner = { name: string; mono?: { id: string; name?: string }; team?: { project: string; folder: string } };
+
+/** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
+function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
   const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
-  if (!mono)
+  const team = mono ? undefined : host.codingTeamOf?.(source.id);
+  if (!mono && !team)
     throw new Error(
       host.isHabitRun?.(source.id)
         ? "A habit run can't delegate. Post what you found; the Mono delegates from its own chat."
-        : "Only a Mono's own chat can delegate and manage tasks. A worker reports to the chat that delegated it.",
+        : "Only a Mono's own chat or a chat in a project's coding team can delegate and manage tasks. A worker reports to the chat that delegated it.",
     );
-  if (mono.id === CHECKER_MONO_ID)
+  if (mono?.id === CHECKER_MONO_ID)
     throw new Error("The checker only reads. It never delegates or starts work.");
   if (!host.tasks) throw new Error("Tasks are unavailable in this build");
-  return { mono, tasks: host.tasks };
+  const owner: TaskOwner = mono
+    ? { name: mono.name || mono.id, mono }
+    : { name: team!.name, team: { project: team!.project, folder: team!.folder } };
+  return { owner, tasks: host.tasks };
 }
 
 /** The caller's rows by id, in the order asked; one that isn't the caller's reads exactly like one that doesn't exist. */
@@ -356,7 +364,7 @@ async function delegate(
   host: AgentAppHost,
   helpers: TaskHelpers,
 ) {
-  const { mono, tasks } = taskOwner(source, host);
+  const { owner, tasks } = taskOwner(source, host);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error(
       "request ID must use letters, digits, underscores or hyphens (up to 100)",
@@ -366,8 +374,13 @@ async function delegate(
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
   const goal = input.goal === undefined ? undefined : text(input.goal, "goal", 1_000);
-  if (input.lead !== undefined)
-    return briefLead(source, mono, tasks, { requestId, brief, title, asks, goal, input });
+  if (input.lead !== undefined) {
+    if (!owner.mono)
+      throw new Error(
+        "A coding-team chat hands its work to its own workers; only the leadership team briefs a project's Lead. Leave out lead.",
+      );
+    return briefLead(source, owner.mono, tasks, { requestId, brief, title, asks, goal, input });
+  }
   if (input.whenBusy !== undefined)
     throw new Error("whenBusy is for a brief to a Lead (lead); a worker starts in a chat of its own");
   const isolation = input.isolation ?? "shared";
@@ -375,6 +388,9 @@ async function delegate(
     throw new Error('isolation must be "shared" or "worktree"');
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
+  // A coding-team chat works on its own project only: naming it is fine, naming another is not.
+  if (owner.team && named !== undefined && named !== owner.team.project && (tasks.hubProjectFolder?.(named) ?? named) !== owner.team.folder)
+    throw new Error(`A coding-team chat delegates on its own project (${owner.team.project}). Leave out project.`);
   const model = taskModel(input.model, source);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
@@ -383,8 +399,8 @@ async function delegate(
   const launch = helpers.startLaunch(
     source,
     {
-      prompt: briefPrompt(mono.name || mono.id, brief, goal, memory),
-      ...(named !== undefined
+      prompt: briefPrompt(owner.name, brief, goal, memory),
+      ...(named !== undefined && !owner.team
         ? { project: tasks.hubProjectFolder?.(named) ?? named }
         : {}),
       ...(model ? { harness: model.harness, model: model.model } : {}),
