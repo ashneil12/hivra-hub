@@ -178,12 +178,18 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
   for (const step of [
     "record his asks with ash_record before you act, quoting his own words",
     "one call with every ask of the message in asks",
-    // A brain dump (Ash, 20 Oct): a fast first reply that lists every ask, then parallel work.
+    // A brain dump (Ash, 20 Oct): a fast first reply that lists every ask, then parallel work. Baseline, 20 Oct: one
+    // worker took 36 of a 40-ask dump and the asks were never listed back, so any message with several asks is listed
+    // back first and its work split across workers by area.
+    "Any message with more than one ask (a brain dump or a short list)",
     "your first words come within a minute, before any tool call",
-    "List every ask in his order",
+    "List every ask back in his order",
     "none dropped, merged away or invented",
     "group what needs discussing, each point with your recommendation",
-    "start the independent work in parallel",
+    "start the independent work in parallel, split by area: one worker per area",
+    "each brief with Ash's own words for only its asks",
+    "Never hand a whole message to one worker; a big area gets more than one worker, or a second round",
+    "end with one line naming what is running and who has which asks",
     // Still chatting while workers run.
     "While workers run you are never busy: answer whatever Ash writes at once",
     "a message of his that arrives mid-turn gets a short answer right then",
