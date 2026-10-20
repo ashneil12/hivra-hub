@@ -69,8 +69,19 @@ function savedEfforts(value: unknown): { reasoningEfforts?: ReasoningEffort[] } 
   const levels = reasoningEfforts(value);
   return levels.length === REASONING_EFFORTS.length ? {} : { reasoningEfforts: levels };
 }
-/** Only levels enabled for this model are offered or sent; see customModelEfforts for the default. */
-export type CustomModel = { id: string; name: string; provider: CustomProvider; baseUrl: string; modelId: string; reasoningEfforts?: ReasoningEffort[] };
+/** What Ash sees for a level: "Extra high" for xhigh, otherwise the word with a capital. */
+export function effortLabel(level: string): string {
+  return level === "xhigh" ? "Extra high" : level ? level[0].toUpperCase() + level.slice(1) : level;
+}
+/**
+ * Only levels enabled for this model are offered or sent; see customModelEfforts for the default. `refusedEfforts`
+ * are levels the provider itself refused on this Mac (the router retried without them): they stay listed, marked as
+ * not supported, are never sent, and never look selected. "Try them again" in Reasoning settings clears them.
+ */
+export type CustomModel = {
+  id: string; name: string; provider: CustomProvider; baseUrl: string; modelId: string;
+  reasoningEfforts?: ReasoningEffort[]; refusedEfforts?: ReasoningEffort[];
+};
 
 const KEY = "monocode:custom-models";
 const CHANGED = "monocode:custom-models-change";
@@ -110,7 +121,10 @@ export function subscribeCustomModels(onChange: () => void): () => void {
 
 /** Metadata only: whatever is passed, a key-like field is dropped before anything is written. */
 function writeModels(list: CustomModel[]): void {
-  const clean = list.map(({ id, name, provider, baseUrl, modelId, reasoningEfforts: levels }) => ({ id, name, provider, baseUrl, modelId, ...savedEfforts(levels) }));
+  const clean = list.map(({ id, name, provider, baseUrl, modelId, reasoningEfforts: levels, refusedEfforts: refused }) => {
+    const kept = reasoningEfforts(refused);
+    return { id, name, provider, baseUrl, modelId, ...savedEfforts(levels), ...(kept.length ? { refusedEfforts: kept } : {}) };
+  });
   localStorage.setItem(KEY, JSON.stringify(clean));
   version++;
   window.dispatchEvent(new CustomEvent(CHANGED));
@@ -311,20 +325,90 @@ export function customModelSettings(model: CustomModel): Record<string, string> 
   return { provider: model.provider, baseUrl: model.baseUrl, modelId: model.modelId, customModelId: model.id };
 }
 
+/**
+ * The level a chat on a custom model asks for, before anything the provider refused is taken out: the chat's own
+ * pick, else for a narrowed list its old default (medium, else the first). A model nobody narrowed sends none unless
+ * the chat picked one, so the provider's own default stays the default (some providers refuse the field).
+ */
+export function pickedCustomEffort(target: { model?: string; modelSettings: Record<string, string> }): { model: CustomModel; effort: ReasoningEffort } | undefined {
+  const saved = findCustomModel(target.model);
+  if (!saved) return undefined;
+  const levels = customModelEfforts(saved.reasoningEfforts);
+  const narrowed = Array.isArray(saved.reasoningEfforts);
+  const effort = target.modelSettings.effort ?? (narrowed ? (levels.includes("medium") ? "medium" : levels[0]) : undefined);
+  return levels.includes(effort as ReasoningEffort) ? { model: saved, effort: effort as ReasoningEffort } : undefined;
+}
+
+/** The levels this model's provider refused on this Mac. */
+export function refusedEfforts(model: Pick<CustomModel, "refusedEfforts"> | undefined): ReasoningEffort[] {
+  return reasoningEfforts(model?.refusedEfforts);
+}
+
 /** The route for a session's model, or undefined for a subscription model. Prefers the saved metadata. */
 export function customModelRoute(target: Pick<ModelTarget, "model" | "modelSettings">): CustomModelRoute | undefined {
   if (!isCustomModelId(target.model)) return undefined;
   const saved = findCustomModel(target.model);
   if (saved) {
-    const levels = customModelEfforts(saved.reasoningEfforts);
-    // A chat that never picked a level sends none for a model nobody narrowed: some providers refuse the field,
-    // so the provider's own default stays the default. A narrowed list keeps its old default (medium, else first).
-    const narrowed = Array.isArray(saved.reasoningEfforts);
-    const effort = target.modelSettings.effort ?? (narrowed ? (levels.includes("medium") ? "medium" : levels[0]) : undefined);
-    return { ...customModelSettings(saved), ...(levels.includes(effort as ReasoningEffort) ? { reasoningEffort: effort as ReasoningEffort } : {}) } as CustomModelRoute;
+    const picked = pickedCustomEffort(target);
+    // A level the provider already refused is not sent again: the reply uses the provider's default, and the chat
+    // and the picker say so (effortDroppedText, the picker's "Not supported").
+    const send = picked && !refusedEfforts(saved).includes(picked.effort) ? picked.effort : undefined;
+    return { ...customModelSettings(saved), ...(send ? { reasoningEffort: send } : {}) } as CustomModelRoute;
   }
   const s = target.modelSettings;
   return s.customModelId ? { provider: s.provider as CustomProvider, baseUrl: s.baseUrl, modelId: s.modelId, customModelId: s.customModelId } : undefined;
+}
+
+// ---- levels a provider refused ------------------------------------------------------------------------------------------
+
+/** What the router announces when a provider refused a level (src-tauri/src/model_router.rs, EffortRefusal). */
+export type EffortRefusal = { customModelId: string; provider: string; baseUrl: string; modelId: string; effort: string };
+export const EFFORT_REFUSED_EVENT = "model-router://effort-refused";
+
+/** Mark a level as refused for the model it belongs to. Returns whether anything changed. */
+export function markEffortRefused(refusal: Pick<EffortRefusal, "customModelId" | "effort">): boolean {
+  const level = reasoningEfforts([refusal.effort])[0];
+  if (!level) return false;
+  const list = listCustomModels();
+  const model = list.find((m) => m.id === refusal.customModelId);
+  if (!model || refusedEfforts(model).includes(level)) return false;
+  writeModels(list.map((m) => m.id === model.id ? { ...m, refusedEfforts: [...refusedEfforts(m), level] } : m));
+  return true;
+}
+
+/** "Try them again": the next message at a refused level asks the provider once more. */
+export function clearRefusedEfforts(id: string): void {
+  writeModels(listCustomModels().map((m) => m.id === id ? { ...m, refusedEfforts: [] } : m));
+}
+
+/** The one plain line a chat shows when its level was dropped: "xAI didn't accept the Medium level, so …". */
+export function effortDroppedText(model: Pick<CustomModel, "provider">, effort: string): string {
+  const who = model.provider === "custom" ? "Your provider" : providerName(model.provider);
+  return `${who} didn't accept the ${effortLabel(effort)} level, so this reply used the provider's default.`;
+}
+
+/**
+ * The line to show in a chat whose picked level its provider refused, once per chat and level, or undefined.
+ * `shown` is the caller's record of what this chat was already told.
+ */
+export function effortDroppedNotice(
+  target: { model?: string; modelSettings: Record<string, string> },
+  shown: Set<string>,
+): string | undefined {
+  const picked = pickedCustomEffort(target);
+  if (!picked || !refusedEfforts(picked.model).includes(picked.effort)) return undefined;
+  const key = `${picked.model.id}|${picked.effort}`;
+  if (shown.has(key)) return undefined;
+  shown.add(key);
+  return effortDroppedText(picked.model, picked.effort);
+}
+
+/** In the app: every refusal the router announces marks that level for its model. Returns the unlisten. */
+export async function listenForEffortRefusals(): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<EffortRefusal>(EFFORT_REFUSED_EVENT, (event) => {
+    markEffortRefused(event.payload);
+  });
 }
 
 /** What the bottom pill says: the name, and for a model outside the subscription, "billed separately" in grey. */

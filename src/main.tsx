@@ -28,11 +28,15 @@ import { initializeProviderBinaryPaths } from "./features/providers/model/provid
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
 import { isTauri } from "@tauri-apps/api/core";
-import { setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
+import { listenForEffortRefusals, setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
 import { DevRibbon } from "./app/shell/DevRibbon";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
-if (isTauri()) setModelKeyStore(tauriModelKeyStore);
+if (isTauri()) {
+  setModelKeyStore(tauriModelKeyStore);
+  // A level a provider refuses is marked for that model, so the picker can't show it as picked.
+  void listenForEffortRefusals().catch(() => undefined);
+}
 
 performance.mark("monocode:bootstrap");
 // Let local boot IPC overlap loading/evaluating the workspace UI.
