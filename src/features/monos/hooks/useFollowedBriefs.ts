@@ -26,6 +26,34 @@ export type FollowedReport = {
   answer: string;
 };
 
+/**
+ * Post each Lead report its owner has answered to the room, once (`reported` holds the receipts already posted). A
+ * receipt is kept only after its post went through, so one that failed is tried again on the next sweep (the room
+ * keeps one copy of a report by its id).
+ */
+export async function postAnsweredLeadReports(
+  rows: readonly Delegation[],
+  sessions: readonly Session[],
+  reported: Set<string>,
+  onLeadReport: (report: FollowedReport) => Promise<unknown> | void,
+): Promise<void> {
+  for (const row of rows) {
+    if (row.follow !== "lead" || row.state === "running" || row.state === "question") continue;
+    const receipt = completionReceipt(row.requestId, row.generation);
+    if (reported.has(receipt)) continue;
+    const owner = sessions.find((s) => s.id === row.ownerSession);
+    if (!owner) continue;
+    const answered = answeredReport(row, owner, receipt);
+    if (!answered) continue;
+    try {
+      await onLeadReport({ row, receipt, owner, ...answered });
+      reported.add(receipt);
+    } catch (error) {
+      console.error("Could not post the Lead's report to its room; trying again on the next sweep", error);
+    }
+  }
+}
+
 export function useFollowedBriefs(options: {
   tracker: DelegationTracker;
   sessions: Session[];
@@ -78,17 +106,7 @@ export function useFollowedBriefs(options: {
     }
     const onLeadReport = latest.current.onLeadReport;
     if (!onLeadReport) return;
-    for (const row of tracker.known()) {
-      if (row.follow !== "lead" || row.state === "running" || row.state === "question") continue;
-      const receipt = completionReceipt(row.requestId, row.generation);
-      if (reported.current.has(receipt)) continue;
-      const owner = sessionsRef.current.find((s) => s.id === row.ownerSession);
-      if (!owner) continue;
-      const answered = answeredReport(row, owner, receipt);
-      if (!answered) continue;
-      reported.current.add(receipt);
-      await Promise.resolve(onLeadReport({ row, receipt, owner, ...answered })).catch(() => undefined);
-    }
+    await postAnsweredLeadReports(tracker.known(), sessionsRef.current, reported.current, onLeadReport);
   };
 
   // After a change to the chats: once, shortly after the first change (a streaming chat changes constantly, so this
