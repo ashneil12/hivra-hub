@@ -103,7 +103,7 @@ describe("its Stop", () => {
 
   it("comes back with a note when nothing took the stop", async () => {
     renderWith(async () => false);
-    act(() => q("[data-workflow-stop]")!.click());
+    await act(async () => q("[data-workflow-stop]")!.click());
     await settle();
     expect(container.textContent).not.toContain("Stopping…");
     expect(q("[data-workflow-stop]")).not.toBeNull();
@@ -114,12 +114,14 @@ describe("its Stop", () => {
     renderWith(async () => {
       throw new Error("Claude Code exited");
     });
-    act(() => q("[data-workflow-stop]")!.click());
+    await act(async () => q("[data-workflow-stop]")!.click());
     await settle();
     expect(q("[data-workflow-stop]")).not.toBeNull();
     expect(q("[data-workflow-stop-failed]")?.textContent).toContain("Claude Code exited");
     // A second try clears the note while it goes.
+    renderWith(() => new Promise<boolean>(() => undefined));
     act(() => q("[data-workflow-stop]")!.click());
     expect(q("[data-workflow-stop-failed]")).toBeNull();
+    expect(container.textContent).toContain("Stopping…");
   });
 });
