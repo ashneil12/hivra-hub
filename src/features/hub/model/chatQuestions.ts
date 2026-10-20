@@ -128,7 +128,11 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
   const picks = prompt.questions.map(recommendedOption);
   // Several questions: one pick each, in order ("Shield first; Keep the timer").
   const pick = picks.every(Boolean) ? picks.map((o) => plainOptionLabel(o!.label)).join("; ") : undefined;
-  const words = prompt.questions.map((q) => `${q.header ?? ""} ${q.prompt} ${q.options.map((o) => o.label).join(" ")}`).join(" ");
+  // Everything the agent wrote into it: the title, each header and prompt, and every option's label and description.
+  const words = [
+    prompt.title ?? "",
+    ...prompt.questions.map((q) => `${q.header ?? ""} ${q.prompt} ${q.options.map((o) => `${o.label} ${o.description ?? ""}`).join(" ")}`),
+  ].join(" ");
   const flagged = prompt.questions.some((q) => /red\s*line/i.test(q.header ?? "")) || /red\s*line/i.test(prompt.title ?? "");
   return {
     source: "ask",
