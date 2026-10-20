@@ -24,7 +24,11 @@ import { listMonos, monoForSession, monoState } from "../../features/monos/model
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
-export type DriverTarget = { room: string } | { mono: string } | { session: string };
+/**
+ * Where Ash writes: a room, a Mono's chat, a chat by id, or a project's coding team (a new chat there, as his New
+ * session makes one; a chat already in it with `session`).
+ */
+export type DriverTarget = { room: string } | { mono: string } | { session: string } | { codingTeam: string };
 
 export type DriverAction = { id: string; op: string; error?: string; [key: string]: unknown };
 
@@ -43,6 +47,8 @@ export type DriverHost = {
   setDefaults(model: string, effort: string): void;
   /** Open a chat the way a click on it does (a worker's sub-chat under its owner's Mono when `owner` is given). */
   openSession(sessionId: string, owner?: string): void;
+  /** A new chat in a project's coding team (App.tsx startCodingTeamChat): its id, or null when it has no code folder. */
+  startCodingTeamChat?(projectId: string): string | null;
 };
 
 export function driverEnabled(): boolean {
@@ -274,6 +280,12 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       const text = String(action.text ?? "");
       if (!text.trim()) throw new Error("send: empty text");
       if ("room" in to) return { ok: true, at: Date.now(), ...sendToRoom(to.room, text, action.fresh === true) };
+      if ("codingTeam" in to) {
+        const sessionId = host.startCodingTeamChat?.(to.codingTeam) ?? null;
+        if (!sessionId) throw new Error(`send: no coding team for ${to.codingTeam}`);
+        await wait(50);
+        return { ok: host.submit(sessionId, text), at: Date.now(), session: sessionId, codingTeam: to.codingTeam };
+      }
       const sessionId = "mono" in to ? await host.openMono(to.mono) : to.session;
       if (!sessionId) throw new Error(`send: no chat for ${JSON.stringify(to)}`);
       if ("session" in to && action.open !== false) host.openSession(sessionId, typeof action.owner === "string" ? action.owner : undefined);

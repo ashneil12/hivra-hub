@@ -6811,6 +6811,30 @@ function Workspace({
     [closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
+  /**
+   * A new chat in a project's coding team, as Ash's New session there makes one: the coding team opens and the chat
+   * starts in the project's folder. Its id, or null for a project with no code folder. The benches' way in
+   * (verifyKickoff.ts, verifyDriver.ts).
+   */
+  const startCodingTeamChat = useCallback(
+    (projectId: string): string | null => {
+      const project = hubData()
+        .listProjects()
+        .find((entry) => entry.id === projectId);
+      if (!project?.folder) return null;
+      openCodingTeam(project.id, { lead: false });
+      noteCodingTeamView(project.id, "chat");
+      const session = newWorkspaceSession(project.folder, sessionDefaults?.runtimeMode);
+      sessionsRef.current = [...sessionsRef.current, session];
+      setSessions(sessionsRef.current);
+      const tab = newTab(session.id);
+      appendTab(tab, project.folder);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      return session.id;
+    },
+    [openCodingTeam, sessionDefaults?.runtimeMode, appendTab, setActiveTabId],
+  );
 
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
@@ -9097,12 +9121,20 @@ function Workspace({
       send: async (message) => {
         // Into a group room, as Ash writes there (hub/model/roomConductor.ts).
         if (message.room) return sendVerifyRoomMessage(message.room, message.prompt);
+        // A new chat in a project's coding team, as Ash starts one there.
+        if (message.codingTeam) {
+          const sessionId = startCodingTeamChat(message.codingTeam);
+          if (!sessionId) throw new Error(`no coding team for ${message.codingTeam}`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          onSubmit(sessionId, message.prompt);
+          return;
+        }
         await onOpenMono(message.monoId);
         const sessionId = monoViewIdRef.current;
         if (sessionId) onSubmit(sessionId, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -11418,6 +11450,7 @@ function Workspace({
       closeMonoView();
       setHubSelection(selection);
     },
+    startCodingTeamChat: (projectId) => startCodingTeamChat(projectId),
     openSession: (sessionId, owner) => {
       const actions = delegationActions();
       if (owner && actions) actions.openChild(owner, sessionId);
@@ -11449,6 +11482,7 @@ function Workspace({
       openSession: (sessionId, owner) => verifyDriverHost.current!.openSession(sessionId, owner),
       setDefaults: (model, effort) => verifyDriverHost.current!.setDefaults(model, effort),
       showHub: (selection) => verifyDriverHost.current!.showHub(selection),
+      startCodingTeamChat: (projectId) => verifyDriverHost.current!.startCodingTeamChat?.(projectId) ?? null,
     });
   }, []);
 

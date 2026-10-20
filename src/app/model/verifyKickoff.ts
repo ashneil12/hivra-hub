@@ -78,6 +78,8 @@ export type VerifyMessage = {
   prompt: string;
   /** Instead of a Mono's chat: a group room (its id, or a project id for that project's Leadership team). */
   room?: string;
+  /** Instead of a Mono's chat: a new chat in this project's coding team (its project id), as Ash starts one there. */
+  codingTeam?: string;
 };
 
 /** The run whose messages this window sends: a dev copy's plan only (the daily app never has one). */
@@ -106,15 +108,25 @@ export function unsentVerifyMessages(
   return list.flatMap((entry: unknown) => {
     const m = entry as Partial<VerifyMessage> | null;
     const room = typeof m?.room === "string" && /^[A-Za-z0-9:_-]{1,200}$/.test(m.room) ? m.room : undefined;
+    const codingTeam =
+      typeof m?.codingTeam === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.codingTeam) ? m.codingTeam : undefined;
     return m &&
       typeof m.id === "string" &&
       /^[A-Za-z0-9_-]{1,64}$/.test(m.id) &&
-      ((typeof m.monoId === "string" && m.monoId) || room) &&
+      ((typeof m.monoId === "string" && m.monoId) || room || codingTeam) &&
       typeof m.prompt === "string" &&
       m.prompt.trim() &&
       m.prompt.length <= 20_000 &&
       !sent.has(m.id)
-      ? [{ id: m.id, monoId: typeof m.monoId === "string" ? m.monoId : "", prompt: m.prompt, ...(room ? { room } : {}) }]
+      ? [
+          {
+            id: m.id,
+            monoId: typeof m.monoId === "string" ? m.monoId : "",
+            prompt: m.prompt,
+            ...(room ? { room } : {}),
+            ...(codingTeam ? { codingTeam } : {}),
+          },
+        ]
       : [];
   });
 }

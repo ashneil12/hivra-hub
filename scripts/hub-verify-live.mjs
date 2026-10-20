@@ -47,6 +47,12 @@
 //       room_post, answering the message that woke it;
 //   20. a private message between Monos (mono_message) arrives as a hidden turn in the other Mono's own chat, shown as
 //       from the sender, and nothing of it reaches the room.
+//   Then the coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to talk to"), in the same launch:
+//   Ash starts a new chat in the Verify project's coding team, the way he does there:
+//   21. that chat (not a Mono) is an orchestrator: its Claude starts with the delegate tool, its first prompt carries
+//       who it is, the talk and delegate rules and the project's memory; it delegates a worker, whose chat is
+//       `app-<that chat>-<request>` in the project's folder (so the coding team's list nests it under the chat), whose
+//       brief is signed by the coding team with its worker rules, and whose report comes back to that chat.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -100,6 +106,7 @@ export const WALK = [
   "room_agents_talk",
   "room_busy_mono_answers",
   "room_private_message",
+  "coding_team_delegates",
 ];
 
 /** Thrown between phases when the negative control has already caught its failure: no more launches needed. */
@@ -138,6 +145,9 @@ export const ROOM_ID = `${TREE_PROJECT.id}:leadership`;
 export const ROOM_ASH = (n) => `VERIFY-ROOM-ASH-${n}`;
 export const ROOM_BUSY = "VERIFY-ROOM-BUSY";
 export const ROOM_DM = "VERIFY-ROOM-DM";
+/** The coding team (check 21): Ash's first message in a new chat there, and its worker's brief. */
+export const CT_KICKOFF = "VERIFY-CT-KICKOFF";
+export const CT_WORKER = "VERIFY-CT-WORKER";
 /** A room turn's prompt for one Mono (roomTurns.ts turnPrompt opens with it). */
 export const roomTurn = (name) => `(?:^|</monocode_context>\\s*)\\[MonoCode room\\] You are ${name},`;
 /** A worker's finish line: what the brief's "Done when" says, and so what MonoCode sends as `/goal`. */
@@ -561,7 +571,37 @@ export function scenario({ runId, failGate = false }) {
     { name: "room-alfred-dm", match: said("\\[MonoCode message from Chief of Staff\\]"), times: 1, steps: [{ mark: "room-alfred-dm" }, { say: "NO_REPLY" }] },
     { name: "room-quiet", match: said("\\[MonoCode room\\]"), steps: [{ say: "NO_REPLY" }] },
   ];
+  // The coding team: a plain chat in the Verify project's folder, an orchestrator like the Lead.
+  const team = [
+    {
+      name: "ct-kickoff",
+      match: said(CT_KICKOFF),
+      setTag: "ct-chat",
+      times: 1,
+      steps: [
+        { say: "Got it: one worker checks the verify widget while we talk." },
+        { app: "tasks.delegate", input: { title: "Coding team check", brief: `${CT_WORKER} run ${runId}: check the verify widget.` }, save: "ct-task" },
+        { mark: "ct-delegated" },
+        { say: "Started it; I'll tell you what it finds." },
+      ],
+    },
+    {
+      name: "ct-worker",
+      match: brief(CT_WORKER),
+      setTag: "ct-worker",
+      times: 1,
+      steps: [{ mark: "ct-worker-started" }, { say: `CT-WORKER-DONE run ${runId}: the widget is fine.` }],
+    },
+    {
+      name: "ct-report",
+      tag: "ct-chat",
+      match: `${said("\\[MonoCode report\\]")}[\\s\\S]*CT-WORKER-DONE`,
+      times: 1,
+      steps: [{ mark: "ct-got-report" }, { say: "The check is back: the widget is fine." }],
+    },
+  ];
   const rules = [
+    ...team,
     ...room,
     ...flow,
     ...durable,
@@ -2100,6 +2140,83 @@ async function main() {
         { evidence: dmEvidence },
       );
     else fail("room_private_message", "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room", JSON.stringify(dmEvidence));
+
+    phase();
+    // 21. The coding team: Ash starts a new chat in the Verify project's coding team (the stub lists his message; the
+    // window opens the coding team and starts the chat in the project's folder, as his New session there does).
+    stub.state.verifyMessages = [
+      ...(stub.state.verifyMessages ?? []),
+      { id: "ct-ash-1", codingTeam: TREE_PROJECT.id, prompt: `${CT_KICKOFF} run ${id}: have one worker check the verify widget.` },
+    ];
+    const ctDelegated = await waitMark("ct-delegated", 60_000);
+    const ctTask = savedCall("ct-task")?.response;
+    const ctChild = ctTask?.result?.childSessionId ?? null;
+    const ctWorker = await waitMark("ct-worker-started", 60_000);
+    const ctReport = await waitMark("ct-got-report", 60_000);
+    const ctRow = ctChild
+      ? (await query(db, "SELECT id, owner_session, owner_mono, child_session, project, state, delivery FROM delegations WHERE child_session = ?", ctChild))[0] ?? null
+      : null;
+    const ctChat = ctRow?.owner_session ?? null;
+    const ctSessions = await query(db, "SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (?, ?)", ctChat ?? "?", ctChild ?? "?");
+    const ctChatRow = ctSessions.find((row) => row.id === ctChat) ?? null;
+    const ctChildRow = ctSessions.find((row) => row.id === ctChild) ?? null;
+    const ctMonoBlocks = ctChat ? (await query(db, "SELECT COUNT(*) AS n FROM mono_blocks WHERE session_id = ?", ctChat))[0]?.n ?? 0 : 0;
+    const ctStart = ctDelegated
+      ? events().find((event) => event.dir === "start" && event.conversation === ctDelegated.conversation)
+      : undefined;
+    const ctArgs = ctStart?.argv ?? [];
+    const ctMcp = (() => {
+      const at = ctArgs.indexOf("--mcp-config");
+      try {
+        return at >= 0 ? JSON.parse(ctArgs[at + 1]).mcpServers ?? {} : {};
+      } catch {
+        return {};
+      }
+    })();
+    const ctFirstPrompt = prompts().find((entry) => entry.rule === "ct-kickoff")?.prompt ?? "";
+    const ctBrief = prompts().find((entry) => entry.rule === "ct-worker")?.prompt ?? "";
+    const ctEvidence = {
+      call: ctTask?.ok ?? null,
+      row: ctRow,
+      chat: ctChatRow,
+      child: ctChildRow,
+      chatIsMono: ctMonoBlocks > 0 || !!ctRow?.owner_mono,
+      delegateTool: !!ctMcp.monocode && ctArgs.includes("mcp__monocode__*"),
+      firstPrompt: ["<coding_team>", "<talk_rules>", "<delegate_rules>", "<project_memory>"].filter((tag) => ctFirstPrompt.includes(tag)),
+      brief: {
+        signed: ctBrief.includes("[MonoCode brief from Verify coding team]"),
+        rules: ctBrief.includes("<worker_rules>"),
+        memory: ctBrief.includes("<project_memory>"),
+      },
+      reportInSameChat: !!ctReport && ctReport.conversation === ctDelegated?.conversation,
+    };
+    if (
+      ctDelegated &&
+      ctTask?.ok === true &&
+      ctRow &&
+      ctChat &&
+      !ctEvidence.chatIsMono &&
+      !ctChat.startsWith("app-") &&
+      ctChild?.startsWith(`app-${ctChat}-`) &&
+      ctChatRow?.cwd === project &&
+      ctChildRow?.cwd === project &&
+      !ctChildRow.hidden &&
+      ctRow.project === TREE_PROJECT.id &&
+      ctEvidence.delegateTool &&
+      ctEvidence.firstPrompt.length === 4 &&
+      ctEvidence.brief.signed &&
+      ctEvidence.brief.rules &&
+      ctEvidence.brief.memory &&
+      ctWorker &&
+      ctEvidence.reportInSameChat
+    )
+      pass(
+        "coding_team_delegates",
+        "A chat Ash starts in a project's coding team (not a Mono) is an orchestrator: it delegates, its worker nests under it, and the report comes back to it",
+        `Ash's new chat in Verify's coding team (${ctChat}, in the project's folder, no Mono) started with the delegate tool and its first prompt carried ${ctEvidence.firstPrompt.join(", ")}; it delegated ${ctChild} (row ${ctRow.id}, project ${ctRow.project}), a chat in the same folder nested under it by its id, signed by "Verify coding team" with its worker rules and the project's memory; the worker's report came back to the same chat`,
+        { evidence: ctEvidence },
+      );
+    else fail("coding_team_delegates", "A chat Ash starts in a project's coding team (not a Mono) is an orchestrator: it delegates, its worker nests under it, and the report comes back to it", JSON.stringify({ delegated: !!ctDelegated, worker: !!ctWorker, report: !!ctReport, ...ctEvidence }));
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))

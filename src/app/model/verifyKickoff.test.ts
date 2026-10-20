@@ -134,6 +134,20 @@ describe("Ash's messages the bench sends mid-run", () => {
     ]);
   });
 
+  it("can start a new chat in a project's coding team, by its project id", () => {
+    const storage = new Map<string, string>();
+    const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v) };
+    const team = {
+      messages: [
+        { id: "ct-ash-1", codingTeam: "verify", prompt: "VERIFY-CT-KICKOFF: one worker on the check" },
+        { id: "bad-team", codingTeam: "Verify; drop", prompt: "x" },
+      ],
+    };
+    expect(unsentVerifyMessages("run-13", team, store)).toEqual([
+      { id: "ct-ash-1", monoId: "", codingTeam: "verify", prompt: "VERIFY-CT-KICKOFF: one worker on the check" },
+    ]);
+  });
+
   it("are looked for every second and sent in order, one pass at a time", async () => {
     vi.useFakeTimers();
     try {
