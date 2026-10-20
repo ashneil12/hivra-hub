@@ -22,6 +22,7 @@ import { OlderQuestions } from "./OlderQuestions";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
+import { plainStateWord } from "../model/liveJobs";
 import { ProposalView } from "./ProposalView";
 import { NewProjectView } from "./NewProjectView";
 import { useTemplatesVersion } from "../model/templates";
@@ -215,8 +216,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   );
 }
 
-const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "stuck", "sent_to_lead", "lead_gave_up"]);
-const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Stuck" };
+const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "unknown"]);
+const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Stuck" };
+const jobWord = (j: HubJob) => (j.state === "unknown" ? plainStateWord(j.rawState ?? "") : JOB_WORD[j.state]);
 
 /** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
 function BeingBuiltToday({ title }: { title: string }) {
@@ -233,7 +235,7 @@ function BeingBuiltToday({ title }: { title: string }) {
           <button key={j.id} type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
             className="flex items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-content/5" data-hub-today-job={j.id}>
             <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
-            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {JOB_WORD[j.state]}</span>
+            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {jobWord(j)}</span>
           </button>
         ))}
         {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}

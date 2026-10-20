@@ -4,7 +4,7 @@ import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/ic
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNow, workersFromJobs } from "../model/liveJobs";
 import { setHubSelection } from "../model/hubNav";
-import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, markSeen, useWorkVersion } from "../model/hubWork";
+import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, jobStateWord, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
 import { foldParts, partsDone } from "../model/jobParts";
@@ -147,6 +147,7 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
           <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
         ) : null}
         {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
+        {!w.stuck && w.stateReason ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stateReason}</span> : null}
         {w.prWatch ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-pr-line>{w.prWatch.line}</span> : null}
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
@@ -177,6 +178,8 @@ function Activity({ worker }: { worker: Worker }) {
           </div>
           {worker.stuck && worker.stuckReason ? (
             <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-job-reason>{worker.stuckReason.replace(/^Example: /, "")}</div>
+          ) : !worker.stuck && worker.stateReason ? (
+            <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-job-reason>{worker.stateReason}</div>
           ) : null}
         </div>
         <JobStateLabel w={worker} />
@@ -281,6 +284,5 @@ function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean })
         <span className="size-1.5 rounded-full bg-content" aria-label="Not seen yet" />Done
       </span>
     );
-  const text = { working: "Working", checking: "Checking", parked: "Parked", done: "Done", waiting_ci: "Waiting on CI" }[st];
-  return <span data-hub-job-state={st} className="shrink-0 text-xs text-content/60">{text}</span>;
+  return <span data-hub-job-state={st} className="shrink-0 text-xs text-content/60">{jobStateWord(w)}</span>;
 }

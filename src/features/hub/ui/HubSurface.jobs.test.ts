@@ -241,6 +241,15 @@ describe("Being built, live", () => {
     expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(1); // only the Done dot
   });
 
+  it("a job waiting on a worker's question stays in Being built: Waiting, the reason under it", async () => {
+    mount(createElement(BeingBuiltView, { projectId: "vg-game" }));
+    await until(() => container.querySelector('[data-hub-worker="j_format"]'), "the waiting job");
+    expect(state("j_format")).toBe("waiting");
+    const row = container.querySelector('[data-hub-worker="j_format"]')!;
+    expect(row.querySelector("[data-hub-job-state]")?.textContent).toBe("Waiting");
+    expect(row.querySelector("[data-hub-job-reason]")?.textContent).toBe("Waiting on an answer to a question");
+  });
+
   it("columns are fixed width, so rows line up whatever the state", async () => {
     mount(view());
     await until(() => container.querySelectorAll("[data-hub-worker]").length === 4, "rows");

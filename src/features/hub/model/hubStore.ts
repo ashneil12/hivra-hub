@@ -142,14 +142,16 @@ function mapSummary(raw: unknown): SinceSummary & { detailLines: string[] } {
   };
 }
 
-const JOB_STATES: readonly JobWireState[] = ["working", "checking", "stuck", "sent_to_lead", "lead_gave_up", "done", "parked"];
+const JOB_STATES: readonly JobWireState[] = ["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "done", "parked"];
 
 export function mapJob(raw: unknown): HubJob | undefined {
   const r = obj(raw);
   const id = str(r.id);
-  const state = JOB_STATES.find((x) => x === r.state);
-  // A dropped job is never shown; an unknown state is not guessed at.
-  if (!id || !state) return undefined;
+  const said = str(r.state).trim();
+  // A dropped job is never shown. A state this app doesn't know yet still shows, under its own word: a job never
+  // vanishes from Being built because Ash OS learned a new word (it once sent `waiting` and the job disappeared).
+  if (!id || !said || said === "dropped") return undefined;
+  const state = JOB_STATES.find((x) => x === said) ?? "unknown";
   const job: HubJob = {
     id,
     projectId: str(r.projectId),
@@ -163,6 +165,9 @@ export function mapJob(raw: unknown): HubJob | undefined {
     finishedAt: optStr(r.finishedAt) ?? null,
     seen: r.seen === true,
   };
+  if (state === "unknown") job.rawState = said.slice(0, 60);
+  const sourceRef = optStr(r.sourceRef);
+  if (sourceRef) job.sourceRef = sourceRef;
   if (r.circle === "amber" || r.circle === "red") job.circle = r.circle;
   const word = optStr(r.word);
   if (word) job.word = word;

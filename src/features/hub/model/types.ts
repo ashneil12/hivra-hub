@@ -68,7 +68,9 @@ export type Need = {
 
 /** A job as Ash OS reports it (Being built). Times are ISO. */
 export type JobWireState =
-  | "working" | "checking" | "stuck" | "sent_to_lead" | "lead_gave_up" | "done" | "parked";
+  | "working" | "checking" | "waiting" | "stuck" | "sent_to_lead" | "lead_gave_up" | "done" | "parked"
+  /** A state this app doesn't know yet (`rawState` says which): shown under its own word, never dropped. */
+  | "unknown";
 
 export type HubJob = {
   id: string;
@@ -95,6 +97,10 @@ export type HubJob = {
   /** A part of a bigger job the Lead split up (its workers): the big job's id and title. Shown as one row. */
   parentId?: string;
   parentTitle?: string;
+  /** Where Ash OS made the job from: `delegation:<top row id>` or `ask:<ask id>` (the app finds its own rows by it). */
+  sourceRef?: string;
+  /** The state word Ash OS sent when `state` is `unknown`. */
+  rawState?: string;
 };
 
 /** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
@@ -338,7 +344,11 @@ export type Worker = {
   /** Set when finished today. */
   finishedAt?: string;
   /** Job state when not stuck or finished. Default working. */
-  state?: "working" | "checking" | "needs_you" | "parked" | "waiting_ci";
+  state?: "working" | "checking" | "waiting" | "needs_you" | "parked" | "waiting_ci" | "unknown";
+  /** A state Ash OS named that this app doesn't know: its own word ("Blocked on ci"). */
+  stateWord?: string;
+  /** Why it waits, in plain words, for a job that isn't stuck (a worker's question): the second line. */
+  stateReason?: string;
   /** Plain reason, shown next to the Stuck mark. */
   stuckReason?: string;
   /** "Sent to coding team lead at 2:20pm · Got it", under the reason. */
@@ -357,4 +367,4 @@ export type Worker = {
   archived?: boolean;
 };
 
-export type JobState = "working" | "checking" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked" | "waiting_ci";
+export type JobState = "working" | "checking" | "waiting" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked" | "waiting_ci" | "unknown";

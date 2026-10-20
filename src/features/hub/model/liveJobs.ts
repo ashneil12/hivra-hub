@@ -31,6 +31,12 @@ function stepsOf(job: HubJob): Worker["steps"] {
   return steps;
 }
 
+/** A state word as Ash OS sent it, as a label: "blocked_on_ci" reads "Blocked on ci". */
+export function plainStateWord(raw: string): string {
+  const words = raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Unknown";
+}
+
 /** A job as one row. `now` (ms) is what "last active" and "at it for" are counted from; it ticks, the order never does. */
 export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
   const w: Worker = {
@@ -47,6 +53,16 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
   switch (job.state) {
     case "checking":
       w.state = "checking";
+      break;
+    case "waiting":
+      // A worker asked a question and the job waits on its answer: a quiet word, the reason on the second line.
+      w.state = "waiting";
+      if (job.reason) w.stateReason = job.reason;
+      break;
+    case "unknown":
+      w.state = "unknown";
+      w.stateWord = plainStateWord(job.rawState ?? "");
+      if (job.reason) w.stateReason = job.reason;
       break;
     case "stuck":
     case "sent_to_lead":

@@ -79,6 +79,25 @@ export function jobState(w: Worker): JobState {
   if (w.stuck) return w.stuck === "lead_gave_up" ? (gaveUpAsNeedsYou() ? "needs_you" : "gave_up") : "stuck";
   return w.state ?? "working";
 }
+const STATE_WORD: Record<Exclude<JobState, "unknown">, string> = {
+  working: "Working",
+  checking: "Checking",
+  waiting: "Waiting",
+  stuck: "Stuck",
+  gave_up: "Stuck",
+  needs_you: "Needs you",
+  done_unseen: "Done",
+  done: "Done",
+  parked: "Parked",
+  waiting_ci: "Waiting on CI",
+};
+
+/** The word a job's state reads as; a state Ash OS named that this app doesn't know reads as its own word. */
+export function jobStateWord(w: Worker): string {
+  const state = jobState(w);
+  return state === "unknown" ? (w.stateWord ?? "Unknown") : STATE_WORD[state];
+}
+
 /** Opening a Done job marks it seen; leaving it archives it. */
 export function markSeen(id: string): void {
   const w = WORKERS.find((x) => x.id === id);

@@ -103,6 +103,8 @@ export function jobsScenario(now = Date.now()) {
   const jobs = [
     job("j_air", "vg-game", "Adding the air dodge", "working", { ago: 42, active: 0 }),
     job("j_save", "vg-game", "Fixing the save bug", "checking", { ago: 12, active: 2 }),
+    // What Ash OS sends while a worker's question waits on its answer (ashos/job_sources.py `_summary`).
+    job("j_format", "vg-game", "Choosing the save format", "waiting", { ago: 18, active: 4, wire: { reason: "Waiting on an answer to a question" } }),
     job("j_photo", "vg-game", "The photo mode", "parked", { ago: 300, active: 160, wire: { reason: "Paused by you", finishedAt: iso2(now - 160 * min) } }),
     job("j_mail", "hivra", "Writing the welcome emails", "working", { ago: 25, active: 3 }),
     job("j_backup", "hivra", "Moving the nightly backup", "sent_to_lead", {
