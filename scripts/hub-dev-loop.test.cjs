@@ -281,7 +281,7 @@ test("vite takes the slot's port from MONOCODE_VITE_PORT, keeps strictPort, and 
     const script = `
       const { loadConfigFromFile } = await import("vite");
       const loaded = await loadConfigFromFile({ command: "serve", mode: "development" }, "vite.config.ts", process.cwd(), "silent");
-      console.log(JSON.stringify(loaded.config.server));`;
+      console.log(JSON.stringify({ ...loaded.config.server, cacheDir: loaded.config.cacheDir }));`;
     const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
       cwd: root,
       env: { ...process.env, MONOCODE_VITE_PORT: "", ...env },
@@ -293,6 +293,10 @@ test("vite takes the slot's port from MONOCODE_VITE_PORT, keeps strictPort, and 
   assert.equal(slot.port, 1460);
   assert.equal(slot.strictPort, true);
   assert.equal(read({}).port, 1420);
+  // Two slots from one worktree never share pre-bundled deps (the second window went blank on the Mac, 21 Oct).
+  assert.equal(slot.cacheDir, "target/vite-1460");
+  assert.notEqual(read({ MONOCODE_VITE_PORT: "1470" }).cacheDir, slot.cacheDir);
+  assert.equal(read({}).cacheDir, "target/vite");
 });
 
 // ---- CSP --------------------------------------------------------------------------------------------------------------------
