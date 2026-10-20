@@ -106,3 +106,18 @@ export function useNow(ms = 30_000): number {
   }, [ms]);
   return now;
 }
+
+/**
+ * A job whose Lead can't answer (its last turn failed: out of credits, overloaded) reads Stuck with that reason, whatever
+ * Ash OS last heard: nothing moves until it is dealt with. `failureOf` gives the Lead's failure and name, if any.
+ */
+export function withFailedLeads(
+  rows: readonly Worker[],
+  failureOf: (monoId: string) => { name: string; reason: string } | undefined,
+): Worker[] {
+  return rows.map((w) => {
+    if (w.finishedAt || w.stuck || w.state === "parked" || !w.lead) return w;
+    const failed = failureOf(w.lead);
+    return failed ? { ...w, stuck: "stuck", stuckReason: `${failed.name} can't answer: ${failed.reason}` } : w;
+  });
+}

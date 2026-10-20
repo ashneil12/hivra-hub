@@ -22,6 +22,7 @@ import {
 } from "../../features/hub/model/hubChats";
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
+import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
@@ -316,6 +317,14 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (!waiting) return { ok: false, error: "nothing waiting on Ash in that chat", session: sessionId };
       const result = typeof action.text === "string" && action.text.trim() ? await answerInWords(sessionId, action.text) : await takePick(sessionId);
       return { ok: true, at: Date.now(), session: sessionId, question: waiting.question ?? null, pick: waiting.pick ?? null, result };
+    }
+    case "retry": {
+      // The Try again button on a Mono whose last turn failed (the rail, Today, Being built).
+      const monoId = String(action.mono ?? "");
+      const failure = monoFailure(monoId);
+      if (!failure) return { ok: false, error: "that Mono's last turn didn't fail", at: Date.now() };
+      const ok = retryMonoFailure(monoId);
+      return { ok, at: Date.now(), reason: failure.reason, tone: failure.tone, ...(ok ? {} : { error: "it couldn't take it right now" }) };
     }
     case "reload":
       // The window reloads the way a vite full reload or View > Reload does (pagehide, then a fresh page), once this

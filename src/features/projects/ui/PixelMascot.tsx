@@ -9,7 +9,7 @@ import {
 
 /** What a mascot's agent is doing: idle bobs, working hops, waiting gets an idea. */
 /** "paused" (a usage limit that resumes by itself) rests like idle. */
-export type PixelMascotStatus = "idle" | "working" | "needs-you" | "paused";
+export type PixelMascotStatus = "idle" | "working" | "needs-you" | "failed" | "paused";
 
 type Props = {
   /** Project mascot name; see `projectMascots`. */
@@ -104,6 +104,8 @@ function PixelArt({
   if (name.startsWith("letter")) return <LetterTile letter={name.slice(7) || "A"} />;
   const working = status === "working";
   const waiting = status === "needs-you";
+  // A Mono whose last turn failed stands still (its status dot says why), with no bulb.
+  const stopped = status === "failed";
   const rest = pixelLayers(name, color);
   const talk = working ? pixelLayers(name, color, true) : null;
   const blink = { animationDelay: blinkDelay(name + color) } as CSSProperties;
@@ -112,7 +114,7 @@ function PixelArt({
     <>
       <g
         className={
-          working ? "pixel-hop" : still || waiting ? undefined : "pixel-bob"
+          working ? "pixel-hop" : still || waiting || stopped ? undefined : "pixel-bob"
         }
       >
         {talk ? (

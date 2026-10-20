@@ -18,7 +18,8 @@ import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
-import { StuckToday, stuckProject } from "./StuckToday";
+import { failedMonosFor, StuckToday, stuckProject } from "./StuckToday";
+import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
@@ -104,6 +105,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   useWaitingChatsVersion();
+  useMonoFailuresVersion();
   const { stuck: stuckWorkersNow } = useStuckWorkers();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
@@ -121,6 +123,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
   const chatsWaiting =
     waitingChats(projectId).length > 0 ||
+    failedMonosFor(projectId).length > 0 ||
     stuckWorkersNow.some((s) => !projectId || stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
@@ -233,7 +236,10 @@ function BeingBuiltToday({ title }: { title: string }) {
   // This app's own workers under each job: a stuck one makes the job read Stuck, whatever its siblings do.
   const { stuck: stuckNow, now } = useStuckWorkers();
   const delegations = useDelegationRows();
+  useMonoFailuresVersion();
   const word = (j: HubJob) => {
+    // Its Lead's last turn failed: the job can't move until that is dealt with.
+    if (j.lead && monoFailure(j.lead) && j.state !== "lead_gave_up") return "Can't answer";
     const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
     if (!stuck || j.state === "lead_gave_up") return jobWord(j);
     return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : "Stuck";

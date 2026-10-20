@@ -9,6 +9,7 @@ import {
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
 import { dropHarnessSession } from "../../../integrations/harness/core/registry";
+import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { persistableAttachment } from "../model/attachments";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
@@ -1224,6 +1225,17 @@ function sanitizeBlock(
         taskIds: [...still.taskIds],
         ...(still.briefId !== undefined ? { briefId: still.briefId } : {}),
       };
+    // Why a turn failed (turnFailure.ts): the rail, Today and Being built keep showing it after a restart.
+    const failure = block.failure;
+    if (block.notice === "error" && failure && typeof failure === "object") {
+      const kept = {
+        ...(isProviderErrorClass(failure.errorClass) ? { errorClass: failure.errorClass } : {}),
+        ...(typeof failure.retryable === "boolean" ? { retryable: failure.retryable } : {}),
+        ...(sanitizeTimestamp(failure.resetsAt) !== undefined ? { resetsAt: sanitizeTimestamp(failure.resetsAt) } : {}),
+        ...(sanitizeTimestamp(failure.at) !== undefined ? { at: sanitizeTimestamp(failure.at) } : {}),
+      };
+      if (Object.keys(kept).length) next.failure = kept;
+    }
     // The ship whose restart cut the turn: the resume carries its receipt (src-tauri/src/ship.rs).
     if (
       block.notice === "interrupt" &&

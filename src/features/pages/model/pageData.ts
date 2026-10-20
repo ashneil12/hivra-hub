@@ -231,6 +231,11 @@ export function agentsData(inputs: AgentInputs): AgentsData {
         return finish({ state, doing, question: q });
       }
       reason = look.activity;
+    } else if (look?.status === "failed") {
+      // Its last turn failed (out of credits, overloaded): it can't answer, with the plain reason.
+      state = "stuck";
+      doing = "Can't answer";
+      reason = look.activity;
     } else if (look?.status === "paused") {
       state = "paused";
       doing = look.activity ?? "Paused";

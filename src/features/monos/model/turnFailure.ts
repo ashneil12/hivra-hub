@@ -1,0 +1,115 @@
+// A Mono whose last turn failed (an API error: out of credits, overloaded, a usage limit, signed out) is in a state of
+// its own, not idle with a line of provider text in its chat (Ash, 20 Oct baseline: a 402 left the Tally lead "idle" with
+// "402 openrouter.ai said: Insufficient credits"). This reads that state from the chat: the plain reason the Monos
+// rail, Today and Being built show ("Out of credits", "Out of usage until 05:00"), amber when it should work again by
+// itself or with Try again, red when something has to be fixed first, and the provider's own words for "details".
+import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
+import type { Block, Session } from "../../sessions/model/session";
+
+export type TurnFailure = {
+  /** The error notice it comes from ("usage-limit" for a chat stopped at its limit with no notice). */
+  blockId: string;
+  /** Plain words: "Out of credits", "The model is overloaded", "Out of usage until 05:00". */
+  reason: string;
+  /** Red: nothing works until something is fixed (billing, sign-in). Amber: it should work again (Try again, a reset). */
+  tone: "red" | "amber";
+  /** What the provider said, behind "details". */
+  detail: string;
+  errorClass?: ProviderErrorClass;
+  /** Trying again as it is can work. */
+  retryable: boolean;
+  resetsAt?: number;
+  /** Epoch ms it failed, when known. */
+  at?: number;
+};
+
+const CREDITS = /credit|balance|insufficient|payment required|funds|quota/i;
+const SIGNED_OUT = /log ?in|sign[ -]?in|expired|revoked|not logged/i;
+const CONNECTION = /connection|timed out|timeout|econnreset|etimedout|socket hang up|fetch failed|no response/i;
+/** The CLI's own assistant line for a failed request ("API Error: 402 …"): part of the failure, not a reply. */
+const API_ERROR_LINE = /^\s*API Error\b/i;
+
+/** "05:00" in the Mac's own time; "Thu 05:00" when it is more than a day away. */
+export function resetClock(at: number, now = Date.now()): string {
+  const d = new Date(at);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return at - now > 20 * 3_600_000 ? `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${hm}` : hm;
+}
+
+/** The plain reason and its colour, from what failed. */
+export function plainFailure(
+  failure: { errorClass?: ProviderErrorClass; retryable?: boolean; resetsAt?: number },
+  detail: string,
+  now = Date.now(),
+): Pick<TurnFailure, "reason" | "tone"> {
+  switch (failure.errorClass) {
+    case "usage_limit":
+      return {
+        reason: failure.resetsAt != null && failure.resetsAt > now ? `Out of usage until ${resetClock(failure.resetsAt, now)}` : "Out of usage",
+        tone: "amber",
+      };
+    case "billing":
+      return { reason: CREDITS.test(detail) ? "Out of credits" : "Billing refused", tone: "red" };
+    case "auth":
+      return { reason: SIGNED_OUT.test(detail) ? "Signed out of the model" : "Sign-in refused", tone: "red" };
+    case "overloaded":
+      return { reason: "The model is overloaded", tone: "amber" };
+    case "provider_error":
+      if (CONNECTION.test(detail)) return { reason: "Lost the connection to the model", tone: "amber" };
+      return failure.retryable === false
+        ? { reason: "The model refused the request", tone: "red" }
+        : { reason: "The model's API failed", tone: "amber" };
+    default:
+      return { reason: "Its last turn failed", tone: "amber" };
+  }
+}
+
+function isFailureNotice(block: Block): boolean {
+  return block.role === "system" && block.notice === "error";
+}
+
+/**
+ * Why this chat's last turn failed, if it did and nothing has happened since: its last turn ended on an error notice
+ * (status lines and the CLI's own "API Error" line around it don't count as anything happening), or it stopped at its
+ * usage limit. A turn running, or anything said after the error, clears it.
+ */
+export function lastTurnFailure(
+  session: Pick<Session, "blocks" | "busy" | "usageLimit" | "worktreeRemoved">,
+  now = Date.now(),
+): TurnFailure | undefined {
+  if (session.busy || session.worktreeRemoved) return undefined;
+  const { blocks } = session;
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (isFailureNotice(block)) {
+      const failure = block.failure ?? {};
+      const errorClass = failure.errorClass ?? (session.usageLimit ? "usage_limit" : undefined);
+      const resetsAt = failure.resetsAt ?? session.usageLimit?.resetsAt;
+      const detail = block.text.trim();
+      return {
+        blockId: block.id,
+        ...plainFailure({ ...failure, errorClass, resetsAt }, detail, now),
+        detail,
+        ...(errorClass ? { errorClass } : {}),
+        retryable: failure.retryable ?? (errorClass !== "billing" && errorClass !== "auth"),
+        ...(resetsAt != null ? { resetsAt } : {}),
+        ...(failure.at != null ? { at: failure.at } : {}),
+      };
+    }
+    if (block.role === "system") continue;
+    if (block.role === "assistant" && API_ERROR_LINE.test(block.text)) continue;
+    break;
+  }
+  if (session.usageLimit) {
+    const resetsAt = session.usageLimit.resetsAt;
+    return {
+      blockId: "usage-limit",
+      ...plainFailure({ errorClass: "usage_limit", resetsAt }, "", now),
+      detail: "",
+      errorClass: "usage_limit",
+      retryable: true,
+      ...(resetsAt != null ? { resetsAt } : {}),
+    };
+  }
+  return undefined;
+}

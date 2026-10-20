@@ -737,6 +737,7 @@ import {
 } from "./model/verifyKickoff";
 import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import { delegationActions } from "../features/monos/model/delegationStore";
+import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import {
   driverEnabled as verifyDriverEnabled,
   startDriver as startVerifyDriver,
@@ -11490,7 +11491,25 @@ function Workspace({
   );
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
+    // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.
+    noteMonoFailures(sessions);
   }, [sessions]);
+  useEffect(
+    () =>
+      setMonoFailuresHost({
+        retry: (id) => {
+          const session = sessionsRef.current.find((entry) => entry.id === id);
+          if (!session || session.busy) return false;
+          // Ash's message held by the failure goes in again; else the turn carries on from where it failed.
+          if (session.queueStatus === "paused" && session.queuedMessages?.length) onResumeQueue(id);
+          else if (session.usageLimit) onUsageLimitResume(id);
+          else return onSubmit(id, CONTINUE_PROMPT);
+          return true;
+        },
+        open: (monoId) => void onOpenMono(monoId),
+      }),
+    [onResumeQueue, onUsageLimitResume, onSubmit, onOpenMono],
+  );
   // Once a launch: a waiting chat whose conversation was deleted (by any path) leaves Today.
   useEffect(() => {
     if (!IS_HUB_BUNDLE) return;

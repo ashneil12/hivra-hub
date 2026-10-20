@@ -14,6 +14,7 @@ import { childChatsByMono, type ChildChat } from "../../features/monos/model/del
 import { countWork, delegationLine, useStuckDismissalsVersion, workSplit, type StuckWorker } from "../../features/monos/model/workerStuck";
 import { shownSubChats, subChatAttention, subChatsOpen, toggleSubChats, useSubChatFolds } from "../../features/monos/model/subChats";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
+import { retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
@@ -324,7 +325,9 @@ export function MonoRailSection({
           const status =
             state.status === "idle"
               ? (state.activity ?? workSplit(counts))
-              : [state.activity ?? MONO_STATUS_LABEL[state.status], stuckSplit].filter(Boolean).join(" · ");
+              : state.status === "failed"
+                ? [`${MONO_STATUS_LABEL.failed}: ${state.activity ?? "its last turn failed"}`, stuckSplit].filter(Boolean).join(" · ")
+                : [state.activity ?? MONO_STATUS_LABEL[state.status], stuckSplit].filter(Boolean).join(" · ");
           return (
             <Fragment key={mono.id}>
             <div
@@ -380,6 +383,7 @@ export function MonoRailSection({
                   name={look.mascot}
                   color={look.color}
                   status={state.status}
+                  tone={state.tone}
                 />
                 {state.status === "working" ? (
                   <Shimmer
@@ -428,6 +432,7 @@ export function MonoRailSection({
                 <MoreHorizontal className="size-4" strokeWidth={1.75} />
               </button>
             </div>
+            {state.status === "failed" ? <MonoFailedLine monoId={mono.id} state={state} onOpen={() => onOpen(mono.id)} /> : null}
             {children.length ? (
               <MonoSubChats monoId={mono.id} children={children} attention={attention} stuckSplit={stuckSplit} now={now} />
             ) : null}
@@ -459,6 +464,47 @@ export function MonoRailSection({
           onClose={() => setBackground(undefined)}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A Mono whose last turn failed, under its row: the plain reason in amber or red ("Out of credits", "Out of usage until
+ * 05:00"), which opens its chat, and Try again. The provider's own words are on hover and in the chat.
+ */
+function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: MonoState; onOpen: () => void }) {
+  const [trying, setTrying] = useState(false);
+  const color = state.tone === "red" ? "text-red-400" : "text-amber-400";
+  return (
+    <div
+      className="ml-5 flex h-6 min-w-0 items-center gap-1 border-l border-content/10 pl-1.5"
+      data-mono-failed={monoId}
+      data-mono-failed-tone={state.tone ?? "amber"}
+    >
+      <button
+        type="button"
+        title={state.detail ?? state.activity}
+        aria-label={`Open ${state.activity ?? "the failed turn"}`}
+        onClick={onOpen}
+        className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-content/6"
+      >
+        <CircleAlert aria-hidden className={`size-3.5 shrink-0 ${color}`} strokeWidth={1.75} />
+        <span className={`min-w-0 truncate ${color}`} data-mono-failed-reason>
+          {state.activity ?? "Its last turn failed"}
+        </span>
+      </button>
+      <button
+        type="button"
+        disabled={trying}
+        data-mono-failed-retry
+        onClick={() => {
+          setTrying(true);
+          if (!retryMonoFailure(monoId)) setTrying(false);
+        }}
+        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-content/60 hover:bg-content/8 hover:text-content disabled:opacity-60"
+      >
+        {trying ? "Trying…" : "Try again"}
+      </button>
     </div>
   );
 }

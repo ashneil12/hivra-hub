@@ -125,11 +125,13 @@ describe("Paused until, instead of Needs you", () => {
     expect(pausedLabel(undefined, NOW)).toBeUndefined();
   });
 
-  it("a Mono at an armed limit is Paused; at an unarmed one it still Needs you", () => {
+  it("a Mono at an armed limit is Paused; at an unarmed one it can't answer until the reset", () => {
     const armed = monoState(chat({ usageLimit: { resetsAt: Date.now() + 3_600_000, resumeAtReset: true } }));
     expect(armed.status).toBe("paused");
     expect(armed.activity).toMatch(/^Paused until /);
-    expect(monoState(chat({ usageLimit: { resetsAt: Date.now() + 3_600_000 } }))).toEqual({ status: "needs-you", activity: "Usage limit reached" });
+    const unarmed = monoState(chat({ usageLimit: { resetsAt: Date.now() + 3_600_000 } }));
+    expect(unarmed).toMatchObject({ status: "failed", tone: "amber" });
+    expect(unarmed.activity).toMatch(/^Out of usage until \d\d:\d\d$/);
   });
 
   it("the Lead that delegated the work is told it resumes by itself", () => {

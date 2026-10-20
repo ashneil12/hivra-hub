@@ -14,9 +14,9 @@ it("is idle between turns", () => {
   });
 });
 
-it("needs the user when a provider usage limit stops the conversation", () => {
+it("can't answer when a provider usage limit stops the conversation", () => {
   expect(monoState({ blocks: [], busy: false, usageLimit: { resetsAt: 1000 } }))
-    .toEqual({ status: "needs-you", activity: "Usage limit reached" });
+    .toEqual({ status: "failed", activity: "Out of usage", tone: "amber" });
   expect(monoState({ blocks: [], busy: false, worktreeRemoved: true, usageLimit: {} }))
     .toEqual({ status: "idle" });
 });

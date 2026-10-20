@@ -191,6 +191,13 @@ export function applyHarnessEvent(
           role: "system",
           text: event.message,
           notice: "error",
+          // Why it failed, so the failure is a state the rail, Today and Being built show (turnFailure.ts).
+          failure: {
+            ...(event.errorClass ? { errorClass: event.errorClass } : {}),
+            ...(event.retryable != null ? { retryable: event.retryable } : {}),
+            ...(event.resetsAt != null ? { resetsAt: event.resetsAt } : {}),
+            at: Date.now(),
+          },
         },
       );
     case "session.providerBound":

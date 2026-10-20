@@ -8,12 +8,15 @@ export function MonoRailMascot({
   status = "idle",
   className = "size-4 shrink-0",
   letter,
+  tone,
 }: {
   name: string;
   /** The sidebar's neutral avatar: this initial, light on a grey glass square, instead of the mascot. */
   letter?: string;
   color: string;
   status?: MonoStatus;
+  /** A failed last turn: red (fix something first) or amber (Try again can work). */
+  tone?: "red" | "amber";
   className?: string;
 }) {
   return (
@@ -38,6 +41,7 @@ export function MonoRailMascot({
       <MonoStatusDot
         status={status}
         color={color}
+        tone={tone}
         className="-top-0.5 -right-0.5 size-1.5"
       />
     </span>
@@ -49,20 +53,28 @@ export function MonoStatusDot({
   status,
   color,
   className,
+  tone,
 }: {
   status: MonoStatus;
   color: string;
   className: string;
+  /** A failed last turn: red (fix something first) or amber (Try again can work). */
+  tone?: "red" | "amber";
 }) {
   return (
     <span
       aria-hidden
+      data-mono-dot={status}
       className={`absolute rounded-full ring-1 ring-background-base ${className} ${
         status === "working"
           ? "motion-safe:animate-pulse"
           : status === "needs-you"
             ? "bg-accent"
-            : "bg-content/30"
+            : status === "failed"
+              ? tone === "red"
+                ? "bg-red-400"
+                : "bg-amber-400"
+              : "bg-content/30"
       }`}
       style={status === "working" ? { backgroundColor: color } : undefined}
     />
