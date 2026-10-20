@@ -1386,7 +1386,13 @@ pub(crate) fn pump(
                 // `applied: false` too: the copy already has this version or a newer one.
                 outbox_mark(&*store.lock_conn()?, &item, None)?;
             }
-            Err(error) if matches!(error.kind, "unreachable" | "timeout" | "unauthorized") => {
+            // Not reachable, or reachable but failing (a 5xx): down for now, sent again later from here.
+            Err(error)
+                if matches!(
+                    error.kind,
+                    "unreachable" | "timeout" | "unauthorized" | "server"
+                ) =>
+            {
                 return Ok(Pump::Down(error));
             }
             Err(error) => {
@@ -2865,6 +2871,94 @@ mod tests {
             studio.binds[0].get("mono_id").is_none(),
             "unknown fields are left out, not null"
         );
+    }
+
+    /// Ash OS is running but failing (a 5xx, a proxy in front of it): that is "down, try later", never a refusal that
+    /// gives the copy up.
+    #[test]
+    fn a_server_error_from_ash_os_waits_instead_of_giving_up() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("delegations-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        std::fs::write(&token, "test-only-token").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for answer in [
+                ("503 Service Unavailable", r#"{"ok":false,"error":"busy"}"#),
+                ("200 OK", r#"{"ok":true,"result":{"applied":true}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&seen).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let want = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= want {
+                            break;
+                        }
+                    }
+                }
+                let (status, body) = answer;
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let store = store();
+        let id = record(
+            &mut store.lock_conn().unwrap(),
+            launch("mono", "req", "child"),
+            10,
+        )
+        .unwrap()
+        .id;
+        let endpoint = hub::Endpoint::local(port, token);
+        let mut send =
+            |action: &'static str, payload: Value| hub::call_blocking(&endpoint, action, payload);
+        let mut skip = Skip::default();
+        let first = pump(&store, &mut send, &mut skip).unwrap();
+        assert!(
+            matches!(&first, Pump::Down(error) if error.kind == "server"),
+            "{first:?}"
+        );
+        let row = get(&store.lock_conn().unwrap(), &id).unwrap().unwrap();
+        assert_eq!((row.mirrored_version, row.mirror_error), (0, None));
+        // Later, in the same run, it goes through.
+        assert_eq!(
+            pump(&store, &mut send, &mut skip).unwrap(),
+            Pump::Progress(1)
+        );
+        assert_eq!(
+            get(&store.lock_conn().unwrap(), &id)
+                .unwrap()
+                .unwrap()
+                .mirrored_version,
+            1
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The real wire: `hub::call_blocking` posts the row to /api/ash-hub-delegation with the key.

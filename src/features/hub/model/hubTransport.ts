@@ -4,7 +4,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type HubErrorKind = "unreachable" | "timeout" | "unauthorized" | "refused" | "error";
+/** `server`: Ash OS answered with a 5xx (running, but failing). */
+export type HubErrorKind = "unreachable" | "timeout" | "unauthorized" | "refused" | "server" | "error";
 
 /** A failed call, in plain words. `kind` tells "Ash OS isn't running" from "Ash OS said no". */
 export class HubCallError extends Error {
@@ -20,7 +21,7 @@ export class HubCallError extends Error {
   }
 }
 
-const KINDS: readonly string[] = ["unreachable", "timeout", "unauthorized", "refused", "error"];
+const KINDS: readonly string[] = ["unreachable", "timeout", "unauthorized", "refused", "server", "error"];
 
 /** What the plugin rejects with is `{kind, message}`; anything else (no Tauri at all) means Ash OS can't be reached. */
 export function toHubError(raw: unknown): HubCallError {

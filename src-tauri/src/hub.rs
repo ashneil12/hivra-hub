@@ -228,6 +228,11 @@ fn status_error(code: u16, response: ureq::Response) -> HubError {
             "refused",
             said.unwrap_or_else(|| "Ash OS refused the call.".into()),
         ),
+        // Up but failing (Ash OS answers a refused call with 400): worth trying again later.
+        500..=599 => HubError::new(
+            "server",
+            said.unwrap_or_else(|| format!("Ash OS answered with an error ({code}).")),
+        ),
         _ => HubError::new(
             "error",
             said.unwrap_or_else(|| format!("Ash OS answered with an error ({code}).")),
