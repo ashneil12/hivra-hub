@@ -736,7 +736,10 @@ import {
   watchVerifyMessages,
 } from "./model/verifyKickoff";
 import { tauriHubTransport } from "../features/hub/model/hubTransport";
-import { delegationActions } from "../features/monos/model/delegationStore";
+import {
+  delegationActions,
+  useDelegationRows,
+} from "../features/monos/model/delegationStore";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import {
   driverEnabled as verifyDriverEnabled,
@@ -2522,6 +2525,7 @@ function Workspace({
     activeSessionId,
   );
 
+  const trayDelegationRows = useDelegationRows();
   const liveAgentRows = useMemo(
     () =>
       liveAgentsEnabled
@@ -2533,9 +2537,22 @@ function Workspace({
                 mono.sessionId ? [mono.sessionId] : [],
               ),
             ),
+            {
+              // The Hub's tray is running work only, each worker named by its task (liveAgents.ts).
+              runningOnly: IS_HUB_BUNDLE,
+              taskTitle: (id) =>
+                trayDelegationRows.find((row) => row.childSession === id)
+                  ?.title ?? undefined,
+            },
           )
         : [],
-    [liveAgentsEnabled, promptableSessions, unseenFinishedIds, monosSnap],
+    [
+      liveAgentsEnabled,
+      promptableSessions,
+      unseenFinishedIds,
+      monosSnap,
+      trayDelegationRows,
+    ],
   );
   // Rebuilt for every streamed batch; identity only moves when a row does.
   const liveAgents = useStableValue(liveAgentRows);
