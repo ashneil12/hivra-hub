@@ -46,7 +46,7 @@ describe("a managed room turn as it is written", () => {
       { id: "next", role: "user", text: "and streaks?" },
       { id: "a3", role: "assistant", text: "Streaks next." },
     ];
-    expect(liveAnswer(chat({ blocks }), "room-7")).toBe("Heard you: delete has to work end to end.\nTally lead has it.");
+    expect(liveAnswer(chat({ blocks }), "room-7")).toBe("Heard you: delete has to work end to end.\n\nTally lead has it.");
   });
 });
 

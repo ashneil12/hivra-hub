@@ -156,6 +156,32 @@ it("the host's words show in the room while its managed turn writes them, then t
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
 });
 
+it("a reply written in two parts around a tool call keeps them apart in the room (the turn's own text runs them together)", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const cos = chatOf("chief-of-staff");
+  setSessions(
+    sessionsRef.current.map((s) =>
+      s.id === cos
+        ? {
+            ...s,
+            blocks: [
+              { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: submitted[0].options.appRequestId as string },
+              { id: "a1", role: "assistant", text: "Nothing for you yet. Briefing the Tally lead now." },
+              { id: "t", role: "assistant", text: "", tool: { callId: "c", title: "delegate_task", kind: "other", status: "completed" } as Block["tool"] },
+              { id: "a2", role: "assistant", text: "The Tally lead has the brief." },
+            ],
+          }
+        : s,
+    ),
+  );
+  settle.get(cos)!("Nothing for you yet. Briefing the Tally lead now.The Tally lead has the brief.");
+  await chat.roomIdle(room.id);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe("Nothing for you yet. Briefing the Tally lead now.\n\nThe Tally lead has the brief.");
+});
+
 it("each seat's room turn starts on the room's project memory, once per conversation of its chat", async () => {
   const { chat, room, submitted, settle, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "wat now");

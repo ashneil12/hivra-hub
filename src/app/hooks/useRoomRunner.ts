@@ -94,7 +94,8 @@ export function answerAfter(session: Session, requestId: string): { delivered: b
 
 /**
  * A managed room turn's words so far: every message the Mono has written since the hidden prompt carrying `requestId`
- * (tool calls left out), one per line, as the turn's reply joins them. The room shows it live (roomConductor drafts).
+ * (tool calls left out), one paragraph each. The room shows it live (roomConductor drafts), and it is the post when the
+ * turn ends: the turn's own reply text runs the parts written around a tool call together ("now.The Lead has it").
  */
 export function liveAnswer(session: Session, requestId: string): string {
   const at = session.blocks.findIndex((b) => b.role === "user" && b.appRequestId === requestId);
@@ -104,7 +105,14 @@ export function liveAnswer(session: Session, requestId: string): string {
     if (block.role === "user" && !block.internal) break;
     if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) parts.push(block.text.trim());
   }
-  return parts.join("\n");
+  return parts.join("\n\n");
+}
+
+/** The post: the turn's words as its chat has them (parts kept apart), when they are the reply's own words. */
+function postText(session: Session | undefined, requestId: string, reply: string): string {
+  const written = session ? liveAnswer(session, requestId) : "";
+  const bare = (text: string) => text.replace(/\s+/g, "");
+  return written && bare(written) === bare(reply) ? written : reply;
 }
 
 /** How often a managed room turn's words are read into the room while it writes (hidden chats flush every 250 ms). */
@@ -207,7 +215,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
                   done(() => {
                     if (outcome.status === "completed") {
                       memory?.delivered();
-                      resolve(outcome.text);
+                      resolve(postText(latest.current.sessionsRef.current.find((s) => s.id === session.id), request.wakeId, outcome.text));
                     } else reject(new Error(outcome.error || (outcome.status === "cancelled" ? "The turn was stopped." : "Its turn did not finish.")));
                   }),
               }),
