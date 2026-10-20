@@ -26,7 +26,7 @@ import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
 import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
 import { leadFor, leadSoul } from "./hubLeads";
-import { KNOWN_SOUL_HASHES } from "./knownSouls.generated";
+import { KNOWN_LEAD_SHAPES, KNOWN_SOUL_HASHES } from "./knownSouls.generated";
 import { TEAM_SOULS } from "./teamSouls";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
@@ -53,6 +53,8 @@ export type SoulTemplate = {
   template: string;
   /** A Lead's: the values its soul was seeded with, so a past seed can be recognised. */
   values?: SoulValues;
+  /** A Lead's: its template for another folder (the roster had none, so the folder its soul names is kept). */
+  render?(folder: string | null): string;
 };
 
 /** The template each Mono on the roster follows today: the team's souls, each Lead's and the checker's. */
@@ -65,7 +67,8 @@ export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplat
     if (lead) {
       const folder = mono.projects[0] ?? null;
       const values = { id: mono.id, name: lead.name, projectName: lead.projectName, projectId: lead.projectId, folder };
-      return [{ monoId: mono.id, name, template: defaultSoul(leadSoul({ ...lead, id: mono.id }, folder)), values }];
+      const render = (f: string | null) => defaultSoul(leadSoul({ ...lead, id: mono.id }, f));
+      return [{ monoId: mono.id, name, template: render(folder), values, render }];
     }
     if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(CHECKER_SOUL) }];
     return [];
@@ -259,20 +262,51 @@ async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Whether `soul` is exactly a soul the app once seeded (any version in git history), with a Lead's own values put back
- * as tokens. Anything else, even one character, may be Ash's edit. The hub's own Lead keeps "hub" as its project id:
- * the word is in the soul's own text too.
- */
-export async function isKnownSeededSoul(soul: string, values: SoulValues = {}): Promise<boolean> {
+/** The folder a Lead's soul names in its "You are ..." line (", working in <folder>."), if any. */
+export function folderInSoul(soul: string): string | null {
+  const who = norm(soul).match(/^You are .*$/m)?.[0];
+  return who?.match(/, working in (.+)\.$/)?.[1]?.trim() || null;
+}
+
+/** soul with a Lead's values put back as tokens, longest first (the hub's own Lead keeps "hub": it is plain text too). */
+function tokenized(soul: string, values: SoulValues, folder: string | null): string {
   let text = norm(soul);
   const swaps = (Object.keys(SOUL_TOKENS) as (keyof typeof SOUL_TOKENS)[])
     .filter((k) => !(k === "projectId" && values.projectId === "hub"))
-    .map((k) => [values[k]?.trim() ?? "", SOUL_TOKENS[k]] as const)
+    .map((k) => [(k === "folder" ? folder : values[k])?.trim() ?? "", SOUL_TOKENS[k]] as const)
     .filter(([value]) => value.length > 0)
     .sort((a, b) => b[0].length - a[0].length);
   for (const [value, token] of swaps) text = text.split(value).join(token);
-  return KNOWN_SOUL_HASHES.has(await sha256(text));
+  return text;
+}
+
+/** Must match scripts/known-souls.mjs withoutWho. */
+const WHO = "\u27e6who\u27e7";
+const withoutWho = (text: string) => norm(text).replace(/^You are .*$/m, WHO);
+
+export type SeedMatch =
+  /** Exactly a soul the app seeded, with this folder in it (null: none). */
+  | { kind: "exact"; folder: string | null }
+  /** The app's own text apart from its "You are ..." line (name, project, folder), which the template writes afresh. */
+  | { kind: "who-line"; folder: string | null };
+
+/**
+ * Whether `soul` is a soul the app once seeded (any version in git history; knownSouls.generated.ts), whatever the
+ * roster says its folder is: the roster's folder, the folder the soul names itself, or none are all tried, and a Lead
+ * whose only difference is its "You are ..." line still counts (that line is the app's: name, project and folder).
+ * Anything else, even one character, may be Ash's edit.
+ */
+export async function matchSeededSoul(soul: string, values: SoulValues = {}): Promise<SeedMatch | null> {
+  const own = folderInSoul(soul);
+  const folders = [...new Set([values.folder?.trim() || null, own, null])];
+  for (const folder of folders) if (KNOWN_SOUL_HASHES.has(await sha256(tokenized(soul, values, folder)))) return { kind: "exact", folder };
+  if (values.id && KNOWN_LEAD_SHAPES.has(await sha256(withoutWho(tokenized(soul, values, null))))) return { kind: "who-line", folder: own };
+  return null;
+}
+
+/** matchSeededSoul as a yes or no. */
+export async function isKnownSeededSoul(soul: string, values: SoulValues = {}): Promise<boolean> {
+  return (await matchSeededSoul(soul, values)) !== null;
 }
 
 export type SoulFiles = {
@@ -316,16 +350,28 @@ export async function refreshSouls(
   const refreshed: string[] = [];
   const recorded: string[] = [];
   const skipped: string[] = [];
-  for (const { monoId, name, template, values } of templates) {
+  for (const entry of templates) {
+    const { monoId, name, values } = entry;
+    let { template } = entry;
     try {
       const soul = await files.read(monoId, "SOUL.md");
       // Not seeded yet: its creation writes the current template.
       if (soul.text == null) continue;
       const last = await files.read(monoId, SOUL_TEMPLATE_FILE);
       let baseline = last.text;
+      const notes: string[] = [];
+      // The roster names no folder for this Lead: keep the one its soul names rather than writing a soul without one.
+      const own = values && !values.folder?.trim() ? folderInSoul(soul.text) : null;
+      if (own && entry.render) {
+        template = entry.render(own);
+        notes.push(`The app had no project folder for ${name}, so the folder its soul already named is kept.`);
+      }
       if (baseline == null && norm(soul.text) !== norm(template)) {
         // No recorded template: only a soul the app itself seeded, untouched, is swapped (then it is its own baseline).
-        if (!(await isKnownSeededSoul(soul.text, values))) {
+        const match = await matchSeededSoul(soul.text, values);
+        if (match && values?.folder?.trim() && match.folder !== values.folder.trim())
+          notes.push(`${name}'s old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.`);
+        if (!match) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
             recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
@@ -354,7 +400,7 @@ export async function refreshSouls(
       if (!(await saveChecked(files, monoId, "SOUL.md", plan.after, soul.hash))) continue;
       // 3. The template it now follows, so his later edits are known.
       await files.write(monoId, SOUL_TEMPLATE_FILE, template, last.hash);
-      const sentences = refreshSentences(plan, name);
+      const sentences = [...refreshSentences(plan, name), ...notes];
       const changes = plan.updated.length + plan.added.length + plan.dropped.length;
       recordBotChange({
         id,

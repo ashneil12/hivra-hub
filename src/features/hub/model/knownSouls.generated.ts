@@ -120,3 +120,28 @@ export const KNOWN_SOUL_HASHES: ReadonlyMap<string, string> = new Map([
   ["f2f1b860d6c32dfe65e183ec28fec7d2a3cf9154435a26bf4d150b59ddd75ded", "team · 2026-10-21"],
   ["fb7ae393379b80699ab3f4cf84876d7f237d358086258ddf37ae1fbb10737ced", "team · 2026-10-19"],
 ]);
+
+// The same Lead souls with their "You are ..." line (name, project, folder) set aside: a Lead whose roster has no folder,
+// or another one, is still recognised as the app's own text everywhere else. 20 shapes.
+export const KNOWN_LEAD_SHAPES: ReadonlyMap<string, string> = new Map([
+  ["1eff0852fa278370dccadb74e748cc90a7e17e743430eb81a9852827473f8a0d", "lead · 2026-10-20"],
+  ["2067983eb5f650725a8d303eff4dc2936cd62745af7c0c3fe5c1d38312a0c34b", "lead · 2026-10-20"],
+  ["2c87cfce2341a4733d33c4da8c83efb51b5372f5c4abbf699daa72ae173f029e", "lead · 2026-10-20"],
+  ["5a0b8119a45c1bfc82a0fddc79a754f4274c90b1308495f13362eb42b98f8858", "lead · 2026-10-20"],
+  ["5f64471341f6443a398a72457f9aff1088b41e426b7c92043b4b362da90ba37b", "lead · 2026-10-20"],
+  ["6922d1b687db2faf4f2d922fb9e96ca04bd8a0e870a42ed56ce456d21fbfb260", "lead · 2026-10-20"],
+  ["7bb71367c285d20bbc12cb036b146d85dc59fdd22af1a2a0dd3cfc9c7b5e74a8", "lead · 2026-10-20"],
+  ["84bb6ec617fc6849451fe7948865b9df2441072cfb6a681dd8a6d5e449547c8e", "lead · 2026-10-20"],
+  ["9dd90ae203c9123e824a46ba55f4fb3c4a17df44a253cf2f7db4af9cd360600a", "lead · 2026-10-20"],
+  ["bad82cfc9db27f1cc4331f58d48c49d9c56d67c25e83dd7e7223150063b11eab", "lead · 2026-10-20"],
+  ["bdf164725f184621641a5c9329610b90a94970b66a1d216c93b401ed671a3d71", "lead · 2026-10-19"],
+  ["bf37786719665ea29348eee5b9a0031f8999c130e817ac4708ef01434d4cd8c3", "lead · 2026-10-20"],
+  ["c5700d1ed96313e7d72bc26008e7a8315c28ffc48131b9f46a15b979591f5ca4", "lead · 2026-10-20"],
+  ["d7096d7fce165e39835e61534c1e9df1f324914e46d8c44ce1f5a8ea059b1b06", "lead · 2026-10-15"],
+  ["dc0c8f82a925df82fb24c7fd2e69c1f8197d8be7a64bd7c2e1d417827131f50a", "lead · 2026-10-20"],
+  ["e7c52b4c610d17db0f138be64befc96a45af56f27c5c1c215fd491b2a2edef32", "lead · 2026-10-20"],
+  ["ec29f06e18352bb48a17a533075c8ba47bd8031c442fbf97cf547839318edcc7", "lead · 2026-10-20"],
+  ["ef190b2e9dd5990e5848588c55d9caf73f795237bfbc7b66e155e6e0020aefbe", "lead · 2026-10-19"],
+  ["f951362e674c4c32c41c7a1f1d31bc4bf1554ff85aa1b6a645af1c9d4f704009", "lead · 2026-10-20"],
+  ["fb0d1cb1173a93fa267b04761805e49940599a8e5e024a4f34ab1f2abc4340b1", "lead · 2026-10-15"],
+]);

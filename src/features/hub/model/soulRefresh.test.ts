@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { botChangeRows, findBotChange, redoBotChange, setBotFiles, undoBotChange } from "./botChanges";
 import { LIVE_15_OCT_LEAD_SOULS } from "./testdata/leadSouls15Oct";
 import {
+  folderInSoul,
   isKnownSeededSoul,
+  matchSeededSoul,
   planSoulRefresh,
   refreshSouls,
   SECTION_SENTENCES,
@@ -286,6 +288,59 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     for (const text of [c.line, ...c.details!]) expectPlain(text);
     await undoBotChange([c.id]);
     expect(f.get("hivra-lead", "SOUL.md")).toBe(hivra.soul);
+  });
+
+  /** What soulTemplates gives a Lead whose roster carries `folder` (none, a wrong one, or the real one). */
+  function leadEntry(l: (typeof LIVE_15_OCT_LEAD_SOULS)[number], folder: string | null, monoId = l.monoId) {
+    const spec = { id: monoId, name: l.values.name, projectName: l.values.projectName, projectId: l.values.projectId } as Parameters<typeof leadSoul>[0];
+    const render = (f: string | null) => defaultSoul(leadSoul(spec, f));
+    return { monoId, name: l.values.name, template: render(folder), values: { ...l.values, id: monoId, folder }, render };
+  }
+
+  it("a roster with no folder: the untouched lead is still swapped, keeping the folder its soul names, and the row says so", async () => {
+    for (const l of LIVE_15_OCT_LEAD_SOULS) {
+      const id = `${l.monoId}-nofolder`;
+      const f = fakeFiles();
+      const soul = l.soul.replaceAll(`ASH_MONO_ID=${l.monoId}`, `ASH_MONO_ID=${id}`);
+      f.set(id, "SOUL.md", soul);
+      expect(await refreshSouls(f, [leadEntry(l, null, id)], DAY)).toEqual({ refreshed: [id], recorded: [], skipped: [] });
+      const now = f.get(id, "SOUL.md")!;
+      expect(now).toContain(`working in ${l.values.folder}.`);
+      expect(now).toContain("Your workers ask you, not Ash");
+      const row = botChangeRows().find((r) => r.kind === "one" && r.change.monoId === id);
+      expect(row?.kind === "one" && row.change.details).toContain(
+        `The app had no project folder for ${l.values.name}, so the folder its soul already named is kept.`,
+      );
+      if (row?.kind === "one") for (const t of row.change.details!) expectPlain(t);
+    }
+  });
+
+  it("a roster with a different folder: still recognised as untouched; the new soul uses the roster's folder and says so", async () => {
+    const exo = LIVE_15_OCT_LEAD_SOULS[2];
+    const f = fakeFiles();
+    const soul = exo.soul.replaceAll("ASH_MONO_ID=vg-game-lead", "ASH_MONO_ID=exo-wrong");
+    f.set("exo-wrong", "SOUL.md", soul);
+    const entry = leadEntry(exo, "/Users/ash/Projects/vg-game-moved", "exo-wrong");
+    expect(await refreshSouls(f, [entry], DAY)).toEqual({ refreshed: ["exo-wrong"], recorded: [], skipped: [] });
+    expect(f.get("exo-wrong", "SOUL.md")).toContain("working in /Users/ash/Projects/vg-game-moved.");
+    const c = findBotChange(`soul-refresh:exo-wrong:${templateFingerprint(entry.template)}`)!;
+    expect(c.details!.at(-1)).toBe("EXO lead's old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.");
+    for (const t of c.details!) expectPlain(t);
+  });
+
+  it("EXO's real folder, with a space and a '?', matches whether the roster names it or not", async () => {
+    const exo = LIVE_15_OCT_LEAD_SOULS[2];
+    expect(exo.values.folder).toBe("/Users/ash/Projects/boxin game?/vg-game");
+    expect(folderInSoul(exo.soul)).toBe("/Users/ash/Projects/boxin game?/vg-game");
+    for (const folder of [exo.values.folder, null, "/somewhere/else"])
+      expect(await matchSeededSoul(exo.soul, { ...exo.values, folder })).not.toBeNull();
+    const f = fakeFiles();
+    f.set("vg-game-lead", "SOUL.md", exo.soul);
+    expect((await refreshSouls(f, [leadEntry(exo, exo.values.folder)], DAY)).refreshed).toEqual(["vg-game-lead"]);
+    expect(f.get("vg-game-lead", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
+    // An edit in the body is still an edit, whatever the folder.
+    const edited = exo.soul.replace("- Parallel work is fine.", "- Ash: no Fridays.\n- Parallel work is fine.");
+    expect(await matchSeededSoul(edited, { ...exo.values, folder: null })).toBeNull();
   });
 
   it("leaves an edited soul alone, with one plain row and no Undo", async () => {
