@@ -1681,7 +1681,10 @@ mod tests {
         assert_eq!(bodies.len(), 5, "{bodies:?}");
         assert!(bodies[0].contains("\"reasoning_effort\":\"medium\""));
         assert!(!bodies[1].contains("reasoning_effort"));
-        assert!(!bodies[2].contains("reasoning_effort"), "medium is remembered");
+        assert!(
+            !bodies[2].contains("reasoning_effort"),
+            "medium is remembered"
+        );
         assert!(bodies[3].contains("\"reasoning_effort\":\"high\""));
         assert!(!bodies[4].contains("reasoning_effort"));
 
@@ -1693,7 +1696,9 @@ mod tests {
         );
         assert_eq!(heard[0].custom_model_id, "xai-perlevel");
         assert_eq!(heard[0].provider, "xai");
-        assert!(!serde_json::to_string(&heard[0]).unwrap().contains("fake-key"));
+        assert!(!serde_json::to_string(&heard[0])
+            .unwrap()
+            .contains("fake-key"));
     }
 
     #[test]
