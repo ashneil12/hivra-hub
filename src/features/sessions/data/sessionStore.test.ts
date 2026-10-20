@@ -342,6 +342,17 @@ describe("persisting a subagent's trail", () => {
 });
 
 describe("sanitizeSessionForPersist", () => {
+  it("keeps a queued app brief's request id and its wait-for-idle through a save", () => {
+    const session = newSession("claude", "/repo");
+    session.queuedMessages = [
+      { id: "app-cos-b1", appRequestId: "app-cos-b1", waitForIdle: true, text: "Ship it", attachments: [] },
+      { id: "plain", appRequestId: "bad id/!", text: "typed", attachments: [] },
+    ];
+    const saved = sanitizeSessionForPersist(session).queuedMessages!;
+    expect(saved[0]).toMatchObject({ appRequestId: "app-cos-b1", waitForIdle: true });
+    expect(saved[1].appRequestId).toBeUndefined();
+    expect(saved[1].waitForIdle).toBeUndefined();
+  });
   it("persists accepted Mono launches on user turns and fingerprints their addition", () => {
     const session = newSession("codex", "/repo");
     session.blocks = [{ id: "user", role: "user", text: "Review" }];

@@ -19,7 +19,9 @@
 // "times"?, "steps": [...] }]}. The first rule that matches (and still has times left) plays its steps:
 //   {"say": "text"}                                   an assistant message
 //   {"app": "sessions.start", "input": {...}}         a `monocode app` call over MONOCODE_APP_ENDPOINT with the turn's
-//                                                     MONOCODE_APP_TOKEN, shown as a Bash tool call and its result
+//                                                     MONOCODE_APP_TOKEN, shown as a Bash tool call and its result;
+//                                                     "{{lastStarted}}" in an input string is the id the last
+//                                                     sessions.start in this process returned
 //   {"background": {"id", "kind": "subagent"|"shell", "description"}}   start background work (task_started)
 //   {"finishBackground": "id"}                        it finishes (task_updated, task_notification)
 //   {"mark": "name"}                                  write marks/<name>.json (when, which conversation, the prompt)
@@ -39,6 +41,15 @@ import { fileURLToPath } from "node:url";
 import { parseTranscript, promptText, transcriptTurns } from "./claude-fixtures.mjs";
 
 export const FAKE_VERSION = "2.1.302 (Claude Code)";
+
+/** An app step's input with "{{lastStarted}}" replaced by the last started session's id (strings at any depth). */
+export function withLastStarted(value, lastStarted) {
+  if (typeof value === "string") return lastStarted ? value.replaceAll("{{lastStarted}}", lastStarted) : value;
+  if (Array.isArray(value)) return value.map((item) => withLastStarted(item, lastStarted));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withLastStarted(item, lastStarted)]));
+  return value;
+}
 
 /** The command line as far as the fake cares. */
 export function parseCliArgs(argv) {
@@ -231,6 +242,7 @@ export async function main(argv = process.argv.slice(2)) {
   const background = new Map();
   const queue = [];
   let running = null;
+  let lastStarted = null;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const assistant = (content) => {
@@ -290,7 +302,8 @@ export async function main(argv = process.argv.slice(2)) {
       } else if (typeof step.app === "string") {
         messages += 1;
         const toolId = `toolu_fake_${process.pid}_${messages}`;
-        const json = JSON.stringify(step.input ?? {});
+        const input = withLastStarted(step.input ?? {}, lastStarted);
+        const json = JSON.stringify(input);
         assistant([
           {
             type: "tool_use",
@@ -299,12 +312,14 @@ export async function main(argv = process.argv.slice(2)) {
             input: { command: `monocode app ${step.app} --json '${json}'`, description: `monocode app ${step.app}` },
           },
         ]);
-        const response = await appCall(step.app, step.input ?? {});
+        const response = await appCall(step.app, input);
+        if (step.app === "sessions.start" && response?.ok && typeof response.result?.id === "string")
+          lastStarted = response.result.id;
         append(path.join(dir, "app-calls.ndjson"), {
           conversation: conversationId,
           rule: rule.name,
           action: step.app,
-          input: step.input ?? {},
+          input,
           response,
         });
         out({

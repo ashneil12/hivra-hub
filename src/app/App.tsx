@@ -32,9 +32,27 @@ import {
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
+import {
+  briefSentAt,
+  briefWaiting,
+  currentLeadBrief,
+  deliveryFor,
+  withoutQueuedBrief,
+} from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
+import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
+import {
+  briefsLeads,
+  delegateToLead,
+  findLeadTarget,
+  leadTargetsFor,
+  formatLeadBrief,
+  leadBriefPrompt,
+  setLeadDelegator,
+} from "../features/hub/model/leadershipDelegation";
+import { postLeadReport } from "../features/hub/model/roomReports";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -969,6 +987,8 @@ type SubmitOptions = ComposerTurnOptions & {
   appRequestId?: string;
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
   followsUp?: boolean;
+  /** A brief that must wait behind the current work (queued, sent as its own turn once idle; never steered). */
+  waitForIdle?: boolean;
   monoSessionCompletion?: Block["monoSessionCompletion"];
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
@@ -7485,12 +7505,18 @@ function Workspace({
                   handoffCard: rawCommand ? session.handoffCard : undefined,
                 },
                 {
-                  id: crypto.randomUUID(),
+                  // An app brief keeps its request id, so a retried send finds it waiting and its sender can tell
+                  // when it went in.
+                  id: options?.appRequestId ?? crypto.randomUUID(),
                   text,
                   attachments,
                   noteCard,
                   handoffCard,
                   intent,
+                  ...(options?.appRequestId
+                    ? { appRequestId: options.appRequestId }
+                    : {}),
+                  ...(options?.waitForIdle ? { waitForIdle: true } : {}),
                 },
                 rawCommand ? undefined : userTurnCards(noteCard),
               )
@@ -7559,7 +7585,13 @@ function Workspace({
                 mode: "follow-up",
                 text: submittedText,
                 attachments: displayAttachments(attachments),
-                cards: userTurnCards(noteCard),
+                cards: {
+                  ...userTurnCards(noteCard),
+                  // A steered app brief: its sender's row sees it went in.
+                  ...(message.appRequestId
+                    ? { appRequestId: message.appRequestId }
+                    : {}),
+                },
               }),
             );
             flushHarnessEvents();
@@ -7596,7 +7628,8 @@ function Workspace({
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
-          operatorCommand.matched
+          operatorCommand.matched ||
+          options?.waitForIdle
             ? "queue"
             : // The agent has yielded and only background work is left, which
               // may never end (a dev server). Queuing would park the message
@@ -7629,6 +7662,10 @@ function Workspace({
                         noteCard,
                         handoffCard,
                         intent,
+                        ...(options?.appRequestId
+                          ? { appRequestId: options.appRequestId }
+                          : {}),
+                        ...(options?.waitForIdle ? { waitForIdle: true } : {}),
                       },
                     ],
                     queueStatus:
@@ -8530,6 +8567,14 @@ function Workspace({
             appContext.push(
               monoContext(agentLook, agentFiles, agentPlan, {
                 delegate: delegateTool,
+                // The leadership team briefs project Leads (double delegation).
+                ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
+                  ? {
+                      leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
+                        (target) => `${target.leadName} (lead "${target.projectId}")`,
+                      ),
+                    }
+                  : {}),
               }),
             );
           }
@@ -9127,6 +9172,92 @@ function Workspace({
     quitting: isAppQuitting,
   });
   delegationsRef.current = delegations;
+  // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
+  useFollowedBriefs({
+    tracker: delegations,
+    sessions,
+    sessionsRef,
+    onLeadReport: ({ row, receipt, report, answer }) =>
+      row.project && row.ownerMono
+        ? postLeadReport({
+            receipt,
+            projectId: row.project,
+            leadChat: row.childSession,
+            ownerMono: row.ownerMono,
+            title: row.title ?? "",
+            report,
+            answer,
+          })
+        : undefined,
+  });
+  // Double delegation: a leadership Mono's brief goes into the Lead's own long-running chat, as a followed row with the
+  // leadership Mono as owner (leadershipDelegation.ts, followedBriefs.ts).
+  useEffect(
+    () =>
+      setLeadDelegator(async (input) => {
+        const tracker = delegationsRef.current;
+        if (!tracker) throw new Error("Delegations are still loading; try again in a moment");
+        const from = findMono(input.fromMonoId);
+        const ownerSession = input.ownerSession ?? from?.sessionId;
+        if (!from || !ownerSession) throw new Error("Brief a Lead from your own chat.");
+        const lead = await ensureMonoSession(input.target.leadId, {
+          home: homeDir,
+          load: (id) => ensureOpenSessionRef.current(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => {
+            sessionsRef.current = [...sessionsRef.current, created];
+            setSessions(sessionsRef.current);
+          },
+        });
+        if (!lead) throw new Error(`${input.target.leadName}'s chat isn't available.`);
+        const fromName = monoLook(from).name;
+        const text =
+          typeof input.brief === "string"
+            ? leadBriefPrompt(fromName, input.brief, input.goal)
+            : formatLeadBrief(fromName, input.brief);
+        const requestId = input.requestId ?? `app-${ownerSession}-lead-${crypto.randomUUID()}`;
+        const launch = tracker.launch({
+          ownerSession,
+          ownerMono: from.id,
+          requestId,
+          childSession: lead.id,
+          project: input.target.projectId,
+          title:
+            input.title ??
+            (typeof input.brief === "string" ? input.brief : input.brief.outcome).split("\n")[0].slice(0, 200),
+          brief: text,
+          ...(input.goal ? { goal: input.goal } : {}),
+          ...(input.askIds?.length ? { askIds: input.askIds } : {}),
+          follow: "lead",
+          by: `owner:${ownerSession}`,
+        });
+        const row = await launch.row;
+        if (!row) throw new Error("The brief couldn't be stored, so it wasn't sent.");
+        const current = sessionsRef.current.find((s) => s.id === lead.id) ?? lead;
+        // A retried brief that already went in (or waits) is not sent twice.
+        if (briefSentAt(row, current) >= 0) return { taskId: row.id, childSessionId: lead.id, delivery: "started" as const };
+        if (briefWaiting(row, current)) return { taskId: row.id, childSessionId: lead.id, delivery: "queued" as const };
+        const delivery = deliveryFor(
+          current,
+          input.mode ?? "queue",
+          isLiveHarness(current.harness) && canSteerHarness(current.harness),
+        );
+        const accepted = await submitSessionRef.current(lead.id, text, [], {
+          appRequestId: requestId,
+          followsUp: true,
+          ...(delivery === "started"
+            ? {}
+            : { followUpBehavior: delivery === "steered" ? "steer" : "queue" }),
+          ...(delivery === "queued" ? { waitForIdle: true } : {}),
+        });
+        if (!accepted) {
+          launch.refuse();
+          throw new Error(`${input.target.leadName} couldn't take the brief right now.`);
+        }
+        return { taskId: row.id, childSessionId: lead.id, delivery };
+      }),
+    [],
+  );
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
       const mono = sessionsRef.current.find((session) => session.id === monoId);
@@ -9594,7 +9725,10 @@ function Workspace({
                       monoSessionCompletion: head.monoSessionCompletion,
                       appRequestId: head.id,
                     }
-                  : {}),
+                  : head.appRequestId
+                    ? // A queued app brief goes in under its request id (followedBriefs.ts watches for it).
+                      { appRequestId: head.appRequestId, followsUp: true }
+                    : {}),
               },
             );
             if (accepted && head.monoSessionCompletion)
@@ -11526,12 +11660,19 @@ function Workspace({
         ) => {
           // The stored row comes first: it is what survives a restart. The batch below is its cache for this run.
           // Ash OS gets the hub project id, which it resolves directly; a folder outside the hub's projects stays a path.
+          // A Lead's worker goes under the leadership brief it is working on, so that brief's report waits for it
+          // (followedBriefs.ts) and the tree shows it there (H4's cascade Stop).
+          const ownerChat = sessionsRef.current.find((session) => session.id === monoId);
+          const working = ownerChat
+            ? currentLeadBrief(delegationsRef.current?.known() ?? [], ownerChat)
+            : undefined;
           const launch = delegationsRef.current?.launch({
             ownerSession: monoId,
             ownerMono: monoForSession(monoId)?.id,
             batchId: sourceTurnId ?? `turn-${sourceTurn}`,
             requestId,
             childSession: sessionId,
+            ...(working ? { parentId: working.id } : {}),
             project: delegation?.project ?? hubProjectIdFor(project) ?? project,
             title: delegation?.title ?? title,
             brief: prompt,
@@ -11720,7 +11861,7 @@ function Workspace({
               isMonoSession(target.id)
                 ? readMonoConversation(target, options)
                 : sessionConversationPage(target, options),
-            send: async (id, prompt, requestId, notifyMonoId) => {
+            send: async (id, prompt, requestId, notifyMonoId, mode = "auto") => {
               const target = await ensureOpenSessionRef.current(id);
               if (
                 !target ||
@@ -11754,12 +11895,57 @@ function Workspace({
                 rememberFollowUp();
                 return { alreadySubmitted: true };
               }
-              if (target.busy)
-                throw new Error("Session is busy; try again when it finishes");
+              // A retried brief that still waits in the queue.
+              const waiting = briefWaiting({ requestId }, target);
+              if (waiting) {
+                if (waiting.text !== prompt)
+                  throw new Error(
+                    "Request ID was already used with another prompt",
+                  );
+                return { alreadySubmitted: true, delivery: "queued" as const };
+              }
               if (sessionDraftBlock(target))
                 throw new Error(
                   "Session already has a draft; send or remove it first",
                 );
+              // A busy session takes the brief behind its current work, or into it when the sender asked to steer
+              // (followedBriefs.ts). Its report, if asked for, is a followed row: decided by watching the session.
+              const delivery = deliveryFor(
+                target,
+                mode,
+                isLiveHarness(target.harness) &&
+                  canSteerHarness(target.harness),
+              );
+              if (delivery !== "started") {
+                const follow = delivery === "steered" ? "steer" : "queue";
+                const launch = notifyMonoId
+                  ? delegationsRef.current?.launch({
+                      ownerSession: notifyMonoId,
+                      ownerMono: monoForSession(notifyMonoId)?.id,
+                      batchId: sourceTurnId ?? `turn-${sourceTurn}`,
+                      requestId,
+                      childSession: id,
+                      project: hubProjectIdFor(target.cwd) ?? target.cwd,
+                      title: target.title,
+                      brief: prompt,
+                      follow,
+                      by: `owner:${notifyMonoId}`,
+                    })
+                  : undefined;
+                await launch?.row;
+                const accepted = await submitSessionRef.current(id, prompt, [], {
+                  appRequestId: requestId,
+                  followsUp: true,
+                  followUpBehavior: follow,
+                  ...(follow === "queue" ? { waitForIdle: true } : {}),
+                });
+                if (!accepted) {
+                  launch?.refuse();
+                  throw new Error("Session could not take the brief");
+                }
+                rememberFollowUp();
+                return { alreadySubmitted: false, delivery };
+              }
               const onSettled = notifyMonoId
                 ? await monitorCompletion(
                     notifyMonoId,
@@ -11790,7 +11976,58 @@ function Workspace({
               }
               rememberFollowUp();
               onSettled?.accept();
-              return { alreadySubmitted: false };
+              return { alreadySubmitted: false, delivery: "started" as const };
+            },
+            queued: async (caller, sessionId) =>
+              sessionsRef.current.flatMap((session) =>
+                (sessionId === undefined || session.id === sessionId) &&
+                canAccessProject(session.cwd)
+                  ? (session.queuedMessages ?? []).flatMap((message, index) =>
+                      message.appRequestId?.startsWith(`app-${caller}-`)
+                        ? [
+                            {
+                              sessionId: session.id,
+                              title: session.title,
+                              requestId: message.appRequestId,
+                              position: index + 1,
+                              prompt: message.text.slice(0, 500),
+                            },
+                          ]
+                        : [],
+                    )
+                  : [],
+              ),
+            unqueue: async (caller, requestId) => {
+              if (!requestId.startsWith(`app-${caller}-`)) return false;
+              const holder = sessionsRef.current.find(
+                (session) =>
+                  canAccessProject(session.cwd) &&
+                  session.queuedMessages?.some(
+                    (message) => message.appRequestId === requestId,
+                  ),
+              );
+              const message = holder?.queuedMessages?.find(
+                (entry) => entry.appRequestId === requestId,
+              );
+              if (!holder || !message) return false;
+              const next = sessionsRef.current.map((session) =>
+                session.id === holder.id
+                  ? withoutQueuedBrief(session, message)
+                  : session,
+              );
+              sessionsRef.current = next;
+              flushSync(() => setSessions(next));
+              // Its row (when a report was asked for) is cancelled: nothing is owed for a brief that never went in.
+              const rows = await tauriDelegations
+                .owned({ ownerSession: caller, requestIds: [requestId] })
+                .catch(() => []);
+              if (rows.length)
+                await delegationsRef.current?.cancelOwned(
+                  caller,
+                  rows,
+                  "Taken back out of the queue by its sender.",
+                );
+              return true;
             },
             draft: async (id, prompt, requestId) => {
               const target = await ensureOpenSessionRef.current(id);
@@ -11954,6 +12191,41 @@ function Workspace({
                 respondHarnessQuestion(child.harness, child.id, requestId, reply),
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
+              unqueue: (childSession, requestId) => {
+                const next = sessionsRef.current.map((session) => {
+                  if (session.id !== childSession) return session;
+                  const waiting = briefWaiting({ requestId }, session);
+                  return waiting ? withoutQueuedBrief(session, waiting) : session;
+                });
+                sessionsRef.current = next;
+                flushSync(() => setSessions(next));
+              },
+              briefLead: async (owner, mono, input) => {
+                const projects = hubData().listProjects();
+                const target = findLeadTarget(mono.id, projects, input.lead);
+                if (!target)
+                  throw new Error(
+                    `No Lead "${input.lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+                const out = await delegateToLead(mono.id, target, input.brief, projects, {
+                  ownerSession: owner.id,
+                  requestId: input.requestId,
+                  title: input.title,
+                  ...(input.goal ? { goal: input.goal } : {}),
+                  askIds: input.askIds,
+                  mode: input.mode,
+                });
+                const [row] = await tauriDelegations.owned({
+                  ownerSession: owner.id,
+                  ids: [out.taskId],
+                });
+                return {
+                  row: row ?? null,
+                  childSessionId: out.childSessionId ?? target.sessionId ?? "",
+                  delivery: out.delivery ?? "started",
+                  leadName: target.leadName,
+                };
+              },
             }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),

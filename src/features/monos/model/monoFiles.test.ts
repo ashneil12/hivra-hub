@@ -188,6 +188,17 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
   );
 });
 
+it("teaches the leadership team to brief Leads (lead_brief_rules), only with the delegate tool and Leads to brief", () => {
+  const look = { name: "Chief of Staff", mascot: "skull", color: "#fff", projects: [{ path: "/code/monocode-hub", name: "hub" }] };
+  const leads = ['MonoCode Hub lead (lead "hub")'];
+  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, leads });
+  expect(taught).toContain("<lead_brief_rules>");
+  expect(taught).toContain('MonoCode Hub lead (lead "hub")');
+  expect(taught).toContain("Leadership room");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true, leads: [] })).not.toContain("<lead_brief_rules>");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { leads })).not.toContain("<lead_brief_rules>");
+});
+
 it("seeds SOUL.md once, moving the old instructions into it", async () => {
   const { id } = createMono(["/code/app"]);
   updateMono(id, (mono) => ({ ...mono, instructions: "Ship on Fridays" }));

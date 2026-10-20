@@ -6,7 +6,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ensureBuiltInMonos } from "./builtInMonos";
 import { ensureProjectLeads } from "./hubLeads";
 import { tieTeamToProjects } from "./hubTeam";
-import { briefsLeads, delegateToLead, formatLeadBrief, leadDelegationReady, leadTargetsFor, setLeadDelegator } from "./leadershipDelegation";
+import { listMonos, removeMonoProject } from "../../monos/model/mono";
+import {
+  briefsLeads,
+  delegateToLead,
+  findLeadTarget,
+  formatLeadBrief,
+  leadBriefPrompt,
+  leadDelegationReady,
+  leadTargetsFor,
+  setLeadDelegator,
+} from "./leadershipDelegation";
 import type { HubProject } from "./types";
 
 const PROJECTS: HubProject[] = [
@@ -37,8 +47,32 @@ describe("leadership -> Lead", () => {
     await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't connected yet");
     const undo = setLeadDelegator(async () => ({ taskId: "t1" }));
     await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).resolves.toEqual({ taskId: "t1" });
-    await expect(delegateToLead("someone", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't in one of your projects");
+    await expect(delegateToLead("someone", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("Only the leadership team");
+    await expect(delegateToLead("chief-of-staff", { ...target, projectId: "elsewhere" }, "x", PROJECTS)).rejects.toThrow("isn't in one of your projects");
     undo();
+  });
+
+  it("a Lead that isn't a member of its project can't be briefed there; a Lead is found by its id, name or project", () => {
+    ensureBuiltInMonos();
+    ensureProjectLeads(PROJECTS);
+    tieTeamToProjects(PROJECTS);
+    expect(findLeadTarget("chief-of-staff", PROJECTS, "hub")?.leadName).toBe("MonoCode Hub lead");
+    expect(findLeadTarget("chief-of-staff", PROJECTS, "MonoCode Hub")?.projectId).toBe("hub");
+    expect(findLeadTarget("chief-of-staff", PROJECTS, "monocode hub lead")?.projectId).toBe("hub");
+    expect(findLeadTarget("chief-of-staff", PROJECTS, "Nobody")).toBeUndefined();
+    // Take the Hub lead off its project: it stops being a target.
+    const lead = listMonos().find((m) => m.name === "MonoCode Hub lead")!;
+    removeMonoProject(lead.id, "/p/monocode-hub");
+    expect(findLeadTarget("chief-of-staff", PROJECTS, "hub")).toBeUndefined();
+    expect(leadTargetsFor("chief-of-staff", PROJECTS).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii"]);
+  });
+
+  it("a delegate-tool brief to a Lead says how a Lead works it, with no Done when (no /goal in a Lead's chat)", () => {
+    const text = leadBriefPrompt("Chief of Staff", "Ash said: \"ship the room\".", "the room shows the report");
+    expect(text.split("\n")[0]).toBe("[MonoCode brief from Chief of Staff]");
+    expect(text).toContain("Done looks like: the room shows the report");
+    expect(text).not.toContain("Done when:");
+    expect(text).toContain("delegate_task");
   });
 
 

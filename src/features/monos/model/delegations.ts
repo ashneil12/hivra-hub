@@ -73,7 +73,15 @@ export type Delegation = {
   version: number;
   mirroredVersion: number;
   mirrorError: string | null;
+  /** A followed brief (followedBriefs.ts): reported by watching the child chat. Absent on older rows. */
+  follow?: FollowMode | null;
 };
+
+/**
+ * How a followed brief went in: queued behind a busy chat's work, steered into it, or a leadership Mono's brief to a
+ * project Lead's long-running chat (delegations.rs, followedBriefs.ts).
+ */
+export type FollowMode = "queue" | "steer" | "lead";
 
 export type RecordInput = {
   ownerSession: string;
@@ -87,6 +95,9 @@ export type RecordInput = {
   goal?: string;
   askIds?: string[];
   by?: string;
+  follow?: FollowMode;
+  /** The open row the owner works for (a Lead's current brief), when the app knows it. */
+  parentId?: string;
 };
 
 export type SettleInput = {
@@ -323,6 +334,8 @@ export function bootStep(
   },
 ): BootStep {
   if (!look.owner) return { kind: "drop", reason: "Its owner is gone." };
+  // A followed brief is reported by watching its chat (followedBriefs.ts), which also runs after a restart.
+  if (row.follow && isOpenDelegation(row)) return { kind: "wait" };
   if (isOpenDelegation(row)) {
     if (!look.child)
       return {
@@ -410,9 +423,47 @@ export class DelegationTracker {
     if (!row) return;
     this.rows.set(row.id, row);
     this.requests.set(key(row.ownerSession, row.requestId), row.id);
-    if (isOpenDelegation(row)) this.openChildren.set(row.childSession, row.id);
+    // A followed brief never re-attaches to a turn in its chat (the watcher reports it), so it isn't "the row this
+    // chat works for" either.
+    if (isOpenDelegation(row) && !row.follow) this.openChildren.set(row.childSession, row.id);
     else if (this.openChildren.get(row.childSession) === row.id)
       this.openChildren.delete(row.childSession);
+  }
+
+  /** The followed briefs still open (followedBriefs.ts watches their chats). */
+  openFollowed(): Delegation[] {
+    return [...this.rows.values()].filter((row) => !!row.follow && isOpenDelegation(row));
+  }
+
+  /** Every row this window knows. */
+  known(): Delegation[] {
+    return [...this.rows.values()];
+  }
+
+  /** A followed brief is done: settle it and queue its report to the owner, once (its receipt dedupes). */
+  settleFollowed(row: Delegation, result: MonoSessionCompletionResult, by = "watch"): Promise<boolean> {
+    return this.serial(async () => {
+      const change = await this.backend.settle(settleInput(row, result, by));
+      this.remember(change.row);
+      if (change.applied && change.row) await this.report(change.row, result);
+      return change.applied;
+    });
+  }
+
+  /** A followed brief that can't go on (taken out of the queue, its chat gone): cancelled, its owner told nothing. */
+  cancelFollowed(row: Delegation, reason: string, by = "watch"): Promise<void> {
+    return this.serial(async () => {
+      for (const entry of await this.backend.cancel([row.id], reason, by)) this.remember(entry);
+    });
+  }
+
+  /** Refresh one row from the store (another window, or the Rust side, may have moved it). */
+  refresh(ids: string[], ownerSession: string): Promise<Delegation[]> {
+    return this.serial(async () => {
+      const rows = await this.backend.owned({ ownerSession, ids });
+      rows.forEach((row) => this.remember(row));
+      return rows;
+    });
   }
 
   /** The rows still running or owed are loaded (boot), so `openRowFor` is complete. */

@@ -290,6 +290,12 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(noteCard ? { noteCard } : {}),
         ...(handoffCard ? { handoffCard } : {}),
         ...(completion ? { monoSessionCompletion: completion } : {}),
+        // An app brief's request id and "wait behind the current work" survive a restart with it.
+        ...(typeof message.appRequestId === "string" &&
+        isPersistableId(message.appRequestId)
+          ? { appRequestId: message.appRequestId }
+          : {}),
+        ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )

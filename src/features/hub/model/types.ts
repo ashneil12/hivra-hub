@@ -253,8 +253,11 @@ export type ChatMessage = {
   quiet?: boolean;
   /** The Need or stuck item this message is about (same data as Today). */
   refId?: string;
-  /** Why this Mono spoke: how the answerer was picked, or that it chimed in or was addressed (behind its name). */
-  pick?: { by: "mention" | "only" | "named" | "router" | "lanes" | "chime" | "addressed"; why: string };
+  /**
+   * Why this Mono spoke: how the answerer was picked, or that it chimed in or was addressed (behind its name). "report":
+   * a Lead's report on a brief from the room's leadership team, or the briefing Mono's answer to it (roomReports.ts).
+   */
+  pick?: { by: "mention" | "only" | "named" | "router" | "lanes" | "chime" | "addressed" | "report"; why: string };
 };
 
 export type ChatConversation = {

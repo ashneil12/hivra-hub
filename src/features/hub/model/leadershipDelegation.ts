@@ -1,14 +1,16 @@
-// The seam for double delegation (HUB-PLAN phase 3: leadership team -> project Lead -> subagents, with reports back).
-// Not built here: it needs the delegate tool (PHASE-2-DESIGN H3, `delegate_task` on MonoCode's app control). What this
-// branch provides, and H3 plugs into:
-// - who a leadership Mono may hand work to (`leadTargetsFor`): the Leads of the projects it is a member of. Team
+// Double delegation (HUB-PLAN phase 3; Ash 19 Oct: "the leadership team will delegate to a coding hub, and then the
+// coding hub would actually do the delegation ... just report back to the leadership team"):
+// leadership team -> project Lead -> workers, with the Lead's report coming back.
+// - who a leadership Mono may brief (`leadTargetsFor`): the Lead of each project both of them are members of. Team
 //   membership is set by hubTeam.tieTeamToProjects, so this is also the allowlist the app control already enforces
 //   (a Mono only reaches sessions in its own projects);
-// - the brief's shape (`LeadBrief` / `formatLeadBrief`), as Chief of Staff's soul describes it, so a brief sent by
-//   `delegate_task` reads the same as one written by hand;
-// - one registration point (`setLeadDelegator`) for H3's implementation, and `leadDelegationReady` for callers.
-// Until H3 lands, a team Mono reaches a Lead the way any Mono reaches a project session (app sessions.send with
-// notifyOnComplete, refused while the Lead is busy); queuing briefs to a busy Lead is H3's job.
+// - the brief's shape (`LeadBrief` / `formatLeadBrief` as Chief of Staff's soul describes it, or `leadBriefPrompt` for
+//   a brief written through the delegate tool);
+// - one registration point (`setLeadDelegator`): the app's implementation (App.tsx) sends the brief into the Lead's own
+//   long-running chat (queued behind its work, or steered into it) as a stored delegation row with the leadership Mono
+//   as owner (follow "lead", monos/model/followedBriefs.ts), and the Lead's final report returns through the H2
+//   report-back path to the briefing Mono's chat and its project's Leadership room (roomReports.ts).
+// The delegate tool reaches it with `delegate_task {lead}` (agent-app/model/agentAppTasks.ts).
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { isDefaultTeamMono } from "./builtInMonos";
 import { LEADS, leadMono } from "./hubLeads";
@@ -25,7 +27,10 @@ export type LeadTarget = {
   sessionId?: string;
 };
 
-/** The Leads a Mono may brief: one per project it is a member of (by folder), never the global memory. */
+/**
+ * The Leads a Mono may brief: one per project it is a member of (by folder), whose Lead is a member of it too, never
+ * the global memory.
+ */
 export function leadTargetsFor(monoId: string, projects: readonly HubProject[]): LeadTarget[] {
   const from = listMonos().find((m) => m.id === monoId);
   if (!from) return [];
@@ -34,6 +39,7 @@ export function leadTargetsFor(monoId: string, projects: readonly HubProject[]):
     const project = projects.find((p) => p.id === spec.projectId);
     const lead = leadMono(spec);
     if (!project?.folder || !lead || lead.id === monoId || !monoWorksOn(from, project.folder)) return [];
+    if (!monoWorksOn(lead, project.folder)) return [];
     return [{ leadId: lead.id, leadName: lead.name?.trim() || spec.name, projectId: spec.projectId, folder: project.folder, ...(lead.sessionId ? { sessionId: lead.sessionId } : {}) }];
   });
 }
@@ -66,8 +72,53 @@ export function formatLeadBrief(from: string, brief: LeadBrief): string {
   ].join("\n");
 }
 
-/** H3's implementation: hand a brief to a Lead and report back to the sender. */
-export type LeadDelegator = (input: { fromMonoId: string; target: LeadTarget; brief: LeadBrief }) => Promise<{ taskId: string }>;
+/** The Lead a Mono names ("hub", "MonoCode Hub", "MonoCode Hub lead", "hub-lead"), among the ones it may brief. */
+export function findLeadTarget(monoId: string, projects: readonly HubProject[], named: string): LeadTarget | undefined {
+  const want = named.trim().toLowerCase();
+  const targets = leadTargetsFor(monoId, projects);
+  return targets.find((t) => {
+    const project = projects.find((p) => p.id === t.projectId);
+    const names = [t.leadId, t.leadName, t.projectId, project?.name, project?.shortName, project?.name && `${project.name} lead`];
+    return names.some((name) => !!name && name.toLowerCase() === want);
+  });
+}
+
+/**
+ * A brief written through the delegate tool, for a Lead: Ash's words and the job, what done looks like, and how a Lead
+ * works it. "Done looks like" (not "Done when") on purpose: a Lead's chat is long-running and serves many briefs, so no
+ * /goal is set there (its workers get one each, claudeGoal.ts).
+ */
+export function leadBriefPrompt(from: string, brief: string, done?: string): string {
+  return [
+    `[MonoCode brief from ${from}]`,
+    brief.trim(),
+    ...(done ? [`Done looks like: ${done.trim()}`] : []),
+    `How: you are this project's Lead. Hand the work to your own workers with delegate_task (async) and review their reports. Your reply once they have all reported is what goes back to ${from}: lead with the outcome, then the evidence (the commit, the check that ran, a screenshot or served URL) and what is not verified.`,
+  ].join("\n\n");
+}
+
+/** What a brief to a Lead carries when it comes through the delegate tool (the app fills in the rest). */
+export type LeadDelegation = {
+  fromMonoId: string;
+  target: LeadTarget;
+  brief: LeadBrief | string;
+  /** The briefing Mono's own chat: the row's owner. */
+  ownerSession?: string;
+  /** The app request id (`app-<owner>-<clientRequestId>`): the row's request and the brief's id in the Lead's chat. */
+  requestId?: string;
+  title?: string;
+  goal?: string;
+  askIds?: string[];
+  /** A busy Lead: queue behind its work (default) or steer into it. */
+  mode?: "queue" | "steer";
+};
+
+/** The app's implementation: hand a brief to a Lead and report back to the sender. */
+export type LeadDelegator = (input: LeadDelegation) => Promise<{
+  taskId: string;
+  childSessionId?: string;
+  delivery?: "started" | "queued" | "steered";
+}>;
 let delegator: LeadDelegator | undefined;
 export function setLeadDelegator(next: LeadDelegator): () => void {
   delegator = next;
@@ -78,10 +129,18 @@ export function setLeadDelegator(next: LeadDelegator): () => void {
 export function leadDelegationReady(): boolean {
   return !!delegator;
 }
-/** Hand a brief to a Lead the sender may reach. Refused until H3 registers a delegator, and for any other target. */
-export function delegateToLead(fromMonoId: string, target: LeadTarget, brief: LeadBrief, projects: readonly HubProject[]): Promise<{ taskId: string }> {
+/** Hand a brief to a Lead the sender may reach. Refused until the app registers a delegator, and for any other target. */
+export function delegateToLead(
+  fromMonoId: string,
+  target: LeadTarget,
+  brief: LeadBrief | string,
+  projects: readonly HubProject[],
+  extra: Omit<LeadDelegation, "fromMonoId" | "target" | "brief"> = {},
+): ReturnType<LeadDelegator> {
   if (!delegator) return Promise.reject(new Error("Delegating to a Lead isn't connected yet."));
+  if (!briefsLeads(fromMonoId))
+    return Promise.reject(new Error("Only the leadership team briefs a project's Lead. A Lead hands work to its own workers."));
   if (!leadTargetsFor(fromMonoId, projects).some((t) => t.leadId === target.leadId && t.projectId === target.projectId))
     return Promise.reject(new Error("That Lead isn't in one of your projects."));
-  return delegator({ fromMonoId, target, brief });
+  return delegator({ fromMonoId, target, brief, ...extra });
 }

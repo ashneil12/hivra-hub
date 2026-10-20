@@ -4,10 +4,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { pickRule } from "./fake-claude.mjs";
+import { pickRule, withLastStarted } from "./fake-claude.mjs";
 import {
   CONTINUE,
   KICKOFF,
+  QUEUED,
   SUBAGENT_ID,
   WORKER,
   exitCode,
@@ -34,6 +35,23 @@ test("the walk's scenario sends each prompt to the right role", () => {
   assert.equal(kickoff.steps.find((step) => step.app).input.prompt.includes(KICKOFF), false, "the worker's brief can't look like a kickoff");
   const worker = rules.find((rule) => rule.name === "worker");
   assert.ok(worker.steps.some((step) => step.background?.id === SUBAGENT_ID));
+});
+
+test("the Lead's second brief goes to the worker it started, once the worker is busy, and matches no worker rule", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const kickoff = rules.find((rule) => rule.name === "lead-kickoff");
+  const at = (pred) => kickoff.steps.findIndex(pred);
+  const send = kickoff.steps.find((step) => step.app === "sessions.send");
+  assert.ok(at((step) => step.waitFile === "worker-busy") < at((step) => step.app === "sessions.send"));
+  assert.ok(at((step) => step.app === "sessions.start") < at((step) => step.waitFile === "worker-busy"));
+  assert.deepEqual(withLastStarted(send.input, "app-lead-r9"), {
+    sessionId: "app-lead-r9",
+    prompt: send.input.prompt,
+    notifyOnComplete: true,
+  });
+  assert.ok(send.input.prompt.startsWith(QUEUED));
+  assert.equal(pickRule(rules, send.input.prompt, [], {})?.name ?? null, null);
+  assert.equal(withLastStarted({ a: ["{{lastStarted}}"] }, null).a[0], "{{lastStarted}}", "nothing started: left as is");
 });
 
 test("the negative control plants a failure the walk must notice", () => {

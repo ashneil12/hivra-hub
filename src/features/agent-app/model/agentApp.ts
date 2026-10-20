@@ -94,6 +94,11 @@ import {
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
 import {
+  sendMode,
+  type Delivery,
+  type SendMode,
+} from "../../monos/model/followedBriefs";
+import {
   handleTasks,
   TASK_FIELDS,
   type AgentAppTasksHost,
@@ -108,6 +113,16 @@ export type AppSessionListing = {
   busy: boolean;
   hasDraft: boolean;
   archived: boolean;
+};
+
+/** A brief the caller sent that waits in another chat's queue (sessions.queue). */
+export type QueuedBrief = {
+  sessionId: string;
+  title: string;
+  requestId: string;
+  /** Its place in that chat's queue, from 1. */
+  position: number;
+  prompt: string;
 };
 
 export type AppSessionPlacement = {
@@ -132,7 +147,15 @@ export type AgentAppHost = {
     prompt: string,
     requestId: string,
     notifyMonoId?: string,
-  ): Promise<{ alreadySubmitted: boolean }>;
+    /** A busy target: queue behind its work (auto, queue) or steer into it (steer). */
+    mode?: SendMode,
+  ): Promise<{ alreadySubmitted: boolean; delivery?: Delivery }>;
+  /**
+   * The briefs `caller` sent that still wait in a chat's queue (sessions.queue), in every project it reaches or one
+   * session; `unqueue` takes one back out (its request id, as sessions.send got it).
+   */
+  queued?(caller: string, sessionId?: string): Promise<QueuedBrief[]>;
+  unqueue?(caller: string, requestId: string): Promise<boolean>;
   draft(
     id: string,
     prompt: string,
@@ -223,7 +246,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["models.list", []],
   ["sessions.list", ["project"]],
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
-  ["sessions.send", ["sessionId", "prompt", "project", "notifyOnComplete"]],
+  ["sessions.send", ["sessionId", "prompt", "project", "notifyOnComplete", "mode"]],
+  ["sessions.queue", ["sessionId", "project", "cancel"]],
   ["sessions.draft", ["sessionId", "prompt", "project"]],
   ["sessions.stop", ["sessionId", "project"]],
   ["sessions.archive", ["sessionId", "project"]],
@@ -1183,17 +1207,48 @@ export async function handleAgentApp(
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
         throw new Error("Invalid request ID");
       await projectSession(source, id, input, host);
+      // A busy session takes the brief behind its work, or into it when asked: the sender hears which, never "busy".
+      const mode = sendMode(input.mode);
       const result = await host.send(
         id,
         prompt,
         `app-${source.id}-${requestId}`,
-        ...(notifyMonoId ? [notifyMonoId] : []),
+        ...(notifyMonoId || mode !== "auto" ? [notifyMonoId] : []),
+        ...(mode !== "auto" ? [mode] : []),
       );
       return {
         sessionId: id,
         submitted: true,
         ...result,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
+        ...(result.delivery === "queued"
+          ? { note: "Queued behind that session's current work; it goes in as its own turn when the session is idle. sessions.queue lists or cancels it." }
+          : result.delivery === "steered"
+            ? { note: "Steered into that session's running turn." }
+            : {}),
+      };
+    }
+    case "sessions.queue": {
+      if (!host.queued || !host.unqueue)
+        throw new Error("This build can't list queued briefs");
+      const cancel = optionalString(input.cancel, "cancel", 300);
+      if (cancel !== undefined) {
+        // The caller's own request ids only: sessions.send gave it `app-<caller>-<id>`, and either form is accepted.
+        const own = cancel.startsWith(`app-${source.id}-`) ? cancel : `app-${source.id}-${cancel}`;
+        if (!/^[A-Za-z0-9_-]{1,300}$/.test(own)) throw new Error("Invalid request ID");
+        const removed = await host.unqueue(source.id, own);
+        if (!removed)
+          throw new Error(
+            "No queued brief of yours with that request id. It may have gone in already: sessions.queue lists what still waits.",
+          );
+        return { cancelled: own };
+      }
+      const sessionId = optionalString(input.sessionId, "sessionId", 256);
+      if (sessionId !== undefined) await projectSession(source, sessionId, input, host);
+      const briefs = await host.queued(source.id, sessionId);
+      return {
+        briefs,
+        ...(briefs.length ? {} : { note: "Nothing of yours is waiting in a queue." }),
       };
     }
     case "sessions.draft": {

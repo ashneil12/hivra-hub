@@ -98,6 +98,11 @@ describe("canSteerQueuedHead", () => {
       ),
     ).toBe(true);
   });
+  it("never steers a brief its sender queued behind the current work; it waits for an idle chat", () => {
+    const brief = { ...queued("app-cos-b1", "brief"), appRequestId: "app-cos-b1", waitForIdle: true };
+    expect(canSteerQueuedHead(chat({ busy: true, turnReady: true, queuedMessages: [brief] }))).toBe(false);
+    expect(canDispatchQueuedHead(chat({ queuedMessages: [brief] }))).toBe(true);
+  });
   it("holds during startup and allows delivery once the busy turn is ready", () => {
     expect(canSteerQueuedHead(chat({ busy: true }))).toBe(false);
     expect(canSteerQueuedHead(chat({ busy: true, turnReady: true }))).toBe(

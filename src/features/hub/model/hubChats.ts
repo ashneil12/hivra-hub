@@ -561,6 +561,85 @@ async function runExchange(chatId: string, convId: string, r: RoomState): Promis
   }
 }
 
+/**
+ * A Lead's report on a brief from a leadership Mono lands in the room (double delegation, roomReports.ts): the Lead's
+ * report, then the briefing Mono's answer to it, which was its own turn on the report in its chat (the H2 report-back
+ * path), so the room's "one answers" holds. Then, as for Ash's messages, each other member may add at most one new
+ * reply (NO_REPLY is never posted), under the turn cap, with one turn in flight per room. Posting the same report again
+ * changes nothing (its id is the report's receipt).
+ */
+export async function postReport(
+  chatId: string,
+  report: { id: string; from: string; text: string; answeredBy: string; answer: string; why: string },
+): Promise<boolean> {
+  const chat = getChat(chatId);
+  if (!chat || !chat.memberIds.includes(report.answeredBy)) return false;
+  if (chat.conversations.some((c) => c.messages.some((m) => m.id === report.id))) return false;
+  const pick = { by: "report" as const, why: report.why };
+  const posted: ChatMessage[] = [
+    { id: report.id, from: report.from, text: report.text.trim() || "(the Lead finished without a written report)", pick },
+    ...(report.answer.trim() && !isSilent(report.answer)
+      ? [{ id: `${report.id}-answer`, from: report.answeredBy, text: report.answer, pick }]
+      : []),
+  ];
+  const latest = chat.conversations[0];
+  const convId = latest?.id ?? `conv-${Date.now().toString(36)}-report`;
+  chats = chats.map((c) => {
+    if (c.id !== chatId) return c;
+    if (!latest)
+      return { ...c, conversations: [{ id: convId, when: "Today", title: autoTitle(`Report: ${report.why}`), messages: posted }] };
+    return { ...c, conversations: c.conversations.map((x) => (x.id === convId ? { ...x, messages: [...x.messages, ...posted] } : x)) };
+  });
+  changed();
+  const r = room(chatId);
+  if (r.running || !runner || posted.length < 2) return true;
+  r.running = true;
+  try {
+    await reportChimes(chatId, convId, report.answeredBy, report.text);
+  } finally {
+    r.running = false;
+  }
+  // Ash may have written meanwhile: his messages get their exchanges now, in order.
+  const waiting = r.pending.splice(0);
+  if (waiting.length)
+    void (async () => {
+      for (const id of waiting) await requestReply(chatId, id);
+    })();
+  return true;
+}
+
+async function reportChimes(chatId: string, convId: string, answeredBy: string, reportText: string): Promise<void> {
+  const chat = getChat(chatId);
+  if (!chat || !runner) return;
+  const seats = seatsOf(chat);
+  const me = seats.find((s) => s.id === answeredBy);
+  if (!me || seats.length < 2) return;
+  const nameOf = (id: string) => seats.find((s) => s.id === id)?.name ?? listMonos().find((m) => m.id === id)?.name ?? id;
+  const transcript = () => roomTranscript(getChat(chatId)?.conversations.find((c) => c.id === convId)?.messages ?? [], nameOf);
+  let chimes: Chime[] | undefined;
+  if (router) {
+    const out = await askRouter(chimePrompt(seats, me, transcript()));
+    chimes = out === undefined ? undefined : parseChimes(out, seats, me.id);
+  }
+  chimes ??= laneChimes(reportText, seats, me.id);
+  let turns = 1;
+  for (const c of chimes) {
+    if (turns >= BOT_TURN_CAP) break;
+    const seat = seats.find((s) => s.id === c.id);
+    if (!seat) continue;
+    setTyping(chatId, seat.id);
+    let reply = "";
+    try {
+      reply = await runner(seat.id, turnPrompt({ chatName: chat.name, projectId: chat.projectId, me: seat, seats, kind: "chime", other: me.name, transcript: transcript() }));
+    } catch {
+      // A chime-in that can't run (busy, failed) is dropped quietly, as in any exchange.
+    }
+    setTyping(chatId, undefined);
+    turns++;
+    if (reply.trim() && !isSilent(reply)) addReply(chatId, seat.id, reply, true, convId, { by: "chime", why: c.why });
+  }
+}
+
 /** Restore exported chats without duplicating an existing conversation. */
 export function importChats(imported: GroupChat[]): void {
   const present = new Set(chats.map((c) => c.id));

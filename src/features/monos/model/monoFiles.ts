@@ -340,12 +340,20 @@ export function monoProjectsBrief(look: Pick<MonoLook, "projects">): string {
  */
 export const DELEGATE_RULES = `<delegate_rules>\nYou have MonoCode's delegate tool: delegate_task, task_status, task_wait, task_cancel and task_answer (the monocode MCP server). Ash talks to you, and the asks in his messages are yours to see through, so work like this:\n1. Record first. When Ash asks for things, record his asks with ash_record, quoting his own words, before you act, so each ask has an id and is yours. Never drop one: a message with several asks gets every one recorded.\n2. Delegate with the asks. Hand a substantial piece of work to a worker with delegate_task rather than app sessions.start: put Ash's own words and the full context in brief (the worker sees nothing else), the ask ids it covers in asks, and the finish line in goal. The task is stored, its worker's chat shows nested under yours, and its report reaches you even across restarts. Give parallel workers separate worktrees (isolation "worktree") or disjoint files.\n3. End the turn. After an async delegation, tell Ash in one line what you started and end your turn: don't poll, wait or do the delegated work yourself. The report comes back as a new turn starting with [MonoCode report]. Use mode "wait" only for a short job whose result you need in this same turn.\n4. Review the report. Check its evidence yourself (the check run, commit, screenshot or served URL) before you believe it; for gaps, delegate again with the brief, the findings and what is still missing.\n5. Close with evidence. Only then mark each ask done with ash_update_ask and the evidence.\nYour workers' questions come to you first, never to Ash: answer from the brief or Ash's words with task_answer. Only a real choice that only Ash can make goes to him, once, with your recommendation (ash_ask_ash). task_status reads results (a result read there is not reported again), task_cancel stops a task and drops its report.\n</delegate_rules>`;
 
+/**
+ * The leadership team's way to hand work to a project (double delegation, hub/model/leadershipDelegation.ts): brief the
+ * project's Lead, who delegates to its own workers and reports back. `leads`: the Leads this Mono may brief.
+ */
+export function leadBriefRules(leads: readonly string[]): string {
+  return `<lead_brief_rules>\nYou are on the leadership team: you hand a project's work to its Lead, not to a worker of your own. Brief one with delegate_task and "lead" set to the project (the Leads you can brief: ${leads.join(", ")}): Ash's own words and the outcome in brief, what done looks like in goal, the ask ids in asks. The brief goes into the Lead's own long-running chat; if the Lead is mid-turn it waits behind that work (whenBusy "steer" puts it into the running turn instead, only when it can't wait). The Lead delegates to its workers; its final report comes back to you as one [MonoCode report] turn, and it also shows in that project's Leadership room with your answer, so answer it as you would Ash there. task_status and task_cancel work on these like any task.\n</lead_brief_rules>`;
+}
+
 /** The blocks this turn adds to the user's message. `delegate`: this chat has the delegate tool. */
 export function monoContext(
   look: MonoLook,
   files: MonoFiles,
   plan: AgentContextPlan,
-  options: { delegate?: boolean } = {},
+  options: { delegate?: boolean; leads?: readonly string[] } = {},
 ): string {
   const parts: string[] = [];
   if (plan.soul) {
@@ -361,6 +369,7 @@ export function monoContext(
       `<session_completion_rules>\nSessions you start through app sessions.start open in the background so the user can stay in this chat. Submitted sessions notify you on completion by default: tell the user the work has started and that you will report back when it finishes. Sessions you monitor during the same Mono turn form one group. MonoCode waits for every session in that group to stop, including failures and cancellations, then sends you all their results together as a new turn once you are idle. Review the full set and give one consolidated report, rather than reporting each session separately. Sessions launched during later turns form separate groups. Only when the user asks not to receive a completion report, set "notifyOnComplete":false on sessions.start and do not promise one. Unsent drafts do not run or notify. For app sessions.send to an existing session, include "notifyOnComplete":true when delegating part of the current task or when the user asks you to report back on that follow-up, unless they have opted out of completion reports. If you successfully stop, archive or delete a monitored session yourself, acknowledge the action in your current reply; MonoCode dismisses your pending report for that session, so do not promise another update about it. Rejected launches or follow-ups are reported by the CLI in this turn and do not generate a later completion notification. Calls still return immediately after acceptance. After completing launch and organization steps, acknowledge the handoff and end your turn; do not keep working on the delegated task, polling or waiting. Inspect the results and report back when notified.\n</session_completion_rules>`,
     );
     if (options.delegate) parts.push(DELEGATE_RULES);
+    if (options.delegate && options.leads?.length) parts.push(leadBriefRules(options.leads));
   }
   if (plan.memory) {
     const budget = memoryWithinBudget(files.memory);

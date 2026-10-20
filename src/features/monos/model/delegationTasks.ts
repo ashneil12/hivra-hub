@@ -26,6 +26,10 @@ export type DelegationTasksDeps = {
   hubProjectFolder?(id: string): string | undefined;
   nextChange?(ms: number): Promise<void>;
   now?(): number;
+  /** Take a followed brief back out of its chat's queue, if it still waits there (followedBriefs.ts). */
+  unqueue?(childSession: string, requestId: string): void;
+  /** Leadership team: brief a project's Lead (App.tsx, through leadershipDelegation.ts). */
+  briefLead?: AgentAppTasksHost["briefLead"];
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -50,6 +54,12 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       await tracker().cancelOwned(owner, [row], reason);
       const stopFailed: string[] = [];
       const child = deps.session(row.childSession);
+      // A followed brief went to a chat that has other work (a Lead's own chat, a busy session): it is taken out of
+      // the queue if it still waits there, and that chat is never stopped for it.
+      if (row.follow) {
+        deps.unqueue?.(row.childSession, row.requestId);
+        return { stopFailed };
+      }
       if (isOpenDelegation(row) && child?.busy) {
         try {
           await deps.stop(row.childSession);
@@ -81,6 +91,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         ...(session.busy ? { lastActiveAt: (deps.now ?? Date.now)() } : {}),
       };
     },
+    ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.now ? { now: deps.now } : {}),

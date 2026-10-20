@@ -54,6 +54,8 @@ export function canSteerQueuedHead(session: Session): boolean {
   return (
     !!head &&
     !head.monoSessionCompletion &&
+    // A brief its sender queued behind the current work waits for an idle chat.
+    !head.waitForIdle &&
     !!session.busy &&
     !!session.turnReady &&
     !session.worktreePreparing &&

@@ -40,7 +40,7 @@ import type { AgentAppHost } from "./agentApp";
 export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   [
     "tasks.delegate",
-    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation"],
+    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "lead", "whenBusy"],
   ],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
@@ -95,6 +95,29 @@ export type AgentAppTasksHost = {
   hubProjectFolder?(id: string): string | undefined;
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
+  /**
+   * Leadership team: brief a project's Lead in its own long-running chat instead of starting a worker (double
+   * delegation, hub/model/leadershipDelegation.ts). `lead` is what the Mono named; the host finds it among the Leads
+   * this Mono may brief, records the row (owner: this chat, child: the Lead's chat) and sends the brief in.
+   */
+  briefLead?(
+    owner: Session,
+    mono: { id: string; name?: string },
+    input: {
+      lead: string;
+      requestId: string;
+      brief: string;
+      title: string;
+      goal?: string;
+      askIds: string[];
+      mode: "queue" | "steer";
+    },
+  ): Promise<{
+    row: Delegation | null;
+    childSessionId: string;
+    delivery: "started" | "queued" | "steered";
+    leadName: string;
+  }>;
 };
 
 /** What agentApp.ts lends the task actions (its own launch rules, so a delegation starts exactly like sessions.start). */
@@ -317,6 +340,10 @@ async function delegate(
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
   const goal = input.goal === undefined ? undefined : text(input.goal, "goal", 1_000);
+  if (input.lead !== undefined)
+    return briefLead(source, mono, tasks, { requestId, brief, title, asks, goal, input });
+  if (input.whenBusy !== undefined)
+    throw new Error("whenBusy is for a brief to a Lead (lead); a worker starts in a chat of its own");
   const isolation = input.isolation ?? "shared";
   if (isolation !== "shared" && isolation !== "worktree")
     throw new Error('isolation must be "shared" or "worktree"');
@@ -361,6 +388,56 @@ async function delegate(
       : {
           note: "It started, but its task record could not be stored; its report still comes back to you.",
         }),
+  };
+}
+
+/** delegate_task {lead}: the leadership team briefs a project's Lead (double delegation); its report comes back later. */
+async function briefLead(
+  source: Session,
+  mono: { id: string; name?: string },
+  tasks: AgentAppTasksHost,
+  job: {
+    requestId: string;
+    brief: string;
+    title: string;
+    asks: string[];
+    goal?: string;
+    input: Record<string, unknown>;
+  },
+) {
+  const { input } = job;
+  if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  const lead = text(input.lead, "lead", 200);
+  for (const field of ["project", "model", "effort", "isolation"] as const)
+    if (input[field] !== undefined)
+      throw new Error(
+        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
+      );
+  const whenBusy = input.whenBusy ?? "queue";
+  if (whenBusy !== "queue" && whenBusy !== "steer")
+    throw new Error('whenBusy must be "queue" or "steer"');
+  const out = await tasks.briefLead(source, mono, {
+    lead,
+    // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
+    requestId: `app-${source.id}-${job.requestId}`,
+    brief: job.brief,
+    title: job.title,
+    ...(job.goal ? { goal: job.goal } : {}),
+    askIds: job.asks,
+    mode: whenBusy,
+  });
+  return {
+    taskId: out.row?.id ?? null,
+    childSessionId: out.childSessionId,
+    status: out.row?.state ?? "running",
+    title: job.title,
+    lead: out.leadName,
+    delivery: out.delivery,
+    note:
+      out.delivery === "queued"
+        ? `Queued behind ${out.leadName}'s current work; it goes in as its own turn when ${out.leadName} is idle. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`
+        : `Briefed ${out.leadName}${out.delivery === "steered" ? " (steered into its running turn)" : ""}. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`,
+    ...(out.row ? {} : { note: "It went in, but its task record could not be stored; its report may not come back." }),
   };
 }
 

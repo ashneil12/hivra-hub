@@ -4,7 +4,8 @@
 // (scripts/fake-claude.mjs), under a throwaway HOME, and walks the delegation chain through real restarts:
 //
 //   1. a Lead (a Mono) delegates a worker with `monocode app sessions.start` (an H2 delegation row);
-//   2. the worker runs and leaves a subagent going in the background;
+//   2. the worker runs and leaves a subagent going in the background; the Lead sends it one more brief meanwhile, which
+//      queues behind the worker's work (a followed row, "queued" back to the Lead) instead of failing as busy;
 //   3. the app is killed mid-turn and started again: the worker resumes by itself with the note naming the subagent;
 //   4. the worker's report wakes the Lead;
 //   5. the Lead's Claude transcript is deleted while the app is down: it starts fresh from its brief;
@@ -42,6 +43,7 @@ export const WALK = [
   "lead_delegated",
   "delegation_mirrored",
   "worker_ran",
+  "brief_queued",
   "inflight_saved_background",
   "restart_resumed_with_note",
   "report_woke_lead",
@@ -54,6 +56,7 @@ class Halt extends Error {}
 export const SUBAGENT_ID = "verify-agent-1";
 export const KICKOFF = "VERIFY-LEAD-KICKOFF";
 export const WORKER = "VERIFY-WORKER";
+export const QUEUED = "VERIFY-QUEUED-BRIEF";
 export const CONTINUE = "Continue from where you left off";
 
 /** The fake Claude's rules for the walk. `failGate` plants the failure the negative control must catch. */
@@ -103,6 +106,13 @@ export function scenario({ runId, failGate = false }) {
           input: { prompt: `${WORKER} run ${runId}: do a small task and report back.`, notifyOnComplete: true },
         },
         { mark: "lead-delegated" },
+        // Once the worker is mid-turn (the walk opens this gate), one more brief to it: it must queue, not fail.
+        { waitFile: "worker-busy", timeoutMs: 180_000 },
+        {
+          app: "sessions.send",
+          input: { sessionId: "{{lastStarted}}", prompt: `${QUEUED} run ${runId}: one more small thing when you're free.`, notifyOnComplete: true },
+        },
+        { mark: "lead-queued" },
         { say: "Started it." },
       ],
     },
@@ -482,6 +492,32 @@ async function main() {
     // 2. The worker runs, with a subagent in the background, and its in-flight row says so.
     const workerStarted = await waitMark("worker-started", 90_000);
     (workerStarted ? pass : fail)("worker_ran", "The worker runs", workerStarted ? `conversation ${workerStarted.conversation}` : "no worker turn");
+    // The Lead's second brief to the busy worker queues behind its work (T3 "Briefs to a busy chat queue or steer").
+    fs.mkdirSync(path.join(fake, "gates"), { recursive: true });
+    fs.writeFileSync(path.join(fake, "gates", "worker-busy"), "");
+    const queuedMark = await waitMark("lead-queued", 60_000);
+    const sendCall = readNdjson(path.join(fake, "app-calls.ndjson")).find((entry) => entry.action === "sessions.send");
+    const followed = await until(async () => {
+      const found = await query(db, "SELECT id, child_session, state, follow FROM delegations WHERE follow = 'queue'");
+      return found.length ? found[0] : null;
+    }, scale(15_000));
+    const waiting = await until(async () => {
+      const raw = (await query(db, "SELECT queued_messages_json AS q FROM sessions WHERE id = ?", workerId))[0]?.q;
+      const parsed = raw ? JSON.parse(raw) : [];
+      return parsed.find((message) => message.waitForIdle && String(message.appRequestId ?? "").includes(leadId ?? "?")) ?? null;
+    }, scale(15_000));
+    if (queuedMark && sendCall?.response?.ok && sendCall.response.result?.delivery === "queued" && followed?.child_session === workerId && waiting)
+      pass(
+        "brief_queued",
+        "A brief to a busy session queues behind its work and the sender hears \"queued\"",
+        `sessions.send -> delivery ${sendCall.response.result.delivery}; followed row ${followed.id} (${followed.follow}, ${followed.state}); waiting in the worker's queue as ${waiting.appRequestId}`,
+      );
+    else
+      fail(
+        "brief_queued",
+        "A brief to a busy session queues behind its work and the sender hears \"queued\"",
+        `mark ${!!queuedMark}, response ${JSON.stringify(sendCall?.response ?? null)}, row ${JSON.stringify(followed)}, queued ${JSON.stringify(waiting)}`,
+      );
     const saved = await until(async () => {
       const rowsNow = await inFlight();
       const own = rowsNow.find((entry) => entry.session_id === workerId);
