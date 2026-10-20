@@ -26,7 +26,13 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
 import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { RailAction } from "./RailAction";
-import { saveMonosEnabled } from "../../features/settings/model/settings";
+import {
+  loadMonoRailCollapsed,
+  saveMonoRailCollapsed,
+  saveMonosEnabled,
+  subscribeMonoRailCollapsed,
+} from "../../features/settings/model/settings";
+import { StuckPanel } from "../../features/monos/ui/StuckPanel";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
 import {
@@ -176,14 +182,38 @@ export function MonoRailSection({
   );
   const ids = monos.map((mono) => mono.id);
   const sortable = useAnimatedReorder(ids, reorderMonos, "y");
-  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("monocode:mono-rail-collapsed") === "1"; } catch { return false; } });
-  const toggleCollapsed = () => setCollapsed((value) => {
-    try { localStorage.setItem("monocode:mono-rail-collapsed", value ? "0" : "1"); } catch { /* optional preference */ }
-    return !value;
-  });
+  // Folded or open, kept with the app's other preferences so it survives a restart (A9).
+  const collapsed = useSyncExternalStore(subscribeMonoRailCollapsed, loadMonoRailCollapsed, loadMonoRailCollapsed);
+  const toggleCollapsed = () => saveMonoRailCollapsed(!collapsed);
+  // "1 stuck" opens its workers beside the rail, answerable there (B6): one Mono's, or every Mono's from the folded header.
+  const [stuckPanel, setStuckPanel] = useState<{ monoId?: string; anchor: HTMLElement }>();
+  const toggleStuckPanel = (anchor: HTMLElement, monoId?: string) =>
+    setStuckPanel((open) => (open && open.anchor === anchor ? undefined : { monoId, anchor }));
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
+  // What each Mono has out (its workers live in its team, never listed here), read once for its line and the folded summary.
+  const workOf = (monoId: string) => {
+    const children = childChats.get(monoId) ?? [];
+    return {
+      attention: subChatAttention(children, now),
+      counts: countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now),
+    };
+  };
+  const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
+  const total: WorkCounts = { working: 0, asking: 0, stuck: 0 };
+  for (const { counts } of work.values()) {
+    total.working += counts.working;
+    total.asking += counts.asking;
+    total.stuck += counts.stuck;
+  }
+  const allStuck = [...work.values()].flatMap(({ attention }) => [...attention.stuck.values()]).sort((a, b) => a.since - b.since);
+  const panelStuck = stuckPanel
+    ? stuckPanel.monoId
+      ? [...(work.get(stuckPanel.monoId)?.attention.stuck.values() ?? [])].sort((a, b) => a.since - b.since)
+      : allStuck
+    : [];
+  const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
 
@@ -229,16 +259,21 @@ export function MonoRailSection({
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
           aria-label={collapsed ? "Expand Monos" : "Collapse Monos"}
-          className={`flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-content${
+          className={`flex items-center gap-1 rounded text-left hover:text-content ${
+            collapsed && workSplit(total) ? "shrink-0" : "min-w-0 flex-1"
+          }${
             project ? "" : " px-1 text-xs leading-5 text-content/50"
           }`}
         >
           <ChevronDown
             className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
-          <span className="truncate">Monos</span>
-          {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
+          <span className={collapsed ? "shrink-0" : "truncate"}>Monos</span>
+          {collapsed && !workSplit(total) ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
         </button>
+        {collapsed && workSplit(total) ? (
+          <FoldedWorkSummary counts={total} stuck={allStuck} onOpenStuck={(anchor) => toggleStuckPanel(anchor)} />
+        ) : null}
         {monos.length ? (
           <button
             type="button"
@@ -310,11 +345,9 @@ export function MonoRailSection({
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
             : "No projects yet";
-          const children = childChats.get(mono.id) ?? [];
           // What it has out, split (Ash, 20 Oct): "2 working · 1 asking · 1 stuck". Idle shows nothing else, unless it
           // waits on something (a watched pull request's CI); busy, its own status first, then what is stuck.
-          const attention = subChatAttention(children, now);
-          const counts = countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now);
+          const { attention, counts } = work.get(mono.id) ?? workOf(mono.id);
           const stuckSplit = workSplit({ ...counts, working: 0 });
           // Open team sits on the row only while the Mono has work out (with its line under it): a Mono with nothing out
           // looks exactly as it always did, on hover too (Ash's shipped rail, 20 Oct); its menu still opens the team.
@@ -459,12 +492,23 @@ export function MonoRailSection({
                 // The work lives in its team; a Mono with none (it only briefed coding teams) opens its chat, where
                 // each brief has its line.
                 onOpen={() => (team ? openTeam(team) : onOpen(mono.id))}
+                onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
             ) : null}
             </Fragment>
           );
         })}
       </div>
+      {stuckPanel ? (
+        <StuckPanel
+          anchor={stuckPanel.anchor}
+          title={panelMono ? monoLook(panelMono).name : "Monos"}
+          stuck={panelStuck}
+          now={now}
+          showLead={!stuckPanel.monoId}
+          onClose={() => setStuckPanel(undefined)}
+        />
+      ) : null}
       {menu ? (
         <MonoMenu
           key={menu.id}
@@ -511,6 +555,7 @@ function MonoWorkLine({
   stuck,
   team,
   onOpen,
+  onOpenStuck,
 }: {
   monoId: string;
   name: string;
@@ -518,6 +563,8 @@ function MonoWorkLine({
   stuck: readonly StuckWorker[];
   team?: TeamTarget;
   onOpen: () => void;
+  /** "1 stuck" opens its stuck workers beside the rail, each answerable there (B6). */
+  onOpenStuck: (anchor: HTMLElement) => void;
 }) {
   const failed = stuck.some((s) => s.kind === "failed");
   const short = shortSplit(counts);
@@ -532,25 +579,98 @@ function MonoWorkLine({
       data-mono-work={monoId}
       data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
     >
-      <button
-        type="button"
-        title={[workSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
-        aria-label={`${workSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
-        onClick={onOpen}
-        className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/45 hover:bg-content/6 hover:text-content"
-      >
-        <Mark
-          aria-hidden
-          className={`size-3.5 shrink-0 ${markColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
-          strokeWidth={1.75}
-        />
-        <span className="min-w-0 truncate" data-mono-work-split>
-          {short.working ? <span>{short.working} working</span> : null}
+      {/* The line is two targets: what is working opens its team; "1 stuck" opens the stuck workers to answer them. */}
+      <span className="flex min-w-0 flex-1 items-center text-[12px] text-content/45" data-mono-work-split>
+        <button
+          type="button"
+          title={[workSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
+          aria-label={`${workSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
+          onClick={onOpen}
+          className={`flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-content/6 hover:text-content${
+            short.stuck ? " shrink" : " flex-1"
+          }`}
+        >
+          <Mark
+            aria-hidden
+            className={`size-3.5 shrink-0 ${markColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
+            strokeWidth={1.75}
+          />
+          {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
           {short.working && short.stuck ? <span aria-hidden> · </span> : null}
-          {short.stuck ? <span className={stuckColor}>{short.stuck} stuck</span> : null}
-        </span>
-      </button>
+        </button>
+        {short.stuck ? (
+          <StuckButton count={short.stuck} color={stuckColor} label={`See what is stuck for ${name}`} onOpen={onOpenStuck} />
+        ) : null}
+      </span>
     </div>
+  );
+}
+
+/** "1 stuck", as a button: it opens the stuck workers beside the rail (B6), never a dead word. */
+function StuckButton({
+  count,
+  color,
+  label,
+  onOpen,
+}: {
+  count: number;
+  color: string;
+  label: string;
+  onOpen: (anchor: HTMLElement) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-no-drag
+      data-stuck-trigger
+      title={label}
+      aria-label={`${count} stuck. ${label}`}
+      aria-haspopup="dialog"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen(event.currentTarget);
+      }}
+      className={`shrink-0 cursor-default rounded-md px-1.5 hover:bg-content/6 ${color}`}
+    >
+      {count} stuck
+    </button>
+  );
+}
+
+/**
+ * The folded Monos section still says what is out (A9: "a busy Mono still shows its one status line"): one short summary
+ * on the header for every Mono ("3 working · 1 stuck"), the full split on hover; "1 stuck" opens every stuck worker.
+ */
+function FoldedWorkSummary({
+  counts,
+  stuck,
+  onOpenStuck,
+}: {
+  counts: WorkCounts;
+  stuck: readonly StuckWorker[];
+  onOpenStuck: (anchor: HTMLElement) => void;
+}) {
+  const short = shortSplit(counts);
+  const failed = stuck.some((s) => s.kind === "failed");
+  const stuckColor = failed ? "text-red-400" : "text-amber-400";
+  return (
+    <span
+      className="flex min-w-0 flex-1 items-center whitespace-nowrap text-[11px] leading-5 text-content/45"
+      title={workSplit(counts)}
+      data-mono-rail-summary
+      data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
+    >
+      {short.working ? (
+        // The header is narrow: working is the spinner and its count ("N working" on hover); "N stuck" is never cut.
+        <span className="flex shrink-0 items-center gap-1 px-1" aria-label={`${short.working} working`}>
+          <Loader aria-hidden className="size-3 shrink-0 animate-spin motion-reduce:animate-none" strokeWidth={1.75} />
+          <span aria-hidden>{short.working}</span>
+        </span>
+      ) : null}
+      {short.working && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
+      {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what is stuck" onOpen={onOpenStuck} /> : null}
+    </span>
   );
 }
 
