@@ -245,9 +245,10 @@ export function MonoRailSection({
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
             : "No projects yet";
+          // Idle shows nothing, unless it is waiting on something (a watched pull request's CI).
           const status =
             state.status === "idle"
-              ? undefined
+              ? state.activity
               : (state.activity ?? MONO_STATUS_LABEL[state.status]);
           return (
             <Fragment key={mono.id}>

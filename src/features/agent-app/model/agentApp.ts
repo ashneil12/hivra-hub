@@ -86,6 +86,7 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 
 export type AppSessionListing = {
   id: string;
@@ -202,6 +203,8 @@ export type AgentAppHost = {
   shipStatus?(): unknown;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat only. */
   tasks?: AgentAppTasksHost;
+  /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat only. */
+  prs?: AgentAppPrsHost;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -261,6 +264,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
   ...TASK_FIELDS,
+  ...PR_FIELDS,
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -1058,6 +1062,7 @@ export async function handleAgentApp(
   fields(action, input);
   if (action.startsWith("tasks."))
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+  if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))

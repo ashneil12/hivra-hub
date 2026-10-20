@@ -8,6 +8,8 @@ import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, 
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
 import { foldParts, partsDone } from "../model/jobParts";
+import { usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
+import { prWatchWorkers } from "../../pr-watch/model/prWatchJobs";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -17,7 +19,11 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   // Live: Ash OS's jobs (done ones stay, with a dot, until Ash has seen them and left). Examples: the mock store.
   const live = !!data.listJobs;
   const now = useNow(30_000);
-  const liveWorkers = live ? workersFromJobs(data.listJobs?.(projectId) ?? [], now) : [];
+  // Watched pull requests are this app's own jobs: "Waiting on CI" under the Mono that registered them.
+  const prWatches = usePrWatchesVersion();
+  const liveWorkers = live
+    ? [...workersFromJobs(data.listJobs?.(projectId) ?? [], now), ...prWatchWorkers(prWatches?.all() ?? [], projectId, now)]
+    : [];
   const [openId, setOpenIdRaw] = useState<string | null>(null);
   const setOpenId = (id: string | null) => {
     if (openId) archiveIfSeen(openId);
@@ -132,6 +138,7 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
           <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
         ) : null}
         {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
+        {w.prWatch ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-pr-line>{w.prWatch.line}</span> : null}
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
@@ -165,6 +172,7 @@ function Activity({ worker }: { worker: Worker }) {
         </div>
         <JobStateLabel w={worker} />
         {worker.stuck ? <WorkerTakeLook w={worker} /> : null}
+        {worker.prWatch ? <StopWatching w={worker} /> : null}
         {worker.kind === "coding" ? (
           <button type="button" data-hub-open-coding onClick={() => setHubSelection({ project: worker.projectId, item: "coding-team" })}
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
@@ -182,6 +190,31 @@ function Activity({ worker }: { worker: Worker }) {
         ))}
       </section>
     </div>
+  );
+}
+
+/** Ash takes a watched pull request back: the app stops waking its Mono about it. */
+function StopWatching({ w: worker }: { w: Worker }) {
+  const [stopping, setStopping] = useState(false);
+  const watch = worker.prWatch;
+  const tracker = usePrWatchesVersion();
+  if (!watch || !tracker) return null;
+  return (
+    <button
+      type="button"
+      data-hub-stop-watching={watch.id}
+      disabled={stopping}
+      onClick={() => {
+        setStopping(true);
+        void tracker
+          .stop(watch)
+          .then(() => tracker.refresh())
+          .catch(() => setStopping(false));
+      }}
+      className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50"
+    >
+      {stopping ? "Stopping…" : "Stop watching"}
+    </button>
   );
 }
 
@@ -239,6 +272,6 @@ function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean })
         <span className="size-1.5 rounded-full bg-content" aria-label="Not seen yet" />Done
       </span>
     );
-  const text = { working: "Working", checking: "Checking", parked: "Parked", done: "Done" }[st];
+  const text = { working: "Working", checking: "Checking", parked: "Parked", done: "Done", waiting_ci: "Waiting on CI" }[st];
   return <span data-hub-job-state={st} className="shrink-0 text-xs text-content/60">{text}</span>;
 }

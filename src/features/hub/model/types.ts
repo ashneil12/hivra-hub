@@ -285,7 +285,7 @@ export type Worker = {
   /** Set when finished today. */
   finishedAt?: string;
   /** Job state when not stuck or finished. Default working. */
-  state?: "working" | "checking" | "needs_you" | "parked";
+  state?: "working" | "checking" | "needs_you" | "parked" | "waiting_ci";
   /** Plain reason, shown next to the Stuck mark. */
   stuckReason?: string;
   /** "Sent to coding team lead at 2:20pm · Got it", under the reason. */
@@ -299,7 +299,9 @@ export type Worker = {
   parentTitle?: string;
   /** A folded big job: its parts, in order. */
   parts?: Worker[];
+  /** A pull request its Mono registered (features/pr-watch): the app waits on its CI for the Mono. */
+  prWatch?: { id: string; ownerSession: string; url: string; line: string };
   archived?: boolean;
 };
 
-export type JobState = "working" | "checking" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked";
+export type JobState = "working" | "checking" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked" | "waiting_ci";
