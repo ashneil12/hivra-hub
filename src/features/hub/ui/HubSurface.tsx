@@ -436,7 +436,7 @@ function AshOsDown({ message, retrying, onRetry }: { message?: string; retrying?
   );
 }
 
-/** Clean first launch: no projects yet. One calm action. */
+/** Clean first launch: no projects yet. Start one, or restore from an export. */
 function FirstTodayEmpty() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);

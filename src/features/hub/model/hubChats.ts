@@ -1,7 +1,7 @@
 import { examplesOn, examples } from "./examples";
-// Group chats per project, behind the hub data layer. Mock store for now;
-// Claude Code swaps in the backend (create chat, add/remove member, send,
-// stream replies). Every made-up row is labelled "Example:".
+// Group chats per project, kept in local storage. The room takes turns on each Mono's own session through the runner
+// the app lends (setGroupChatRunner), with the small-model router picking who answers (setRoomRouter). Only with the
+// example data on does a scripted reply stand in, and every made-up row is labelled "Example:".
 import { useSyncExternalStore } from "react";
 import { listMonos } from "../../monos/model/mono";
 import { DEFAULT_TEAM_IDS } from "./builtInMonos";
@@ -334,7 +334,10 @@ function addReply(chatId: string, from: string, text: string, quiet: boolean, co
 }
 let replySeq = 0;
 
-/** Mock: the picked answerer types, replies; one other member may add a line. */
+/**
+ * Ash sent a message: the room answers it (requestReply). With the example data on, a scripted stand-in answers
+ * instead: the picked answerer types and replies, and one other member may add a line.
+ */
 export function simulateReplies(chatId: string, convId?: string): void {
   if (!examplesOn()) { void requestReply(chatId, convId); return; }
   const chat = getChat(chatId);
