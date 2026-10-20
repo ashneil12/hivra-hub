@@ -94,8 +94,14 @@ type Pending = {
   done: Promise<void>;
 };
 
+/** What a turn's own promise said right after one frame went in (for the turn-boundary regressions). */
+type FrameSeen = { prompt: string; label: string; frame: Record<string, unknown>; outcome: TurnReplay["outcome"] };
+
 /** Play one transcript through the adapter and report what each turn told the chat. */
-async function replay(transcript: Transcript): Promise<Replay> {
+async function replay(
+  transcript: Transcript,
+  observe?: (seen: FrameSeen) => void,
+): Promise<Replay> {
   const rows: { row: Omit<TurnReplay, "outcome" | "error">; pending: Pending }[] = [];
   const settle = async (pending: Pending | undefined, ticks = 50) => {
     for (let i = 0; i < ticks && pending?.outcome === "open"; i++) await tick();
@@ -163,6 +169,8 @@ async function replay(transcript: Transcript): Promise<Replay> {
         if (recorded.interruptAt === index) await cancelClaudeTurn("replay");
         onLine!(JSON.stringify(frame));
         await tick();
+        await tick();
+        observe?.({ prompt: recorded.prompt, label: String(frame.type), frame, outcome: open!.outcome });
       }
       if (recorded.interruptAt === recorded.frames.length)
         await cancelClaudeTurn("replay");
@@ -204,21 +212,14 @@ const workOf = (events: HarnessEvent[]) =>
   );
 
 /**
- * Task ids Claude started (task_started or a background list) while the adapter still held this turn open. Known
- * gap, kept visible here: when Claude runs a background wake before a queued prompt, the wake's result (origin
- * "task-notification") ends the MonoCode turn, so work the prompt then starts runs outside any turn the chat sees
- * (claude_background_wake_before_queued_prompt*). That is the adapter's turn model, not the resume roster.
+ * Task ids Claude started (task_started or a background list) for this turn's prompt. All of them, including what the
+ * prompt starts after a background wake Claude ran first: that wake's result (origin "task-notification") no longer
+ * ends the MonoCode turn (claude_background_wake_before_queued_prompt*, the regression below).
  */
 function startedTaskIds(transcript: Transcript, processIndex: number, prompt: string): string[] {
   const turn = transcript.processes[processIndex].turns.find((t) => t.prompt === prompt)!;
   const ids = new Set<string>();
-  let answered = false;
   for (const { frame } of turn.frames) {
-    if (frame.type === "result") {
-      const origin = (frame.origin as { kind?: string } | undefined)?.kind;
-      if (origin === "task-notification" && !answered) break;
-      answered = true;
-    }
     if (frame.type !== "system") continue;
     if (frame.subtype === "task_started" && typeof frame.task_id === "string" && frame.ambient !== true)
       ids.add(frame.task_id);
@@ -309,6 +310,55 @@ describe("T3 Code's recorded Claude transcripts through the live adapter", () =>
       ),
     );
     for (const id of sessionIds) expect(bound).toContain(id);
+  });
+
+  // The WP5 bench logged this gap; busy briefs depend on it being closed: a brief queued behind a Lead's work is
+  // sent as a new turn, and Claude may first run a wake for a task that finished meanwhile. That wake's result must
+  // not end the brief's turn (its report would be the wake's words, and the brief's own work would run unseen).
+  const resultsOf = (seen: FrameSeen[], prompt: string) =>
+    seen
+      .filter((f) => f.prompt === prompt && f.frame.type === "result")
+      .map((f) => ({
+        by: (f.frame.origin as { kind?: string } | null)?.kind ?? "prompt",
+        result: f.frame.result,
+        outcome: f.outcome,
+      }));
+
+  it("claude_background_wake_before_queued_prompt_no_echo: a wake Claude runs before a queued prompt doesn't end that prompt's turn", async () => {
+    const seen: FrameSeen[] = [];
+    const { turns } = await replay(load("claude_background_wake_before_queued_prompt_no_echo"), (f) => seen.push(f));
+    const prompt = turns.find((t) => t.prompt.startsWith("Use the SendMessage tool"))!;
+    // Still open after the wake's result; the prompt's own result ends it.
+    expect(resultsOf(seen, prompt.prompt)).toEqual([
+      { by: "task-notification", result: "Agent B has been confirmed killed.", outcome: "open" },
+      { by: "prompt", result: "RESUMED", outcome: "completed" },
+    ]);
+    // The task the prompt started (SendMessage resumed Agent A) is this turn's own.
+    expect(workOf(prompt.events).flatMap((e) => e.work.map((w) => w.id))).toContain("a3d786c6840cc6c7e");
+    // The last prompt only got a wake before the recording ended: its turn waits for its own answer and ends when
+    // Claude exits, never on the wake.
+    const last = turns.at(-1)!;
+    expect(resultsOf(seen, last.prompt)).toEqual([
+      { by: "task-notification", result: "A_RESUME_REPORTED", outcome: "open" },
+    ]);
+    expect(last.outcome).toBe("failed");
+    expect(last.error).toBe("Claude Code exited");
+  });
+
+  it("claude_background_wake_before_queued_prompt: the wake doesn't end the turn, and the prompt's work keeps it open", async () => {
+    const seen: FrameSeen[] = [];
+    const { turns } = await replay(load("claude_background_wake_before_queued_prompt"), (f) => seen.push(f));
+    const prompt = turns.find((t) => t.prompt.startsWith("Use the SendMessage tool"))!;
+    // The wake's result leaves it open; after its own result Agent A (resumed by this prompt) still runs, so it stays
+    // open until that finishes, with the next prompt steered in.
+    expect(resultsOf(seen, prompt.prompt)).toEqual([
+      expect.objectContaining({ by: "task-notification", outcome: "open" }),
+      { by: "prompt", result: "RESUMED", outcome: "open" },
+    ]);
+    const last = turns.at(-1)!;
+    expect(last.steered).toBe(true);
+    expect(resultsOf(seen, last.prompt)).toEqual([{ by: "prompt", result: "ALL_DONE", outcome: "completed" }]);
+    expect(workOf(prompt.events).flatMap((e) => e.work.map((w) => w.id))).toContain("adf8739e67a7332fd");
   });
 
   it("a subagent restarted after a restart is reported by the id Claude resumes it with", async () => {

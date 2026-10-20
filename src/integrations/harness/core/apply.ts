@@ -250,6 +250,12 @@ export function applyHarnessEvent(
       return event.key
         ? upsertKeyedStatus(session, event.key, event.text)
         : appendStatus(session, event.text);
+    case "goal.updated": {
+      if (event.goal) return { ...session, goal: event.goal };
+      if (!session.goal) return session;
+      const { goal: _cleared, ...rest } = session;
+      return rest;
+    }
     case "usage.limited":
       return {
         ...session,

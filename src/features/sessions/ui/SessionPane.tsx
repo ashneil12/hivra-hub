@@ -81,6 +81,7 @@ import {
   monoPendingTranscriptBlocks,
   visibleMonoCompletionMessages,
 } from "../../monos/model/monoMessaging";
+import { GoalRow } from "./GoalRow";
 import { MessageQueue } from "./MessageQueue";
 import { useMonoTranscript } from "../../monos/hooks/useMonoTranscript";
 import { MONO_PAGE_TURNS } from "../data/sessionStore";
@@ -1264,7 +1265,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   />
                 </>
               ) : (
-                composer
+                <>
+                  {session.goal ? <GoalRow goal={session.goal} /> : null}
+                  {composer}
+                </>
               )}
             </div>
           ) : null}

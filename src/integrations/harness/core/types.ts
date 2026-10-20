@@ -4,6 +4,7 @@ import type {
   CutWork,
   InterjectionMeta,
   RuntimeMode,
+  SessionGoal,
   TaskListItem,
   ToolPreview,
   TurnIntent,
@@ -77,6 +78,8 @@ export type HarnessEvent =
     }
   /** The provider refused the turn until its usage window resets (epoch ms). */
   | { type: "usage.limited"; resetsAt?: number }
+  /** Claude Code's /goal changed: set, checked, met, cleared (claudeGoal.ts). Null when the chat has none. */
+  | { type: "goal.updated"; goal: SessionGoal | null }
   /**
    * The agent has yielded but the turn is not over: work it started is still
    * running and will wake it again. Empty once it is back at work.

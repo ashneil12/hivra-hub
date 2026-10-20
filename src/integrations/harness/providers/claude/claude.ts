@@ -78,6 +78,16 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { claudeRetryFromMessage } from "./claudeFailure";
+import {
+  GOAL_CHECK_CAP,
+  GOAL_CLEAR,
+  goalCommand,
+  goalFromBrief,
+  goalOpen,
+  goalView,
+  nextGoal,
+  type GoalTrack,
+} from "./claudeGoal";
 import { isAgentToolName } from "../../core/preview";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
@@ -174,6 +184,14 @@ type Live = {
   /** TaskCreate/TaskUpdate items, keyed by Claude's task id. */
   claudeTasks: Map<string, TaskListItem>;
   turnResultSeen: boolean;
+  /**
+   * Prompts written into this MonoCode turn that Claude hasn't answered yet: the turn's own, a follow-up written after
+   * Claude yielded, the `/goal` sent behind a brief. A background wake Claude runs first (its result says
+   * origin task-notification) never answers one, so it can't end the turn while a prompt still waits behind it.
+   */
+  promptsOwed: number;
+  /** Claude Code's /goal in this conversation (claudeGoal.ts). */
+  goal: GoalTrack | null;
   /** Latest `rate_limit_event` refused requests; reported when the turn ends. */
   usageLimit: { resetsAt?: number } | null;
   /**
@@ -244,6 +262,11 @@ const CLAUDE_TASKS_KEY = "claude-tasks";
 const cancelledThreads = new Set<string>();
 /** Threads whose dead conversation was dropped: their next fresh turn carries the chat's brief, once. */
 const briefOwed = new Set<string>();
+/**
+ * Each chat's /goal outlives its Claude process: `--resume` keeps the goal in the conversation, but a fresh one (a
+ * Mono's rotation, a dead conversation started again) has lost it, so the next turn sets it again.
+ */
+const goalByThread = new Map<string, GoalTrack>();
 
 let resolveClaudeBinaryImpl: () => Promise<{ path: string }> =
   resolveClaudeBinary;
@@ -379,6 +402,76 @@ export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
   if (content.length === 0) return;
 
   await writeJson(input.sessionId, message);
+  // Written after Claude yielded (it waits on background work), this is a prompt of its own that the turn now owes
+  // an answer to; written mid-reply it joins the reply already owed.
+  live.promptsOwed = Math.max(live.promptsOwed, 1);
+}
+
+/**
+ * The /goal this turn sets, if any: a MonoCode brief's "Done when: …", or the goal this chat had in a conversation it
+ * no longer has (a rotation, a dead conversation started again). None while Claude's hooks are off (the CLI refuses
+ * /goal then) or for /compact.
+ */
+function goalToSet(live: Live, input: SendTurnInput): string | undefined {
+  if (live.manualCompaction || !loadClaudeHooks()) return undefined;
+  const fresh = goalFromBrief(input.text);
+  if (fresh) return fresh;
+  const carried = goalByThread.get(input.sessionId);
+  return goalOpen(carried) && carried.providerSessionId !== live.claudeSessionId
+    ? carried.objective
+    : undefined;
+}
+
+/**
+ * Follow the chat's /goal through one main-thread line and tell the chat when it changes. The CLI's own goal
+ * messages ("Goal set: …", "Goal active: …") become a status line instead of words in Claude's reply. Past
+ * GOAL_CHECK_CAP checks MonoCode clears the goal, and the turn waits for that too. True when the line is consumed.
+ */
+function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): boolean {
+  if (isSubagentMessage(rec)) return false;
+  let next = nextGoal(live.goal, rec, Date.now());
+  if (next === undefined) return false;
+  const before = goalView(live.goal);
+  const carried = goalByThread.get(sessionId);
+  // Set again in a fresh conversation: the checks it already had still count toward the cap.
+  if (next && !live.goal && carried && carried.objective === next.objective && next.checks === 0)
+    next = { ...next, checks: carried.checks, setAt: carried.setAt, ...(carried.lastCheck ? { lastCheck: carried.lastCheck } : {}) };
+  if (next) next = { ...next, providerSessionId: live.claudeSessionId };
+  if (goalOpen(next) && next.checks >= GOAL_CHECK_CAP && !next.clearing) {
+    next = { ...next, clearing: true, status: "stopped" };
+    if (live.activeTurn) live.promptsOwed += 1;
+    void writeJson(sessionId, buildClaudeUserMessage({ text: GOAL_CLEAR })).catch(() => undefined);
+  }
+  live.goal = next;
+  if (goalOpen(next)) goalByThread.set(sessionId, next);
+  else goalByThread.delete(sessionId);
+  const view = goalView(next);
+  if (JSON.stringify(view) !== JSON.stringify(before)) live.onEvent({ type: "goal.updated", goal: view });
+  if (stringField(rec, "type") !== "assistant") return false;
+  if ((rec.message as { model?: unknown } | undefined)?.model !== "<synthetic>") return false;
+  const said = assistantTextBlocks(rec).join("").trim();
+  if (said) live.onEvent({ type: "status", text: said });
+  return true;
+}
+
+/** A result for a background wake Claude ran by itself (a task finished), not for a prompt MonoCode wrote. */
+function isWakeResult(rec: Record<string, unknown>): boolean {
+  return stringField(asRecord(rec.origin), "kind") === "task-notification";
+}
+
+/**
+ * Claude answered a wake, or the first of two prompts, while a prompt of this turn still waits: keep the turn open for
+ * the answer that is on its way. If Claude starts nothing within RESUME_GRACE_MS, the turn is let go anyway.
+ */
+function holdForOwedPrompt(live: Live): void {
+  if (live.promptsOwed <= 0 || !live.activeTurn || live.cancelled) return;
+  clearAwaitingResume(live);
+  live.awaitingResume = setTimeout(() => {
+    live.awaitingResume = null;
+    live.promptsOwed = 0;
+    maybeFinishTurn(live);
+    syncBackgroundWait(live);
+  }, RESUME_GRACE_MS);
 }
 
 export function respondClaudeApproval(
@@ -584,6 +677,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     taskNotes: [],
     claudeTasks,
     turnResultSeen: false,
+    promptsOwed: 0,
+    // A resumed conversation still has its goal; a fresh one gets it again with its next turn (runTurn).
+    goal:
+      goalByThread.get(input.sessionId)?.providerSessionId === claudeSessionId
+        ? goalByThread.get(input.sessionId)!
+        : null,
     usageLimit: null,
     cancelled: false,
     muteUpdates: false,
@@ -612,6 +711,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     (code) => {
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
+      if (current) clearAwaitingResume(current);
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
@@ -699,6 +799,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.taskNotes = [];
   live.turnResultSeen = false;
   live.assistantError = undefined;
+  live.promptsOwed = 1;
 
   const turnPromise = new Promise<void>((resolve, reject) => {
     live.turnDone = resolve;
@@ -709,6 +810,13 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
 
   try {
     await writeJson(input.sessionId, message);
+    // A brief's finish line goes in right behind it, so Claude reads the brief first and then keeps going until
+    // Claude Code's own evaluator says the condition holds; the turn ends when both are answered.
+    const goal = goalToSet(live, input);
+    if (goal) {
+      live.promptsOwed += 1;
+      await writeJson(input.sessionId, buildClaudeUserMessage({ text: goalCommand(goal) }));
+    }
     input.onAccepted?.();
     // Claude has this prompt now, and with it any note about work a restart cut: from here the chat's background
     // work is this turn's own (none yet), not what a resumed turn carried forward.
@@ -835,6 +943,7 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     return;
   }
 
+  if (noteGoal(sessionId, live, rec)) return;
   if (handleAgentLifecycle(live, rec)) return;
   if (type === "tool_progress") {
     handleToolProgress(live, rec);
@@ -1188,7 +1297,11 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
       });
     }
   }
+  // A wake's result answers the wake, not a prompt this turn wrote (recorded in T3 Code's
+  // claude_background_wake_before_queued_prompt*: the prompt's own work comes after it).
+  if (!isWakeResult(rec)) live.promptsOwed = Math.max(0, live.promptsOwed - 1);
   live.turnResultSeen = true;
+  holdForOwedPrompt(live);
   maybeFinishTurn(live);
   showBackgroundRows(live);
   syncBackgroundWait(live);
@@ -2040,4 +2153,5 @@ export function __claudeTestReset(): void {
   tasksByThread.clear();
   cancelledThreads.clear();
   briefOwed.clear();
+  goalByThread.clear();
 }

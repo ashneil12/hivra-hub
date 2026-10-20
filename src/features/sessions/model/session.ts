@@ -282,8 +282,30 @@ export type QueuedMessage = {
   intent?: TurnIntent;
   /** An app notification that must wait for an idle Mono, never steer its work. */
   monoSessionCompletion?: MonoSessionCompletion;
+  /**
+   * A brief another chat sent through the app (sessions.send, a Lead brief): the request id its user bubble carries
+   * once it is sent, so the sender's row can tell it went in, and a retried send finds it waiting.
+   */
+  appRequestId?: string;
+  /** The sender asked for it to wait behind the current work: sent as its own turn once the chat is idle, never steered. */
+  waitForIdle?: boolean;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
+};
+
+/** Claude Code's /goal as the chat shows it (claudeGoal.ts): the finish line and how the checks went. */
+export type SessionGoal = {
+  objective: string;
+  /** Checks Claude Code's evaluator has made so far. */
+  checks: number;
+  /** What the last check that said "not yet" gave as its reason. */
+  lastCheck?: string;
+  /**
+   * active: Claude keeps going until a check passes; paused: the CLI ended the turn at its own cap, the goal waits for
+   * the next turn; met: a check passed; cleared: someone cleared it; stopped: MonoCode cleared it after its cap.
+   */
+  status: "active" | "paused" | "met" | "cleared" | "stopped";
+  setAt: number;
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -491,6 +513,8 @@ export type Session = {
    * In-memory only otherwise.
    */
   cutWork?: CutWork[];
+  /** Claude Code's /goal for this chat, while one is set or just ended. In-memory only. */
+  goal?: SessionGoal;
   /**
    * How many times this turn has resumed itself after a restart without finishing (`inFlight.ts`). Saved with the
    * in-flight row; any turn that isn't an automatic resume starts again from none. In-memory only otherwise.
