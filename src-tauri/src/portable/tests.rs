@@ -74,6 +74,15 @@ fn open_store(env: &Env) -> SessionStore {
     SessionStore::open(env.db_path.clone()).unwrap()
 }
 
+/// An import with the session store already locked by the test.
+fn import_held(
+    env: &Env,
+    conn: &Connection,
+    request: &ImportRequest,
+) -> Result<ImportReport, String> {
+    import(env, request, || Ok(conn))
+}
+
 fn block(id: &str, role: &str, text: &str) -> Value {
     json!({"id": id, "role": role, "text": text})
 }
@@ -405,7 +414,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
             && m.files.iter().all(|f| f.status == Status::New)));
 
         let conn = target_store.lock_conn().unwrap();
-        let imported = import(
+        let imported = import_held(
             &target,
             &conn,
             &ImportRequest {
@@ -685,7 +694,7 @@ fn an_import_never_overwrites_and_shows_each_conflict_first() {
         }),
     };
     // Without asking for copies: everything already here is kept as it is.
-    let report = import(&target, &conn, &request(false)).unwrap();
+    let report = import_held(&target, &conn, &request(false)).unwrap();
     assert_eq!(
         (
             report.sessions_added,
@@ -716,7 +725,7 @@ fn an_import_never_overwrites_and_shows_each_conflict_first() {
     );
 
     // Asking for copies: the file's versions come in beside, under new ids and names.
-    let report = import(&target, &conn, &request(true)).unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
     assert_eq!(
         (
             report.sessions_copied,
@@ -813,7 +822,7 @@ fn the_ticks_decide_what_goes_in_and_what_comes_back() {
     export(&source, &export_request(&dest, Form::Folder)).unwrap();
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    let report = import(
+    let report = import_held(
         &target,
         &conn,
         &ImportRequest {
@@ -878,7 +887,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
     let store = open_store(&daily);
     {
         let conn = store.lock_conn().unwrap();
-        import(
+        import_held(
             &daily,
             &conn,
             &ImportRequest {
@@ -907,7 +916,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
     dev.protected = vec![source.memory_root.clone()];
     let store = open_store(&dev);
     let conn = store.lock_conn().unwrap();
-    import(
+    import_held(
         &dev,
         &conn,
         &ImportRequest {
@@ -925,7 +934,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
         )
         .unwrap();
     assert_eq!(kept, None);
-    let refused = import(
+    let refused = import_held(
         &dev,
         &conn,
         &ImportRequest {
@@ -1041,7 +1050,7 @@ fn memory_never_lands_outside_its_folder_through_a_link() {
     // With history: the bundle's link is refused, said plainly, and the files come in as plain files inside.
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    let report = import(&target, &conn, &request(true)).unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
     assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
     assert!(report.memory_history.is_empty(), "{report:?}");
     assert!(
@@ -1066,7 +1075,7 @@ fn memory_never_lands_outside_its_folder_through_a_link() {
     // A link already in the memory folder here (left by anything): no write follows it, and each skip is said.
     fs::remove_dir_all(&notes).unwrap();
     std::os::unix::fs::symlink(&outside.0, &notes).unwrap();
-    let report = import(&target, &conn, &request(true)).unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
     assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
     assert_eq!(
         (report.memory_files_added, report.memory_files_beside),
@@ -1114,7 +1123,7 @@ fn a_memory_file_that_isnt_text_is_skipped_never_written_empty() {
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    let report = import(
+    let report = import_held(
         &target,
         &conn,
         &ImportRequest {
@@ -1178,7 +1187,7 @@ fn a_workspace_import_that_fails_midway_leaves_nothing_half_in() {
         "CREATE TRIGGER refuse_delegations BEFORE INSERT ON delegations BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
     )
     .unwrap();
-    let failed = import(&target, &conn, &request).unwrap_err();
+    let failed = import_held(&target, &conn, &request).unwrap_err();
     assert!(failed.contains("disk full"), "{failed}");
     let count = |table: &str| -> i64 {
         conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
@@ -1202,7 +1211,7 @@ fn a_workspace_import_that_fails_midway_leaves_nothing_half_in() {
     // The retry adds everything, and finds nothing of its own already here.
     conn.execute_batch("DROP TRIGGER refuse_delegations;")
         .unwrap();
-    let report = import(&target, &conn, &request).unwrap();
+    let report = import_held(&target, &conn, &request).unwrap();
     assert_eq!(
         (
             report.notes_added,
@@ -1220,6 +1229,82 @@ fn a_workspace_import_that_fails_midway_leaves_nothing_half_in() {
         .data_dir
         .join("note-assets/note-1/1-shot.png")
         .is_file());
+}
+
+/// Chat saves wait on the session store's lock: an import takes it only while the chats go in, never while it
+/// unpacks, checks every file's hash or writes memory.
+#[test]
+fn the_session_store_is_locked_only_while_the_chats_go_in() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export.tar.gz");
+    export(&source, &export_request(&dest, Form::Archive)).unwrap();
+    let store = open_store(&target);
+    let memory = MemoryImport {
+        projects: vec!["ash".into()],
+        keep_both: false,
+        history: true,
+    };
+    let never = || -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        panic!("the session store was locked")
+    };
+
+    // Memory only: the store is never locked.
+    let report = import(
+        &target,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(memory.clone()),
+            workspace: None,
+        },
+        never,
+    )
+    .unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()]);
+
+    // A damaged export is refused before the store is locked.
+    let broken = out.0.join("broken.tar.gz");
+    fs::write(&broken, [0x1f, 0x8b, 0, 0]).unwrap();
+    assert!(import(
+        &target,
+        &ImportRequest {
+            path: broken.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport::default()),
+        },
+        never,
+    )
+    .is_err());
+
+    // With chats: locked once, after the export was opened and the memory written.
+    fs::remove_dir_all(&target.memory_root).unwrap();
+    let mut locked = 0;
+    let report = import(
+        &target,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(memory),
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-1".into()],
+                ..Default::default()
+            }),
+        },
+        || {
+            locked += 1;
+            assert!(
+                target.memory_root.join("ash/.git").is_dir()
+                    && target.memory_root.join("ash/MEMORY.md").is_file(),
+                "memory is written before the store is locked"
+            );
+            store.lock_conn()
+        },
+    )
+    .unwrap();
+    assert_eq!((locked, report.sessions_added), (1, 1));
 }
 
 #[test]

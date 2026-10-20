@@ -1815,21 +1815,24 @@ pub struct ImportReport {
     pub notes: Vec<String>,
 }
 
-pub fn import(
+/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the workspace's
+/// rows: the export is unpacked and checked (up to MAX_UNPACKED) and the memory written before it, never under it.
+pub fn import<G: std::ops::Deref<Target = Connection>>(
     env: &Env,
-    conn: &Connection,
     request: &ImportRequest,
+    lock: impl FnOnce() -> Result<G, String>,
 ) -> Result<ImportReport, String> {
     let opened = open_export(&request.path)?;
     let mut report = ImportReport::default();
     if opened.root().is_none() {
         return Ok(report);
     }
-    if let Some(workspace) = &request.workspace {
-        import_workspace(env, conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
-    }
     if let Some(memory) = &request.memory {
         import_memory(env, &opened, memory, &mut report)?;
+    }
+    if let Some(workspace) = &request.workspace {
+        let conn = lock()?;
+        import_workspace(env, &conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
     }
     Ok(report)
 }
@@ -2579,8 +2582,7 @@ pub fn portable_import(
     request: ImportRequest,
 ) -> Result<ImportReport, String> {
     let env = Env::for_app(&app)?;
-    let conn = store.lock_conn()?;
-    import(&env, &conn, &request)
+    import(&env, &request, || store.lock_conn())
 }
 
 // ---- tests ---------------------------------------------------------------------------------------------------------
