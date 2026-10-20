@@ -65,7 +65,7 @@ export type PageAgent = {
   /** How many of its workers are still at it. */
   waitingOn: number;
 };
-export type AgentsData = { agents: PageAgent[]; counts: Record<AgentState, number>; at: number };
+export type AgentsData = { agents: PageAgent[]; counts: Record<AgentState, number> };
 
 /** A busy chat with no new word for this long reads as stuck; a worker whose chat ended without reporting, after this. */
 export const STUCK_QUIET_MS = 10 * 60_000;
@@ -276,7 +276,7 @@ export function agentsData(inputs: AgentInputs): AgentsData {
     }
   });
   agents.sort((a, b) => RANK[a.role] - RANK[b.role]);
-  return { agents, counts, at: inputs.now };
+  return { agents, counts };
 }
 
 /** What waits on Ash: Ash OS's Needs and the chats whose agent asked him something. */

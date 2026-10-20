@@ -114,7 +114,7 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 - **Reads** (`hub.call(name, args)` once, or `hub.watch(name, [args], onData, [onError])` live; `watch` returns a stop
   function). Live means pushed as it changes, never polled: a burst of changes is one push, the same data is never sent
   twice, and Undo ends the watch (`onError` hears why).
-  - `agents.read` → `{agents, counts, at}`. Each agent (the Monos roster: the team, the Leads, any Mono Ash added):
+  - `agents.read` → `{agents, counts}`. Each agent (the Monos roster: the team, the Leads, any Mono Ash added):
     `{id, name, role: lead|team|mono, projects, state: asking|stuck|working|paused|idle, doing, reason?, since, chatId?,
     question?, workers, jobs, waitingOn}`. `workers` is the work it handed out, nested:
     `{id, title, state: asking|stuck|working|failed|done|stopped, doing, reason?, chatId, startedAt, since, endedAt?,
@@ -161,6 +161,15 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 > - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "keys.read:Anthropic"). You may embed hub blocks with `hub.block(kind, data)`.
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
+
+## Ready-made pages
+
+`readyPages.ts`. Pages offers them under **Ready-made** (in the list, and on the empty screen) until one is kept. **Add**
+shows its preview with what it asks, and **Keep and allow** keeps it like any page (by "Ready-made", on Today's pages).
+- **Agents**: every agent and what it is doing; the stuck and asking ones (agents and the work they handed out, at any
+  depth) on top with **Take it**, **Answer**, **Open** and **Stop**; then Working (with each agent's recent work) and Idle
+  (with **Message**). It watches `agents.read` and uses only the taps, so it is the pattern for a Mono's own connected
+  page, and Rebuild changes it from Ash's words like any other.
 
 ## Rebuild (change a kept page from Ash's words)
 

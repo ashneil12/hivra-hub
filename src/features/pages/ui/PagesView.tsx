@@ -11,6 +11,8 @@ import { undoBotChange } from "../../hub/model/botChanges";
 import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
+import { READY_BY, READY_PAGES, type ReadyPage } from "../model/readyPages";
+import { checkBespokePage } from "../model/designCheck";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
 import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
@@ -340,7 +342,8 @@ function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe t
   );
 }
 
-type Build = { prompt: string } & ({ state: "building" } | BuildPageResult);
+/** A build in flight or back; `ready` marks a ready-made page (its preview, with nothing built). */
+type Build = { prompt: string; ready?: boolean } & ({ state: "building" } | BuildPageResult);
 
 /** Ash OS refused or couldn't take the last page tap: one quiet line with OK. */
 function PagesProblem() {
@@ -356,10 +359,33 @@ function PagesProblem() {
 }
 
 /** The preview Page for a ready build: one object per build (its id is the record's pageId when Ash OS built it). */
-function usePreview(ready: ({ prompt: string } & Extract<BuildPageResult, { status: "ready" }>) | undefined, by: string, monoId: string, projectId: string): Page | undefined {
+function usePreview(ready: ({ prompt: string; ready?: boolean } & Extract<BuildPageResult, { status: "ready" }>) | undefined, by: string, monoId: string, projectId: string): Page | undefined {
   return useMemo(
-    () => (ready ? pageFromSpec(ready.spec, ready.prompt, by, projectId, ready.warnings, Date.now(), ready.pageId, monoId) : undefined),
+    () => (ready ? (ready.ready
+      ? pageFromSpec(ready.spec, ready.prompt, READY_BY, "today", ready.warnings, Date.now())
+      : pageFromSpec(ready.spec, ready.prompt, by, projectId, ready.warnings, Date.now(), ready.pageId, monoId)) : undefined),
     [ready, by, monoId, projectId],
+  );
+}
+
+/** Ready-made pages not kept yet: a row each, with Add (its preview, then Keep and allow like any page). */
+function ReadyMade({ offers, onAdd, compact }: { offers: readonly ReadyPage[]; onAdd: (r: ReadyPage) => void; compact?: boolean }) {
+  if (!offers.length) return null;
+  return (
+    <section data-pages-ready className={compact ? "w-full max-w-[560px] text-left" : ""}>
+      <h2 className="px-2 pb-1 text-[11px] uppercase tracking-wide text-content/60">Ready-made</h2>
+      <div className="flex flex-col gap-px">
+        {offers.map((r) => (
+          <div key={r.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-ready-row={r.id}>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[13px] text-content">{r.title}</span>
+              <span className="text-[12px] leading-5 text-content/60">{r.what}</span>
+            </div>
+            <button type="button" className={quietBtn} data-pages-ready-add={r.id} onClick={() => onAdd(r)}>Add</button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -398,6 +424,11 @@ export function PagesContent() {
     void buildPage({ projectId, monoId: askerId, prompt }).then((result) => setBuild({ prompt, ...result }));
   };
   const ready = build && "status" in build && build.status === "ready" ? build : undefined;
+  const offers = READY_PAGES.filter((r) => !pages.some((p) => p.request === r.request));
+  const addReady = (r: ReadyPage) => {
+    setSentBack(undefined);
+    setBuild({ prompt: r.request, ready: true, status: "ready", spec: r.spec, warnings: checkBespokePage(r.spec).warnings });
+  };
   const preview = usePreview(ready, asker, askerId, projectId);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
@@ -441,7 +472,7 @@ export function PagesContent() {
     const keepLabel = asks.length ? "Keep and allow" : "Keep";
     return (
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
-        <div className="mb-1 text-[12px] text-content/60">“{preview.request}” · {preview.by} built this preview</div>
+        <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made page · built on the same bridge a Mono's page uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
         <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
         <div className="mb-4 mt-1"><Limits /></div>
         {asks.length ? <div className="mb-3"><Permissions asks={asks} /></div> : null}
@@ -517,6 +548,7 @@ export function PagesContent() {
         </div>
         <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
         {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
+        <ReadyMade offers={offers} onAdd={addReady} compact />
       </div>
     );
   }
@@ -567,6 +599,7 @@ export function PagesContent() {
               </div>
             </section>
           ))}
+          <ReadyMade offers={offers} onAdd={addReady} />
         </div>
       </div>
     </div>
