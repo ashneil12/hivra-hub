@@ -71,6 +71,7 @@ export function StuckList({
   where,
   label,
   heading,
+  onOpened,
 }: {
   stuck: readonly StuckWorker[];
   now: number;
@@ -81,6 +82,8 @@ export function StuckList({
   label?: string;
   /** A section heading over the list (Today's "Stuck"); the list and its heading go once nothing is left. */
   heading?: string;
+  /** After "Open chat" jumped into a worker's chat (a popover over the rail closes itself). */
+  onOpened?: () => void;
 }) {
   const [done, setDone] = useState<Record<string, Done>>({});
   const [all, setAll] = useState(false);
@@ -95,7 +98,15 @@ export function StuckList({
         done[s.key] ? (
           <DoneRow key={s.key} done={done[s.key]} variant={variant} />
         ) : (
-          <StuckWorkerCard key={s.key} stuck={s} now={now} variant={variant} where={where?.(s)} onDone={(said) => finished(s, said)} />
+          <StuckWorkerCard
+            key={s.key}
+            stuck={s}
+            now={now}
+            variant={variant}
+            where={where?.(s)}
+            onDone={(said) => finished(s, said)}
+            onOpened={onOpened}
+          />
         ),
       )}
       {held.map((d) => (
@@ -128,12 +139,14 @@ export function StuckWorkerCard({
   variant,
   where,
   onDone,
+  onOpened,
 }: {
   stuck: StuckWorker;
   now: number;
   variant: "chat" | "row";
   where?: string;
   onDone?: (said: string) => void;
+  onOpened?: () => void;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -195,8 +208,16 @@ export function StuckWorkerCard({
             Take the pick
           </button>
         ) : null}
-        <button type="button" className={BTN} data-stuck-open onClick={() => openStuck(stuck)}>
-          Open
+        <button
+          type="button"
+          className={BTN}
+          data-stuck-open
+          onClick={() => {
+            openStuck(stuck);
+            onOpened?.();
+          }}
+        >
+          Open chat
         </button>
         {stuck.kind === "failed" ? (
           <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>

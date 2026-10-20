@@ -13,6 +13,7 @@ import { addMono } from "../../monos/model/mono";
 import { noteMonoFailures, resetMonoFailures } from "../../monos/model/monoFailures";
 import { resetStuckDismissals } from "../../monos/model/workerStuck";
 import { hubData, setHubDataSource } from "../model/hubData";
+import { setWaitingChatsHost } from "../model/waitingChats";
 import type { HubDataSource } from "../model/types";
 import { StuckToday } from "./StuckToday";
 
@@ -81,5 +82,20 @@ describe("Today's Stuck section", () => {
     noteMonoFailures([failedChat("exo-chat")]);
     act(() => root.render(createElement(StuckToday, { projectId: undefined })));
     expect(container.querySelector("[data-mono-failure-where]")?.textContent).toBe("EXO lead");
+  });
+  it("answers a stuck worker the same way the rail's panel does: the reply goes into that worker's chat (B6)", async () => {
+    setDelegationRows([stalled("t-1", "vg-game-lead", "exo-chat", "vg-game", "Run the movement tests")]);
+    const host = { liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() };
+    setWaitingChatsHost(host);
+    act(() => root.render(createElement(StuckToday, { projectId: undefined })));
+    const card = container.querySelector<HTMLElement>('[data-stuck-worker="w-t-1"]')!;
+    expect(card.querySelector("[data-stuck-open]")!.textContent).toBe("Open chat");
+    const input = card.querySelector<HTMLInputElement>("[data-stuck-reply]")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Skip the flaky one");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => card.querySelector<HTMLButtonElement>("[data-stuck-send]")!.click());
+    expect(host.send).toHaveBeenCalledWith("w-t-1", "Skip the flaky one");
   });
 });
