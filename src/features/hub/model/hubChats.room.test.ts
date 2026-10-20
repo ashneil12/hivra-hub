@@ -450,3 +450,41 @@ it("each project's Leadership team seats the default team once; a Mono Ash takes
   expect(chat.seatDefaultTeam("hivra").memberIds).toEqual(["chief-of-staff", "projects-manager", "alfred", "hivra-lead"]);
   expect(chat.seatDefaultTeam("nibbii").memberIds).toEqual(TEAM);
 });
+
+it("the gate that doesn't answer in time, fails or answers nonsense never drops a seat: the lane rules pick, and say so", async () => {
+  const { chat, id, said } = await room();
+  const dump = "remember we agreed the board moves to Fridays; put the new cards on the board and keep my words for the delete rule";
+  for (const router of [
+    () => new Promise<string>(() => undefined), // never answers
+    async () => {
+      throw new Error("No engine for the room's router");
+    },
+    async () => "sure, frank should speak",
+  ]) {
+    chat.setRoomRouter(router, { timeoutMs: 30 });
+    const script = scripted({ "chief-of-staff": "Heard: Fridays, new cards, the delete rule. PM has the board." , "projects-manager": "Cards 4 to 6 are up.", frank: "Saved: the board moves to Fridays." });
+    chat.setGroupChatRunner(script.runner);
+    const conv = chat.startConversation(id, dump);
+    await chat.requestReply(id, conv);
+    // PM (the board) and frank (memory) by their lanes, each once, labelled as the lanes' pick.
+    expect(script.who().slice(0, 3)).toEqual(["chief-of-staff", "projects-manager", "frank"]);
+    const pm = said(conv).find((m) => m.from === "projects-manager")!;
+    expect(pm.pick).toMatchObject({ by: "lanes" });
+    expect(pm.pick!.why).toMatch(/lane/);
+  }
+});
+
+it("work that came back, with the gate down, still gets its check: frank looks at it, never nobody", async () => {
+  const { chat, conductor, id, said } = await room();
+  chat.setRoomRouter(() => new Promise<string>(() => undefined), { timeoutMs: 30 });
+  const script = scripted({
+    "chief-of-staff": "Delete is back: DELETE /tallies/:id works end to end (commit 3f2a1b0, 12/12 tests). Full report in my chat.",
+    frank: "Checked against Ash's words: he asked for it to go for good, and it does. Pass from me.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "add delete");
+  conductor.postBack({ chatId: id, convId: conv, monoId: "chief-of-staff", title: "Delete", answer: "Delete is in." });
+  await chat.roomIdle(id, conv);
+  expect(script.who()).toEqual(["chief-of-staff", "frank"]);
+  expect(said(conv).find((m) => m.from === "frank")!.pick).toMatchObject({ by: "lanes" });
+});

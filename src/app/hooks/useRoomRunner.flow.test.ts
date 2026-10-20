@@ -142,6 +142,10 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
   expect(submitted[1].text).toContain('Work you delegated from this room has come back: "Launch shortlist"');
   expect(submitted[1].text).toContain("Ash, the shortlist is in");
   settle.get(chatOf("chief-of-staff"))!("Launch shortlist is back: stay on Base, Clanker v4 first. Full write-up in my chat.");
+  // No engine for the gate here: the lanes pick, and work that came back always gets frank's check against Ash's words.
+  await vi.waitFor(() => expect(submitted).toHaveLength(3));
+  expect(submitted[2]).toMatchObject({ sessionId: chatOf("frank") });
+  settle.get(chatOf("frank"))!("NO_REPLY");
   await chat.roomIdle(room.id);
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", pick: { by: "back" } });
   expect(done).toEqual(["app-mono-chief-of-staff-q1"]);

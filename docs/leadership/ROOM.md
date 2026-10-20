@@ -96,6 +96,9 @@ messages first (median 9 s, p90 27 s); the room re-planned within about 40 s of 
   ...", "@alfred". A seat woken by several posts runs once, with all of them in view. A builder flagged by reviewers
   waits until every reviewer of that round has spoken, so it answers all the flags in one message.
 - Work that came back ("X is back") and a Lead's report also go past the gate, so the seat whose check it is looks at it.
+- The gate never drops a seat quietly: when it doesn't answer within 15 s, fails, or answers something that isn't its
+  list, the lanes pick instead (the pick says "lanes" and why), and work that came back always gets frank's check
+  against Ash's words. Its helper call (Haiku, no thinking, its own process) answers in about 2 s.
 - When nothing is left to run and three or more seats spoke since Ash's message (or the last digest), the host gets one
   digest turn. It may say nothing if a round is still open.
 

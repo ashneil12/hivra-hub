@@ -47,6 +47,7 @@ import {
   parseChimes,
   pingPong,
   QUIET_CEILING_MS,
+  reviewChimes,
   roomTranscript,
   STALE_POSTS_LIMIT,
   turnPrompt,
@@ -99,29 +100,37 @@ export function setGroupChatRunner(next: GroupChatRunner | GroupChatRunFn): () =
 /** A runner may still say a Mono can't take the turn; it becomes a notice like any failure. */
 export class MonoBusyError extends Error {}
 
-/** The cheap router: one isolated prompt to the smallest model, text back. Without one, the lane rules decide. */
+/**
+ * The cheap router: one isolated prompt to the smallest model, text back. Without one, or when it doesn't answer in
+ * time, fails or answers something that isn't its JSON, the lane rules decide: a seat is never dropped silently.
+ */
 export type RoomRouter = (prompt: string) => Promise<string>;
+/** How long the gate may take (a helper call answers in about 2 s since 20 Oct). */
+export const ROUTER_TIMEOUT_MS = 15_000;
 let router: RoomRouter | undefined;
-export function setRoomRouter(next: RoomRouter): () => void {
+let routerTimeoutMs = ROUTER_TIMEOUT_MS;
+export function setRoomRouter(next: RoomRouter, options: { timeoutMs?: number } = {}): () => void {
   router = next;
+  routerTimeoutMs = options.timeoutMs ?? ROUTER_TIMEOUT_MS;
   return () => {
     if (router === next) router = undefined;
   };
 }
-const ROUTER_TIMEOUT_MS = 20_000;
-async function askRouter(prompt: string): Promise<string | undefined> {
+/** The gate's answer, or why there is none (no router, it timed out, it failed). */
+async function askRouter(prompt: string): Promise<{ out: string } | { missed: string }> {
   const ask = router;
-  if (!ask) return undefined;
+  if (!ask) return { missed: "no gate" };
   let timer: number | undefined;
   try {
-    return await Promise.race([
+    const out = await Promise.race([
       ask(prompt),
       new Promise<undefined>((resolve) => {
-        timer = window.setTimeout(() => resolve(undefined), ROUTER_TIMEOUT_MS);
+        timer = window.setTimeout(() => resolve(undefined), routerTimeoutMs);
       }),
     ]);
-  } catch {
-    return undefined;
+    return out === undefined ? { missed: `the gate took over ${Math.round(routerTimeoutMs / 1000)} s` } : { out };
+  } catch (error) {
+    return { missed: `the gate failed (${error instanceof Error ? error.message : String(error)})` };
   } finally {
     window.clearTimeout(timer);
   }
@@ -658,13 +667,21 @@ async function chimeIn(chatId: string, convId: string, post: ChatMessage, named:
   t.routing++;
   notify();
   let chimes: Chime[] | undefined;
+  let by: ChatPickSource = "chime";
   try {
-    if (router) {
-      const conv = getChat(chatId)?.conversations.find((c) => c.id === convId);
-      const out = await askRouter(chimePrompt(seats, poster, roomTranscript(conv?.messages ?? [], nameOf), about));
-      chimes = out === undefined ? undefined : parseChimes(out, seats, poster.id);
+    const conv = getChat(chatId)?.conversations.find((c) => c.id === convId);
+    const asked = await askRouter(chimePrompt(seats, poster, roomTranscript(conv?.messages ?? [], nameOf), about));
+    chimes = "out" in asked ? parseChimes(asked.out, seats, poster.id) : undefined;
+    if (!chimes) {
+      // No gate, or none in time: the lanes pick, so nobody whose lane it is gets dropped.
+      const missed = "missed" in asked ? asked.missed : "the gate's answer wasn't a list";
+      if (router) console.warn(`[room] ${missed}; the lane rules pick who else speaks`);
+      by = "lanes";
+      chimes = (about === "answer" ? laneChimes(words, seats, poster.id) : reviewChimes(words, seats, poster.id)).map((c) => ({
+        ...c,
+        why: router ? `${c.why} (${missed})` : c.why,
+      }));
     }
-    chimes ??= about === "answer" ? laneChimes(words, seats, poster.id) : [];
   } finally {
     t.routing--;
   }
@@ -680,7 +697,7 @@ async function chimeIn(chatId: string, convId: string, post: ChatMessage, named:
       monoId: c.id,
       convId,
       kind: about === "answer" ? "chime" : "reply",
-      by: "chime",
+      by,
       why: c.why,
       other: poster.name,
       trigger: post.id,
@@ -908,4 +925,5 @@ export function resetConductorForTests(): void {
   rooms.clear();
   runner = undefined;
   router = undefined;
+  routerTimeoutMs = ROUTER_TIMEOUT_MS;
 }

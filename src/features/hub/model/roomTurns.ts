@@ -202,6 +202,17 @@ export function laneChimes(ashText: string, seats: readonly Seat[], answerer: st
 }
 
 /**
+ * Who must look at work that came back (a report, "X is back") when the gate can't say: the seats whose lane the post
+ * touches, and frank, whose check against Ash's own words is due on every piece of work (docs/leadership/ROOM.md §3).
+ */
+export function reviewChimes(postText: string, seats: readonly Seat[], poster: string): Chime[] {
+  return seats
+    .filter((s) => s.id !== poster && (s.id === "frank" || laneScore(s, postText) > 0))
+    .sort((a, b) => orderOf(a) - orderOf(b))
+    .map((s) => ({ id: s.id, why: s.id === "frank" && laneScore(s, postText) === 0 ? "work came back: check it against Ash's words (frank's lane)" : `the work touches ${s.name}'s lane` }));
+}
+
+/**
  * Members a Mono's reply addresses: an @mention anywhere, or names opening a line or sentence and followed by a comma
  * or colon ("frank, please check…", "PM: put that in the contract", "frank, Critiquito, please pass or flag", "frank and
  * Critiquito, re-check 07"). In order, without the speaker.

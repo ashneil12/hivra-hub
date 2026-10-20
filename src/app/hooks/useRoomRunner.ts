@@ -19,6 +19,7 @@ import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/
 import { monoForSession, monoLook } from "../../features/monos/model/mono";
 import {
   postBack,
+  ROUTER_TIMEOUT_MS,
   roomTurnOf,
   setGroupChatRunner,
   setRoomRouter,
@@ -220,12 +221,12 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
   }, []);
 
   // The room's cheap router (who else may add something): the smallest model, isolated and read-only. When Claude
-  // can't run one, the room falls back to its lane rules.
+  // can't run one, or it doesn't answer in time, the room falls back to its lane rules.
   useEffect(
     () =>
       setRoomRouter(async (prompt) => {
         if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
-        return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: 20_000 });
+        return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: ROUTER_TIMEOUT_MS });
       }),
     [],
   );
