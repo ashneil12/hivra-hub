@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/ic
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNow, workersFromJobs } from "../model/liveJobs";
 import { openCodingTeam, setHubSelection } from "../model/hubNav";
+import { leadFor } from "../model/hubLeads";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, jobStateWord, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
@@ -188,6 +189,15 @@ function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpe
   );
 }
 
+/** A live job a project's Lead runs, in a project with code: it opens in that coding team, on the Lead's chat. */
+function inCodingTeam(worker: Worker): boolean {
+  return (
+    !!worker.lead &&
+    !!leadFor(worker.lead) &&
+    !!hubData().listProjects().find((project) => project.id === worker.projectId)?.folder
+  );
+}
+
 function Activity({ worker, now }: { worker: Worker; now: number }) {
   const live = !worker.finishedAt && !worker.stuck;
   return (
@@ -208,7 +218,7 @@ function Activity({ worker, now }: { worker: Worker; now: number }) {
         <JobStateLabel w={worker} />
         {worker.stuck && !worker.stuckWorker ? <WorkerTakeLook w={worker} /> : null}
         {worker.prWatch ? <StopWatching w={worker} /> : null}
-        {worker.kind === "coding" ? (
+        {worker.kind === "coding" || inCodingTeam(worker) ? (
           <button type="button" data-hub-open-coding onClick={() => openCodingTeam(worker.projectId, { lead: true })}
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
             <Terminal className="size-3" strokeWidth={1.75} /> Open in coding team
