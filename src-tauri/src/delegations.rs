@@ -505,6 +505,8 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
     for mut older in take_over {
         older.state = CANCELLED.into();
         older.error = Some("A later request to that session took it over.".into());
+        // A question it was waiting on is nobody's now: the session works for the later request.
+        older.pending_question = None;
         older.settled_at = Some(now);
         if older.owner_session == owner && older.delivery != DISPOSED {
             older.delivery = DISPOSED.into();
@@ -2106,6 +2108,31 @@ mod tests {
         assert_eq!(
             (reopened.id.as_str(), reopened.state.as_str()),
             (row.id.as_str(), RUNNING)
+        );
+    }
+
+    /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.
+    #[test]
+    fn a_row_taken_over_drops_its_waiting_question() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono-a", "req-a", "child"), 10).unwrap();
+        assert!(
+            set_question(
+                &mut conn,
+                &first.id,
+                Some("Which save slot?".into()),
+                None,
+                11
+            )
+            .unwrap()
+            .applied
+        );
+        record(&mut conn, launch("mono-b", "req-b", "child"), 12).unwrap();
+        let taken = get(&conn, &first.id).unwrap().unwrap();
+        assert_eq!(
+            (taken.state.as_str(), taken.pending_question),
+            (CANCELLED, None)
         );
     }
 
