@@ -97,7 +97,26 @@ export async function runScenario(scenario, ctx) {
     }
     if (cond.monoQuestion) {
       const snap = await act("snapshot");
-      return (snap.sessions ?? []).some((x) => x.mono === resolveMono(cond.monoQuestion) && x.question);
+      const asking = (snap.sessions ?? []).some((x) => x.mono === resolveMono(cond.monoQuestion) && x.question);
+      // `gone`: the question it was waiting on is answered (or moved on).
+      return cond.gone ? !asking : asking;
+    }
+    if (cond.monoAnswered) {
+      // The chat itself shows a reply after the last cut-turn note (a resumed turn), and its turn is over.
+      const snap = await act("snapshot");
+      const chat = (snap.sessions ?? []).find((x) => x.mono === resolveMono(cond.monoAnswered));
+      if (!chat || chat.busy) return false;
+      const tail = chat.tail ?? [];
+      const cut = tail.map((block) => block.notice).lastIndexOf("interrupt");
+      return tail.slice(cut + 1).some((block) => block.role === "assistant" && String(block.text ?? "").trim());
+    }
+    if (cond.monoSaid) {
+      // Anything the Mono wrote (text or a tool call) since Ash's last message to it.
+      const monoId = resolveMono(cond.monoSaid);
+      const session = await ctx.monoSession(monoId);
+      if (!session) return false;
+      const since = lastSendTo.get(monoId) ?? ref;
+      return (await ctx.claudeTexts(since)).some((line) => line.session === session && !line.result && (line.text || line.tools?.length));
     }
     if (cond.delegation) {
       const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000 || ms(row.updated_at) >= t0);
@@ -213,6 +232,21 @@ export async function runScenario(scenario, ctx) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text }).catch((error) => ({ ok: false, error: error.message }));
       record.sends.push({ t: Date.now(), todayAnswer: step.answer, result: answer });
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
+    } else if (step.reload) {
+      // The window reloads (a vite full reload, View > Reload): whatever runs is cut the way that cuts it.
+      const answer = await act("reload", { afterMs: step.reload.afterMs ?? 300 }).catch((error) => ({ ok: false, error: error.message }));
+      record.marks.push({ t: Date.now(), mark: "reload", answer });
+      log(`  the window reloads${answer.ok === false ? ` (NOT DONE: ${answer.error})` : ""}`);
+      await sleep(1500);
+      const back = await act("ping", {}, 120_000).catch(() => null);
+      record.marks.push({ t: Date.now(), mark: back?.ok ? "reloaded" : "reload: the driver never came back" });
+      log(`  ${back?.ok ? "the reloaded window answers the driver" : "the reloaded window never answered"}`);
+    } else if (step.retry) {
+      // The "Try again" button on a Mono whose last turn failed (Today, Being built, the rail).
+      const answer = await act("retry", { mono: resolveMono(step.retry.mono) }).catch((error) => ({ ok: false, error: error.message }));
+      record.sends.push({ t: Date.now(), retry: step.retry, answer });
+      if (step.retry.mono) lastSendTo.set(resolveMono(step.retry.mono), Date.now());
+      log(`  Ash tapped Try again on ${step.retry.mono}: ${answer.ok ? "ok" : `not possible: ${answer.error}`}`);
     } else if (step.view) await view(step);
     else if (step.snapshot) {
       const snap = await act("snapshot").catch(() => null);
@@ -268,11 +302,44 @@ export async function runScenario(scenario, ctx) {
     replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? s.to.session, firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null })),
   };
   if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
-  const result = { ...record, ended, metrics, room, otherRooms, texts, delegations: rows, criteria: scenario.criteria ?? "" };
+  const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "" };
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
   return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits };
+}
+
+/**
+ * What the app answered Claude's AskUserQuestion calls with (the control_response lines the claude wrapper logs): the
+ * proof an answer reached the agent, not just the screen.
+ */
+export function questionAnswers(state, since = 0) {
+  const logs = path.join(state ?? "", "claude");
+  if (!state || !fs.existsSync(logs)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(logs).filter((n) => n.endsWith(".ndjson"))) {
+    for (const raw of fs.readFileSync(path.join(logs, name), "utf8").split("\n")) {
+      if (!raw.includes('"control-answer"')) continue;
+      let entry;
+      try {
+        entry = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (entry.dir !== "control-answer" || entry.t < since) continue;
+      let message;
+      try {
+        message = JSON.parse(entry.line);
+      } catch {
+        continue;
+      }
+      const response = message.response?.response ?? {};
+      const answers = response.updatedInput?.answers;
+      if (!answers && response.behavior !== "deny") continue;
+      out.push({ t: entry.t, pid: name.replace(".ndjson", ""), behavior: response.behavior ?? null, answers: answers ?? null, message: response.message ?? null });
+    }
+  }
+  return out.sort((a, b) => a.t - b.t);
 }
 
 /**
@@ -316,6 +383,7 @@ export function transcript(scenario, result, t0) {
     if (send.stop) timeline.push({ t: send.t, line: `**Ash pressed Stop** on ${JSON.stringify(send.stop)}` });
     else if (send.todayAnswer)
       timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}", pick "${send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
+    else if (send.retry) continue;
     else if (send.skipped) timeline.push({ t: send.t, line: `(Ash's message "${send.label}" could not be sent: ${send.skipped})` });
     else
       timeline.push({
@@ -335,6 +403,10 @@ export function transcript(scenario, result, t0) {
     if (!line.text) continue;
     timeline.push({ t: line.t, line: `[${line.who} chat] ${line.text.slice(0, 1200)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
   }
+  for (const a of result.answers ?? [])
+    timeline.push({ t: a.t, line: a.answers ? `(the app answered the question in Claude: ${JSON.stringify(a.answers).slice(0, 400)})` : `(the app declined the question in Claude: ${a.message ?? a.behavior})` });
+  for (const s of result.sends) if (s.retry) timeline.push({ t: s.t, line: `**Ash tapped Try again** on ${s.retry.mono}: ${s.answer?.ok ? "ok" : `not possible: ${s.answer?.error}`}` });
+  for (const m of result.marks ?? []) if (String(m.mark).startsWith("reload")) timeline.push({ t: m.t, line: `(test harness: ${m.mark === "reload" ? "the window reloads" : m.mark})` });
   for (const f of result.faults) timeline.push({ t: f.t, line: f.off ? "(test harness: outage off)" : `(test harness: model outage on, ${f.on.fixture ?? "529"})` });
   for (const v of result.views) timeline.push({ t: v.t, line: `(looked at ${v.name}${v.screenshot?.ok ? `, screenshot ${v.screenshot.file}` : ""})` });
   timeline.sort((a, b) => a.t - b.t);
