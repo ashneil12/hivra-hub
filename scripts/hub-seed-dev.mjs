@@ -134,6 +134,10 @@ export function scrub(db) {
     // copies of his Mono chats, and its outbox would replay them (to the stub, never the live studio).
     wipe("delegations", "delegations");
     wipe("delegationChatBinds", "delegation_chat_binds");
+    // PR watches (src-tauri/src/pr_watch): a dev copy would otherwise poll Ash's pull requests, wake its copies of his
+    // Mono chats and make mc/pr-<n> worktrees in his real project checkouts.
+    wipe("prWatchWakes", "pr_watch_wakes");
+    wipe("prWatches", "pr_watches");
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");

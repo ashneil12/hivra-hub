@@ -200,7 +200,7 @@ daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a D
   `~/.monocode-hub-dev/slots/<slot>/`, never the live key.
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
-  automations, reminders, orchestration rows, delegation rows and every `provider_session_id` are cleared. It refuses the daily folder,
+  automations, reminders, orchestration rows, delegation rows, PR watches and every `provider_session_id` are cleared. It refuses the daily folder,
   a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
   newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
 - One copy per slot: starting a slot that is already running says so and exits 75.
