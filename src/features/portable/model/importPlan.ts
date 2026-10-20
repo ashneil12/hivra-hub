@@ -14,7 +14,7 @@ import { addMockProject } from "../../hub/model/mockData";
 import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../../hub/model/setupSouls";
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
-import type { PortableConnector, PortableMono, PortableProject, PortableTeam, ProjectPrefsFile, SetupDoc } from "./setupDoc";
+import { isPortableSetting, settingLooksSecret, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
 
 // ---- what Rust found (src-tauri/src/portable.rs, Inspection) ---------------------------------------------------------
 
@@ -536,8 +536,11 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
     let set = 0;
     for (const key of keys) {
+      // Checked again where it is written: only a real preference, and never one that looks like a secret.
+      const value = doc.settings[key];
+      if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;
       try {
-        localStorage.setItem(key, doc.settings[key]);
+        localStorage.setItem(key, value);
         set++;
       } catch {
         /* storage full or unavailable */

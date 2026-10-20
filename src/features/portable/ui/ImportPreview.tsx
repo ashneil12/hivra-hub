@@ -49,6 +49,11 @@ function count(n: number, one: string, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** Setting keys by name, without the app's own prefix: `monocode.themeScheme` → themeScheme. */
+function settingNames(keys: string[]): string {
+  return keys.map((k) => k.replace(/^monocode[:.]/, "")).join(", ");
+}
+
 function folderName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
@@ -217,12 +222,9 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
           ] as const).map(([value, label]) => (
             <Row key={value} testId={`settings-${value}`} tick={<Tick on={choices.settings === value} onClick={() => set((c) => ({ ...c, settings: value }))} label={label} />} title={label} />
           ))}
-          {plan.settings.differ.length ? (
-            <button type="button" onClick={() => setOpen((o) => toggle(o, "settings"))} className="px-2 text-left text-[12px] text-content/60 hover:text-content">
-              {open.has("settings") ? "Hide" : "Show"} which differ
-            </button>
-          ) : null}
-          {open.has("settings") ? <p className="px-2 text-[12px] text-content/60">{plan.settings.differ.join(", ")}</p> : null}
+          {/* By name, so Ash sees exactly what a file would write before he says yes. */}
+          {plan.settings.add.length ? <p className="px-2 text-[12px] text-content/60" data-portable-settings-add>Not here yet: {settingNames(plan.settings.add)}</p> : null}
+          {plan.settings.differ.length ? <p className="px-2 text-[12px] text-content/60" data-portable-settings-differ>Set differently here: {settingNames(plan.settings.differ)}</p> : null}
         </Section>
       ) : null}
 

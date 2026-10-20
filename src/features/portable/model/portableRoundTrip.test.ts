@@ -63,6 +63,7 @@ async function seed(a: Awaited<ReturnType<typeof app>>) {
   localStorage.setItem("monocode:hub-role-names", "1");
   localStorage.setItem("monocode.openaiKey", "sk-proj-PLANTEDplantedPLANTEDplanted0123456789");
   localStorage.setItem("monocode.someIntegration", JSON.stringify({ url: "https://x", token: "abcdefgh12345678" }));
+  localStorage.setItem("monocode.keybindingOverrides", JSON.stringify({ "mod+k": "palette", token: "abcdefgh12345678" }));
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "hivra" }));
   localStorage.setItem("monocode:hub-project-prefs", JSON.stringify({ names: { hivra: "Hivra HQ" }, order: ["hivra", "vg-game"], hidden: [], icons: { hivra: { kind: "emoji", emoji: "🐝" }, "vg-game": { kind: "image", src: "asset://x", path: "/Users/ash/pic.png" } } }));
   a.templates.setTemplate("hivra", "product-saas");
@@ -103,7 +104,9 @@ it("no secret is in the setup files: logins, keys and secret-looking settings st
   expect(doc.connectors[0]).toEqual({ id: "c-github", name: "GitHub", projectId: "hivra", where: "mac", loginLivesIn: "This Mac's Keychain (monocode-hub:c-github)" });
   expect(doc.customModels[0]).not.toHaveProperty("apiKey");
   expect(doc.settings["monocode.openaiKey"]).toBeUndefined();
-  expect(JSON.parse(doc.settings["monocode.someIntegration"])).toEqual({ url: "https://x", token: "[secret removed]" });
+  // A preference with a secret-looking field keeps the rest; a key that isn't a preference doesn't travel at all.
+  expect(JSON.parse(doc.settings["monocode.keybindingOverrides"])).toEqual({ "mod+k": "palette", token: "[secret removed]" });
+  expect(doc.settings["monocode.someIntegration"]).toBeUndefined();
   expect(doc.settings["monocode.themeScheme"]).toBe("midnight");
   expect(doc.settings["monocode:hub-nav"]).toBeUndefined();
   expect(doc.projectPrefs.icons).toEqual({ hivra: { kind: "emoji", emoji: "🐝" } });
@@ -218,6 +221,38 @@ it("the preview shows each conflict, and the restore keeps what is already here"
   const all = { ...b.plan.defaultChoices(again), settings: "all" as const, replaceSouls: new Set(["chief-of-staff"]) };
   await b.plan.applyImport(pending, again, all, { agentFiles: { read: disk.read, write: disk.write } });
   expect(disk.files.get("chief-of-staff/SOUL.md")).toBe(SOUL);
+  expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
+});
+
+it("settings come back only as real preferences: never this install's state, a path, or anything that looks like a secret", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  // A crafted export: its setup.json says whatever it likes.
+  const setup = JSON.parse(files["setup/setup.json"]) as { settings: Record<string, string> };
+  const crafted = {
+    "monocode:hub-bot-changes": "[]",
+    "monocode:hub-lead-adopted": "{}",
+    "monocode.lastModel": "x",
+    "monocode.chatBackgroundPath": "/Users/someone/pic.png",
+    "monocode.projectLocations": "{}",
+    "monocode.claudePromptCache": "{}",
+    "monocode.quickComposerShortcut": ANTHROPIC,
+    "monocode.githubToken": "abcdefgh12345678",
+  };
+  setup.settings = { ...setup.settings, ...crafted };
+  files["setup/setup.json"] = JSON.stringify(setup);
+
+  localStorage.clear();
+  const b = await app();
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  expect([...plan.settings.add].sort()).toEqual(["monocode.accentColor", "monocode.keybindingOverrides", "monocode.themeScheme", "monocode:hub-role-names"]);
+  // Even a plan that names them can't write them.
+  plan.settings.add.push(...Object.keys(crafted));
+  pending.doc.settings = { ...pending.doc.settings, ...crafted };
+  await b.plan.applyImport(pending, plan, { ...b.plan.defaultChoices(plan), settings: "all" });
+  for (const key of Object.keys(crafted)) expect(localStorage.getItem(key), key).toBeNull();
   expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
 });
 
