@@ -18,6 +18,11 @@
 //!   work, or steered into it) or a leadership Mono's brief to a project Lead's long-running chat. The app reports these
 //!   by watching the child chat (monos/model/followedBriefs.ts), not from a launch's own callback, so they never take
 //!   the child over from earlier rows, a plain record never cancels them, and a resumed turn never re-attaches to them.
+//! - **Stalls** (H4 stuck workers): a running row whose worker went quiet, loops on the same step, or stopped without
+//!   reporting is marked stalled (`stall_kind` `quiet`, `loop` or `idle`, a plain reason, and since when) by the app's
+//!   watcher (monos/model/workerStall.ts). A stall is not a state: the row stays `running` (Ash OS knows five states), and
+//!   any move of the row (a question, a settle, a resumed turn, a Stop, a take-over) clears it. Activity again clears it
+//!   too. It is copied to Ash OS with the row (`stalled`) and logged (`stalled` / `unstalled`).
 //! - **Outbox**: every change bumps `version`. One thread copies rows newer than `mirrored_version` to Ash OS
 //!   (`ash-hub-delegation`), and each chat's Claude session binding (`ash-hub-chat-bind`), and replays whatever is left
 //!   at boot. It goes through `hub::Endpoint`, so a dev copy only ever reaches the stub or the read-only proxy.
@@ -123,6 +128,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_follow {
         conn.execute_batch("ALTER TABLE delegations ADD COLUMN follow TEXT;")?;
     }
+    let has_stall = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'stall_kind'")?
+        .exists([])?;
+    if !has_stall {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN stall_kind TEXT;
+             ALTER TABLE delegations ADD COLUMN stall_reason TEXT;
+             ALTER TABLE delegations ADD COLUMN stalled_at INTEGER;",
+        )?;
+    }
     Ok(())
 }
 
@@ -162,11 +177,23 @@ pub struct Delegation {
     pub mirror_error: Option<String>,
     /// `queue`, `steer` or `lead` for a followed brief (see the module docs); none for a launch's own report.
     pub follow: Option<String>,
+    /// A running row's stall (module docs): `quiet`, `loop` or `idle`; none while it moves.
+    pub stall_kind: Option<String>,
+    pub stall_reason: Option<String>,
+    /// Since when it has been stuck this way (its last activity, or the start of the loop), epoch ms.
+    pub stalled_at: Option<i64>,
 }
 
 impl Delegation {
     fn is_open(&self) -> bool {
         self.state == RUNNING || self.state == QUESTION
+    }
+
+    /// The row moved (a question, a settle, a resumed turn, a Stop): whatever stall it had is over.
+    fn unstall(&mut self) {
+        self.stall_kind = None;
+        self.stall_reason = None;
+        self.stalled_at = None;
     }
 
     /// The newest event in the row's history.
@@ -200,7 +227,7 @@ impl Delegation {
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error, follow";
+     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at";
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
@@ -237,6 +264,9 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         mirrored_version: row.get(28)?,
         mirror_error: row.get(29)?,
         follow: row.get(30)?,
+        stall_kind: row.get(31)?,
+        stall_reason: row.get(32)?,
+        stalled_at: row.get(33)?,
     })
 }
 
@@ -263,7 +293,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
     conn.execute(
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)"
+             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)"
         ),
         params![
             d.id,
@@ -297,6 +327,9 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.mirrored_version,
             d.mirror_error,
             d.follow,
+            d.stall_kind,
+            d.stall_reason,
+            d.stalled_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -308,7 +341,8 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
     conn.execute(
         "UPDATE delegations SET generation = ?2, state = ?3, error_class = ?4, error = ?5, retryable = ?6,
            resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
-           updated_at = ?12, settled_at = ?13, log = ?14, version = ?15
+           updated_at = ?12, settled_at = ?13, log = ?14, version = ?15, stall_kind = ?16, stall_reason = ?17,
+           stalled_at = ?18
          WHERE id = ?1",
         params![
             d.id,
@@ -326,6 +360,9 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.settled_at,
             serde_json::to_string(&d.log).unwrap_or_else(|_| "[]".into()),
             d.version,
+            d.stall_kind,
+            d.stall_reason,
+            d.stalled_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -507,6 +544,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         older.error = Some("A later request to that session took it over.".into());
         // A question it was waiting on is nobody's now: the session works for the later request.
         older.pending_question = None;
+        older.unstall();
         older.settled_at = Some(now);
         if older.owner_session == owner && older.delivery != DISPOSED {
             older.delivery = DISPOSED.into();
@@ -557,6 +595,9 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         mirrored_version: 0,
         mirror_error: None,
         follow: follow.clone(),
+        stall_kind: None,
+        stall_reason: None,
+        stalled_at: None,
     };
     row.note(
         now,
@@ -628,6 +669,7 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.retryable = input.retryable;
     row.resets_at = input.resets_at;
     row.pending_question = None;
+    row.unstall();
     row.settled_at = Some(now);
     let mut detail = json!({ "state": row.state, "generation": row.generation });
     if let Some(class) = &row.error_class {
@@ -687,6 +729,7 @@ pub fn reattach(
     }
     let was = row.state.clone();
     row.generation += 1;
+    row.unstall();
     if reopen {
         row.state = RUNNING.into();
         row.result = None;
@@ -776,6 +819,7 @@ pub fn set_question_with(
         });
     }
     row.state = next.into();
+    row.unstall();
     let event = if question.is_some() {
         "asked"
     } else {
@@ -783,6 +827,90 @@ pub fn set_question_with(
     };
     row.pending_question = question;
     row.note(now, &by, event, question_detail(detail));
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    nudge();
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
+const STALL_KINDS: [&str; 3] = ["quiet", "loop", "idle"];
+const STALL_REASON_MAX: usize = 300;
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallInput {
+    pub id: String,
+    /// The turn the watcher judged: a stall never lands on a newer one.
+    pub generation: i64,
+    /// `quiet`, `loop` or `idle`; none clears the stall (it moves again).
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Since when it has been stuck this way, epoch ms; never later than now.
+    #[serde(default)]
+    pub since: Option<i64>,
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+/// Mark a running row stalled, or clear its stall (module docs). Only a running row of this generation moves; the same
+/// kind again changes nothing (the watcher looks every half minute), so the outbox copies one change per stall.
+pub fn set_stall(conn: &mut Connection, input: StallInput, now: i64) -> Result<Change, String> {
+    let kind = text(input.kind, 20);
+    if let Some(kind) = kind.as_deref() {
+        if !STALL_KINDS.contains(&kind) {
+            return Err("a stall is quiet, loop or idle".into());
+        }
+    }
+    let by = actor(input.by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, &input.id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    if row.state != RUNNING || row.generation != input.generation || row.stall_kind == kind {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    match kind {
+        Some(kind) => {
+            let reason = text(input.reason, STALL_REASON_MAX);
+            row.note(
+                now,
+                &by,
+                "stalled",
+                json!({ "kind": kind, "reason": reason, "generation": row.generation }),
+            );
+            row.stalled_at = Some(
+                input
+                    .since
+                    .unwrap_or(now)
+                    .clamp(row.created_at.min(now), now),
+            );
+            row.stall_kind = Some(kind);
+            row.stall_reason = reason;
+        }
+        None => {
+            row.note(
+                now,
+                &by,
+                "unstalled",
+                json!({ "was": row.stall_kind, "generation": row.generation }),
+            );
+            row.unstall();
+        }
+    }
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -932,6 +1060,7 @@ pub fn cancel(
                 .clone()
                 .or_else(|| Some("Stopped by its owner.".into()));
             row.pending_question = None;
+            row.unstall();
             row.settled_at = Some(now);
         }
         row.delivery = DISPOSED.into();
@@ -972,6 +1101,7 @@ pub fn refuse(
         });
     }
     row.state = CANCELLED.into();
+    row.unstall();
     row.error = Some("The launch was refused.".into());
     row.settled_at = Some(now);
     row.delivery = DISPOSED.into();
@@ -1251,6 +1381,11 @@ pub(crate) fn delegation_payload(d: &Delegation) -> Value {
     });
     if let Some(mono) = d.owner_mono.as_deref().filter(|m| mono_id_ok(m)) {
         payload["owner_mono"] = json!(mono);
+    }
+    // Ash OS keeps what it knows and ignores the rest (ashos/hub.py `_delegation_row`); the log carries it either way.
+    if let Some(kind) = d.stall_kind.as_deref() {
+        payload["stalled"] =
+            json!({ "kind": kind, "reason": d.stall_reason, "since": d.stalled_at });
     }
     payload
 }
@@ -1552,6 +1687,19 @@ pub fn delegations_set_question(
         detail,
         now_millis(),
     )?;
+    if let (true, Some(row)) = (change.applied, &change.row) {
+        changed(&app, &[row]);
+    }
+    Ok(change)
+}
+
+#[tauri::command(async)]
+pub fn delegations_set_stall(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    input: StallInput,
+) -> Result<Change, String> {
+    let change = set_stall(&mut *store.lock_conn()?, input, now_millis())?;
     if let (true, Some(row)) = (change.applied, &change.row) {
         changed(&app, &[row]);
     }
@@ -2339,6 +2487,221 @@ mod tests {
             .map(|d| d.id)
             .collect();
         assert_eq!(ids, vec![working.id.clone(), worker.id.clone()]);
+    }
+
+    fn stall(id: &str, generation: i64, kind: Option<&str>, since: i64) -> StallInput {
+        StallInput {
+            id: id.into(),
+            generation,
+            kind: kind.map(str::to_string),
+            reason: kind.map(|k| format!("went {k}")),
+            since: Some(since),
+            by: Some("watch".into()),
+        }
+    }
+
+    fn events(row: &Delegation) -> Vec<String> {
+        row.log
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .get("event")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_running_worker_stalls_once_per_kind_and_clears_when_it_moves_again() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+
+        let stalled = set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 400), 700).unwrap();
+        assert!(stalled.applied);
+        let stalled = stalled.row.unwrap();
+        assert_eq!(stalled.stall_kind.as_deref(), Some("quiet"));
+        assert_eq!(stalled.stall_reason.as_deref(), Some("went quiet"));
+        // Since when it has been stuck this way (its last activity), not when the watcher noticed.
+        assert_eq!(stalled.stalled_at, Some(400));
+        assert_eq!(stalled.state, RUNNING);
+        assert!(stalled.version > row.version, "a stall is copied to Ash OS");
+        assert_eq!(events(&stalled).last().map(String::as_str), Some("stalled"));
+
+        // The same stall again (the watcher ticks every half minute) changes nothing.
+        let again = set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 650), 760).unwrap();
+        assert!(!again.applied);
+        assert_eq!(again.row.unwrap().stalled_at, Some(400));
+
+        // Another kind of stall replaces it; a stall time in the future is the moment it was written.
+        let looping = set_stall(&mut conn, stall(&row.id, 1, Some("loop"), 9_999), 800).unwrap();
+        assert!(looping.applied);
+        let looping = looping.row.unwrap();
+        assert_eq!(looping.stall_kind.as_deref(), Some("loop"));
+        assert_eq!(looping.stalled_at, Some(800));
+
+        // Activity again: cleared, once.
+        let moving = set_stall(&mut conn, stall(&row.id, 1, None, 0), 900).unwrap();
+        assert!(moving.applied);
+        let moving = moving.row.unwrap();
+        assert_eq!(
+            (
+                moving.stall_kind.as_deref(),
+                moving.stall_reason.as_deref(),
+                moving.stalled_at
+            ),
+            (None, None, None)
+        );
+        assert_eq!(
+            events(&moving).last().map(String::as_str),
+            Some("unstalled")
+        );
+        assert!(
+            !set_stall(&mut conn, stall(&row.id, 1, None, 0), 950)
+                .unwrap()
+                .applied
+        );
+
+        // It survives a read back from the store.
+        set_stall(&mut conn, stall(&row.id, 1, Some("idle"), 960), 1_000).unwrap();
+        let stored = get(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(stored.stall_kind.as_deref(), Some("idle"));
+        assert_eq!(stored.stalled_at, Some(960));
+    }
+
+    #[test]
+    fn only_a_running_row_of_this_generation_stalls() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        assert!(
+            set_stall(&mut conn, stall(&row.id, 2, Some("quiet"), 5), 20)
+                .unwrap()
+                .row
+                .unwrap()
+                .stall_kind
+                .is_none()
+        );
+        assert!(set_stall(&mut conn, stall(&row.id, 1, Some("asleep"), 5), 20).is_err());
+        assert!(
+            !set_stall(&mut conn, stall("t-missing", 1, Some("quiet"), 5), 20)
+                .unwrap()
+                .applied
+        );
+        // Asking its Lead is not a stall: that worker waits on an answer.
+        set_question(&mut conn, &row.id, Some("Which branch?".into()), None, 30).unwrap();
+        assert!(
+            !set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 5), 40)
+                .unwrap()
+                .applied
+        );
+        set_question(&mut conn, &row.id, None, None, 50).unwrap();
+        settle(&mut conn, finish(&row.id, 1, FAILED, ""), 60).unwrap();
+        assert!(
+            !set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 5), 70)
+                .unwrap()
+                .applied
+        );
+    }
+
+    #[test]
+    fn every_move_of_the_row_clears_its_stall() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let clear = |row: &Delegation| {
+            assert_eq!(
+                (row.stall_kind.as_deref(), row.stalled_at),
+                (None, None),
+                "{:?}",
+                row.log
+            );
+        };
+        // A question.
+        let asked = record(&mut conn, launch("lead", "r1", "w1"), 10).unwrap();
+        set_stall(&mut conn, stall(&asked.id, 1, Some("quiet"), 5), 20).unwrap();
+        clear(
+            &set_question(&mut conn, &asked.id, Some("Which?".into()), None, 30)
+                .unwrap()
+                .row
+                .unwrap(),
+        );
+        clear(&get(&conn, &asked.id).unwrap().unwrap());
+        // A settle.
+        let settled = record(&mut conn, launch("lead", "r2", "w2"), 10).unwrap();
+        set_stall(&mut conn, stall(&settled.id, 1, Some("loop"), 5), 20).unwrap();
+        clear(
+            &settle(&mut conn, finish(&settled.id, 1, COMPLETED, "done"), 30)
+                .unwrap()
+                .row
+                .unwrap(),
+        );
+        // A resumed turn (a new generation).
+        let resumed = record(&mut conn, launch("lead", "r3", "w3"), 10).unwrap();
+        set_stall(&mut conn, stall(&resumed.id, 1, Some("idle"), 5), 20).unwrap();
+        let again = reattach(&mut conn, "w3", true, None, 30).unwrap().unwrap();
+        assert_eq!(again.generation, 2);
+        clear(&again);
+        // A Stop.
+        let stopped = record(&mut conn, launch("lead", "r4", "w4"), 10).unwrap();
+        set_stall(&mut conn, stall(&stopped.id, 1, Some("quiet"), 5), 20).unwrap();
+        clear(&cancel(&mut conn, &[stopped.id.clone()], None, None, 30).unwrap()[0]);
+        // A later request that takes the chat over.
+        let older = record(&mut conn, launch("lead", "r5", "w5"), 10).unwrap();
+        set_stall(&mut conn, stall(&older.id, 1, Some("quiet"), 5), 20).unwrap();
+        record(&mut conn, launch("lead", "r6", "w5"), 30).unwrap();
+        clear(&get(&conn, &older.id).unwrap().unwrap());
+    }
+
+    #[test]
+    fn ash_os_gets_the_stall_with_the_row() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        assert!(delegation_payload(&row).get("stalled").is_none());
+        let stalled = set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 400), 700)
+            .unwrap()
+            .row
+            .unwrap();
+        let payload = delegation_payload(&stalled);
+        assert_eq!(
+            payload["state"], "running",
+            "Ash OS knows five states; a stall is not one of them"
+        );
+        assert_eq!(
+            payload["stalled"],
+            json!({ "kind": "quiet", "reason": "went quiet", "since": 400 })
+        );
+        assert_eq!(
+            payload["log"].as_array().unwrap().last().unwrap()["event"],
+            "stalled"
+        );
+    }
+
+    #[test]
+    fn an_older_store_gets_the_stall_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE delegations (id TEXT PRIMARY KEY, owner_session TEXT NOT NULL, owner_mono TEXT, batch_id TEXT,
+               parent_id TEXT, root_id TEXT NOT NULL, child_session TEXT NOT NULL, request_id TEXT NOT NULL,
+               generation INTEGER NOT NULL DEFAULT 1, project TEXT, title TEXT, brief TEXT, goal TEXT,
+               ask_ids TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, error_class TEXT, error TEXT, retryable INTEGER,
+               resets_at INTEGER, result TEXT, pending_question TEXT, delivery TEXT NOT NULL, delivery_message TEXT,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, settled_at INTEGER,
+               log TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1,
+               mirrored_version INTEGER NOT NULL DEFAULT 0, mirror_error TEXT, follow TEXT,
+               UNIQUE (owner_session, request_id));",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        let mut conn = conn;
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 1).unwrap();
+        set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 1), 2).unwrap();
+        assert_eq!(
+            get(&conn, &row.id).unwrap().unwrap().stall_kind.as_deref(),
+            Some("quiet")
+        );
     }
 
     #[test]

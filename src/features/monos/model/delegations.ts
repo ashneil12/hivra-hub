@@ -75,6 +75,28 @@ export type Delegation = {
   mirrorError: string | null;
   /** A followed brief (followedBriefs.ts): reported by watching the child chat. Absent on older rows. */
   follow?: FollowMode | null;
+  /**
+   * A running row's stall (delegations.rs, workerStall.ts): its worker went quiet, loops, or stopped without reporting.
+   * Not a state: the row stays running, and any move of it clears the stall. Absent on older rows.
+   */
+  stallKind?: StallKind | null;
+  stallReason?: string | null;
+  /** Since when it has been stuck this way (its last activity, or when the loop was seen), epoch ms. */
+  stalledAt?: number | null;
+};
+
+/** How a running worker is stuck: no output (`quiet`), the same step over and over (`loop`), or idle without a report. */
+export type StallKind = "quiet" | "loop" | "idle";
+
+export type StallInput = {
+  id: string;
+  /** The turn that was judged: a stall never lands on a newer one. */
+  generation: number;
+  /** None clears the stall. */
+  kind?: StallKind;
+  reason?: string;
+  since?: number;
+  by?: string;
 };
 
 /**
@@ -167,6 +189,8 @@ export type DelegationsBackend = {
   bindChat(input: ChatBindInput): Promise<boolean>;
   /** The followed-brief rows (any state) behind briefs waiting in one chat's queue, by request id. */
   followedInto?(childSession: string, requestIds: string[]): Promise<Delegation[]>;
+  /** Mark a running row stalled, or (no kind) clear its stall. */
+  setStall?(input: StallInput): Promise<Change>;
 };
 
 export const tauriDelegations: DelegationsBackend = {
@@ -187,6 +211,7 @@ export const tauriDelegations: DelegationsBackend = {
     invoke("delegations_reports_seen", { ownerSession, messageIds }),
   bindChat: (input) => invoke("delegations_bind_chat", { input }),
   followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
+  setStall: (input) => invoke("delegations_set_stall", { input }),
 };
 
 /** delegations.rs's event after any change to a row. */
@@ -697,6 +722,29 @@ export class DelegationTracker {
   ): Promise<Change> {
     return this.serial(async () => {
       const change = await this.backend.setQuestion(row.id, question, by, detail);
+      this.remember(change.row);
+      return change;
+    });
+  }
+
+  /**
+   * The stall watcher judged a running row (workerStall.ts): stalled this way, or (null) moving again. Through the
+   * tracker, so this window's open rows stay in step; a backend without stalls changes nothing.
+   */
+  setStall(
+    row: Pick<Delegation, "id" | "generation">,
+    stall: { kind: StallKind; reason: string; since: number } | null,
+    by = "watch",
+  ): Promise<Change> {
+    const write = this.backend.setStall?.bind(this.backend);
+    if (!write) return Promise.resolve({ applied: false, row: null });
+    return this.serial(async () => {
+      const change = await write({
+        id: row.id,
+        generation: row.generation,
+        ...(stall ? { kind: stall.kind, reason: stall.reason, since: stall.since } : {}),
+        by,
+      });
       this.remember(change.row);
       return change;
     });

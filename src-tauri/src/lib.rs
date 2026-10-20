@@ -451,6 +451,7 @@ pub fn run() {
             delegations::delegations_settle,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
+            delegations::delegations_set_stall,
             delegations::delegations_set_delivery,
             delegations::delegations_cancel,
             delegations::delegations_refuse,
