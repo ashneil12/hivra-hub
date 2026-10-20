@@ -135,12 +135,13 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
   await expect(page.locator('[data-hub-worker="j_format"] [data-hub-job-state]')).toHaveAttribute("data-hub-job-state", "waiting");
   await shot(page, "3-being-built");
 
-  // Today: the Stuck section above Waiting on you, every stuck worker with its project and Lead, answerable there.
+  // Today: the Stuck section above Waiting on you, every stuck worker with its Lead (the project is named too unless the
+  // Lead's name already says it: "EXO lead", not "EXO · EXO lead"), answerable there.
   await select({ project: "today", item: "inbox" });
   const today = page.locator("[data-hub-stuck]");
   await expect(today).toBeVisible({ timeout: 15_000 });
   await expect(today.locator("[data-stuck-worker]")).toHaveCount(3);
-  await expect(today.locator("[data-stuck-where]").first()).toHaveText("EXO · EXO lead · Run the movement tests");
+  await expect(today.locator("[data-stuck-where]").first()).toHaveText("EXO lead · Run the movement tests");
   await expect(today.locator('[data-stuck-kind="asking"] [data-stuck-reply]')).toBeVisible();
   await expect(today.locator('[data-stuck-kind="failed"] [data-stuck-dismiss]')).toBeVisible();
   await shot(page, "4-today");
