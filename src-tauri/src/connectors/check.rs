@@ -5,12 +5,12 @@
 use super::builtin::Telegram;
 use super::catalog::Entry;
 use super::launch::{find_on_path, plan, stdio_command, Plan};
-use super::oauth;
 use super::remote::{handshake, PostError, Remote};
 use super::secrets::{redact, Login, SecretStore};
 use serde::Serialize;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -29,8 +29,9 @@ pub struct Outcome {
     pub tools: Option<usize>,
 }
 
-pub fn run(entry: &Entry, login: &mut Login, store: &dyn SecretStore) -> Outcome {
-    let outcome = test(entry, login, store);
+/// `dir`: the app's data folder, where the connector's renewal lock is (renew.rs).
+pub fn run(entry: &Entry, login: &mut Login, store: &dyn SecretStore, dir: &Path) -> Outcome {
+    let outcome = test(entry, login, store, dir);
     let secrets = login.secrets();
     Outcome {
         message: redact(&outcome.message, &secrets),
@@ -39,7 +40,7 @@ pub fn run(entry: &Entry, login: &mut Login, store: &dyn SecretStore) -> Outcome
     }
 }
 
-fn test(entry: &Entry, login: &mut Login, store: &dyn SecretStore) -> Outcome {
+fn test(entry: &Entry, login: &mut Login, store: &dyn SecretStore, dir: &Path) -> Outcome {
     let account = match identity(entry, login) {
         Ok(account) => account,
         Err(why) => return failed(why),
@@ -52,26 +53,18 @@ fn test(entry: &Entry, login: &mut Login, store: &dyn SecretStore) -> Outcome {
         Plan::Remote { url, headers } => {
             let remote = Remote::new(url, headers);
             let mut result = handshake(&remote);
-            if result == Err(PostError::Unauthorized) {
-                if let Some(tokens) = login.oauth.clone() {
-                    match oauth::refresh(&tokens) {
-                        Ok(renewed) => {
-                            login.oauth = Some(renewed);
-                            // The provider may have retired the old refresh token: a login that isn't kept is lost.
-                            if let Err(why) = store.put(&entry.id, login) {
-                                return failed(format!(
-                                    "{}'s login was renewed but couldn't be saved ({why}), so the next session would start with the old one. Sign in again.",
-                                    entry.name
-                                ));
-                            }
-                            if let Ok(Plan::Remote { url, headers }) =
-                                super::launch::plan(entry, login)
-                            {
-                                result = handshake(&Remote::new(url, headers));
-                            }
+            if result == Err(PostError::Unauthorized) && login.oauth.is_some() {
+                // Renewed under the lock every session's bridge takes too, and kept before it is used (renew.rs): the
+                // provider may have retired the old refresh token, so a login that isn't kept is lost.
+                match super::renew::renew(dir, store, &entry.id, login) {
+                    Ok(renewed) => {
+                        *login = renewed;
+                        if let Ok(Plan::Remote { url, headers }) = super::launch::plan(entry, login)
+                        {
+                            result = handshake(&Remote::new(url, headers));
                         }
-                        Err(why) => return failed(why),
                     }
+                    Err(why) => return failed(format!("{}: {why}", entry.name)),
                 }
             }
             match result {
@@ -359,10 +352,12 @@ mod tests {
             Arc::new(Seen::default()),
         );
         let entry = oauth_entry(mcp);
-        let mut login = rotating_login(&token_url, oauth::now() + 3600);
+        let mut login = rotating_login(&token_url, super::super::oauth::now() + 3600);
         let store = ReadOnly::default();
         store.0.put("notion", &login).unwrap();
-        let outcome = run(&entry, &mut login, &store);
+        let dir = std::env::temp_dir().join(format!("mc-check-{}", uuid::Uuid::new_v4()));
+        let outcome = run(&entry, &mut login, &store, &dir);
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(*sent.lock().unwrap(), vec!["REFRESH_0".to_string()]);
         // The provider has moved on to REFRESH_1, but the Keychain still holds REFRESH_0: not "Connected".
         assert!(!outcome.ok, "{outcome:?}");
@@ -384,7 +379,7 @@ mod tests {
             )]),
             oauth: None,
         };
-        let outcome = run(entry, &mut login, &Memory::default());
+        let outcome = run(entry, &mut login, &Memory::default(), &std::env::temp_dir());
         assert!(!outcome.ok);
         assert!(
             !outcome.message.contains("SECRET_PATH_SENTINEL"),

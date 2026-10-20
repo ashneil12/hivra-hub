@@ -7,6 +7,7 @@
 //! - `signing`: the app signs each session's connector arguments; the launcher refuses anything it didn't sign.
 //! - `remote` + `bridge`: hosted MCP servers spoken to over stdio with the login held in memory.
 //! - `oauth`: browser sign-in (MCP authorization with dynamic registration, or Google with Ash's own client).
+//! - `renew`: renewing an OAuth login under a lock shared by every process that holds it.
 //! - `builtin`: small servers for plain HTTP APIs (Telegram).
 //! - `check`: the Test button.
 //! - `commands`: the Connectors page's commands.
@@ -21,6 +22,7 @@ pub mod commands;
 pub mod launch;
 mod oauth;
 mod remote;
+mod renew;
 pub mod secrets;
 pub mod settings;
 pub mod signing;

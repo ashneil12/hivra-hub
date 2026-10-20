@@ -296,7 +296,7 @@ impl Service {
         } else {
             Login::default()
         };
-        let outcome = check::run(entry, &mut login, self.store.as_ref());
+        let outcome = check::run(entry, &mut login, self.store.as_ref(), &self.dir);
         self.record(id, &outcome)?;
         Ok(outcome)
     }

@@ -17,6 +17,7 @@ use super::builtin::Telegram;
 use super::catalog::{self, fill, Entry, Launch};
 use super::oauth;
 use super::remote::Remote;
+use super::renew;
 use super::secrets::{redact, Keychain, Login, SecretStore};
 use super::settings;
 use super::signing;
@@ -163,10 +164,10 @@ pub fn prepare(
     } else {
         Login::default()
     };
-    if let Some(tokens) = login.oauth.as_ref().filter(|t| oauth::expiring(t)) {
-        let renewed = oauth::refresh(tokens).map_err(|why| redact(&why, &login.secrets()))?;
-        login.oauth = Some(renewed);
-        store.put(&entry.id, &login)?;
+    if login.oauth.as_ref().is_some_and(oauth::expiring) {
+        // Another session may be renewing the same login right now (renew.rs).
+        login = renew::renew(dir, store, &entry.id, &login)
+            .map_err(|why| redact(&why, &login.secrets()))?;
     }
     let plan = plan(entry, &login)?;
     Ok((entry, login, plan))
@@ -177,15 +178,14 @@ fn refresher(
     entry: &'static Entry,
     login: Login,
     store: Arc<dyn SecretStore>,
+    dir: PathBuf,
 ) -> Option<Refresher> {
     login.oauth.as_ref()?;
     let login = Arc::new(Mutex::new(login));
     Some(Arc::new(move || {
         let mut login = login.lock().unwrap();
-        let tokens = login.oauth.clone().ok_or("no OAuth login")?;
-        let renewed = oauth::refresh(&tokens)?;
-        login.oauth = Some(renewed);
-        store.put(&entry.id, &login)?;
+        // The renewal another session already made, or a new one (renew.rs).
+        *login = renew::renew(&dir, store.as_ref(), &entry.id, &login)?;
         match plan(entry, &login)? {
             Plan::Remote { headers, .. } => Ok(headers),
             _ => Err("not a hosted server".into()),
@@ -224,7 +224,7 @@ pub fn run_main(args: &[String]) -> i32 {
         Plan::Remote { url, headers } => {
             let bridge = Bridge {
                 remote: Arc::new(Remote::new(url, headers)),
-                refresh: refresher(entry, login, store),
+                refresh: refresher(entry, login, store, dir.clone()),
                 log,
             };
             let stdin = std::io::stdin();
@@ -662,6 +662,92 @@ pub(crate) mod tests {
         assert!(seen.get("HOME").is_some_and(|home| !home.is_empty()));
         assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
         assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
+    }
+
+    fn oauth_on_everywhere(dir: &Path, id: &str) {
+        let mut s = Settings::default();
+        s.connectors.insert(
+            id.into(),
+            ConnectorState {
+                signed_in: true,
+                method: Some(Method::Oauth),
+                allow: vec![EVERYWHERE.into()],
+                ..Default::default()
+            },
+        );
+        settings::save(dir, &s).unwrap();
+    }
+
+    fn bearer(plan: &Plan) -> String {
+        let Plan::Remote { headers, .. } = plan else {
+            panic!("{plan:?}")
+        };
+        headers
+            .iter()
+            .find(|(name, _)| name == "Authorization")
+            .map(|(_, value)| value.clone())
+            .unwrap()
+    }
+
+    /// Two sessions start the same connector at once with an expired login. The provider rotates refresh tokens (each
+    /// works once): only one launch may spend it, and the other must take what that one got.
+    #[test]
+    fn two_launches_renew_an_expired_login_once() {
+        use super::super::oauth::tests::{rotating_login, rotating_token_endpoint};
+        let (token_url, sent) = rotating_token_endpoint(std::time::Duration::from_millis(300));
+        let dir = temp_dir();
+        oauth_on_everywhere(&dir, "notion");
+        let store = Arc::new(Memory::default());
+        store.put("notion", &rotating_login(&token_url, 1)).unwrap();
+        let args = Arc::new(signed(store.as_ref(), "notion", "m", &[]));
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let launches: Vec<_> = (0..2)
+            .map(|_| {
+                let (dir, store, args, start) = (
+                    dir.clone(),
+                    Arc::clone(&store),
+                    Arc::clone(&args),
+                    Arc::clone(&start),
+                );
+                std::thread::spawn(move || {
+                    start.wait();
+                    prepare(&args, &dir, store.as_ref()).map(|(_, _, plan)| bearer(&plan))
+                })
+            })
+            .collect();
+        for launch in launches {
+            assert_eq!(launch.join().unwrap(), Ok("Bearer ACCESS_1".to_string()));
+        }
+        assert_eq!(*sent.lock().unwrap(), vec!["REFRESH_0".to_string()]);
+        let kept = store.get("notion").unwrap().unwrap().oauth.unwrap();
+        assert_eq!(kept.refresh_token.as_deref(), Some("REFRESH_1"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A running bridge whose server says the token expired takes the renewal another session already made, instead of
+    /// spending the refresh token that session already spent.
+    #[test]
+    fn a_bridge_takes_a_renewal_another_session_made() {
+        use super::super::oauth::tests::{rotating_login, rotating_token_endpoint};
+        let (token_url, sent) = rotating_token_endpoint(std::time::Duration::ZERO);
+        let dir = temp_dir();
+        let entry = catalog::entry("notion").unwrap();
+        let store: Arc<dyn SecretStore> = Arc::new(Memory::default());
+        let started = rotating_login(&token_url, oauth::now() + 3600);
+        store.put("notion", &started).unwrap();
+        let first = refresher(entry, started.clone(), Arc::clone(&store), dir.clone()).unwrap();
+        let second = refresher(entry, started, Arc::clone(&store), dir.clone()).unwrap();
+        let auth = |headers: Vec<(String, String)>| headers[0].1.clone();
+        assert_eq!(first().map(auth), Ok("Bearer ACCESS_1".to_string()));
+        assert_eq!(second().map(auth), Ok("Bearer ACCESS_1".to_string()));
+        assert_eq!(*sent.lock().unwrap(), vec!["REFRESH_0".to_string()]);
+        // Told again that ACCESS_1 expired, it really renews (with the refresh token now kept).
+        assert_eq!(second().map(auth), Ok("Bearer ACCESS_2".to_string()));
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec!["REFRESH_0".to_string(), "REFRESH_1".to_string()]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
