@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -8,11 +8,18 @@ import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
-import { buildPage, type BuildPageResult } from "../model/buildPage";
+import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
+import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
+import type { PageSpec } from "../model/pageSpec";
+import { READY_BY, READY_PAGES, type ReadyPage } from "../model/readyPages";
+import { checkBespokePage } from "../model/designCheck";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
-import { handleBridgeCall, type BridgeCall } from "../model/bridge";
-import { SANDBOX, bespokeSrcdoc, readTokens } from "../model/sandbox";
+import { PageBridgeHost } from "../model/pageBridgeHost";
+import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
+import { appPageSources } from "../model/pageSources";
+import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
+import { SessionStateContext } from "../../sessions/model/sessionStateStore";
+import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
@@ -153,7 +160,7 @@ export function Block({ block }: { block: PageBlock }) {
 }
 
 export function PageBody({ page, live }: { page: Page; live?: boolean }) {
-  if (page.spec.kind === "bespoke") return <BespokeFrame pageId={page.id} spec={page.spec} live={live} />;
+  if (page.spec.kind === "bespoke") return <BespokeFrame key={`${page.id}:${specKey(page.spec)}`} pageId={page.id} spec={page.spec} live={live} title={page.title} />;
   return (
     <div className="grid grid-cols-2 gap-3">
       {pageBlocks(page).map((b, i) => <Block key={`${b.kind}-${i}`} block={b} />)}
@@ -161,26 +168,81 @@ export function PageBody({ page, live }: { page: Page; live?: boolean }) {
   );
 }
 
+/** Ash's tap inside the frame is fresh: the browser's own user activation (a click in a frame activates the window that
+ * holds it), or, without that API, the frame holding the focus. */
+export function tappedInside(frame: HTMLIFrameElement | null): boolean {
+  const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (activation) return activation.isActive;
+  return !!frame && document.activeElement === frame && document.hasFocus();
+}
+
 /**
  * A bespoke page in its sandbox: sandbox="allow-scripts" only, a strict CSP, the theme tokens injected. Its only way
- * out is hub.call over postMessage; the host answers only what Ash approved (none in preview), via the bridge.
+ * out is postMessage to its bridge (pageBridgeHost.ts): reads and live watches of what it asked for (a preview reads the
+ * live data it asked for, nothing else), and its taps only on a kept page and only on Ash's tap. A frame that navigates
+ * away from its own page is cut off and reloaded (the app's frame-src already refuses the trip).
  */
-export function BespokeFrame({ pageId, spec, live }: { pageId: string; spec: BespokeSpec; live?: boolean }) {
+export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; spec: BespokeSpec; live?: boolean; title?: string }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const scheme = loadActiveSchemeId();
+  const sessions = useContext(SessionStateContext);
   const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark"));
+  const [height, setHeight] = useState(460);
+  const [generation, setGeneration] = useState(0);
+  // The bridge lives as long as the frame: a re-render (the record read again) must not drop the page's watches.
+  const named = useRef(title ?? spec.title);
+  named.current = title ?? spec.title;
   useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      if (!ref.current || e.source !== ref.current.contentWindow) return;
-      const m = e.data as { type?: string } & BridgeCall;
-      if (m?.type !== "hub:call") return;
-      const approved = live ? approvedPermissions(pageId) : [];
-      void handleBridgeCall(m, approved, {}).then((reply) => ref.current?.contentWindow?.postMessage({ type: "hub:reply", ...reply }, "*"));
+    const frame = ref.current;
+    const host = new PageBridgeHost({
+      pageId, title: named.current, live: !!live, asks: spec.permissions,
+      approved: () => (live ? approvedPermissions(pageId) : []),
+      tapped: () => tappedInside(ref.current),
+      post: (message) => ref.current?.contentWindow?.postMessage(message, "*"),
+      sources: appPageSources(sessions),
+      onSize: setHeight,
+    });
+    let loads = 0;
+    const onLoad = () => {
+      loads += 1;
+      if (loads > 1) setGeneration((g) => g + 1); // it left its own page: a fresh frame, a fresh bridge
     };
+    const onMessage = (e: MessageEvent) => {
+      if (!ref.current || e.source !== ref.current.contentWindow || e.origin !== "null" || loads > 1) return;
+      host.receive(e.data);
+    };
+    frame?.addEventListener("load", onLoad);
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [pageId, live]);
-  return <iframe ref={ref} key={scheme} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page className="h-[460px] w-full rounded-xl border-0 bg-transparent" />;
+    return () => {
+      frame?.removeEventListener("load", onLoad);
+      window.removeEventListener("message", onMessage);
+      host.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one bridge per frame: the spec is fixed for a frame (a new spec is a new frame)
+  }, [pageId, live, sessions, generation]);
+  return (
+    <iframe ref={ref} key={`${scheme}:${generation}`} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page
+      style={{ height }} className="w-full rounded-xl border-0 bg-transparent" />
+  );
+}
+
+/** What this page did on Ash's taps (answered, sent, stopped), newest first: who did it is the page. */
+function PageActivity({ pageId, title }: { pageId: string; title: string }) {
+  usePageActionsVersion();
+  const now = useNow(30_000);
+  const log = pageActionLog(pageId).slice(0, 3);
+  if (!log.length) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-0.5 px-1 text-[12px] text-content/60" data-page-activity>
+      {log.map((e) => (
+        <div key={`${e.at}-${e.line}`} className="truncate">{e.line} · from the {/\bpage$/i.test(title) ? title : `${title} page`} · {agoLabel(e.at, now)}</div>
+      ))}
+    </div>
+  );
+}
+function agoLabel(at: number, now: number): string {
+  const m = Math.floor((now - at) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
 }
 
 /** The asks a bespoke page makes, in plain words. Key asks get their own card on top. */
@@ -257,16 +319,16 @@ function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   );
 }
 
-function AskBox({ onAsk, monos, monoId, onPick }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void }) {
+function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe the page" }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void; placeholder: string; label?: string }) {
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
   return (
     <form className={`${card} flex items-center gap-2 px-3 py-2`} onSubmit={(e) => { e.preventDefault(); send(); }}>
       <input
-        aria-label="Describe the page"
+        aria-label={label}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Describe the page…"
+        placeholder={placeholder}
         className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-content outline-none placeholder:text-content/60"
       />
       <select aria-label="Mono that builds it" data-pages-mono-picker value={monoId} onChange={(e) => onPick(e.target.value)}
@@ -280,7 +342,8 @@ function AskBox({ onAsk, monos, monoId, onPick }: { onAsk: (text: string) => voi
   );
 }
 
-type Build = { prompt: string } & ({ state: "building" } | BuildPageResult);
+/** A build in flight or back; `ready` marks a ready-made page (its preview, with nothing built). */
+type Build = { prompt: string; ready?: boolean } & ({ state: "building" } | BuildPageResult);
 
 /** Ash OS refused or couldn't take the last page tap: one quiet line with OK. */
 function PagesProblem() {
@@ -296,10 +359,33 @@ function PagesProblem() {
 }
 
 /** The preview Page for a ready build: one object per build (its id is the record's pageId when Ash OS built it). */
-function usePreview(ready: ({ prompt: string } & Extract<BuildPageResult, { status: "ready" }>) | undefined, by: string, monoId: string, projectId: string): Page | undefined {
+function usePreview(ready: ({ prompt: string; ready?: boolean } & Extract<BuildPageResult, { status: "ready" }>) | undefined, by: string, monoId: string, projectId: string): Page | undefined {
   return useMemo(
-    () => (ready ? pageFromSpec(ready.spec, ready.prompt, by, projectId, ready.warnings, Date.now(), ready.pageId, monoId) : undefined),
+    () => (ready ? (ready.ready
+      ? pageFromSpec(ready.spec, ready.prompt, READY_BY, "today", ready.warnings, Date.now())
+      : pageFromSpec(ready.spec, ready.prompt, by, projectId, ready.warnings, Date.now(), ready.pageId, monoId)) : undefined),
     [ready, by, monoId, projectId],
+  );
+}
+
+/** Ready-made pages not kept yet: a row each, with Add (its preview, then Keep and allow like any page). */
+function ReadyMade({ offers, onAdd, compact }: { offers: readonly ReadyPage[]; onAdd: (r: ReadyPage) => void; compact?: boolean }) {
+  if (!offers.length) return null;
+  return (
+    <section data-pages-ready className={compact ? "w-full max-w-[560px] text-left" : ""}>
+      <h2 className="px-2 pb-1 text-[11px] uppercase tracking-wide text-content/60">Ready-made</h2>
+      <div className="flex flex-col gap-px">
+        {offers.map((r) => (
+          <div key={r.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-ready-row={r.id}>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[13px] text-content">{r.title}</span>
+              <span className="text-[12px] leading-5 text-content/60">{r.what}</span>
+            </div>
+            <button type="button" className={quietBtn} data-pages-ready-add={r.id} onClick={() => onAdd(r)}>Add</button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -315,6 +401,7 @@ export function PagesContent() {
   const [newPage, setNewPage] = useState(false);
   const [kept, setKept] = useState<string>();
   const [sentBack, setSentBack] = useState<string>();
+  const [rebuilding, setRebuilding] = useState<string>();
   // The sidebar's pinned pages open here.
   const requested = pendingOpenPage();
   useEffect(() => {
@@ -337,6 +424,11 @@ export function PagesContent() {
     void buildPage({ projectId, monoId: askerId, prompt }).then((result) => setBuild({ prompt, ...result }));
   };
   const ready = build && "status" in build && build.status === "ready" ? build : undefined;
+  const offers = READY_PAGES.filter((r) => !pages.some((p) => p.request === r.request));
+  const addReady = (r: ReadyPage) => {
+    setSentBack(undefined);
+    setBuild({ prompt: r.request, ready: true, status: "ready", spec: r.spec, warnings: checkBespokePage(r.spec).warnings });
+  };
   const preview = usePreview(ready, asker, askerId, projectId);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
@@ -380,7 +472,7 @@ export function PagesContent() {
     const keepLabel = asks.length ? "Keep and allow" : "Keep";
     return (
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
-        <div className="mb-1 text-[12px] text-content/60">“{preview.request}” · {preview.by} built this preview</div>
+        <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made page · built on the same bridge a Mono's page uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
         <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
         <div className="mb-4 mt-1"><Limits /></div>
         {asks.length ? <div className="mb-3"><Permissions asks={asks} /></div> : null}
@@ -423,6 +515,7 @@ export function PagesContent() {
           <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
+            <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
             <PinToggle page={shown} inHeader />
           </div>
           <div className="mt-1 text-[12px] text-content/60">Kept · {nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
@@ -436,7 +529,10 @@ export function PagesContent() {
             </div>
           ) : null}
           {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
-          <PageBody page={shown} live />
+          <PageRebuild key={shown.id} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
+            <PageBody page={shown} live />
+            <PageActivity pageId={shown.id} title={shown.title} />
+          </PageRebuild>
         </div>
       </div>
     );
@@ -450,8 +546,9 @@ export function PagesContent() {
           <div className="mt-1 text-[13px] text-content/70">Describe the page. {asker} builds it and shows you a preview first.</div>
           <div className="mt-2"><Limits /></div>
         </div>
-        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} /></div>
+        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
         {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
+        <ReadyMade offers={offers} onAdd={addReady} compact />
       </div>
     );
   }
@@ -502,10 +599,124 @@ export function PagesContent() {
               </div>
             </section>
           ))}
+          <ReadyMade offers={offers} onAdd={addReady} />
         </div>
       </div>
     </div>
   );
+}
+
+type Rebuild = { prompt: string; monoId: string; by: string } & ({ state: "building" } | BuildPageResult);
+
+/**
+ * Rebuild: Ash says what should change ("add a column for stuck time") and a seated Mono (the one that built it, unless
+ * he picks another) changes the page as it is now. The new version shows as a preview with what it would keep and what it
+ * newly asks; the page runs as it is until he uses it (same page, pin and place on Today) or throws it away. A Mono's
+ * rebuild from its chat (ash_page_rebuild) waits on the page the same way.
+ */
+function PageRebuild({ page, asking, onDone, seated, projectId, children }: { page: Page; asking: boolean; onDone: () => void; seated: { id: string; name: string }[]; projectId: string; children: ReactNode }) {
+  const [run, setRun] = useState<Rebuild>();
+  const [viewing, setViewing] = useState<{ id?: string; spec: PageSpec; request: string; by: string }>();
+  const [picked, setPicked] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const builderId = picked && seated.some((m) => m.id === picked) ? picked : page.monoId && seated.some((m) => m.id === page.monoId) ? page.monoId : defaultBuilder(projectId, seated);
+  const builder = seated.find((m) => m.id === builderId)?.name ?? page.by;
+  const ask = (prompt: string, monoId = builderId, by = builder) => {
+    setRun({ prompt, monoId, by, state: "building" });
+    void rebuildPage({ pageId: page.id, monoId, prompt, current: page.spec }).then((result) => {
+      setRun({ prompt, monoId, by, ...result });
+      if (result.status === "ready") {
+        setViewing({ id: result.pageId, spec: result.spec, request: prompt, by });
+        onDone();
+      }
+    });
+  };
+  const close = () => { setViewing(undefined); setRun(undefined); };
+  const fresh = useNewAsksDelay(viewing ? newAsks(page, viewing.spec) : []);
+
+  if (viewing) {
+    const added = newAsks(page, viewing.spec);
+    const keeps = viewing.spec.kind === "bespoke" ? viewing.spec.permissions.filter((a) => page.permissions.includes(a)) : [];
+    const preview: Page = { ...page, spec: viewing.spec, title: viewing.spec.title, newVersion: undefined };
+    const use = (allowNew: boolean) => {
+      setBusy(true);
+      void useNewVersion(page, viewing, { allowNew }).then((ok) => { setBusy(false); if (ok) close(); });
+    };
+    return (
+      <div data-pages-new-version>
+        <div className="mb-1 text-[12px] text-content/60">“{viewing.request}” · {viewing.by} built a new version</div>
+        <div className="mb-3 text-[12px] text-content/70" data-pages-new-version-keeps>
+          {keeps.length ? `It keeps what you allowed it (${allowedLabel(keeps.length).replace(/^Allowed: /, "")}).` : "The page stays as it is until you use this version."}
+        </div>
+        {added.length ? <div className="mb-3"><div className="mb-1 text-[12px] text-content/70">The new version also asks:</div><Permissions asks={added} /></div> : null}
+        <div className="relative rounded-xl border border-dashed border-content/30 p-4">
+          <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
+            <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
+          </div>
+          <div className="relative"><PageBody page={preview} /></div>
+        </div>
+        <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
+          <span className="text-[12px] text-content/70">This is the new version. Your page stays as it is until you use it.</span>
+          <span className="ml-auto" />
+          <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Throw away</button>
+          <button type="button" data-pages-use-version disabled={busy || !fresh} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
+            {added.length ? "Use it and allow" : "Use this version"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const waiting = page.newVersion;
+  return (
+    <>
+      {asking && !run ? (
+        <div className="mb-4" data-pages-rebuild-ask>
+          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the page and shows you the new version first.</div>
+          <AskBox onAsk={(text) => ask(text)} monos={seated} monoId={builderId} onPick={setPicked} placeholder="What should change? Like “add a column for stuck time”…" label="What should change" />
+        </div>
+      ) : null}
+      {run ? (
+        <div className="mb-4" data-pages-rebuild-state={"status" in run ? run.status : "building"}>
+          <div className="mb-1 text-[12px] text-content/60">“{run.prompt}” · asked {run.by}</div>
+          {!("status" in run) || run.status === "building" ? (
+            <div className={`${card} flex items-center gap-3 p-4 text-[13px] text-content/80`} role="status">
+              <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
+              <span className="min-w-0 flex-1 leading-5">{"status" in run ? run.reason : `${run.by} is changing the page…`}</span>
+              {"status" in run ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
+            </div>
+          ) : run.status === "not-connected" ? (
+            <div className={`${card} p-4`}>
+              <div className="text-[14px] text-content">Not connected yet</div>
+              <p className="mt-1 text-[13px] leading-5 text-content/70">{run.reason}</p>
+            </div>
+          ) : run.status !== "ready" ? (
+            <div className="rounded-lg px-3 py-2.5">
+              <div className="text-[13px] text-content">{run.status === "turned-down" ? `Sent back to ${run.by}` : "That didn't work"}</div>
+              <div className="text-[13px] leading-5 text-content/60">{run.status === "turned-down" ? "Turned down automatically: " : ""}{run.reason}</div>
+            </div>
+          ) : null}
+          {"status" in run && run.status !== "ready" ? (
+            <div className="mt-2 flex gap-2">
+              <button type="button" className={quietBtn} onClick={() => setRun(undefined)}>Back to the page</button>
+              {run.status === "error" ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {waiting && !run ? (
+        <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} data-pages-version-waiting>
+          <span className="min-w-0 flex-1 truncate">New version from {waiting.by}: “{waiting.request}”</span>
+          <button type="button" className={quietBtn} onClick={() => setViewing({ id: waiting.id, spec: waiting.spec, request: waiting.request, by: waiting.by })}>See it</button>
+        </div>
+      ) : null}
+      {children}
+    </>
+  );
+}
+/** The key delay (useKeyDelay) for a new version that newly asks to read keys. */
+function useNewAsksDelay(added: Capability[]): boolean {
+  return useKeyDelay(added.some((a) => !!keyName(a)));
 }
 
 /** Pin or unpin a page; pinned pages show in the sidebar. */

@@ -3,7 +3,7 @@ import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "
 import { listMonos } from "../../monos/model/mono";
 import { checkBespokePage, type DesignIssue } from "./designCheck";
 import { validatePageSpec, type PageSpec } from "./pageSpec";
-import { stubPageSpec } from "./stubPages";
+import { stubPageSpec, stubRebuildSpec } from "./stubPages";
 
 /**
  * The seam between Pages and a real Mono build (docs/pages-build-contract.md). The app calls Ash OS through the hub
@@ -15,6 +15,8 @@ import { stubPageSpec } from "./stubPages";
  * request (Try again) joins the running build or collects the finished page; nothing is built twice.
  */
 export type BuildPageRequest = { projectId: string; monoId: string; prompt: string };
+/** Rebuild: a kept page changed from Ash's words; `current` is its spec (the dev stub changes it here). */
+export type RebuildPageRequest = { pageId: string; monoId: string; prompt: string; current?: PageSpec };
 export type BuildPageResult =
   | {
       status: "ready";
@@ -24,6 +26,8 @@ export type BuildPageResult =
       pin?: boolean;
       /** Ash OS's id for this page (its preview is already in the record; Keep marks it kept). */
       pageId?: string;
+      /** A rebuild: the kept page this new version would replace. */
+      replaces?: string;
     }
   | { status: "turned-down"; reason: string }
   | { status: "not-connected"; reason: string }
@@ -60,13 +64,27 @@ export type BuildDeps = { transport?: HubTransport; roster?: readonly { id: stri
 export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the page should show." };
+  return build({ projectId: req.projectId, monoId: req.monoId, prompt: req.prompt }, () => stubPageSpec(req.prompt), deps);
+}
+
+/**
+ * Rebuild a kept page from Ash's words (Ash OS: `ash-hub-build-page` with its `pageId`). The answer is the page's new
+ * version: it waits on the page (`newVersion`) until Ash uses it or throws it away; the page runs as it was until then.
+ */
+export async function rebuildPage(req: RebuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
+  if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
+  if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what should change on the page." };
+  return build({ pageId: req.pageId, monoId: req.monoId, prompt: req.prompt }, () => (req.current ? stubRebuildSpec(req.current, req.prompt) : stubPageSpec(req.prompt)), deps);
+}
+
+async function build(payload: Record<string, unknown>, stub: () => unknown, deps: BuildDeps): Promise<BuildPageResult> {
   let raw: unknown;
-  if (deps.stub ?? devStubOn()) raw = stubPageSpec(req.prompt);
+  if (deps.stub ?? devStubOn()) raw = stub();
   else {
     try {
-      const payload = { projectId: req.projectId, monoId: req.monoId, prompt: req.prompt, wait: BUILD_WAIT_SECONDS };
+      const body = { ...payload, wait: BUILD_WAIT_SECONDS };
       const store = deps.transport ? undefined : liveHubStore();
-      raw = store ? await store.act(BUILD_PAGE_ACTION, payload) : await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, payload);
+      raw = store ? await store.act(BUILD_PAGE_ACTION, body, payload.pageId ? ["pages"] : []) : await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, body);
     } catch (e) {
       const err = e instanceof HubCallError ? e : toHubError(e);
       if (err.kind === "error" && isStillBuilding(err.message)) return { status: "building", reason: err.message };
@@ -76,8 +94,12 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
       return { status: "error", reason: err.message || "The build didn't go through." };
     }
   }
-  const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown }) : {};
-  const extra = { ...(r.pin === true ? { pin: true } : {}), ...(typeof r.pageId === "string" && r.pageId ? { pageId: r.pageId } : {}) };
+  const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown; replaces?: unknown }) : {};
+  const extra = {
+    ...(r.pin === true ? { pin: true } : {}),
+    ...(typeof r.pageId === "string" && r.pageId ? { pageId: r.pageId } : {}),
+    ...(typeof r.replaces === "string" && r.replaces ? { replaces: r.replaces } : {}),
+  };
   const spec = validatePageSpec(raw);
   if (!spec.ok) return { status: "turned-down", reason: spec.error };
   if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [], ...extra };

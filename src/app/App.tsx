@@ -170,6 +170,7 @@ import {
   setWaitingChatsHost,
   setWorkerQuestionRouter,
 } from "../features/hub/model/waitingChats";
+import { setPageActionsHost } from "../features/pages/model/pageActions";
 import { useStableValue } from "../shared/hooks/useStableValue";
 import { useDragResize } from "../shared/hooks/useDragResize";
 import { beginLayoutTransition } from "../shared/lib/layoutTransition";
@@ -11434,6 +11435,29 @@ function Workspace({
       },
     });
   }, [onQuestionReply, onOpenMono, openReminderSession]);
+
+  // Pages (features/pages/model/pageActions.ts): a kept page's taps borrow the same hands as Ash's own: the question
+  // reply in a chat, the composer's send, a chat's or a Mono's own view.
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    return setPageActionsHost({
+      liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
+      respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      send: async (id, text) => {
+        const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
+        if (!session) return false;
+        if (!(await Promise.resolve(submitSessionRef.current(session.id, text, [], { followsUp: true })))) return false;
+        await upsertSession(sessionsRef.current.find((s) => s.id === session.id) ?? session);
+        return true;
+      },
+      open: (id) => {
+        const mono = monoForSession(id);
+        if (mono) void onOpenMono(mono.id);
+        else if (!focusOpenSession(id)) void onSelectHistorySession(id);
+      },
+      openMono: (monoId) => void onOpenMono(monoId),
+    });
+  }, [onQuestionReply, onOpenMono, focusOpenSession, onSelectHistorySession]);
 
   const onOpenApprovalSession = useCallback(
     (sessionId: string) => {
