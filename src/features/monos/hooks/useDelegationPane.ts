@@ -1,5 +1,6 @@
 // What a chat's pane adds for the delegation tree (H4): a worker's chat runs on its own ("Runs on its own · Open
-// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads "Waiting on N" with one Stop.
+// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads "2 working: API, UI" with one
+// Stop (leadFlow.ts), while it goes on talking with Ash.
 import {
   delegationActions,
   hasJumpedIn,
@@ -15,6 +16,7 @@ import {
   startedByMono,
   waitingOn,
 } from "../model/delegationView";
+import { workingOn } from "../model/leadFlow";
 import { findMono, listMonos, monoForSession, monoLook } from "../model/mono";
 
 export type DelegationPane =
@@ -28,6 +30,9 @@ export type DelegationPane =
   | {
       kind: "lead";
       count: number;
+      /** What is out, by title: still running, and asking this chat a question. */
+      working: string[];
+      asking: string[];
       failed: string[];
       /** Chats whose workers the last Stop couldn't load: they may still be running. */
       unloaded: string[];
@@ -57,6 +62,7 @@ export function useDelegationPane(
     return {
       kind: "lead",
       count,
+      ...workingOn(sessionId, rows),
       failed,
       unloaded,
       ...(actions
