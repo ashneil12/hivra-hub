@@ -732,6 +732,12 @@ import {
   pendingVerifyKickoff,
   verifyKickoffMono,
 } from "./model/verifyKickoff";
+import { delegationActions } from "../features/monos/model/delegationStore";
+import {
+  driverEnabled as verifyDriverEnabled,
+  startDriver as startVerifyDriver,
+  type DriverHost as VerifyDriverHost,
+} from "./model/verifyDriver";
 import {
   loadShipNote,
   reportShipReady,
@@ -11221,6 +11227,55 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+
+  // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
+  // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.
+  const verifyDriverHost = useRef<VerifyDriverHost | null>(null);
+  verifyDriverHost.current = {
+    sessions: () => sessionsRef.current,
+    openMono: async (monoId) => {
+      await onOpenMono(monoId);
+      return monoViewIdRef.current ?? null;
+    },
+    submit: (sessionId, text) => onSubmit(sessionId, text),
+    stop: (sessionId) => onStopFromUser(sessionId),
+    showHub: (selection) => {
+      closeMonoView();
+      setHubSelection(selection);
+    },
+    openSession: (sessionId, owner) => {
+      const actions = delegationActions();
+      if (owner && actions) actions.openChild(owner, sessionId);
+      else void Promise.resolve(openReminderSession(sessionId)).catch(() => undefined);
+    },
+    setDefaults: (model, effort) => {
+      try {
+        localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model }));
+        localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: model }));
+        localStorage.setItem("monocode.lastModelSettings", JSON.stringify({ effort }));
+      } catch {
+        // no storage: the bench's claude wrapper still holds every turn to the budget
+      }
+      for (const session of sessionsRef.current) {
+        if (session.harness !== "claude") continue;
+        if (session.model !== model) onModelChange(session.id, "claude", model);
+        if (session.modelSettings?.effort !== effort)
+          onModelSettingsChange(session.id, { ...(session.modelSettings ?? {}), effort });
+      }
+    },
+  };
+  useEffect(() => {
+    if (!verifyDriverEnabled()) return;
+    return startVerifyDriver({
+      sessions: () => verifyDriverHost.current!.sessions(),
+      openMono: (monoId) => verifyDriverHost.current!.openMono(monoId),
+      submit: (sessionId, text) => verifyDriverHost.current!.submit(sessionId, text),
+      stop: (sessionId) => verifyDriverHost.current!.stop(sessionId),
+      openSession: (sessionId, owner) => verifyDriverHost.current!.openSession(sessionId, owner),
+      setDefaults: (model, effort) => verifyDriverHost.current!.setDefaults(model, effort),
+      showHub: (selection) => verifyDriverHost.current!.showHub(selection),
+    });
+  }, []);
 
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {

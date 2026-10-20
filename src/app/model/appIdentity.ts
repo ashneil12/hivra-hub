@@ -38,6 +38,8 @@ export type VerifyPlan = {
   kickoff?: { project: string; monoName: string; prompt: string; monoId?: string };
   /** The bench's fake Claude takes /goal (a dev copy otherwise never sends it: claude.ts goalsAllowed). */
   goals?: boolean;
+  /** The real-Claude bench (scripts/hub-realtest.mjs): the window takes scripted actions (verifyDriver.ts). */
+  driver?: boolean;
 };
 
 export type AppIdentity = {
@@ -58,6 +60,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
   return {
     runId: value.runId,
     ...(value.goals === true ? { goals: true } : {}),
+    ...(value.driver === true ? { driver: true } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

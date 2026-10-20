@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "about": "A 3-minute plumbing check of the bench (not a benchmark): the driver, the memory stand-in, a recorded outage, the views.",
+  "project": { "id": "tally", "name": "Tally", "shortName": "Tally" },
+  "memory": {
+    "tally": ["Tally's accent colour is teal #0F766E (Ash, 18 Oct)."],
+    "vg-game": ["EXO's hero palette is Vanguard orange #FF6A00."],
+    "ash": ["Ash wants plain English and the number first."]
+  },
+  "budget": { "maxTurns": 12, "maxRequests": 60, "maxMinutes": 10 },
+  "scenarios": [
+    {
+      "id": "smoke",
+      "title": "Plumbing check",
+      "minutes": 6,
+      "maxTurns": 10,
+      "steps": [
+        { "send": { "mono": "lead" }, "label": "memory", "text": "check tally's memory and tell me our accent colour, one line" },
+        { "wait": { "monoReply": "lead", "maxSec": 150 } },
+        { "fault": { "fixture": 529, "scope": "any", "times": 1, "maxSec": 60 } },
+        { "send": { "mono": "lead" }, "label": "down", "text": "status? one line" },
+        { "wait": { "monoReply": "lead", "maxSec": 60 } },
+        { "fault": null },
+        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built" },
+        { "view": { "project": "today", "item": "inbox" }, "name": "today" }
+      ],
+      "checks": { "leak": ["FF6A00"] },
+      "criteria": "Plumbing only."
+    }
+  ]
+}

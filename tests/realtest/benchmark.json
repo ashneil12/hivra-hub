@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "sources": [
+    "B: Ash's Grok Bot Leadership Board room, 15 Oct (docs/leadership/ROOM.md), plus the coding-chat cases (Ash, 20 Oct)",
+    "P: the past-requests benchmark compiled from about 800 of Ash's October messages and 4,351 older ones (DB = deal-breaker; times marked proposed are the team's, not Ash's)"
+  ],
+  "items": {
+    "B1": "Long no-tag dump in the room: within about 10-20 s the lead (Chief of Staff) posts ONE reply: an ack, the main beats, who owns what; then the builder confirms scope; the checker posts only what was missed (or nothing). Ash never has to tag anyone.",
+    "B2": "Agents work without Ash: the builder posts a round, reviewers pass or flag in their own lanes, the builder answers all flags in one message, a retake, passes, the lead closes ('Locked'). It stops by itself on agreement, not at a fixed count; no runaway.",
+    "B3": "Ash interrupts mid-review ('make it work fully'): the lead acks within about 10 s and re-plans; everyone realigns within about 1 minute.",
+    "B4": "'skip review just ship it': reviewers stand down, it ships with proof (test output, commit), no review round.",
+    "B5": "'look into X in parallel': the lead says it is running and keeps chatting; minutes later 'X is back' lands in the same thread with a short summary; the worker's chatter stays in a child chat.",
+    "B6": "Two-word message ('wat now'): ONE agent asks one question, or the lead gives a status (what is waiting on whom). Never several agents asking.",
+    "B7": "Pushback from Ash: the lead explains plainly, proposes a change, and the team adopts it in one round ('Locked, Ash: ...').",
+    "B8": "An agent claims 'it works' without proof: another agent challenges it; it is labelled 'Not connected yet' or unproven before Ash tries it.",
+    "B9": "Model down or out of budget: Ash sees a visible notice, never silence.",
+    "B10": "Two agents disagree: settled by quoting Ash's words, or one question to Ash with a recommendation; no more than two turns each.",
+    "B11": "Ash chats with a Lead while its workers run: the Lead stays responsive and Ash's message is not stuck behind a report.",
+    "B12": "A worker gets stuck (a question, a failure, or a stall with no progress): visible within a minute from the Lead's chat, the Mono rail, Being built and Today; Ash can answer or jump into its chat in 2 clicks or fewer.",
+    "B13": "Sub-chats are nested under their Mono, collapsed or hidden by default, and open on a problem.",
+    "B14": "Memory: a fact saved for the test project is used by its Lead and workers; a fact from another project never appears; a global 'how Ash works' fact applies everywhere.",
+    "B15": "A Page shows what agents are doing live and lets Ash answer a stuck worker from it.",
+    "P1": "DB: Ash pastes a ~40-ask dump into a project Lead's chat: ONE reply lists every ask (none dropped, none invented), starts independent work in parallel, groups discussion points with recommendations. First reply under 60 s, workers started under 2 min (proposed).",
+    "P2": "DB: while 3 workers run Ash asks something else: the same chat answers at once, with a status like 'Delegated 3: 2 working, 1 failed', never 'busy'.",
+    "P3": "DB: a worker stalls or asks: flagged in the Lead chat and on Today within about 1 min; the Lead answers it itself when Ash's words cover it, else Ash gets ONE question with a recommendation, answerable inline or one click into the sub-chat. Anything with no progress for an hour gets checked.",
+    "P4": "Sub-chats are hidden but nested: Ash opens one, types, returns; nothing breaks.",
+    "P5": "DB: leadership room, no tags: the host replies in under 30 s (Grok: 9 s median, 27 s p90); other seats join in order only on their own job; a trivial message gets ONE reply; agents address each other by name; review loops end on a clear state; the host closes with a digest whenever 3 or more seats spoke.",
+    "P6": "Ash proposes something that conflicts with a past decision: at least one seat pushes back with reasons.",
+    "P7": "Leadership agrees a plan: Chief of Staff briefs the Lead (queued if busy), the Lead delegates, a report with evidence comes back up to the group; the whole tree is visible without opening any worker.",
+    "P8": "DB: a new project knows his global preferences and nothing from another project; a decision made in project A is recalled in a fresh chat the next day.",
+    "P9": "'From now on X': saved at once, shown, never asked again.",
+    "P10": "'Make a dashboard of what the agents are doing': a live page where he can answer a stuck agent from the page.",
+    "P11": "'Change this part of Today': updates live, no restart, undoable.",
+    "P12": "DB: Ash reports a hub bug to the hub's Lead: fixed in a dev copy, tested, shipped with rollback, conversations intact, without him opening Claude Code.",
+    "P14": "'where are we / wat do u need fro me': one plain paragraph plus only what needs him, each with a one-tap recommended answer.",
+    "P15": "A worker dies on a 402 / usage limit: shown failed with the reason; every 'done' carries a commit, test, link or screenshot.",
+    "P17": "A full day of work: no duplicate screenshots, decisions batched, nothing to read twice.",
+    "NOT": "Ash does NOT want: @-tagging, endless bot loops, background agents starting work on their own, talking to workers, needless questions, walls of text, em dashes."
+  }
+}

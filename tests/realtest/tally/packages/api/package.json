@@ -1,0 +1,5 @@
+{
+  "name": "@tally/api",
+  "private": true,
+  "type": "module"
+}

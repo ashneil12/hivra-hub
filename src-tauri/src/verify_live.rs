@@ -8,6 +8,12 @@
 //!
 //! The daily app never reads it, and neither does a dev copy on the real HOME: both conditions are checked before the
 //! file is opened, so a stray variable can't point a real copy at a fake Claude.
+//!
+//! The real-Claude bench (`scripts/hub-realtest.mjs`, docs/REALTEST.md) adds a `driver` folder: the run drops Ash's
+//! scripted actions into `<driver>/inbox/*.json` (a message to the leadership room, to a Lead or a worker, a stop, a
+//! snapshot of what the window shows), the window takes them one at a time with [`verify_live_take`] and does each
+//! through the same calls Ash's typing and clicks use, then answers with [`verify_live_done`] into `<driver>/done/`.
+//! Both commands refuse unless this process has a plan with a driver, so only that dev copy ever has them.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -50,6 +56,9 @@ pub struct Plan {
     pub goals: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kickoff: Option<Kickoff>,
+    /// The real-Claude bench's action folder (absolute, existing): `inbox/` in, `taken/` and `done/` out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
 }
 
 fn valid_run_id(id: &str) -> bool {
@@ -75,6 +84,11 @@ pub fn parse(text: &str) -> Result<Plan, String> {
             return Err(
                 "verify plan: claudeBinary must be an absolute path to a file named claude".into(),
             );
+        }
+    }
+    if let Some(driver) = &plan.driver {
+        if !Path::new(driver).is_absolute() || !Path::new(driver).is_dir() {
+            return Err("verify plan: driver must be an existing absolute folder".into());
         }
     }
     if plan.goals && plan.claude_binary.is_none() {
@@ -155,7 +169,86 @@ pub fn window_info(plan: &Plan) -> Value {
     if plan.goals {
         info["goals"] = Value::Bool(true);
     }
+    if plan.driver.is_some() {
+        info["driver"] = Value::Bool(true);
+    }
     info
+}
+
+const ACTION_MAX_BYTES: u64 = 256 * 1024;
+
+fn valid_action_id(id: &str) -> bool {
+    valid_run_id(id)
+}
+
+/// The next action file in `<driver>/inbox` (by name), moved to `<driver>/taken` and parsed; `None` when the inbox is
+/// empty. A file that isn't JSON is moved aside and answered with `{"id","error"}` so the run hears about it.
+pub fn take_from(driver: &Path) -> Result<Option<Value>, String> {
+    let inbox = driver.join("inbox");
+    let taken = driver.join("taken");
+    let mut names: Vec<String> = match std::fs::read_dir(&inbox) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| name.ends_with(".json") && !name.starts_with('.'))
+            .collect(),
+        Err(_) => return Ok(None),
+    };
+    names.sort();
+    let Some(name) = names.into_iter().next() else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(&taken).map_err(|e| format!("verify driver: {e}"))?;
+    let from = inbox.join(&name);
+    let to = taken.join(&name);
+    std::fs::rename(&from, &to).map_err(|e| format!("verify driver: {e}"))?;
+    let size = std::fs::metadata(&to).map(|m| m.len()).unwrap_or(0);
+    let stem = name.trim_end_matches(".json").to_string();
+    if size > ACTION_MAX_BYTES {
+        return Ok(Some(serde_json::json!({ "id": stem, "error": "action file too large" })));
+    }
+    let text = std::fs::read_to_string(&to).map_err(|e| format!("verify driver: {e}"))?;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(mut action)) => {
+            action
+                .entry("id")
+                .or_insert_with(|| Value::String(stem.clone()));
+            Ok(Some(Value::Object(action)))
+        }
+        _ => Ok(Some(serde_json::json!({ "id": stem, "error": "action is not a JSON object" }))),
+    }
+}
+
+/// Write an action's answer as `<driver>/done/<id>.json` (whole, through a temporary name).
+pub fn done_into(driver: &Path, id: &str, result: &Value) -> Result<(), String> {
+    if !valid_action_id(id) {
+        return Err("verify driver: bad action id".into());
+    }
+    let done = driver.join("done");
+    std::fs::create_dir_all(&done).map_err(|e| format!("verify driver: {e}"))?;
+    let tmp = done.join(format!(".{id}.tmp"));
+    let text = serde_json::to_string_pretty(result).map_err(|e| format!("verify driver: {e}"))?;
+    std::fs::write(&tmp, text).map_err(|e| format!("verify driver: {e}"))?;
+    std::fs::rename(&tmp, done.join(format!("{id}.json"))).map_err(|e| format!("verify driver: {e}"))
+}
+
+fn driver_dir() -> Result<PathBuf, String> {
+    plan()
+        .and_then(|plan| plan.driver.as_ref())
+        .map(PathBuf::from)
+        .ok_or_else(|| "verify driver: this copy has no driver".into())
+}
+
+/// The real-Claude bench: the window's next scripted action, or null.
+#[tauri::command]
+pub fn verify_live_take() -> Result<Option<Value>, String> {
+    take_from(&driver_dir()?)
+}
+
+/// The real-Claude bench: the window's answer to an action.
+#[tauri::command]
+pub fn verify_live_done(id: String, result: Value) -> Result<(), String> {
+    done_into(&driver_dir()?, &id, &result)
 }
 
 #[cfg(test)]
@@ -241,11 +334,48 @@ mod tests {
                 "monoId",
             ),
             (r#"{"version":1,"runId":"a","goals":true}"#.to_string(), "goals"),
+            (
+                r#"{"version":1,"runId":"a","driver":"/no/such/folder"}"#.to_string(),
+                "driver",
+            ),
             (r#"{"version":1,"runId":"a","extra":1}"#.to_string(), "unknown field"),
         ];
         for (text, expected) in cases {
             let error = parse(&text).unwrap_err();
             assert!(error.contains(expected), "{text}: {error}");
         }
+    }
+
+    #[test]
+    fn a_driver_folder_hands_over_actions_in_order_and_takes_answers() {
+        let root = std::env::temp_dir().join(format!("verify-driver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("inbox")).unwrap();
+        let driver = root.to_str().unwrap().to_string();
+        let plan = parse(&format!(r#"{{"version":1,"runId":"a","driver":"{driver}"}}"#)).unwrap();
+        assert_eq!(plan.driver.as_deref(), Some(driver.as_str()));
+        assert_eq!(window_info(&plan)["driver"], true);
+        assert!(window_info(&parse(r#"{"version":1,"runId":"a"}"#).unwrap()).get("driver").is_none());
+
+        assert_eq!(take_from(&root).unwrap(), None);
+        std::fs::write(root.join("inbox/002-b.json"), r#"{"op":"snapshot"}"#).unwrap();
+        std::fs::write(root.join("inbox/001-a.json"), r#"{"id":"first","op":"send"}"#).unwrap();
+        std::fs::write(root.join("inbox/003-c.json"), "not json").unwrap();
+        let first = take_from(&root).unwrap().unwrap();
+        assert_eq!(first["id"], "first");
+        let second = take_from(&root).unwrap().unwrap();
+        assert_eq!(second["id"], "002-b");
+        assert_eq!(second["op"], "snapshot");
+        let third = take_from(&root).unwrap().unwrap();
+        assert!(third["error"].as_str().unwrap().contains("JSON"));
+        assert_eq!(take_from(&root).unwrap(), None);
+        assert!(root.join("taken/001-a.json").is_file());
+
+        done_into(&root, "first", &serde_json::json!({"ok": true})).unwrap();
+        let answer: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("done/first.json")).unwrap()).unwrap();
+        assert_eq!(answer["ok"], true);
+        assert!(done_into(&root, "../escape", &Value::Null).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
