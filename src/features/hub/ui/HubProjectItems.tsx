@@ -5,7 +5,8 @@ import { MoreHorizontal, Plus, DashboardSquare as Layers, MessageMultiple as Mes
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
-import type { ProjectItem } from "../model/types";
+import { leadSpecFor } from "../model/hubLeads";
+import type { HubProject, ProjectItem } from "../model/types";
 
 function iconFor(item: ProjectItem): IconComponent {
   switch (item.kind) {
@@ -19,6 +20,14 @@ function iconFor(item: ProjectItem): IconComponent {
     default:
       return item.sectionType === "builds-playtests" ? PackageOpen : Layers;
   }
+}
+
+/** What an item is, on hover: the coding team (its Lead and chats) against the leadership team's group chat. */
+function itemHint(item: ProjectItem, project: HubProject): string | undefined {
+  if (item.kind === "coding-team") return `${leadSpecFor(project).name} and your chats in ${project.name}'s code`;
+  if (item.kind === "leadership-team") return "The leadership team's group chat";
+  if (item.kind === "group-chat") return "A group chat";
+  return undefined;
 }
 
 /** The project's items, where Monocode's rail lists Projects. */
@@ -66,6 +75,10 @@ export function HubProjectItems({
             <button
               key={item.id}
               type="button"
+              // Which is which (Ash, 20 Oct): the coding team is where he talks to the project's Lead and its chats; the
+              // leadership team is a group chat (the room).
+              title={itemHint(item, project)}
+              data-hub-item={item.kind}
               onClick={() => {
                 setHubSelection({ project: project.id, item: item.id });
                 onPick(item);

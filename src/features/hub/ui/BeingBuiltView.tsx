@@ -3,7 +3,7 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNow, workersFromJobs } from "../model/liveJobs";
-import { setHubSelection } from "../model/hubNav";
+import { openCodingTeam, setHubSelection } from "../model/hubNav";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, jobStateWord, markSeen, useWorkVersion } from "../model/hubWork";
 import type { Worker } from "../model/types";
 import { findWaiting } from "../model/waiting";
@@ -209,7 +209,7 @@ function Activity({ worker, now }: { worker: Worker; now: number }) {
         {worker.stuck && !worker.stuckWorker ? <WorkerTakeLook w={worker} /> : null}
         {worker.prWatch ? <StopWatching w={worker} /> : null}
         {worker.kind === "coding" ? (
-          <button type="button" data-hub-open-coding onClick={() => setHubSelection({ project: worker.projectId, item: "coding-team" })}
+          <button type="button" data-hub-open-coding onClick={() => openCodingTeam(worker.projectId, { lead: true })}
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12">
             <Terminal className="size-3" strokeWidth={1.75} /> Open in coding team
           </button>
