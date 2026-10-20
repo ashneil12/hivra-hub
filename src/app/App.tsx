@@ -11454,6 +11454,8 @@ function Workspace({
     submit: (sessionId, text) => onSubmit(sessionId, text),
     stop: (sessionId) => onStopFromUser(sessionId),
     showHub: (selection) => {
+      // The coding team is the project's folder with its Sessions list, opened as Ash's click on it does.
+      if (selection.item === "coding-team" && selection.project !== "today") return openCodingTeam(selection.project);
       closeMonoView();
       setHubSelection(selection);
     },
@@ -15231,53 +15233,80 @@ function Workspace({
   const teamLeadSession = teamLeadMono?.sessionId
     ? sessions.find((session) => session.id === teamLeadMono.sessionId)
     : undefined;
-  const codingTeamList: CodingTeamList | undefined = teamProject
-    ? {
-        ...(teamLeadMono
-          ? {
-              lead: {
-                session: {
-                  id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
-                  cwd: teamProject.folder!,
-                  harness: teamLeadSession?.harness ?? "claude",
-                  model: teamLeadSession?.model ?? "",
-                  runtimeMode: teamLeadSession?.runtimeMode ?? "supervised",
-                  title: monoLook(teamLeadMono).name,
-                  createdAt: 0,
-                  updatedAt: 0,
-                  pinned: true,
-                },
-                mark: (
-                  <MonoRailMascot
-                    name={monoLook(teamLeadMono).mascot}
-                    color={monoLook(teamLeadMono).color}
-                    status={monoRail.states.get(teamLeadMono.id)?.status ?? "idle"}
-                    className="size-3.5 shrink-0"
-                  />
-                ),
-                active: monoCovers && monoViewMono?.id === teamLeadMono.id,
-                busy: !!teamLeadSession?.busy,
-                // In the time's place: what it is to the project.
-                statusLabel: "Lead",
-                onOpen: () => void onOpenMono(teamLeadMono.id),
-              },
-            }
-          : {}),
-      }
-    : undefined;
+  const teamLeadLook = teamLeadMono ? monoLook(teamLeadMono) : undefined;
+  const teamLeadStatus = teamLeadMono ? (monoRail.states.get(teamLeadMono.id)?.status ?? "idle") : "idle";
+  const teamLeadActive = !!teamLeadMono && monoCovers && monoViewMono?.id === teamLeadMono.id;
+  const teamLeadBusy = !!teamLeadSession?.busy;
+  // Kept by identity while nothing it shows changes: the Sidebar is memoized.
+  const codingTeamList = useMemo<CodingTeamList | undefined>(
+    () =>
+      teamProject
+        ? {
+            ...(teamLeadMono && teamLeadLook
+              ? {
+                  lead: {
+                    session: {
+                      id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
+                      cwd: teamProject.folder!,
+                      harness: teamLeadSession?.harness ?? "claude",
+                      model: teamLeadSession?.model ?? "",
+                      runtimeMode: teamLeadSession?.runtimeMode ?? "supervised",
+                      title: teamLeadLook.name,
+                      createdAt: 0,
+                      updatedAt: 0,
+                      pinned: true,
+                    },
+                    mark: (
+                      <MonoRailMascot
+                        name={teamLeadLook.mascot}
+                        color={teamLeadLook.color}
+                        status={teamLeadStatus}
+                        className="size-3.5 shrink-0"
+                      />
+                    ),
+                    active: teamLeadActive,
+                    busy: teamLeadBusy,
+                    // In the time's place: what it is to the project.
+                    statusLabel: "Lead",
+                    onOpen: () => void onOpenMono(teamLeadMono.id),
+                  },
+                }
+              : {}),
+          }
+        : undefined,
+    [
+      teamProject,
+      teamLeadMono?.id,
+      teamLeadMono?.sessionId,
+      teamLeadLook?.name,
+      teamLeadLook?.mascot,
+      teamLeadLook?.color,
+      teamLeadStatus,
+      teamLeadActive,
+      teamLeadBusy,
+      teamLeadSession?.harness,
+      teamLeadSession?.model,
+      teamLeadSession?.runtimeMode,
+      onOpenMono,
+    ],
+  );
+  const teamProjectId = teamProject?.id;
   // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
-  const onSelectSessionFromList = (sessionId: string) => {
-    if (teamProject && !isMonoSession(sessionId)) {
-      noteCodingTeamView(teamProject.id, "chat");
-      if (monoViewIdRef.current) closeMonoView();
-    }
-    return onSelectHistorySession(sessionId);
-  };
-  const onNewFromList = () => {
-    if (teamProject) noteCodingTeamView(teamProject.id, "chat");
+  const onSelectSessionFromList = useCallback(
+    (sessionId: string) => {
+      if (teamProjectId && !isMonoSession(sessionId)) {
+        noteCodingTeamView(teamProjectId, "chat");
+        if (monoViewIdRef.current) closeMonoView();
+      }
+      return onSelectHistorySession(sessionId);
+    },
+    [teamProjectId, closeMonoView, onSelectHistorySession],
+  );
+  const onNewFromList = useCallback(() => {
+    if (teamProjectId) noteCodingTeamView(teamProjectId, "chat");
     if (monoViewIdRef.current) closeMonoView();
     return onNew();
-  };
+  }, [teamProjectId, closeMonoView, onNew]);
 
   const projectStrip = (
     <ProjectStrip
