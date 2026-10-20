@@ -613,6 +613,7 @@ import {
   dequeueQueuedMessage,
   isWaitingBrief,
   queuedMessageForSubmit,
+  typedQuestionAnswer,
   waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
@@ -7402,6 +7403,37 @@ function Workspace({
         )
       )
         return false;
+      // Ash typed while the agent waits on its own question (AskUserQuestion): his words answer it, the way Claude
+      // Code's picker takes a typed answer, never a message queued behind the question (messageQueue.ts).
+      const typed = typedQuestionAnswer(storedCurrent, text, options ?? {});
+      if (typed) {
+        const reply: UserQuestionReply =
+          typed.kind === "answer" ? typed.reply : { kind: "skipped" };
+        delegationActions()?.noteAnswer?.(sessionId, typed.requestId, reply);
+        respondHarnessQuestion(
+          storedCurrent.harness,
+          sessionId,
+          typed.requestId,
+          reply,
+        );
+        if (typed.kind === "answer") {
+          const answered = sessionsRef.current.map((session) =>
+            session.id === sessionId ? appendSteerUser(session, text) : session,
+          );
+          sessionsRef.current = answered;
+          setSessions(answered);
+          dismissNoticesForContinuedSession(sessionId);
+          // Files or a card sent with the words follow as his next message, once the question is answered.
+          if (
+            attachments.length ||
+            (options?.noteCard ?? storedCurrent.noteCard) ||
+            (options?.handoffCard ?? storedCurrent.handoffCard)
+          )
+            return submitSessionRef.current(sessionId, "", attachments, options);
+          return true;
+        }
+        // Set aside: his message goes in as usual, right after it.
+      }
       const draftBlock = options?.draftBlockId
         ? storedCurrent.blocks.find(
             (block) =>

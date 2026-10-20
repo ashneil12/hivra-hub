@@ -6,7 +6,7 @@
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
 import {
-  CUSTOM_OPTION_ID,
+  freeTextReply,
   type UserQuestion,
   type UserQuestionPrompt,
   type UserQuestionReply,
@@ -144,6 +144,14 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
   };
 }
 
+/**
+ * "waiting on Ash: Which sharing model should the worker build?": a chat stopped on its own question to Ash, as other
+ * agents hear its state (never "busy" or "queued behind its work", which is not why it stands still).
+ */
+export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
+  return `waiting on Ash: ${fromPrompt(prompt)?.question ?? "a question"}`;
+}
+
 export type ChatLike = {
   busy?: boolean;
   pendingQuestion?: UserQuestionPrompt;
@@ -179,15 +187,7 @@ export function pickReply(prompt: UserQuestionPrompt): UserQuestionReply | undef
  * each, which is what he said). Undefined when no question takes words, so the caller sends them as a message instead.
  */
 export function wordsReply(prompt: UserQuestionPrompt, text: string): UserQuestionReply | undefined {
-  const words = text.trim();
-  if (!words) return undefined;
-  const open = prompt.questions.filter((q) => q.allowCustom);
-  if (!open.length) return undefined;
-  return {
-    kind: "answered",
-    answers: Object.fromEntries(open.map((q) => [q.id, [CUSTOM_OPTION_ID]])),
-    custom: Object.fromEntries(open.map((q) => [q.id, words])),
-  };
+  return freeTextReply(prompt.questions, text);
 }
 
 /** The message that takes the agent's pick when the question can't be answered in place (a marker, or a dead turn). */

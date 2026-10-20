@@ -110,6 +110,7 @@ import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRoom
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
+import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import {
   AUTOPILOT_FIELDS,
   handleAutopilotApp,
@@ -1330,12 +1331,16 @@ export async function handleAgentApp(
         ...(notifyMonoId || mode !== "auto" ? [notifyMonoId] : []),
         ...(mode !== "auto" ? [mode] : []),
       );
+      // A chat stopped on its own question to Ash is waiting on him, not busy with work.
+      const asked = result.delivery === "queued" ? (await host.session(id).catch(() => null))?.pendingQuestion : undefined;
       return {
         sessionId: id,
         submitted: true,
         ...result,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
-        ...(result.delivery === "queued"
+        ...(asked
+          ? { state: waitingOnAshLine(asked), note: `That session is ${waitingOnAshLine(asked)}. This goes in as its own turn once he answers and it is idle. sessions.queue lists or cancels it.` }
+          : result.delivery === "queued"
           ? { note: "Queued behind that session's current work; it goes in as its own turn when the session is idle. sessions.queue lists or cancels it." }
           : result.delivery === "steered"
             ? { note: "Steered into that session's running turn." }

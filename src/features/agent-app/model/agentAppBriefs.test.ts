@@ -97,6 +97,31 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     expect(h.briefLead.mock.calls[1][2]).toMatchObject({ mode: "steer" });
   });
 
+  it("a Lead stopped on its own question to Ash reads 'waiting on Ash: <question>', never queued behind its work", async () => {
+    const question = {
+      requestId: 3,
+      questions: [{ id: "q", prompt: "Which sharing model should the worker build?", multiSelect: false, allowCustom: true, options: [] }],
+    };
+    const row = { id: "t-lead", state: "running", childSession: "lead-chat", askIds: [], updatedAt: 1, delivery: "pending" } as unknown as Delegation;
+    const briefLead = vi.fn(async () => ({ row, childSessionId: "lead-chat", delivery: "queued" as const, leadName: "Tally lead" }));
+    const child = vi.fn((id: string) => (id === "lead-chat" ? { busy: true, pendingQuestion: question } : undefined));
+    const tasks = { owned: vi.fn(async () => [row]), acknowledge: vi.fn(), nextChange: vi.fn(), cancel: vi.fn(), briefLead, child } as unknown as AgentAppTasksHost;
+    const h = host({ tasks } as Partial<AgentAppHost>);
+    const out = (await handleAgentApp(source, "b6", "tasks.delegate", { brief: "fix it", lead: "tally" }, h.api)) as { note: string; leadState: string };
+    expect(out.leadState).toBe("waiting on Ash: Which sharing model should the worker build?");
+    expect(out.note).toContain("Tally lead is waiting on Ash: Which sharing model should the worker build?");
+    expect(out.note).not.toContain("Queued behind");
+    // task_status says the same while the question is open.
+    const status = (await handleAgentApp(source, "s1", "tasks.status", { taskIds: ["t-lead"] }, h.api)) as { tasks: Array<{ activity: string }> };
+    expect(status.tasks[0].activity).toBe("waiting on Ash: Which sharing model should the worker build?");
+    // sessions.send to that chat hears it too.
+    const target = { ...h.target, pendingQuestion: question };
+    const h2 = host({ session: vi.fn(async (id: string) => (id === target.id ? target : null)) } as Partial<AgentAppHost>);
+    const sent = (await handleAgentApp(source, "b7", "sessions.send", { sessionId: "lead-chat", prompt: "x" }, h2.api)) as { note: string; state: string };
+    expect(sent.state).toBe("waiting on Ash: Which sharing model should the worker build?");
+    expect(sent.note).not.toContain("Queued behind");
+  });
+
   it("refuses a Lead brief with a worker's options, and whenBusy without a lead", async () => {
     const h = leadHost();
     await expect(handleAgentApp(source, "b3", "tasks.delegate", { brief: "x", lead: "hub", model: "sonnet" }, h.api)).rejects.toThrow("leave out model");

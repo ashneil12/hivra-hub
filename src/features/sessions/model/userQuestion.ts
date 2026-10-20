@@ -106,6 +106,26 @@ export function buildQuestionReply(
   };
 }
 
+/**
+ * Words typed as the answer, the way Claude Code's picker takes a typed ("Other") answer: they answer every question
+ * that takes words (the agent reads the same words for each). Undefined when the words are empty or no question takes
+ * words.
+ */
+export function freeTextReply(
+  questions: readonly UserQuestion[],
+  text: string,
+): UserQuestionReply | undefined {
+  const words = text.trim();
+  if (!words) return undefined;
+  const open = questions.filter((question) => question.allowCustom);
+  if (!open.length) return undefined;
+  return {
+    kind: "answered",
+    answers: Object.fromEntries(open.map((question) => [question.id, [CUSTOM_OPTION_ID]])),
+    custom: Object.fromEntries(open.map((question) => [question.id, words])),
+  };
+}
+
 export function selectedAnswerLabels(
   question: UserQuestion,
   reply: Extract<UserQuestionReply, { kind: "answered" }>,
