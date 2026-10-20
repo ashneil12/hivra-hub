@@ -94,7 +94,7 @@ it("a Lead whose own brief the watcher marked stalled is stuck, with how", () =>
     monos: [mono("vg-game-lead", { sessionId: "s-exo" })], rows,
     sessions: [session("s-exo", { busy: true, blocks: [{ id: "b", role: "tool", text: "", tool: { title: "Run npm test", status: "in_progress" } } as never] })],
   }));
-  expect(data.agents[0]).toMatchObject({ state: "stuck", reason: "No output for 8 min · still running npm test", since: NOW - 8 * 60_000 });
+  expect(data.agents[0]).toMatchObject({ state: "stuck", reason: "No output for 8 min · still running the tests", since: NOW - 8 * 60_000 });
 });
 
 it("a worker asking its Lead with a live question can be answered from the page (its chat)", () => {

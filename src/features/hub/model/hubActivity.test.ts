@@ -76,7 +76,7 @@ describe("activity tracking", () => {
     f.advance(0);
     for (let i = 0; i < 100; i++) {
       f.advance(1000);
-      f.input("pointermove");
+      f.input("keydown");
     }
     // 100 seconds of steady use: one report at the start, one a minute later
     expect(reports.length).toBe(2);
@@ -97,23 +97,25 @@ describe("activity tracking", () => {
     f.advance(0);
     f.advance(IDLE_MS + 5 * 60_000);
     const back = f.now();
-    f.input("pointerdown");
+    f.input("keydown");
     f.advance(0);
     expect(reports.length).toBe(2);
     expect(reports[1].getTime()).toBe(back);
   });
 
-  it("counts window focus as use, and ignores input while the window is hidden", () => {
+  it("counts only typing as use (Ash: active is when he types), and ignores typing while the window is hidden", () => {
     const f = fakeEnv();
     const reports: Date[] = [];
     startActivityTracking((at) => reports.push(at), f.env);
+    for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "focus"]) f.input(type);
+    f.advance(REPORT_GAP_MS);
+    expect(reports).toEqual([]);
     f.hide();
     f.input("keydown");
-    f.input("focus");
     f.advance(REPORT_GAP_MS);
     expect(reports).toEqual([]);
     f.show();
-    f.input("focus");
+    f.input("keydown");
     f.advance(0);
     expect(reports.length).toBe(1);
   });

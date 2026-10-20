@@ -119,10 +119,26 @@ export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "rese
   return `Failed: ${words ? lowerFirst(words) : "it stopped without saying why"}`;
 }
 
-/** How a stalled worker is stuck, with how long ("No output for 9 min · still running npm test"). */
+// Commands a stall reason names, in Ash's words (Critiquito, 21 Oct: "still running npm test" is jargon).
+const PLAIN_COMMANDS: [RegExp, string][] = [
+  [/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?::[\w-]+)?\b|\b(?:npx\s+)?(?:vitest|jest|playwright test|pytest)\b(?:\s+run)?|\bcargo\s+test\b|\bgo\s+test\b/gi, "the tests"],
+  [/\b(?:npm|pnpm|yarn|bun)\s+run\s+build\b|\bcargo\s+build\b|\b(?:npx\s+)?tsc\b(?:\s+--noEmit)?|\b(?:npx\s+)?vite\s+build\b/gi, "the build"],
+  [/\b(?:npm|pnpm|yarn|bun)\s+(?:install|i|ci|add)\b|\bpip\s+install\b/gi, "an install"],
+  [/\b(?:npm|pnpm|yarn|bun)\s+run\s+lint\b|\b(?:npx\s+)?eslint\b|\bcargo\s+clippy\b/gi, "the code checks"],
+  [/\bgit\s+push\b/gi, "a push"],
+];
+
+/** A worker's stall reason with the commands it names said plainly ("Still running npm test" → "Still running the tests"). */
+export function plainReason(reason: string): string {
+  let out = reason;
+  for (const [pattern, words] of PLAIN_COMMANDS) out = out.replace(pattern, words);
+  return out.replace(/\b(the tests|the build|an install|the code checks|a push)(?:\s+\1)+/g, "$1");
+}
+
+/** How a stalled worker is stuck, with how long ("No output for 9 min · still running the tests"). */
 export function stallLine(row: Pick<Delegation, "stallKind" | "stallReason" | "stalledAt">, now: number): string {
   const since = row.stalledAt ?? now;
-  const reason = row.stallReason?.trim() ?? "";
+  const reason = plainReason(row.stallReason?.trim() ?? "");
   switch (row.stallKind) {
     case "quiet":
       return `No output for ${minutes(now - since)}${reason ? ` · ${lowerFirst(reason)}` : ""}`;

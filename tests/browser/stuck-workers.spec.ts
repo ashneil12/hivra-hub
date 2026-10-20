@@ -111,7 +111,7 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
   const cards = page.locator('[data-stuck-list="chat"] [data-stuck-worker]');
   await expect(cards).toHaveCount(3);
   await expect(cards.nth(0)).toHaveAttribute("data-stuck-kind", "stalled");
-  await expect(cards.nth(0).locator("[data-stuck-line]")).toHaveText("No output for 9 min · still running npm test");
+  await expect(cards.nth(0).locator("[data-stuck-line]")).toHaveText("No output for 9 min · still running the tests");
   await expect(cards.nth(1).locator("[data-stuck-line]")).toHaveText("Failed: billing refused");
   await expect(cards.nth(2).locator("[data-stuck-line]")).toContainText("How long should the air dodge last?");
   // The Lead's line names what is out (leadFlow.ts), the stuck ones too; its count is on hover.

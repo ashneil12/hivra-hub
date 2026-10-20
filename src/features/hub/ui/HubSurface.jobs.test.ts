@@ -392,10 +392,12 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     mount(view());
     const job = () => container.querySelector('[data-hub-worker="j_mail"]');
     await until(() => job()?.querySelector('[data-hub-job-state="waiting"]'), "the waiting job");
-    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Asked: Which sender? [Resend | SES]");
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Asked: Which sender?");
     act(() => job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="answer"]')!.click());
     const card = container.querySelector('[data-hub-job-answer="j_mail"] [data-stuck-worker="w-q"]');
-    expect(card?.querySelector("[data-stuck-line]")?.textContent).toBe("Which sender? [Resend | SES]");
+    expect(card?.querySelector("[data-stuck-line]")?.textContent).toBe("Which sender?");
+    // Its options are one tap each, never raw "[a | b]" text.
+    expect([...card!.querySelectorAll("[data-stuck-option-label]")].map((b) => b.textContent)).toEqual(["Resend", "SES"]);
     expect(card?.querySelector("[data-stuck-reply]")).not.toBeNull();
   });
 

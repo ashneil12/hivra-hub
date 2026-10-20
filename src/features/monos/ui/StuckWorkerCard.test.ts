@@ -149,12 +149,12 @@ describe("stuck workers in the Lead's chat", () => {
       ["w4", "failed"],
       ["w2", "asking"],
     ]);
-    expect(card("w3")!.querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · still running npm test");
+    expect(card("w3")!.querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · still running the tests");
     expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Failed: billing refused");
     expect(card("w2")!.querySelector("[data-stuck-where]")!.textContent).toBe("Job w2");
     expect(card("w2")!.textContent).toContain("· asking");
     // Its stored question reads without the "(Recommended)" marker.
-    expect(card("w2")!.querySelector("[data-stuck-line]")!.textContent).toBe("Which save format? [JSON | Binary]");
+    expect(card("w2")!.querySelector("[data-stuck-line]")!.textContent).toBe("Which save format?");
     const line = container.querySelector("[data-delegation-working]")!;
     expect(line.textContent).toBe("1 working: Job w1 · 1 asking: Job w2 · 2 stuck: Job w3, Job w4");
     expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed");
@@ -163,7 +163,7 @@ describe("stuck workers in the Lead's chat", () => {
   it("answers a question with one click on an option, the worker's pick first, and names Ash in the row's log", async () => {
     const { card, host, actions } = setup();
     const options = [...card("w2")!.querySelectorAll<HTMLButtonElement>("[data-stuck-option]")];
-    expect(options.map((b) => b.textContent)).toEqual(["Binary", "JSON"]);
+    expect(options.map((b) => b.querySelector("[data-stuck-option-label]")!.textContent)).toEqual(["Binary", "JSON"]);
     await act(async () => options[0].click());
     expect(actions.noteAnswer).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
     expect(host.respond).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
@@ -237,7 +237,7 @@ describe("a stuck worker's own chat", () => {
     act(() => root.render(createElement(WorkerLine)));
     expect(container.textContent).toContain("Asked EXO lead a question");
     const options = [...container.querySelectorAll<HTMLButtonElement>('[data-stuck-worker="w2"] [data-stuck-option]')];
-    expect(options.map((b) => b.textContent)).toEqual(["Binary", "JSON"]);
+    expect(options.map((b) => b.querySelector("[data-stuck-option-label]")!.textContent)).toEqual(["Binary", "JSON"]);
     await act(async () => options[0].click());
     expect(host.respond).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
   });

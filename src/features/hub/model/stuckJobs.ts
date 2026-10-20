@@ -4,6 +4,7 @@
 // stuck workers over the jobs: a job with a stuck worker reads Stuck with that worker's reason, and carries the worker
 // so the row can open its chat or answer it. A question still on its Lead reads Waiting, with the question.
 import type { Delegation } from "../../monos/model/delegations";
+import { questionWithoutOptions } from "../../monos/model/stuckActions";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import type { Worker } from "./types";
 
@@ -16,11 +17,11 @@ export function withStuckWorkers(rows: readonly Worker[], delegations: readonly 
     // Ash OS already says it is stuck, or the Lead gave up: that louder word and reason stay; the worker comes along.
     if (w.stuck) return { ...w, stuckWorker: stuck };
     if (stuck.kind === "asking" && !stuck.escalated)
-      return { ...w, state: "waiting", stateReason: `Asked: ${stuck.line}`, stuckWorker: stuck };
+      return { ...w, state: "waiting", stateReason: `Asked: ${questionWithoutOptions(stuck.line)}`, stuckWorker: stuck };
     return {
       ...w,
       stuck: "stuck",
-      stuckReason: stuck.kind === "asking" ? `Asked, not answered yet: ${stuck.line}` : stuck.line,
+      stuckReason: stuck.kind === "asking" ? `Asked, not answered yet: ${questionWithoutOptions(stuck.line)}` : stuck.line,
       stuckWorker: stuck,
     };
   });

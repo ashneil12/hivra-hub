@@ -168,8 +168,8 @@ describe("the Monos section folds (A9)", () => {
     mount();
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
-    expect(summary.textContent).toBe("1·2 stuck");
-    expect(summary.querySelector('[aria-label="1 working"]')).not.toBeNull();
+    // In words, as a Mono's own line reads.
+    expect(summary.textContent).toBe("1 working·2 stuck");
     expect(summary.getAttribute("title")).toBe("1 working · 2 stuck");
     expect(summary.dataset.monoWorkKind).toBe("failed");
     // Open again, and that sticks too.
@@ -200,5 +200,41 @@ describe("the Monos section folds (A9)", () => {
     act(() => toggle().click());
     expect(container.querySelector("[data-mono-rail-summary]")).toBeNull();
     expect(toggle().textContent).toContain("2");
+  });
+});
+
+describe("stuck cards read plainly (Critiquito, 21 Oct)", () => {
+  it("an asking worker's options are buttons, the suggested one first and marked; one tap answers it", async () => {
+    const exo = createMono(["/code/vg-game"]);
+    updateMono(exo.id, (m) => ({ ...m, name: "EXO lead", sessionId: "exo-chat" }));
+    setDelegationRows([
+      row("t-1", "w1", exo.id, "exo-chat", {
+        state: "question",
+        pendingQuestion: "How long should the air dodge last? [0.25 s (Recommended) | 0.4 s]",
+        log: [{ at: now - 30_000, by: "worker", event: "asked" }],
+      }),
+      row("t-2", "w2", exo.id, "exo-chat", { stallKind: "quiet", stallReason: "Still running npm test", stalledAt: now - 9 * 60_000 }),
+    ]);
+    const host = { liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() };
+    setWaitingChatsHost(host);
+    mount();
+    act(() => container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] [data-stuck-trigger]`)!.click());
+    const card = panel()!.querySelector<HTMLElement>('[data-stuck-worker="w1"]')!;
+    expect(card.querySelector("[data-stuck-line]")!.textContent).toBe("How long should the air dodge last?");
+    expect(card.textContent).not.toContain("[");
+    const options = [...card.querySelectorAll<HTMLButtonElement>("[data-stuck-option]")];
+    expect(options.map((b) => b.querySelector("[data-stuck-option-label]")!.textContent)).toEqual(["0.25 s", "0.4 s"]);
+    expect(options[0].hasAttribute("data-stuck-suggested")).toBe(true);
+    expect(card.querySelector("[data-stuck-take-pick]")).toBeNull();
+    // Actions on one row, the reply and Send on their own row below.
+    expect(card.querySelector("[data-stuck-actions] [data-stuck-open]")).not.toBeNull();
+    expect(card.querySelector("[data-stuck-reply-row] [data-stuck-reply]")).not.toBeNull();
+    expect(card.querySelector("[data-stuck-reply-row] [data-stuck-send]")).not.toBeNull();
+    await act(async () => options[1].click());
+    expect(host.send).toHaveBeenCalledWith("w1", expect.stringContaining("0.4 s"));
+    // A stall reason says its command plainly.
+    expect(panel()!.querySelector('[data-stuck-worker="w2"] [data-stuck-line]')!.textContent).toBe(
+      "No output for 9 min · still running the tests",
+    );
   });
 });

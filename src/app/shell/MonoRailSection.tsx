@@ -259,21 +259,16 @@ export function MonoRailSection({
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
           aria-label={collapsed ? "Expand Monos" : "Collapse Monos"}
-          className={`flex items-center gap-1 rounded text-left hover:text-content ${
-            collapsed && workSplit(total) ? "shrink-0" : "min-w-0 flex-1"
-          }${
+          className={`flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-content${
             project ? "" : " px-1 text-xs leading-5 text-content/50"
           }`}
         >
           <ChevronDown
             className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
-          <span className={collapsed ? "shrink-0" : "truncate"}>Monos</span>
-          {collapsed && !workSplit(total) ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
+          <span className="truncate">Monos</span>
+          {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
         </button>
-        {collapsed && workSplit(total) ? (
-          <FoldedWorkSummary counts={total} stuck={allStuck} onOpenStuck={(anchor) => toggleStuckPanel(anchor)} />
-        ) : null}
         {monos.length ? (
           <button
             type="button"
@@ -288,6 +283,9 @@ export function MonoRailSection({
           </button>
         ) : null}
       </div>
+      {collapsed && workSplit(total) ? (
+        <FoldedWorkSummary counts={total} stuck={allStuck} onOpenStuck={(anchor) => toggleStuckPanel(anchor)} />
+      ) : null}
       {!collapsed && rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
         <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
           <span className="w-full">Monos now go by what they do.</span>
@@ -639,8 +637,9 @@ function StuckButton({
 }
 
 /**
- * The folded Monos section still says what is out (A9: "a busy Mono still shows its one status line"): one short summary
- * on the header for every Mono ("3 working · 1 stuck"), the full split on hover; "1 stuck" opens every stuck worker.
+ * The folded Monos section still says what is out (A9: "a busy Mono still shows its one status line"): one line under the
+ * header for every Mono, in the same words as a Mono's own line ("3 working · 1 stuck"), the full split on hover; "1 stuck"
+ * opens every stuck worker.
  */
 function FoldedWorkSummary({
   counts,
@@ -654,23 +653,25 @@ function FoldedWorkSummary({
   const short = shortSplit(counts);
   const failed = stuck.some((s) => s.kind === "failed");
   const stuckColor = failed ? "text-red-400" : "text-amber-400";
+  const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
   return (
-    <span
-      className="flex min-w-0 flex-1 items-center whitespace-nowrap text-[11px] leading-5 text-content/45"
+    <div
+      className="mx-3 -mt-1 mb-1.5 flex h-6 min-w-0 items-center px-1 text-[12px] text-content/45"
       title={workSplit(counts)}
       data-mono-rail-summary
       data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
     >
-      {short.working ? (
-        // The header is narrow: working is the spinner and its count ("N working" on hover); "N stuck" is never cut.
-        <span className="flex shrink-0 items-center gap-1 px-1" aria-label={`${short.working} working`}>
-          <Loader aria-hidden className="size-3 shrink-0 animate-spin motion-reduce:animate-none" strokeWidth={1.75} />
-          <span aria-hidden>{short.working}</span>
-        </span>
-      ) : null}
-      {short.working && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
+      <span className="flex min-w-0 items-center gap-1.5 pr-0.5" data-mono-rail-summary-split>
+        <Mark
+          aria-hidden
+          className={`size-3.5 shrink-0 ${short.working ? "text-content/45" : stuckColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
+          strokeWidth={1.75}
+        />
+        {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
+        {short.working && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
+      </span>
       {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what is stuck" onOpen={onOpenStuck} /> : null}
-    </span>
+    </div>
   );
 }
 

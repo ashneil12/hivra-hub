@@ -40,6 +40,8 @@ export type BotChange = {
   details?: string[];
   /** Only a note of something a bot left alone on purpose: nothing changed, so there is no Undo. */
   note?: boolean;
+  /** When it was made (epoch ms), for Today's "Since …" paragraph. Rows from before this was kept have none. */
+  at?: number;
 };
 
 type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
@@ -69,7 +71,7 @@ function all(): BotChange[] {
 }
 /** An applied hub change: a Bot changes row whose Undo reverts it through the backend. */
 export function recordHubChange(id: string, by: string, line: string, after: string): void {
-  list = [{ id: `hub:${id}`, bot: by, day: "Today", line, now: "As it was", after, hubChangeId: id }, ...list.filter((c) => c.id !== `hub:${id}`)];
+  list = [{ id: `hub:${id}`, bot: by, day: "Today", line, now: "As it was", after, hubChangeId: id, at: Date.now() }, ...list.filter((c) => c.id !== `hub:${id}`)];
   saveReal();
   changed();
 }
@@ -85,7 +87,7 @@ export function setPageHooks(next: PageHooks): void {
 }
 /** A kept Page: a Bot changes row whose Undo takes it away again. */
 export function recordPageChange(pageId: string, by: string, title: string): void {
-  list = [{ id: `page:${pageId}`, bot: by, day: "Today", line: `${by} added the page “${title}”`, now: "No page", after: `Page “${title}” on your Pages list`, pageId }, ...list.filter((c) => c.id !== `page:${pageId}`)];
+  list = [{ id: `page:${pageId}`, bot: by, day: "Today", line: `${by} added the page “${title}”`, now: "No page", after: `Page “${title}” on your Pages list`, pageId, at: Date.now() }, ...list.filter((c) => c.id !== `page:${pageId}`)];
   saveReal();
   changed();
 }
@@ -99,7 +101,7 @@ export function setPinHook(next: PinHook): void {
 /** A Mono pinned or unpinned a page: a Bot changes row under that Mono. */
 export function recordPinChange(pageId: string, by: string, title: string, pinned: boolean): void {
   const id = `pin:${pageId}:${Date.now().toString(36)}`;
-  list = [{ id, bot: by, day: "Today", line: `${by} ${pinned ? "pinned" : "unpinned"} the page “${title}”`, now: pinned ? "Not pinned" : "Pinned", after: pinned ? "Pinned in the sidebar" : "Not pinned", pin: { pageId, pinned } }, ...list];
+  list = [{ id, bot: by, day: "Today", line: `${by} ${pinned ? "pinned" : "unpinned"} the page “${title}”`, now: pinned ? "Not pinned" : "Pinned", after: pinned ? "Pinned in the sidebar" : "Not pinned", pin: { pageId, pinned }, at: Date.now() }, ...list];
   saveReal();
   changed();
 }
@@ -151,6 +153,11 @@ let list: BotChange[] = [...loadReal(), ...examples<BotChange>([
 let version = 0;
 const subs = new Set<() => void>();
 const changed = () => { version++; subs.forEach((f) => f()); };
+/** The changes made since `ms` that still stand (not undone, not a note): Today's "Since …" paragraph names them. */
+export function botChangesSince(ms: number): BotChange[] {
+  return all().filter((c) => !c.undone && !c.note && typeof c.at === "number" && c.at >= ms);
+}
+
 export function useBotChangesVersion(): number {
   return useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => version);
 }
@@ -181,7 +188,7 @@ export function botChangeRows(): BotChangeRow[] {
 
 /** A bot rewrote one of its own files: the row Ash sees, with what it can put back. Kept across restarts. */
 export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & Required<Pick<BotChange, "monoId" | "file" | "beforeText" | "afterText">>): void {
-  list = [change, ...list.filter((c) => c.id !== change.id)];
+  list = [{ ...change, at: change.at ?? Date.now() }, ...list.filter((c) => c.id !== change.id)];
   saveReal();
   changed();
 }
