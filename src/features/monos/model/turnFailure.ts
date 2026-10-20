@@ -113,3 +113,26 @@ export function lastTurnFailure(
   }
   return undefined;
 }
+
+/**
+ * The message of a turn that failed before the agent did anything for it (only the CLI's own "API Error" line and
+ * notices after it): Try again sends it again, as Ash's words. A plain "continue" instead makes the agent take up
+ * whatever it was on before (the realtest's Lead resumed a long task it had been stopped on). Undefined when the turn
+ * had begun (it continues), or its message was the app's own hidden turn.
+ */
+export function failedTurnMessage(session: Pick<Session, "blocks">): Block | undefined {
+  const { blocks } = session;
+  let sawFailure = false;
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (isFailureNotice(block)) {
+      sawFailure = true;
+      continue;
+    }
+    if (block.role === "system") continue;
+    if (block.role === "assistant" && API_ERROR_LINE.test(block.text)) continue;
+    if (!sawFailure || block.role !== "user" || block.draft) return undefined;
+    return !block.internal && block.text.trim() ? block : undefined;
+  }
+  return undefined;
+}

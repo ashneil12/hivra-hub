@@ -3,7 +3,7 @@ import { applyHarnessEvent } from "../../../integrations/harness/core/apply";
 import { sanitizeSessionForPersist } from "../../sessions/data/sessionStore";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import { monoState } from "./mono";
-import { lastTurnFailure, plainFailure, resetClock } from "./turnFailure";
+import { failedTurnMessage, lastTurnFailure, plainFailure, resetClock } from "./turnFailure";
 
 const NOW = new Date(2026, 9, 20, 18, 0).getTime();
 
@@ -75,6 +75,18 @@ describe("a failed turn is a state of its own", () => {
     expect(plainFailure({ errorClass: "provider_error", retryable: false }, "400 bad request", NOW)).toEqual({ reason: "The model refused the request", tone: "red" });
     expect(plainFailure({}, "Claude exited", NOW)).toEqual({ reason: "Its last turn failed", tone: "amber" });
     expect(resetClock(new Date(2026, 9, 22, 5, 0).getTime(), NOW)).toMatch(/^[A-Z][a-z]{2} 05:00$/);
+  });
+
+  it("Try again sends again the message of a turn that failed before the agent did anything; a begun turn continues", () => {
+    expect(failedTurnMessage(out402())?.text).toBe("status? one line");
+    // Two failures in a row (402, then a Try again that hit a 529): still that message.
+    const twice = applyHarnessEvent({ ...out402(), busy: true }, { type: "session.error", message: "API overloaded (529)", errorClass: "overloaded", retryable: true });
+    expect(failedTurnMessage(twice)?.text).toBe("status? one line");
+    const begun: Session = { ...out402(), blocks: [out402().blocks[0], { id: "t", role: "tool", text: "npm test" }, ...out402().blocks.slice(1)] };
+    expect(failedTurnMessage(begun)).toBeUndefined();
+    const hidden: Session = { ...out402(), blocks: [{ ...out402().blocks[0], internal: true }, ...out402().blocks.slice(1)] };
+    expect(failedTurnMessage(hidden)).toBeUndefined();
+    expect(failedTurnMessage({ blocks: [{ id: "u", role: "user", text: "hi" }] })).toBeUndefined();
   });
 
   it("clears once anything happens after it: a new turn, a reply, a running turn", () => {

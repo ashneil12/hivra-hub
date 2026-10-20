@@ -741,6 +741,7 @@ import {
   useDelegationRows,
 } from "../features/monos/model/delegationStore";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
+import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
   driverEnabled as verifyDriverEnabled,
   startDriver as startVerifyDriver,
@@ -11517,10 +11518,15 @@ function Workspace({
         retry: (id) => {
           const session = sessionsRef.current.find((entry) => entry.id === id);
           if (!session || session.busy) return false;
-          // Ash's message held by the failure goes in again; else the turn carries on from where it failed.
+          // Ash's message held by the failure goes in again; a turn that failed before the agent did anything sends its
+          // message again (a plain "continue" would take up whatever the agent was on before); else it carries on.
           if (session.queueStatus === "paused" && session.queuedMessages?.length) onResumeQueue(id);
-          else if (session.usageLimit) onUsageLimitResume(id);
-          else return onSubmit(id, CONTINUE_PROMPT);
+          else {
+            const unsent = failedTurnMessage(session);
+            if (unsent) return onSubmit(id, unsent.text);
+            if (session.usageLimit) onUsageLimitResume(id);
+            else return onSubmit(id, CONTINUE_PROMPT);
+          }
           return true;
         },
         open: (monoId) => void onOpenMono(monoId),
