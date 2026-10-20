@@ -1,4 +1,5 @@
 import type {
+  ApprovalCall,
   Attachment,
   RuntimeMode,
   TaskListItem,
@@ -1149,6 +1150,25 @@ export function previewFromTool(
       rawInput: input,
     },
   );
+}
+
+/**
+ * What a permission request would run, for policy checks (autopilot): the tool's name, a shell command in full (never
+ * cut), and the files an edit or write touches.
+ */
+export function approvalCall(
+  toolName: string,
+  input: Record<string, unknown>,
+): ApprovalCall {
+  const command = typeof input.command === "string" ? input.command : undefined;
+  const paths = ["file_path", "notebook_path"]
+    .map((key) => input[key])
+    .filter((value): value is string => typeof value === "string");
+  return {
+    tool: toolName,
+    ...(command !== undefined ? { command } : {}),
+    ...(paths.length ? { paths } : {}),
+  };
 }
 
 export function summarizeToolRequest(

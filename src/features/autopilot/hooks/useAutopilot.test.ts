@@ -106,7 +106,14 @@ const question = (id: string, prompt: string, options: { id: string; label: stri
   id,
 });
 
-const approval = (title: string): Block => ({ id: crypto.randomUUID(), role: "tool", text: title, tool: { title, kind: "execute" }, approval: { requestId: 9 } });
+/** A tool approval; `null` for one whose provider didn't say exactly what it runs. */
+const approval = (title: string, call: NonNullable<Block["approval"]>["call"] | null = { tool: "Bash", command: title }, detail?: string): Block => ({
+  id: crypto.randomUUID(),
+  role: "tool",
+  text: title,
+  tool: { title, kind: call?.tool === "Bash" ? "execute" : call?.tool.toLowerCase(), ...(detail ? { detail } : {}) },
+  approval: { requestId: 9, ...(call ? { call } : {}) },
+});
 
 describe("useAutopilot", () => {
   it("while a project's switch is on, its chats take their recommendation; the red list and other projects wait", async () => {
@@ -134,6 +141,34 @@ describe("useAutopilot", () => {
     expect(byChat.line).toMatchObject({ kind: "question", outcome: "taken", recommendation: "yes, behind a flag" });
     expect(sent.find((m) => m.id === "nopick")?.text).toMatch(/^Ash is away on autopilot until .* Decide this yourself/);
     expect(byChat.nopick).toMatchObject({ kind: "question", outcome: "handed_back" });
+  });
+
+  it("allows only reads, listed checks and edits in the chat's own folder; every other approval waits for Ash", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const hivra = "/Users/ash/Projects/hivra";
+    const filler = "x".repeat(6_100);
+    await mount([
+      // What autopilot used to allow because the red list's words missed them.
+      session("py", hivra, { blocks: [approval(`python3 -c "import shutil; shutil.rmtree('backups')"`)] }),
+      session("b64", hivra, { blocks: [approval("echo cm0gLXJmIH4vZGF0YQ== | base64 -d | sh")] }),
+      session("merge", hivra, { blocks: [approval("gh pr merge 12 --admin")] }),
+      session("long", hivra, { blocks: [approval(`Write ${hivra}/notes.md`, { tool: "Write", paths: [`${hivra}/notes.md`] }, `${filler} DROP TABLE users`)] }),
+      session("home", hivra, { blocks: [approval("Edit ~/.zshrc", { tool: "Edit", paths: ["/Users/ash/.zshrc"] })] }),
+      session("tool", hivra, { blocks: [approval("Slack: post", { tool: "mcp__slack__post" })] }),
+      session("bare", hivra, { blocks: [approval("npm test", null)] }),
+      // What it allows by itself.
+      session("check", hivra, { blocks: [approval("npm run check")] }),
+      session("read", hivra, { blocks: [approval("Read /etc/hosts", { tool: "Read", paths: ["/etc/hosts"] })] }),
+      session("edit", hivra, { blocks: [approval(`Edit ${hivra}/src/a.ts`, { tool: "Edit", paths: [`${hivra}/src/a.ts`] })] }),
+      session("tree", hivra, { worktreeCwd: "/Users/ash/Worktrees/hivra-x", blocks: [approval("Edit a.ts", { tool: "Edit", paths: ["/Users/ash/Worktrees/hivra-x/a.ts"] })] }),
+    ]);
+    expect(approvals.map((a) => a.id).sort()).toEqual(["check", "edit", "read", "tree"]);
+    const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
+    for (const id of ["py", "b64", "merge", "long", "home", "tool", "bare"])
+      expect(byChat[id], id).toMatchObject({ kind: "approval", outcome: "held", detail: expect.stringMatching(/^Not allowed by itself: /) });
+    expect(byChat.long.detail).toContain("too long");
+    expect(byChat.check).toMatchObject({ kind: "approval", outcome: "taken" });
   });
 
   it("leaves a delegated worker's question to its Lead, but still decides its approvals", async () => {

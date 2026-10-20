@@ -3,9 +3,10 @@
 // acts:
 // - while a switch covers a chat that waits on Ash (Today's "Waiting on you", hub/model/waitingChats.ts), its pick is
 //   taken through that list's own `takePick(id, { by: "autopilot" })`, which refuses its red lines; a question with no
-//   pick is handed back to the agent in words. Tool approvals are allowed. Anything that touches Ash's red list (theirs
-//   or ours, model/redList.ts) waits for him. Each call goes in the Autopilot log. A delegated worker's question is
-//   left to its Lead (H3's tasks.answer);
+//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, a listed test or build
+//   command, or an edit inside the chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
+//   Anything that touches Ash's red list (theirs or ours, model/redList.ts) waits for him. Each call goes in the
+//   Autopilot log. A delegated worker's question is left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),
 //   brought back after a restart from the stored row, and marked done once a turn finishes.
 
@@ -252,9 +253,10 @@ export function useAutopilot(options: {
           if (handled.current.has(key)) continue;
           handled.current.add(key);
           const requestId = block.approval.requestId;
-          const verdict = approvalVerdict(block, redHoldFor(session.id, now));
+          const verdict = approvalVerdict(block, session.worktreeCwd || session.cwd, redHoldFor(session.id, now));
           if (verdict.kind === "held") {
-            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red: verdict.red, dedupe: key });
+            // It waits for Ash in the chat, as when autopilot is off; the log says why.
+            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red: verdict.red, detail: `Not allowed by itself: ${verdict.why}`, dedupe: key });
           } else {
             void log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: key }).then(
               () => latest.current.approve(session.id, requestId, "allow"),

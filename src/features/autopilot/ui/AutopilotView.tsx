@@ -117,7 +117,7 @@ export function AutopilotView() {
               {held.length ? (
                 <section aria-label="Waiting for you" data-autopilot-held>
                   <h2 className="mb-1 text-xs text-content/60">Waiting for you</h2>
-                  <p className="px-2 pb-1 text-[12px] text-content/50">Red-list calls autopilot left for you. Each waits in the chat that asked.</p>
+                  <p className="px-2 pb-1 text-[12px] text-content/50">Calls autopilot left for you: the red list, and approvals it doesn't allow by itself. Each waits in the chat that asked.</p>
                   <div className="flex flex-col">
                     {held.map((entry) => (
                       <LogRow key={entry.id} entry={entry} projectName={projectName} fresh={false} />
