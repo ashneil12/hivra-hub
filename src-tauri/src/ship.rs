@@ -1379,8 +1379,9 @@ pub fn ship_start(
 
 // ---- small helpers ---------------------------------------------------------------------------------------------------
 
-/// How long `app.ship` waits for `hub-ship.mjs`, which checks, stages and schedules (seconds, normally).
-const SHIP_START_LIMIT: Duration = Duration::from_secs(120);
+/// How long `app.ship` waits for `hub-ship.mjs`, which checks, stages and schedules (seconds, normally). Above the
+/// script's own 300 s healthcheck of the new build plus staging, so a slow but healthy check is never cut off.
+const SHIP_START_LIMIT: Duration = Duration::from_secs(420);
 
 /// Run `command` to the end and collect what it printed, or stop it and everything it started (its own process group)
 /// once `limit` has passed.
