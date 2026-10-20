@@ -608,6 +608,8 @@ import {
   supportsProviderAccounts,
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
+import { firstTurnAccount, reactToLimit } from "../features/providers/model/accountWaterfall";
+import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -7721,8 +7723,24 @@ function Workspace({
       const accountProvider = supportsProviderAccounts(current.harness)
         ? current.harness
         : undefined;
+      // A chat's first turn goes to the first account in Ash's order with room when the picked one is out (E5,
+      // accountWaterfall.ts); a chat already talking to an account stays there until that account refuses it.
+      const startedOn =
+        accountProvider && !current.providerSessionId
+          ? firstTurnAccount(
+              accountProvider,
+              current.providerAccountId ??
+                selectedProviderAccountId(accountProvider, current.cwd),
+              {
+                now: Date.now(),
+                usageFor: (account) =>
+                  getCachedRateLimits(account.provider, account.id),
+              },
+            )
+          : undefined;
       const providerAccountId = accountProvider
-        ? (current.providerAccountId ??
+        ? (startedOn?.id ??
+          current.providerAccountId ??
           selectedProviderAccountId(accountProvider, current.cwd))
         : undefined;
       if (
@@ -8238,6 +8256,19 @@ function Workspace({
             const titled = isFirstTurn ? titleSeed : selected.title;
             let next: Session = {
               ...selected,
+              ...(startedOn?.line
+                ? {
+                    blocks: [
+                      ...selected.blocks,
+                      {
+                        id: crypto.randomUUID(),
+                        role: "system",
+                        text: startedOn.line,
+                        notice: "account-moved",
+                      } as Block,
+                    ],
+                  }
+                : {}),
               providerAccountId,
               usageLimit: undefined,
               autoResumes: options?.autoResume,
@@ -10539,6 +10570,51 @@ function Workspace({
     [onUsageLimitResume],
   );
   usageLimitAccountChangeRef.current = onUsageLimitAccountChange;
+
+  // E5: a chat refused for its limit moves to the next account in Ash's order with room, by itself, and says so in
+  // one line (accountWaterfall.ts). Once per refusal: the account it was on is remembered until the limit clears.
+  const waterfallSeen = useRef(new Map<string, string>());
+  useEffect(() => {
+    const now = Date.now();
+    for (const session of sessions) {
+      const account = session.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
+      if (!session.usageLimit) {
+        waterfallSeen.current.delete(session.id);
+        continue;
+      }
+      if (
+        session.busy ||
+        !supportsProviderAccounts(session.harness) ||
+        waterfallSeen.current.get(session.id) === account
+      )
+        continue;
+      waterfallSeen.current.set(session.id, account);
+      const plan = reactToLimit(session, session.harness, {
+        now,
+        usageFor: (entry) => getCachedRateLimits(entry.provider, entry.id),
+      });
+      if (plan.action !== "move") continue;
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) =>
+          entry.id === session.id
+            ? {
+                ...entry,
+                blocks: [
+                  ...entry.blocks,
+                  {
+                    id: crypto.randomUUID(),
+                    role: "system",
+                    text: plan.line,
+                    notice: "account-moved",
+                  } as Block,
+                ],
+              }
+            : entry,
+        ),
+      );
+      void onUsageLimitAccountChange(session.id, plan.to);
+    }
+  }, [sessions, onUsageLimitAccountChange]);
 
   const [usageLimitTick, setUsageLimitTick] = useState(0);
   useEffect(() => {

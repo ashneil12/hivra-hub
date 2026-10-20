@@ -195,3 +195,23 @@ export function startAccount(
   const next = nextAvailableAccount(order, { now, usageFor, marks, except: picked });
   return next ? { id: next.id, line: startedLine(provider, order, picked, next.id) } : { id: picked };
 }
+
+/**
+ * What the app does when it sees a chat refused for its limit (App.tsx): mark the chat's account as out, then plan
+ * the move with Ash's order, his switch, and the cached usage readings.
+ */
+export function reactToLimit(
+  session: { usageLimit?: { resetsAt?: number }; busy?: boolean; providerAccountId?: string },
+  provider: ProviderAccountProvider,
+  { now, usageFor }: { now: number; usageFor: UsageFor },
+): WaterfallPlan {
+  const order = orderedAccounts(provider);
+  const from = order.find((a) => sameProviderAccountId(a.id, session.providerAccountId));
+  if (session.usageLimit && from) markAccountLimited(from, { now, resetsAt: session.usageLimit.resetsAt, reading: usageFor(from) });
+  return planWaterfall(session, provider, { order, enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });
+}
+
+/** The account a chat's first turn goes to (App.tsx's send), with Ash's order and the cached readings. */
+export function firstTurnAccount(provider: ProviderAccountProvider, picked: string, { now, usageFor }: { now: number; usageFor: UsageFor }): { id: string; line?: string } {
+  return startAccount(provider, picked, { order: orderedAccounts(provider), enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });
+}

@@ -10,6 +10,8 @@ import { claudeFailureFromResult } from "../../../integrations/harness/providers
 import { newSession, type Session } from "../../sessions/model/session";
 import {
   accountAvailability,
+  firstTurnAccount,
+  reactToLimit,
   limitMarks,
   markAccountLimited,
   moveAccount,
@@ -171,5 +173,35 @@ describe("new chats and the account coming back", () => {
     expect(startAccount("claude", "account-c", { order, enabled: true, now: NOW, usageFor: readings({}), marks: {} })).toEqual({ id: "account-c" });
     const allOut = readings({ default: reading(100), "account-b": reading(100), "account-c": reading(100) });
     expect(startAccount("claude", "default", { order, enabled: true, now: NOW, usageFor: allOut, marks: {} })).toEqual({ id: "default" });
+  });
+});
+
+describe("what the app runs (reactToLimit, firstTurnAccount)", () => {
+  it("a refused chat marks its account out, moves, and the next new chat skips that account until it resets", () => {
+    threeAccounts();
+    const chat = refusedChat("default", recordedResult("503-gateway-429-limit.ndjson"));
+    const usageFor = readings({});
+    const plan = reactToLimit({ ...chat, usageLimit: { resetsAt: NOW + HOUR } }, "claude", { now: NOW, usageFor });
+    expect(plan).toMatchObject({ action: "move", to: "account-b" });
+    expect(firstTurnAccount("claude", "default", { now: NOW + 10 * 60_000, usageFor })).toMatchObject({ id: "account-b" });
+    expect(firstTurnAccount("claude", "default", { now: NOW + HOUR + 1, usageFor })).toEqual({ id: "default" });
+  });
+
+  it("follows Ash's order and his switch", () => {
+    threeAccounts();
+    moveAccount("claude", "account-c", -1); // default, account-c, account-b
+    const chat = refusedChat("default", recordedResult("503-gateway-429-limit.ndjson"));
+    expect(reactToLimit(chat, "claude", { now: NOW, usageFor: readings({}) })).toMatchObject({ action: "move", to: "account-c", line: "Claude account 1 hit its limit, so this chat moved to account 2 (Personal)." });
+    setWaterfallEnabled("claude", false);
+    const again = refusedChat("account-c", recordedResult("503-gateway-429-limit.ndjson"));
+    expect(reactToLimit(again, "claude", { now: NOW, usageFor: readings({}) })).toEqual({ action: "stay", reason: "off" });
+  });
+
+  it("a chat on account 2 that runs out goes back to account 1 once account 1 has reset", () => {
+    const order = threeAccounts();
+    markAccountLimited(order[0], { now: NOW, resetsAt: NOW + HOUR });
+    const later = NOW + 2 * HOUR;
+    const chat = refusedChat("account-b", recordedResult("503-gateway-429-limit.ndjson"));
+    expect(reactToLimit(chat, "claude", { now: later, usageFor: readings({}) })).toMatchObject({ action: "move", to: "default", line: "Claude account 2 hit its limit, so this chat moved to account 1." });
   });
 });
