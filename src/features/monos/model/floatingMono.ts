@@ -160,7 +160,9 @@ export async function deliverFloatingMonoRequest(
       break;
     case "stopWorkflow":
       if (!host.stopWorkflow) throw new Error("Stopping a workflow is unavailable here.");
-      await host.stopWorkflow(session.id, session.harness, action.taskId);
+      // false: the adapter had nothing to stop. Say so, or the pop-out's Stop reads "Stopping…" for good.
+      if ((await host.stopWorkflow(session.id, session.harness, action.taskId)) === false)
+        throw new Error("Couldn't stop it: Claude Code isn't running this workflow any more.");
       break;
     case "stopAll":
       if (!host.stopTree) throw new Error("Stopping delegated work is unavailable here.");

@@ -124,6 +124,18 @@ describe("floating Mono delivery", () => {
     expect(runtime.stop).not.toHaveBeenCalled();
   });
 
+  it("says when the workflow Stop it relayed found nothing to stop", async () => {
+    const runtime = host();
+    runtime.stopWorkflow = vi.fn().mockResolvedValue(false);
+    await expect(
+      deliverFloatingMonoRequest(
+        { id: 1, monoId: "mono", action: { kind: "stopWorkflow", taskId: "wtask" } },
+        runtime,
+        async () => true,
+      ),
+    ).rejects.toThrow("isn't running this workflow");
+  });
+
   it("says when a Stop from the floating chat left chats running", async () => {
     const runtime = host();
     runtime.stopTree = vi
