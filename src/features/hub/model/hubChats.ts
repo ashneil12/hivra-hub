@@ -1,30 +1,30 @@
 import { examplesOn, examples } from "./examples";
-// Group chats per project, kept in local storage. The room takes turns on each Mono's own session through the runner
-// the app lends (setGroupChatRunner), with the small-model router picking who answers (setRoomRouter). Only with the
-// example data on does a scripted reply stand in, and every made-up row is labelled "Example:".
+// Group chats ("rooms") per project. The live copy is kept here in memory and every change is written through to the
+// room store (roomStore.ts): the app database in the app, the window's own storage in the browser preview and the
+// tests. The room takes turns through roomConductor.ts (re-exported below), on each Mono's own session through the
+// runner the app lends (setGroupChatRunner). Only with the example data on does a scripted reply stand in, and every
+// made-up row is labelled "Example:".
 import { useSyncExternalStore } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { listMonos } from "../../monos/model/mono";
 import { DEFAULT_TEAM_IDS } from "./builtInMonos";
-import { leadFor } from "./hubLeads";
 import {
-  addressedIn,
-  BOT_TURN_CAP,
-  chimePrompt,
-  isSilent,
-  lanePick,
-  laneChimes,
-  parseChimes,
-  parsePick,
-  pickPrompt,
-  plainFailure,
-  roomTranscript,
-  ruledPick,
-  turnPrompt,
-  type Chime,
-  type Pick,
-  type Seat,
-  type TurnKind,
-} from "./roomTurns";
+  CHAT_KEY,
+  IMPORTED_KEY,
+  SEATED_KEY,
+  STORED_MESSAGES,
+  conversationInput,
+  fingerprint,
+  groupChats,
+  legacyBundle,
+  messageInput,
+  messageMeta,
+  missingAfterImport,
+  roomInput,
+  tauriRooms,
+  whenLabel,
+  type RoomBackend,
+} from "./roomStore";
 import type { ChatConversation, ChatMessage, GroupChat } from "./types";
 
 const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
@@ -103,45 +103,215 @@ export function validGroupChats(value: unknown): GroupChat[] {
     }));
 }
 
-const CHAT_KEY = "monocode:hub-chats";
-// Examples never replace or persist over real conversations.
-if (!examplesOn()) {
-  try {
-    const saved: unknown = JSON.parse(localStorage.getItem(CHAT_KEY) ?? "[]");
-    chats = validGroupChats(saved).map((c) => c.replyPending ? { ...c, replyPending: undefined,
-      replyError: "The previous reply was interrupted. Check the Mono's conversation before trying again." } : c);
-  } catch { /* keep a clean roster if storage is unavailable */ }
-}
+export { STORED_MESSAGES };
 
-/** How many of a conversation's newest messages are stored (the whole roster shares one storage key). */
-export const STORED_MESSAGES = 500;
+// ---- Where the rooms are kept ------------------------------------------------------------------------------------
+
+/** The app database (in the app); none in the preview and the tests, which keep the roster in the window's storage. */
+let backend: RoomBackend | undefined;
+/** The store has been read (always true without a backend): until then changes wait (`whenLoaded`). */
+let loaded = true;
+let waiting: (() => void)[] = [];
+let tail: Promise<unknown> = Promise.resolve();
 /** Why the last save failed, until one works (GroupChatView shows it). */
 let saveProblem: string | undefined;
 
+function readSeated(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEATED_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function problem(what: string, error: unknown): string {
+  const why = error instanceof Error && error.message ? ` (${error.message.replace(/\.$/, "")})` : typeof error === "string" && error ? ` (${error.replace(/\.$/, "")})` : "";
+  return `${what}${why}.`;
+}
+
+/** The whole roster in the window's storage: the preview's and the tests' store (and the old builds'). */
+function saveLocal(): void {
+  if (examplesOn() || backend) return;
+  try {
+    const stored = chats.map(({ replyPending: _p, ...c }) => ({
+      ...c,
+      conversations: c.conversations.map((x) =>
+        x.messages.length > STORED_MESSAGES ? { ...x, messages: x.messages.slice(-STORED_MESSAGES) } : x),
+    }));
+    localStorage.setItem(CHAT_KEY, JSON.stringify(stored));
+    localStorage.setItem(SEATED_KEY, JSON.stringify(chats.filter((c) => c.seated).map((c) => c.id)));
+    saveProblem = undefined;
+  } catch (error) {
+    // Said once per run of failures, not on every message.
+    if (!saveProblem) console.error("Could not save the group chats", error);
+    saveProblem = problem("Group chats couldn't be saved", error) + " New messages may be gone after a restart.";
+  }
+}
+
+/** One write to the app database, after the ones before it. A failure is shown until a later write works. */
+function write(op: (b: RoomBackend) => Promise<unknown>): void {
+  if (examplesOn()) return;
+  const b = backend;
+  if (!b) {
+    saveLocal();
+    return;
+  }
+  const run = () => op(b);
+  tail = tail.then(run, run).then(
+    () => {
+      if (saveProblem) {
+        saveProblem = undefined;
+        notify();
+      }
+    },
+    (error: unknown) => {
+      if (!saveProblem) console.error("Could not save the group chats", error);
+      saveProblem = problem("Group chats couldn't be saved", error) + " New messages may be gone after a restart.";
+      notify();
+    },
+  );
+}
+
+/** Every write so far has reached the store (tests, and the migration check). */
+export function roomWritesSettled(): Promise<void> {
+  return tail.then(() => undefined, () => undefined);
+}
+
+function persistRoom(chat: GroupChat | undefined): void {
+  if (!chat) return;
+  const input = roomInput(chat);
+  write((b) => b.upsertRoom(input));
+}
+function persistConversation(chatId: string, conversation: ChatConversation | undefined): void {
+  if (!conversation) return;
+  const input = conversationInput(chatId, conversation);
+  write((b) => b.upsertConversation(input));
+}
+function persistMessage(chatId: string, convId: string, message: ChatMessage): void {
+  const input = messageInput(chatId, convId, message);
+  write((b) => b.addMessage(input));
+}
+
+/** Run a change now, or once the store has been read. */
+function whenLoaded(change: () => void): void {
+  if (loaded) change();
+  else waiting.push(change);
+}
+
+/**
+ * Read the rooms from the app database. The first time, the old key's rooms are copied across and read back; the old
+ * key stays as it is. A conversation whose last word is Ash's, still unanswered when the app closed, says so (Try
+ * again), so the room never goes quiet on him.
+ */
+export async function loadRooms(from: RoomBackend, now = Date.now()): Promise<void> {
+  backend = from;
+  loaded = false;
+  let problemText: string | undefined;
+  try {
+    let snapshot = await from.load();
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(CHAT_KEY);
+    } catch {
+      raw = null;
+    }
+    const legacy = raw ? validGroupChats(safeParse(raw)) : [];
+    if (raw && legacy.length && localStorage.getItem(IMPORTED_KEY) !== fingerprint(raw)) {
+      const bundle = legacyBundle(legacy, readSeated(), now);
+      await from.import({ ...bundle, mark: "legacy_import" });
+      snapshot = await from.load();
+      const missing = missingAfterImport(bundle, snapshot);
+      if (missing) problemText = `${missing}. The old copy is kept in this window's storage.`;
+      else localStorage.setItem(IMPORTED_KEY, fingerprint(raw));
+    }
+    const stored = groupChats(snapshot, now);
+    const ids = new Set(stored.map((c) => c.id));
+    // Anything made before the store answered stays (its writes are queued behind the read).
+    const early = chats.filter((c) => !ids.has(c.id));
+    chats = [...stored.map((c) => {
+      const mine = chats.find((x) => x.id === c.id);
+      const extra = mine?.conversations.filter((v) => !c.conversations.some((s) => s.id === v.id)) ?? [];
+      return withCutOff(extra.length ? { ...c, conversations: [...extra, ...c.conversations] } : c, now);
+    }), ...early];
+  } catch (error) {
+    problemText = problem("Group chats couldn't be loaded", error);
+  } finally {
+    saveProblem = problemText;
+    loaded = true;
+    const run = waiting;
+    waiting = [];
+    for (const change of run) change();
+    changed();
+  }
+}
+
+function safeParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+/** Ash's last message in a conversation, unanswered when the app closed less than a day ago: offer Try again. */
+function withCutOff(chat: GroupChat, now: number): GroupChat {
+  for (const conv of chat.conversations) {
+    const last = conv.messages[conv.messages.length - 1];
+    if (!last || last.from !== "ash" || conv.answeredThrough === last.id) continue;
+    if (last.at !== undefined && now - last.at > 24 * 60 * 60_000) continue;
+    return {
+      ...chat,
+      replyConversationId: conv.id,
+      replyMessageId: last.id,
+      replyError: "The room's answer was cut off when the app closed. Your message is saved.",
+    };
+  }
+  return chat;
+}
+
+// The live copy at start: the examples, the app database (read now, in the background), or the window's storage.
+if (!examplesOn()) {
+  let inApp = false;
+  try {
+    inApp = isTauri();
+  } catch {
+    inApp = false;
+  }
+  if (inApp) void loadRooms(tauriRooms);
+  else {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(CHAT_KEY) ?? "[]");
+      const seated = readSeated();
+      chats = validGroupChats(saved).map((c) => ({
+        ...(c.replyPending ? { ...c, replyPending: undefined, replyError: "The previous reply was interrupted. Check the Mono's conversation before trying again." } : c),
+        ...(seated.has(c.id) ? { seated: true } : {}),
+      }));
+    } catch { /* keep a clean roster if storage is unavailable */ }
+  }
+}
+
+/** The store in use, for the agents' reads of older messages ("app" or "window"). */
+export function roomBackend(): RoomBackend | undefined {
+  return backend;
+}
+
+// ---- Change notification --------------------------------------------------------------------------------------------
+
 const EVENT = "monocode:hub-chats-changed";
 let version = 0;
-function changed(): void {
-  if (!examplesOn()) {
-    try {
-      const stored = chats.map((c) => ({
-        ...c,
-        conversations: c.conversations.map((x) =>
-          x.messages.length > STORED_MESSAGES ? { ...x, messages: x.messages.slice(-STORED_MESSAGES) } : x),
-      }));
-      localStorage.setItem(CHAT_KEY, JSON.stringify(stored));
-      saveProblem = undefined;
-    } catch (error) {
-      // Said once per run of failures, not on every message.
-      if (!saveProblem) console.error("Could not save the group chats", error);
-      const why = error instanceof Error && error.message ? ` (${error.message.replace(/\.$/, "")})` : "";
-      saveProblem = `Group chats couldn't be saved${why}. New messages may be gone after a restart.`;
-    }
-  }
+/** Re-render only (nothing to save): typing indicators, problems. */
+export function notify(): void {
   version++;
   window.dispatchEvent(new CustomEvent(EVENT));
 }
+/** In the window's storage, the whole roster is written on every change; in the app, each change wrote its own row. */
+function changed(): void {
+  if (!backend) saveLocal();
+  notify();
+}
 
-/** Why the group chats couldn't be saved, while they can't. */
+/** Why the group chats couldn't be saved or loaded, while they can't. */
 export function chatSaveProblem(): string | undefined {
   return saveProblem;
 }
@@ -154,6 +324,8 @@ export function useHubChatsVersion(): number {
   return useSyncExternalStore(subscribe, () => version, () => version);
 }
 
+// ---- Rooms ------------------------------------------------------------------------------------------------------
+
 export function leadershipChatId(projectId: string): string {
   return `${projectId}:leadership`;
 }
@@ -162,30 +334,36 @@ export function listChats(projectId: string): GroupChat[] {
   return chats.filter((c) => c.projectId === projectId);
 }
 
+/** Every room (the agents' room tools look rooms up by id or name). */
+export function allChats(): readonly GroupChat[] {
+  return chats;
+}
+
 export function getChat(id: string): GroupChat | undefined {
   return chats.find((c) => c.id === id);
+}
+
+function update(chatId: string, change: (chat: GroupChat) => GroupChat): GroupChat | undefined {
+  let next: GroupChat | undefined;
+  chats = chats.map((c) => (c.id === chatId ? (next = change(c)) : c));
+  return next;
 }
 
 /** Every project has a Leadership team. It is made empty here; seatDefaultTeam seats the default team once. */
 export function ensureLeadership(projectId: string): GroupChat {
   const id = leadershipChatId(projectId);
-  let chat = getChat(id);
-  if (!chat) {
-    chat = { id, projectId, name: "Leadership team", isDefault: true, memberIds: [], conversations: [] };
-    chats = [...chats, chat];
-    changed();
+  const existing = getChat(id);
+  if (existing) return existing;
+  const chat: GroupChat = { id, projectId, name: "Leadership team", isDefault: true, memberIds: [], conversations: [] };
+  // Before the store is read, the room may be there already: make it then, if it still isn't.
+  if (!loaded) {
+    whenLoaded(() => void ensureLeadership(projectId));
+    return chat;
   }
+  chats = [...chats, chat];
+  persistRoom(chat);
+  changed();
   return chat;
-}
-
-const SEATED_KEY = "monocode:hub-leadership-seated";
-function seatedChats(): Set<string> {
-  try {
-    const v = JSON.parse(localStorage.getItem(SEATED_KEY) ?? "[]") as unknown;
-    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-  } catch {
-    return new Set();
-  }
 }
 
 /**
@@ -194,22 +372,20 @@ function seatedChats(): Set<string> {
  * chat: a Mono Ash takes out of the chat stays out, and one he removed from the roster is never added. Returns the chat.
  */
 export function seatDefaultTeam(projectId: string): GroupChat {
+  if (!loaded) {
+    whenLoaded(() => void seatDefaultTeam(projectId));
+    return ensureLeadership(projectId);
+  }
   const chat = ensureLeadership(projectId);
-  if (examplesOn()) return chat;
-  const seated = seatedChats();
-  if (seated.has(chat.id)) return chat;
+  if (examplesOn() || chat.seated) return chat;
   const roster = new Set(listMonos().map((m) => m.id));
   const team = DEFAULT_TEAM_IDS.filter((id) => roster.has(id));
   if (!team.length) return chat; // the roster isn't ready yet: try again next time
   const add = team.filter((id) => !chat.memberIds.includes(id));
-  if (add.length) chats = chats.map((c) => (c.id === chat.id ? { ...c, memberIds: [...add, ...c.memberIds] } : c));
-  try {
-    localStorage.setItem(SEATED_KEY, JSON.stringify([...seated, chat.id]));
-  } catch {
-    /* storage unavailable: seating again adds nobody twice */
-  }
+  const next = update(chat.id, (c) => ({ ...c, seated: true, memberIds: [...add, ...c.memberIds] }));
+  persistRoom(next);
   changed();
-  return getChat(chat.id)!;
+  return next ?? chat;
 }
 
 export function createChat(projectId: string, name: string, memberIds: string[]): GroupChat {
@@ -218,51 +394,53 @@ export function createChat(projectId: string, name: string, memberIds: string[])
     projectId,
     name: name.trim() || "New chat",
     isDefault: false,
-    memberIds: [...memberIds],
+    memberIds: [...new Set(memberIds)],
     conversations: [],
   };
   chats = [...chats, chat];
+  persistRoom(chat);
   changed();
   return chat;
 }
 
 export function addMember(chatId: string, monoId: string): void {
-  chats = chats.map((c) => (c.id === chatId && !c.memberIds.includes(monoId) ? { ...c, memberIds: [...c.memberIds, monoId] } : c));
-  changed();
+  whenLoaded(() => {
+    const chat = getChat(chatId);
+    if (!chat || chat.memberIds.includes(monoId)) return;
+    persistRoom(update(chatId, (c) => ({ ...c, memberIds: [...c.memberIds, monoId] })));
+    changed();
+  });
 }
 
 export function removeMember(chatId: string, monoId: string): void {
-  chats = chats.map((c) => (c.id === chatId ? { ...c, memberIds: c.memberIds.filter((id) => id !== monoId) } : c));
-  changed();
-}
-
-export function sendMessage(chatId: string, text: string, convId?: string): void {
-  chats = chats.map((c) => {
-    if (c.id !== chatId) return c;
-    const msg: ChatMessage = { id: crypto.randomUUID(), from: "ash", text };
-    const target = convId ? c.conversations.find((x) => x.id === convId) : undefined;
-    if (target)
-      return {
-        ...c,
-        conversations: c.conversations.map((x) =>
-          x.id === target.id
-            ? { ...x, title: x.messages.length || x.named ? x.title : autoTitle(text), messages: [...x.messages, msg] }
-            : x,
-        ),
-      };
-    const [first, ...rest] = c.conversations;
-    if (first && first.when === "Today") return { ...c, conversations: [{ ...first, messages: [...first.messages, msg] }, ...rest] };
-    return { ...c, conversations: [{ id: msg.id, when: "Today", title: autoTitle(text), messages: [msg] }, ...c.conversations] };
+  whenLoaded(() => {
+    if (!getChat(chatId)?.memberIds.includes(monoId)) return;
+    persistRoom(update(chatId, (c) => ({ ...c, memberIds: c.memberIds.filter((id) => id !== monoId) })));
+    changed();
   });
-  changed();
 }
 
 export function renameChat(chatId: string, name: string): void {
   const next = name.trim();
   if (!next) return;
-  chats = chats.map((c) => (c.id === chatId ? { ...c, name: next } : c));
-  changed();
+  whenLoaded(() => {
+    persistRoom(update(chatId, (c) => ({ ...c, name: next })));
+    changed();
+  });
 }
+
+/** Who answers Ash first in a room (unset: Chief of Staff when seated, else the first member). */
+export function setRoomLead(chatId: string, monoId: string | undefined): void {
+  whenLoaded(() => {
+    persistRoom(update(chatId, (c) => {
+      const { leadId: _, ...rest } = c;
+      return monoId ? { ...rest, leadId: monoId } : rest;
+    }));
+    changed();
+  });
+}
+
+// ---- Conversations and messages -----------------------------------------------------------------------------------
 
 /** A conversation names itself from its first message: the first line, cut at a word near 40 characters. */
 export function autoTitle(text: string): string {
@@ -273,397 +451,242 @@ export function autoTitle(text: string): string {
   return `${space > 20 ? cut.slice(0, space) : cut}…`;
 }
 
+let seq = 0;
+/** A message id: its time first, so the order of ids is the order of messages. */
+export function newMessageId(from: string): string {
+  return `${Date.now().toString(36)}-${from.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || "x"}-${(++seq).toString(36)}`;
+}
+
+function newConversationRecord(id: string, title: string, at: number, messages: ChatMessage[] = []): ChatConversation {
+  return { id, when: whenLabel(at, at), title, createdAt: at, messages };
+}
+
+/** Keep a conversation's newest STORED_MESSAGES in memory (the store keeps them all). */
+function capped(conv: ChatConversation): ChatConversation {
+  return conv.messages.length > STORED_MESSAGES ? { ...conv, messages: conv.messages.slice(-STORED_MESSAGES), more: true } : conv;
+}
+
+/**
+ * Add a message to a conversation (the newest one when none is named; a new one, named from the text, when the room
+ * has none). Returns where it went, or nothing when the room is gone.
+ */
+export function appendMessage(
+  chatId: string,
+  convId: string | undefined,
+  message: Omit<ChatMessage, "id" | "at"> & { id?: string; at?: number },
+): { convId: string; message: ChatMessage } | undefined {
+  const chat = getChat(chatId);
+  if (!chat) return undefined;
+  const at = message.at ?? Date.now();
+  const full: ChatMessage = { ...message, id: message.id ?? newMessageId(message.from), at };
+  const target = (convId && chat.conversations.find((x) => x.id === convId)) || (convId ? undefined : chat.conversations[0]);
+  if (!target) {
+    const id = convId ?? `conv-${at.toString(36)}-${++seq}`;
+    const conv = newConversationRecord(id, autoTitle(message.text) || "Conversation", at, [full]);
+    update(chatId, (c) => ({ ...c, conversations: [conv, ...c.conversations] }));
+    persistConversation(chatId, conv);
+    persistMessage(chatId, id, full);
+    changed();
+    return { convId: id, message: full };
+  }
+  if (target.messages.some((x) => x.id === full.id)) return { convId: target.id, message: target.messages.find((x) => x.id === full.id)! };
+  update(chatId, (c) => ({
+    ...c,
+    conversations: c.conversations.map((x) => (x.id === target.id ? capped({ ...x, messages: [...x.messages, full] }) : x)),
+  }));
+  persistMessage(chatId, target.id, full);
+  changed();
+  return { convId: target.id, message: full };
+}
+
+/** Ash writes in a conversation (the newest, or a new one when there is none from today). Returns the message id. */
+export function sendMessage(chatId: string, text: string, convId?: string): string {
+  const at = Date.now();
+  const msg: ChatMessage = { id: crypto.randomUUID(), from: "ash", kind: "ash", text, at };
+  whenLoaded(() => {
+    const c = getChat(chatId);
+    if (!c) return;
+    const target = convId ? c.conversations.find((x) => x.id === convId) : undefined;
+    if (target) {
+      const retitle = !target.messages.length && !target.named;
+      update(chatId, (chat) => ({
+        ...chat,
+        conversations: chat.conversations.map((x) =>
+          x.id === target.id ? capped({ ...x, title: retitle ? autoTitle(text) : x.title, messages: [...x.messages, msg] }) : x),
+      }));
+      if (retitle) persistConversation(chatId, getChat(chatId)?.conversations.find((x) => x.id === target.id));
+      persistMessage(chatId, target.id, msg);
+      changed();
+      return;
+    }
+    const [first] = c.conversations;
+    if (first && first.when === "Today") {
+      appendMessage(chatId, first.id, msg);
+      return;
+    }
+    const conv = newConversationRecord(msg.id, autoTitle(text), at, [msg]);
+    update(chatId, (chat) => ({ ...chat, conversations: [conv, ...chat.conversations] }));
+    persistConversation(chatId, conv);
+    persistMessage(chatId, conv.id, msg);
+    changed();
+  });
+  return msg.id;
+}
+
 /** Ash renames a conversation (double-click its name). Empty keeps the old name. */
 export function renameConversation(chatId: string, convId: string, title: string): void {
   const next = title.trim();
   if (!next) return;
-  chats = chats.map((c) =>
-    c.id === chatId ? { ...c, conversations: c.conversations.map((x) => (x.id === convId ? { ...x, title: next, named: true } : x)) } : c,
-  );
-  changed();
+  whenLoaded(() => {
+    update(chatId, (c) => ({ ...c, conversations: c.conversations.map((x) => (x.id === convId ? { ...x, title: next, named: true } : x)) }));
+    persistConversation(chatId, getChat(chatId)?.conversations.find((x) => x.id === convId));
+    changed();
+  });
 }
 
 /**
  * The New conversation screen sends its first message: only now is a conversation made, named from that message.
  * Returns its id.
  */
-let convSeq = 0;
 export function startConversation(chatId: string, text: string): string {
-  const id = `conv-${Date.now().toString(36)}-${++convSeq}`;
-  const msg: ChatMessage = { id: `${id}-1`, from: "ash", text };
-  chats = chats.map((c) =>
-    c.id === chatId ? { ...c, conversations: [{ id, when: "Today", title: autoTitle(text), messages: [msg] }, ...c.conversations] } : c,
-  );
+  const at = Date.now();
+  const id = `conv-${at.toString(36)}-${++seq}`;
+  const msg: ChatMessage = { id: `${id}-1`, from: "ash", kind: "ash", text, at };
+  const conv = newConversationRecord(id, autoTitle(text), at, [msg]);
+  update(chatId, (c) => ({ ...c, conversations: [conv, ...c.conversations] }));
+  persistConversation(chatId, conv);
+  persistMessage(chatId, id, msg);
   changed();
   return id;
 }
 
 /** Start a fresh conversation at the top of the list; returns its id. */
 export function newConversation(chatId: string): string {
-  const id = `conv-${Date.now().toString(36)}`;
-  chats = chats.map((c) =>
-    c.id === chatId ? { ...c, conversations: [{ id, when: "Today", title: "New conversation", messages: [] }, ...c.conversations] } : c,
-  );
+  const at = Date.now();
+  const id = `conv-${at.toString(36)}-${++seq}`;
+  const conv = newConversationRecord(id, "New conversation", at);
+  update(chatId, (c) => ({ ...c, conversations: [conv, ...c.conversations] }));
+  persistConversation(chatId, conv);
   changed();
   return id;
 }
 
-// ---- Replies: the room takes turns (roomTurns.ts has the rules). One exchange per message, or batch of messages, from
-// Ash: a picked answerer, then at most one new reply from each other member, then a Mono another Mono addresses may
-// answer once, all under BOT_TURN_CAP turns. One turn is in flight per room; what Ash sends meanwhile waits and is
-// answered together in the next exchange. Every turn runs in the Mono's own session (the app's runner).
-let typing: Record<string, string | undefined> = {};
-export function typingIn(chatId: string): string | undefined {
-  return typing[chatId];
-}
-function setTyping(chatId: string, monoId: string | undefined): void {
-  typing = { ...typing, [chatId]: monoId };
-  chats = chats.map((c) => c.id === chatId ? { ...c, replyPending: monoId } : c);
-  changed();
-}
-
-function addReply(chatId: string, from: string, text: string, quiet: boolean, convId?: string, pick?: ChatMessage["pick"]): void {
-  chats = chats.map((c) => {
-    if (c.id !== chatId) return c;
-    const msg: ChatMessage = { id: `${Date.now().toString(36)}${from}${++replySeq}`, from, text, ...(quiet ? { quiet: true } : {}), ...(pick ? { pick } : {}) };
-    const target = (convId && c.conversations.find((x) => x.id === convId)) || c.conversations[0];
-    if (!target) return c;
-    return { ...c, conversations: c.conversations.map((x) => (x.id === target.id ? { ...x, messages: [...x.messages, msg] } : x)) };
-  });
-  changed();
-}
-let replySeq = 0;
-
-/**
- * Ash sent a message: the room answers it (requestReply). With the example data on, a scripted stand-in answers
- * instead: the picked answerer types and replies, and one other member may add a line.
- */
-export function simulateReplies(chatId: string, convId?: string): void {
-  if (!examplesOn()) { void requestReply(chatId, convId); return; }
-  const chat = getChat(chatId);
-  const [answerer, extra] = chat?.memberIds ?? [];
-  if (!answerer) return;
-  setTyping(chatId, answerer);
-  window.setTimeout(() => {
-    setTyping(chatId, undefined);
-    addReply(chatId, answerer, "Example: on it. I'll put the plan on the board within the hour.", false, convId);
-    if (!extra) return;
-    window.setTimeout(() => addReply(chatId, extra, "Example: I'll check it against the project's needs when it's done.", true, convId), 1600);
-  }, 1800);
-}
-
-export type GroupChatRunner = (monoId: string, prompt: string) => Promise<string>;
-let runner: GroupChatRunner | undefined;
-/** The app supplies its normal Mono session engine; the store never invents an answer. */
-export function setGroupChatRunner(next: GroupChatRunner): () => void {
-  runner = next;
-  return () => { if (runner === next) runner = undefined; };
-}
-/** The runner's refusal when the Mono's own session is mid-turn: an answer surfaces it, a chime-in just skips. */
-export class MonoBusyError extends Error {}
-
-/** The cheap router: one isolated prompt to the smallest model, text back. Without one, the lane rules decide. */
-export type RoomRouter = (prompt: string) => Promise<string>;
-let router: RoomRouter | undefined;
-export function setRoomRouter(next: RoomRouter): () => void {
-  router = next;
-  return () => { if (router === next) router = undefined; };
-}
-const ROUTER_TIMEOUT_MS = 20_000;
-async function askRouter(prompt: string): Promise<string | undefined> {
-  const ask = router;
-  if (!ask) return undefined;
-  let timer: number | undefined;
-  try {
-    return await Promise.race([
-      ask(prompt),
-      new Promise<undefined>((resolve) => { timer = window.setTimeout(() => resolve(undefined), ROUTER_TIMEOUT_MS); }),
-    ]);
-  } catch {
-    return undefined;
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-type RoomState = {
-  running: boolean;
-  /** Conversations Ash sent to while a turn was in flight, answered in order once it ends. */
-  pending: string[];
-  /** Who the current or last exchange picked, and why (shown with a failure). */
-  pick?: Pick;
-  routing?: boolean;
-  /** The conversation whose exchange hit the turn cap and now waits for Ash. */
-  paused?: string;
-};
-const rooms = new Map<string, RoomState>();
-function room(chatId: string): RoomState {
-  let r = rooms.get(chatId);
-  if (!r) { r = { running: false, pending: [] }; rooms.set(chatId, r); }
-  return r;
-}
-/** "Choosing who answers…" while the router picks. */
-export function roomRouting(chatId: string): boolean {
-  return !!rooms.get(chatId)?.routing;
-}
-/** The exchange hit the turn cap in this conversation and is waiting for Ash. */
-export function roomPaused(chatId: string, convId?: string): boolean {
-  const paused = rooms.get(chatId)?.paused;
-  return !!paused && (!convId || paused === convId);
-}
-/** Who was picked to answer the last message, and why: "Projects Manager, squarely Projects Manager's lane". */
-export function roomPick(chatId: string): Pick | undefined {
-  return rooms.get(chatId)?.pick;
-}
-
-function setReplyProblem(chatId: string, error: string | undefined): void {
-  chats = chats.map((c) => c.id === chatId ? { ...c, replyError: error } : c);
-}
-export function replyProblem(chatId: string, convId?: string): string | undefined {
-  const chat = getChat(chatId);
-  return convId && chat?.replyConversationId !== convId ? undefined : chat?.replyError;
-}
-export function retryReply(chatId: string): Promise<void> {
-  const chat = getChat(chatId);
-  if (!chat?.replyConversationId || !chat.replyMessageId) return Promise.resolve();
-  const conv = chat.conversations.find((c) => c.id === chat.replyConversationId);
-  const lastUser = conv ? [...conv.messages].reverse().find((m) => m.from === "ash") : undefined;
-  if (lastUser?.id !== chat.replyMessageId) {
-    setReplyProblem(chatId, "This conversation has newer messages. Open it before sending again.");
-    changed(); return Promise.resolve();
-  }
-  return requestReply(chatId, chat.replyConversationId);
-}
-
-/** Ash's messages in a conversation that no exchange has answered yet (oldest first). */
-function unanswered(conv: ChatConversation): ChatMessage[] {
-  if (conv.answeredThrough !== undefined) {
-    const at = conv.messages.findIndex((m) => m.id === conv.answeredThrough);
-    if (at >= 0) return conv.messages.slice(at + 1).filter((m) => m.from === "ash");
-  }
-  // No marker (older data): the run of Ash's messages since the last reply.
-  const out: ChatMessage[] = [];
-  for (let i = conv.messages.length - 1; i >= 0 && conv.messages[i].from === "ash"; i--) out.unshift(conv.messages[i]);
-  return out;
-}
-function setAnswered(chatId: string, convId: string, through: string | undefined, replyMessageId?: string): void {
-  chats = chats.map((c) => c.id !== chatId ? c : {
+/** The last of Ash's messages the room has taken up in a conversation (unset: back to "the run since the last reply"). */
+export function setAnsweredThrough(chatId: string, convId: string, through: string | undefined): void {
+  update(chatId, (c) => ({
     ...c,
-    ...(replyMessageId ? { replyConversationId: convId, replyMessageId } : {}),
     conversations: c.conversations.map((x) => {
       if (x.id !== convId) return x;
       const { answeredThrough: _, ...rest } = x;
       return through === undefined ? rest : { ...x, answeredThrough: through };
     }),
-  });
+  }));
+  persistConversation(chatId, getChat(chatId)?.conversations.find((x) => x.id === convId));
   changed();
 }
 
-/** The chat's members as the room's seats: their names, and a Lead's project as another name for it. */
-function seatsOf(chat: GroupChat): Seat[] {
-  const roster = listMonos();
-  return chat.memberIds.map((id) => {
-    // A member no longer on the roster keeps its seat; the runner says so if it is picked.
-    const mono = roster.find((m) => m.id === id);
-    const name = mono?.name?.trim() || id;
-    const lead = leadFor(id);
-    return {
-      id,
-      name,
-      ...(mono?.engine ? { engine: mono.engine } : {}),
-      ...(lead ? { aliases: [lead.projectName, `${lead.projectName} lead`], card: `${name}: runs ${lead.projectName}'s work and its workers; answers about ${lead.projectName} itself. Not: other projects.` } : {}),
-    };
+/** Ash's messages in a conversation that no answer has taken up yet (oldest first). */
+export function unanswered(conv: ChatConversation): ChatMessage[] {
+  if (conv.answeredThrough !== undefined) {
+    const at = conv.messages.findIndex((m) => m.id === conv.answeredThrough);
+    if (at >= 0) return conv.messages.slice(at + 1).filter((m) => m.from === "ash");
+  }
+  // No marker (older data, or nothing answered yet): Ash's messages since the last Mono's reply (the app's own lines,
+  // a notice or a pause, don't count as a reply).
+  const out: ChatMessage[] = [];
+  for (let i = conv.messages.length - 1; i >= 0; i--) {
+    const m = conv.messages[i];
+    if (m.from === "ash") out.unshift(m);
+    else if (m.from !== "app" && m.kind !== "notice" && m.kind !== "system") break;
+  }
+  return out;
+}
+
+/** The conversation a message is in. */
+export function conversationOf(chatId: string, messageId: string): ChatConversation | undefined {
+  return getChat(chatId)?.conversations.find((c) => c.messages.some((x) => x.id === messageId));
+}
+
+/** Allowed reactions: an acknowledgement, a done, a looking-at-it. */
+export const REACTIONS = ["👍", "✅", "👀"] as const;
+
+/**
+ * `who` reacts to a message with `emoji` (on: add; off: take back; neither: toggle). Returns the message's reactions,
+ * or nothing when it isn't there.
+ */
+export function react(chatId: string, messageId: string, who: string, emoji: string, on?: boolean): Record<string, string[]> | undefined {
+  const conv = conversationOf(chatId, messageId);
+  const message = conv?.messages.find((x) => x.id === messageId);
+  if (!conv || !message || !(REACTIONS as readonly string[]).includes(emoji)) return undefined;
+  const list = message.reactions?.[emoji] ?? [];
+  const has = list.includes(who);
+  const add = on ?? !has;
+  if (add === has) return message.reactions ?? {};
+  const nextList = add ? [...list, who] : list.filter((x) => x !== who);
+  const reactions = { ...(message.reactions ?? {}) };
+  if (nextList.length) reactions[emoji] = nextList;
+  else delete reactions[emoji];
+  update(chatId, (c) => ({
+    ...c,
+    conversations: c.conversations.map((x) =>
+      x.id === conv.id ? { ...x, messages: x.messages.map((y) => (y.id === messageId ? { ...y, reactions } : y)) } : x),
+  }));
+  write((b) => b.updateMessage({ roomId: chatId, id: messageId, reactions }));
+  changed();
+  return reactions;
+}
+
+/** A message's notice is settled (its Try again ran): it stays, without the button. */
+export function settleNotice(chatId: string, messageId: string): void {
+  const conv = conversationOf(chatId, messageId);
+  const message = conv?.messages.find((x) => x.id === messageId);
+  if (!conv || !message?.notice?.retry) return;
+  const next: ChatMessage = { ...message, notice: { ...message.notice, retry: false } };
+  update(chatId, (c) => ({
+    ...c,
+    conversations: c.conversations.map((x) => (x.id === conv.id ? { ...x, messages: x.messages.map((y) => (y.id === messageId ? next : y)) } : x)),
+  }));
+  const meta = messageMeta(next);
+  write((b) => b.updateMessage({ roomId: chatId, id: messageId, meta }));
+  changed();
+}
+
+/** Runtime state the room shows (who is answering, why the last answer failed); not stored. */
+export function setRoomRuntime(chatId: string, change: Partial<Pick<GroupChat, "replyPending" | "replyError" | "replyConversationId" | "replyMessageId">>): void {
+  update(chatId, (c) => {
+    const next = { ...c };
+    for (const [key, value] of Object.entries(change) as [keyof typeof change, string | undefined][]) {
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+    }
+    return next;
   });
+  if (!backend) saveLocal();
+  notify();
 }
 
 /**
- * Ask the room to answer Ash's latest message(s) in a conversation. While a turn is in flight in this room, the
- * conversation waits its turn and this returns at once; the running exchange stops at its next turn boundary and the
- * waiting messages are answered together.
+ * A room's messages for the agents: after `since` (a message id) or the newest `limit`, in one conversation or all,
+ * oldest first. Older messages than the window keeps come from the store.
  */
-export function requestReply(chatId: string, convId?: string): Promise<void> {
-  const chat = getChat(chatId);
-  const conv = chat?.conversations.find((c) => c.id === convId) ?? chat?.conversations[0];
-  if (!chat || !conv) return Promise.resolve();
-  const r = room(chatId);
-  if (r.running) {
-    if (!r.pending.includes(conv.id)) r.pending.push(conv.id);
-    return Promise.resolve();
-  }
-  return runRoom(chatId, conv.id, r);
-}
-
-async function runRoom(chatId: string, convId: string, r: RoomState): Promise<void> {
-  r.running = true;
-  r.pending = [convId];
-  try {
-    while (r.pending.length) await runExchange(chatId, r.pending.shift()!, r);
-  } finally {
-    r.running = false;
-    r.routing = false;
-  }
-}
-
-type Turn = { seat: string; kind: TurnKind; why: string; by?: Pick["by"]; other?: string };
-
-async function runExchange(chatId: string, convId: string, r: RoomState): Promise<void> {
-  const chat = getChat(chatId);
-  const conv = chat?.conversations.find((c) => c.id === convId);
-  if (!chat || !conv) return;
-  const batch = unanswered(conv);
-  const last = batch[batch.length - 1];
-  if (!last) return;
-  const before = conv.answeredThrough;
-  setAnswered(chatId, convId, last.id, last.id);
-  r.paused = undefined;
-  setReplyProblem(chatId, undefined);
-  const seats = seatsOf(chat);
-  const nameOf = (id: string) => seats.find((s) => s.id === id)?.name ?? id;
-  const fail = (error: string) => { setReplyProblem(chatId, error); setAnswered(chatId, convId, before); };
-  if (!seats.length || !runner) {
-    fail(!seats.length ? "Add a Mono to this chat before sending." : "The Mono session engine isn't connected. Open this chat in the desktop app.");
-    return;
-  }
-  const transcript = () => roomTranscript(getChat(chatId)?.conversations.find((c) => c.id === convId)?.messages ?? [], nameOf);
-
-  // Round 1: who answers.
-  let pick = ruledPick(batch.map((m) => m.text), seats);
-  if (!pick && router) {
-    r.routing = true; changed();
-    for (let attempt = 0; attempt < 2 && !pick; attempt++) {
-      const out = await askRouter(pickPrompt(seats, transcript()) + (attempt ? "\nName exactly one member id from the list." : ""));
-      if (out === undefined) break;
-      pick = parsePick(out, seats);
-    }
-    r.routing = false;
-  }
-  pick ??= lanePick(batch.map((m) => m.text).join("\n"), seats)!;
-  r.pick = pick;
-
-  const queue: Turn[] = [{ seat: pick.id, kind: "answer", why: pick.why, by: pick.by }];
-  const replied = new Set<string>();
-  const extra = new Set<string>();
-  let turns = 0;
-  while (queue.length) {
-    // Ash spoke again: stop here; his new messages open the next exchange.
-    if (r.pending.some((id) => { const c = getChat(chatId)?.conversations.find((x) => x.id === id); return !!c && unanswered(c).length > 0; })) return;
-    if (turns >= BOT_TURN_CAP) { r.paused = convId; changed(); return; }
-    const turn = queue.shift()!;
-    const me = seats.find((s) => s.id === turn.seat);
-    if (!me) continue;
-    setTyping(chatId, turn.seat);
-    let reply: string;
-    try {
-      reply = await runner(turn.seat, turnPrompt({ chatName: chat.name, projectId: chat.projectId, me, seats, kind: turn.kind, batch: batch.length, other: turn.other, transcript: transcript() }));
-    } catch (error) {
-      setTyping(chatId, undefined);
-      // A chime-in or reply that couldn't run (busy, failed) is dropped quietly; the answer's failure is shown.
-      if (turn.kind === "answer") { fail(error instanceof Error ? plainFailure(me.name, error.message, me.engine) : `${me.name} couldn't reply. Your message is saved.`); return; }
-      continue;
-    }
-    setTyping(chatId, undefined);
-    turns++;
-    if (turn.kind === "answer" && !reply.trim()) { fail("The Mono finished without a text reply. Open its conversation to inspect the result."); return; }
-    if (isSilent(reply)) continue;
-    addReply(chatId, turn.seat, reply, turn.kind !== "answer", convId, { by: turn.by ?? (turn.kind === "chime" ? "chime" : "addressed"), why: turn.why });
-    // Round 3: a Mono this reply addresses may answer once, next.
-    const named = addressedIn(reply, seats, turn.seat).filter((id) => !replied.has(id));
-    named.forEach((id) => replied.add(id));
-    // Its answer to being addressed takes the place of a chime-in still waiting, so it doesn't speak twice in a row.
-    for (let i = queue.length - 1; i >= 0; i--) if (queue[i].kind === "chime" && named.includes(queue[i].seat)) queue.splice(i, 1);
-    queue.unshift(...named.map((id): Turn => ({ seat: id, kind: "reply", why: `${me.name} addressed ${nameOf(id)}`, other: me.name })));
-    // Round 2: after the answer, who else may have something new (each at most once).
-    if (turn.kind === "answer") {
-      const ashText = batch.map((m) => m.text).join("\n");
-      let chimes: Chime[] | undefined;
-      if (router && seats.length > 1) {
-        const out = await askRouter(chimePrompt(seats, me, transcript()));
-        chimes = out === undefined ? undefined : parseChimes(out, seats, me.id);
-      }
-      chimes ??= laneChimes(ashText, seats, me.id);
-      for (const c of chimes)
-        if (!replied.has(c.id) && !extra.has(c.id)) { extra.add(c.id); queue.push({ seat: c.id, kind: "chime", why: c.why, other: me.name }); }
-    }
-  }
-}
-
-/**
- * A Lead's report on a brief from a leadership Mono lands in the room (double delegation, roomReports.ts): the Lead's
- * report, then the briefing Mono's answer to it, which was its own turn on the report in its chat (the H2 report-back
- * path), so the room's "one answers" holds. Then, as for Ash's messages, each other member may add at most one new
- * reply (NO_REPLY is never posted), under the turn cap, with one turn in flight per room. Posting the same report again
- * changes nothing (its id is the report's receipt).
- */
-export async function postReport(
+export async function readRoom(
   chatId: string,
-  report: { id: string; from: string; text: string; answeredBy: string; answer: string; why: string },
-): Promise<boolean> {
+  options: { conversation?: string; since?: string; limit?: number } = {},
+): Promise<{ convId: string; message: ChatMessage }[]> {
   const chat = getChat(chatId);
-  if (!chat || !chat.memberIds.includes(report.answeredBy)) return false;
-  if (chat.conversations.some((c) => c.messages.some((m) => m.id === report.id))) return false;
-  const pick = { by: "report" as const, why: report.why };
-  const posted: ChatMessage[] = [
-    { id: report.id, from: report.from, text: report.text.trim() || "(the Lead finished without a written report)", pick },
-    ...(report.answer.trim() && !isSilent(report.answer)
-      ? [{ id: `${report.id}-answer`, from: report.answeredBy, text: report.answer, pick }]
-      : []),
-  ];
-  const latest = chat.conversations[0];
-  const convId = latest?.id ?? `conv-${Date.now().toString(36)}-report`;
-  chats = chats.map((c) => {
-    if (c.id !== chatId) return c;
-    if (!latest)
-      return { ...c, conversations: [{ id: convId, when: "Today", title: autoTitle(`Report: ${report.why}`), messages: posted }] };
-    return { ...c, conversations: c.conversations.map((x) => (x.id === convId ? { ...x, messages: [...x.messages, ...posted] } : x)) };
-  });
-  changed();
-  const r = room(chatId);
-  if (r.running || !runner || posted.length < 2) return true;
-  r.running = true;
-  try {
-    await reportChimes(chatId, convId, report.answeredBy, report.text);
-  } finally {
-    r.running = false;
-  }
-  // Ash may have written meanwhile: his messages get their exchanges now, in order.
-  const waiting = r.pending.splice(0);
-  if (waiting.length)
-    void (async () => {
-      for (const id of waiting) await requestReply(chatId, id);
-    })();
-  return true;
-}
-
-async function reportChimes(chatId: string, convId: string, answeredBy: string, reportText: string): Promise<void> {
-  const chat = getChat(chatId);
-  if (!chat || !runner) return;
-  const seats = seatsOf(chat);
-  const me = seats.find((s) => s.id === answeredBy);
-  if (!me || seats.length < 2) return;
-  const nameOf = (id: string) => seats.find((s) => s.id === id)?.name ?? listMonos().find((m) => m.id === id)?.name ?? id;
-  const transcript = () => roomTranscript(getChat(chatId)?.conversations.find((c) => c.id === convId)?.messages ?? [], nameOf);
-  let chimes: Chime[] | undefined;
-  if (router) {
-    const out = await askRouter(chimePrompt(seats, me, transcript()));
-    chimes = out === undefined ? undefined : parseChimes(out, seats, me.id);
-  }
-  chimes ??= laneChimes(reportText, seats, me.id);
-  let turns = 1;
-  for (const c of chimes) {
-    if (turns >= BOT_TURN_CAP) break;
-    const seat = seats.find((s) => s.id === c.id);
-    if (!seat) continue;
-    setTyping(chatId, seat.id);
-    let reply = "";
-    try {
-      reply = await runner(seat.id, turnPrompt({ chatName: chat.name, projectId: chat.projectId, me: seat, seats, kind: "chime", other: me.name, transcript: transcript() }));
-    } catch {
-      // A chime-in that can't run (busy, failed) is dropped quietly, as in any exchange.
-    }
-    setTyping(chatId, undefined);
-    turns++;
-    if (reply.trim() && !isSilent(reply)) addReply(chatId, seat.id, reply, true, convId, { by: "chime", why: c.why });
-  }
+  if (!chat) return [];
+  const limit = Math.max(1, Math.min(options.limit ?? 30, 200));
+  const all = chat.conversations
+    .filter((c) => !options.conversation || c.id === options.conversation)
+    .flatMap((c) => c.messages.map((message) => ({ convId: c.id, message })))
+    .sort((a, b) => (a.message.at ?? 0) - (b.message.at ?? 0));
+  if (!options.since) return all.slice(-limit);
+  const at = all.findIndex((x) => x.message.id === options.since);
+  if (at >= 0) return all.slice(at + 1, at + 1 + limit);
+  if (!backend) throw new Error(`No message ${options.since} in this room`);
+  const { chatMessage } = await import("./roomStore");
+  const older = await backend.read(chatId, { conversation: options.conversation, since: options.since, limit });
+  return older.map((m) => ({ convId: m.conversationId, message: chatMessage(m) }));
 }
 
 /**
@@ -675,6 +698,7 @@ export function importChats(imported: GroupChat[], { mergeConversations = false 
   const present = new Set(chats.map((c) => c.id));
   const valid = validGroupChats(imported);
   let conversations = 0;
+  const addedConversations: { chatId: string; conv: ChatConversation }[] = [];
   if (mergeConversations) {
     chats = chats.map((c) => {
       const from = valid.find((v) => v.id === c.id);
@@ -682,6 +706,7 @@ export function importChats(imported: GroupChat[], { mergeConversations = false 
       const have = new Set(c.conversations.map((v) => v.id));
       const add = from.conversations.filter((v) => !have.has(v.id));
       conversations += add.length;
+      for (const conv of add) addedConversations.push({ chatId: c.id, conv });
       return add.length ? { ...c, conversations: [...c.conversations, ...add] } : c;
     });
   }
@@ -691,7 +716,58 @@ export function importChats(imported: GroupChat[], { mergeConversations = false 
   }).map((c) => ({ ...c, replyPending: undefined }));
   conversations += additions.reduce((n, c) => n + c.conversations.length, 0);
   chats = [...chats, ...additions];
+  if (backend && (additions.length || addedConversations.length)) {
+    const bundle = legacyBundle(additions, new Set(additions.filter((c) => c.seated).map((c) => c.id)));
+    for (const { chatId, conv } of addedConversations) {
+      const one = legacyBundle([{ ...getChat(chatId)!, conversations: [conv] }], new Set());
+      bundle.conversations.push(...one.conversations);
+      bundle.messages.push(...one.messages);
+    }
+    write((b) => b.import(bundle));
+  }
   changed();
   return { chats: additions.length, conversations };
 }
 export function exportChats(): GroupChat[] { return structuredClone(chats); }
+
+/** Tests: forget everything (and the store in use). */
+export function resetRoomsForTests(next: GroupChat[] = []): void {
+  chats = next;
+  backend = undefined;
+  loaded = true;
+  waiting = [];
+  tail = Promise.resolve();
+  saveProblem = undefined;
+}
+
+// The room taking turns lives in roomConductor.ts; these are its door for the app and the screens.
+export {
+  keepGoing,
+  MonoBusyError,
+  postBack,
+  postFromMono,
+  postReport,
+  replyProblem,
+  requestReply,
+  retryNotice,
+  retryReply,
+  roomActive,
+  roomIdle,
+  roomPaused,
+  roomPauseReason,
+  roomPick,
+  roomRouting,
+  roomTurnOf,
+  roomWorking,
+  setGroupChatRunner,
+  setRoomRouter,
+  simulateReplies,
+  stopRoom,
+  typingIn,
+  type GroupChatRunner,
+  type RoomRouter,
+  type RoomTurnOutcome,
+  type RoomTurnRequest,
+  type RoomWakeEnd,
+  type RoomWorker,
+} from "./roomConductor";

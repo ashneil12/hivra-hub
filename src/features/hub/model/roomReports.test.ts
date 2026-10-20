@@ -46,6 +46,7 @@ it("posts the Lead's report and the briefing Mono's answer, then lets the others
   // The cheap router gates who may add something (it names the answerer too, who must not speak twice).
   chat.setRoomRouter(async () => '{"chime":[{"id":"chief-of-staff","why":"x"},{"id":"frank","why":"memory"},{"id":"alfred","why":"gate"}]}');
   expect(await reports.postLeadReport(report(lead), { id: lead.id, name: "MonoCode Hub lead" })).toBe(true);
+  await chat.roomIdle(room);
   const messages = chat.getChat(room)!.conversations[0].messages;
   expect(messages.slice(0, 2).map((m) => [m.from, m.text, m.pick?.by])).toEqual([
     [lead.id, report(lead).report, "report"],
