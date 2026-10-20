@@ -3,12 +3,69 @@
 //   does the talking, and Ash can still jump in;
 // - a Lead with delegated work out reads what is out by name ("2 working: API, UI · 1 asking: Docs · 1 stuck: Tests";
 //   "Waiting on N" without names; its count, "Delegated 3: 2 working, 1 failed", on hover), with one Stop for
-//   everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx).
-import { useState } from "react";
-import { Square } from "../../../shared/ui/icons";
+//   everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx);
+// - a Mono with a brief out to a coding team reads one line for it (Ash, 20 Oct: "Briefed EXO coding team: <task> · 2
+//   working · 1 stuck"), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
+import { Fragment, useState } from "react";
+import { ChevronRight, Square, Terminal } from "../../../shared/ui/icons";
+import { briefedStatus, type BriefedTeam } from "../model/briefedTeams";
 import { workingLine } from "../model/leadFlow";
 import type { StuckWorker } from "../model/workerStuck";
 import { StuckList, stuckTitle } from "./StuckWorkerCard";
+
+/**
+ * One brief to a coding team, as the briefing Mono's chat shows it: "Briefed EXO coding team: Fix the save bug · 2
+ * working · 1 stuck", the asking part amber and the stuck part amber or red. Live (it reads the rows), and one click
+ * opens the coding team on its Lead.
+ */
+export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?: (brief: BriefedTeam) => void }) {
+  const { counts } = brief;
+  const status = [
+    counts.working ? { key: "working", text: `${counts.working} working`, className: "" } : undefined,
+    counts.asking ? { key: "asking", text: `${counts.asking} asking`, className: "text-amber-400" } : undefined,
+    counts.stuck
+      ? { key: "stuck", text: `${counts.stuck} stuck`, className: brief.failed ? "text-red-400" : "text-amber-400" }
+      : undefined,
+  ].filter((part): part is { key: string; text: string; className: string } => !!part);
+  const team = brief.to?.team ?? "its coding team";
+  const words = `Briefed ${team}: ${brief.title} · ${briefedStatus(brief)}`;
+  return (
+    <button
+      type="button"
+      data-briefed-team={brief.row.id}
+      data-briefed-project={brief.to?.projectId}
+      data-briefed-kind={counts.stuck ? (brief.failed ? "failed" : "stuck") : counts.asking ? "asking" : "working"}
+      disabled={!onOpen || !brief.to}
+      title={brief.to ? `Open ${team} on ${brief.to.leadName}` : words}
+      aria-label={brief.to ? `${words}. Open ${team}` : words}
+      onClick={() => onOpen?.(brief)}
+      className="group/brief flex w-full min-w-0 cursor-default items-center gap-2 rounded-2xl border border-content/10 px-4 py-2.5 text-left font-sans text-[12px] text-content/55 hover:bg-content/4 disabled:hover:bg-transparent"
+    >
+      <Terminal aria-hidden className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
+      <span className="min-w-0 truncate" data-briefed-words>
+        <span className="text-content/85">Briefed {team}:</span> {brief.title}
+      </span>
+      <span className="shrink-0" data-briefed-status>
+        <span aria-hidden> · </span>
+        {status.length
+          ? status.map((part, index) => (
+              <Fragment key={part.key}>
+                {index ? <span aria-hidden> · </span> : null}
+                <span className={part.className}>{part.text}</span>
+              </Fragment>
+            ))
+          : briefedStatus(brief)}
+      </span>
+      {brief.to ? (
+        <ChevronRight
+          aria-hidden
+          className="ml-auto size-3.5 shrink-0 text-content/35 group-hover/brief:text-content/70"
+          strokeWidth={1.75}
+        />
+      ) : null}
+    </button>
+  );
+}
 
 /** "Tests, Upload" (at most three names, then "+2"), as the working line names them. */
 function names(list: readonly string[]): string {
@@ -91,6 +148,8 @@ export function DelegationWaitingLine({
   failed = [],
   unloaded = [],
   onStopAll,
+  briefs = [],
+  onOpenBrief,
 }: {
   count: number;
   /** What is out by title, still running (not stalled) and asking: "2 working: API, UI". */
@@ -106,6 +165,9 @@ export function DelegationWaitingLine({
   /** Chats whose workers the last Stop couldn't load (they may still be running), by title. */
   unloaded?: readonly string[];
   onStopAll?: () => Promise<unknown> | void;
+  /** Its briefs out to coding teams: a line each, above the working line (BriefedTeamLine). */
+  briefs?: readonly BriefedTeam[];
+  onOpenBrief?: (brief: BriefedTeam) => void;
 }) {
   const [stopping, setStopping] = useState(false);
   if (count <= 0 && !failed.length && !unloaded.length && !stuck.length)
@@ -122,10 +184,19 @@ export function DelegationWaitingLine({
   ]
     .filter(Boolean)
     .join(" · ");
-  const line = named || (count > 0 ? `Waiting on ${count}` : undefined);
+  // Briefs have their own lines: "Waiting on N" counts only the rest.
+  const others = count - briefs.length;
+  const line = named || (others > 0 ? `Waiting on ${others}` : undefined);
   return (
     <>
       <StuckList stuck={stuck} now={now} variant="chat" label="Stuck workers" />
+      {briefs.length ? (
+        <div data-briefed-teams className="flex flex-col gap-1.5 pb-1.5">
+          {briefs.map((brief) => (
+            <BriefedTeamLine key={brief.row.id} brief={brief} onOpen={onOpenBrief} />
+          ))}
+        </div>
+      ) : null}
       <div
         data-delegation-waiting={count}
         className="flex items-center gap-2 px-1 pb-1.5 font-sans text-[12px] text-content/55"

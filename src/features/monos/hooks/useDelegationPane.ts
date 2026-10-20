@@ -34,10 +34,21 @@ import {
   useCodingTeamVersion,
 } from "../../hub/model/codingTeam";
 import { hubData } from "../../hub/model/hubData";
+import { leadFor } from "../../hub/model/hubLeads";
+import { openCodingTeam } from "../../hub/model/hubNav";
+import { briefedTeams, type BriefTeam, type BriefedTeam } from "../model/briefedTeams";
 
 /** A hub project by id, for its name. */
 function hubProjectNamed(id: string) {
   return hubData().listProjects().find((project) => project.id === id);
+}
+
+/** The coding team a Lead's chat is (briefedTeams.ts): its project, the team's name and the Lead's. */
+function briefTeamOf(leadChat: string): BriefTeam | undefined {
+  const mono = monoForSession(leadChat);
+  const lead = mono ? leadFor(mono.id) : undefined;
+  const project = lead ? hubProjectNamed(lead.projectId) : undefined;
+  return mono && lead && project ? { projectId: project.id, team: codingTeamName(project), leadName: monoLook(mono).name } : undefined;
 }
 
 export type DelegationPane =
@@ -66,6 +77,9 @@ export type DelegationPane =
       /** Chats whose workers the last Stop couldn't load: they may still be running. */
       unloaded: string[];
       onStopAll?: () => Promise<unknown>;
+      /** Its briefs out to coding teams: one live line each, which opens that coding team on its Lead. */
+      briefs: BriefedTeam[];
+      onOpenBrief?: (brief: BriefedTeam) => void;
     };
 
 /**
@@ -98,14 +112,20 @@ export function useDelegationPane(
     if (!count && !failed.length && !unloaded.length && !stuck.length)
       return undefined;
     const actions = delegationActions();
+    // A brief to a coding team is its own line (briefedTeams.ts), not a name on the working line.
+    const briefs = briefedTeams(sessionId, rows, now, briefTeamOf);
     return {
       kind: "lead",
       count,
       // A stalled worker is named as stuck, not working.
       ...workingOn(
         sessionId,
-        rows.filter((row) => !(row.state === "running" && row.stallKind)),
+        rows.filter((row) => !(row.state === "running" && row.stallKind) && row.follow !== "lead"),
       ),
+      briefs,
+      onOpenBrief: (brief) => {
+        if (brief.to) openCodingTeam(brief.to.projectId, { lead: true });
+      },
       ...(rollup ? { rollup } : {}),
       stuck,
       now,

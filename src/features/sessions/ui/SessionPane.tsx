@@ -1209,6 +1209,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       failed={delegationPane.failed}
                       unloaded={delegationPane.unloaded}
                       onStopAll={delegationPane.onStopAll}
+                      briefs={delegationPane.briefs}
+                      onOpenBrief={delegationPane.onOpenBrief}
                     />
                   ) : null}
                   <MonoComposer
@@ -1312,6 +1314,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       failed={delegationPane.failed}
                       unloaded={delegationPane.unloaded}
                       onStopAll={delegationPane.onStopAll}
+                      briefs={delegationPane.briefs}
+                      onOpenBrief={delegationPane.onOpenBrief}
                     />
                   ) : null}
                   {composer}
