@@ -10,6 +10,7 @@ import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
 import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
@@ -38,7 +39,7 @@ function startHubMcp(): void {
   const lookups = { monoOf: monoForSession, habitRunMono, isLead: (id: string) => !!leadFor(id) };
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);
-  const ashOs = tauriAshOsServer();
+  const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());
   const cli = invoke<string>("app_cli_path").catch(() => null);
   const connectors = loadConnectors();
   window.addEventListener("focus", () => void loadConnectors());
