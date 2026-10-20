@@ -33,6 +33,12 @@ it("tells Ash OS which chat each Claude session is: a Lead, another Mono, a work
     role: "worker",
     delegationId: "t-1",
   });
+  // Its task finished (no open row): still a worker, as its ash-os identity says.
+  expect(chatBinding(claude("app-lead-chat-1"))).toEqual({
+    providerSession: "p-app-lead-chat-1",
+    chatId: "app-lead-chat-1",
+    role: "worker",
+  });
   expect(chatBinding(claude("plain"))).toEqual({ providerSession: "p-plain", chatId: "plain" });
   expect(chatBinding({ id: "codex", harness: "codex", providerSessionId: "x" })).toBeUndefined();
   expect(chatBinding({ id: "unbound", harness: "claude" })).toBeUndefined();

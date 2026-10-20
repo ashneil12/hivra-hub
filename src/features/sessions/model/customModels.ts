@@ -102,6 +102,22 @@ function writeModels(list: CustomModel[]): void {
   window.dispatchEvent(new CustomEvent(CHANGED));
 }
 
+/**
+ * Models from a setup import: each one whose id isn't here yet is added, metadata only (writeModels drops anything
+ * key-like). Its key is entered again on this Mac. Returns how many were added.
+ */
+export function importCustomModels(models: readonly unknown[]): number {
+  const have = listCustomModels();
+  const ids = new Set(have.map((m) => m.id));
+  const add = models.filter(
+    (m): m is CustomModel =>
+      !!m && typeof m === "object" && typeof (m as CustomModel).id === "string" && typeof (m as CustomModel).name === "string" &&
+      typeof (m as CustomModel).modelId === "string" && CUSTOM_PROVIDERS.some((p) => p.id === (m as CustomModel).provider) && !ids.has((m as CustomModel).id),
+  );
+  if (add.length) writeModels([...have, ...add]);
+  return add.length;
+}
+
 // ---- the form -------------------------------------------------------------------------------------------------------
 
 export type CustomModelForm = { name: string; provider: CustomProvider; baseUrl: string; modelId: string; key: string; reasoningEfforts?: ReasoningEffort[] };

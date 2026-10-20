@@ -27,7 +27,13 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
-import type { DelegationTracker } from "../features/monos/model/delegations";
+import {
+  tauriDelegations,
+  type DelegationTracker,
+} from "../features/monos/model/delegations";
+import { delegationTasksHost } from "../features/monos/model/delegationTasks";
+import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
@@ -109,7 +115,13 @@ import {
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
-import { hubData, nameHubProject, useHubDataVersion } from "../features/hub/model/hubData";
+import {
+  hubData,
+  hubProjectFolder,
+  hubProjectIdFor,
+  nameHubProject,
+  useHubDataVersion,
+} from "../features/hub/model/hubData";
 import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
@@ -406,6 +418,7 @@ import {
   type HandoffComposerCard,
   userMessagesAfterHandoff,
   wrapHandoffPrompt,
+  wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
@@ -584,6 +597,7 @@ import {
   listSessionsByProject,
   persistFingerprint,
   rebaseProjectSessions,
+  dropInFlightSession,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
   setSessionArchived,
@@ -652,6 +666,7 @@ import {
   monosSnapshot,
   monoState,
   removeMono,
+  saveMonoName,
   saveOpenMono,
   subscribeMonos,
   type MonoState,
@@ -668,6 +683,7 @@ import {
 } from "../features/monos/model/monoFiles";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
+import { claimVerifyKickoff, pendingVerifyKickoff } from "./model/verifyKickoff";
 import {
   loadShipNote,
   reportShipReady,
@@ -848,11 +864,14 @@ import {
 } from "../features/sessions/data/sessionHistory";
 import {
   CONTINUE_PROMPT,
+  RESUME_STOPPED_MESSAGE,
   canAutoContinue,
   interruptingShip,
-  shipResumePrompt,
   inFlightRefs,
   inFlightSnapshotKey,
+  markResumeStopped,
+  resumeBlocked,
+  resumePrompt,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -955,6 +974,11 @@ type SubmitOptions = ComposerTurnOptions & {
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
+  /**
+   * An automatic resume after a restart, and which one (1 = the first). Kept on the session (`autoResumes`) and in
+   * its in-flight row; any other turn starts the count again from none.
+   */
+  autoResume?: number;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
@@ -7238,6 +7262,8 @@ function Workspace({
               sessionId,
               text,
               !!remote?.busy,
+              // An automatic resume carries a note or a ship's receipt, so its text isn't the bare continue.
+              !!options?.autoResume || text.trim() === CONTINUE_PROMPT,
             );
       if (delegation)
         options = {
@@ -7853,6 +7879,9 @@ function Workspace({
               ...selected,
               providerAccountId,
               usageLimit: undefined,
+              autoResumes: options?.autoResume,
+              // A resume carries what was cut forward until Claude has the prompt (claude.ts clears it then).
+              cutWork: options?.autoResume ? selected.cutWork : undefined,
               worktreePreparing: createDraftWorktree
                 ? true
                 : selected.worktreePreparing,
@@ -8199,6 +8228,8 @@ function Workspace({
         const planEventKey = planTurnKey(gen);
         let nativePlanSeen = false;
         let providerFailureSeen = false;
+        // The provider's saved conversation was gone and this turn went on in a fresh one (claude.ts).
+        let providerLost = false;
         const routePlanEvent = (event: HarnessEvent): HarnessEvent | null => {
           if (event.type === "session.error") providerFailureSeen = true;
           if (proposalDraft) {
@@ -8230,6 +8261,7 @@ function Workspace({
 
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
+          if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
           if (options?.onSettled && event.type === "message.delta")
             controlText = (controlText + event.text).slice(-(options.controlTextLimit ?? 20_000));
@@ -8404,6 +8436,16 @@ function Workspace({
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
+              // A conversation whose saved transcript is gone starts again from the chat's own brief.
+              resumeFallback: (prompt) =>
+                wrapRecoveredPrompt(
+                  buildDeterministicHandoff(
+                    sessionsRef.current.find((s) => s.id === sessionId) ??
+                      current,
+                    submittedText,
+                  ),
+                  prompt,
+                ),
               onEvent: routeTurnEvent,
             });
           let sendText = orchestrator.prompt(
@@ -8452,12 +8494,14 @@ function Workspace({
             : undefined;
           // Who it is counts as part of its soul: a rename or a change to its
           // projects is handed over too, and so is a change to the fixed rules.
+          // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again.
+          const delegateTool = mono && hasDelegateTool(sessionId, current.harness);
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -8484,7 +8528,11 @@ function Workspace({
             agentPlan &&
             (agentPlan.soul || agentPlan.memory)
           ) {
-            appContext.push(monoContext(agentLook, agentFiles, agentPlan));
+            appContext.push(
+              monoContext(agentLook, agentFiles, agentPlan, {
+                delegate: delegateTool,
+              }),
+            );
           }
           if (operatorCommand.matched || handAgent) {
             const cli = appCliCommand(await invoke<string | null>("app_cli_path"));
@@ -8498,7 +8546,9 @@ function Workspace({
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
           await sendTurn(sendText);
-          if (agentFiles) {
+          // A fresh conversation after a lost one never got the soul and memory: leave them unrecorded so the next
+          // turn hands them over again.
+          if (agentFiles && !providerLost) {
             recordAgentContext(
               sessionId,
               sessionsRef.current.find((session) => session.id === sessionId)
@@ -8726,6 +8776,23 @@ function Workspace({
     },
     [submitSession],
   );
+
+  // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
+  // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
+  const verifyKickoffStarted = useRef(false);
+  useEffect(() => {
+    if (verifyKickoffStarted.current || windowTransfer) return;
+    const kickoff = pendingVerifyKickoff();
+    if (!kickoff) return;
+    verifyKickoffStarted.current = true;
+    claimVerifyKickoff(kickoff.runId);
+    const mono = createMono([kickoff.project]);
+    saveMonoName(mono.id, kickoff.monoName);
+    void onOpenMono(mono.id).then(() => {
+      const sessionId = monoViewIdRef.current;
+      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+    });
+  }, [onOpenMono, onSubmit, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -10642,6 +10709,32 @@ function Workspace({
     .map((session) => session.id)
     .join("\n");
 
+  /**
+   * A turn the app has restarted under too often (`MAX_AUTO_RESUMES`) stops resuming itself: its chat says so and
+   * reads Needs you, it leaves the quit snapshot so the next boot doesn't mark it interrupted again, and a Lead
+   * waiting on it (a delegated worker's row) hears it failed, with why.
+   */
+  const stopResuming = useCallback(
+    (session: Session) => {
+      const stopped = markResumeStopped(session);
+      sessionsRef.current = sessionsRef.current.map((entry) =>
+        entry.id === session.id ? stopped : entry,
+      );
+      setSessions(sessionsRef.current);
+      persistSession(stopped);
+      void dropInFlightSession(session.id).catch(() => undefined);
+      const owed = delegationsRef.current?.resumeMonitor(
+        session.id,
+        CONTINUE_PROMPT,
+        false,
+        true,
+      );
+      owed?.started();
+      owed?.settled({ status: "failed", text: "", error: RESUME_STOPPED_MESSAGE });
+    },
+    [persistSession],
+  );
+
   useEffect(() => {
     // A dev copy shows a cut-off chat as interrupted but never continues it on its own, and a build on trial waits
     // until it has committed (src-tauri/src/ship.rs): if it is rolled back, the old build resumes them instead.
@@ -10659,22 +10752,30 @@ function Workspace({
       for (const id of ids) {
         const session = stillDue(id);
         if (!session) continue;
+        // Cut by restart after restart: stop and wait for Ash instead of looping.
+        if (resumeBlocked(session)) {
+          stopResuming(session);
+          continue;
+        }
+        const autoResume = (session.autoResumes ?? 0) + 1;
         const ship = interruptingShip(session);
         if (!ship) {
-          onSubmit(id, CONTINUE_PROMPT);
+          // With what the restart cut, if anything was running in the background.
+          onSubmit(id, resumePrompt(session), [], { autoResume });
           continue;
         }
         // Cut by a ship's restart: resume once, with what the ship did.
         if (shipResumes.current.has(id)) continue;
         shipResumes.current.add(id);
         void loadShipNote(ship).then((note) => {
-          if (stillDue(id)) onSubmit(id, shipResumePrompt(id, note));
+          const due = stillDue(id);
+          if (due) onSubmit(id, resumePrompt(due, { note }), [], { autoResume });
           shipResumes.current.delete(id);
         });
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoContinueKey, onSubmit, shipHold]);
+  }, [autoContinueKey, onSubmit, shipHold, stopResuming]);
 
   const onCompactContext = useCallback(
     (sessionId: string) => {
@@ -11451,17 +11552,21 @@ function Workspace({
           project: string,
           prompt: string,
           title: string,
+          delegation?: DelegationMeta,
         ) => {
           // The stored row comes first: it is what survives a restart. The batch below is its cache for this run.
+          // Ash OS gets the hub project id, which it resolves directly; a folder outside the hub's projects stays a path.
           const launch = delegationsRef.current?.launch({
             ownerSession: monoId,
             ownerMono: monoForSession(monoId)?.id,
             batchId: sourceTurnId ?? `turn-${sourceTurn}`,
             requestId,
             childSession: sessionId,
-            project,
-            title,
+            project: delegation?.project ?? hubProjectIdFor(project) ?? project,
+            title: delegation?.title ?? title,
             brief: prompt,
+            ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
+            ...(delegation?.goal ? { goal: delegation.goal } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
@@ -11495,19 +11600,23 @@ function Workspace({
             },
           );
         };
-        const dismissCompletion = (sessionId: string) => {
-          if (!isMonoSession(source.id)) return;
-          delegationsRef.current?.stopOwned(source.id, sessionId);
-          monoCompletionBatches.current!.dismissSession(source.id, sessionId);
+        // The Mono doesn't need this child's report any more: out of the batch cache and its queue.
+        const dropReport = (monoId: string, sessionId: string) => {
+          monoCompletionBatches.current!.dismissSession(monoId, sessionId);
           flushSync(() =>
             setSessions((previous) =>
               previous.map((session) =>
-                session.id === source.id
+                session.id === monoId
                   ? dismissQueuedMonoSessionCompletion(session, sessionId)
                   : session,
               ),
             ),
           );
+        };
+        const dismissCompletion = (sessionId: string) => {
+          if (!isMonoSession(source.id)) return;
+          void delegationsRef.current?.stopOwned(source.id, sessionId);
+          dropReport(source.id, sessionId);
         };
         const promise = handleAgentApp(
           source,
@@ -11515,7 +11624,7 @@ function Workspace({
           payload.action,
           payload.input,
           {
-            start: async (launch, id, placement, notifyMonoId) => {
+            start: async (launch, id, placement, notifyMonoId, delegation) => {
               const rememberLaunch = () => {
                 const created =
                   sessionsRef.current.find((session) => session.id === id) ??
@@ -11523,7 +11632,11 @@ function Workspace({
                 rememberSession({
                   sessionId: id,
                   cwd: created?.cwd ?? launch.cwd,
-                  title: created?.title ?? launch.prompt.trim().slice(0, 300),
+                  // A delegation's card names the job, not the brief's "[MonoCode brief from ...]" opening line.
+                  title:
+                    delegation?.title ??
+                    created?.title ??
+                    launch.prompt.trim().slice(0, 300),
                   harness: created?.harness ?? launch.harness,
                   model:
                     created?.model ??
@@ -11567,6 +11680,7 @@ function Workspace({
                     launch.cwd,
                     launch.prompt,
                     launch.prompt.trim().split("\n")[0].slice(0, 200),
+                    delegation,
                   )
                 : undefined;
               try {
@@ -11840,6 +11954,7 @@ function Workspace({
               return (
                 mono && {
                   id: mono.id,
+                  name: monoLook(mono).name,
                   projects: mono.projects,
                   showStartedSessionsInSidebar:
                     mono.showStartedSessionsInSidebar,
@@ -11855,6 +11970,21 @@ function Workspace({
               );
             },
             habits: { load: loadHabits, update: updateHabits },
+            tasks: delegationTasksHost({
+              backend: tauriDelegations,
+              tracker: () => delegationsRef.current,
+              session: (id) =>
+                sessionsRef.current.find((session) => session.id === id),
+              stop: async (id) => {
+                await flushSync(() => stopSessionRef.current(id));
+                flushHarnessEvents();
+              },
+              dropReport,
+              respond: (child, requestId, reply) =>
+                respondHarnessQuestion(child.harness, child.id, requestId, reply),
+              hubProjectId: hubProjectIdFor,
+              hubProjectFolder,
+            }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>

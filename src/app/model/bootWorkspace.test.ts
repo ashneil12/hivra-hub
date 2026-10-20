@@ -63,3 +63,21 @@ it("still persists the interruption marker for a recovered running turn", async 
   expect(store.upsertSession).toHaveBeenCalledWith(restored?.sessions[0]);
   expect(restored?.sessions[0].blocks.at(-1)?.notice).toBe("interrupt");
 });
+
+it("brings back a cut turn's background work and resume count from its row (Phase 1b WP5)", async () => {
+  const sessions = savedWorkspace();
+  const work = [{ kind: "subagent" as const, label: "Audit src/math.ts", id: "a44c0ed810da9e4f3" }];
+  store.listInFlightSessions.mockResolvedValue([
+    { sessionId: sessions[1].id, cwd: "/repo", background: work, resumes: 2 },
+  ]);
+  const { loadResumedWorkspace } = await import("./appLifecycle");
+  const restored = await loadResumedWorkspace();
+  const cut = restored!.sessions.find((session) => session.id === sessions[1].id)!;
+  expect(cut.cutWork).toEqual(work);
+  expect(cut.autoResumes).toBe(2);
+  expect(cut.blocks.at(-1)?.notice).toBe("interrupt");
+  // The other chats carry nothing.
+  const idle = restored!.sessions.find((session) => session.id === sessions[0].id)!;
+  expect(idle.cutWork).toBeUndefined();
+  expect(idle.autoResumes).toBeUndefined();
+});

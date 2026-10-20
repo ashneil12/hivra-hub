@@ -1,21 +1,42 @@
-import { monoTaskRunnerConnected, runMonoTask } from "../../hub/model/hubChats";
+import { liveHubStore } from "../../hub/model/hubData";
 import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "../../hub/model/hubTransport";
 import { listMonos } from "../../monos/model/mono";
 import { checkBespokePage, type DesignIssue } from "./designCheck";
-import { PAGE_SPEC_SCHEMA, validatePageSpec, type PageSpec } from "./pageSpec";
+import { validatePageSpec, type PageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 
 /**
- * The seam between Pages and a real Mono build (docs/pages-build-contract.md). The app calls the backend through the
- * hub transport with `ash-hub-build-page`; the backend has the Mono build the page and answers with a PageSpec.
- * Only a seated Mono may build: temporary workers are turned away before anything is sent.
+ * The seam between Pages and a real Mono build (docs/pages-build-contract.md). The app calls Ash OS through the hub
+ * transport with `ash-hub-build-page`; Ash OS runs that Mono on the project's real asks and answers with a PageSpec
+ * (plus the record's `pageId`). Only a seated Mono may build: temporary workers are turned away before anything is sent.
+ *
+ * A build can take longer than one call: the app says how long Ash OS may wait (`wait`, which also stretches the
+ * call's own time limit in hub.rs). If the Mono isn't done by then, the answer is "still building", and the same
+ * request (Try again) joins the running build or collects the finished page; nothing is built twice.
  */
 export type BuildPageRequest = { projectId: string; monoId: string; prompt: string };
 export type BuildPageResult =
-  | { status: "ready"; spec: PageSpec; warnings: DesignIssue[]; /** The Mono asks for it to be pinned in the sidebar. */ pin?: boolean }
+  | {
+      status: "ready";
+      spec: PageSpec;
+      warnings: DesignIssue[];
+      /** The Mono asks for it to be pinned in the sidebar. */
+      pin?: boolean;
+      /** Ash OS's id for this page (its preview is already in the record; Keep marks it kept). */
+      pageId?: string;
+    }
   | { status: "turned-down"; reason: string }
   | { status: "not-connected"; reason: string }
+  /** The Mono is still at it: Try again collects the page (the same request never starts a second build). */
+  | { status: "building"; reason: string }
   | { status: "error"; reason: string };
+
+/** How long Ash OS may wait for a build within one call (it allows up to 40 s; hub.rs adds this to its 15 s). */
+export const BUILD_WAIT_SECONDS = 30;
+/** Ash OS's "<Mono> is still building this page/preview. Press Try again…": a wait, not a failure. */
+export function isStillBuilding(message: string): boolean {
+  return /\bis still building\b/i.test(message);
+}
 
 export const BUILD_PAGE_ACTION = "ash-hub-build-page";
 export const SEATED_ONLY_PAGES = "Only a seated Mono can build pages. Temporary workers can't.";
@@ -41,26 +62,26 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the page should show." };
   let raw: unknown;
   if (deps.stub ?? devStubOn()) raw = stubPageSpec(req.prompt);
-  else if (!deps.transport && monoTaskRunnerConnected()) {
-    try {
-      const text = await runMonoTask(req.monoId, `Build a page for project ${JSON.stringify(req.projectId)} from this user request: ${JSON.stringify(req.prompt)}. Return ONLY a JSON PageSpec matching this schema: ${JSON.stringify(PAGE_SPEC_SCHEMA)}. Use real data if available; label unknown values. Do not claim to publish or save the page: the app validates and previews your JSON first. Never include credentials or remote scripts. Use permissions only if the page needs them.`, { maxReplyChars: 500_000 });
-      raw = JSON.parse(text.trim().replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, ""));
-    } catch (e) { return { status: "error", reason: e instanceof Error ? e.message : "The Mono couldn't build the page." }; }
-  }
   else {
     try {
-      raw = await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, { projectId: req.projectId, monoId: req.monoId, prompt: req.prompt });
+      const payload = { projectId: req.projectId, monoId: req.monoId, prompt: req.prompt, wait: BUILD_WAIT_SECONDS };
+      const store = deps.transport ? undefined : liveHubStore();
+      raw = store ? await store.act(BUILD_PAGE_ACTION, payload) : await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, payload);
     } catch (e) {
       const err = e instanceof HubCallError ? e : toHubError(e);
-      if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: "Building pages with a Mono isn't wired to the backend yet." };
+      if (err.kind === "error" && isStillBuilding(err.message)) return { status: "building", reason: err.message };
+      if (err.kind === "timeout") return { status: "building", reason: "The page is taking a while. Press Try again in a moment to see it." };
+      if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: err.isDown ? "The harness service isn't running, so no Mono can build a page right now." : err.message };
+      if (/turned it down/i.test(err.message) || err.message === SEATED_ONLY_PAGES) return { status: "turned-down", reason: err.message };
       return { status: "error", reason: err.message || "The build didn't go through." };
     }
   }
-  const pin = !!raw && typeof raw === "object" && (raw as { pin?: unknown }).pin === true ? { pin: true } : {};
+  const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown }) : {};
+  const extra = { ...(r.pin === true ? { pin: true } : {}), ...(typeof r.pageId === "string" && r.pageId ? { pageId: r.pageId } : {}) };
   const spec = validatePageSpec(raw);
   if (!spec.ok) return { status: "turned-down", reason: spec.error };
-  if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [], ...pin };
+  if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [], ...extra };
   const check = checkBespokePage(spec.value);
   if (check.blocked) return { status: "turned-down", reason: check.blocked.plain };
-  return { status: "ready", spec: spec.value, warnings: check.warnings, ...pin };
+  return { status: "ready", spec: spec.value, warnings: check.warnings, ...extra };
 }

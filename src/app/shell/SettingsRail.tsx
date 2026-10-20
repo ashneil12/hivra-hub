@@ -12,7 +12,7 @@ import {
   Sparkles,
   Terminal,
   Zap,
-  type IconComponent, Undo2, DashboardSquare } from "../../shared/ui/icons";
+  type IconComponent, Undo2, DashboardSquare, CloudUpload } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -34,6 +34,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   archive: Archive,
   changes: Undo2,
   dashboards: DashboardSquare,
+  portable: CloudUpload,
   connectors: Zap,
 };
 

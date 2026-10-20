@@ -8,20 +8,51 @@ import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
-import { ensureProjectLeads, leadMcpArgs, reseedAdoptedLeadSoul } from "./hubLeads";
+import { ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
+import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { invoke } from "@tauri-apps/api/core";
+import { habitRunMono } from "../../monos/model/monoHabits";
 import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
 import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
+import { pathKey } from "../../../shared/lib/paths";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
-import { seedHubBundleDefaults } from "./hubBundle";
+import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
 seedHubBundleDefaults();
+
+/**
+ * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): Ash's ash-os entry with the chat's identity,
+ * and for a Mono's own chat the delegate tool. A session that starts before the entries are read waits for them (at
+ * most a few seconds; then it starts without them).
+ */
+function startHubMcp(): void {
+  const ashOs = tauriAshOsServer();
+  const cli = invoke<string>("app_cli_path").catch(() => null);
+  const read = Promise.all([ashOs, cli]).then(([ashOs, cli]): HubMcpServers => ({ ashOs, cli }));
+  const ready = Promise.race([
+    read.then((servers) => {
+      setHubMcpServers(servers, {
+        monoOf: monoForSession,
+        habitRunMono,
+        isLead: (id) => !!leadFor(id),
+      });
+      return true;
+    }),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]).catch(() => false);
+  setClaudeExtraArgs(async (sessionId) => {
+    await ready;
+    return registeredHubMcpArgs(sessionId);
+  });
+}
+if (IS_HUB_BUNDLE) startHubMcp();
 
 // The app ships clean: it reads Ash OS. The example data answers only behind the dev flag
 // (`monocode:hub-examples`, set by hub-dev.html), or when a source is swapped in with `setHubDataSource`.
@@ -46,29 +77,26 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 /**
  * The Hub bundle's project Leads and leadership team: once Ash OS has said which projects there are (and their
  * folders), make the Leads that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead
- * in place), give the team its souls, make it a member of every project and seat it in each Leadership team. The
- * Leads' Claude Code sessions carry their ash-os identity.
+ * in place), give the team its souls, make it a member of every project and seat it in each Leadership team. Every
+ * chat's Claude Code session carries its ash-os identity (startHubMcp).
  */
 function startHubBundleLeads(store: HubStore): void {
   noteTeamEngines();
   void seedTeamFiles();
-  void tauriAshOsServer().then((server) =>
-    setClaudeExtraArgs((sessionId) => {
-      const mono = monoForSession(sessionId);
-      return mono ? leadMcpArgs(mono.id, server) : [];
-    }),
-  );
-  let done = false;
+  // Every project on the strip gets its Lead (and the team's membership and seat), including one Ash just made with
+  // New project: checked again whenever the strip's projects change (each step is idempotent; Leads register once).
+  let seen = "";
+  const register = (monoId: string, projectId: string) =>
+    tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" });
+  const unregister = (monoId: string, projectId: string) =>
+    tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId });
   const tryLeads = () => {
     const projects = store.getSnapshot().projects;
-    if (done || !projects.length) return;
-    done = true;
     const strip = stripProjects(projects);
-    const result = ensureProjectLeads(
-      strip,
-      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" }),
-      (monoId, projectId) => tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId }),
-    );
+    const key = strip.map((p) => `${p.id}:${p.folder ?? ""}`).join("|");
+    if (!strip.length || key === seen) return;
+    seen = key;
+    const result = ensureProjectLeads(strip, register, unregister);
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
@@ -84,9 +112,36 @@ function startHubBundleLeads(store: HubStore): void {
   store.subscribe(tryLeads);
 }
 
+/**
+ * The hub project a folder belongs to (its Ash OS id), and the folder of a hub project id. A delegation records the hub
+ * project id for Ash OS, which resolves it directly (docs/PHASE-2-DESIGN.md, H2/H3); a Mono may name one by its id.
+ */
+export function hubProjectIdFor(folder: string): string | undefined {
+  const key = pathKey(folder);
+  return (override ?? choose()).source.listProjects().find((project) => project.folder && pathKey(project.folder) === key)?.id;
+}
+
+export function hubProjectFolder(id: string): string | undefined {
+  return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
+}
+
+/**
+ * The live store when the hub reads Ash OS (the app, a dev copy, the dev page with a stub or the live proxy); undefined
+ * with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
+ * through it, so the slices they move are read again at once.
+ */
+export function liveHubStore(): HubStore | undefined {
+  return (override ?? choose()).store;
+}
+
 /** The one place the frontend gets hub data from. */
 export function hubData(): HubDataSource {
   return withProjectPrefs((override ?? choose()).source);
+}
+
+/** The projects as Ash OS has them, before Ash's own names, order and "Remove from hub": what a setup export carries. */
+export function registryProjects(): HubProject[] {
+  return (override ?? choose()).source.listProjects();
 }
 
 /** Every screen reads projects with Ash's own name, order and "Remove from hub" applied (projectPrefs.ts). */

@@ -919,6 +919,55 @@ pub fn list_open(conn: &Connection) -> Result<Vec<Delegation>, String> {
     )
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedQuery {
+    pub owner_session: String,
+    /// Rows by id...
+    #[serde(default)]
+    pub ids: Vec<String>,
+    /// ...and/or by the request that recorded them.
+    #[serde(default)]
+    pub request_ids: Vec<String>,
+}
+
+const OWNED_MAX: usize = 20;
+
+/// The rows one chat owns, for its task tools (H3): by id or request, or (neither) the ones still running and the ones
+/// whose report it is still owed, newest first. Another chat's row is never returned, so a model can't read or move
+/// work it didn't delegate even when it knows the id.
+pub fn owned(conn: &Connection, input: OwnedQuery) -> Result<Vec<Delegation>, String> {
+    let owner = session_id(&input.owner_session, "owner session")?;
+    if input.ids.is_empty() && input.request_ids.is_empty() {
+        return query(
+            conn,
+            "WHERE owner_session = ?1 AND (state IN ('running', 'question') OR delivery IN ('pending', 'queued'))
+             ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+            &[&owner, &(OWNED_MAX as i64)],
+        );
+    }
+    if input.ids.len() + input.request_ids.len() > OWNED_MAX {
+        return Err(format!("At most {OWNED_MAX} tasks at once"));
+    }
+    let mut rows = Vec::new();
+    let mut seen = HashSet::new();
+    for id in &input.ids {
+        if let Some(row) = get(conn, id.trim())?.filter(|row| row.owner_session == owner) {
+            if seen.insert(row.id.clone()) {
+                rows.push(row);
+            }
+        }
+    }
+    for request in &input.request_ids {
+        if let Some(row) = by_request(conn, &owner, request.trim())? {
+            if seen.insert(row.id.clone()) {
+                rows.push(row);
+            }
+        }
+    }
+    Ok(rows)
+}
+
 /// The whole delegation tree a row belongs to, oldest first.
 pub fn tree(conn: &Connection, id: &str) -> Result<Vec<Delegation>, String> {
     let Some(row) = get(conn, id)? else {
@@ -958,7 +1007,8 @@ pub fn bind_chat(conn: &mut Connection, input: ChatBindInput, now: i64) -> Resul
     }
     let chat = session_id(&input.chat_id, "chat id")?;
     let mono = text(input.mono_id, 64).filter(|m| mono_id_ok(m));
-    let role = text(input.role, 20).filter(|r| ["lead", "mono", "worker"].contains(&r.as_str()));
+    let role = text(input.role, 20)
+        .filter(|r| ["lead", "mono", "worker", "checker"].contains(&r.as_str()));
     let delegation = text(input.delegation_id, 128);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1402,6 +1452,14 @@ pub fn delegations_reports_seen(
     message_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
     reports_seen(&*store.lock_conn()?, &owner_session, &message_ids)
+}
+
+#[tauri::command(async)]
+pub fn delegations_owned(
+    store: State<'_, SessionStore>,
+    input: OwnedQuery,
+) -> Result<Vec<Delegation>, String> {
+    owned(&*store.lock_conn()?, input)
 }
 
 #[tauri::command(async)]
@@ -1927,6 +1985,85 @@ mod tests {
             })
             .unwrap();
         assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn the_checker_binds_with_its_own_role() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let input = |role: &str| ChatBindInput {
+            provider_session: format!("claude-{role}"),
+            chat_id: "mono-checker".into(),
+            mono_id: Some("checker".into()),
+            role: Some(role.into()),
+            delegation_id: None,
+        };
+        assert!(bind_chat(&mut conn, input("checker"), 1).unwrap());
+        assert!(bind_chat(&mut conn, input("boss"), 2).unwrap());
+        let roles: Vec<Option<String>> = conn
+            .prepare("SELECT role FROM delegation_chat_binds ORDER BY provider_session")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(roles, vec![None, Some("checker".into())]);
+    }
+
+    #[test]
+    fn a_chat_reads_only_its_own_rows_by_id_by_request_or_what_is_still_owed() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mine = record(&mut conn, launch("mono-exo", "app-mono-exo-a", "c-a"), 10).unwrap();
+        let done = record(&mut conn, launch("mono-exo", "app-mono-exo-b", "c-b"), 11).unwrap();
+        let read = record(&mut conn, launch("mono-exo", "app-mono-exo-c", "c-c"), 12).unwrap();
+        let theirs = record(
+            &mut conn,
+            launch("mono-hivra", "app-mono-hivra-a", "c-h"),
+            13,
+        )
+        .unwrap();
+        settle(&mut conn, finish(&done.id, 1, COMPLETED, "ok"), 14).unwrap();
+        settle(&mut conn, finish(&read.id, 1, COMPLETED, "ok"), 15).unwrap();
+        set_delivery(&mut conn, deliver(&[&read.id], ACKNOWLEDGED, None), 16).unwrap();
+        let query = |ids: &[&str], requests: &[&str]| OwnedQuery {
+            owner_session: "mono-exo".into(),
+            ids: ids.iter().map(|id| id.to_string()).collect(),
+            request_ids: requests.iter().map(|id| id.to_string()).collect(),
+        };
+        let ids = |rows: Vec<Delegation>| rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(owned(&conn, query(&[], &[])).unwrap()),
+            vec![done.id.clone(), mine.id.clone()],
+            "running and owed, newest first; a read result and another chat's row are left out"
+        );
+        assert_eq!(
+            ids(owned(&conn, query(&[&read.id, &theirs.id, "t-missing"], &[])).unwrap()),
+            vec![read.id.clone()],
+            "another chat's row is never returned, even by its id"
+        );
+        assert_eq!(
+            ids(owned(&conn, query(&[], &["app-mono-exo-a", "app-mono-hivra-a"])).unwrap()),
+            vec![mine.id.clone()]
+        );
+        assert!(owned(
+            &conn,
+            OwnedQuery {
+                owner_session: "bad owner!".into(),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        let many: Vec<String> = (0..21).map(|n| format!("t-{n}")).collect();
+        assert!(owned(
+            &conn,
+            OwnedQuery {
+                owner_session: "mono-exo".into(),
+                ids: many,
+                ..Default::default()
+            }
+        )
+        .is_err());
     }
 
     #[test]

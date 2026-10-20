@@ -2,6 +2,7 @@ import { allSchemes, applySchemeAccent, loadActiveSchemeId, saveActiveSchemeId, 
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+import { PortablePage } from "../../portable/ui/PortablePage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -662,6 +663,7 @@ export function SettingsView({
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
+              {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}

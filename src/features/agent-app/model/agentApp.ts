@@ -1,4 +1,17 @@
-import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import {
+  hasProbedHarnessAvailability,
+  isHarnessAvailable,
+  probeHarnessAvailability,
+} from "../../../integrations/harness/core/availability";
+
+/**
+ * Which CLIs are installed is unknown until the first probe ends, and every harness reads as missing before it. A
+ * Lead that resumes right after a restart can call sessions.start in that window; it waits for the probe instead of
+ * being told its own harness "is not available".
+ */
+async function harnessesProbed(): Promise<void> {
+  if (!hasProbedHarnessAvailability()) await probeHarnessAvailability();
+}
 import { looksLikeProject } from "../../projects/model/recents";
 import {
   mergeModelSettings,
@@ -80,6 +93,12 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
+import {
+  handleTasks,
+  TASK_FIELDS,
+  type AgentAppTasksHost,
+  type DelegationMeta,
+} from "./agentAppTasks";
 
 export type AppSessionListing = {
   id: string;
@@ -102,6 +121,8 @@ export type AgentAppHost = {
     id: string,
     placement?: AppSessionPlacement,
     notifyMonoId?: string,
+    /** A delegation (tasks.delegate): what its stored row records beyond a plain monitored launch. */
+    delegation?: DelegationMeta,
   ): Promise<void>;
   sessions(cwd: string): Promise<AppSessionListing[]>;
   session(id: string): Promise<Session | null>;
@@ -147,6 +168,8 @@ export type AgentAppHost = {
    */
   monoOf?(sessionId: string): {
     id: string;
+    /** Its name, as briefs it sends are signed. */
+    name?: string;
     projects: readonly string[];
     showStartedSessionsInSidebar?: boolean;
     /** Files the sessions it starts into a folder named after it. */
@@ -190,6 +213,8 @@ export type AgentAppHost = {
   }): Promise<unknown>;
   /** The newest ship and its receipt, reported by app.version. */
   shipStatus?(): unknown;
+  /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat only. */
+  tasks?: AgentAppTasksHost;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -248,6 +273,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
+  ...TASK_FIELDS,
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -475,6 +501,17 @@ function fileInMonoFolder(
     cwd,
     setFolderCustomColor(created.folders, created.id, folder.color),
   );
+}
+
+/** A started session goes into the starting Mono's sidebar folder, when it has one and the session is shown. */
+function fileStarted(
+  source: Session,
+  launch: QuickLaunch,
+  id: string,
+  host: AgentAppHost,
+): void {
+  const folder = host.monoOf?.(source.id)?.folder;
+  if (folder && !launch.sidebarHidden) fileInMonoFolder(launch.cwd, id, folder);
 }
 
 function startLaunch(
@@ -1032,6 +1069,8 @@ export async function handleAgentApp(
   host: AgentAppHost,
 ): Promise<unknown> {
   fields(action, input);
+  if (action.startsWith("tasks."))
+    return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1101,6 +1140,7 @@ export async function handleAgentApp(
       };
     }
     case "models.list":
+      await harnessesProbed();
       return {
         runtimeModes: RUNTIME_MODES.map((id) => ({
           id,
@@ -1202,6 +1242,7 @@ export async function handleAgentApp(
         throw new Error(
           "request ID must use letters, digits, underscores or hyphens",
         );
+      await harnessesProbed();
       const launch = startLaunch(source, input, host);
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (input.worktreeCwd !== undefined) {
@@ -1239,9 +1280,7 @@ export async function handleAgentApp(
         );
       else if (notifyMonoId) await host.start(launch, id, undefined, notifyMonoId);
       else await host.start(launch, id);
-      const folder = host.monoOf?.(source.id)?.folder;
-      if (folder && !launch.sidebarHidden)
-        fileInMonoFolder(launch.cwd, id, folder);
+      fileStarted(source, launch, id, host);
       return {
         id,
         cwd: launch.cwd,

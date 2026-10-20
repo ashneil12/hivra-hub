@@ -3,7 +3,7 @@ import { isGlobalProject } from "./hubProjects";
 // Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes them on
 // its first run and again whenever one is missing, never twice and never over Ash's edits: EXO lead, Hivra lead,
 // Nibbii lead, MonoCode Hub lead. Each is tied to its project's folder (from Ash OS), starts its chats there, talks to
-// Ash OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools) and has a soul that makes it the orchestrator Ash asked
+// Ash OS as itself (ASH_MONO_ID / ASH_ROLE on its ash-os tools, hubMcp.ts) and has a soul that makes it the orchestrator Ash asked
 // for. `ash` is Ash's global memory, not a project, so it never gets a Lead (hubProjects.ts).
 import { projectKey } from "../../../shared/lib/paths";
 import {
@@ -43,8 +43,45 @@ export const LEADS: readonly LeadSpec[] = [
   },
 ];
 
+/** Leads of projects beyond the four (one Ash made with New project, or a project Ash OS added to the strip). */
+const MORE_KEY = "monocode:hub-project-leads";
+function moreLeads(): LeadSpec[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(MORE_KEY) ?? "[]") as unknown;
+    return Array.isArray(v) ? v.filter((x): x is LeadSpec => !!x && typeof x.id === "string" && typeof x.projectId === "string" && typeof x.name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function rememberLead(spec: LeadSpec): void {
+  if (LEADS.some((l) => l.id === spec.id)) return;
+  const list = moreLeads();
+  if (list.some((l) => l.id === spec.id)) return;
+  try {
+    localStorage.setItem(MORE_KEY, JSON.stringify([...list, spec]));
+  } catch {
+    /* storage unavailable: the Lead still works this session as a Mono, only its rank and identity wait */
+  }
+}
+
+/**
+ * The Lead a project has: one of the four, else `<project id>-lead` named "<Project> lead" (Ash OS's own convention for
+ * a Lead's Mono id).
+ */
+export function leadSpecFor(project: Pick<HubProject, "id" | "name" | "shortName">): LeadSpec {
+  return (
+    LEADS.find((l) => l.projectId === project.id) ??
+    moreLeads().find((l) => l.projectId === project.id) ?? {
+      projectId: project.id,
+      id: `${project.id}-lead`,
+      name: `${(project.shortName || project.name).trim()} lead`,
+      projectName: project.name,
+    }
+  );
+}
+
 export function leadFor(monoId: string): LeadSpec | undefined {
-  return LEADS.find((lead) => lead.id === monoId || lead.legacy?.id === monoId);
+  return LEADS.find((lead) => lead.id === monoId || lead.legacy?.id === monoId) ?? moreLeads().find((lead) => lead.id === monoId);
 }
 
 /** The Mono that is this Lead today: its own id, or the legacy seat it adopted. */
@@ -116,26 +153,29 @@ function adoptedOnce(): Set<string> {
   }
 }
 
+type Register = (monoId: string, projectId: string) => Promise<unknown>;
+/** Which Leads each `register` already told Ash OS about, so a list that changes doesn't send them all again. */
+const registered = new WeakMap<Register, Set<string>>();
+
 /**
- * Make the Leads that are missing (with their project folder and soul) and tie an existing Lead to its project's
- * folder if it lost it. Never renames, re-souls or removes a Lead Ash has already, with one exception made once: a
- * legacy seat (the old "Harness lead") becomes the new Lead in place, keeping its id, conversation and files. It takes
- * the new name only if it still has the old default one, and its new project's folder goes first so its chats start
- * there. `register` tells Ash OS which Mono leads which project (`ash-hub-mono-project-add`, role lead) and
- * `unregister` drops the legacy seat's old project (`ash-hub-mono-project-remove`); their failures are ignored.
+ * Every project on the strip has its own Lead Mono. Make the ones that are missing (with their project folder and
+ * soul) and tie an existing Lead to its project's folder if it lost it. Never renames, re-souls or removes a Lead Ash
+ * has already, and never brings back one he removed, with one exception made once: a legacy seat (the old "Harness
+ * lead") becomes the new Lead in place, keeping its id, conversation and files. It takes the new name only if it still
+ * has the old default one, and its new project's folder goes first so its chats start there. `register` tells Ash OS
+ * which Mono leads which project (`ash-hub-mono-project-add`, role lead), once per Lead, and `unregister` drops the
+ * legacy seat's old project (`ash-hub-mono-project-remove`); their failures are ignored. `ash` (the global memory)
+ * never gets one.
  */
-export function ensureProjectLeads(
-  projects: readonly HubProject[],
-  register?: (monoId: string, projectId: string) => Promise<unknown>,
-  unregister?: (monoId: string, projectId: string) => Promise<unknown>,
-): EnsureResult {
+export function ensureProjectLeads(projects: readonly HubProject[], register?: Register, unregister?: Register): EnsureResult {
   const created: string[] = [];
   const tied: string[] = [];
   const adopted: string[] = [];
-  for (const lead of LEADS) {
-    if (isGlobalProject(lead.projectId)) continue;
-    const project = projects.find((p) => p.id === lead.projectId);
-    if (!project || isMonoRemovedByUser(lead.id)) continue;
+  for (const project of projects) {
+    if (isGlobalProject(project.id)) continue;
+    const lead = leadSpecFor(project);
+    if (isMonoRemovedByUser(lead.id)) continue;
+    rememberLead(lead);
     const existing = leadMono(lead);
     // Ash removed the seat this Lead replaces: it stays gone.
     if (!existing && lead.legacy && isMonoRemovedByUser(lead.legacy.id)) continue;
@@ -170,7 +210,15 @@ export function ensureProjectLeads(
       addMonoProject(existing.id, project.folder);
       tied.push(existing.id);
     }
-    void register?.(existing?.id ?? lead.id, lead.projectId)?.catch(() => undefined);
+    if (register) {
+      const monoId = existing?.id ?? lead.id;
+      const told = registered.get(register) ?? new Set<string>();
+      registered.set(register, told);
+      if (!told.has(monoId)) {
+        told.add(monoId);
+        void register(monoId, lead.projectId)?.catch(() => told.delete(monoId));
+      }
+    }
   }
   return { created, tied, adopted };
 }
@@ -211,17 +259,6 @@ export function leadWorkingFolder(monoId: string): string | undefined {
   return findMono(monoId)?.projects[0];
 }
 
-/**
- * The ash-os MCP entry for a Lead's Claude Code session: Ash's own ash-os server, the same command, with the Lead's
- * identity in its environment. Claude Code does not pass its own environment to MCP servers (checked 15 Oct: an
- * ash-os server it starts sees only HOME, LOGNAME, PATH, SHELL and USER), so the identity has to be in the entry. The
- * identity is the Mono's own id, so an adopted seat keeps acting under the id Ash OS already knows.
- */
-export function leadMcpArgs(monoId: string, server: AshOsServer | null): string[] {
-  const lead = leadFor(monoId);
-  if (!lead || !server) return [];
-  const entry = { ...server, env: { ...(server.env ?? {}), ASH_MONO_ID: monoId, ASH_ROLE: "lead" } };
-  return ["--mcp-config", JSON.stringify({ mcpServers: { "ash-os": entry } })];
-}
-
+/** Ash's own ash-os MCP entry, as Rust reads it from ~/.claude.json (`hub_ash_os_mcp`). Each hub chat gets it with its
+ * identity added (hubMcp.ts); a Lead's identity is its Mono's own id, so an adopted seat keeps the id Ash OS knows. */
 export type AshOsServer = { command: string; args?: string[]; env?: Record<string, string> };

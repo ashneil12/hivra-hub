@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
-import { parseSetup, setPendingSetup } from "../model/setupFile";
+import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
+import type { PendingImport } from "../../portable/model/importPlan";
 import { setHubSelection } from "../model/hubNav";
 import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 
@@ -13,12 +14,23 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const picked = (p: PendingImport) => {
+    setPendingImport(p);
+    setRestored(`Picked ${p.name}: ${p.doc.projects.length} projects, ${p.doc.monos.length} Monos. You'll see it all before anything is added.`);
+  };
+  const pick = async () => {
+    try {
+      const p = await pickExportForRestore();
+      if (p === "browser") fileRef.current?.click();
+      else if (p) picked(p);
+    } catch (e) {
+      setRestored(e instanceof Error ? e.message : "Couldn't read that export.");
+    }
+  };
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     try {
-      const file = parseSetup(await f.text());
-      setPendingSetup(file, f.name);
-      setRestored(`Picked ${f.name}: ${file.projects.length} projects, ${file.bots?.length ?? 0} bots. You'll see it all before anything is added.`);
+      picked(readImportText(f.name, await f.text()));
     } catch (e) {
       setRestored(e instanceof Error ? e.message : "Couldn't read that file.");
     }
@@ -57,7 +69,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">How would you like to start?</h1>
             <Group label="Start">
               <Toggle on={start === "fresh"} onClick={() => setStart("fresh")} title="Start a new project" sub="Name it, pick a dashboard" />
-              <Toggle on={start === "restore"} onClick={() => { setStart("restore"); fileRef.current?.click(); }} title="Restore a setup file" sub="Your projects come back" />
+              <Toggle on={start === "restore"} onClick={() => { setStart("restore"); void pick(); }} title="Restore from an export" sub="Your setup comes back" />
             </Group>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
               onChange={(e) => void onFile(e.target.files?.[0])} />
@@ -89,7 +101,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
               The {THEME_PRESETS.find((t) => t.id === theme)?.label} look.{" "}
-              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your setup file brings." : "Today opens next."}
+              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your export brings." : "Today opens next."}
             </p>
           </div>
         ) : null}
@@ -104,7 +116,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             </button>
           ) : (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
-              {start === "fresh" ? "Create your first project" : restored ? "Review the setup file" : "Go to Today"}
+              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : "Go to Today"}
             </button>
           )}
         </div>

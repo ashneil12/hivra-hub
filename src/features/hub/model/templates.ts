@@ -22,7 +22,7 @@ export type DashboardTemplate = {
 
 export const TEMPLATES: DashboardTemplate[] = [
   {
-    id: "game-studio", label: "Game studio", icon: "ghost",
+    id: "game-studio", label: "Game studio", icon: "gamepad",
     blurb: "Builds to play, playtest notes and what the team is building.",
     todayCards: ["Since you were last here", "Stuck and gave up", "Needs (up to 5)", "Latest build to try"],
     sections: [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
@@ -101,6 +101,11 @@ export function isCustomised(projectId: string): boolean {
 }
 /** Example: Hivra's dashboard was changed by an applied proposal ('Users & emails'). */
 const CUSTOMISED_EXAMPLE = new Set(["hivra"]);
+
+/** True when this Mac has its own template choice for the project (an import then leaves it alone). */
+export function hasSavedTemplate(projectId: string): boolean {
+  return !!saved[projectId];
+}
 
 export function setTemplate(projectId: string, template: TemplateId): void {
   store({ ...saved, [projectId]: { template } });

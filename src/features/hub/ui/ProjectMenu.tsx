@@ -1,20 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { Popover, type PopoverAnchor } from "../../../shared/ui/Popover";
 import {
-  Archive, Bot, Clock, DashboardSquare, Folder, Gauge, GitBranch, Globe, Inbox, MessageSquare, Palette, Shield, Sparkles,
+  Archive, Bot, Check, Clock, DashboardSquare, GitBranch, Inbox, MessageSquare, Shield,
   Star, StickyNote, Terminal, Wrench, Zap, type IconComponent,
 } from "../../../shared/ui/icons";
-import { hubData } from "../model/hubData";
+import { hubData, liveHubStore } from "../model/hubData";
+import { archiveCheck, archiveProject, renameProjectEverywhere, setProjectShape, type ArchiveCheck } from "../model/projectActions";
 import {
-  isImageFileName, moveProject, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, renameProject, setProjectIcon,
+  isImageFileName, moveProject, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
   useProjectPrefsVersion, type ProjectIconChoice,
 } from "../model/projectPrefs";
-import type { HubProject } from "../model/types";
+import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
+import type { HubProject, ProjectIconShape } from "../model/types";
+import { SHAPES } from "./projectShapeIcons";
 
-/** The icons a project can wear (the app's own set; no ghost). */
+/**
+ * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
+ * New picks are Ash OS's shapes (SHAPES), which every device sees.
+ */
 export const PROJECT_ICONS: Record<string, IconComponent> = {
-  sparkles: Sparkles, palette: Palette, gauge: Gauge, folder: Folder, star: Star, zap: Zap, terminal: Terminal, bot: Bot,
-  inbox: Inbox, shield: Shield, globe: Globe, wrench: Wrench, branch: GitBranch, dashboard: DashboardSquare,
+  ...SHAPES,
+  zap: Zap, star: Star, terminal: Terminal, bot: Bot,
+  inbox: Inbox, shield: Shield, wrench: Wrench, branch: GitBranch, dashboard: DashboardSquare,
   chat: MessageSquare, note: StickyNote, archive: Archive, clock: Clock,
 };
 export const PROJECT_EMOJI = ["🚀", "🎮", "🛠️", "📦", "🧪", "🌱", "🔥", "⭐", "🎨", "📈", "🧠", "💬", "🏠", "🍀", "🐝", "🌊"];
@@ -40,7 +47,10 @@ function safeProjects(): HubProject[] {
   }
 }
 
-/** What a project's tile shows: Ash's emoji, icon or image, else its first letter. Same size everywhere. */
+/**
+ * What a project's tile shows: its shape from Ash OS, drawn grey (Ash picks it from the tile's menu), unless he gave it
+ * an emoji or an image on this Mac. Same size everywhere.
+ */
 export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size?: number }) {
   useProjectPrefsVersion();
   const choice = projectIcon(project.id);
@@ -52,6 +62,8 @@ export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size
   }
   if (choice?.kind === "image")
     return <img data-project-glyph="image" alt="" src={choice.src} style={{ width: size + 4, height: size + 4 }} className="rounded-[6px] object-cover" />;
+  const Shape = SHAPES[project.iconShape];
+  if (Shape) return <Shape data-project-glyph="shape" data-project-shape={project.iconShape} aria-hidden style={{ width: size, height: size }} strokeWidth={1.75} />;
   const letters = letterOf(project, safeProjects());
   return (
     <span
@@ -95,7 +107,7 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
   return (
     <Popover anchor={anchor} side="right" align="start" width={210} constrainHeight={false} role="menu" aria-label={`${project.name} options`}
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
-      {item("Change icon or image", () => setMode({ kind: "icon" }))}
+      {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
       {item("Show folder in Finder", () => {
         if (project.folder) void projectFileActions().then((a) => a.showFolder(project.folder!));
@@ -110,87 +122,136 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
 }
 
 function IconChooser({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
-  const [tab, setTab] = useState<"emoji" | "icon">("emoji");
-  const file = useRef<HTMLInputElement>(null);
-  const pick = (choice: ProjectIconChoice | undefined) => {
+  useProjectPrefsVersion();
+  const [tab, setTab] = useState<"shape" | "emoji">("shape");
+  const [busy, setBusy] = useState<ProjectIconShape>();
+  const [problem, setProblem] = useState<string>();
+  const local = projectIcon(project.id);
+  const pickLocal = (choice: ProjectIconChoice | undefined) => {
     setProjectIcon(project.id, choice);
     onClose();
   };
+  const pickShape = (shape: ProjectIconShape) => {
+    setBusy(shape);
+    setProblem(undefined);
+    void setProjectShape(project, shape).then(onClose, (e: Error) => {
+      setBusy(undefined);
+      setProblem(e.message);
+    });
+  };
   return (
-    <Popover anchor={anchor} side="right" align="start" width={244} constrainHeight={false} role="dialog" aria-label="Project icon"
+    <Popover anchor={anchor} side="right" align="start" width={260} constrainHeight={false} role="dialog" aria-label="Project icon"
       onDismiss={onClose} className="flex flex-col gap-2 p-2" data-project-icon-chooser>
       <div className="flex items-center gap-1 text-[12px]">
-        {(["emoji", "icon"] as const).map((t) => (
+        {(["shape", "emoji"] as const).map((t) => (
           <button key={t} type="button" onClick={() => setTab(t)} aria-pressed={tab === t}
             className={`rounded-md px-2 py-0.5 ${tab === t ? "bg-content/12 text-content" : "text-content/55 hover:bg-content/8"}`}>
-            {t === "emoji" ? "Emoji" : "Icon"}
+            {t === "shape" ? "Shape" : "Emoji"}
           </button>
         ))}
       </div>
-      <div className="grid grid-cols-6 gap-1" data-project-icon-grid={tab}>
+      <div className="grid grid-cols-7 gap-1" data-project-icon-grid={tab}>
         {tab === "emoji"
           ? PROJECT_EMOJI.map((e) => (
-              <button key={e} type="button" aria-label={`Emoji ${e}`} onClick={() => pick({ kind: "emoji", emoji: e })}
+              <button key={e} type="button" aria-label={`Emoji ${e}`} onClick={() => pickLocal({ kind: "emoji", emoji: e })}
                 className="grid size-8 place-items-center rounded-md text-[18px] hover:bg-content/8">{e}</button>
             ))
-          : Object.entries(PROJECT_ICONS).map(([name, Icon]) => (
-              <button key={name} type="button" aria-label={`Icon ${name}`} onClick={() => pick({ kind: "icon", icon: name })}
-                className="grid size-8 place-items-center rounded-md text-content/75 hover:bg-content/8 hover:text-content">
-                <Icon className="size-4" strokeWidth={1.75} />
-              </button>
-            ))}
+          : PROJECT_SHAPES.map((shape) => {
+              const Icon = SHAPES[shape];
+              const on = !local && project.iconShape === shape;
+              return (
+                <button key={shape} type="button" aria-label={`Shape ${SHAPE_LABEL[shape]}`} aria-pressed={on} title={SHAPE_LABEL[shape]}
+                  data-project-shape-choice={shape} disabled={!!busy} onClick={() => pickShape(shape)}
+                  className={`grid size-8 place-items-center rounded-md hover:bg-content/8 hover:text-content disabled:opacity-50 ${on ? "bg-content/12 text-content" : "text-content/70"}`}>
+                  <Icon className="size-4" strokeWidth={1.75} />
+                </button>
+              );
+            })}
       </div>
+      {problem ? <p className="px-0.5 text-[11px] leading-4 text-content/70" role="alert" data-project-icon-problem>{problem}</p> : null}
       <div role="separator" className="h-px bg-content/10" />
       <div className="flex items-center gap-1">
         <button type="button" data-project-upload
           onClick={async () => {
             const actions = await projectFileActions();
             const img = await actions.pickImage(project.id);
-            if (img) pick({ kind: "image", ...img });
+            if (img) pickLocal({ kind: "image", ...img });
           }}
           className="flex-1 rounded-md px-2 py-1 text-left text-[12px] text-content/80 hover:bg-content/8">
           Upload image…
         </button>
-        <button type="button" data-project-icon-reset onClick={() => pick(undefined)}
-          className="rounded-md px-2 py-1 text-[12px] text-content/55 hover:bg-content/8">
-          Reset
-        </button>
+        {local ? (
+          <button type="button" data-project-icon-reset onClick={() => pickLocal(undefined)}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-content/55 hover:bg-content/8">
+            <Check className="size-3" />Use the shape
+          </button>
+        ) : null}
       </div>
-      <input ref={file} type="file" hidden accept=".png,.jpg,.jpeg,.svg" onChange={() => undefined} />
-      <span className="px-0.5 text-[11px] text-content/40">PNG, JPG or SVG. It's copied into the app, so moving the file later is fine.</span>
+      <span className="px-0.5 text-[11px] text-content/40">
+        {liveHubStore() ? "A shape is kept by the harness, so every device shows it. An emoji or image stays on this Mac." : "Kept on this Mac."}
+      </span>
     </Popover>
   );
 }
 
 function RenameProject({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
   const [name, setName] = useState(project.name);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => input.current?.select(), []);
   const commit = () => {
-    if (name.trim() && name.trim() !== project.name) renameProject(project.id, name);
-    onClose();
+    if (busy) return;
+    if (!name.trim() || name.trim() === project.name) return onClose();
+    setBusy(true);
+    setProblem(undefined);
+    void renameProjectEverywhere(project, name).then(onClose, (e: Error) => {
+      setBusy(false);
+      setProblem(e.message);
+    });
   };
   return (
-    <Popover anchor={anchor} side="right" align="start" width={230} constrainHeight={false} role="dialog" aria-label="Rename project"
-      onDismiss={commit} className="p-2">
-      <input ref={input} value={name} aria-label="Project name" maxLength={40}
-        onChange={(e) => setName(e.target.value)}
+    <Popover anchor={anchor} side="right" align="start" width={250} constrainHeight={false} role="dialog" aria-label="Rename project"
+      onDismiss={problem ? onClose : commit} className="flex flex-col gap-1.5 p-2">
+      <input ref={input} value={name} aria-label="Project name" maxLength={60} disabled={busy}
+        onChange={(e) => { setName(e.target.value); setProblem(undefined); }}
         onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") onClose(); }}
         className="w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none focus:border-content/30" />
+      {problem ? <p className="px-0.5 text-[11px] leading-4 text-content/70" role="alert" data-project-rename-problem>{problem}</p> : null}
     </Popover>
   );
 }
 
 /**
  * The confirm, with friction to match the risk. Keeping the Lead (the default): a plain question, Cancel and Remove.
- * Taking the Lead too: Ash types the project's name first. Files and Ash OS's record are never touched; Undo follows.
+ * Taking the Lead too: Ash types the project's name first. With Ash OS there, it archives the project (asked first
+ * what that leaves open); nothing is deleted, its asks, memory and folder stay, and Undo brings it back.
  */
 export function RemoveFromHub({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
   const lead = projectLead(project);
+  const live = !!liveHubStore();
   const [removeLead, setRemoveLead] = useState(false);
   const [typed, setTyped] = useState("");
+  const [check, setCheck] = useState<ArchiveCheck>();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  useEffect(() => {
+    if (!live) return;
+    let on = true;
+    archiveCheck(project.id).then((c) => on && setCheck(c), (e: Error) => on && setProblem(e.message));
+    return () => { on = false; };
+  }, [live, project.id]);
   const typedOk = typed.trim().toLowerCase() === project.name.trim().toLowerCase();
-  const ready = !removeLead || typedOk;
+  const ready = (!removeLead || typedOk) && !busy;
+  const remove = () => {
+    setBusy(true);
+    setProblem(undefined);
+    const hide = live ? { hide: () => archiveProject(project.id, true), unhide: () => archiveProject(project.id, false) } : undefined;
+    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: Error) => {
+      setBusy(false);
+      setProblem(e.message);
+    });
+  };
   return (
     <Popover anchor={anchor} side="right" align="start" width={300} constrainHeight={false} role="alertdialog" aria-label={`Remove ${project.name} from the hub`}
       onDismiss={onClose} className="flex flex-col gap-2.5 p-3" data-project-remove-confirm={removeLead ? "with-lead" : "keep-lead"}>
@@ -198,6 +259,11 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
       <p className="text-[12px] leading-5 text-content/60" data-remove-what>
         Its files stay on disk.{lead ? (removeLead ? "" : ` ${lead.name} is kept.`) : ""}
       </p>
+      {check ? (
+        <p className="text-[12px] leading-5 text-content/60" data-remove-open>
+          {openLine(check)} Nothing is deleted, and you can bring it back.
+        </p>
+      ) : null}
       {lead ? (
         <div className="flex flex-col gap-1" role="radiogroup" aria-label="Its Lead">
           {[false, true].map((remove) => (
@@ -223,13 +289,22 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
       <div className="flex justify-end gap-1.5 pt-1">
         <button type="button" onClick={onClose} className="rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8">Cancel</button>
         <button type="button" data-project-remove disabled={!ready}
-          onClick={() => { void removeFromHub(project, { retireLead: !!lead && removeLead }); onClose(); }}
+          onClick={remove}
           className="rounded-md bg-red-500/15 px-2.5 py-1 text-[12px] text-red-300 hover:bg-red-500/25 disabled:opacity-35">
           Remove
         </button>
       </div>
+      {problem ? <p className="text-[12px] leading-5 text-content/70" role="alert" data-remove-problem>{problem}</p> : null}
     </Popover>
   );
+}
+
+/** "It has 3 open asks and 1 thing waiting on you." */
+export function openLine(c: Pick<ArchiveCheck, "openAsks" | "openNeeds">): string {
+  if (!c.openAsks && !c.openNeeds) return "Nothing in it is open.";
+  const asks = `${c.openAsks} open ${c.openAsks === 1 ? "ask" : "asks"}`;
+  const needs = `${c.openNeeds} ${c.openNeeds === 1 ? "thing" : "things"} waiting on you`;
+  return `It has ${c.openAsks && c.openNeeds ? `${asks} and ${needs}` : c.openAsks ? asks : needs}.`;
 }
 
 /** "EXO game removed from the hub · Undo", for ten seconds. */

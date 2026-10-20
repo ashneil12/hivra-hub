@@ -17,18 +17,22 @@ import {
   bootStep,
   DelegationTracker,
   isOpenDelegation,
+  storedResult,
   type ChatBindInput,
   type Delegation,
   type DelegationsBackend,
   type DeliveryInput,
+  type OwnedQuery,
   type RecordInput,
   type SettleInput,
 } from "./delegations";
 import {
+  dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "./monoSessionCompletion";
+import { delegationTasksHost } from "./delegationTasks";
 
 const RANK = { pending: 0, queued: 1, delivered: 2, acknowledged: 3 } as const;
 
@@ -76,8 +80,8 @@ class MemoryStore implements DelegationsBackend {
       project: input.project ?? null,
       title: input.title ?? null,
       brief: input.brief ?? null,
-      goal: null,
-      askIds: [],
+      goal: input.goal ?? null,
+      askIds: input.askIds ?? [],
       state: "running",
       errorClass: null,
       error: null,
@@ -205,6 +209,28 @@ class MemoryStore implements DelegationsBackend {
   async tree(id: string) {
     const root = this.rows.get(id)?.rootId;
     return [...this.rows.values()].filter((row) => row.rootId === root).map(this.copy);
+  }
+
+  async owned(query: OwnedQuery) {
+    const mine = [...this.rows.values()].filter(
+      (row) => row.ownerSession === query.ownerSession,
+    );
+    if (!query.ids?.length && !query.requestIds?.length)
+      return mine
+        .filter(
+          (row) =>
+            isOpenDelegation(row) ||
+            row.delivery === "pending" ||
+            row.delivery === "queued",
+        )
+        .reverse()
+        .map(this.copy);
+    return mine
+      .filter(
+        (row) =>
+          query.ids?.includes(row.id) || query.requestIds?.includes(row.requestId),
+      )
+      .map(this.copy);
   }
 
   async reportsSeen(owner: string, ids: string[]) {
@@ -653,5 +679,109 @@ describe("delegations that survive restarts", () => {
     const other = new AppRun(store, app.quit());
     expect(await other.tracker.boot(false)).toMatchObject({ queue: 0 });
     expect(other.mono.queuedMessages ?? []).toHaveLength(0);
+  });
+});
+
+describe("the delegate tool's tasks on the rows (H3)", () => {
+  function tasksFor(app: AppRun) {
+    const stopped: string[] = [];
+    const answered: unknown[] = [];
+    const tasks = delegationTasksHost({
+      backend: app.store,
+      tracker: () => app.tracker,
+      session: (id) => app.sessions.get(id),
+      stop: async (id) => {
+        stopped.push(id);
+        const child = app.sessions.get(id)!;
+        app.sessions.set(id, { ...child, busy: false });
+      },
+      dropReport: (owner, child) => {
+        app.batches.dismissSession(owner, child);
+        app.sessions.set(owner, dismissQueuedMonoSessionCompletion(app.sessions.get(owner)!, child));
+      },
+      respond: (child, requestId, reply) => answered.push([child.id, requestId, reply]),
+      nextChange: async () => undefined,
+    });
+    return { tasks, stopped, answered };
+  }
+
+  it("a result read inside the owner's turn is received: acknowledged, and no report turn follows, even after a restart", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const child = await app.start("app-mono-exo-w", "Fix the save bug");
+    child.finish("Fixed: saves survive a restart.");
+    await app.settledDown();
+    const { tasks } = tasksFor(app);
+    const [finished] = await tasks.owned(MONO, { requestIds: ["app-mono-exo-w"] });
+    expect(finished).toMatchObject({ state: "completed", delivery: "pending" });
+    await tasks.acknowledge(MONO, [finished]);
+    app.endMonoTurn();
+    await app.settledDown();
+    expect(row(store, "app-mono-exo-w").delivery).toBe("acknowledged");
+    expect(app.reportsFor("app-mono-exo-w")).toEqual([]);
+    expect(await tasks.owned(MONO, {})).toEqual([]);
+    const next = new AppRun(store, app.quit());
+    expect(await next.tracker.boot(true)).toMatchObject({ queue: 0, settle: 0 });
+    expect(next.mono.queuedMessages ?? []).toHaveLength(0);
+  });
+
+  it("task_cancel cancels with its reason, stops the running worker and drops the report it owed", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-mono-exo-c", "Refactor the HUD");
+    const { tasks, stopped } = tasksFor(app);
+    const [open] = await tasks.owned(MONO, { requestIds: ["app-mono-exo-c"] });
+    expect(await tasks.cancel(MONO, open, "Ash changed his mind")).toEqual({ stopFailed: [] });
+    expect(stopped).toEqual(["app-mono-exo-c"]);
+    expect(row(store, "app-mono-exo-c")).toMatchObject({
+      state: "cancelled",
+      delivery: "disposed",
+      error: "Ash changed his mind",
+    });
+    app.endMonoTurn();
+    await app.settledDown();
+    expect(app.reportsFor("app-mono-exo-c")).toEqual([]);
+  });
+
+  it("a chat only ever reads its own rows", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-mono-exo-o", "Mine");
+    await store.record({ ownerSession: "mono-hivra", requestId: "app-mono-hivra-x", childSession: "app-mono-hivra-x" });
+    const { tasks } = tasksFor(app);
+    const theirs = [...store.rows.values()].find((entry) => entry.ownerSession === "mono-hivra")!;
+    expect(await tasks.owned(MONO, { ids: [theirs.id] })).toEqual([]);
+    expect((await tasks.owned(MONO, {})).map((entry) => entry.childSession)).toEqual(["app-mono-exo-o"]);
+  });
+
+  it("an answer goes only to the worker's open question, and the row logs who answered", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-mono-exo-q", "Pick a save slot");
+    const { tasks, answered } = tasksFor(app);
+    const [open] = await tasks.owned(MONO, { requestIds: ["app-mono-exo-q"] });
+    const setQuestion = vi.spyOn(store, "setQuestion");
+    app.sessions.set("app-mono-exo-q", {
+      ...app.sessions.get("app-mono-exo-q")!,
+      pendingQuestion: { requestId: 7, questions: [] },
+    });
+    await expect(tasks.answer!(MONO, open, 8, { kind: "skipped" })).rejects.toThrow("no longer open");
+    await tasks.answer!(MONO, open, 7, { kind: "answered", answers: { slot: ["two"] } });
+    expect(answered).toEqual([["app-mono-exo-q", 7, { kind: "answered", answers: { slot: ["two"] } }]]);
+    expect(setQuestion).toHaveBeenCalledWith(open.id, null, "owner:mono-exo");
+  });
+
+  it("a report rebuilt from a row names where the work ran, not the hub project id the row keeps for Ash OS", async () => {
+    const store = new MemoryStore();
+    const recorded = await store.record({
+      ownerSession: MONO,
+      requestId: "app-mono-exo-p",
+      childSession: "app-mono-exo-p",
+      project: "vg-game",
+    });
+    const finished = { ...recorded, state: "completed" as const, result: "Done" };
+    const child = { ...newSession("claude", PROJECT), id: "app-mono-exo-p" };
+    expect(storedResult(finished, child).project).toBe(PROJECT);
+    expect(storedResult(finished).project).toBe("vg-game");
   });
 });

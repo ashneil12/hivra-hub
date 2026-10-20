@@ -10,8 +10,10 @@
 //   short pause that folds a burst of events into one read.
 import { toHubError, type HubFeedEvent, type HubFeedState, type HubTransport } from "./hubTransport";
 import type {
-  AnswerState, HubAnswer, HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType, OlderDismissed, ProjectIconShape, SinceSummary,
+  AnswerState, HubAnswer, HubChangeRecord, HubChangeSide, HubConnection, HubJob, HubJobGroup, HubProject, HubQuestion, JobOption, JobOptions, JobWireState, Need, NeedActionType,
+  OlderDismissed, SinceSummary, TodaySection, TodaySectionKind,
 } from "./types";
+import { toShape } from "./projectShapes";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
 
@@ -46,7 +48,16 @@ export type HubSnapshot = {
   sinceAt?: string;
   /** The change feed's own number: the last event this store has seen. */
   seq: number;
+  /** Ash OS's pages (`ash-hub-pages`, kept and removed), as it sends them; the Pages store reads them. Undefined until read. */
+  pages?: unknown[];
+  /** The Today board's sections (`ash-hub-layout`). Undefined until read, or on a service without it. */
+  today?: TodaySection[];
+  /** Change the hub / Edit Today history (`ash-hub-changes`), newest first. Undefined until read. */
+  changes?: HubChangeRecord[];
 };
+
+/** What a write makes the store read again at once (the feed would bring it a moment later anyway). */
+export type HubSlice = "needs" | "projects" | "since" | "jobs" | "pages" | "layout" | "changes";
 
 export type HubStoreOptions = {
   transport: HubTransport;
@@ -66,7 +77,8 @@ export type HubStoreOptions = {
   whileRunning?: (store: HubStore) => (() => void) | void;
 };
 
-const ICONS: readonly ProjectIconShape[] = ["ghost", "sparkles", "palette", "gauge", "folder"];
+const TODAY_KINDS: readonly TodaySectionKind[] = ["since", "setup", "needs", "being-built", "page"];
+const CHANGE_STATES: readonly HubChangeRecord["state"][] = ["preview", "applied", "undone", "discarded"];
 const ACTIONS: readonly NeedActionType[] = ["start", "open", "sign_in", "see_options", "accept"];
 
 type Raw = Record<string, unknown>;
@@ -80,7 +92,7 @@ export function mapProject(raw: unknown): HubProject | undefined {
   const id = str(r.id);
   if (!id) return undefined;
   const name = str(r.name, id);
-  const icon = ICONS.find((i) => i === r.iconShape) ?? "folder";
+  const icon = toShape(r.iconShape);
   return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null, ...(r.status === "parked" ? { parked: true } : {}) };
 }
 
@@ -173,6 +185,59 @@ export function mapJob(raw: unknown): HubJob | undefined {
   return job;
 }
 
+/** Today's sections as Ash OS sends them; anything it doesn't know is left out, never guessed at. */
+export function mapToday(raw: unknown): TodaySection[] {
+  const seen = new Set<string>();
+  return arr(raw).flatMap((v) => {
+    const r = obj(v);
+    const kind = TODAY_KINDS.find((k) => k === r.kind);
+    const id = str(r.id);
+    if (!kind || !id || seen.has(id) || typeof r.title !== "string") return [];
+    if (kind === "page" && !optStr(r.pageId)) return [];
+    seen.add(id);
+    return [{ id, kind, title: r.title, ...(kind === "page" ? { pageId: str(r.pageId) } : {}) }];
+  });
+}
+
+function mapSide(raw: unknown): HubChangeSide {
+  const r = obj(raw);
+  return {
+    ...(optStr(r.image) ? { image: str(r.image) } : {}),
+    sections: arr(r.sections).map((x) => {
+      const sec = obj(x);
+      return { title: str(sec.title), rows: arr(sec.rows).filter((t): t is string => typeof t === "string") };
+    }),
+  };
+}
+
+/** One change from Ash OS's history (`ash-hub-changes`). */
+export function mapChange(raw: unknown): HubChangeRecord | undefined {
+  const r = obj(raw);
+  const previewId = str(r.previewId);
+  const state = CHANGE_STATES.find((x) => x === r.state);
+  const flow = r.flow === "hub" || r.flow === "today" || r.flow === "connect" ? r.flow : undefined;
+  if (!previewId || !state || !flow) return undefined;
+  return {
+    previewId,
+    title: str(r.title),
+    by: str(r.by, str(r.monoId)),
+    monoId: str(r.monoId),
+    flow,
+    projectId: str(r.projectId, "today"),
+    state,
+    prompt: str(r.prompt),
+    createdAt: str(r.createdAt),
+    ...(optStr(r.appliedAt) ? { appliedAt: str(r.appliedAt) } : {}),
+    ...(optStr(r.undoneAt) ? { undoneAt: str(r.undoneAt) } : {}),
+    now: mapSide(r.now),
+    preview: mapSide(r.preview),
+    log: arr(r.log).map((x) => {
+      const l = obj(x);
+      return { at: str(l.at), what: str(l.what), by: str(l.by), ...(optStr(l.note) ? { note: str(l.note) } : {}) };
+    }),
+  };
+}
+
 /** Same order Ash already sees: groups and jobs still there keep their place, new ones join at the end. */
 export function mergeJobGroups(prev: HubJobGroup[], next: HubJobGroup[]): HubJobGroup[] {
   const key = (g: HubJobGroup) => `${g.projectId}|${g.leadId ?? ""}`;
@@ -253,7 +318,7 @@ export class HubStore {
   private feedUp = false;
   private lastEventSeq = 0;
   private dismissed = new Set<string>();
-  private queue = new Set<"needs" | "projects" | "since" | "jobs" | "all">();
+  private queue = new Set<HubSlice | "all">();
   private timers = { coalesce: 0 as unknown, health: 0 as unknown, retry: 0 as unknown, stop: 0 as unknown, pending: 0 as unknown };
   private attempts = 0;
   private inflight?: Promise<void>;
@@ -350,6 +415,9 @@ export class HubStore {
         if (!this.feedClose || !this.feedUp) this.openFeed();
         void this.loadSince();
         void this.loadJobs();
+        void this.loadPages();
+        void this.loadLayout();
+        void this.loadChanges();
       } catch (error) {
         if (this.alive(gen)) this.fail(error);
       } finally {
@@ -436,6 +504,62 @@ export class HubStore {
       const e = toHubError(error);
       if (e.isDown && this.alive(gen)) this.fail(error);
     }
+  }
+
+  /**
+   * Pages, the Today board and the change history. A service without them ("Unknown hub action", or the read-only
+   * proxy of an older dev setup) leaves the slice unset: Pages and Today then draw what they have.
+   */
+  async loadPages(): Promise<void> {
+    await this.loadOptional("ash-hub-pages", { include_removed: true }, (raw) => this.patch({ pages: arr(obj(raw).pages) }));
+  }
+
+  async loadLayout(): Promise<void> {
+    await this.loadOptional("ash-hub-layout", {}, (raw) => {
+      const today = mapToday(obj(raw).today);
+      if (today.length) this.patch({ today });
+    });
+  }
+
+  async loadChanges(): Promise<void> {
+    await this.loadOptional("ash-hub-changes", { limit: 50 }, (raw) =>
+      this.patch({ changes: arr(obj(raw).changes).map(mapChange).filter((c): c is HubChangeRecord => !!c) }),
+    );
+  }
+
+  private async loadOptional(action: string, payload: Record<string, unknown>, apply: (raw: unknown) => void): Promise<void> {
+    const gen = this.gen;
+    try {
+      const raw = await this.t.call(action, payload);
+      if (this.alive(gen)) apply(raw);
+    } catch (error) {
+      const e = toHubError(error);
+      if (e.isDown && this.alive(gen)) this.fail(error);
+    }
+  }
+
+  /** Read these slices again now (after a write; the feed would bring them a moment later). */
+  async reload(slices: readonly HubSlice[]): Promise<void> {
+    const load: Record<HubSlice, () => Promise<void>> = {
+      needs: () => this.loadNeeds(),
+      projects: () => this.loadProjects(),
+      since: () => this.loadSince(0),
+      jobs: () => this.loadJobs(),
+      pages: () => this.loadPages(),
+      layout: () => this.loadLayout(),
+      changes: () => this.loadChanges(),
+    };
+    await Promise.all([...new Set(slices)].map((s) => load[s]()));
+  }
+
+  /**
+   * One call Ash's tap makes (keep a page, apply a change, create a project, ...), then the slices it moves are read
+   * again. A refusal comes back as the thrown HubCallError, in Ash OS's own words.
+   */
+  async act<T = unknown>(action: string, payload: Record<string, unknown>, reload: readonly HubSlice[] = []): Promise<T> {
+    const out = await this.t.call<T>(action, payload);
+    if (this.running && reload.length) await this.reload(reload);
+    return out;
   }
 
   // ---- Ash's choices ---------------------------------------------------------------------------------------------
@@ -648,6 +772,9 @@ export class HubStore {
     if (topics.has("projects")) this.queue.add("projects");
     if (topics.has("since") || topics.has("activity")) this.queue.add("since");
     if (topics.has("jobs")) this.queue.add("jobs");
+    if (topics.has("pages")) this.queue.add("pages");
+    if (topics.has("layout")) this.queue.add("layout");
+    if (topics.has("changes")) this.queue.add("changes");
     if (this.queue.size && !this.timers.coalesce) {
       const wait = Math.max(this.coalesceMs, this.lastFlush + this.minGapMs - Date.now());
       this.timers.coalesce = setTimeout(() => void this.flush(), wait);
@@ -660,12 +787,7 @@ export class HubStore {
     const wanted = new Set(this.queue);
     this.queue.clear();
     if (wanted.has("all")) return void (await this.loadAll());
-    await Promise.all([
-      wanted.has("needs") ? this.loadNeeds() : undefined,
-      wanted.has("projects") ? this.loadProjects() : undefined,
-      wanted.has("since") ? this.loadSince(0) : undefined,
-      wanted.has("jobs") ? this.loadJobs() : undefined,
-    ]);
+    await this.reload([...wanted].filter((w): w is HubSlice => w !== "all"));
   }
 
   // ---- down ------------------------------------------------------------------------------------------------------

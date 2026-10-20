@@ -1,8 +1,9 @@
 import { draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
-import { useState, type ReactNode } from "react";
-import { Clock, Folder, Gauge, MoreHorizontal, Palette, Plus, Sparkles, type IconComponent } from "../../../shared/ui/icons";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Clock, MoreHorizontal, Plus, type IconComponent } from "../../../shared/ui/icons";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
+import { moveLocalNamesToAshOs } from "../model/projectActions";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { waitingCount } from "../model/waiting";
 import { useWaitingChatsVersion } from "../model/waitingChats";
@@ -11,16 +12,9 @@ import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
-import type { HubProject, ProjectIconShape } from "../model/types";
+import type { HubProject } from "../model/types";
 
-/** Ash OS's shape names. "ghost" is no longer drawn: a project shows its letter tile unless Ash picks an icon. */
-export const SHAPES: Record<ProjectIconShape, IconComponent> = {
-  ghost: Folder,
-  sparkles: Sparkles,
-  palette: Palette,
-  gauge: Gauge,
-  folder: Folder,
-};
+export { SHAPES } from "./projectShapeIcons";
 
 /**
  * Far-left strip: Today for all projects, then each project as a grey shape,
@@ -50,6 +44,11 @@ export function ProjectStrip({
   useWaitingChatsVersion();
   const data = hubData();
   const projects = data.listProjects();
+  // Names Ash gave projects on this Mac before Ash OS kept them go to Ash OS once (it runs only when Ash OS is there).
+  const haveProjects = projects.length > 0;
+  useEffect(() => {
+    if (haveProjects) void moveLocalNamesToAshOs();
+  }, [haveProjects]);
   useProjectDraftVersion();
   const draftProject = projectDraft();
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
@@ -86,13 +85,13 @@ export function ProjectStrip({
         );
       })}
       {draftProject ? (
-        <div data-hub-project-draft className="opacity-70">
+        <div data-hub-project-draft>
           <StripButton
-            label={draftProject.name.split(" ")[0]}
+            label="Draft"
             title={`Draft: ${draftProject.name}, still being set up`}
             selected={selection.item === "new-project"}
             onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }}
-            glyph={<span className="grid size-full place-items-center rounded-[inherit] border border-dashed border-content/40 text-[11px] text-content/70">{draftInitial(draftProject.name)}</span>}
+            glyph={<span className="grid size-[24px] place-items-center rounded-[7px] bg-content/10 text-[12px] font-medium text-content/85 ring-1 ring-inset ring-content/10">{draftInitial(draftProject.name)}</span>}
           />
         </div>
       ) : null}
@@ -102,6 +101,9 @@ export function ProjectStrip({
     </nav>
   );
 }
+
+/** How long a press on a project's tile opens its menu. */
+export const LONG_PRESS_MS = 550;
 
 export function StripButton({
   label,
@@ -124,6 +126,11 @@ export function StripButton({
   /** Right-click, or the hover "⋯", opens the project's menu. */
   onMenu?: (anchor: PopoverAnchor) => void;
 }) {
+  // A long press opens the menu too (a trackpad without a right-click habit); the click that ends it doesn't open the project.
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; fired: boolean } | undefined>(undefined);
+  const endPress = () => {
+    if (press.current) clearTimeout(press.current.timer);
+  };
   return (
     <div className="group/strip relative">
     <button
@@ -131,8 +138,22 @@ export function StripButton({
       title={title}
       aria-label={title}
       aria-current={selected || undefined}
-      onClick={onClick}
-      onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu({ x: e.clientX, y: e.clientY }); } : undefined}
+      onClick={() => {
+        if (press.current?.fired) {
+          press.current = undefined;
+          return;
+        }
+        onClick();
+      }}
+      onPointerDown={onMenu ? (e) => {
+        if (e.button !== 0) return;
+        const at = { x: e.clientX, y: e.clientY };
+        endPress();
+        press.current = { fired: false, timer: setTimeout(() => { if (press.current) press.current.fired = true; onMenu(at); }, LONG_PRESS_MS) };
+      } : undefined}
+      onPointerUp={onMenu ? endPress : undefined}
+      onPointerLeave={onMenu ? endPress : undefined}
+      onContextMenu={onMenu ? (e) => { e.preventDefault(); endPress(); onMenu({ x: e.clientX, y: e.clientY }); } : undefined}
       className="group flex w-14 shrink-0 flex-col items-center gap-1.5 pb-2 pt-1"
     >
       <span
