@@ -1,9 +1,14 @@
 import type { ApprovalDecision } from "../../../integrations/harness";
-import type { Attachment, Session } from "../../sessions/model/session";
+import type {
+  Attachment,
+  HarnessId,
+  Session,
+} from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import { displayAttachments } from "../../sessions/model/attachments";
 import { listMonos, monoLook, monoState, type MonoStatus } from "./mono";
 import { pixelLayers } from "../../projects/model/pixelMascots";
+import type { StopTreeResult } from "./stopTree";
 
 export const FLOATING_MONO_CHANGED = "mono_chat_changed";
 export const FLOATING_MONO_REQUEST = "mono_chat_request";
@@ -25,6 +30,12 @@ export type FloatingMonoAction =
   | { kind: "open" }
   | { kind: "submit"; text: string; attachments: Attachment[] }
   | { kind: "stop" }
+  /** The Stop on a workflow run's row: that run and every agent in it. */
+  | { kind: "stopWorkflow"; taskId: string }
+  /** "Waiting on N" · Stop all: everything the Mono delegated. */
+  | { kind: "stopAll" }
+  /** The Stop on one task of a delegated batch: it and everything beneath it. */
+  | { kind: "stopRow"; childSession: string }
   | { kind: "create" }
   | { kind: "approval"; requestId: number; decision: ApprovalDecision }
   | { kind: "question"; requestId: number; reply: UserQuestionReply }
@@ -96,6 +107,16 @@ export type FloatingMonoHost = {
     attachments: Attachment[],
   ): boolean | void;
   stop(sessionId: string): void;
+  /** The main chat's workflow Stop (AgentTranscript's onStopWorkflow). */
+  stopWorkflow?(
+    sessionId: string,
+    harness: HarnessId,
+    taskId: string,
+  ): Promise<unknown> | void;
+  /** The main chat's Stop all (useDelegationPane's onStopAll). */
+  stopTree?(sessionId: string): Promise<StopTreeResult>;
+  /** The main chat's Stop on a batch row (DelegationBatchRow), for a task this chat owns. */
+  stopRow?(sessionId: string, childSession: string): Promise<StopTreeResult>;
   approval(
     sessionId: string,
     requestId: number,
@@ -137,6 +158,18 @@ export async function deliverFloatingMonoRequest(
     case "stop":
       host.stop(session.id);
       break;
+    case "stopWorkflow":
+      if (!host.stopWorkflow) throw new Error("Stopping a workflow is unavailable here.");
+      await host.stopWorkflow(session.id, session.harness, action.taskId);
+      break;
+    case "stopAll":
+      if (!host.stopTree) throw new Error("Stopping delegated work is unavailable here.");
+      couldNotStop(await host.stopTree(session.id));
+      break;
+    case "stopRow":
+      if (!host.stopRow) throw new Error("Stopping delegated work is unavailable here.");
+      couldNotStop(await host.stopRow(session.id, action.childSession));
+      break;
     case "approval":
       host.approval(session.id, action.requestId, action.decision);
       break;
@@ -167,4 +200,13 @@ export async function deliverFloatingMonoRequest(
       throw new Error("Unknown chat action.");
   }
   return session;
+}
+
+/** A Stop that left chats running says so in the floating chat, as the main chat's line does. */
+function couldNotStop(result: StopTreeResult): void {
+  const count = result.stopFailed.length;
+  if (count)
+    throw new Error(
+      count === 1 ? "Couldn't stop one chat." : `Couldn't stop ${count} chats.`,
+    );
 }

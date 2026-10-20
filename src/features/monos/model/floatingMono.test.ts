@@ -3,6 +3,7 @@ import { newSession } from "../../sessions/model/session";
 import {
   deliverFloatingMonoRequest,
   floatingMonoSession,
+  type FloatingMonoAction,
   type FloatingMonoHost,
 } from "./floatingMono";
 
@@ -104,6 +105,37 @@ describe("floating Mono delivery", () => {
         async () => true,
       ),
     ).rejects.toThrow("could not be sent");
+  });
+
+  it("hands every Stop the main chat has to the window running the Mono", async () => {
+    const runtime = host();
+    const stopped = { stopped: ["worker"], cancelled: ["d1"], stopFailed: [] };
+    runtime.stopWorkflow = vi.fn().mockResolvedValue(true);
+    runtime.stopTree = vi.fn().mockResolvedValue(stopped);
+    runtime.stopRow = vi.fn().mockResolvedValue(stopped);
+    const send = (action: FloatingMonoAction) =>
+      deliverFloatingMonoRequest({ id: 1, monoId: "mono", action }, runtime, async () => true);
+    await send({ kind: "stopWorkflow", taskId: "wtask" });
+    expect(runtime.stopWorkflow).toHaveBeenCalledWith(session.id, "codex", "wtask");
+    await send({ kind: "stopAll" });
+    expect(runtime.stopTree).toHaveBeenCalledWith(session.id);
+    await send({ kind: "stopRow", childSession: "worker" });
+    expect(runtime.stopRow).toHaveBeenCalledWith(session.id, "worker");
+    expect(runtime.stop).not.toHaveBeenCalled();
+  });
+
+  it("says when a Stop from the floating chat left chats running", async () => {
+    const runtime = host();
+    runtime.stopTree = vi
+      .fn()
+      .mockResolvedValue({ stopped: [], cancelled: [], stopFailed: ["a", "b"] });
+    await expect(
+      deliverFloatingMonoRequest(
+        { id: 1, monoId: "mono", action: { kind: "stopAll" } },
+        runtime,
+        async () => true,
+      ),
+    ).rejects.toThrow("Couldn't stop 2 chats.");
   });
 
   it("transfers attachment bytes instead of another webview's blob URL", () => {

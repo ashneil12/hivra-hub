@@ -4,6 +4,14 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { IS_MAC } from "../../platform/tauri/platform";
 import type { Session } from "../../features/sessions/model/session";
 import { findMono } from "../../features/monos/model/mono";
+import { stopHarnessTask } from "../../integrations/harness/core/registry";
+import {
+  delegationActions,
+  delegationRows,
+  noteStopFailures,
+} from "../../features/monos/model/delegationStore";
+import { isOpenDelegation } from "../../features/monos/model/delegations";
+import { delegationOf } from "../../features/monos/model/delegationView";
 import {
   loadMonoMenuBarIcon,
   subscribeMonoMenuBarIcon,
@@ -21,6 +29,34 @@ import {
 type Host = Omit<FloatingMonoHost, "create"> & {
   /** Add a Mono to the roster and return its id. */
   create(): string;
+};
+
+/**
+ * The floating chat's Stops, done here by the window that runs the Mono: the
+ * same calls the main chat's workflow row, "Waiting on N" line and batch rows
+ * make, so a Stop from either window ends the same work the same way.
+ */
+export const floatingMonoOwnerStops: Required<
+  Pick<FloatingMonoHost, "stopWorkflow" | "stopTree" | "stopRow">
+> = {
+  stopWorkflow: (sessionId, harness, taskId) =>
+    stopHarnessTask(harness, sessionId, taskId),
+  stopTree: async (sessionId) => {
+    const actions = delegationActions();
+    if (!actions) throw new Error("Stopping delegated work is unavailable.");
+    return actions.stopTree(sessionId);
+  },
+  stopRow: async (sessionId, childSession) => {
+    const actions = delegationActions();
+    if (!actions) throw new Error("Stopping delegated work is unavailable.");
+    const row = delegationOf(childSession, delegationRows());
+    // Only work this Mono's own chat handed out, and only while it runs.
+    if (!row || row.ownerSession !== sessionId || !isOpenDelegation(row))
+      throw new Error("That task isn't running any more.");
+    const result = await actions.stopRow(row);
+    noteStopFailures(row.ownerSession, result.stopFailed);
+    return result;
+  },
 };
 
 /** The floating webview never boots providers or persists the live transcript. */
@@ -86,7 +122,7 @@ export function useFloatingMono(
             try {
               const session = await deliverFloatingMonoRequest(
                 request,
-                { ...current.current.host, create },
+                { ...floatingMonoOwnerStops, ...current.current.host, create },
                 () =>
                   disposed
                     ? Promise.resolve(false)

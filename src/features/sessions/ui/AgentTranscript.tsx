@@ -294,6 +294,11 @@ type Props = {
   managed?: boolean;
   /** Saved session that omitted tool output is fetched from. */
   sessionId?: string;
+  /**
+   * Stops a workflow run, for a view of a session another window runs (the
+   * floating chat). Without it, only the window running the session stops one.
+   */
+  onStopWorkflow?: (taskId: string) => void;
 };
 
 function AgentTranscriptComponent({
@@ -352,16 +357,19 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
   sessionId,
+  onStopWorkflow: stopWorkflowElsewhere,
 }: Props) {
   const isMonoChat = !!agentMascot;
-  // One Stop for a whole workflow run. Only where this window runs the
-  // session's harness itself; a remote or detached view has no session id.
+  // One Stop for a whole workflow run. Where this window runs the session's
+  // harness itself; a remote view has no session id, and a detached one
+  // (the floating chat) hands the Stop to the window that runs it.
   const onStopWorkflow = useMemo(
     () =>
-      harness && sessionId
+      stopWorkflowElsewhere ??
+      (harness && sessionId
         ? (taskId: string) => void stopHarnessTask(harness, sessionId, taskId)
-        : undefined,
-    [harness, sessionId],
+        : undefined),
+    [stopWorkflowElsewhere, harness, sessionId],
   );
   const blocks = useMemo(() => {
     // A Mono's reaction sits on the message it answers, not in a bubble.

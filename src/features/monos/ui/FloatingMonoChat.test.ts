@@ -26,9 +26,11 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
   AgentTranscript: ({
     blocks,
     onOpenArtifact,
+    onStopWorkflow,
   }: {
     blocks: { text: string }[];
     onOpenArtifact: (id: string) => void;
+    onStopWorkflow?: (taskId: string) => void;
   }) =>
     createElement(
       "div",
@@ -39,6 +41,14 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
         { "data-open-doc": "", onClick: () => onOpenArtifact("doc-1") },
         "Open document",
       ),
+      // A workflow run's row, which draws its Stop only when it is given one.
+      onStopWorkflow
+        ? createElement(
+            "button",
+            { "data-workflow-stop": "", onClick: () => onStopWorkflow("wtask") },
+            "Stop",
+          )
+        : null,
     ),
 }));
 vi.mock("../hooks/useMonoTranscript", () => ({
@@ -328,4 +338,69 @@ it("reads a Mono's document in a sheet over the chat and slides it away", async 
   act(() => vi.runAllTimers());
   expect(container.querySelector("[data-artifact-sheet]")).toBeNull();
   vi.useRealTimers();
+});
+
+it("has the main chat's Stops: the run's, and Stop all while work is out, both done by the Mono's window", async () => {
+  native.invoke.mockImplementation(async (command) => {
+    if (command === "mono_chat_state") return snapshot(0);
+    if (command === "delegations_recent")
+      return [
+        {
+          id: "d-1",
+          ownerSession: "chat-a",
+          childSession: "worker-1",
+          state: "running",
+          delivery: "pending",
+          title: "Fix the save bug",
+        },
+      ];
+    return undefined;
+  });
+  await render();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  const waiting = container.querySelector('[data-delegation-waiting="1"]')!;
+  expect(waiting.textContent).toContain("Waiting on 1");
+  await act(async () => {
+    (
+      waiting.querySelector("[data-delegation-stop-all]") as HTMLButtonElement
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(native.invoke).toHaveBeenCalledWith("mono_chat_action", {
+    monoId: "first",
+    action: { kind: "stopAll" },
+  });
+  act(() =>
+    (
+      container.querySelector("[data-workflow-stop]") as HTMLButtonElement
+    ).click(),
+  );
+  expect(native.invoke).toHaveBeenCalledWith("mono_chat_action", {
+    monoId: "first",
+    action: { kind: "stopWorkflow", taskId: "wtask" },
+  });
+});
+
+it("shows no Stop all when nothing it delegated is still out", async () => {
+  native.invoke.mockImplementation(async (command) => {
+    if (command === "mono_chat_state") return snapshot(0);
+    if (command === "delegations_recent")
+      return [
+        {
+          id: "d-1",
+          ownerSession: "chat-a",
+          childSession: "worker-1",
+          state: "completed",
+          delivery: "delivered",
+        },
+      ];
+    return undefined;
+  });
+  await render();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(container.querySelector("[data-delegation-waiting]")).toBeNull();
 });

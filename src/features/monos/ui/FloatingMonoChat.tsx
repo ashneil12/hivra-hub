@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -27,6 +33,11 @@ import {
   type FloatingMonoEntry,
   type FloatingMonoView,
 } from "../model/floatingMono";
+import { useDelegationFeed } from "../hooks/useDelegationFeed";
+import { useDelegationPane } from "../hooks/useDelegationPane";
+import { setDelegationActions } from "../model/delegationStore";
+import type { StopTreeResult } from "../model/stopTree";
+import { DelegationWaitingLine } from "./DelegationNotices";
 import { MonoComposer } from "./MonoComposer";
 import { MonoStatusDot } from "./MonoRailMascot";
 import { MonoStatus } from "./MonoStatus";
@@ -49,6 +60,15 @@ const SURFACE =
  */
 const CARD =
   "body-glass relative my-1.5 mr-1.5 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] shadow-[0_0_0_100vmax_rgb(0_0_0/0.28)] [html.theme-light_&]:shadow-[0_0_0_100vmax_rgb(0_0_0/0.05)]";
+/**
+ * What a Stop sent to the window running the Mono reports back here: nothing.
+ * That window records what it couldn't stop; this one shows its error.
+ */
+const STOPPED_ELSEWHERE: StopTreeResult = {
+  stopped: [],
+  cancelled: [],
+  stopFailed: [],
+};
 
 export function FloatingMonoChat({ onShown }: { onShown: () => void }) {
   const [view, setView] = useState(EMPTY);
@@ -130,6 +150,31 @@ export function FloatingMonoChat({ onShown }: { onShown: () => void }) {
       }
     },
     [view.monoId],
+  );
+  const actionRef = useRef(action);
+  actionRef.current = action;
+  // The delegation tree as the main chat reads it: the same rows, so "Waiting
+  // on N" and each batch row's Stop show here exactly when they show there.
+  useDelegationFeed();
+  // Their Stops are done by the window that runs the Mono, as its own are.
+  useLayoutEffect(
+    () =>
+      setDelegationActions({
+        openOwner: () => void actionRef.current({ kind: "reveal" }),
+        openChild: () => void actionRef.current({ kind: "reveal" }),
+        stopTree: async () => {
+          await actionRef.current({ kind: "stopAll" });
+          return STOPPED_ELSEWHERE;
+        },
+        stopRow: async (row) => {
+          await actionRef.current({
+            kind: "stopRow",
+            childSession: row.childSession,
+          });
+          return STOPPED_ELSEWHERE;
+        },
+      }),
+    [],
   );
   const switchTo = useCallback(
     async (to: string) => {
@@ -383,6 +428,11 @@ function FloatingConversation({
   onOpenArtifact: (id: string) => void;
 }) {
   const transcript = useMonoTranscript(session, true);
+  const delegationPane = useDelegationPane(session.id, true);
+  const stopWorkflow = useCallback(
+    (taskId: string) => void action({ kind: "stopWorkflow", taskId }),
+    [action],
+  );
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
@@ -440,6 +490,7 @@ function FloatingConversation({
           modelSettings={session.modelSettings}
           pendingQuestion={!!session.pendingQuestion}
           backgroundTasks={session.backgroundTasks}
+          onStopWorkflow={stopWorkflow}
           onApproval={(requestId, decision) =>
             void action({ kind: "approval", requestId, decision })
           }
@@ -484,6 +535,13 @@ function FloatingConversation({
         </div>
       ) : null}
       <div className="shrink-0 px-1 pb-1">
+        {delegationPane?.kind === "lead" ? (
+          <DelegationWaitingLine
+            count={delegationPane.count}
+            failed={delegationPane.failed}
+            onStopAll={delegationPane.onStopAll}
+          />
+        ) : null}
         <MonoComposer
           sessionId={`floating:${session.id}`}
           name={mono.name}

@@ -32,7 +32,7 @@ export function useDelegationFeed(
       reading = true;
       try {
         const rows = await recent(Date.now() - CHILD_CHATS_RECENT_MS);
-        if (live) setDelegationRows(rows);
+        if (live) setDelegationRows(Array.isArray(rows) ? rows : []);
       } catch (error) {
         console.error("Could not read the delegation rows", error);
       } finally {

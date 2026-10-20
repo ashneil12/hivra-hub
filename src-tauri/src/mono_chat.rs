@@ -812,6 +812,27 @@ pub fn mono_chat_reply(
     Ok(())
 }
 
+/// What a floating chat may ask the window running its Mono to do (floatingMono.ts `FloatingMonoAction`). The three
+/// Stops beside `stop` are the main chat's: a workflow run's row, "Waiting on N" · Stop all, and a batch row's Stop.
+fn is_chat_action(kind: &str) -> bool {
+    matches!(
+        kind,
+        "submit"
+            | "create"
+            | "stop"
+            | "stopWorkflow"
+            | "stopAll"
+            | "stopRow"
+            | "approval"
+            | "question"
+            | "questionInteraction"
+            | "reveal"
+            | "openFile"
+            | "openArtifact"
+            | "resume"
+    )
+}
+
 #[tauri::command]
 pub async fn mono_chat_action(
     app: AppHandle,
@@ -826,19 +847,7 @@ pub async fn mono_chat_action(
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !matches!(
-        kind,
-        "submit"
-            | "create"
-            | "stop"
-            | "approval"
-            | "question"
-            | "questionInteraction"
-            | "reveal"
-            | "openFile"
-            | "openArtifact"
-            | "resume"
-    ) {
+    if !is_chat_action(kind) {
         return Err("Unknown chat action.".into());
     }
     if action.to_string().len() > 32 * 1024 * 1024 {
@@ -944,6 +953,15 @@ mod tests {
             .0
             .iter()
             .any(|pixel| pixel[3] == 0));
+    }
+
+    #[test]
+    fn a_floating_chat_can_send_every_stop_the_main_chat_has() {
+        for kind in ["stop", "stopWorkflow", "stopAll", "stopRow"] {
+            assert!(is_chat_action(kind), "{kind}");
+        }
+        assert!(!is_chat_action("stopEverything"));
+        assert!(!is_chat_action(""));
     }
 
     #[test]
