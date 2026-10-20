@@ -3,9 +3,11 @@
 // cuts the Lead's report to leadership short.
 import { describe, expect, it } from "vitest";
 import { canDispatchQueuedHead, canSteerQueuedHead, queuedHead } from "../../sessions/model/messageQueue";
+import { sanitizeSessionForPersist } from "../../sessions/data/sessionStore";
 import { newSession, type Block, type QueuedMessage, type Session } from "../../sessions/model/session";
 import type { Delegation } from "./delegations";
 import { FOLLOW_GRACE_MS, followStep, REPORT_REQUEST_PREFIX, reportRequestId } from "./followedBriefs";
+import { claimsDone, stillRunningNote, workingLine, workingOn } from "./leadFlow";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
   completionMessage,
@@ -268,5 +270,81 @@ describe("a Lead with two workers out still chats with Ash", () => {
     chat = enqueueMonoMessage(chat, ash("ash-1", "How's it going?"));
     expect(queuedHead(chat)?.id).toBe("ash-1");
     expect(canSteerQueuedHead(chat)).toBe(true);
+  });
+});
+
+describe("says it's done while delegated work is still out (borrowed from Block's Buzz)", () => {
+  it("knows a claim that the job is finished from an update that says some of it still runs", () => {
+    for (const text of [
+      "Done. API and UI are shipped.",
+      "All done: the room ships.",
+      "Everything is finished and merged.",
+      "The feature is complete.",
+      "That's done, nothing left to do.",
+      "**Shipped**: the fix is live.",
+    ])
+      expect(claimsDone(text), text).toBe(true);
+    for (const text of [
+      "API is done; UI is still running.",
+      "Started two workers. I'll report back once they finish.",
+      "1 of 2 back: the API is done.",
+      "Waiting on the UI worker.",
+      "Not done yet.",
+      "Here's the plan for the API and UI.",
+    ])
+      expect(claimsDone(text), text).toBe(false);
+  });
+
+  const open = (id: string, title: string, extra: Partial<Delegation> = {}) =>
+    leadBrief({ id, title, ownerSession: "lead-chat", childSession: `app-lead-chat-${id}`, requestId: id, follow: null, parentId: "t-1", ...extra });
+  const rows = [open("w-api", "API"), open("w-ui", "UI"), open("w-old", "Old", { state: "completed" }), open("w-cos", "Not this chat's", { ownerSession: "cos-chat" })];
+
+  it("notes what still runs, once per task and once per brief, and never while the Lead works", () => {
+    const blocks = [user("[MonoCode brief from Chief of Staff]", "app-cos-chat-b1"), said("All done: API and UI shipped.")];
+    expect(stillRunningNote(lead({ blocks, busy: true }), rows)).toBeUndefined();
+    const note = stillRunningNote(lead({ blocks }), rows, { id: "t-1", title: "Ship the API and UI" })!;
+    expect(note).toMatchObject({
+      role: "system",
+      notice: "still-running",
+      text: 'Still running: 2 (API, UI). "Ship the API and UI" stays open until they report back.',
+      stillRunning: { taskIds: ["w-api", "w-ui"], briefId: "t-1" },
+    });
+    // Once it is there, the same claim again (or another one for the brief) adds nothing.
+    const noted = lead({ blocks: [...blocks, note] });
+    expect(stillRunningNote(noted, rows, { id: "t-1", title: "Ship" })).toBeUndefined();
+    const again = lead({ blocks: [...blocks, note, user("Ash: and?"), said("Everything is done.")] });
+    expect(stillRunningNote(again, rows, { id: "t-1", title: "Ship" })).toBeUndefined();
+    // Without a brief (Ash talking to the Lead): once per task; a new task gets its own note.
+    expect(stillRunningNote(again, rows)).toBeUndefined();
+    const more = [...rows, open("w-docs", "Docs")];
+    expect(stillRunningNote(again, more)?.text).toBe("Still running: 3 (API, UI, Docs). Their reports come back here when they finish.");
+    // Nothing out, or a reply that says what still runs: no note.
+    expect(stillRunningNote(lead({ blocks }), [rows[2], rows[3]])).toBeUndefined();
+    expect(stillRunningNote(lead({ blocks: [blocks[0], said("API is done; UI is still running.")] }), rows)).toBeUndefined();
+  });
+
+  it("keeps the brief open: a Lead that says it's done waits for its workers before its report goes", () => {
+    const brief = leadBrief();
+    const api = rows[0];
+    const blocks = [user(brief.brief!, brief.requestId), said("All done: API and UI shipped.")];
+    expect(followStep(brief, { chat: lead({ blocks }), children: [brief, api], now: 0 })).toEqual({ kind: "wait", why: "workers" });
+  });
+
+  it("the note survives a save, so a restart never adds it again", () => {
+    const note = stillRunningNote(lead({ blocks: [user("go"), said("Done.")] }), rows, { id: "t-1", title: "Ship" })!;
+    const saved = sanitizeSessionForPersist(lead({ blocks: [user("go"), said("Done."), note] }));
+    expect(saved.blocks.at(-1)).toMatchObject({ notice: "still-running", stillRunning: { taskIds: ["w-api", "w-ui"], briefId: "t-1" } });
+  });
+});
+
+describe("the Lead's chat shows what is out while it talks", () => {
+  it("reads \"2 working: API, UI\" and who is asking, oldest first", () => {
+    const row = (id: string, title: string, state: Delegation["state"], createdAt: number) =>
+      leadBrief({ id, title, state, createdAt, ownerSession: "lead-chat", follow: null });
+    const rows = [row("b", "UI", "running", 2), row("a", "API", "running", 1), row("c", "Docs", "question", 3), row("d", "Old", "completed", 0)];
+    expect(workingLine(workingOn("lead-chat", rows))).toBe("2 working: API, UI · 1 asking: Docs");
+    expect(workingLine(workingOn("other", rows))).toBeUndefined();
+    const many = ["A", "B", "C", "D", "E"].map((title, index) => row(title, title, "running", index));
+    expect(workingLine(workingOn("lead-chat", many))).toBe("5 working: A, B, C +2");
   });
 });

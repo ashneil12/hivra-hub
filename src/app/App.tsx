@@ -9267,6 +9267,15 @@ function Workspace({
     sessionsRef,
     // A Lead asked for its report on its own (a message steered into its last turn on the brief): like a report.
     ask: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+    // "Still running: N" when a Lead says it's done with work it delegated still out (monos/model/leadFlow.ts).
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
     onLeadReport: ({ row, receipt, report, answer }) =>
       row.project && row.ownerMono
         ? postLeadReport({
