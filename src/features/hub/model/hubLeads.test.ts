@@ -126,7 +126,7 @@ describe("the project Leads", () => {
       "`ash_dump`, in Ash's words verbatim",
       "Verify your own work: tests, an independent check, proof",
       'Ask Ash for "Looks right" only on very critical work',
-      "ASH_MONO_ID=vg-game-lead, ASH_ROLE=lead",
+      "ASH_MONO_ID=vg-game-lead, ASH_ROLE=lead, ASH_PROJECT=vg-game",
       "working in /Users/ash/Projects/boxin game?/vg-game",
     ])
       expect(soul).toContain(phrase);
@@ -193,6 +193,15 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
       isLead: (id) => !!leadFor(id),
     });
     expect(JSON.parse(adopted[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead", ASH_CHAT: "s-harness-chat" });
+    // with the app's own lookups (hubData.ts) it works on the project it now leads, `hub`, never the old `ash`; so do its workers
+    const appLookups = {
+      monoOf: (id: string) => listMonos().find((m) => m.sessionId === id),
+      habitRunMono: () => undefined,
+      isLead: (id: string) => !!leadFor(id),
+      leadProject: (id: string) => leadFor(id)?.projectId,
+    };
+    for (const chat of ["s-harness-chat", "app-s-harness-chat-r1"])
+      expect(JSON.parse(hubMcpArgs(chat, { ashOs: { command: "x" }, cli: null }, appLookups)[1]).mcpServers["ash-os"].env.ASH_PROJECT).toBe("hub");
     await completeLeadAdoption("ash-lead", async () => {});
     expect(unregister).toHaveBeenCalledTimes(1);
     // once its soul is written: a second launch changes nothing and makes no second Lead

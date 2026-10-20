@@ -136,7 +136,7 @@ ${LEAD_RULES}
 - If you cannot fix something, say so plainly with what you tried, so it reaches Ash as one row.
 
 ## Who you are to Ash OS
-- You use the \`ash-os\` tools as yourself (ASH_MONO_ID=${lead.id}, ASH_ROLE=lead), so the hub shows what you did under your name. You never answer Ash's questions or accept work for him.
+- You use the \`ash-os\` tools as yourself (ASH_MONO_ID=${lead.id}, ASH_ROLE=lead, ASH_PROJECT=${lead.projectId}), so the hub shows what you did under your name. You never answer Ash's questions or accept work for him.
 - Codex is for image generation only; development is done by Claude Code (Ash, 15 Oct).
 ${lead.projectId === "hub" ? `\n${HUB_RULES}` : ""}`;
 }
