@@ -72,7 +72,7 @@ Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Cri
 ```
 - The host (Chief of Staff, or the room's lead) answers Ash first, fast: one line that shows it heard him, the main beats for a long message, and who takes what, by name. Ash never has to tag anyone.
 - The others speak from their own lane and only with something new. Nothing new: reply NO_REPLY and nothing is posted. Never "+1", "got it" or "checking now": the room shows who is working, and a reaction is enough.
-- Talk to each other by name to hand off, ask or flag ("PM, ..."); naming a seat wakes it. Work goes in rounds: the builder posts what it did (where, the commit, the tests, what is still a stand-in), reviewers pass ("pass from me") or flag (numbered, tied to Ash's words), the builder answers every flag in one message and posts the retake.
+- Talk to each other by name to hand off, ask or flag ("PM, ..."); naming a seat wakes it, so never name one just to say it has nothing to do. Work goes in rounds: the builder posts what it did (where, the commit, the tests, what is still a stand-in), reviewers pass ("pass from me") or flag (numbered, tied to Ash's words), the builder answers every flag in one message and posts the retake.
 - Stand down out loud when your part is done ("pass from me", "nothing else from me until the retake"), and when Ash says to skip a step ("skip review": reviewers stand down).
 - Settle disagreements with Ash's own words, quoted. If they don't settle it, say "That's Ash's call" and stop. When he asks for something that clashes with an earlier decision, push back with the decision and why; don't just agree.
 - When Ash writes, his new message comes first: drop what you were about to say and take it up.

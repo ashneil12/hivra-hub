@@ -400,7 +400,7 @@ function task(input: TurnInput): string {
     case "answer": {
       const several = input.batch && input.batch > 1 ? ` (${input.batch} messages; answer them together)` : "";
       return hosting
-        ? `Ash just wrote${several}. You host this room, so you answer first, now. Start with one line that shows you heard him. For a long message, give the main beats you heard; then say who takes what, by name ("PM, ..."), which wakes that seat. If what he asks clashes with something already decided, say so with the decision. A short or simple message gets a short answer and wakes nobody.`
+        ? `Ash just wrote${several}. You host this room, so you answer first, now. Start with one line that shows you heard him. For a long message, give the main beats you heard; then say who takes what, by name ("PM, ..."), which wakes that seat; leave out seats with nothing to do. If what he asks clashes with something already decided, say so with the decision. A short or simple message gets a short answer and wakes nobody.`
         : `Ash just wrote to you${several}. Answer him first, from your lane. Name a seat ("CoS, ...") only if it should act.`;
     }
     case "chime":

@@ -72,7 +72,13 @@ const MESSAGES_KEY = "monocode:verify-live-messages";
  * One of Ash's messages the bench sends mid-run (the stub's `ash-hub-verify-messages`, scripts/hub-verify-live.mjs):
  * typed into that Mono's chat the way Ash types, so it takes his path (it goes first, and steers a running turn).
  */
-export type VerifyMessage = { id: string; monoId: string; prompt: string };
+export type VerifyMessage = {
+  id: string;
+  monoId: string;
+  prompt: string;
+  /** Instead of a Mono's chat: a group room (its id, or a project id for that project's Leadership team). */
+  room?: string;
+};
 
 /** The run whose messages this window sends: a dev copy's plan only (the daily app never has one). */
 export function verifyRun(identity: AppIdentity | null = appIdentity()): string | null {
@@ -99,16 +105,16 @@ export function unsentVerifyMessages(
   const sent = sentMessages(runId, storage);
   return list.flatMap((entry: unknown) => {
     const m = entry as Partial<VerifyMessage> | null;
+    const room = typeof m?.room === "string" && /^[A-Za-z0-9:_-]{1,200}$/.test(m.room) ? m.room : undefined;
     return m &&
       typeof m.id === "string" &&
       /^[A-Za-z0-9_-]{1,64}$/.test(m.id) &&
-      typeof m.monoId === "string" &&
-      m.monoId &&
+      ((typeof m.monoId === "string" && m.monoId) || room) &&
       typeof m.prompt === "string" &&
       m.prompt.trim() &&
       m.prompt.length <= 20_000 &&
       !sent.has(m.id)
-      ? [{ id: m.id, monoId: m.monoId, prompt: m.prompt }]
+      ? [{ id: m.id, monoId: typeof m.monoId === "string" ? m.monoId : "", prompt: m.prompt, ...(room ? { room } : {}) }]
       : [];
   });
 }

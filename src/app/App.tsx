@@ -1,4 +1,4 @@
-import { useRoomRunner } from "./hooks/useRoomRunner";
+import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
@@ -8948,6 +8948,8 @@ function Workspace({
     return watchVerifyMessages(runId, {
       list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
       send: async (message) => {
+        // Into a group room, as Ash writes there (hub/model/roomConductor.ts).
+        if (message.room) return sendVerifyRoomMessage(message.room, message.prompt);
         await onOpenMono(message.monoId);
         const sessionId = monoViewIdRef.current;
         if (sessionId) onSubmit(sessionId, message.prompt);

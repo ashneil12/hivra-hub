@@ -117,6 +117,23 @@ describe("Ash's messages the bench sends mid-run", () => {
     expect(unsentVerifyMessages("run-9", { messages: "x" }, storage)).toEqual([]);
   });
 
+  it("can be for a group room instead of a Mono's chat (a room id or a project id), never both missing", () => {
+    const storage = new Map<string, string>();
+    const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v) };
+    const rooms = {
+      messages: [
+        { id: "room-ash-1", room: "verify", prompt: "VERIFY-ROOM-ASH-1: plan round 1" },
+        { id: "room-ash-2", room: "verify:leadership", prompt: "is the label in?" },
+        { id: "nowhere", prompt: "lost" },
+        { id: "bad-room", room: "verify leadership; drop", prompt: "x" },
+      ],
+    };
+    expect(unsentVerifyMessages("run-12", rooms, store)).toEqual([
+      { id: "room-ash-1", monoId: "", room: "verify", prompt: "VERIFY-ROOM-ASH-1: plan round 1" },
+      { id: "room-ash-2", monoId: "", room: "verify:leadership", prompt: "is the label in?" },
+    ]);
+  });
+
   it("are looked for every second and sent in order, one pass at a time", async () => {
     vi.useFakeTimers();
     try {
