@@ -100,6 +100,7 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import {
   AUTOPILOT_FIELDS,
@@ -226,6 +227,8 @@ export type AgentAppHost = {
   shipStatus?(): unknown;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat only. */
   tasks?: AgentAppTasksHost;
+  /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat only. */
+  prs?: AgentAppPrsHost;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -287,6 +290,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
   ...AUTOPILOT_FIELDS,
+  ...PR_FIELDS,
 ]);
 
 /**
@@ -1112,6 +1116,7 @@ export async function handleAgentApp(
   checkerLane(source, action, host);
   if (action.startsWith("tasks."))
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+  if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))

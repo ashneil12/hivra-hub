@@ -1,0 +1,442 @@
+{
+ "data": {
+  "viewer": {
+   "login": "ashneil12"
+  },
+  "rateLimit": {
+   "remaining": 4941,
+   "resetAt": "2026-10-20T00:38:26Z",
+   "cost": 1
+  },
+  "repository": {
+   "nameWithOwner": "cli/cli",
+   "pullRequest": {
+    "number": 14752,
+    "url": "https://github.com/cli/cli/pull/14752",
+    "title": "Refreshable tokens: build-gated debug overrides for testing token expiry",
+    "state": "OPEN",
+    "isDraft": false,
+    "merged": false,
+    "mergedAt": null,
+    "closedAt": null,
+    "mergeCommit": null,
+    "headRefOid": "d5d4d81bbd0c5868f614d9cf15168d0d515b2b3e",
+    "headRefName": "babakks/refresh-token-test-env",
+    "baseRefName": "babakks/refresh-token-relative-expiry",
+    "headRepository": {
+     "nameWithOwner": "cli/cli"
+    },
+    "mergeable": "UNKNOWN",
+    "reviewDecision": "APPROVED",
+    "author": {
+     "login": "babakks"
+    },
+    "commits": {
+     "nodes": [
+      {
+       "commit": {
+        "oid": "d5d4d81bbd0c5868f614d9cf15168d0d515b2b3e",
+        "statusCheckRollup": {
+         "state": "SUCCESS",
+         "contexts": {
+          "totalCount": 7,
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "label-external",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118161955532",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-from-default-branch",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118163557812",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "check-requirements / check-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118162071469",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "check-requirements / close-unmet-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118163581771",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-unmet-requirements",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118161564910",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "close-no-help-wanted",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118161935221",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ready-for-review",
+            "status": "COMPLETED",
+            "conclusion": "SKIPPED",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/39280601167/job/118161983371",
+            "isRequired": false,
+            "checkSuite": {
+             "workflowRun": {
+              "workflow": {
+               "name": "PR Triaging"
+              }
+             }
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    "comments": {
+     "totalCount": 0,
+     "nodes": []
+    },
+    "reviews": {
+     "totalCount": 9,
+     "nodes": [
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTDO4aA",
+       "author": {
+        "login": "copilot-pull-request-reviewer"
+       },
+       "body": "<!-- ccr-overview-v2 -->\n\n### 🟡 Changes recommended\n\nDebug-only behavior needs HTTP-client logging regression tests and a tagged CI test invocation.\n\n<details o",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T14:53:27Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5573425256"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTDUfCw",
+       "author": {
+        "login": "babakks"
+       },
+       "body": "",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:00:08Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5573517067"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTDUhBw",
+       "author": {
+        "login": "babakks"
+       },
+       "body": "",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:00:10Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5573517575"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTDW24g",
+       "author": {
+        "login": "williammartin"
+       },
+       "body": "Hey @babakks,\n\nSorry, I have to leave as my day is over. This is a slightly sloppy review starting point 😅\n\nI feel 3/10 strongly about the testing comments. How",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:03:07Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5573555938"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTDYCQw",
+       "author": {
+        "login": "williammartin"
+       },
+       "body": "",
+       "state": "APPROVED",
+       "submittedAt": "2026-10-19T15:04:37Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5573575235"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTD5wTA",
+       "author": {
+        "login": "babakks"
+       },
+       "body": "",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:46:39Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5574127692"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTD5xeg",
+       "author": {
+        "login": "babakks"
+       },
+       "body": "",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:46:41Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5574127994"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTD5ysw",
+       "author": {
+        "login": "babakks"
+       },
+       "body": "",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:46:43Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5574128307"
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABTD9OKg",
+       "author": {
+        "login": "copilot-pull-request-reviewer"
+       },
+       "body": "<!-- ccr-overview-v2 -->\n\n### 🟢 Approval recommended\n\nStatic review found no blocking defects in the build gating, refresh integration, or script changes.\n\n**No",
+       "state": "COMMENTED",
+       "submittedAt": "2026-10-19T15:51:40Z",
+       "lastEditedAt": null,
+       "url": "https://github.com/cli/cli/pull/14752#pullrequestreview-5574184490"
+      }
+     ]
+    },
+    "reviewThreads": {
+     "totalCount": 5,
+     "nodes": [
+      {
+       "id": "PRRT_kwDODKw3uc6t-QaS",
+       "path": "internal/debug/config_enabled_test.go",
+       "isResolved": true,
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATYkRA",
+          "author": {
+           "login": "copilot-pull-request-reviewer"
+          },
+          "body": "🛑 Requirement: Exercise the debug-only tests in CI\n\nThis build constraint excludes the override and invalid-input tests from the existing CI invocation, which u",
+          "createdAt": "2026-10-19T14:53:26Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315292740",
+          "path": "internal/debug/config_enabled_test.go",
+          "isMinimized": false
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATdFSQ",
+          "author": {
+           "login": "babakks"
+          },
+          "body": "Not changing this one. The `ghdebug` build is a developer tool for testing token expiry, used rarely, and it never ships. Running a second tagged test pass on e",
+          "createdAt": "2026-10-19T15:00:08Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315366729",
+          "path": "internal/debug/config_enabled_test.go",
+          "isMinimized": false
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc6t-Qbi",
+       "path": "pkg/cmd/factory/default.go",
+       "isResolved": true,
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATYkxA",
+          "author": {
+           "login": "copilot-pull-request-reviewer"
+          },
+          "body": "🛑 Requirement: Test the verbose-refresh override through the HTTP client\n\nTestTokenRefresherHttpClient only checks default headline-only logging. The new debug-",
+          "createdAt": "2026-10-19T14:53:27Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315292868",
+          "path": "pkg/cmd/factory/default.go",
+          "isMinimized": false
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATdGzQ",
+          "author": {
+           "login": "babakks"
+          },
+          "body": "Not changing this one either. Without the CI step from the other thread, a `ghdebug` tagged test here would only run when someone opts in, so it would mostly go",
+          "createdAt": "2026-10-19T15:00:10Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315367117",
+          "path": "pkg/cmd/factory/default.go",
+          "isMinimized": false
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc6t-gef",
+       "path": "Makefile",
+       "isResolved": true,
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATe-gQ",
+          "author": {
+           "login": "williammartin"
+          },
+          "body": "**Change Requested**\n\nA plain `make` needs to restore an untagged binary after `make debug`. It currently leaves `bin/gh` as a debug build because `script/build",
+          "createdAt": "2026-10-19T15:03:07Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315397761",
+          "path": "Makefile",
+          "isMinimized": false
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABAT7ukQ",
+          "author": {
+           "login": "babakks"
+          },
+          "body": "Good catch, thanks! Fixed in 3acdfcdcb. `script/build` now reads the build tags recorded in the existing `bin/gh` and compares them with `GO_BUILDTAGS`, so it r",
+          "createdAt": "2026-10-19T15:46:39Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315868817",
+          "path": "Makefile",
+          "isMinimized": false
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc6t-gem",
+       "path": "internal/debug/config_enabled_test.go",
+       "isResolved": false,
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATe-iw",
+          "author": {
+           "login": "williammartin"
+          },
+          "body": "**Suggestion**\n\nNon blocking, and I feel 3/10 strongly about this. Could we run the `ghdebug` variant in CI so the tagged implementation cannot silently stop co",
+          "createdAt": "2026-10-19T15:03:07Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315397771",
+          "path": "internal/debug/config_enabled_test.go",
+          "isMinimized": false
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABAT7vkg",
+          "author": {
+           "login": "babakks"
+          },
+          "body": "Good point, thanks! :pray: I took a slightly different route that makes a tagged test run unnecessary.\n\nIn 8f43becdf I moved the environment parsing out of `con",
+          "createdAt": "2026-10-19T15:46:41Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315869074",
+          "path": "internal/debug/config_enabled_test.go",
+          "isMinimized": false
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc6t-ges",
+       "path": "pkg/cmd/factory/default.go",
+       "isResolved": true,
+       "comments": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABATe-kw",
+          "author": {
+           "login": "williammartin"
+          },
+          "body": "**Suggestion**\n\nNon blocking, and I feel 3/10 strongly about this. The new tests cover parsing, but not whether this client or the expiry consumers apply each o",
+          "createdAt": "2026-10-19T15:03:07Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315397779",
+          "path": "pkg/cmd/factory/default.go",
+          "isMinimized": false
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABAT7wqw",
+          "author": {
+           "login": "babakks"
+          },
+          "body": "Thanks! Same reasoning as my reply to Copilot here: these paths only matter in debug builds, and the release default (headline only logging) is already covered ",
+          "createdAt": "2026-10-19T15:46:43Z",
+          "lastEditedAt": null,
+          "url": "https://github.com/cli/cli/pull/14752#discussion_r4315869355",
+          "path": "pkg/cmd/factory/default.go",
+          "isMinimized": false
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

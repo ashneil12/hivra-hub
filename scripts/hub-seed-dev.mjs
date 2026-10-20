@@ -139,6 +139,10 @@ export function scrub(db) {
     // dev copy, and his armed resumes would resume its copies of his chats. The log is history and stays.
     wipe("autopilotSwitches", "autopilot_switches");
     wipe("autopilotResumes", "autopilot_resumes");
+    // PR watches (src-tauri/src/pr_watch): a dev copy would otherwise poll Ash's pull requests, wake its copies of his
+    // Mono chats and make mc/pr-<n> worktrees in his real project checkouts.
+    wipe("prWatchWakes", "pr_watch_wakes");
+    wipe("prWatches", "pr_watches");
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");

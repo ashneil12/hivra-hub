@@ -63,7 +63,9 @@ A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOC
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
 made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
-only reaches that copy's own control port. A proof that needs ash-os tools in a dev copy can opt in to a stand-in that
+only reaches that copy's own control port. The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
+the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
+only) points it at a stand-in. A proof that needs ash-os tools in a dev copy can opt in to a stand-in that
 only talks to that slot's stub: start it with `VITE_MONOCODE_DEV_ASH_OS` set to the entry
 `node scripts/hub-stub-ash-os-mcp.mjs --entry --url <stub url> --token-file <slot token file>` prints. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
@@ -198,7 +200,7 @@ daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a D
   `~/.monocode-hub-dev/slots/<slot>/`, never the live key.
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
-  automations, reminders, orchestration rows, delegation rows and every `provider_session_id` are cleared. It refuses the daily folder,
+  automations, reminders, orchestration rows, delegation rows, PR watches and every `provider_session_id` are cleared. It refuses the daily folder,
   a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
   newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
 - One copy per slot: starting a slot that is already running says so and exits 75.

@@ -39,6 +39,12 @@ import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
+import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
+import {
+  tauriPrWatches,
+  waitingActivity,
+  type PrWatchTracker,
+} from "../features/pr-watch/model/prWatches";
 import { useHubChecks } from "./hooks/useHubChecks";
 import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
@@ -1868,6 +1874,8 @@ function Workspace({
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
+  const prWatchesRef = useRef<PrWatchTracker | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -9150,6 +9158,16 @@ function Workspace({
     quitting: isAppQuitting,
   });
   delegationsRef.current = delegations;
+  const prWatches = usePrWatches({
+    sessionsRef,
+    queueWake: (monoId, message) =>
+      queueMonoSessionCompletionRef.current(monoId, message),
+  });
+  prWatchesRef.current = prWatches;
+  const prWatchVersion = useSyncExternalStore(
+    prWatches.subscribe,
+    prWatches.snapshot,
+  );
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {
@@ -9637,8 +9655,10 @@ function Workspace({
                   : {}),
               },
             );
-            if (accepted && head.monoSessionCompletion)
+            if (accepted && head.monoSessionCompletion) {
               delegationsRef.current?.delivered(head.id);
+              prWatchesRef.current?.delivered(head.id);
+            }
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
@@ -9720,6 +9740,7 @@ function Workspace({
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
       delegationsRef.current?.discarded(messageId);
+      prWatchesRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -12105,6 +12126,12 @@ function Workspace({
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
             }),
+            prs: {
+              add: (input) => tauriPrWatches.add(input),
+              remove: (input) => tauriPrWatches.remove(input),
+              list: (ownerSession) => tauriPrWatches.list(ownerSession),
+              hubProjectId: hubProjectIdFor,
+            },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
@@ -14250,7 +14277,15 @@ function Workspace({
       const session = mono.sessionId
         ? sessions.find((entry) => entry.id === mono.sessionId)
         : undefined;
-      if (session) states.set(mono.id, monoState(session));
+      if (session) {
+        // An idle Mono that is waiting on a pull request says so instead of nothing.
+        const state = monoState(session);
+        const waiting =
+          state.status === "idle"
+            ? waitingActivity(prWatches.watchingFor(session.id))
+            : undefined;
+        states.set(mono.id, waiting ? { ...state, activity: waiting } : state);
+      }
       const count = mono.sessionId
         ? monoReplies.counts.get(mono.sessionId)
         : undefined;
@@ -14258,7 +14293,7 @@ function Workspace({
     }
     return { states, unseen };
     // The roster is read through its snapshot.
-  }, [monosSnap, sessions, monoReplies.counts]);
+  }, [monosSnap, sessions, monoReplies.counts, prWatches, prWatchVersion]);
   const monoRail = useStableValue(monoRailState);
   const busyProjectPaths = useStableValue(
     promptableSessions.flatMap((session) =>

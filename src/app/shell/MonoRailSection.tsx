@@ -273,9 +273,10 @@ export function MonoRailSection({
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
             : "No projects yet";
+          // Idle shows nothing, unless it is waiting on something (a watched pull request's CI).
           const status =
             state.status === "idle"
-              ? waitingLabel(mono.sessionId ? waitingOn(mono.sessionId, delegationRows) : 0)
+              ? (state.activity ?? waitingLabel(mono.sessionId ? waitingOn(mono.sessionId, delegationRows) : 0))
               : (state.activity ?? MONO_STATUS_LABEL[state.status]);
           const children = childChats.get(mono.id) ?? [];
           return (
