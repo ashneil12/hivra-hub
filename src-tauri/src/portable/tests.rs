@@ -1083,6 +1083,70 @@ fn memory_never_lands_outside_its_folder_through_a_link() {
     );
 }
 
+/// Puts `bytes` at `relative` in a folder export and lists it in the manifest, as an export would.
+fn put_in_export(dest: &Path, relative: &str, bytes: &[u8]) {
+    fs::write(dest.join(relative), bytes).unwrap();
+    let manifest_path = dest.join(MANIFEST);
+    let mut manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let files = manifest["files"].as_array_mut().unwrap();
+    files.retain(|f| f["path"] != relative);
+    files.push(json!({"path": relative, "bytes": bytes.len(), "sha256": sha256_hex(bytes)}));
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+}
+
+#[test]
+fn a_memory_file_that_isnt_text_is_skipped_never_written_empty() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    export(&source, &request).unwrap();
+    // decisions.md comes back with the history; the file's own copy of it, and a new one, aren't UTF-8.
+    let not_text = [0xff, 0xfe, b'x', 0xc3];
+    put_in_export(&dest, "memory/ash/decisions.md", &not_text);
+    put_in_export(&dest, "memory/ash/blob.md", &not_text);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["ash".into()],
+                keep_both: true,
+                history: true,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()]);
+    assert_eq!(
+        fs::read_to_string(target.memory_root.join("ash/decisions.md")).unwrap(),
+        "- Keep it simple\n",
+        "the history's text is kept, not replaced with nothing"
+    );
+    assert!(!target.memory_root.join("ash/blob.md").exists());
+    for name in ["decisions.md", "blob.md"] {
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains(&format!("memory/ash/{name}")) && n.contains("text")),
+            "{:?}",
+            report.notes
+        );
+    }
+}
+
 #[test]
 fn a_newer_or_damaged_export_is_refused_and_a_v1_file_is_recognised() {
     let source_dir = TestDir::new("source");

@@ -2178,7 +2178,13 @@ fn import_memory(
                 ));
                 continue;
             }
-            let text = opened.read(path).unwrap_or_default();
+            // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
+            let Some(text) = opened.read(path) else {
+                report.notes.push(format!(
+                    "{path} isn't plain text (UTF-8), so it was skipped; nothing here changed for it."
+                ));
+                continue;
+            };
             match fs::read_to_string(&dest) {
                 Ok(local) if local == text => {}
                 Ok(_) if fresh => write_within(&inside, &dest, &text)?,
