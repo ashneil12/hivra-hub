@@ -23,6 +23,7 @@ import {
 } from "../../projects/model/projectMascots";
 import { removeMonoBackground } from "./monoBackground";
 import { lastTurnFailure } from "./turnFailure";
+import { recordMonoChat, rosterSaved } from "./monoHome";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
 export const MONO_COLORS = [
@@ -242,6 +243,8 @@ function saveRoster(roster: readonly Mono[]): void {
   } catch {
     return;
   }
+  // The durable copy: MONOS.json in the Monos' home (monoHome.ts).
+  rosterSaved(roster);
   window.dispatchEvent(new CustomEvent(MONOS_CHANGED));
 }
 
@@ -385,7 +388,10 @@ export function saveMonoSessionId(monoId: string, sessionId: string): void {
   // One conversation belongs to one Mono: never hand another Mono's chat over.
   const owner = monoForSession(sessionId);
   if (owner && owner.id !== monoId) return;
+  const before = findMono(monoId)?.sessionId;
   updateMono(monoId, (mono) => ({ ...mono, sessionId }));
+  // Its chat ids live in its own folder too (chats.json), so a WebView reset can't lose them.
+  if (before !== sessionId) void recordMonoChat(monoId, sessionId).catch(() => undefined);
 }
 
 export function saveMonoName(monoId: string, name: string): void {

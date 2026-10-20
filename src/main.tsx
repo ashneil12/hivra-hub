@@ -29,10 +29,16 @@ import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
+import { hydrateRosterFromHome, enableTauriHome } from "./features/monos/model/monoHome";
 import { DevRibbon } from "./app/shell/DevRibbon";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
 if (isTauri()) setModelKeyStore(tauriModelKeyStore);
+// The Monos' roster and chat ids live in their home (~/agent-memory/monos for the daily app); the WebView keeps a cache.
+if (isTauri()) enableTauriHome();
+const rosterReconciled = hydrateRosterFromHome().catch((error: unknown) => {
+  console.error("Couldn't read the Monos' roster file; using the WebView's copy", error);
+});
 
 performance.mark("monocode:bootstrap");
 // Let local boot IPC overlap loading/evaluating the workspace UI.
@@ -106,6 +112,7 @@ void Promise.all([
   providerBinaryPathsPrimed,
   loadBootWorkspace(),
   appLoaded,
+  rosterReconciled,
 ]).then(
   ([
     ,
