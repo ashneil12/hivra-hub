@@ -54,6 +54,10 @@ pub struct ProjectFile {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The repository's mainline, where finished work lands (`pm/pages-live` here). The worktree janitor calls a
+    /// worktree merged when its commits are on this branch. Without it: the branch the main checkout has checked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_branch: Option<String>,
     #[serde(default)]
     pub actions: Vec<ProjectAction>,
     #[serde(default)]
@@ -161,6 +165,23 @@ fn valid_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// A branch name git accepts and the janitor can pass to git without quoting: no leading `-` or `/`, no `..`, no
+/// empty segment, no `.lock` ending, nothing but letters, digits, `.`, `_`, `-` and `/`.
+pub fn valid_branch_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('-')
+        && !name.contains("..")
+        && !name.ends_with(".lock")
+        && !name.ends_with('.')
+        && name
+            .split('/')
+            .all(|segment| !segment.is_empty() && !segment.starts_with('.'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
 /// A relative path that stays inside the checkout: no root, no `..`, no `.` tricks.
 pub fn valid_relative_path(path: &str) -> bool {
     if path.is_empty() || path.len() > 200 || path.contains('\\') || path.contains('\0') {
@@ -195,6 +216,13 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
     if let Some(name) = &file.name {
         bounded(name, "name", 80)?;
         single_line(name, "name")?;
+    }
+    if let Some(branch) = &file.main_branch {
+        if !valid_branch_name(branch) {
+            return Err(format!(
+                "mainBranch {branch:?} must be a plain git branch name (letters, digits, '.', '_', '-' and '/')"
+            ));
+        }
     }
     if file.actions.len() > MAX_ACTIONS {
         return Err(format!("at most {MAX_ACTIONS} actions are allowed"));
@@ -698,6 +726,9 @@ pub(crate) mod tests {
                 r#"{"version":1,"worktrees":{"regenerable":["../x"]}}"#,
                 "worktrees.regenerable",
             ),
+            (r#"{"version":1,"mainBranch":"--force"}"#, "mainBranch"),
+            (r#"{"version":1,"mainBranch":"a..b"}"#, "mainBranch"),
+            (r#"{"version":1,"mainBranch":"main branch"}"#, "mainBranch"),
             ("not json", "project.json"),
         ];
         for (text, expected) in cases {
@@ -723,6 +754,22 @@ pub(crate) mod tests {
         assert!(ship.confirm.is_some());
         assert_eq!(file.build_output(), vec!["target", "node_modules", "dist"]);
         assert_eq!(file.worktrees.regenerable, vec![".identity-baseline.json"]);
+    }
+
+    #[test]
+    fn main_branch_names_are_plain_git_branches() {
+        let file = parse(r#"{"version":1,"mainBranch":"pm/pages-live"}"#).unwrap();
+        assert_eq!(file.main_branch.as_deref(), Some("pm/pages-live"));
+        assert_eq!(parse(r#"{"version":1}"#).unwrap().main_branch, None);
+        for good in ["main", "pm/pages-live", "release-1.2", "a_b/c"] {
+            assert!(valid_branch_name(good), "{good}");
+        }
+        for bad in [
+            "", "-x", "/x", "x/", "a//b", "a..b", ".hidden", "a/.b", "x.lock", "x.", "a b", "a~b",
+            "a:b", "a^b", "a\\b",
+        ] {
+            assert!(!valid_branch_name(bad), "{bad}");
+        }
     }
 
     #[test]

@@ -24,6 +24,8 @@ function session(id: string, cwd: string, patch: Partial<Session> = {}): Session
   return { ...newSession("claude", cwd), id, title: id, busy: false, ...patch };
 }
 
+let delegated = new Set<string>();
+
 function Harness({ initial }: { initial: Session[] }) {
   const [sessions, setSessions] = useState(initial);
   current = sessions;
@@ -35,7 +37,7 @@ function Harness({ initial }: { initial: Session[] }) {
     answerQuestion: (id, requestId, reply) => answers.push({ id, requestId, reply }),
     approve: (id, requestId, decision) => approvals.push({ id, requestId, decision }),
     openSession: async (id) => sessions.find((s) => s.id === id) ?? null,
-    isDelegated: () => false,
+    isDelegated: (id) => delegated.has(id),
     openChat: () => undefined,
   });
   return null;
@@ -60,6 +62,7 @@ beforeEach(async () => {
   root = createRoot(container);
   answers = [];
   approvals = [];
+  delegated = new Set();
   backend = memoryAutopilot();
   setAutopilotBackend(backend);
   setHubDataSource({
@@ -103,6 +106,21 @@ describe("useAutopilot", () => {
     expect(byChat.tests).toMatchObject({ kind: "approval", outcome: "taken", recommendation: "Allowed" });
     expect(byChat.force).toMatchObject({ kind: "approval", outcome: "held", red: "mass-destructive" });
     expect(byChat.exo).toBeUndefined();
+  });
+
+  it("leaves a delegated worker's question to its Lead, but still decides its approvals", async () => {
+    await backend.set({ scopes: ["*"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    delegated = new Set(["worker"]);
+    await mount([
+      session("worker", "/Users/ash/Projects/hivra", {
+        ...question("worker", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }]),
+        blocks: [approval("npm test")],
+      }),
+    ]);
+    expect(answers).toEqual([]);
+    expect(approvals).toEqual([{ id: "worker", requestId: 9, decision: "allow" }]);
+    expect(backend.entries.filter((e) => e.kind === "question")).toEqual([]);
   });
 
   it("does nothing for questions while autopilot is off", async () => {

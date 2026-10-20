@@ -1,6 +1,6 @@
 import { leafIds, newTab, type WorkspaceTab } from "../../workspace/model/layout";
 import type { DockSide, ProjectTerminalDock } from "../../projects/model/projectTerminal";
-import { sessionNeedsInput, type Session } from "./session";
+import { sessionNeedsInput, type CutWork, type Session } from "./session";
 import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 
@@ -13,9 +13,26 @@ export const UPDATE_INTERRUPT_MESSAGE =
 
 export const CONTINUE_PROMPT = "Continue from where you left off.";
 
+/**
+ * A turn resumes itself after a restart at most this many times in a row. One that keeps taking the app down (or is
+ * cut by restart after restart) then stops and waits in Needs you instead of looping (T3's MAX_CONTINUATION_CHAIN).
+ */
+export const MAX_AUTO_RESUMES = 3;
+
+/** The note a chat gets when it stopped resuming itself; it shows in Needs you. */
+export const RESUME_STOPPED_MESSAGE = `MonoCode Hub restarted ${MAX_AUTO_RESUMES} times while this turn was running, so it stopped resuming it by itself. Check what it was doing, then send a message to carry on.`;
+
+/** The "what was cut" note is bounded so it can't crowd out the turn's own context (T3's RestartBackgroundNote). */
+export const CUT_NOTE_MAX_ENTRIES = 10;
+export const CUT_NOTE_MAX_LABEL = 160;
+
 export type InFlightRef = {
   sessionId: string;
   cwd: string;
+  /** What the turn had running in the background when this was saved. */
+  background?: CutWork[];
+  /** Automatic resumes this turn has already had (`MAX_AUTO_RESUMES`). */
+  resumes?: number;
 };
 
 export type ResumedWorkspace = {
@@ -55,7 +72,13 @@ export function inFlightRefs(
     if (!session || session.inboxAsk || seen.has(session.id)) return;
     if (!isInFlightSession(session) || !canResumeAfterQuit(session)) return;
     seen.add(session.id);
-    refs.push({ sessionId: session.id, cwd: session.cwd });
+    const background = session.busy ? (session.cutWork ?? []) : [];
+    refs.push({
+      sessionId: session.id,
+      cwd: session.cwd,
+      ...(background.length ? { background } : {}),
+      ...(session.autoResumes ? { resumes: session.autoResumes } : {}),
+    });
   };
 
   for (const tab of tabs) {
@@ -174,8 +197,120 @@ export function canAutoContinue(session: Session): boolean {
     !session.worktreeRemoved &&
     !!session.providerSessionId &&
     !session.busy &&
+    // A question still on screen is Ash's to answer; resuming would talk over it.
+    !session.pendingQuestion &&
     lastBlockIsInterrupt(session)
   );
+}
+
+/** This turn has resumed itself after restarts as often as it may: it stops and waits for Ash instead. */
+export function resumeBlocked(session: Pick<Session, "autoResumes">): boolean {
+  return (session.autoResumes ?? 0) >= MAX_AUTO_RESUMES;
+}
+
+/**
+ * Stop resuming a turn that has been cut by restart after restart: its note replaces the interrupt as the last
+ * block, so nothing continues it until Ash sends a message, and the chat reads Needs you.
+ */
+export function markResumeStopped(session: Session): Session {
+  if (resumeStopped(session)) return session;
+  const cut = cutWorkLines(session.cutWork ?? []);
+  return {
+    ...session,
+    autoResumes: undefined,
+    cutWork: undefined,
+    blocks: [
+      ...session.blocks,
+      {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: cut.length
+          ? `${RESUME_STOPPED_MESSAGE}\nIt had this running in the background:\n${cut.join("\n")}`
+          : RESUME_STOPPED_MESSAGE,
+        notice: "resume-stopped",
+      },
+    ],
+  };
+}
+
+/** The chat stopped resuming itself after restarts and is waiting for Ash (its last block says so). */
+export function resumeStopped(session: Pick<Session, "blocks">): boolean {
+  const last = session.blocks[session.blocks.length - 1];
+  return last?.role === "system" && last.notice === "resume-stopped";
+}
+
+function clipText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat;
+}
+
+/** One entry, at most `CUT_NOTE_MAX_LABEL` characters, keeping its id whole whenever it fits. */
+export function cutWorkLabel(work: CutWork): string {
+  const id = clipText(work.id, CUT_NOTE_MAX_LABEL);
+  const suffix = id ? ` (id ${id})` : "";
+  const budget = CUT_NOTE_MAX_LABEL - suffix.length;
+  if (budget < 2) return clipText(`${work.label}${suffix}`, CUT_NOTE_MAX_LABEL);
+  return `${clipText(work.label, budget) || work.kind}${suffix}`;
+}
+
+function cutWorkLines(work: CutWork[]): string[] {
+  const seen = new Set<string>();
+  const unique = work.filter((entry) => {
+    const key = entry.id || `${entry.kind}\u0000${entry.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const omitted = unique.length - CUT_NOTE_MAX_ENTRIES;
+  return [
+    ...unique
+      .slice(0, CUT_NOTE_MAX_ENTRIES)
+      .map((entry) => `- ${entry.kind}: ${cutWorkLabel(entry)}`),
+    ...(omitted > 0 ? [`- and ${omitted} more`] : []),
+  ];
+}
+
+/**
+ * What a restart cut short, for the resumed turn: each subagent, backgrounded shell or monitor with the id to
+ * restart it by, bounded to `CUT_NOTE_MAX_ENTRIES` lines. Null when nothing was running in the background.
+ */
+export function cutWorkNote(work: CutWork[]): string | null {
+  const lines = cutWorkLines(work);
+  if (!lines.length) return null;
+  return [
+    "Note: MonoCode Hub restarted while this turn was running, and this background work was cut before it finished. It will not report back on its own, so restart or resume what you still need (by its id) and wait for its result:",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * The text of an automatic resume: what was cut (if anything), then the ship's receipt when a ship's restart cut it
+ * (`shipResumePrompt`), else the plain continue.
+ */
+export function resumePrompt(
+  session: Pick<Session, "id" | "cutWork">,
+  ship?: { note: ShipNote | null },
+): string {
+  const base = ship ? shipResumePrompt(session.id, ship.note) : CONTINUE_PROMPT;
+  const note = cutWorkNote(session.cutWork ?? []);
+  return note ? `${note}\n\n${base}` : base;
+}
+
+/**
+ * Bring each restored chat's saved resume state back from its in-flight row: what it had running in the background
+ * and how often it has resumed itself already.
+ */
+export function withInFlightState(
+  session: Session,
+  ref: InFlightRef | undefined,
+): Session {
+  if (!ref) return session;
+  const background = ref.background ?? [];
+  return {
+    ...session,
+    ...(background.length ? { cutWork: background } : {}),
+    ...(ref.resumes ? { autoResumes: ref.resumes } : {}),
+  };
 }
 
 function lastBlockIsInterrupt(session: Session): boolean {
@@ -186,8 +321,17 @@ function lastBlockIsInterrupt(session: Session): boolean {
   );
 }
 
+/** Changes whenever a row would be written differently: a chat, its resume count or its background work. */
 export function inFlightSnapshotKey(refs: InFlightRef[]): string {
-  return refs.map((ref) => ref.sessionId).join("\n");
+  return refs
+    .map((ref) =>
+      [
+        ref.sessionId,
+        ref.resumes ?? 0,
+        ...(ref.background ?? []).map((work) => `${work.kind}:${work.id}:${work.label}`),
+      ].join("\t"),
+    )
+    .join("\n");
 }
 
 /**

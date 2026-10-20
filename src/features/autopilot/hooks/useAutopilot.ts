@@ -2,7 +2,8 @@
 // keeps the store live and answers "will this chat resume by itself?" for completion reports. The main window also
 // acts:
 // - while a switch covers a chat, its pending question takes the agent's own recommendation and its tool approvals are
-//   allowed, unless either touches Ash's red list (then it waits for him); each call goes in the Autopilot log;
+//   allowed, unless either touches Ash's red list (then it waits for him); each call goes in the Autopilot log. A
+//   delegated worker's question is left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),
 //   brought back after a restart from the stored row, and marked done once a turn finishes.
 
@@ -219,7 +220,9 @@ export function useAutopilot(options: {
         if (!covering) continue;
         const untilLabel = formatUntil(covering.untilMs, now);
         const base = { project: sessionProject(session), chatId: session.id, ...who(session) };
-        const question = session.pendingQuestion;
+        // A delegated worker's question is its Lead's to answer (H3's tasks.answer), not Ash's: autopilot leaves it.
+        const question =
+          session.orchestrationLeadId || latest.current.isDelegated(session.id) ? undefined : session.pendingQuestion;
         if (question) {
           const key = `q:${session.id}:${question.requestId}:${hash(JSON.stringify(question.questions))}`;
           if (!handled.current.has(key)) {

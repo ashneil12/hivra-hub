@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { parseSetup, setPendingSetup } from "../model/setupFile";
+import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
 import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
@@ -9,7 +9,10 @@ import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion }
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
-import type { Need } from "../model/types";
+import { TODAY_DEFAULT, type HubJob, type Need, type TodaySection } from "../model/types";
+import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
+import { PageBody } from "../../pages/ui/PagesView";
+import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
@@ -106,39 +109,35 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const sinceAt = data.sinceAt();
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
-  return (
-    <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
-      {!projectId ? <HomeTools /> : null}
-      {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
-        {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
-          <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
-          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="hover:text-content">{data.listNeeds(p.id).filter((n) => n.state !== "done").length} {data.listNeeds(p.id).filter((n) => n.state !== "done").length === 1 ? "need" : "needs"}</button>
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
-          </div>
-        </div>)}
-      </section> : null}
-      <section>
-        {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{sinceLabel(sinceAt)}</h2> : null}
-        {since.pending ? (
-          // Ash OS is still writing it: a quiet line, and the paragraph swaps in here when it is ready.
-          <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
-        ) : (
-          <p className="line-clamp-4 text-[13px] leading-5 text-content/85" data-hub-since>{calmSummary(since.plainText)}</p>
-        )}
+  // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
+  // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox keeps its own fixed order.
+  const sections: readonly TodaySection[] = projectId ? TODAY_DEFAULT.filter((s) => s.kind !== "being-built") : data.todayLayout?.() ?? TODAY_DEFAULT;
+  const sinceBlock = (s: TodaySection) => (
+    <section key={s.id} data-hub-today-section={s.kind}>
+      {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{s.title === "Since you were away" ? sinceLabel(sinceAt) : `${s.title} · ${sinceLabel(sinceAt).toLowerCase()}`}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
+      {since.pending ? (
+        // Ash OS is still writing it: a quiet line, and the paragraph swaps in here when it is ready.
+        <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
+      ) : (
+        <p className="line-clamp-4 text-[13px] leading-5 text-content/85" data-hub-since>{calmSummary(since.plainText)}</p>
+      )}
+    </section>
+  );
+  const setupBlock = (s: TodaySection) =>
+    !projectId && setupItems().length ? (
+      <section key={s.id} data-hub-setup data-hub-today-section={s.kind}>
+        <h2 className="mb-1 text-xs text-content/60">{s.title}</h2>
+        <p className="px-2 pb-1 text-[13px] text-content/60">Passwords and keys never travel in the setup file.</p>
+        <div className="flex flex-col">
+          {setupItems().map((w) => (
+            <StuckRow key={w.id} item={w} />
+          ))}
+        </div>
       </section>
-      {!projectId && setupItems().length ? (
-        <section data-hub-setup>
-          <h2 className="mb-1 text-xs text-content/60">Setup</h2>
-          <p className="px-2 pb-1 text-[13px] text-content/60">Passwords and keys never travel in the setup file.</p>
-          <div className="flex flex-col">
-            {setupItems().map((w) => (
-              <StuckRow key={w.id} item={w} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+    ) : null;
+  const needsBlock = (s: TodaySection) => (
+    <div key={s.id} className="flex flex-col gap-6" data-hub-today-section={s.kind}>
+      {s.title !== "Needs you" ? <h2 className="-mb-4 text-xs text-content/60" data-hub-needs-heading>{s.title}</h2> : null}
       <label className="flex flex-col gap-1 text-[12px] text-content/60">
         Find an ask, including Later and Older
         <input type="search" aria-label="Search asks" value={query} onChange={(e) => { setQuery(e.target.value); setShown(25); }} placeholder="Search by words or project…" className="rounded-md border border-stroke bg-content/3 px-3 py-2 text-[13px] text-content outline-none focus:border-content/30" />
@@ -161,8 +160,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           <section key={p.id}>
             {projectId ? null : <h2 className="mb-1 text-xs text-content/60">{p.name}</h2>}
             <div className="flex flex-col">
-              {pStuck.map((s) => (
-                <StuckRow key={s.id} item={s} />
+              {pStuck.map((st) => (
+                <StuckRow key={st.id} item={st} />
               ))}
               {pNeeds.map((n) => (
                 <NeedRow key={n.id} need={n} onSheet={setSheet} />
@@ -175,11 +174,94 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           </section>
         );
       })}
+    </div>
+  );
+  const block = (s: TodaySection) =>
+    s.kind === "since" ? sinceBlock(s)
+    : s.kind === "setup" ? setupBlock(s)
+    : s.kind === "needs" ? needsBlock(s)
+    : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} />
+    : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
+    : null;
+  return (
+    <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
+      {!projectId ? <HomeTools /> : null}
+      {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
+        {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
+          <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="hover:text-content">{data.listNeeds(p.id).filter((n) => n.state !== "done").length} {data.listNeeds(p.id).filter((n) => n.state !== "done").length === 1 ? "need" : "needs"}</button>
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
+            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
+          </div>
+        </div>)}
+      </section> : null}
+      {sections.map(block)}
       {!query.trim() ? <OlderGroup projectId={projectId} onSheet={setSheet} /> : null}
+      {!projectId ? <LastChange /> : null}
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
     </div>
+  );
+}
+
+const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "stuck", "sent_to_lead", "lead_gave_up"]);
+const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Stuck" };
+
+/** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
+function BeingBuiltToday({ title }: { title: string }) {
+  const data = hubData();
+  const rows = data.listProjects().flatMap((p) =>
+    (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
+  );
+  if (!rows.length) return null;
+  return (
+    <section data-hub-today-section="being-built" data-hub-today-being-built>
+      <h2 className="mb-1 text-xs text-content/60">{title}</h2>
+      <div className="flex flex-col">
+        {rows.slice(0, 8).map(({ p, j, lead }) => (
+          <button key={j.id} type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
+            className="flex items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-content/5" data-hub-today-job={j.id}>
+            <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
+            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {JOB_WORD[j.state]}</span>
+          </button>
+        ))}
+        {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}
+      </div>
+    </section>
+  );
+}
+
+/** A kept page placed on Today by an applied Edit Today change. Gone from the board if the page was taken away. */
+function TodayPage({ title, pageId }: { title: string; pageId: string }) {
+  usePagesVersion();
+  const page = findPage(pageId);
+  if (!page || page.removed || !page.keptAt) return null;
+  return (
+    <section data-hub-today-section="page" data-hub-today-page={pageId}>
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="min-w-0 flex-1 truncate text-xs text-content/60">{title}</h2>
+        <button type="button" className="rounded-md px-2 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content"
+          onClick={() => { requestOpenPage(pageId); window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" })); }}>
+          Open in Pages
+        </button>
+      </div>
+      <PageBody page={page} live />
+    </section>
+  );
+}
+
+/** The last change to Today or the hub (within a day), with Undo or Redo right here. */
+function LastChange() {
+  const data = hubData();
+  const last = (data.listChanges?.() ?? []).find((c) => (c.flow === "today" || c.flow === "hub") && (c.state === "applied" || c.state === "undone"));
+  const at = last?.undoneAt ?? last?.appliedAt;
+  if (!last || !at || Date.now() - Date.parse(at) > 86_400_000) return null;
+  return (
+    <section data-hub-today-last-change className="-mt-2 opacity-90">
+      <ChangeRow change={last} compact />
+    </section>
   );
 }
 
@@ -421,10 +503,21 @@ function FirstTodayEmpty() {
   const onFile = async (f: File | undefined) => {
     if (!f) return;
     try {
-      setPendingSetup(parseSetup(await f.text()), f.name);
+      setPendingImport(readImportText(f.name, await f.text()));
       setHubSelection({ project: "today", item: "restore" });
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Couldn't read that file.");
+    }
+  };
+  const pick = async () => {
+    try {
+      const p = await pickExportForRestore();
+      if (p === "browser") return fileRef.current?.click();
+      if (!p) return;
+      setPendingImport(p);
+      setHubSelection({ project: "today", item: "restore" });
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Couldn't read that export.");
     }
   };
   return (
@@ -443,10 +536,10 @@ function FirstTodayEmpty() {
           <button
             type="button"
             data-hub-today-restore
-            onClick={() => fileRef.current?.click()}
+            onClick={() => void pick()}
             className="rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content"
           >
-            Restore a setup file
+            Restore from an export
           </button>
           <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-today-file
             onChange={(e) => void onFile(e.target.files?.[0])} />

@@ -34,6 +34,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_background;
 mod mcp;
+pub mod mcp_server;
 mod menu;
 mod mobile_access;
 mod mobile_router;
@@ -46,6 +47,7 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod pi_usage;
+mod portable;
 mod project_actions;
 mod project_file;
 mod project_logo;
@@ -68,6 +70,7 @@ mod tool_detail;
 mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
+mod verify_live;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -450,6 +453,7 @@ pub fn run() {
             delegations::delegations_refuse,
             delegations::delegations_list_open,
             delegations::delegations_tree,
+            delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
             autopilot::autopilot_status,
@@ -668,6 +672,7 @@ pub fn run() {
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
             session_store::session_take_in_flight,
+            session_store::session_drop_in_flight,
             session_store::workspace_set_snapshot,
             session_store::workspace_get_snapshot,
             notes::notes_list,
@@ -685,6 +690,14 @@ pub fn run() {
             mono::mono_save,
             mono::mono_archive,
             mono::mono_unarchive,
+            portable::portable_info,
+            portable::portable_mono_files,
+            portable::portable_find_skills,
+            portable::portable_paths_exist,
+            portable::portable_session_engines,
+            portable::portable_export,
+            portable::portable_inspect,
+            portable::portable_import,
             checkpoint::session_checkpoint_ensure,
             checkpoint::session_checkpoint_begin_turn,
             checkpoint::session_checkpoint_finish_turn,

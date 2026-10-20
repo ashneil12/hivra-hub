@@ -336,6 +336,11 @@ test("the dev environment shares the Rust build cache and points Ash OS only at 
   const on = devEnvironment({ slot: "a", hub: { port: 54321, tokenFile: "/t/hub-token" }, home, env: inherited });
   assert.equal(on.MONOCODE_HUB_PORT, "54321");
   assert.equal(on.MONOCODE_HUB_TOKEN_FILE, "/t/hub-token");
+  // A memory folder for Export comes only from --memory, never from whatever the shell had.
+  const leaked = devEnvironment({ slot: "a", hub: null, home, env: { ...inherited, MONOCODE_HUB_MEMORY_ROOT: "/Users/ash/agent-memory" } });
+  assert.equal(leaked.MONOCODE_HUB_MEMORY_ROOT, undefined);
+  const asked = devEnvironment({ slot: "a", hub: null, memory: "/tmp/fixture-memory", home, env: inherited });
+  assert.equal(asked.MONOCODE_HUB_MEMORY_ROOT, "/tmp/fixture-memory");
 });
 
 test("--print shows the plan and changes nothing; bad options are refused", (t) => {
@@ -396,6 +401,12 @@ test("the read-only proxy answers only the dev copy's token, adds the live key i
   assert.equal((await call("seen", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
   assert.equal((await call("activity", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
   assert.equal(seen.length, 1);
+  // Pages, the Today board and the change history are reads (Today draws the real board); building, keeping, applying
+  // and making a project are writes and stay refused.
+  for (const read of ["pages", "layout", "changes"]) assert.equal((await call(read, { Authorization: `Bearer ${token}` })).status, 200, read);
+  for (const write of ["build-page", "page-update", "page-remove", "change-preview", "change-apply", "change-undo", "project-create", "project-rename", "project-archive"])
+    assert.equal((await call(write, { Authorization: `Bearer ${token}` })).status, 403, `${write} is a write`);
+  assert.equal(seen.length, 4);
   await assert.rejects(startLiveProxy({ port: 0, keyFile, clientTokenFile: keyFile }), /can't be the live key/);
 });
 
@@ -501,6 +512,9 @@ test("--replace (what the seed's refusal says to pass) reseeds, like --reseed", 
     assert.equal(o.reseed, true, flag);
   }
   assert.equal(parseArgs(["--seed"]).reseed, false);
+  assert.equal(parseArgs(["--memory", "/tmp/m"]).memory, "/tmp/m");
+  assert.equal(parseArgs([]).memory, undefined);
+  assert.throws(() => parseArgs(["--memory"]), /--memory needs a value/);
 });
 
 test("an agent's dev copy never takes focus: --background, or no terminal; --foreground overrides", async () => {

@@ -124,7 +124,8 @@ pub struct Facts {
     /// The first ignored file that is real local work (not build output, not a link).
     pub local_ignored: Option<String>,
     pub status_error: Option<String>,
-    /// The default branch merges are checked against, as of the last fetch (`origin/main`).
+    /// The mainline merges are checked against: the project file's `mainBranch`, else the branch the main checkout
+    /// has checked out, else the remote's default (`origin/main`, as of the last fetch).
     pub default_ref: Option<String>,
     /// Commits on HEAD that the default branch doesn't have.
     pub ahead: Option<u64>,
@@ -491,15 +492,73 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-/// One repository's worktree list and default branch, read once per scan.
+/// One repository's worktree list and mainline, read once per scan.
 #[derive(Clone, Debug)]
 struct RepoInfo {
     main: PathBuf,
     trees: Vec<(PathBuf, Worktree)>,
+    /// What "merged" is checked against: [`Mainline::reference`].
     default_ref: Option<String>,
+    /// The mainline's branch name on the remote, for the merged pull request check.
+    default_base: Option<String>,
     build_output: Vec<String>,
     /// The imported project file's `worktrees.regenerable`.
     regenerable: Vec<String>,
+}
+
+/// The branch finished work lands on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Mainline {
+    /// A ref git resolves and the report names: `pm/pages-live` (a local branch) or `origin/main`.
+    pub reference: String,
+    /// The branch's own name, which pull requests target: `pm/pages-live`, `main`.
+    pub branch: String,
+}
+
+fn ref_exists(main: &Path, full: &str) -> bool {
+    git_text(main, &["rev-parse", "--verify", "--quiet", full]).is_ok()
+}
+
+/// The repository's real mainline, in this order:
+/// 1. the project file's `mainBranch` (the local branch, else `origin/<name>`);
+/// 2. the branch the main checkout has checked out (this repository: `pm/pages-live`, while `origin/HEAD` points at
+///    an old `hub-frontend`);
+/// 3. the remote's default branch, then `main`/`master`.
+pub(crate) fn mainline(main: &Path, named: Option<&str>) -> Option<Mainline> {
+    if let Some(name) = named
+        .map(str::trim)
+        .filter(|name| project_file::valid_branch_name(name))
+    {
+        if ref_exists(main, &format!("refs/heads/{name}")) {
+            return Some(Mainline {
+                reference: name.to_string(),
+                branch: name.to_string(),
+            });
+        }
+        if ref_exists(main, &format!("refs/remotes/origin/{name}")) {
+            return Some(Mainline {
+                reference: format!("origin/{name}"),
+                branch: name.to_string(),
+            });
+        }
+    }
+    if let Ok(branch) = git_text(main, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        let branch = branch.trim();
+        if project_file::valid_branch_name(branch)
+            && ref_exists(main, &format!("refs/heads/{branch}"))
+        {
+            return Some(Mainline {
+                reference: branch.to_string(),
+                branch: branch.to_string(),
+            });
+        }
+    }
+    let reference = default_ref(main)?;
+    let branch = reference
+        .strip_prefix("origin/")
+        .unwrap_or(&reference)
+        .to_string();
+    Some(Mainline { reference, branch })
 }
 
 fn default_ref(main: &Path) -> Option<String> {
@@ -547,11 +606,18 @@ fn repo_info(worktree: &Path, data_dir: Option<&Path>) -> Result<RepoInfo, Strin
         .as_ref()
         .map(|file| file.build_output())
         .unwrap_or_else(project_file::default_build_output);
+    let mainline = mainline(
+        &main,
+        imported
+            .as_ref()
+            .and_then(|file| file.main_branch.as_deref()),
+    );
     let regenerable = imported
         .map(|file| file.worktrees.regenerable)
         .unwrap_or_default();
     Ok(RepoInfo {
-        default_ref: default_ref(&main),
+        default_ref: mainline.as_ref().map(|line| line.reference.clone()),
+        default_base: mainline.map(|line| line.branch),
         main,
         trees,
         build_output,
@@ -959,8 +1025,7 @@ fn gather_linked(path: &Path, ctx: &Context, cache: &RepoCache, facts: &mut Fact
             && facts.untracked == 0
             && facts.local_ignored.is_none();
         if ctx.check_pull_requests && clean && facts.ahead.is_some_and(|ahead| ahead > 0) {
-            if let Some(default) = &repo.default_ref {
-                let base = default.rsplit('/').next().unwrap_or(default);
+            if let Some(base) = &repo.default_base {
                 facts.merged_pr = gh_merged_pr(path, branch, &head, base).ok().flatten();
             }
         }
@@ -2149,6 +2214,145 @@ mod tests {
         let text = render_text(&report, later);
         assert!(text.contains("nothing was removed"));
         assert!(text.contains("REMOVE"));
+    }
+
+    /// "Merged" means on the repository's real mainline. Here `origin/HEAD` still points at an old `hub-frontend`
+    /// while work lands on `pm/pages-live`, the branch the main checkout has checked out (this repository's case).
+    #[cfg(unix)]
+    #[test]
+    fn merged_means_on_the_real_mainline_not_an_old_remote_default() {
+        let temp = temp("monocode-janitor-mainline");
+        let main = repo(&temp.0);
+        let initial = git_text(&main, &["rev-parse", "HEAD"]).unwrap();
+        let initial = initial.trim();
+        git_checked(
+            &main,
+            &["update-ref", "refs/remotes/origin/hub-frontend", initial],
+        )
+        .unwrap();
+        git_checked(
+            &main,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/hub-frontend",
+            ],
+        )
+        .unwrap();
+        git_checked(&main, &["checkout", "-q", "-b", "pm/pages-live"]).unwrap();
+        let root = temp.0.join("Worktrees");
+        std::fs::create_dir_all(&root).unwrap();
+        let add = |name: &str| {
+            let path = root.join(name);
+            git_checked(
+                &main,
+                &["worktree", "add", "-q", "-b", name, path.to_str().unwrap()],
+            )
+            .unwrap();
+            path
+        };
+        let landed = add("landed");
+        git_commit_file(&landed, "landed.txt", "done");
+        git_checked(&main, &["merge", "-q", "--ff-only", "landed"]).unwrap();
+        let open = add("open");
+        git_commit_file(&open, "open.txt", "wip");
+        // What the janitor used to compare against: the landed work is not on the old remote default.
+        assert_eq!(
+            git_text(
+                &main,
+                &["rev-list", "--count", "origin/hub-frontend..landed"]
+            )
+            .unwrap()
+            .trim(),
+            "1"
+        );
+
+        let ctx = Context::default();
+        let policy = Policy::default();
+        let later = now_ms() + 7 * DAY_MS;
+        let entry = |report: &Report, name: &str| {
+            report
+                .entries
+                .iter()
+                .find(|entry| entry.facts.path.ends_with(&format!("/{name}")))
+                .unwrap_or_else(|| panic!("{name} missing from {report:#?}"))
+                .clone()
+        };
+        let scan = report(std::slice::from_ref(&root), &[], &ctx, &policy, later);
+        let merged = entry(&scan, "landed");
+        assert_eq!(merged.facts.default_ref.as_deref(), Some("pm/pages-live"));
+        assert_eq!(merged.facts.ahead, Some(0));
+        assert_eq!(merged.verdict.state, "merged", "{:?}", merged.verdict);
+        assert_eq!(merged.verdict.outcome, Outcome::Remove);
+        assert!(
+            merged.verdict.reason.contains("pm/pages-live"),
+            "{}",
+            merged.verdict.reason
+        );
+        let unmerged = entry(&scan, "open");
+        assert_eq!(unmerged.facts.ahead, Some(1));
+        assert_ne!(unmerged.verdict.outcome, Outcome::Remove);
+
+        // The project file can name the mainline; a name that isn't a branch falls through to the checkout's.
+        git_checked(&main, &["branch", "release", initial]).unwrap();
+        git_checked(
+            &main,
+            &["update-ref", "refs/remotes/origin/staging", initial],
+        )
+        .unwrap();
+        let line = |reference: &str, branch: &str| {
+            Some(Mainline {
+                reference: reference.into(),
+                branch: branch.into(),
+            })
+        };
+        assert_eq!(mainline(&main, Some("release")), line("release", "release"));
+        assert_eq!(
+            mainline(&main, Some("staging")),
+            line("origin/staging", "staging")
+        );
+        assert_eq!(
+            mainline(&main, Some("missing")),
+            line("pm/pages-live", "pm/pages-live")
+        );
+        assert_eq!(
+            mainline(&main, Some("--evil")),
+            line("pm/pages-live", "pm/pages-live")
+        );
+        assert_eq!(
+            mainline(&main, None),
+            line("pm/pages-live", "pm/pages-live")
+        );
+
+        // An imported project file's mainBranch is what the report uses.
+        let data = temp.0.join("data");
+        std::fs::create_dir_all(main.join(".monocode")).unwrap();
+        std::fs::write(
+            main.join(".monocode/project.json"),
+            r#"{"version":1,"mainBranch":"release"}"#,
+        )
+        .unwrap();
+        let reviewed = project_file::status(&data, &main).file_hash.unwrap();
+        project_file::import(&data, &main, &reviewed).unwrap();
+        let named_ctx = Context {
+            data_dir: Some(data),
+            ..Context::default()
+        };
+        let named = report(std::slice::from_ref(&root), &[], &named_ctx, &policy, later);
+        let against_release = entry(&named, "landed");
+        assert_eq!(
+            against_release.facts.default_ref.as_deref(),
+            Some("release")
+        );
+        assert_eq!(against_release.facts.ahead, Some(1));
+        assert_ne!(against_release.verdict.outcome, Outcome::Remove);
+
+        // A detached main checkout and no project file: the remote's default, as before.
+        git_checked(&main, &["checkout", "-q", "--detach"]).unwrap();
+        assert_eq!(
+            mainline(&main, None),
+            line("origin/hub-frontend", "hub-frontend")
+        );
     }
 
     #[cfg(unix)]

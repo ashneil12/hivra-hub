@@ -209,12 +209,17 @@ pub fn policy() -> Policy {
 }
 
 pub fn effective_policy(identity: &Identity) -> Policy {
-    let policy = identity.policy();
+    let mut policy = identity.policy();
     if isolated_home().is_some() {
-        policy.in_isolated_home()
-    } else {
-        policy
+        policy = policy.in_isolated_home();
     }
+    // The fake-Claude test bench's dev copy resumes cut turns like the daily app, so a restart midway is exercised
+    // (src/verify_live.rs: only a dev copy under a temporary HOME has a plan).
+    if identity.kind == Kind::Dev && crate::verify_live::plan().is_some_and(|plan| plan.auto_resume)
+    {
+        policy.auto_resume = true;
+    }
+    policy
 }
 
 /// Rules 1 and 2, first thing in `run()`. Shows an alert and exits when this copy must not start.
@@ -863,6 +868,7 @@ pub fn app_info(identity: &Identity, product: &str, version: &str) -> Value {
         "schemaVersion": crate::session_store::SCHEMA_VERSION,
         "policy": effective_policy(identity),
         "isolatedHome": isolated_home(),
+        "verify": crate::verify_live::plan().map(crate::verify_live::window_info),
     })
 }
 

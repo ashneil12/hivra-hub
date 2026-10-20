@@ -29,6 +29,7 @@ import type {
   Block,
   BtwMessage,
   BtwThread,
+  CutWork,
   GeneratedImageMeta,
   HarnessId,
   HandoffMeta,
@@ -47,6 +48,7 @@ import type {
 } from "../model/session";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
+import type { InFlightRef } from "../model/inFlight";
 
 import { restoreOrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 
@@ -890,7 +892,7 @@ export async function flushSessionWrites(): Promise<void> {
 let inFlightWrite: Promise<unknown> = Promise.resolve();
 
 export async function replaceInFlightSessions(
-  refs: { sessionId: string; cwd: string }[],
+  refs: InFlightRef[],
 ): Promise<void> {
   const run = inFlightWrite
     .catch(() => undefined)
@@ -899,6 +901,8 @@ export async function replaceInFlightSessions(
         sessions: refs.map((ref) => ({
           sessionId: ref.sessionId,
           cwd: normalizeProjectPath(ref.cwd),
+          background: ref.background ?? [],
+          resumes: ref.resumes ?? 0,
         })),
       }),
     );
@@ -906,24 +910,48 @@ export async function replaceInFlightSessions(
   await run;
 }
 
+/**
+ * One chat leaves the quit snapshot (it stopped resuming itself after restarts). Queued behind any replace, so a
+ * replace already on its way can't bring it back.
+ */
+export async function dropInFlightSession(sessionId: string): Promise<void> {
+  const run = inFlightWrite
+    .catch(() => undefined)
+    .then(() => invoke("session_drop_in_flight", { sessionId }));
+  inFlightWrite = run;
+  await run;
+}
+
+type InFlightRow = {
+  sessionId: string;
+  cwd: string;
+  background?: CutWork[];
+  resumes?: number;
+};
+
+/** The row as the app keeps it: no empty list, no zero count. */
+function inFlightRef(row: InFlightRow): InFlightRef {
+  const background = Array.isArray(row.background) ? row.background : [];
+  const resumes =
+    typeof row.resumes === "number" && row.resumes > 0 ? row.resumes : 0;
+  return {
+    sessionId: row.sessionId,
+    cwd: row.cwd,
+    ...(background.length ? { background } : {}),
+    ...(resumes ? { resumes } : {}),
+  };
+}
+
 /** Kept across Vite reloads; boot must not delete the only copy. */
-export async function listInFlightSessions(): Promise<
-  { sessionId: string; cwd: string }[]
-> {
-  const rows = await invoke<{ sessionId: string; cwd: string }[]>(
-    "session_list_in_flight",
-  );
-  return Array.isArray(rows) ? rows : [];
+export async function listInFlightSessions(): Promise<InFlightRef[]> {
+  const rows = await invoke<InFlightRow[]>("session_list_in_flight");
+  return Array.isArray(rows) ? rows.map(inFlightRef) : [];
 }
 
 /** Destructive: the first window to boot after a quit owns these chats. */
-export async function takeInFlightSessions(): Promise<
-  { sessionId: string; cwd: string }[]
-> {
-  const rows = await invoke<{ sessionId: string; cwd: string }[]>(
-    "session_take_in_flight",
-  );
-  return Array.isArray(rows) ? rows : [];
+export async function takeInFlightSessions(): Promise<InFlightRef[]> {
+  const rows = await invoke<InFlightRow[]>("session_take_in_flight");
+  return Array.isArray(rows) ? rows.map(inFlightRef) : [];
 }
 
 /**
@@ -1089,7 +1117,12 @@ function sanitizeBlock(
   if (block.role === "system") {
     const interjection = sanitizeInterjection(block.interjection);
     if (interjection) next.interjection = interjection;
-    if (block.notice === "error" || block.notice === "interrupt") {
+    if (
+      block.notice === "error" ||
+      block.notice === "interrupt" ||
+      block.notice === "resume-stopped" ||
+      block.notice === "recovered"
+    ) {
       next.notice = block.notice;
     }
     // The ship whose restart cut the turn: the resume carries its receipt (src-tauri/src/ship.rs).

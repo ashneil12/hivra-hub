@@ -31,7 +31,7 @@ it("only a seated Mono may build; a temporary worker is turned away before anyth
 it("calls the backend through the hub transport and validates what comes back", async () => {
   const call = vi.fn(async () => stubPageSpec("EXO bugs"));
   const r = await buildPage(req, { roster, transport: { call: call as never, openFeed: () => () => undefined } });
-  expect(call).toHaveBeenCalledWith("ash-hub-build-page", req);
+  expect(call).toHaveBeenCalledWith("ash-hub-build-page", { ...req, wait: 30 });
   expect(r.status).toBe("ready");
   expect((await buildPage(req, { roster, transport: answering({ kind: "blocks", title: "x", blocks: [{ kind: "video", title: "v" }] }) })).status).toBe("turned-down");
 });
