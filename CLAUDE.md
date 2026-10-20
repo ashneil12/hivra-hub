@@ -115,7 +115,8 @@ receipt).
 
 After a commit, rollback is manual: `npm run hub:rollback -- <id> --confirm` (the database goes back to that
 ship's copy, so newer chats leave the live database; the rollback keeps a copy of them). The last 3 ship folders
-stay; older ones move to `~/Archive/monocode/ships/`. `npm run hub:ship -- --drill-rollback` runs the whole path
+stay; older ones move to `~/Archive/monocode/ships/` and are never deleted (`npm run hub:doctor` shows how many and
+how big). `npm run hub:ship -- --drill-rollback` runs the whole path
 and then rolls back on purpose.
 
 **Never** quit, kill (`pkill`, `killall`, `osascript ... quit`) or copy the daily app by hand, and never ship from

@@ -60,7 +60,8 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
 - Rollback is automatic only before "committed".
 - At startup, `main()` finishes an interrupted trial or restore if the runner died (crash, reboot).
 - After "committed", the new build is authoritative. A crash loop hits the three-try cap. `hub:rollback <id>` is manual, because the database copy would drop newer chats.
-- Only the last 3 ship folders stay; older ones move to `~/Archive/monocode/ships/`.
+- Only the last 3 ship folders stay; older ones move to `~/Archive/monocode/ships/`. Nothing deletes them;
+  `hub:doctor` reports the archive's count and size.
 - Ash installs the first build that can ship once, with the old `hub:install`.
 
 ## 2. Work packages

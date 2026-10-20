@@ -10,7 +10,9 @@
 // - data folders: ~/Library/Application Support/com.ash.monocode-hub*, and upstream's com.monocode.desktop;
 // - running copies: each data folder's running.json whose process is still alive (pid and start time);
 // - slots: ~/.monocode-hub-dev/slots.json, and dev data folders it doesn't know;
-// - worktrees: `git worktree list` of this repo, plus any MonoCode Hub checkout under ~/Worktrees.
+// - worktrees: `git worktree list` of this repo, plus any MonoCode Hub checkout under ~/Worktrees;
+// - the ship archive: ~/Archive/monocode/ships, where old ship folders go. Nothing ever deletes them, so it only grows;
+//   the doctor says how many and how big (it never prunes).
 //
 // It only reads. It never opens a database or a lock file (sizes come from du), and never launches anything; a copy's
 // kind comes from its identifier (src-tauri/src/instance.rs, scripts/hub-bundle.mjs). Tests: scripts/hub-doctor.test.cjs.
@@ -223,8 +225,14 @@ export async function collect({
     target: fs.existsSync(path.join(tree.path, "target")) ? path.join(tree.path, "target") : null,
   }));
 
-  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows };
+  // Old ship folders (scripts/hub-ship-runner.mjs `retainShips`): kept forever, so its size is worth seeing.
+  const archive = path.join(home, "Archive/monocode/ships");
+  const archived = list(archive).filter((dir) => !path.basename(dir).startsWith(".") && fs.statSync(dir).isDirectory());
+  const shipArchive = { path: archive, count: archived.length };
+
+  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows, shipArchive };
   if (sizes) {
+    shipArchive.size = archived.length ? await sizeOf(archive) : 0;
     const jobs = [
       ...bundles.map((row) => [row, row.path]),
       ...dataFolders.map((row) => [row, row.path]),
@@ -275,6 +283,13 @@ export function render(report) {
     lines.push(
       `  ${t(w.path)}  ${w.branch || "?"} @ ${w.commit ?? "?"}  ${w.kind}${w.slot ? `, slot ${w.slot}` : ""}${w.size === undefined ? "" : `  ${formatSize(w.size)}${w.targetSize ? ` (target ${formatSize(w.targetSize)})` : ""}`}`,
     );
+  if (report.shipArchive) {
+    const { path: where, count, size: bytes } = report.shipArchive;
+    const what = count
+      ? `${count} ship${count === 1 ? "" : "s"}${bytes === undefined ? "" : `, ${formatSize(bytes)}`} (kept: nothing is deleted; move old ones out by hand)`
+      : "empty";
+    lines.push("", `Ship archive  ${t(where)}  ${what}`);
+  }
   if (report.sharedBuildCache)
     lines.push("", `Shared Rust build cache  ${t(report.sharedBuildCache.path)}  ${report.sharedBuildCache.size == null ? "not created yet" : formatSize(report.sharedBuildCache.size)}`);
   return lines.join("\n");
