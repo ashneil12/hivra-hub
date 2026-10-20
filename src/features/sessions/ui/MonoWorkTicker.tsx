@@ -41,14 +41,20 @@ export function MonoWorkTicker({
       "(prefers-reduced-motion: reduce)",
     ).matches;
     const elapsed = performance.now() - lastTick.current;
+    // A lasting state that is over (a workflow run that ended) gives way at
+    // once; holding it would show something no longer true.
+    const over = !!current.lasting && current.lasting !== status.lasting;
     // Bursts coalesce into the latest activity, without interrupting a tick.
-    const delay = reduced
-      ? 0
-      : Math.max(
-          0,
-          Math.max(frame.previous ? TICK_MS : 0, status.active ? HOLD_MS : 0) -
-            elapsed,
-        );
+    const delay =
+      reduced || over
+        ? 0
+        : Math.max(
+            0,
+            Math.max(
+              frame.previous ? TICK_MS : 0,
+              status.active ? HOLD_MS : 0,
+            ) - elapsed,
+          );
     const tick = () => {
       lastTick.current = performance.now();
       setFrame((previous) => ({
@@ -63,7 +69,14 @@ export function MonoWorkTicker({
     }
     const timer = window.setTimeout(tick, delay);
     return () => window.clearTimeout(timer);
-  }, [status.key, status.label, status.kind, status.active, frame]);
+  }, [
+    status.key,
+    status.label,
+    status.kind,
+    status.active,
+    status.lasting,
+    frame,
+  ]);
 
   useEffect(() => {
     if (!frame.previous) return;

@@ -93,3 +93,32 @@ test("an agent in the run opens onto what Claude Code streams for it: its brief,
   await expect(failed.locator("[data-workflow-agent-prompt]")).toHaveText("FAIL-ME AGENT-C verify findings");
   await shot(page, "workflow-5-agent-failed");
 });
+
+test("once the run ends while the Lead's turn goes on, its line says what the Lead does now, not the run", async ({ page }) => {
+  await page.goto("/tests/browser/workflow-run.html?scenario=ended");
+  await expect.poll(async () => (await proof(page)).held).toBe(true);
+  const ticker = page.locator("[data-mono-work] [role=status] .sr-only").first();
+  await expect(ticker).toHaveText("Running workflow: Verify (2/3 agents)");
+  // The ticker just moved to the run's line, so it would hold it for most of its 850 ms. The run ends now.
+  const moved = await page.evaluate(async () => {
+    const run = () => document.querySelector("[data-workflow-run] [data-workflow-status]")?.textContent ?? "";
+    const line = () => document.querySelector("[data-mono-work] [role=status] .sr-only")?.textContent ?? "";
+    const wait = async (until: () => boolean) => {
+      while (!until()) await new Promise((resolve) => setTimeout(resolve, 5));
+      return performance.now();
+    };
+    (window as unknown as { proof: Proof }).proof.resume();
+    const ended = await wait(() => run().startsWith("Finished"));
+    const changed = await wait(() => !line().startsWith("Running workflow"));
+    return { ms: changed - ended, line: line() };
+  });
+  expect(moved.line).toBe("Thinking…");
+  expect(moved.ms).toBeLessThan(150);
+  await expect(page.locator("[data-mono-work]").first()).not.toContainText("Running workflow");
+  // Still the Lead's live turn (Claude Code has yet to pick the thread back up).
+  expect((await proof(page)).held).toBe(true);
+  await expect(page.locator("[data-workflow-run] [data-workflow-status]").first()).toHaveText(
+    "Finished · 2 of 3 agents done · 1 failed",
+  );
+  await shot(page, "workflow-6-run-ended-turn-live");
+});

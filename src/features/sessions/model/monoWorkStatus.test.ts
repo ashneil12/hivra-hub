@@ -48,6 +48,28 @@ describe("Mono work status", () => {
     ).toBe("Pondering…");
   });
 
+  it("reads a running workflow as lasting, and what the Lead does next once the run is over", () => {
+    const run = (status: "running" | "completed"): Block => ({
+      id: "wf",
+      role: "tool",
+      text: "Workflow",
+      tool: { kind: "workflow", status: status === "running" ? "in_progress" : "completed" },
+      workflowRun: {
+        taskId: "w1",
+        status,
+        phases: [{ index: 1, title: "Verify" }],
+        agents: [{ index: 1, label: "Verify findings", state: status === "running" ? "working" : "failed", phaseIndex: 1 }],
+      },
+    });
+    expect(monoWorkStatus([run("running")], true)).toMatchObject({
+      label: "Running workflow: Verify (0/1 agents)",
+      lasting: "workflow:w1",
+    });
+    const after = monoWorkStatus([run("completed")], true);
+    expect(after.label).toBe("Thinking…");
+    expect(after.lasting).toBeUndefined();
+  });
+
   it("prioritizes an unresolved approval over later narration", () => {
     expect(
       monoWorkStatus(

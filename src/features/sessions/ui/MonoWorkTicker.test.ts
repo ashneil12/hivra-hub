@@ -98,3 +98,28 @@ it("changes immediately without a rolling animation when reduced motion is enabl
   expect(container.querySelector('[data-moving="true"]')).toBeNull();
   expect(container.querySelectorAll(".mono-work-ticker-row")).toHaveLength(1);
 });
+
+it("holds a workflow run's progress like any step, but drops the run the moment it is over", () => {
+  const run = (done: number): MonoWorkStatus => ({
+    key: `workflow:w1:${done}/3`,
+    label: `Running workflow: Verify (${done}/3 agents)`,
+    kind: "agent",
+    active: true,
+    lasting: "workflow:w1",
+  });
+  render(run(1));
+  render(run(2));
+  // Progress inside the run keeps the ticker's pace.
+  expect(container.querySelector(".sr-only")?.textContent).toBe(run(1).label);
+  advance(850);
+  expect(container.querySelector(".sr-only")?.textContent).toBe(run(2).label);
+  // The run ended while the turn goes on: the line moves on now, not after a hold (the run's line pushed out above).
+  advance(100);
+  render(thinking);
+  expect(container.querySelector(".sr-only")?.textContent).toBe(thinking.label);
+  const rows = () => Array.from(container.querySelectorAll(".mono-work-ticker-row")).map((row) => row.textContent);
+  expect(rows()).toEqual([run(2).label, thinking.label]);
+  expect(container.querySelector('[data-moving="true"]')).not.toBeNull();
+  advance(340);
+  expect(rows()).toEqual([thinking.label]);
+});

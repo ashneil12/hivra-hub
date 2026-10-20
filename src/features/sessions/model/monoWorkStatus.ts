@@ -25,6 +25,12 @@ export type MonoWorkStatus = {
   label: string;
   kind: ActivityPhaseKind;
   active: boolean;
+  /**
+   * A state that lasts, not a step (a workflow run, by its task id). Its
+   * progress ticks at the ticker's pace, but once it is over the line moves
+   * on at once: a run that ended must not read as running.
+   */
+  lasting?: string;
 };
 
 /** A short status for the latest activity, stable across its streamed chunks. */
@@ -61,11 +67,15 @@ export function monoWorkStatus(
       label: `${line.charAt(0).toUpperCase()}${line.slice(1)}`,
       kind: "agent",
       active: true,
+      lasting: `workflow:${workflow.taskId}`,
     };
   }
   let thought = -1;
   let latest: Block | undefined;
   for (const block of blocks) {
+    // A run that is over is not what the Lead is doing now; while one runs,
+    // the line above already says so.
+    if (block.workflowRun) continue;
     if (isProseBlock(block) || isThinkingBlock(block)) {
       thought += 1;
       latest = block;

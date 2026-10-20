@@ -19,18 +19,25 @@ import "../../src/styles/index.css";
 
 // The real Claude adapter, registry, transcript and Being built, fed what Claude Code 2.1.302 streamed for a real
 // Workflow run against a fake API (the recorded fixtures). Only the child process and native IPC are fake.
-const scenario = new URLSearchParams(location.search).get("scenario") === "stop" ? "stop" : "run";
+const scenarioParam = new URLSearchParams(location.search).get("scenario");
+const scenario = scenarioParam === "stop" ? "stop" : scenarioParam === "ended" ? "ended" : "run";
 const lines = (scenario === "stop" ? stopFixture : runFixture).split("\n").filter((line) => line.trim());
 const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
 const agentsIn = (rec: Record<string, unknown>) =>
   Array.isArray(rec.workflow_progress)
     ? (rec.workflow_progress as Array<Record<string, unknown>>).filter((entry) => entry.type === "workflow_agent")
     : [];
-// Where the replay waits for the test: mid-run (one agent done, one working), or at the first agent frame for Stop.
+// Where the replay waits for the test: mid-run (one agent done, one working), at the first agent frame for Stop, or,
+// for "ended", at the last agent frame, resuming only to just after the run ends: the Lead's turn goes on there
+// (Claude Code picks the thread back up after the run's notification).
+const runEnds = records.findIndex((rec) => rec.subtype === "task_updated");
 const holdAt =
   scenario === "stop"
     ? records.findIndex((rec) => agentsIn(rec).length > 0)
-    : records.findIndex((rec) => agentsIn(rec).some((agent) => agent.state === "done"));
+    : scenario === "ended"
+      ? runEnds - 1
+      : records.findIndex((rec) => agentsIn(rec).some((agent) => agent.state === "done"));
+const resumeTo = scenario === "ended" ? records.findIndex((rec) => rec.subtype === "task_notification") : lines.length;
 
 Object.assign(window, {
   __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
@@ -125,7 +132,7 @@ function Fixture() {
       proof: {
         sent,
         held: () => held,
-        resume: () => void replay(lines.length),
+        resume: () => void replay(resumeTo),
         title: () => document.title,
       },
     });
