@@ -285,9 +285,10 @@ window, provider or service cannot be exercised, report that gap and keep that a
 
 To try a change in the app, use a dev copy (`npm run hub:dev`, see "Which copy is which"). It has its own data
 folder, Mono files, webview storage and Keychain names, its live harness bridge is off and it never reaps the daily
-app's processes. Do not copy the daily database or keys into it. Dev sessions still use the installed agent CLIs;
-use a test worktree and avoid real external actions. The old MonoCode Test copy (`hub:test-copy:*`,
-`com.ash.monocode-hub.sandbox`) is retired: dev copies replace it.
+app's processes. Never copy the daily database or keys into it by hand: the one supported copy is
+`npm run hub:seed-dev` (or `hub:dev -- --seed`), a cleaned backup of the chats only; keys never go in. Dev sessions
+still use the installed agent CLIs; use a test worktree and avoid real external actions. The old MonoCode Test copy
+(`hub:test-copy:*`, `com.ash.monocode-hub.sandbox`) is retired: dev copies replace it.
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
