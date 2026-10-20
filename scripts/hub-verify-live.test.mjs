@@ -200,7 +200,7 @@ test("configs layer like tauri --config (JSON merge patch) and run ids are safe 
   assert.match(runId(new Date("2026-10-19T22:05:09Z")), /^[A-Za-z0-9._-]{1,64}$/);
 });
 
-// ---- cleanup (SH-6) ---------------------------------------------------------------------------
+// ---- cleanup (SH-6) and the slot registry (SH-7) ---------------------------------------------------------------------------
 
 /** A fresh folder that stands in for Ash's real HOME, a TMPDIR to watch, and a way to put the worktree back as it was. */
 function sandbox(t) {
@@ -240,6 +240,19 @@ test("SH-6: a run that fails while setting up still removes its temporary HOME",
   const result = verifyLive(box, ["--no-build", "--slot", base]);
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /belong to other worktrees/);
+  assert.deepEqual(fs.readdirSync(box.tmp), [], "the temporary HOME is gone");
+});
+
+test("SH-7: the verify slot is never registered in the real home's slots.json", (t) => {
+  const box = sandbox(t);
+  const slot = `verify-reg-${process.pid}`;
+  t.after(() => fs.rmSync(path.join(ROOT, "target/hub-dev", `${slot}.conf.json`), { force: true }));
+  // Stops at the copy check (no build here), after the slot is planned and set up.
+  const result = verifyLive(box, ["--no-build", "--slot", slot]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const registry = path.join(box.home, ".monocode-hub-dev/slots.json");
+  const slots = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry, "utf8")).slots : {};
+  assert.equal(slots[slot], undefined, "a later plain hub:dev in this worktree can't pick it");
   assert.deepEqual(fs.readdirSync(box.tmp), [], "the temporary HOME is gone");
 });
 

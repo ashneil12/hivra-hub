@@ -700,6 +700,8 @@ async function main() {
     for (const dir of [home, project, bin, fake]) fs.mkdirSync(dir, { recursive: true });
 
     // -- the slot, the fake and the plan -------------------------------------------------------------------------------
+    // Planned against the real slot registry (read only) so it never takes another worktree's slot, but registered only
+    // under the temporary HOME: in the real slots.json a later plain hub:dev in this worktree could pick it.
     slot = await planSlot({ requested: options.slot });
     if (kindOf(slot.identifier) !== "dev" || !slot.identifier.startsWith(DEV_IDENTIFIER_PREFIX))
       throw new Error(`refusing: ${slot.identifier} is not a dev copy's identifier`);
@@ -738,7 +740,7 @@ async function main() {
 
   try {
     // -- build ---------------------------------------------------------------------------------------------------------
-    registerSlot(slot);
+    registerSlot(slot, home);
     writeSlotConfig(slot);
     const config = mergePatch(readJson(path.join(ROOT, "src-tauri/tauri.hub.conf.json")), readJson(slot.configFile));
     const binary = path.join(ROOT, "target/debug/monocode");
