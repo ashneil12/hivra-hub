@@ -6,6 +6,7 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  withQueued,
 } from "../../sessions/model/messageQueue";
 import type {
   Attachment,
@@ -20,7 +21,7 @@ export type MessageDelivery = {
   error?: string;
 };
 
-/** Show the message now; the outbox only controls its delivery. */
+/** Show the message now; the outbox only controls its delivery (Ash's own ahead of the app's, `withQueued`). */
 export function enqueueMonoMessage(
   session: Session,
   message: QueuedMessage,
@@ -39,10 +40,10 @@ export function enqueueMonoMessage(
   return {
     ...session,
     blocks: [...session.blocks, bubble],
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      { ...message, blockId: bubble.id },
-    ],
+    queuedMessages: withQueued(session.queuedMessages ?? [], {
+      ...message,
+      blockId: bubble.id,
+    }),
     queueStatus: session.queueStatus === "paused" ? "paused" : "active",
   };
 }
