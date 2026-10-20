@@ -16,7 +16,8 @@ const AGENTS_CSS = `
 .item{border-radius:8px}
 .item:hover{background:color-mix(in srgb,var(--color-content) 4%,transparent)}
 .item + .item{border-top:1px solid var(--color-stroke);border-top-left-radius:0;border-top-right-radius:0}
-.row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.6fr) 104px auto;align-items:center;gap:12px;padding:8px}
+.row,.worker{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.4fr) 124px 236px;align-items:center;gap:12px;padding:8px}
+.wide{grid-column:span 2}
 .name{font-size:13px;color:var(--color-content);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .under{font-size:12px;color:color-mix(in srgb,var(--color-content) 62%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .doing{font-size:13px;color:color-mix(in srgb,var(--color-content) 85%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -37,8 +38,10 @@ button:disabled{opacity:.45;cursor:default}
 .answer{display:flex;gap:6px;align-items:center}
 .answer input{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--color-content);background:var(--color-surface-raised);border:0;border-radius:6px;padding:6px 8px;outline:none}
 .note{font-size:12px;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
-.worker{display:grid;grid-template-columns:minmax(0,1fr) 104px auto;align-items:center;gap:12px;padding:4px 0 4px 16px}
-.worker .name{font-size:12px;color:color-mix(in srgb,var(--color-content) 85%,transparent)}
+.worker{padding-top:4px;padding-bottom:4px}
+.worker .name{padding-left:16px;font-size:12px;color:color-mix(in srgb,var(--color-content) 85%,transparent)}
+.worker .doing{font-size:12px;color:color-mix(in srgb,var(--color-content) 70%,transparent)}
+.more .worker{margin:0 -8px}
 .empty{font-size:13px;color:color-mix(in srgb,var(--color-content) 70%,transparent);padding:8px}
 `;
 
@@ -108,11 +111,11 @@ function row(item) {
   wrap.dataset.item = item.key;
   const r = el("div", "row");
   r.dataset.row = item.key;
-  const who = el("div");
+  const who = el("div", item.doing ? "" : "wide");
   who.appendChild(el("div", "name", item.name));
   if (item.under) who.appendChild(el("div", "under", item.under));
   r.appendChild(who);
-  r.appendChild(el("div", "doing", item.doing || ""));
+  if (item.doing) r.appendChild(el("div", "doing", item.doing));
   r.appendChild(status(item.state, item.since));
   const acts = el("div", "acts");
   const q = item.question;
@@ -140,7 +143,10 @@ function row(item) {
 }
 function workerLine(w) {
   const line = el("div", "worker");
-  line.appendChild(el("div", "name", w.title));
+  line.dataset.worker = w.id;
+  const doing = w.state === "working" ? w.doing : w.reason || "";
+  line.appendChild(el("div", doing ? "name" : "name wide", w.title));
+  if (doing) line.appendChild(el("div", "doing", doing));
   line.appendChild(status(w.state, w.state === "done" || w.state === "failed" || w.state === "stopped" ? 0 : w.since));
   const acts = el("div", "acts");
   acts.appendChild(btn("Open", (b) => tap("w:" + w.id, b, "chats.open", { workerId: w.id })));
@@ -155,14 +161,14 @@ function attention(agents) {
   const walk = (agent, workers, path) => {
     for (const w of workers) {
       if (w.state === "asking" || w.state === "stuck")
-        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: w.doing, state: w.state, since: w.since, reason: w.reason,
+        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: "", state: w.state, since: w.since, reason: w.reason,
           question: w.question, openArgs: { workerId: w.id }, stopArgs: { workerId: w.id } });
       walk(agent, w.workers || [], path);
     }
   };
   for (const a of agents) {
     if (a.state === "asking" || a.state === "stuck")
-      out.push({ key: "a:" + a.id, name: a.name, doing: a.doing, state: a.state, since: a.since, reason: a.reason, question: a.question,
+      out.push({ key: "a:" + a.id, name: a.name, doing: a.state === "stuck" ? a.doing : "", state: a.state, since: a.since, reason: a.reason, question: a.question,
         agentId: a.id, openArgs: { agentId: a.id }, stopArgs: a.state === "stuck" && a.chatId ? { agentId: a.id } : null });
     walk(a, a.workers || [], a.name);
   }

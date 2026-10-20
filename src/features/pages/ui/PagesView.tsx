@@ -646,7 +646,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
       <div data-pages-new-version>
         <div className="mb-1 text-[12px] text-content/60">“{viewing.request}” · {viewing.by} built a new version</div>
         <div className="mb-3 text-[12px] text-content/70" data-pages-new-version-keeps>
-          {keeps.length ? `It keeps what you allowed: ${keeps.map(describeCapability).join("; ").toLowerCase()}.` : "The page stays as it is until you use this version."}
+          {keeps.length ? `It keeps what you allowed it (${allowedLabel(keeps.length).replace(/^Allowed: /, "")}).` : "The page stays as it is until you use this version."}
         </div>
         {added.length ? <div className="mb-3"><div className="mb-1 text-[12px] text-content/70">The new version also asks:</div><Permissions asks={added} /></div> : null}
         <div className="relative rounded-xl border border-dashed border-content/30 p-4">
