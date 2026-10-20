@@ -373,11 +373,11 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       // opens at once on the Mono's chat.
       const monoId = String(action.mono ?? "");
       if (!listMonos().some((mono) => mono.id === monoId)) throw new Error(`team: no Mono ${monoId}`);
+      // It answers once the switch is made; the team's window is read with "open" afterwards.
       const on = action.on !== false;
       await setMonoTeam(monoId, on);
       if (on) openMonoTeam(monoId, { owner: true });
-      await wait(Number(action.settleMs ?? 1500));
-      return { ok: true, on, folder: monoWorkFolder(monoId) ?? null, dom: domRows() };
+      return { ok: true, on, folder: monoWorkFolder(monoId) ?? null };
     }
     case "answer": {
       // Today's Waiting on you row: "Take the pick" (one tap) or "answer in your words" + Send.

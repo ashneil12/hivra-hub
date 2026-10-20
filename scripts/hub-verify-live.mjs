@@ -2587,7 +2587,8 @@ async function main() {
     let teamDom = null;
     let teamError = null;
     try {
-      teamSwitch = await act("team", { mono: mtMonoId, on: true, settleMs: scale(2_000) });
+      // Its window is busy with the Mono's reports just before: room to answer on a loaded Mac.
+      teamSwitch = await act("team", { mono: mtMonoId, on: true }, 120_000);
     } catch (error) {
       teamError = error.message;
     }
