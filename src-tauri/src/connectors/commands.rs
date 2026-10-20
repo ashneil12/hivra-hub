@@ -47,13 +47,7 @@ fn entry(id: &str) -> Result<&'static catalog::Entry, String> {
 
 /// A server URL: https, or plain http only to this Mac (a server you run yourself).
 fn secure_or_local(value: &str) -> bool {
-    match url::Url::parse(value) {
-        Ok(url) if url.scheme() == "https" => url.host_str().is_some(),
-        Ok(url) if url.scheme() == "http" => {
-            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-        }
-        _ => false,
-    }
+    oauth::secure_or_loopback(value)
 }
 
 fn check_allow(allow: &[String]) -> Result<(), String> {

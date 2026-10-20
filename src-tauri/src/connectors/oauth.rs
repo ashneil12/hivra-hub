@@ -37,6 +37,29 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// An address a login may go to: https, or plain http only to this Mac (a server Ash runs himself).
+pub fn secure_or_loopback(value: &str) -> bool {
+    match url::Url::parse(value) {
+        Ok(url) if url.scheme() == "https" => url.host_str().is_some(),
+        Ok(url) if url.scheme() == "http" => {
+            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+        }
+        _ => false,
+    }
+}
+
+/// `value`, if it is [`secure_or_loopback`]; else why not, in words.
+fn secure(value: String, what: &str) -> Result<String, String> {
+    if secure_or_loopback(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "The sign-in server named an address for its {what} that isn't https ({}), so MonoCode Hub won't send a login there.",
+            display_url(&value)
+        ))
+    }
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))
@@ -83,7 +106,11 @@ pub fn discover(mcp_url: &str) -> Result<Endpoints, String> {
         }
     }
     let path = base.path().trim_end_matches('/');
-    let mut candidates: Vec<String> = metadata_url.into_iter().collect();
+    // Metadata over plain http could be swapped on the way: only an https (or loopback) address is read.
+    let mut candidates: Vec<String> = metadata_url
+        .into_iter()
+        .filter(|url| secure_or_loopback(url))
+        .collect();
     if !path.is_empty() {
         candidates.push(format!(
             "{origin}/.well-known/oauth-protected-resource{path}"
@@ -112,6 +139,7 @@ pub fn discover(mcp_url: &str) -> Result<Endpoints, String> {
                 })
         })
         .unwrap_or_default();
+    let issuer = secure(issuer, "sign-in")?;
     let issuer_url =
         url::Url::parse(&issuer).map_err(|_| "The sign-in server isn't valid.".to_string())?;
     let issuer_origin = issuer_url.origin().ascii_serialization();
@@ -148,15 +176,21 @@ pub fn discover(mcp_url: &str) -> Result<Endpoints, String> {
         })
         .unwrap_or_else(|| Some(format!("{issuer_origin}/register")));
     Ok(Endpoints {
-        authorize: field("authorization_endpoint", "/authorize"),
-        token: field("token_endpoint", "/token"),
-        register,
+        authorize: secure(
+            field("authorization_endpoint", "/authorize"),
+            "sign-in page",
+        )?,
+        token: secure(field("token_endpoint", "/token"), "tokens")?,
+        register: register
+            .map(|url| secure(url, "app registration"))
+            .transpose()?,
         scopes,
     })
 }
 
 /// Dynamic client registration: the hub registers itself for this one redirect address.
 pub fn register(endpoint: &str, redirect: &str) -> Result<(String, Option<String>), String> {
+    secure(endpoint.to_string(), "app registration")?;
     let body = serde_json::json!({
         "client_name": "MonoCode Hub",
         "redirect_uris": [redirect],
@@ -325,6 +359,8 @@ fn handle_callback(mut stream: TcpStream, state: &str) -> Option<Result<String, 
 }
 
 fn token_request(endpoint: &str, form: &[(&str, &str)]) -> Result<Value, String> {
+    // A code, a refresh token or a client secret only ever goes over https (or to this Mac).
+    secure(endpoint.to_string(), "tokens")?;
     match agent()
         .post(endpoint)
         .set("Accept", "application/json")
@@ -754,6 +790,79 @@ pub(crate) mod tests {
             "kept when none comes back"
         );
         assert!(!expiring(&renewed));
+    }
+
+    /// An MCP server on this Mac whose metadata names the authorization endpoints given (by `me`, its own address).
+    fn server_naming(endpoints: impl Fn(&str) -> Value + Send + 'static) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let me = base.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let (head, _) = read_request(&mut stream);
+                let line = head.lines().next().unwrap_or("").to_string();
+                let body = if line.starts_with("GET /.well-known/oauth-protected-resource") {
+                    serde_json::json!({"resource": format!("{me}/mcp"), "authorization_servers": [format!("{me}/")]})
+                } else if line.starts_with("GET /.well-known/oauth-authorization-server") {
+                    endpoints(&me)
+                } else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                };
+                let b = body.to_string();
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len());
+            }
+        });
+        format!("{base}/mcp")
+    }
+
+    /// A server's metadata can name any address: the code, the tokens and the refresh token go there. Only https (or
+    /// plain http to this Mac) is taken.
+    #[test]
+    fn discovered_endpoints_must_be_https() {
+        for (field, bad) in [
+            ("token_endpoint", "http://attacker.example/token"),
+            (
+                "authorization_endpoint",
+                "http://attacker.example/authorize",
+            ),
+            ("registration_endpoint", "http://attacker.example/register"),
+            ("token_endpoint", "ftp://attacker.example/token"),
+        ] {
+            let mcp = server_naming(move |me| {
+                let mut metadata = serde_json::json!({
+                    "issuer": me,
+                    "authorization_endpoint": format!("{me}/authorize"),
+                    "token_endpoint": format!("{me}/token"),
+                    "registration_endpoint": format!("{me}/register"),
+                });
+                metadata[field] = Value::from(bad);
+                metadata
+            });
+            let err = discover(&mcp).unwrap_err();
+            assert!(err.contains("https"), "{field} {bad}: {err}");
+        }
+        // Loopback http is fine (a server Ash runs himself, and these tests).
+        let local = server_naming(|me| {
+            serde_json::json!({"issuer": me, "authorization_endpoint": format!("{me}/authorize"),
+                "token_endpoint": format!("{me}/token"), "registration_endpoint": format!("{me}/register")})
+        });
+        assert!(discover(&local).is_ok());
+        // A login kept from before is never renewed over plain http either.
+        let tokens = OAuthTokens {
+            access_token: "A".into(),
+            refresh_token: Some("REFRESH_SENTINEL".into()),
+            expires_at: Some(1),
+            token_endpoint: "http://attacker.example/token".into(),
+            client_id: "c".into(),
+            client_secret: None,
+            resource: None,
+        };
+        let err = refresh(&tokens).unwrap_err();
+        assert!(err.contains("https"), "{err}");
     }
 
     #[test]
