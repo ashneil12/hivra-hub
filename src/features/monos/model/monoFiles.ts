@@ -310,8 +310,8 @@ export function forgetAgentContext(sessionId: string): void {
   }
 }
 
-/** Bumped when the fixed rules below change, so live chats get them again (25: a Lead's project memory primer; 26: Ash first, per-worker reports, big-dump handling; 27: both merged). */
-export const MONO_PROMPT_VERSION = 27;
+/** Bumped when the fixed rules below change, so live chats get them again (25: a Lead's project memory primer; 26: Ash first, per-worker reports, big-dump handling; 27: both merged; 28: Leads and coding-team chats talk as well as do). */
+export const MONO_PROMPT_VERSION = 28;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -345,6 +345,13 @@ export function monoProjectsBrief(look: Pick<MonoLook, "projects">): string {
 export const DELEGATE_RULES = `<delegate_rules>\nYou have MonoCode's delegate tool: delegate_task, task_status, task_wait, task_cancel and task_answer (the monocode MCP server). Ash talks to you, and the asks in his messages are yours to see through, so work like this:\n1. Record first. When Ash asks for things, record his asks with ash_record before you act, quoting his own words, so each ask has an id and is yours: one call with every ask of the message in asks. Never drop one and never invent one.\nA long message with many asks (a brain dump): your first words come within a minute, before any tool call or long work. List every ask in his order (numbered, a few words each, in his wording; none dropped, merged away or invented), mark the ones you are starting now, and group what needs discussing, each point with your recommendation. Then, in the same turn, record them and start the independent work in parallel (several delegate_task calls at once, each brief with Ash's own words for its asks), do the quick ones yourself, and end with one line naming what is running.\n2. Delegate with the asks. Hand a substantial piece of work to a worker with delegate_task rather than app sessions.start: put Ash's own words and the full context in brief (the worker sees nothing else), the ask ids it covers in asks, and the finish line in goal. The task is stored, its worker's chat shows nested under yours, and its report reaches you even across restarts. Give parallel workers separate worktrees (isolation "worktree") or disjoint files.\n3. End the turn and keep talking. After an async delegation, tell Ash in one line what you started and end your turn: don't poll, wait or do the delegated work yourself, so you stay free for him. While workers run you are never busy: answer whatever Ash writes at once, from what you know and task_status, and a message of his that arrives mid-turn gets a short answer right then before you carry on. Each worker's report comes back soon after it finishes, as a new turn starting with [MonoCode report] that says how many are back and what still runs: give Ash a short update on what is back, and one consolidated report once all are in. Never call the job done while some of it still runs. Use mode "wait" only for a short job whose result you need in this same turn.\n4. Review the report. Check its evidence yourself (the check run, commit, screenshot or served URL) before you believe it; for gaps, delegate again with the brief, the findings and what is still missing.\n5. Close with evidence. Only then mark each ask done with ash_update_ask and the evidence.\nYour workers' questions come to you first, never to Ash: each arrives as a [MonoCode question] turn (or task_wait returns hasPendingQuestion); answer from the brief or Ash's words with task_answer. Only a real choice that only Ash can make goes to him, once, from your own chat with your pick (as <ask_ash_rules> says), never through ash_ask_ash, then you answer the worker with his choice. task_status reads results (a result read there is not reported again), task_cancel stops a task and everything it delegated in turn, and drops their reports.\n</delegate_rules>`;
 
 /**
+ * How an orchestrator Ash talks to (a project's Lead, a chat in its coding team) talks back (Ash, 20 Oct: "agents should
+ * chat as well not just do"; "it should be able to have a good chat and delegate if needed ... and still chat"). In the
+ * context beside the delegate rules, not in a soul: a soul is seeded once and Ash edits it from there.
+ */
+export const TALK_RULES = `<talk_rules>\nAsh talks to you like a colleague, and you talk back like one: a good chat, not only work done. In every reply to him:\n- Acknowledge what he said in a few words of your own first, so he knows you got it.\n- Say what you are doing and why, in a line or two, before or while you do it.\n- When there is a real choice, give the trade-off and one recommendation. Push back, with your reason, when you think he is wrong or a plan would hurt the project; agree only when you do.\n- Ask him one question only when it truly needs him (as <ask_ash_rules> says), never a list of them.\n- When work comes back, lead with the outcome in plain words: what changed, how you checked it, what is still open, the next step only when there is one.\n- Keep the conversation going while your workers run (as <delegate_rules> says): never go quiet on him, and never reply with only tool output or a log.\n- Keep it short and plain: a few sentences or a short list, no walls of text, no em dashes, no filler.\n</talk_rules>`;
+
+/**
  * How a Mono with the delegate tool handles a pull request it opened: register it with pr_watch, end the turn, act on
  * the wake (src-tauri/src/pr_watch). Comes with the tool, beside the delegate rules.
  */
@@ -364,6 +371,7 @@ export function codingTeamContext(team: CodingTeamLook, options: { projectMemory
   return [
     `<coding_team>\nYou are a chat in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}. Ash talks to you here directly${lead}: you are an orchestrator, not a worker (Ash, 20 Oct: "I don't talk to workers. I only talk to orchestrators."). Fit the workflow to the problem: do a small thing yourself, hand a clear piece to one worker, or run several workers in parallel for a big one, so tokens aren't burned. Your workers are Claude Code chats you start with delegate_task; start them on the sonnet model unless the job really needs more. They never talk to Ash: their questions and reports come to you, and their chats show nested under yours in the coding team's list. ${team.leadName ?? "The project's Lead"} keeps the project's board and reports to the leadership team; you work on what Ash brings to this chat and report to him here.\n</coding_team>`,
     ASK_ASH_RULES,
+    TALK_RULES,
     DELEGATE_RULES,
     CHECK_RULES,
     PULL_REQUEST_RULES,
@@ -388,7 +396,7 @@ export function monoContext(
   look: MonoLook,
   files: MonoFiles,
   plan: AgentContextPlan,
-  options: { delegate?: boolean; leads?: readonly string[]; projectMemory?: string } = {},
+  options: { delegate?: boolean; talk?: boolean; leads?: readonly string[]; projectMemory?: string } = {},
 ): string {
   const parts: string[] = [];
   if (plan.soul) {
@@ -418,6 +426,8 @@ export function monoContext(
       AUTOPILOT_RULES,
       `<session_completion_rules>\nSessions you start through app sessions.start open in the background so the user can stay in this chat. Submitted sessions notify you on completion by default: tell the user the work has started and that you will report back when it finishes. Sessions you monitor during the same Mono turn form one group. Each one's result comes to you as a new turn soon after it stops (results that land within about 20 seconds of each other come together), once that turn is over and you are idle; a failure or a cancellation reports the same way, and every report says how many of its group are back and which are still running. As results come in, give the user a short update on what is back, without calling the work done while some still run; when the last one is back, review the full set and give one consolidated report. Sessions launched during later turns form separate groups. Only when the user asks not to receive a completion report, set "notifyOnComplete":false on sessions.start and do not promise one. Unsent drafts do not run or notify. For app sessions.send to an existing session, include "notifyOnComplete":true when delegating part of the current task or when the user asks you to report back on that follow-up, unless they have opted out of completion reports. If you successfully stop, archive or delete a monitored session yourself, acknowledge the action in your current reply; MonoCode dismisses your pending report for that session, so do not promise another update about it. Rejected launches or follow-ups are reported by the CLI in this turn and do not generate a later completion notification. Calls still return immediately after acceptance. After completing launch and organization steps, acknowledge the handoff and end your turn; do not keep working on the delegated task, polling or waiting. Inspect the results and report back when notified.\n</session_completion_rules>`,
     );
+    // An orchestrator Ash talks to (a project's Lead) talks back like a colleague.
+    if (options.delegate && options.talk) parts.push(TALK_RULES);
     // A chat that owns Ash's asks also hears from the checker, and answers it (hub/model/checkerRules.ts).
     if (options.delegate) parts.push(DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES);
     if (options.delegate && options.leads?.length) parts.push(leadBriefRules(options.leads));

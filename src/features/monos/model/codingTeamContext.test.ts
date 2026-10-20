@@ -8,7 +8,7 @@ import { CHECK_RULES } from "../../hub/model/checkerRules";
 import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
 import { questionGoesToLead } from "../../notifications/model/stuckNotifications";
 import type { Delegation } from "./delegations";
-import { codingTeamContext, DELEGATE_RULES, PULL_REQUEST_RULES } from "./monoFiles";
+import { codingTeamContext, DELEGATE_RULES, PULL_REQUEST_RULES, TALK_RULES } from "./monoFiles";
 import { isOrchestratorChat } from "./orchestrators";
 
 const TEAM = { projectId: "vg-game", projectName: "EXO", folder: "/Users/ash/Projects/vg-game", leadName: "EXO lead" };
@@ -24,7 +24,7 @@ describe("codingTeamContext", () => {
     expect(text.startsWith("<coding_team>\nYou are a chat in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game.")).toBe(true);
     expect(text).toContain("Ash talks to you here directly, like EXO lead: you are an orchestrator, not a worker");
     expect(text).toContain("start them on the sonnet model");
-    for (const block of [ASK_ASH_RULES, DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES]) expect(text).toContain(block);
+    for (const block of [ASK_ASH_RULES, TALK_RULES, DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES]) expect(text).toContain(block);
     expect(text).not.toContain("<project_memory>");
     expect(text).not.toMatch(/—/);
   });

@@ -17,6 +17,7 @@ import {
   monoTurn,
   recordAgentContext,
   resetMonoDefaults,
+  TALK_RULES,
 } from "./monoFiles";
 
 beforeEach(() => {
@@ -202,6 +203,31 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
   expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(
     "<delegate_rules>",
   );
+});
+
+// Ash, 20 Oct: "agents should chat as well not just do": a Lead talks back like a colleague, not a log.
+it("teaches a Lead with the delegate tool to talk as well as do (talk_rules), and no one else", () => {
+  const look = { name: "EXO lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
+  const lead = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, talk: true });
+  expect(lead).toContain(TALK_RULES);
+  // Before the delegate rules, which it points to rather than repeats.
+  expect(lead.indexOf("<talk_rules>")).toBeLessThan(lead.indexOf("<delegate_rules>"));
+  for (const habit of [
+    "Acknowledge what he said in a few words of your own first",
+    "Say what you are doing and why",
+    "give the trade-off and one recommendation",
+    "Push back, with your reason, when you think he is wrong",
+    "Ask him one question only when it truly needs him (as <ask_ash_rules> says)",
+    "lead with the outcome in plain words",
+    "Keep the conversation going while your workers run (as <delegate_rules> says)",
+    "never reply with only tool output or a log",
+    "no walls of text, no em dashes",
+  ])
+    expect(TALK_RULES).toContain(habit);
+  expect(TALK_RULES).not.toMatch(/\u2014/);
+  // Not for a Mono without the delegate tool, nor one that isn't a Lead (the leadership team talks in its room).
+  expect(monoContext(look, files(), { soul: true, memory: true }, { talk: true })).not.toContain("<talk_rules>");
+  expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true })).not.toContain("<talk_rules>");
 });
 
 it("teaches the leadership team to brief Leads (lead_brief_rules), only with the delegate tool and Leads to brief", () => {

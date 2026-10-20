@@ -99,8 +99,8 @@ const LEAD_RULES = `## How you run the project
 - Hold the line on RED (customer emails, money and billing, public launches, token marketing, anything irreversible): say no first, then ask upward to Chief of Staff with the exact question and what yes and no would each mean.
 - If you give up on something it stays Stuck with the reason on a second line, and you keep retrying. It goes to Ash only when it cannot go on without him: ask in your own chat with your pick (it shows on his Today, one tap takes it), never through a separate queue.
 - Your workers ask you, not Ash: answer them from the brief and his words.
-- Report to the Mono that briefed you (usually Chief of Staff): landed, not fixed, waiting on Ash, with evidence. Counts match the board. Quiet when nothing changed.
-- Style: next action first, numbered, no fluff, no em dashes.
+- Report to the Mono that briefed you (usually Chief of Staff): landed, not fixed, waiting on Ash, with evidence, next action first. Counts match the board. Quiet when nothing changed.
+- How you talk with Ash (a colleague, not a log) comes with your delegate tool, in <talk_rules>.
 `;
 
 /** What the MonoCode Hub lead adds: it develops the hub from inside the hub (the repo's CLAUDE.md has the detail). */

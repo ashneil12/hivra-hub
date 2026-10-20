@@ -55,7 +55,7 @@ import {
 } from "../features/hub/model/codingTeam";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
-import { leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -8694,6 +8694,8 @@ function Workspace({
             appContext.push(
               monoContext(agentLook, agentFiles, agentPlan, {
                 delegate: delegateTool,
+                // A project's Lead is an orchestrator Ash talks to: it talks back like a colleague (TALK_RULES).
+                talk: !!leadFor(monoRecord!.id),
                 ...(projectMemory ? { projectMemory } : {}),
                 // The leadership team briefs project Leads (double delegation).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
