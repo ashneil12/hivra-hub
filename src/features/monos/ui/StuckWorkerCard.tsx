@@ -7,11 +7,14 @@ import { Check, CircleAlert, Clock } from "../../../shared/ui/icons";
 import { findMono, monoForSession, monoLook } from "../model/mono";
 import {
   answerWithOption,
+  answerWithStoredOption,
   dismissFailure,
   liveQuestion,
   openStuck,
   questionOptions,
+  questionWithoutOptions,
   sendWords,
+  storedOptions,
   stopStuck,
   suggestion,
   takeSuggestion,
@@ -21,7 +24,7 @@ import type { StuckWorker } from "../model/workerStuck";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
-const QUIET = "shrink-0 rounded-md px-2 py-1 text-xs text-content/55 hover:bg-content/6 hover:text-content disabled:opacity-60";
+const QUIET = "shrink-0 rounded-md px-2 py-1 text-xs text-content/45 hover:bg-content/6 hover:text-content/80 disabled:opacity-60";
 
 /** The Mono a worker answers to, by name ("EXO lead"). */
 export function leadNameOf(stuck: Pick<StuckWorker, "row">): string {
@@ -152,7 +155,11 @@ export function StuckWorkerCard({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const prompt = liveQuestion(stuck);
-  const options = questionOptions(prompt);
+  // Each option its own button, the suggested one first and marked, so picking is one tap (Critiquito, 21 Oct): the live
+  // question's options when this window holds it, else the ones its row stores.
+  const live = questionOptions(prompt);
+  const options = live.length ? live : storedOptions(stuck);
+  const answer = (id: string) => (live.length ? answerWithOption(stuck, id) : answerWithStoredOption(stuck, id));
   const pick = suggestion(prompt, stuck);
   const run = async (call: () => StuckResult | Promise<StuckResult>) => {
     setBusy(true);
@@ -170,6 +177,7 @@ export function StuckWorkerCard({
       : "flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5";
   const placeholder =
     stuck.kind === "asking" ? "Or answer in your words…" : stuck.kind === "stalled" ? "Tell it what to do…" : "Reply in its chat…";
+  const line = options.length ? questionWithoutOptions(stuck.line) : stuck.line;
   return (
     <div className={frame} data-stuck-worker={stuck.row.childSession} data-stuck-kind={stuck.kind} data-stuck-escalated={stuck.escalated || undefined}>
       <div className="flex min-w-0 items-center gap-1.5 text-[12px] text-content/60">
@@ -183,14 +191,15 @@ export function StuckWorkerCard({
         </span>
       </div>
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-stuck-line>
-        {stuck.line}
+        {line}
       </div>
       {stuck.kind === "asking" && pick && !options.length ? (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-stuck-pick>
           Suggests: {pick}
         </div>
       ) : null}
-      <div className="mt-1 flex flex-wrap items-center gap-2">
+      {/* One row of one-tap actions: its options (or its pick), Open chat, and Dismiss for a failure. */}
+      <div className="mt-1 flex flex-wrap items-center gap-2" data-stuck-actions>
         {options.map((option) => (
           <button
             key={option.id}
@@ -198,9 +207,12 @@ export function StuckWorkerCard({
             disabled={busy}
             className={option.recommended ? PRIMARY : BTN}
             data-stuck-option={option.id}
-            onClick={() => void run(() => answerWithOption(stuck, option.id))}
+            data-stuck-suggested={option.recommended || undefined}
+            aria-label={option.recommended ? `${option.label} (suggested)` : option.label}
+            onClick={() => void run(() => answer(option.id))}
           >
-            {option.label}
+            <span data-stuck-option-label>{option.label}</span>
+            {option.recommended ? <span className="ml-1.5 font-normal opacity-60">Suggested</span> : null}
           </button>
         ))}
         {!options.length && pick ? (
@@ -223,29 +235,31 @@ export function StuckWorkerCard({
           <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
             Dismiss
           </button>
-        ) : (
-          <>
-            <input
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.nativeEvent.isComposing) send();
-              }}
-              placeholder={placeholder}
-              aria-label={`${stuck.kind === "asking" ? "Answer" : "Tell"} ${stuckTitle(stuck)} in your words`}
-              maxLength={4000}
-              data-stuck-reply
-              className="min-w-[8rem] flex-1 rounded-md bg-content/5 px-2.5 py-1 text-[13px] text-content outline-none placeholder:text-content/50 focus:bg-content/10"
-            />
-            <button type="button" className={BTN} disabled={busy || !text.trim()} data-stuck-send onClick={send}>
-              {busy ? "Sending…" : "Send"}
-            </button>
-            <button type="button" className={QUIET} disabled={busy} data-stuck-stop onClick={() => void run(() => stopStuck(stuck))}>
-              Stop
-            </button>
-          </>
-        )}
+        ) : null}
       </div>
+      {/* Then Ash's own words, full width: a field that reads as a field, Send, and a quieter Stop set apart. */}
+      {stuck.kind === "failed" ? null : (
+        <div className="mt-1 flex min-w-0 items-center gap-2" data-stuck-reply-row>
+          <input
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) send();
+            }}
+            placeholder={placeholder}
+            aria-label={`${stuck.kind === "asking" ? "Answer" : "Tell"} ${stuckTitle(stuck)} in your words`}
+            maxLength={4000}
+            data-stuck-reply
+            className="min-w-0 flex-1 rounded-md border border-content/12 bg-transparent px-2.5 py-1 text-[13px] text-content outline-none placeholder:text-content/45 focus:border-content/30"
+          />
+          <button type="button" className={BTN} disabled={busy || !text.trim()} data-stuck-send onClick={send}>
+            {busy ? "Sending…" : "Send"}
+          </button>
+          <button type="button" className={`ml-1 ${QUIET}`} disabled={busy} data-stuck-stop onClick={() => void run(() => stopStuck(stuck))}>
+            Stop
+          </button>
+        </div>
+      )}
       {problem ? (
         <div className="text-[13px] text-content/60" data-stuck-problem>
           {problem}

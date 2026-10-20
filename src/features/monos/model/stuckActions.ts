@@ -40,6 +40,39 @@ export function questionOptions(prompt: UserQuestionPrompt | undefined): StuckOp
 }
 
 /**
+ * The options of an asking worker's stored question ("How long? [0.25 s (Recommended) | 0.4 s]"), for a window that
+ * doesn't hold its live question: each one a button (the suggested one first), answered as Ash's words in its chat.
+ * One question only, two to four options; none otherwise.
+ */
+export function storedOptions(stuck: Pick<StuckWorker, "kind" | "row">): StuckOption[] {
+  if (stuck.kind !== "asking") return [];
+  const raw = stuck.row.pendingQuestion?.trim() ?? "";
+  if (raw.includes(" / ")) return [];
+  const match = /\[([^[\]]+)\]\s*$/.exec(raw);
+  const parts = match ? match[1].split(" | ").map((part) => part.trim()).filter(Boolean) : [];
+  if (parts.length < 2 || parts.length > 4) return [];
+  const RECOMMENDED = /\s*[([]\s*recommended\s*[)\]]\s*/i;
+  const options = parts.map((part, i) => ({
+    id: `stored-${i}`,
+    label: part.replace(RECOMMENDED, " ").trim(),
+    recommended: RECOMMENDED.test(part),
+  }));
+  return [...options.filter((o) => o.recommended), ...options.filter((o) => !o.recommended)];
+}
+
+/** The question's words without its "[a | b]" options, when the options show as buttons. */
+export function questionWithoutOptions(text: string): string {
+  return text.replace(/\s*\[[^[\]]+\]\s*$/, "").trim();
+}
+
+/** Answer with one of the stored question's options: Ash's words naming it, into the worker's chat. */
+export function answerWithStoredOption(stuck: StuckWorker, optionId: string): Promise<StuckResult> {
+  const option = storedOptions(stuck).find((o) => o.id === optionId);
+  if (!option) return Promise.resolve({ ok: false, reason: "That question isn't open here any more. Open the chat to answer." });
+  return sendWords(stuck, option.label);
+}
+
+/**
  * The worker's recommended answer, in plain words, when every question has one: from its live question, else from the
  * question its row stores (a window that doesn't run it, or a turn cut off by a restart).
  */

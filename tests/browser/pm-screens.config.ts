@@ -10,7 +10,7 @@ const channel = process.env.PM_PROOF_CHANNEL ?? "chrome";
 export default defineConfig({
   ...base,
   testDir: ".",
-  testMatch: "pm-screens.spec.ts",
+  testMatch: process.env.PM_PROOF_SPEC ?? "pm-screens.spec.ts",
   timeout: 120_000,
   use: { ...base.use, baseURL: `http://127.0.0.1:${PORT}` },
   projects: [{ name: "chromium", use: { browserName: "chromium", ...(channel ? { channel } : {}) } }],

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
 import {
   ASK_ESCALATE_MS,
+  plainReason,
   storedQuestion,
   delegationLine,
   dismissStuck,
@@ -74,7 +75,7 @@ describe("stuckWorkers", () => {
       ["fail", "failed"],
       ["ask", "asking"],
     ]);
-    expect(stuck.find((s) => s.kind === "stalled")?.line).toBe("No output for 9 min · still running npm test");
+    expect(stuck.find((s) => s.kind === "stalled")?.line).toBe("No output for 9 min · still running the tests");
     expect(stuck.find((s) => s.kind === "failed")?.line).toBe("Failed: usage limit reached");
     expect(stuck.find((s) => s.kind === "asking")?.line).toBe("Which save format? [JSON | binary]");
   });
@@ -126,7 +127,7 @@ describe("storedQuestion", () => {
 describe("what a Lead's work reads as", () => {
   const rows = [
     row({ id: "w1" }),
-    row({ id: "w2", stallKind: "loop", stallReason: "Repeating the same step: npm test (6 times)", stalledAt: NOW }),
+    row({ id: "w2", stallKind: "loop", stallReason: "Repeating the same step: the tests (6 times)", stalledAt: NOW }),
     asking("w3", NOW),
     row({ id: "w4", state: "failed", settledAt: NOW - MIN, createdAt: 20 * MIN }),
     row({ id: "w5", state: "completed", settledAt: NOW - MIN, createdAt: 20 * MIN }),
@@ -150,7 +151,7 @@ describe("what a Lead's work reads as", () => {
   });
 
   it("reads one row as its state word for the rail", () => {
-    expect(delegationLine(rows[1], NOW)).toBe("Repeating the same step: npm test (6 times)");
+    expect(delegationLine(rows[1], NOW)).toBe("Repeating the same step: the tests (6 times)");
     expect(delegationLine(rows[0], NOW)).toBe("working");
   });
 });
@@ -171,5 +172,15 @@ describe("stuckForJob: a running sibling never hides a stuck worker", () => {
     expect(stuckForJob(undefined, rows, NOW)).toBeUndefined();
     const onlyStalled = rows.filter((r) => r.id !== "t-b").map((r) => (r.id === "t-c" ? { ...r, parentId: "t-a" } : r));
     expect(stuckForJob("delegation:t-top", onlyStalled, NOW)?.row.id).toBe("t-c");
+  });
+});
+
+describe("plainReason", () => {
+  it("says the commands a stall names in plain words", () => {
+    expect(plainReason("Still running npm test")).toBe("Still running the tests");
+    expect(plainReason("still running npx vitest run src/a.test.ts")).toBe("still running the tests src/a.test.ts");
+    expect(plainReason("Waiting on cargo build")).toBe("Waiting on the build");
+    expect(plainReason("Stuck in npm install")).toBe("Stuck in an install");
+    expect(plainReason("Waiting on a permission")).toBe("Waiting on a permission");
   });
 });
