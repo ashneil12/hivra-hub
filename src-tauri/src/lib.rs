@@ -634,6 +634,8 @@ pub fn run() {
             harness::harness_resolve_opencode,
             harness::harness_resolve_configured,
             harness::harness_runtime_binary_paths,
+            verify_live::verify_live_take,
+            verify_live::verify_live_done,
             harness::harness_resolve_claude,
             harness::claude_mcp_list,
             mcp::mcp_discover,

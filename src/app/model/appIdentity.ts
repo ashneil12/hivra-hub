@@ -40,6 +40,8 @@ export type VerifyPlan = {
   goals?: boolean;
   /** How long a worker may be silent before it is marked stalled (the bench's seconds, not minutes). */
   stallMs?: number;
+  /** The real-Claude bench (scripts/hub-realtest.mjs): the window takes scripted actions (verifyDriver.ts). */
+  driver?: boolean;
 };
 
 export type AppIdentity = {
@@ -61,6 +63,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
     runId: value.runId,
     ...(value.goals === true ? { goals: true } : {}),
     ...(typeof value.stallMs === "number" && value.stallMs >= 1_000 && value.stallMs <= 600_000 ? { stallMs: value.stallMs } : {}),
+    ...(value.driver === true ? { driver: true } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

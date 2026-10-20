@@ -1,0 +1,5 @@
+{
+  "name": "@tally/shared",
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "tally",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings --test packages/*/test/*.test.ts",
+    "api": "node --experimental-strip-types --no-warnings packages/api/src/main.ts"
+  },
+  "engines": { "node": ">=22.6" }
+}
