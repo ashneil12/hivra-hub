@@ -175,7 +175,13 @@ export type AgentAppHost = {
    * `sessions.stop {"cascade":true}` (H4, monos/model/stopTree.ts): stop the session, then everything beneath it,
    * depth first, touching only rows owned by a chat it stopped. Returns the chats that would not stop.
    */
-  stopTree?(id: string): Promise<{ stopFailed: string[]; stopped: string[]; cancelled: string[] }>;
+  stopTree?(id: string): Promise<{
+    stopFailed: string[];
+    stopped: string[];
+    cancelled: string[];
+    /** Chats whose workers couldn't be loaded, so they may still be running. */
+    unloaded?: string[];
+  }>;
   remove(id: string, mode: "archive" | "delete"): Promise<void>;
   worktrees(cwd: string): Promise<Worktrees>;
   createWorktree(
@@ -1385,13 +1391,22 @@ export async function handleAgentApp(
         if (input.cascade === true) {
           if (!host.stopTree)
             throw new Error("This build can't stop a session's tree; stop each session instead");
-          const { stopFailed, cancelled } = await host.stopTree(id);
+          const { stopFailed, cancelled, unloaded } = await host.stopTree(id);
           return {
             sessionId: id,
             stopped: !stopFailed.includes(id),
             cascade: true,
             cancelled: cancelled.length,
             stopFailed,
+            // The workers beneath couldn't be read: the Stop reached the session, maybe not them.
+            ...(unloaded?.length
+              ? {
+                  unloaded,
+                  note: unloaded
+                    .map((chat) => `Couldn't load the workers under ${chat}; they may still be running.`)
+                    .join(" "),
+                }
+              : {}),
           };
         }
         await host.stop(id);
