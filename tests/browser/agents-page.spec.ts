@@ -89,7 +89,7 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(hivra.locator(".question")).toHaveText("send it to the waitlist today or wait for the new headline?");
   await shot(page, "agents-4-lead-asks");
   await hivra.getByRole("button", { name: "Take it" }).click();
-  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: send it today" }]);
+  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: send it today\n\n(sent from the Agents page)" }]);
   await expect(hivra).toHaveCount(0);
   await expect(frame.locator('[data-list="working"] [data-item="a:hivra-lead"] .row .doing')).toHaveText("Shipping to the testers");
 

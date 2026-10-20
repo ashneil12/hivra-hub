@@ -9,7 +9,7 @@
 // Nothing here is a new door: when the app hasn't lent a hand yet the page is told so, and nothing is guessed. What a
 // page sends into a chat ends with "(sent from the <page> page)", and every action is logged for the page to show.
 import { useSyncExternalStore } from "react";
-import { pickReply, wordsReply } from "../../hub/model/chatQuestions";
+import { pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
 import { hubData } from "../../hub/model/hubData";
 import type { HubAnswer } from "../../hub/model/types";
 import { answerInWords, findWaitingChat, openWaitingChat, takePick, type TakeResult, type WaitingChat } from "../../hub/model/waitingChats";
@@ -164,7 +164,7 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
   return `Answered ${name}: ${quoteOf(text)}`;
 }
 
-async function pick(args: Record<string, unknown>, d: PageActionDeps): Promise<string> {
+async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const needId = str(args.needId);
   if (needId) {
     d.answerNeed(needId, { quick: "agree" });
@@ -173,8 +173,12 @@ async function pick(args: Record<string, unknown>, d: PageActionDeps): Promise<s
   const chatId = str(args.chatId);
   if (!chatId) throw new Error("Say which chat's pick to take (chatId).");
   const name = chatName(chatId, d);
-  if (d.findWaiting(chatId)) {
-    took(await d.takePick(chatId));
+  const waiting = d.findWaiting(chatId);
+  if (waiting) {
+    // A "Needs Ash:" line is answered with a message, which can say where it came from; a live question takes the
+    // option itself (Waiting on you's Take the pick).
+    if (waiting.source === "marker" && waiting.pick) took(await d.answerInWords(chatId, signed(pickMessage(waiting), ctx)));
+    else took(await d.takePick(chatId));
     return `Took ${name}'s pick`;
   }
   const h = d.host();
@@ -267,7 +271,7 @@ export async function runPageAction(call: PageAction | string, args: Record<stri
       done = await answer(args, ctx, d);
       break;
     case "agents.pick":
-      done = await pick(args, d);
+      done = await pick(args, ctx, d);
       break;
     case "agents.message":
       done = await message(args, ctx, d);

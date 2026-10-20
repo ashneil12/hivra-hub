@@ -12,7 +12,10 @@ const row = (id: string, over: Partial<Delegation> = {}) => ({ id, ownerSession:
 function deps(over: Partial<PageActionDeps> = {}) {
   const calls: unknown[][] = [];
   const note = (name: string) => (...args: unknown[]) => { calls.push([name, ...args]); };
-  const waiting: WaitingChat[] = [{ sessionId: "s-lead", chatName: "EXO lead", question: "Example: which layout?", pick: "Three slots" } as WaitingChat];
+  const waiting: WaitingChat[] = [
+    { sessionId: "s-lead", source: "ask", requestId: 3, chatName: "EXO lead", question: "Example: which layout?", pick: "Three slots" } as WaitingChat,
+    { sessionId: "s-hivra", source: "marker", chatName: "Hivra lead", question: "Example: send it today?", pick: "send it today" } as WaitingChat,
+  ];
   const d: PageActionDeps = {
     host: () => ({
       liveQuestion: (id) => (id === "w-d2" ? prompt : undefined),
@@ -65,6 +68,9 @@ it("answers a worker's live question in its own chat (Ash's in-chat answer), and
   expect(calls[1]).toEqual(["respond", "w-d2", 9, { kind: "answered", answers: { q: ["a"] } }]);
   await runPageAction("agents.pick", { chatId: "s-lead" }, ctx, d);
   expect(calls[2]).toEqual(["takePick", "s-lead"]);
+  // A "Needs Ash:" line is answered with Waiting on you's own words for the pick, signed.
+  await runPageAction("agents.pick", { chatId: "s-hivra" }, ctx, d);
+  expect(calls[3]).toEqual(["answerInWords", "s-hivra", "Go with your pick: send it today\n\n(sent from the Agents page)"]);
 });
 
 it("an Ash OS question goes through Ash's own answer call", async () => {
