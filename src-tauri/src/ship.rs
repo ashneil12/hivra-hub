@@ -844,21 +844,44 @@ pub fn holding() -> bool {
 /// thread; when all three are up, the build commits.
 #[tauri::command]
 pub fn ship_ready(app: AppHandle) -> Value {
-    let start = {
-        let mut trial = TRIAL.lock().unwrap_or_else(|poison| poison.into_inner());
-        match trial.as_mut() {
-            Some(trial) if !trial.committed && !trial.checking => {
-                trial.checking = true;
-                Some((trial.id.clone(), trial.dir.clone()))
-            }
-            _ => None,
-        }
-    };
-    if let Some((id, dir)) = start {
+    if let Some((id, dir)) = begin_checks(&TRIAL) {
         let app = app.clone();
         std::thread::spawn(move || run_trial_checks(&app, &id, &dir));
     }
     status()
+}
+
+/// The trial's checks start once at a time, and never after it committed: `(id, dir)` when they start now.
+fn begin_checks(trial: &Mutex<Option<TrialState>>) -> Option<(String, PathBuf)> {
+    let mut trial = trial.lock().unwrap_or_else(|poison| poison.into_inner());
+    match trial.as_mut() {
+        Some(trial) if !trial.committed && !trial.checking => {
+            trial.checking = true;
+            Some((trial.id.clone(), trial.dir.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The checks are over: committed or not, the next `ship_ready` may start them again unless this build committed.
+fn end_checks(trial: &Mutex<Option<TrialState>>, committed: bool) {
+    let mut trial = trial.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(trial) = trial.as_mut() {
+        trial.committed |= committed;
+        trial.checking = false;
+    }
+}
+
+/// Write `committed.json`. A write that fails ends this round of checks uncommitted, so the next `ship_ready` tries
+/// again (the runner rolls back if none succeeds in time).
+fn record_commit(
+    trial: &Mutex<Option<TrialState>>,
+    dir: &Path,
+    note: &Value,
+) -> Result<(), String> {
+    let written = write_json(&dir.join(COMMITTED), note);
+    end_checks(trial, written.is_ok());
+    written
 }
 
 fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
@@ -872,11 +895,7 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
     if db.is_err() || bridge.is_err() {
         log(dir, &format!("trial checks failed: {checks}"));
         let _ = write_json(&dir.join(TRIAL_CHECKS), &checks);
-        if let Ok(mut trial) = TRIAL.lock() {
-            if let Some(trial) = trial.as_mut() {
-                trial.checking = false;
-            }
-        }
+        end_checks(&TRIAL, false);
         return;
     }
     let stamp = instance::stamp();
@@ -889,15 +908,9 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
         "at": now_iso(),
         "checks": checks,
     });
-    if let Err(error) = write_json(&dir.join(COMMITTED), &note) {
+    if let Err(error) = record_commit(&TRIAL, dir, &note) {
         log(dir, &format!("couldn't write {COMMITTED}: {error}"));
         return;
-    }
-    if let Ok(mut trial) = TRIAL.lock() {
-        if let Some(trial) = trial.as_mut() {
-            trial.committed = true;
-            trial.checking = false;
-        }
     }
     log(dir, "committed");
     // The runner writes it down; if it is gone, this app does.
@@ -1565,6 +1578,27 @@ mod tests {
             ..facts(Phase::RollingBack)
         };
         assert_eq!(plan(&other), Plan::Leave);
+    }
+
+    #[test]
+    fn a_commit_that_couldnt_be_written_is_tried_again() {
+        let root = TempDir::new("commit");
+        let trial = Mutex::new(Some(TrialState {
+            id: "20261019-210405-bbbbbbb".into(),
+            // No such folder: writing committed.json fails.
+            dir: root.0.join("gone"),
+            committed: false,
+            checking: false,
+        }));
+        let (_, dir) = begin_checks(&trial).expect("the first ship_ready starts the checks");
+        assert!(begin_checks(&trial).is_none(), "one round at a time");
+        assert!(record_commit(&trial, &dir, &json!({})).is_err());
+        let (_, dir) = begin_checks(&trial).expect("the next ship_ready tries again");
+        std::fs::create_dir_all(&dir).unwrap();
+        record_commit(&trial, &dir, &json!({})).unwrap();
+        assert!(dir.join(COMMITTED).is_file());
+        assert!(begin_checks(&trial).is_none(), "committed: no more checks");
+        assert!(trial.lock().unwrap().as_ref().unwrap().committed);
     }
 
     #[test]
