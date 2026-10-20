@@ -699,7 +699,7 @@
             "delegation": {
               "owner": "lead",
               "state": "completed",
-              "title": "time ?zone|reset"
+              "title": "time ?zone|timezone"
             },
             "maxSec": 480
           }
