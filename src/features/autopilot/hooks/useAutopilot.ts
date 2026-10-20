@@ -38,6 +38,8 @@ import {
 } from "../model/autopilot";
 import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
 import { approvalVerdict, chatProject, handBackText } from "../model/decide";
+import { editStaysInside, type Locate } from "../model/safeApproval";
+import { gitLocateFiles } from "../../../platform/tauri/fs";
 import { formatUntil } from "../model/endTime";
 import {
   pausedLabel,
@@ -104,6 +106,8 @@ export function useAutopilot(options: {
   isDelegated: (sessionId: string) => boolean;
   /** Show a chat (the log's "Open chat"). */
   openChat: (sessionId: string) => void;
+  /** Where paths really are, links followed (the app's git_locate_files); tests pass their own. */
+  locate?: Locate;
 }): void {
   const latest = useRef(options);
   latest.current = options;
@@ -261,15 +265,22 @@ export function useAutopilot(options: {
           if (handled.current.has(key)) continue;
           handled.current.set(key, session.id);
           const requestId = block.approval.requestId;
-          const verdict = approvalVerdict(block, session.worktreeCwd || session.cwd, redHoldFor(session.id, now));
+          const folder = session.worktreeCwd || session.cwd;
+          const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now));
+          // It waits for Ash in the chat, as when autopilot is off; the log says why.
+          const hold = (red: string | null, why: string) =>
+            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red, detail: `Not allowed by itself: ${why}`, dedupe: `${key}:${block.id}` });
           if (verdict.kind === "held") {
-            // It waits for Ash in the chat, as when autopilot is off; the log says why.
-            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red: verdict.red, detail: `Not allowed by itself: ${verdict.why}`, dedupe: `${key}:${block.id}` });
-          } else {
-            void log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
+            hold(verdict.red, verdict.why);
+            continue;
+          }
+          // An edit its words allow is allowed only once the app has found where it really lands (links followed).
+          void editStaysInside(block.approval.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
+            if (why) return hold(null, why);
+            return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
               () => latest.current.approve(session.id, requestId, "allow"),
             );
-          }
+          });
         }
       }
     }

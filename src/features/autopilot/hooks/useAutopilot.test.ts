@@ -27,6 +27,16 @@ function session(id: string, cwd: string, patch: Partial<Session> = {}): Session
 }
 
 let delegated = new Set<string>();
+/** Folders that are links to elsewhere, as the app resolves them (fs.rs git_locate_files); outside git: null. */
+let links: Record<string, string> = {};
+const OUTSIDE_GIT = "/Users/ash/Scratch";
+const locate = async (paths: string[]) =>
+  paths.map((path) => {
+    if (path.startsWith(`${OUTSIDE_GIT}/`)) return null;
+    const link = Object.keys(links).find((from) => path.startsWith(`${from}/`));
+    const real = link ? `${links[link]}${path.slice(link.length)}` : path;
+    return { root: "/Users/ash", relative: real.slice("/Users/ash/".length) };
+  });
 let setAll: (change: (sessions: Session[]) => Session[]) => void = () => undefined;
 
 function Harness({ initial }: { initial: Session[] }) {
@@ -57,6 +67,7 @@ function Harness({ initial }: { initial: Session[] }) {
     openSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     isDelegated: (id) => delegated.has(id),
     openChat: () => undefined,
+    locate,
   });
   return null;
 }
@@ -85,6 +96,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetWaitingChats();
   delegated = new Set();
+  links = {};
   backend = memoryAutopilot();
   setAutopilotBackend(backend);
   setHubDataSource({
@@ -198,6 +210,23 @@ describe("useAutopilot", () => {
       expect(byChat[id], id).toMatchObject({ kind: "approval", outcome: "held", detail: expect.stringMatching(/^Not allowed by itself: /) });
     expect(byChat.long.detail).toContain("too long");
     expect(byChat.check).toMatchObject({ kind: "approval", outcome: "taken" });
+  });
+
+  it("checks where an edit really lands: through a link out of the chat's folder, or outside git, it waits for Ash", async () => {
+    await backend.set({ scopes: ["*"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const tree = "/Users/ash/Worktrees/hivra-x";
+    links = { [`${tree}/shared`]: "/Users/ash/Projects/hivra/shared" };
+    const edit = (path: string) => approval(`Edit ${path}`, { tool: "Edit", paths: [path] });
+    await mount([
+      session("linked", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/shared/config.ts`)] }),
+      session("plain", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/src/a.ts`)] }),
+      session("nogit", `${OUTSIDE_GIT}/notes`, { blocks: [edit(`${OUTSIDE_GIT}/notes/a.md`)] }),
+    ]);
+    expect(approvals.map((a) => a.id)).toEqual(["plain"]);
+    const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
+    expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/Users/ash/Projects/hivra/shared/config.ts, outside the chat's folder") });
+    expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
   });
 
   it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {

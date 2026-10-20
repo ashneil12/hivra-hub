@@ -6,7 +6,9 @@
 //   redirection or wildcard, and none of the options that make those tools run something else.
 // Anything else waits for Ash exactly as when autopilot is off; the red list (redList.ts) is checked on top. It judges
 // the provider's own request (`Block.approval.call`), never the transcript's label: a call that doesn't say exactly
-// what it runs waits.
+// what it runs waits. An edit is checked twice: by its words (safeCall), then where it really lands (editStaysInside),
+// with every folder on the way resolved through links by the app, so a link inside the folder (node_modules to the
+// main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
 
@@ -33,7 +35,7 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
  * Inside the chat's folder, these still wait: they change how git, the agent harnesses, hooks, editors or package
  * managers run commands, not just the project's files.
  */
-const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo"]);
+const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules"]);
 const GUARDED_FILES: ReadonlySet<string> = new Set([".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules"]);
 
 /** A folder shallower than this (/, /Users, /Users/ash) is too broad to count as a chat's own. */
@@ -220,4 +222,45 @@ export function safeCall(call: ApprovalCall | undefined, folder: string | undefi
   }
   if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command);
   return `${call.tool} isn't a read, a test or build, or an edit in the chat's folder`;
+}
+
+// ---- where an edit really lands ----------------------------------------------------------------------------------
+
+/** A path's checkout and its place in it, with the folders on the way resolved through links (fs.rs git_locate_files). */
+export type RealPlace = { root: string; relative: string };
+/** The app's lookup of real places; null for a path outside git. */
+export type Locate = (paths: string[]) => Promise<(RealPlace | null)[]>;
+
+/** A name looked up inside the chat's folder, so the lookup resolves the folder itself (it needn't exist). */
+const PROBE = ".monocode-autopilot-probe";
+
+const realPath = (place: RealPlace, relative = place.relative) =>
+  relative ? `${place.root.replace(/\/+$/, "")}/${relative}` : place.root;
+
+/**
+ * Whether an edit the words allowed still lands inside the chat's folder once links are followed; why not otherwise.
+ * Not an edit: nothing to check. A folder or file the app can't place (outside git, or the lookup failed) waits: a
+ * file name that is itself a link isn't resolved by the lookup, which is why node_modules is held by name too.
+ */
+export async function editStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+  if (!call || !EDIT_TOOLS.has(call.tool)) return null;
+  const root = folder?.replace(/\/+$/, "");
+  if (!root || !call.paths?.length) return "it doesn't say which file it edits";
+  const targets = call.paths.map((path) => (path.startsWith("/") ? path : `${root}/${path}`));
+  let places: (RealPlace | null)[];
+  try {
+    places = await locate([`${root}/${PROBE}`, ...targets]);
+  } catch (error) {
+    return `the app couldn't find where it really edits (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const home = places[0];
+  if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
+  for (let i = 0; i < targets.length; i++) {
+    const place = places[i + 1];
+    if (!place) return `the app couldn't place ${call.paths[i]} in a git checkout`;
+    const why = editInside(realPath(place), realFolder);
+    if (why) return why;
+  }
+  return null;
 }

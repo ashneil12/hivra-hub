@@ -1,7 +1,7 @@
 // What autopilot allows by itself on a tool approval: reads, a short list of checks with nothing chained or expanded,
 // and edits inside the chat's own folder. Everything else waits for Ash.
 import { describe, expect, it } from "vitest";
-import { editInside, safeCall, safeCommand, shellWords } from "./safeApproval";
+import { editInside, editStaysInside, safeCall, safeCommand, shellWords, type Locate } from "./safeApproval";
 
 const FOLDER = "/Users/ash/Worktrees/hub-x";
 
@@ -121,7 +121,7 @@ describe("edits", () => {
   });
 
   it("never touch what changes how tools run, and never from a folder too broad to be the chat's own", () => {
-    for (const path of [".git/config", ".git/hooks/pre-commit", ".claude/settings.json", ".mcp.json", ".npmrc", ".envrc", ".husky/pre-commit", ".vscode/tasks.json", ".cargo/config.toml", "sub/.git/config"])
+    for (const path of [".git/config", ".git/hooks/pre-commit", ".claude/settings.json", ".mcp.json", ".npmrc", ".envrc", ".husky/pre-commit", ".vscode/tasks.json", ".cargo/config.toml", "sub/.git/config", "node_modules/pkg/index.js"])
       expect(editInside(`${FOLDER}/${path}`, FOLDER), path).not.toBeNull();
     expect(editInside("/Users/ash/notes.md", "/Users/ash")).not.toBeNull();
     expect(editInside("/Users/ash/notes.md", "~")).not.toBeNull();
@@ -142,5 +142,34 @@ describe("tool calls", () => {
     expect(safeCall({ tool: "mcp__slack__reply_to_thread" }, FOLDER)).not.toBeNull();
     expect(safeCall({ tool: "Task" }, FOLDER)).not.toBeNull();
     expect(safeCall(undefined, FOLDER)).not.toBeNull();
+  });
+});
+
+describe("where an edit really lands", () => {
+  // The app's lookup (fs.rs git_locate_files): `shared` inside the folder is a link to the main checkout.
+  const MAIN = "/Users/ash/Projects/hub";
+  const lookup: Locate = async (paths) =>
+    paths.map((path) => {
+      if (path.startsWith("/tmp/")) return null;
+      if (path.startsWith(`${FOLDER}/shared/`)) return { root: MAIN, relative: `shared/${path.slice(`${FOLDER}/shared/`.length)}` };
+      return path.startsWith(`${FOLDER}/`) ? { root: FOLDER, relative: path.slice(FOLDER.length + 1) } : { root: "/", relative: path.slice(1) };
+    });
+  const edit = (...paths: string[]) => ({ tool: "Edit", paths });
+
+  it("follows links: an edit that leaves the folder through one waits", async () => {
+    expect(await editStaysInside(edit(`${FOLDER}/src/a.ts`, "src/b.ts"), FOLDER, lookup)).toBeNull();
+    expect(await editStaysInside(edit(`${FOLDER}/shared/config.ts`), FOLDER, lookup)).toBe(`it edits ${MAIN}/shared/config.ts, outside the chat's folder`);
+    expect(await editStaysInside(edit(`${FOLDER}/src/a.ts`, `${FOLDER}/shared/x.ts`), `${FOLDER}/`, lookup)).not.toBeNull();
+  });
+
+  it("waits when the app can't place the folder or a file, or the lookup fails; anything but an edit isn't its to check", async () => {
+    expect(await editStaysInside(edit("/tmp/x/a.ts"), "/tmp/x", lookup)).toContain("couldn't place the chat's folder");
+    expect(await editStaysInside(edit("/tmp/y/a.ts"), FOLDER, lookup)).toContain("couldn't place /tmp/y/a.ts");
+    const broken: Locate = async () => {
+      throw new Error("not in the app");
+    };
+    expect(await editStaysInside(edit(`${FOLDER}/a.ts`), FOLDER, broken)).toContain("couldn't find where it really edits (not in the app)");
+    expect(await editStaysInside({ tool: "Bash", command: "npm test" }, FOLDER, broken)).toBeNull();
+    expect(await editStaysInside(undefined, FOLDER, broken)).toBeNull();
   });
 });
