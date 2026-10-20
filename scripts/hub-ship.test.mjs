@@ -4,6 +4,10 @@
 // (it carries a real build stamp and the ship marker, takes the data folder's lock like the app, and commits, stalls
 // or crashes as told). codesign is a fake that reads the bundle's fake signature. The runner runs as a detached
 // process (launchd is only used for real ships and the drill). Nothing here touches the real HOME.
+//
+// Every process a test starts (the fake apps, the runner, whatever they open) lives in that test's temporary folder,
+// and is found by it: each test ends by stopping all of them, passed or failed, and the last test fails if any is still
+// alive. A fake app also quits on its own once this test process is gone, so a killed run leaves nothing behind.
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
@@ -11,7 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
 import { isRunning, readJson, sha256File, stampOf } from "./hub-ship-runner.mjs";
@@ -23,15 +27,80 @@ const SHA_A = "a".repeat(40);
 const pids = new Set();
 const roots = [];
 
-after(() => {
-  for (const pid of pids) {
+/**
+ * Every live process started from one of this suite's temporary folders (its command line names the folder: the fake
+ * app, the shell that execs it, the runner), plus anything those spawned.
+ */
+function strays() {
+  const ps = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
+  const rows = (ps.stdout ?? "").split("\n").flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] }] : [];
+  });
+  const found = new Map();
+  for (const row of rows)
+    if (row.pid !== process.pid && roots.some((root) => row.command.includes(`${root}/`))) found.set(row.pid, row);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of rows)
+      if (!found.has(row.pid) && found.has(row.ppid)) {
+        found.set(row.pid, row);
+        grew = true;
+      }
+  }
+  return [...found.values()];
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/** Stop everything this suite started and wait until it is gone; fails naming whatever survived. */
+async function stopEverything() {
+  const targets = new Map(strays().map((row) => [row.pid, row.command]));
+  for (const pid of pids) if (alive(pid)) targets.set(pid, `pid ${pid}`);
+  for (const pid of targets.keys()) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
       // gone
     }
   }
+  const deadline = Date.now() + 5_000;
+  let left = [];
+  do {
+    left = [...targets.keys()].filter(alive).concat(strays().map((row) => row.pid).filter((pid) => !targets.has(pid)));
+    if (left.length === 0) return;
+    for (const pid of left) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  assert.fail(`still running after the test: ${left.map((pid) => targets.get(pid) ?? `pid ${pid}`).join("; ")}`);
+}
+
+// Passed or failed, a test leaves nothing running: not the apps it started, not the ones the runner opened.
+afterEach(stopEverything);
+
+// And after the whole suite: nothing it started may still be alive. Cleaned up either way, then reported.
+after(async () => {
+  const survivors = strays().map((row) => row.command);
+  const stopped = await stopEverything().then(
+    () => null,
+    (error) => error,
+  );
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+  assert.deepEqual(survivors, [], "processes this suite started outlived it");
+  if (stopped) throw stopped;
 });
 
 const FAKE_APP = String.raw`
@@ -42,6 +111,13 @@ import { DatabaseSync } from "node:sqlite";
 
 const binary = process.argv[2];
 const args = process.argv.slice(3);
+// Only while the test that started it runs: a killed test run must not leave this behind.
+const owner = Number(process.env.HUB_SHIP_TEST_OWNER);
+if (owner) {
+  setInterval(() => {
+    try { process.kill(owner, 0); } catch (error) { if (error.code === "ESRCH") process.exit(0); }
+  }, 250).unref();
+}
 const app = path.resolve(binary, "../../..");
 const fake = JSON.parse(fs.readFileSync(path.join(app, "Contents/Resources/fake.json"), "utf8"));
 if (args[0] === "healthcheck") {
@@ -165,7 +241,7 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
     db: sha256File(path.join(data, "monocode.db")),
     wal: sha256File(path.join(data, "monocode.db-wal")),
   };
-  const env = { ...process.env, HOME: home, MONOCODE_SHIP_CODESIGN: codesign };
+  const env = { ...process.env, HOME: home, MONOCODE_SHIP_CODESIGN: codesign, HUB_SHIP_TEST_OWNER: String(process.pid) };
   return { root, home, repo, sha, app, bundle, data, before, env, git };
 }
 
@@ -443,4 +519,23 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.equal(stampOf(w.app).sha, w.sha);
   assert.equal(stampOf(answer.previousKeptAt).sha, SHA_A);
   assert.ok(answer.previousKeptAt.startsWith(path.join(w.home, "Archive/monocode/ships/legacy-")));
+});
+
+test("a fake app quits by itself once the test run that started it is gone", async () => {
+  const w = world();
+  // A stand-in for a test run that was killed: the app's owner is a process that ends while the app runs.
+  const owner = spawn("/bin/sleep", ["1"], { stdio: "ignore" });
+  const exited = new Promise((resolve) => owner.on("exit", resolve));
+  const child = spawn(path.join(w.app, "Contents/MacOS/monocode"), [], {
+    env: { ...w.env, HUB_SHIP_TEST_OWNER: String(owner.pid) },
+    detached: true,
+    stdio: "ignore",
+  });
+  pids.add(child.pid);
+  let quit = false;
+  child.on("exit", () => (quit = true));
+  await until("the app", () => readJson(path.join(w.data, "running.json"))?.pid === child.pid);
+  assert.equal(quit, false, "it runs while its owner does");
+  await exited;
+  await until("the app to quit", () => quit, 5_000);
 });
