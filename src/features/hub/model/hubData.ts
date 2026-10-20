@@ -188,6 +188,14 @@ export function useHubDataVersion(): void {
   useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
 }
 
+/**
+ * The live store's checks (hubChecks.ts) for the app to hand to their chats; none behind the example data. Subscribing
+ * keeps the store running, so a check reaches its chat whichever screen is open.
+ */
+export function hubCheckFeed(): Pick<HubStore, "onChecks" | "checksDelivered" | "subscribe"> | undefined {
+  return (override ?? choose()).store;
+}
+
 /** Ash left the page: Needs that ticked themselves off while he was looking go away. */
 export function dismissDoneNeeds(): void {
   (override ?? choose()).store?.dismissDone();

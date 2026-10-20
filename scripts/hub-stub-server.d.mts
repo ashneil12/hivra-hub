@@ -36,6 +36,20 @@ export type StubNeed = {
   since?: number;
 };
 
+export type StubCheck = {
+  id: string;
+  dumpId: string;
+  owner: string;
+  finding: string;
+  askIds: string[];
+  status: "open" | "delivered" | "right" | "fixed";
+  createdAt: number;
+  deliveredAt?: number;
+  answer?: string;
+  answeredAt?: number;
+  answeredBy?: string;
+};
+
 export type Stub = {
   port: number;
   url: string;
@@ -51,6 +65,15 @@ export type Stub = {
   /** Pages, Change the hub and the Today layout (scripts/hub-stub-studio.mjs). */
   studio: StubStudio;
   calls: Array<{ method: string; path: string; query: Record<string, string>; headers: Record<string, string | undefined> }>;
+  /** The checker's messages and checks (scripts/hub-stub-checks.mjs). */
+  checks: {
+    dumps: Map<string, Record<string, unknown> & { id: string; owner: string }>;
+    checks: Map<string, StubCheck>;
+  };
+  /** A message the checker's rules flag (`suspect`), owned by `owner` (`mono:<id>`, `chat:<id>` or `claude:<sid>`). */
+  addDump(dump: Record<string, unknown> & { id: string; text: string }): Record<string, unknown>;
+  /** A check as if the checker had noted it (event `check.opened`). */
+  addCheck(check: Partial<StubCheck> & { dumpId: string; owner: string; finding: string }): StubCheck;
   /** The app's delegation copies (ash-hub-delegation), by id: the newest version each sent. */
   delegations: Map<string, Record<string, unknown> & { id: string; version: number; state: string }>;
   events: Array<Record<string, unknown>>;

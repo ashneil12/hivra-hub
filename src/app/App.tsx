@@ -38,6 +38,8 @@ import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
+import { useHubChecks } from "./hooks/useHubChecks";
+import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -974,6 +976,8 @@ type SubmitOptions = ComposerTurnOptions & {
   /** An app request that may arrive mid-turn, steering or queuing as one typed here would. */
   followsUp?: boolean;
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  /** A checker's note for this chat (hub/model/hubChecks.ts): a hidden turn shown as a quiet card. */
+  monoCheck?: Block["monoCheck"];
   onSettled?: (outcome: ControlOutcome) => void;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
@@ -2447,10 +2451,13 @@ function Workspace({
     // The roster is read through its snapshot.
     [monosSnap],
   );
-  // How many replies each Mono has that the user has not read, for the rail.
+  // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one.
+  const replyBusyRef = useRef(busySessionIds);
+  const replyBusy = withoutCheckTurns(busySessionIds, sessions);
+  if (!setsEqual(replyBusyRef.current, replyBusy)) replyBusyRef.current = replyBusy;
   const monoReplies = useUnseenReplyCounts(
     monoSessionIds,
-    busySessionIds,
+    replyBusyRef.current,
     activeSessionId,
   );
 
@@ -7259,6 +7266,7 @@ function Workspace({
         options?.onSettled ||
         options?.managed ||
         options?.monoSessionCompletion ||
+        options?.monoCheck ||
         options?.resendEdited
           ? undefined
           : delegationsRef.current?.resumeMonitor(
@@ -7846,12 +7854,13 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : {}),
         // The orchestrator writes these turns, not the user; hide them.
-        ...(options?.managed || options?.monoSessionCompletion
+        ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck
           ? { internal: true }
           : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
           : {}),
+        ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
       const queuedHandoff =
@@ -8701,8 +8710,8 @@ function Workspace({
               (s) => s.id === sessionId,
             );
             const visible = sessionId === activeSessionIdRef.current;
-            // A habit's hidden run speaks through its Mono's chat instead.
-            if (finished && !isHabitRun(sessionId))
+            // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
+            if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
               void announceSessionFinished(finished, visible);
           }, 0);
           notifyReviewChanged(sessionId);
@@ -9131,6 +9140,23 @@ function Workspace({
     quitting: isAppQuitting,
   });
   delegationsRef.current = delegations;
+  // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
+  useHubChecks(
+    {
+      sessions,
+      sessionsRef,
+      openSession: ensureOpenSession,
+      openMono: (monoId) =>
+        ensureMonoSession(monoId, {
+          home: homeDir,
+          load: (id) => ensureOpenSession(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => updateSessionState(sessionsRef, setSessions, (current) => [...current, created]),
+        }),
+      submit: (sessionId, text, options) => submitSession(sessionId, text, [], options),
+    },
+    IS_HUB_BUNDLE,
+  );
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
       const mono = sessionsRef.current.find((session) => session.id === monoId);

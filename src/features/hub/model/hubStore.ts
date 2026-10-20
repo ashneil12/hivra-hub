@@ -14,6 +14,7 @@ import type {
   OlderDismissed, SinceSummary, TodaySection, TodaySectionKind,
 } from "./types";
 import { toShape } from "./projectShapes";
+import { mapChecks, type HubCheck } from "./hubChecks";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
 
@@ -57,7 +58,7 @@ export type HubSnapshot = {
 };
 
 /** What a write makes the store read again at once (the feed would bring it a moment later anyway). */
-export type HubSlice = "needs" | "projects" | "since" | "jobs" | "pages" | "layout" | "changes";
+export type HubSlice = "needs" | "projects" | "since" | "jobs" | "pages" | "layout" | "changes" | "checks";
 
 export type HubStoreOptions = {
   transport: HubTransport;
@@ -418,6 +419,7 @@ export class HubStore {
         void this.loadPages();
         void this.loadLayout();
         void this.loadChanges();
+        void this.loadChecks();
       } catch (error) {
         if (this.alive(gen)) this.fail(error);
       } finally {
@@ -538,6 +540,32 @@ export class HubStore {
     }
   }
 
+  // ---- checks (docs/PHASE-2-DESIGN.md decision 4; hubChecks.ts, app/hooks/useHubChecks.ts) --------------------------
+  private checks: HubCheck[] = [];
+  private readonly checkListeners = new Set<(checks: readonly HubCheck[]) => void>();
+
+  /** Every pull of the checks not yet delivered (at boot, and on feed topic `checks`); called at once with the last. */
+  onChecks(listener: (checks: readonly HubCheck[]) => void): () => void {
+    this.checkListeners.add(listener);
+    if (this.checks.length) listener(this.checks);
+    return () => this.checkListeners.delete(listener);
+  }
+
+  /** The checker's notes for the chats this app runs that Ash OS hasn't heard delivered. An older service has none. */
+  async loadChecks(): Promise<void> {
+    await this.loadOptional("ash-hub-checks", { limit: 50 }, (raw) => {
+      this.checks = mapChecks(raw);
+      this.checkListeners.forEach((listener) => listener(this.checks));
+    });
+  }
+
+  /** The app handed these checks to their chats as turns: Ash OS marks each delivered once. */
+  async checksDelivered(ids: readonly string[]): Promise<void> {
+    if (!ids.length) return;
+    await this.t.call("ash-hub-check-delivered", { ids: [...ids] });
+    this.checks = this.checks.filter((check) => !ids.includes(check.id));
+  }
+
   /** Read these slices again now (after a write; the feed would bring them a moment later). */
   async reload(slices: readonly HubSlice[]): Promise<void> {
     const load: Record<HubSlice, () => Promise<void>> = {
@@ -548,6 +576,7 @@ export class HubStore {
       pages: () => this.loadPages(),
       layout: () => this.loadLayout(),
       changes: () => this.loadChanges(),
+      checks: () => this.loadChecks(),
     };
     await Promise.all([...new Set(slices)].map((s) => load[s]()));
   }
@@ -775,6 +804,7 @@ export class HubStore {
     if (topics.has("pages")) this.queue.add("pages");
     if (topics.has("layout")) this.queue.add("layout");
     if (topics.has("changes")) this.queue.add("changes");
+    if (topics.has("checks")) this.queue.add("checks");
     if (this.queue.size && !this.timers.coalesce) {
       const wait = Math.max(this.coalesceMs, this.lastFlush + this.minGapMs - Date.now());
       this.timers.coalesce = setTimeout(() => void this.flush(), wait);

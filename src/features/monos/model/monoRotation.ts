@@ -44,6 +44,8 @@ type Exchange = {
   /** Posted by this habit on its own, with no user message before it. */
   habit?: string;
   completion?: string;
+  /** Its answer to a checker's note (hub/model/hubChecks.ts), never the user's words. */
+  check?: true;
 };
 
 /** Whether the next turn should start a fresh provider session, and why. */
@@ -64,6 +66,10 @@ function exchanges(blocks: readonly Block[], afterId?: string): Exchange[] {
     : -1;
   const out: Exchange[] = [];
   for (const block of blocks.slice(after + 1)) {
+    if (block.role === "user" && block.internal && block.monoCheck) {
+      out.push({ id: block.id, at: block.startedAt, user: "", reply: "", check: true });
+      continue;
+    }
     if (block.role === "user" && block.monoSessionCompletion) {
       out.push({
         id: block.id,
@@ -133,6 +139,8 @@ function when(at: number | undefined): string {
 }
 
 function exchangeLine(exchange: Exchange): string {
+  if (exchange.check)
+    return `- ${when(exchange.at)}You, answering the checker: ${oneLine(exchange.reply, LINE_CHARS)}`;
   if (exchange.completion)
     return `- ${when(exchange.at)}You, reviewing session "${exchange.completion}": ${oneLine(exchange.reply, LINE_CHARS)}`;
   if (exchange.habit)
@@ -193,7 +201,9 @@ export function planRotation(
       parts.push(
         `Most recent, word for word:\n\n${verbatim
           .map((exchange) =>
-            exchange.habit
+            exchange.check
+              ? `You, answering the checker (${when(exchange.at).replace(/ · $/, "") || "earlier"}):\n${clip(exchange.reply, VERBATIM_REPLY_CHARS)}`
+              : exchange.habit
               ? `You, on your own from your habit "${exchange.habit}" (${when(exchange.at).replace(/ · $/, "") || "earlier"}):\n${clip(exchange.reply, VERBATIM_REPLY_CHARS)}`
               : exchange.completion
                 ? `You, reviewing session "${exchange.completion}" (${when(exchange.at).replace(/ · $/, "") || "earlier"}):\n${clip(exchange.reply, VERBATIM_REPLY_CHARS)}`

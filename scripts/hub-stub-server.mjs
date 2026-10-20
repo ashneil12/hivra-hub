@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStudio } from "./hub-stub-studio.mjs";
+import { createChecks } from "./hub-stub-checks.mjs";
 
 const IDLE_SECONDS = 1800;
 const NEEDS_SHOWN = 5;
@@ -36,6 +37,7 @@ const TOPICS = [
   [/^hub\.page\./, ["pages"]],
   [/^hub\.change\./, ["changes"]],
   [/^hub\.layout\./, ["layout"]],
+  [/^check\./, ["checks"]],
 ];
 const topicsOf = (kind) => (TOPICS.find(([re]) => re.test(kind)) || [null, []])[1];
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -236,6 +238,8 @@ export async function startStub({
 
   // Pages, Change the hub and the project calls (scripts/hub-stub-studio.mjs).
   const { studio, calls: studioCalls } = createStudio({ state, emit, now, iso, buildMs, latest: () => latest });
+  // The checker's calls and the checks it opens (scripts/hub-stub-checks.mjs).
+  const { calls: checkCalls, checks, addDump, addCheck } = createChecks({ emit, now, iso });
 
   // ---- the calls ---------------------------------------------------------------------------------------------------
   const openNeeds = () => state.needs.filter((n) => n.state === "open" && !n.older);
@@ -534,6 +538,7 @@ export async function startStub({
       case "mono-projects": return monoProjectsCall(v);
       default:
         if (Object.hasOwn(studioCalls, name)) return studioCalls[name](v);
+        if (Object.hasOwn(checkCalls, name)) return checkCalls[name](v);
         throw new Error("Unknown hub action");
     }
   }
@@ -705,6 +710,9 @@ export async function startStub({
     },
     state,
     studio,
+    checks,
+    addDump,
+    addCheck,
     calls,
     events,
     delegations,
