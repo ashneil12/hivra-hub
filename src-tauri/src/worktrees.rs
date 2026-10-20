@@ -695,7 +695,7 @@ pub(crate) fn reconcile_removals(conn: &rusqlite::Connection) -> Result<(), Stri
     Ok(())
 }
 
-fn remove_with_sessions(
+pub(crate) fn remove_with_sessions(
     conn: &rusqlite::Connection,
     root: &Path,
     path: &Path,

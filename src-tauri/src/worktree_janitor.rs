@@ -1675,8 +1675,10 @@ pub async fn worktree_janitor_report(
 }
 
 /// Ash's tap. Every worktree is checked again right before anything is deleted; one that changed is skipped.
-/// Free deletes the build output here. Remove only re-checks (and unlinks setup's links): the app then removes each
-/// ready worktree through its usual path, which detaches the worktree's chats (src/app/App.tsx `onRemoveWorktree`).
+/// Free deletes the build output here. Remove re-checks (and unlinks setup's links, so the app's own removal check
+/// sees a clean worktree): the app then removes each ready worktree through its usual path, which stops and detaches
+/// its chats (src/app/App.tsx `onRemoveWorktree`) and deletes through [`worktree_janitor_remove`], checking it once more
+/// in the same step as the delete.
 #[tauri::command(async)]
 pub async fn worktree_janitor_clean(
     app: AppHandle,
@@ -1750,6 +1752,54 @@ fn clean_one(app: &AppHandle, tier: Tier, path: &Path, head: Option<&str>) -> Cl
         }
     }
     result
+}
+
+/// Remove one worktree the report found ready, if it still is: the same re-check as the tap's (its commit unchanged, the
+/// verdict still Remove), then setup's links unlinked and the worktree removed with its chats detached so they keep
+/// their history (worktrees.rs `remove_with_sessions`, `git worktree remove` without --force; the branch stays). The
+/// caller holds the removal reservation from before the re-check to after the delete.
+pub(crate) fn remove_if_still_ready(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    head: Option<&str>,
+    ctx: &Context,
+    now: u64,
+) -> Result<crate::worktrees::WorktreeRemoval, String> {
+    let facts = gather(path, Kind::Linked, ctx);
+    if head.is_some() && facts.head.as_deref() != head {
+        return Err("Its commit changed since the report; kept".into());
+    }
+    let verdict = verdict(&facts, &Policy::default(), now);
+    if verdict.outcome != Outcome::Remove {
+        return Err(format!("Kept: {}", verdict.reason));
+    }
+    let repo = facts
+        .repo
+        .clone()
+        .ok_or("Its repository is unknown; kept")?;
+    unlink_output_links(path, &facts);
+    crate::worktrees::remove_with_sessions(conn, Path::new(&repo), path, false, true)
+}
+
+/// Remove after Ash's tap, through the app's usual removal (src/features/source-control/model/worktrees.ts
+/// `removeWorktree`, which stops and detaches the worktree's chats first): the re-check and the delete happen in one
+/// step under the removal reservation, so nothing can start or change in the worktree between them.
+#[tauri::command(async)]
+pub async fn worktree_janitor_remove(
+    app: AppHandle,
+    path: String,
+    head: Option<String>,
+) -> Result<crate::worktrees::WorktreeRemoval, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = expand_home(&path);
+        let _reservation = crate::worktree_lifecycle::reserve_removal(&path)?;
+        let ctx = app_context(&app, std::slice::from_ref(&path), true, false)?;
+        let store = app.state::<crate::session_store::SessionStore>();
+        let conn = store.lock_conn()?;
+        remove_if_still_ready(&conn, &path, head.as_deref(), &ctx, now_ms())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- the command line -----------------------------------------------------------------------------------------------
@@ -2253,6 +2303,76 @@ mod tests {
         let text = render_text(&report, later);
         assert!(text.contains("nothing was removed"));
         assert!(text.contains("REMOVE"));
+    }
+
+    /// The tap's removal re-checks the worktree it deletes, in the same step: work that landed after the report (a new
+    /// commit, a chat that started) keeps it.
+    #[cfg(unix)]
+    #[test]
+    fn removal_rechecks_the_worktree_it_deletes() {
+        let temp = temp("monocode-janitor-recheck");
+        let main = repo(&temp.0);
+        let tree = temp.0.join("merged");
+        git_checked(
+            &main,
+            &["worktree", "add", "-b", "merged", tree.to_str().unwrap()],
+        )
+        .unwrap();
+        git_commit_file(&tree, "feature.txt", "done");
+        git_checked(&main, &["merge", "--ff-only", "merged"]).unwrap();
+        let later = now_ms() + 7 * DAY_MS;
+        let quiet = Context::default();
+        let reported = gather(&tree, Kind::Linked, &quiet);
+        assert_eq!(
+            verdict(&reported, &Policy::default(), later).outcome,
+            Outcome::Remove
+        );
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+
+        // After the report, work lands in it: a commit the mainline doesn't have.
+        git_commit_file(&tree, "more.txt", "more");
+        let Err(err) = remove_if_still_ready(
+            &store.lock_conn().unwrap(),
+            &tree,
+            reported.head.as_deref(),
+            &quiet,
+            later,
+        ) else {
+            panic!("removed a worktree with new work in it")
+        };
+        assert!(err.contains("changed"), "{err}");
+        assert!(tree.join("more.txt").exists());
+
+        // Merged again, but a chat is running in it now.
+        git_checked(&main, &["merge", "--ff-only", "merged"]).unwrap();
+        let head = gather(&tree, Kind::Linked, &quiet).head;
+        let chatting = Context {
+            chats: vec![(tree.canonicalize().unwrap(), now_ms(), true)],
+            ..Context::default()
+        };
+        let Err(err) = remove_if_still_ready(
+            &store.lock_conn().unwrap(),
+            &tree,
+            head.as_deref(),
+            &chatting,
+            later,
+        ) else {
+            panic!("removed a worktree with a chat running in it")
+        };
+        assert!(err.contains("Kept"), "{err}");
+        assert!(tree.exists());
+
+        // Still ready: removed, the branch kept.
+        assert!(remove_if_still_ready(
+            &store.lock_conn().unwrap(),
+            &tree,
+            head.as_deref(),
+            &quiet,
+            later,
+        )
+        .is_ok());
+        assert!(!tree.exists());
+        assert!(git_text(&main, &["rev-parse", "--verify", "refs/heads/merged"]).is_ok());
     }
 
     /// Only links really inside the worktree are unlinked: never one reached through a linked folder, nor a path that

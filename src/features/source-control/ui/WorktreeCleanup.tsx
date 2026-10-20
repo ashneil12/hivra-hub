@@ -6,6 +6,7 @@ import {
   formatBytes,
   janitorClean,
   janitorReport,
+  removeCheckedWorktree,
   tapBytes,
   tapTargets,
   type CleanTier,
@@ -86,15 +87,17 @@ export function WorktreeCleanup({
     let freed = 0;
     const kept: string[] = [];
     try {
-      for (const checked of await janitorClean(tier, targets)) {
+      const results = await janitorClean(tier, targets);
+      for (const [index, checked] of results.entries()) {
         if (!checked.done) {
           kept.push(`${projectName(checked.path)}: ${checked.message}`);
           continue;
         }
         if (tier === "remove") {
           try {
-            // The app's own removal: it detaches the worktree's chats so they keep their history.
-            await onRemove(checked.repo!, checked.path, false, true);
+            // The app's own removal (it detaches the worktree's chats so they keep their history), checked once more
+            // in the same step as the delete.
+            await removeCheckedWorktree(checked, targets[index]?.head ?? null, onRemove);
           } catch (e) {
             kept.push(`${projectName(checked.path)}: ${String(e)}`);
             continue;

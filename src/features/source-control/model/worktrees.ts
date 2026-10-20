@@ -13,6 +13,7 @@ import {
   waitForRun,
   type WorktreeSetup,
 } from "../../projects/model/projectActions";
+import { janitorRemovalHead } from "./worktreeJanitor";
 
 export type Worktree = {
   path: string;
@@ -115,10 +116,19 @@ export async function removeWorktree(
   force = false,
   keepSessions = false,
 ) {
-  const result = await invoke<{ sessionIds: string[]; projectCwd: string }>(
-    "git_worktree_remove",
-    { cwd, path, force, keepSessions },
-  );
+  // A worktree the clean-up tap is removing is checked once more in the same step as the delete (worktreeJanitor.ts).
+  const tap = janitorRemovalHead(path);
+  const result = tap
+    ? await invoke<{ sessionIds: string[]; projectCwd: string }>("worktree_janitor_remove", {
+        path,
+        head: tap.head,
+      })
+    : await invoke<{ sessionIds: string[]; projectCwd: string }>("git_worktree_remove", {
+        cwd,
+        path,
+        force,
+        keepSessions,
+      });
   notifyGitChanged();
   return result;
 }

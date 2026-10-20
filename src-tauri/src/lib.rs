@@ -584,6 +584,7 @@ pub fn run() {
             project_actions::project_action_wait,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
+            worktree_janitor::worktree_janitor_remove,
             fs::create_path,
             fs::rename_path,
             fs::delete_path,

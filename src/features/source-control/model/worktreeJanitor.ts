@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { pathKey } from "../../../shared/lib/paths";
+import type { RemoveWorktree } from "./worktrees";
 
 /** The worktree clean-up report (src-tauri/src/worktree_janitor.rs). It only reads; the two taps act on it. */
 export type JanitorOutcome = "remove" | "free" | "keep";
@@ -56,6 +58,34 @@ export const janitorClean = (tier: CleanTier, entries: JanitorEntry[]) =>
     tier,
     items: entries.map((entry) => ({ path: entry.path, head: entry.head })),
   });
+
+/** Worktrees a Remove tap is removing right now, by path key, with the commit the report saw. */
+const tapRemovals = new Map<string, string | null>();
+
+/** The commit the report saw, when a Remove tap is removing this worktree right now (`removeWorktree` reads it). */
+export function janitorRemovalHead(path: string): { head: string | null } | undefined {
+  const key = pathKey(path);
+  return tapRemovals.has(key) ? { head: tapRemovals.get(key) ?? null } : undefined;
+}
+
+/**
+ * Remove one worktree the tap re-checked, through the app's usual removal (`onRemove`: App.tsx onRemoveWorktree, which
+ * stops and detaches its chats). While it runs, `removeWorktree` sends this path to `worktree_janitor_remove`, which
+ * checks it once more in the same step as the delete, so nothing can start or change in it in between.
+ */
+export async function removeCheckedWorktree(
+  checked: Pick<CleanResult, "path" | "repo">,
+  head: string | null,
+  onRemove: RemoveWorktree,
+) {
+  const key = pathKey(checked.path);
+  tapRemovals.set(key, head);
+  try {
+    return await onRemove(checked.repo ?? "", checked.path, false, true);
+  } finally {
+    tapRemovals.delete(key);
+  }
+}
 
 /** What one tap acts on. Free covers removable worktrees too: their build output is just as safe to delete. */
 export function tapTargets(report: JanitorReport, tier: CleanTier): JanitorEntry[] {
