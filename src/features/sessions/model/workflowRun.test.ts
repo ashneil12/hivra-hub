@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentPhase,
   mergeWorkflowFrame,
+  parseWorkflowRun,
   workflowActivityLine,
   workflowCounts,
   workflowLastActivity,
@@ -82,5 +83,37 @@ describe("what a run says about itself", () => {
 
   it("knows its newest activity", () => {
     expect(workflowLastActivity({ ...run([agent(1, "working", 1, { lastProgressAt: 50 })]), updatedAt: 20 })).toBe(50);
+  });
+});
+
+describe("parseWorkflowRun", () => {
+  const saved = {
+    taskId: "w1",
+    status: "running",
+    phases: [{ index: 1, title: "Scan" }, { index: "x", title: "bad" }],
+    agents: [
+      { index: 1, label: "A", state: "done", tokens: 10 },
+      { index: 2, label: "B", state: "working" },
+      { index: 3, label: "C", state: "sleeping" },
+    ],
+  };
+
+  it("keeps what is well formed", () => {
+    expect(parseWorkflowRun(saved)).toEqual({
+      taskId: "w1",
+      status: "running",
+      phases: [{ index: 1, title: "Scan" }],
+      agents: [
+        { index: 1, label: "A", state: "done", tokens: 10 },
+        { index: 2, label: "B", state: "working" },
+      ],
+    });
+    expect(parseWorkflowRun({ status: "running" })).toBeNull();
+  });
+
+  it("stops a run still marked running when a transcript is loaded after a restart", () => {
+    const loaded = parseWorkflowRun(saved, { hydrate: true });
+    expect(loaded?.status).toBe("stopped");
+    expect(loaded?.agents.map((agent) => agent.state)).toEqual(["done", "skipped"]);
   });
 });

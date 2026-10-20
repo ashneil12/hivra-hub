@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
 import {
@@ -1075,6 +1076,10 @@ function sanitizeBlock(
   }
   const agentRun = sanitizeAgentRun(block.agentRun);
   if (agentRun) next.agentRun = agentRun;
+  const workflowRun = parseWorkflowRun(block.workflowRun, {
+    hydrate: options?.hydrate === true,
+  });
+  if (block.tool && workflowRun) next.workflowRun = workflowRun;
   const taskList = sanitizeTaskList(block.taskList);
   if (taskList) next.taskList = taskList;
   else if (block.role === "tasks") return null;

@@ -240,3 +240,71 @@ export const WORKFLOW_AGENT_STATE_LABEL: Record<WorkflowAgentState, string> = {
   failed: "failed",
   skipped: "skipped",
 };
+
+const AGENT_STATES = new Set<WorkflowAgentState>(["queued", "working", "done", "failed", "skipped"]);
+const RUN_STATUSES = new Set<WorkflowRunStatus>(["running", "completed", "failed", "stopped"]);
+
+const num = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+const str = (value: unknown, max = 400): string | undefined =>
+  typeof value === "string" && value.trim() ? value.slice(0, max) : undefined;
+
+/**
+ * A run as saved with its block, checked field by field. On `hydrate` (a
+ * transcript loaded after a restart) a run still marked running is stopped:
+ * the Claude Code process that ran it is gone.
+ */
+export function parseWorkflowRun(
+  value: unknown,
+  options?: { hydrate?: boolean },
+): WorkflowRunMeta | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const taskId = str(record.taskId, 200);
+  const status = record.status as WorkflowRunStatus;
+  if (!taskId || !RUN_STATUSES.has(status)) return null;
+  const phases = (Array.isArray(record.phases) ? record.phases : []).flatMap((entry) => {
+    const row = entry as Record<string, unknown> | null;
+    const index = num(row?.index);
+    const title = str(row?.title, 200);
+    return index !== undefined && title ? [{ index, title }] : [];
+  });
+  const agents = (Array.isArray(record.agents) ? record.agents : []).flatMap((entry): WorkflowAgent[] => {
+    const row = entry as Record<string, unknown> | null;
+    const index = num(row?.index);
+    const label = str(row?.label, 200);
+    const state = row?.state as WorkflowAgentState;
+    if (index === undefined || !label || !AGENT_STATES.has(state)) return [];
+    const agent: WorkflowAgent = { index, label, state };
+    const phaseIndex = num(row?.phaseIndex);
+    if (phaseIndex !== undefined) agent.phaseIndex = phaseIndex;
+    for (const key of ["phaseTitle", "model", "result", "error"] as const) {
+      const text = str(row?.[key]);
+      if (text) agent[key] = text;
+    }
+    for (const key of ["attempt", "tokens", "toolCalls", "durationMs", "lastProgressAt"] as const) {
+      const n = num(row?.[key]);
+      if (n !== undefined) agent[key] = n;
+    }
+    return [agent];
+  });
+  const run: WorkflowRunMeta = { taskId, status, phases, agents };
+  for (const key of ["name", "description", "summary"] as const) {
+    const text = str(record[key]);
+    if (text) run[key] = text;
+  }
+  for (const key of ["startedAt", "updatedAt", "totalTokens", "toolCalls", "durationMs"] as const) {
+    const n = num(record[key]);
+    if (n !== undefined) run[key] = n;
+  }
+  if (options?.hydrate && run.status === "running") {
+    return {
+      ...run,
+      status: "stopped",
+      agents: run.agents.map((agent) =>
+        agent.state === "working" || agent.state === "queued" ? { ...agent, state: "skipped" } : agent,
+      ),
+    };
+  }
+  return run;
+}
