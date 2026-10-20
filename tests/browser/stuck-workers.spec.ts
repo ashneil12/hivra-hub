@@ -7,9 +7,10 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 // from other parts of the UI, being able to respond quickly or go into the chat"). The real app in a browser
 // (hub-dev.html: the hub reads the stub Ash OS through its real transport), with the EXO lead's delegation rows seeded
 // as delegations.rs would return them: one worker running, one asking its Lead, one stalled, one failed on a billing
-// refusal, two done. Each surface is checked and photographed: the Monos rail (folded sub-chats, the Mono's mark, the
-// split), the Lead's chat (a card per stuck worker, the rollup line), Being built (the job reads Stuck though a sibling
-// runs, Open chat) and Today (the Stuck section).
+// refusal, two done. Each surface is checked and photographed: the Monos rail (the Mono's mark and one line with the
+// split, never its sub-chats: Ash, 20 Oct, they live in its coding team), the Lead's chat (a card per stuck worker, the
+// rollup line), its coding team (the sub-chats under the Lead, opened by the stuck ones), Being built (the job reads Stuck
+// though a sibling runs, Open chat) and Today (the Stuck section).
 
 const SHOTS = process.env.STUCK_PROOF_DIR ?? "test-results/stuck-workers";
 const shot = async (page: Page, name: string) => {
@@ -90,15 +91,21 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
   // hovered row trades its mark for its options button.
   await page.mouse.move(800, 300);
 
-  // The rail: the Mono carries the most urgent mark (red: a failure), its sub-chats opened by themselves (something is
-  // stuck), and its status splits what is out.
+  // The rail: the Mono carries the most urgent mark (red: a failure) and one line splitting what is out, the stuck part
+  // red; its sub-chats are never listed there (they live in its coding team).
   const mark = rail(page).locator('[data-mono-stuck="3"]');
   await expect(mark).toBeVisible();
   await expect(mark).toHaveAttribute("data-mono-stuck-kind", "failed");
   await expect(rail(page).locator('button[aria-label*="1 working · 1 asking · 2 stuck"]').first()).toBeAttached();
-  const children = rail(page).locator('[data-mono-children="vg-game-lead"] [data-mono-child]');
+  const line = rail(page).locator('[data-mono-work="vg-game-lead"]');
+  // Short (asking counts as stuck, as on Today); the full split is on hover.
+  await expect(line.locator("[data-mono-work-split]")).toHaveText("1 working · 3 stuck");
+  await expect(line).toHaveAttribute("data-mono-work-kind", "failed");
+  await expect(rail(page).locator("[data-mono-children], [data-mono-child]")).toHaveCount(0);
+  // In its coding team, beside its chat: its sub-chats under it, opened by themselves since something is stuck.
+  const children = page.locator(`[data-sub-chats="${ownerSession}"] [data-sub-chat]`);
   await expect(children).toHaveCount(6);
-  await expect(rail(page).locator("[data-mono-child][data-state=stalled]")).toHaveAttribute("aria-label", /No output for 9 min/);
+  await expect(page.locator("[data-sub-chat][data-state=stalled]")).toHaveAttribute("aria-label", /No output for 9 min/);
 
   // The Lead's chat: a card per stuck worker over the composer, oldest first, and the rollup line.
   const cards = page.locator('[data-stuck-list="chat"] [data-stuck-worker]');
@@ -108,18 +115,20 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
   await expect(cards.nth(1).locator("[data-stuck-line]")).toHaveText("Failed: billing refused");
   await expect(cards.nth(2).locator("[data-stuck-line]")).toContainText("How long should the air dodge last?");
   // The Lead's line names what is out (leadFlow.ts), the stuck ones too; its count is on hover.
-  const line = page.locator("[data-delegation-working]").first();
-  await expect(line).toHaveText(
+  const working = page.locator("[data-delegation-working]").first();
+  await expect(working).toHaveText(
     "1 working: Wire the dodge input · 1 asking: Pick the dodge timing · 2 stuck: Run the movement tests, Upload the playtest build",
   );
-  await expect(line).toHaveAttribute("title", "Delegated 6: 1 working, 1 asking, 1 stuck, 1 failed, 2 done");
+  await expect(working).toHaveAttribute("title", "Delegated 6: 1 working, 1 asking, 1 stuck, 1 failed, 2 done");
   await shot(page, "1-lead-chat-and-rail");
 
-  // Folding the sub-chats holds until something new is stuck; the fold still says what is stuck.
-  await rail(page).locator('[data-mono-children-toggle="vg-game-lead"]').click();
+  // Folding the sub-chats in the coding team holds until something new is stuck; the fold still says what is stuck.
+  await page.locator(`[data-sub-chats-toggle="${ownerSession}"]`).click();
   await expect(children).toHaveCount(0);
-  await expect(rail(page).locator('[data-mono-children-toggle="vg-game-lead"]')).toHaveText("6 sub-chats · 3 stuck");
-  await shot(page, "2-rail-folded");
+  await expect(page.locator(`[data-sub-chats-toggle="${ownerSession}"]`)).toHaveText("6 sub-chats · 3 stuck");
+  // The rail's line still says what is out.
+  await expect(line.locator("[data-mono-work-split]")).toHaveText("1 working · 3 stuck");
+  await shot(page, "2-coding-team-folded");
 
   // Being built: the job reads Stuck with the failed worker's reason though a sibling runs, and opens its chat.
   await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);

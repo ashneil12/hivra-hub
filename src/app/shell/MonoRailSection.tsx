@@ -12,7 +12,7 @@ import {
 import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
-import { countWork, useStuckDismissalsVersion, workSplit, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
+import { countWork, shortSplit, useStuckDismissalsVersion, workSplit, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
@@ -497,8 +497,9 @@ export function MonoRailSection({
 
 /**
  * What a Mono has out, on one line under its row, in place of the sub-chats it used to list (Ash, 20 Oct: the rail shows
- * people, not work): "2 working · 1 asking · 1 stuck", the asking part amber and the stuck part amber or red (red when one
- * failed); the row keeps its own mark. One click opens its team, where the work and its sub-chats are.
+ * people, not work): "2 working · 1 stuck" (asking counts as stuck, as on Today; the full split is on hover), the stuck
+ * part amber, or red once one failed; the row keeps its own mark. One click opens its team, where the work and its
+ * sub-chats are.
  */
 function MonoWorkLine({
   monoId,
@@ -516,27 +517,22 @@ function MonoWorkLine({
   onOpen: () => void;
 }) {
   const failed = stuck.some((s) => s.kind === "failed");
+  const short = shortSplit(counts);
   const stuckColor = failed ? "text-red-400" : "text-amber-400";
-  const parts = [
-    counts.working ? { key: "working", text: `${counts.working} working`, className: "" } : undefined,
-    counts.asking ? { key: "asking", text: `${counts.asking} asking`, className: "text-amber-400" } : undefined,
-    counts.stuck ? { key: "stuck", text: `${counts.stuck} stuck`, className: stuckColor } : undefined,
-  ].filter((part): part is { key: string; text: string; className: string } => !!part);
-  const split = parts.map((part) => part.text).join(" · ");
   // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
   // line's own mark says why it waits.
-  const Mark = counts.working ? Loader : counts.stuck ? CircleAlert : Clock;
-  const markColor = counts.working ? "text-content/45" : counts.stuck ? stuckColor : "text-amber-400";
+  const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
+  const markColor = short.working ? "text-content/45" : stuckColor;
   return (
     <div
       className="ml-5 flex h-6 min-w-0 items-center border-l border-content/10 pl-1.5"
       data-mono-work={monoId}
-      data-mono-work-kind={counts.stuck ? (failed ? "failed" : "stuck") : counts.asking ? "asking" : "working"}
+      data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
     >
       <button
         type="button"
-        title={team ? `Open ${team.name}` : `Open ${name}`}
-        aria-label={`${split}. Open ${team ? team.name : name}`}
+        title={[workSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
+        aria-label={`${workSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
         onClick={onOpen}
         className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/45 hover:bg-content/6 hover:text-content"
       >
@@ -546,12 +542,9 @@ function MonoWorkLine({
           strokeWidth={1.75}
         />
         <span className="min-w-0 truncate" data-mono-work-split>
-          {parts.map((part, index) => (
-            <Fragment key={part.key}>
-              {index ? <span aria-hidden> · </span> : null}
-              <span className={part.className}>{part.text}</span>
-            </Fragment>
-          ))}
+          {short.working ? <span>{short.working} working</span> : null}
+          {short.working && short.stuck ? <span aria-hidden> · </span> : null}
+          {short.stuck ? <span className={stuckColor}>{short.stuck} stuck</span> : null}
         </span>
       </button>
     </div>

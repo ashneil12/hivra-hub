@@ -127,8 +127,11 @@ it("lists no sub-chats under a Mono: one line says what it has out, the row's la
   expect(container.querySelector("[data-mono-children]")).toBeNull();
   expect(container.querySelector("[data-mono-child]")).toBeNull();
   expect(container.querySelector("[data-mono-children-toggle]")).toBeNull();
-  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 asking");
+  // Short, as the rail has little room: asking counts as stuck (as on Today); the full split is the row's label and the
+  // line's hover.
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
   expect(work(mono.id)?.dataset.monoWorkKind).toBe("asking");
+  expect(work(mono.id)?.querySelector("button")?.getAttribute("title")).toContain("1 working · 1 asking");
   expect(container.querySelector('button[aria-label*="1 working · 1 asking"]')).not.toBeNull();
   // A Mono with nothing out has no line.
   expect(work(other.id)).toBeNull();

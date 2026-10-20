@@ -6,27 +6,21 @@
 //   everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx);
 // - a Mono with a brief out to a coding team reads one line for it (Ash, 20 Oct: "Briefed EXO coding team: <task> · 2
 //   working · 1 stuck"), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { ChevronRight, Square, Terminal } from "../../../shared/ui/icons";
 import { briefedStatus, type BriefedTeam } from "../model/briefedTeams";
 import { workingLine } from "../model/leadFlow";
-import type { StuckWorker } from "../model/workerStuck";
+import { shortSplit, workSplit, type StuckWorker } from "../model/workerStuck";
 import { StuckList, stuckTitle } from "./StuckWorkerCard";
 
 /**
  * One brief to a coding team, as the briefing Mono's chat shows it: "Briefed EXO coding team: Fix the save bug · 2
- * working · 1 stuck", the asking part amber and the stuck part amber or red. Live (it reads the rows), and one click
- * opens the coding team on its Lead.
+ * working · 1 stuck" (asking counts as stuck; the stuck part amber, or red once one failed). Live (it reads the rows),
+ * and one click opens the coding team on its Lead.
  */
 export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?: (brief: BriefedTeam) => void }) {
   const { counts } = brief;
-  const status = [
-    counts.working ? { key: "working", text: `${counts.working} working`, className: "" } : undefined,
-    counts.asking ? { key: "asking", text: `${counts.asking} asking`, className: "text-amber-400" } : undefined,
-    counts.stuck
-      ? { key: "stuck", text: `${counts.stuck} stuck`, className: brief.failed ? "text-red-400" : "text-amber-400" }
-      : undefined,
-  ].filter((part): part is { key: string; text: string; className: string } => !!part);
+  const short = shortSplit(counts);
   const team = brief.to?.team ?? "its coding team";
   const words = `Briefed ${team}: ${brief.title} · ${briefedStatus(brief)}`;
   return (
@@ -34,9 +28,9 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
       type="button"
       data-briefed-team={brief.row.id}
       data-briefed-project={brief.to?.projectId}
-      data-briefed-kind={counts.stuck ? (brief.failed ? "failed" : "stuck") : counts.asking ? "asking" : "working"}
+      data-briefed-kind={brief.failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
       disabled={!onOpen || !brief.to}
-      title={brief.to ? `Open ${team} on ${brief.to.leadName}` : words}
+      title={[workSplit(counts), brief.to ? `Open ${team} on ${brief.to.leadName}` : undefined].filter(Boolean).join("\n") || words}
       aria-label={brief.to ? `${words}. Open ${team}` : words}
       onClick={() => onOpen?.(brief)}
       className="group/brief flex w-full min-w-0 cursor-default items-center gap-2 rounded-2xl border border-content/10 px-4 py-2.5 text-left font-sans text-[12px] text-content/55 hover:bg-content/4 disabled:hover:bg-transparent"
@@ -49,14 +43,17 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
         </span>
         <span className="shrink-0 whitespace-pre" data-briefed-status>
           <span aria-hidden> · </span>
-          {status.length
-          ? status.map((part, index) => (
-              <Fragment key={part.key}>
-                {index ? <span aria-hidden> · </span> : null}
-                <span className={part.className}>{part.text}</span>
-              </Fragment>
-            ))
-          : briefedStatus(brief)}
+          {short.text ? (
+            <>
+              {short.working ? <span>{short.working} working</span> : null}
+              {short.working && short.stuck ? <span aria-hidden> · </span> : null}
+              {short.stuck ? (
+                <span className={brief.failed ? "text-red-400" : "text-amber-400"}>{short.stuck} stuck</span>
+              ) : null}
+            </>
+          ) : (
+            briefedStatus(brief)
+          )}
         </span>
       </span>
       {brief.to ? (

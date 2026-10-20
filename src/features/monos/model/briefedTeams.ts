@@ -4,7 +4,7 @@
 // workers themselves. The counts are the Lead's workers for that brief (every row beneath it), read like any other
 // work out (workerStuck.ts): working, asking, stuck (stalled or failed).
 import { isOpenDelegation, type Delegation } from "./delegations";
-import { countWork, stuckOf, workSplit, type WorkCounts } from "./workerStuck";
+import { countWork, shortSplit, stuckOf, type WorkCounts } from "./workerStuck";
 
 /** The coding team a Lead's chat is: its project, the team's name ("EXO coding team") and the Lead's. */
 export type BriefTeam = { projectId: string; team: string; leadName: string };
@@ -69,7 +69,10 @@ export function briefedTeams(
     });
 }
 
-/** What the line says after the brief: "2 working · 1 stuck", or the Lead on it while it has no workers yet. */
+/**
+ * What the line says after the brief: "2 working · 1 stuck" (asking counts as stuck: workerStuck.ts shortSplit), or the
+ * Lead on it while it has no workers out.
+ */
 export function briefedStatus(brief: BriefedTeam): string {
-  return workSplit(brief.counts) ?? `${brief.to?.leadName ?? "its Lead"} on it`;
+  return shortSplit(brief.counts).text ?? `${brief.to?.leadName ?? "its Lead"} on it`;
 }

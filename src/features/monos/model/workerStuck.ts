@@ -251,6 +251,16 @@ export function workSplit(counts: WorkCounts): string | undefined {
   return parts.length ? parts.join(" · ") : undefined;
 }
 
+/**
+ * The short form, where room is tight (a Mono's line on the rail, a brief's line in its chat): what still works and what
+ * needs someone, asking counted as stuck as Today's Stuck section does ("2 working · 1 stuck", Ash's words, 20 Oct).
+ */
+export function shortSplit(counts: WorkCounts): { working: number; stuck: number; text?: string } {
+  const stuck = counts.asking + counts.stuck;
+  const text = [counts.working ? `${counts.working} working` : "", stuck ? `${stuck} stuck` : ""].filter(Boolean).join(" · ");
+  return { working: counts.working, stuck, ...(text ? { text } : {}) };
+}
+
 /** A row's rollup word: a stalled one is stuck whatever its live chat shows. */
 export function rollupState(row: Delegation): RollupState {
   if (row.state === "running") return row.stallKind ? "stuck" : "working";
