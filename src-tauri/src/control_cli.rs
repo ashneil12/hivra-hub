@@ -204,7 +204,9 @@ Actions:
   sessions.stop {"sessionId":"..."}
                   Stop a session's current turn and pause its queued messages.
                   The conversation and checkout are kept. Idle sessions are
-                  unchanged. Reuse --request-id on retries.
+                  unchanged. "cascade":true also stops everything beneath it
+                  (what it delegated, depth first) and returns stopFailed.
+                  Reuse --request-id on retries.
   sessions.archive {"sessionId":"..."}
                   Stop the session if running, save its conversation, and
                   archive it. It can be restored from MonoCode's archive.
@@ -312,7 +314,9 @@ Actions:
                   Reading a finished result marks it read: no report follows.
   tasks.wait     {"taskIds":["t-..."],"timeoutSeconds":25}  Block until one of
                   them finishes or asks a question (0-25 s). Status only.
-  tasks.cancel   {"taskId":"t-...","reason":"..."}  Stop a task and drop its report.
+  tasks.cancel   {"taskId":"t-...","reason":"..."}  Stop a task and everything it
+                  delegated in turn, and drop their reports. stopFailed lists
+                  any worker that would not stop.
   tasks.answer   {"taskId":"t-...","requestId":7,"answers":{"<questionId>":["<optionId>"]}}
                   Answer your worker's open question, or pass "skip":true.
 
