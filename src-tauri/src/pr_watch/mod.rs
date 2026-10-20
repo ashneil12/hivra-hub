@@ -18,7 +18,8 @@
 //!   in a row end the watch and say so. No webhooks: nothing opens a door into the Mac.
 //! - **Durable**: watches and their wakes are rows here (own tables, no numbered migration). A wake is delivered
 //!   through the Mono's queue by the main window (src/features/pr-watch), `pending` → `queued` → `delivered` (or
-//!   `disposed`), and recovered at boot like a delegation's report.
+//!   `disposed`), and recovered at boot like a delegation's report. Each sweep deletes settled wakes and ended
+//!   watches 30 days on (`prune`).
 //! - **The poller** is a thread in this process, so a hidden or closed window never pauses it.
 
 pub mod bounded;
@@ -60,6 +61,8 @@ const RATE_FLOOR: i64 = 200;
 const RATE_PAUSE_MIN: i64 = 60_000;
 const ASKS_MAX: usize = 50;
 const LOG_MAX: usize = 30;
+/// Ended watches and settled wakes are kept this long (the board shows a day of them), then deleted.
+const KEEP_ENDED: i64 = 30 * 24 * 60 * 60_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -952,6 +955,7 @@ pub fn sweep(
         }
     }
     let conn = store.lock_conn()?;
+    prune(&conn, now)?;
     swept.next_due = conn
         .query_row(
             "SELECT MIN(next_read_at) FROM pr_watches WHERE state = 'watching'",
@@ -963,6 +967,25 @@ pub fn sweep(
         .flatten()
         .map(|due| due.max(*paused_until));
     Ok(swept)
+}
+
+/// Forget what is long settled: wakes delivered or thrown away more than [`KEEP_ENDED`] ago, and watches that ended
+/// that long ago with no wake still owed to their owner.
+fn prune(conn: &Connection, now: i64) -> Result<(), String> {
+    let before = now - KEEP_ENDED;
+    conn.execute(
+        "DELETE FROM pr_watch_wakes WHERE delivery IN ('delivered', 'disposed') AND updated_at < ?1",
+        params![before],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM pr_watches WHERE state = 'ended' AND ended_at < ?1
+           AND NOT EXISTS (SELECT 1 FROM pr_watch_wakes w
+                           WHERE w.watch_id = pr_watches.id AND w.delivery IN ('pending', 'queued'))",
+        params![before],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn failed_read(
@@ -1823,6 +1846,86 @@ mod tests {
             .unwrap()
             .was_watching
         );
+    }
+
+    #[test]
+    fn ended_watches_and_settled_wakes_go_after_thirty_days() {
+        let store = store();
+        // Two watches ended long ago: one fully told, one whose last wake still waits for its owner.
+        for owner in ["mono-a", "mono-b"] {
+            add(&store, &FakeGh::new(vec![Ok(pending())]), input(owner), T0).unwrap();
+        }
+        let closed = recorded(|v| pr(v)["state"] = json!("CLOSED"));
+        run(
+            &store,
+            &FakeGh::new(vec![Ok(closed)]),
+            T0 + IN_FLIGHT_EVERY,
+            &mut 0,
+        );
+        let wakes = open_wakes(&store);
+        assert_eq!(wakes.len(), 2);
+        let told = wakes
+            .iter()
+            .find(|w| w.owner_session == "mono-a")
+            .unwrap()
+            .id
+            .clone();
+        set_wake_delivery(
+            &mut store.lock_conn().unwrap(),
+            std::slice::from_ref(&told),
+            "delivered",
+            T0 + IN_FLIGHT_EVERY + 1,
+        )
+        .unwrap();
+        // A live watch, registered at the same time, stays whatever its age.
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(pending())]),
+            AddInput {
+                number: 14717,
+                ..input("mono-c")
+            },
+            T0,
+        )
+        .unwrap();
+        let count = |table: &str| -> i64 {
+            store
+                .lock_conn()
+                .unwrap()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!((count("pr_watches"), count("pr_watch_wakes")), (3, 2));
+
+        // A day later nothing goes.
+        run(&store, &FakeGh::new(vec![]), T0 + 24 * 60 * 60_000, &mut 0);
+        assert_eq!((count("pr_watches"), count("pr_watch_wakes")), (3, 2));
+
+        // A month and a day later: the told watch and its wake go; the one still owed a wake and the live one stay.
+        store
+            .lock_conn()
+            .unwrap()
+            .execute(
+                "UPDATE pr_watches SET next_read_at = ?1 WHERE state = 'watching'",
+                [T0 + 40 * 24 * 60 * 60_000],
+            )
+            .unwrap();
+        run(
+            &store,
+            &FakeGh::new(vec![]),
+            T0 + 31 * 24 * 60 * 60_000,
+            &mut 0,
+        );
+        assert_eq!((count("pr_watches"), count("pr_watch_wakes")), (2, 1));
+        let left: Vec<String> = list(&store.lock_conn().unwrap(), None, T0)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.owner_session)
+            .collect();
+        assert!(left.contains(&"mono-c".to_string()), "{left:?}");
+        assert_eq!(open_wakes(&store)[0].owner_session, "mono-b");
     }
 
     #[test]
