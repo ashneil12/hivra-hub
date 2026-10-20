@@ -10,7 +10,7 @@ import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
-import { setHubSelection, type HubSelection } from "../model/hubNav";
+import { monoTeamInView, setHubSelection, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
 
@@ -66,7 +66,8 @@ export function ProjectStrip({
       <StripButton
         label="Today"
         title="Today, all projects"
-        selected={selection.project === "today" && selection.item !== "autopilot"}
+        // A Mono's own team is selected with no project (hubNav.ts): Today isn't what is open then.
+        selected={selection.project === "today" && selection.item !== "autopilot" && !monoTeamInView(selection)}
         onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "inbox" }); }}
         Icon={Clock}
       />

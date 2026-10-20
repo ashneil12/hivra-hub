@@ -12,6 +12,7 @@ import {
   Settings,
   StickyNote,
   Terminal,
+  UserGroup,
   X,
   Zap,
 } from "../../shared/ui/icons";
@@ -130,6 +131,8 @@ type Props = {
   onToggleMonoOverview?: () => void;
   monoOverviewOpen?: boolean;
   onOpenMonoSettings?: () => void;
+  /** The Mono's own team, beside its overview (MonoViewActions `team`). */
+  monoTeam?: { name: string; open: boolean; onToggle: () => void };
   /** The full-height Mono panel owns these while it is open. */
   hideWindowControls?: boolean;
   projectRailOpen?: boolean;
@@ -671,22 +674,46 @@ export function TabVisitNav({
   );
 }
 
-/** A Mono's overview toggle and settings, beside its conversation. */
+/** A Mono's team, overview toggle and settings, beside its conversation. */
 export function MonoViewActions({
   name,
   overviewOpen,
   onToggleOverview,
   onOpenSettings,
+  team,
   className = "",
 }: {
   name: string;
   overviewOpen: boolean;
   onToggleOverview?: () => void;
   onOpenSettings?: () => void;
+  /**
+   * Its own team (hub/model/monoTeams.ts), for a Mono that has one: "Team" opens its chat inside the team's Sessions
+   * list, its workers under it; pressed while it is, and a click goes back to the chat on its own.
+   */
+  team?: { name: string; open: boolean; onToggle: () => void };
   className?: string;
 }) {
   return (
     <div className={`flex items-center gap-1 ${className}`}>
+      {team ? (
+        <button
+          type="button"
+          aria-pressed={team.open}
+          title={team.open ? `Hide ${team.name}` : `Show ${team.name}`}
+          data-tauri-drag-region="false"
+          data-mono-view-team
+          onClick={team.onToggle}
+          className={`flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] ${
+            team.open
+              ? "bg-content/10 text-content"
+              : "bg-content/5 text-content/70 hover:bg-content/8 hover:text-content"
+          }`}
+        >
+          <UserGroup className="size-3.5" strokeWidth={1.75} />
+          Team
+        </button>
+      ) : null}
       {onToggleOverview ? (
         <button
           type="button"
@@ -750,6 +777,7 @@ function TitleBarComponent({
   onToggleMonoOverview,
   monoOverviewOpen = false,
   onOpenMonoSettings,
+  monoTeam,
   hideWindowControls = false,
   projectRailOpen = true,
   sessionSidebarOpen = true,
@@ -1096,6 +1124,7 @@ function TitleBarComponent({
             overviewOpen={monoOverviewOpen}
             onToggleOverview={onToggleMonoOverview}
             onOpenSettings={onOpenMonoSettings}
+            team={monoTeam}
             className="px-3"
           />
         ) : null}

@@ -430,15 +430,19 @@ type Props = {
   /** A Mono fills the main area, which has no project sidebar. */
   monoViewActive?: boolean;
   /**
-   * Hub: this list is a project's coding team (hub/model/codingTeam.ts), the main place Ash talks (Ash, 20 Oct). Its
-   * Lead's chat is pinned at the top, and every chat a chat started nests under the chat Ash talks to, folded until
-   * one is stuck (hub/model/codingTeamList.ts).
+   * Hub: this list is a team (Ash, 20 Oct: sub-chats only ever live in a team): a project's coding team
+   * (hub/model/codingTeam.ts), the main place Ash talks, or a Mono's own team (hub/model/monoTeams.ts). The chat that
+   * owns it (the Lead's, or the Mono's) is pinned at the top, and every chat a chat started nests under the chat Ash
+   * talks to, folded until one is stuck (hub/model/codingTeamList.ts).
    */
   codingTeam?: CodingTeamList;
 };
 
-/** The coding team's Lead, as its pinned row shows it. */
+/** A team's list: whose it is, and the chat that owns it as its pinned row shows it. */
 export type CodingTeamList = {
+  /** A project's coding team (its Lead pinned) or a Mono's own team (the Mono pinned). */
+  kind: "coding" | "mono";
+  /** The chat that owns the team: the project's Lead, or the Mono whose team it is. */
   lead?: {
     /** Its chat as a row (a stand-in id until its chat exists). */
     session: SessionSummary;
@@ -880,7 +884,9 @@ function SidebarComponent({
             .map((session) => session.id),
         ],
         listedSessions,
-        delegationRows,
+        // A brief to a project's Lead is that coding team's work, never a sub-chat of the Mono that sent it: without
+        // its row, the Lead's workers can't climb through it into the Mono's own team.
+        delegationRows.filter((row) => row.follow !== "lead"),
         listedBusySessionIds,
       )
     : undefined;
@@ -2829,13 +2835,15 @@ function SidebarComponent({
             </div>
           ) : (
             <div>
-              {/* A coding team's Lead, pinned at the top: its default chat (Ash, 20 Oct). */}
+              {/* A team's owner (a coding team's Lead, or the Mono whose team it is), pinned at the top: its default
+                  chat (Ash, 20 Oct). */}
               {teamLead &&
               !filtersActive &&
               (!searchNarrowed ||
                 filterSessionsByQuery([teamLead.session], searchQuery).length > 0) ? (
                 <ul
                   data-coding-team-lead={teamLead.session.id}
+                  data-team-kind={codingTeam?.kind}
                   className={`flex flex-col ${inset ? "gap-px px-2 pt-1" : "gap-0.5 p-1.5 pb-0"}`}
                 >
                   <li>{renderLeadCard(teamLead)}</li>
@@ -2875,7 +2883,8 @@ function SidebarComponent({
                     >
                       This project’s machine isn’t connected on this computer.
                     </p>
-                  ) : (
+                  ) : teamLead ? null : (
+                    // A team's list is never empty: its owner is pinned above, its workers under it.
                     <SessionsEmpty message="Sessions you start will show up here" />
                   )}
                 </div>

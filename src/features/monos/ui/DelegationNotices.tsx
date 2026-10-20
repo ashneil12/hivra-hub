@@ -42,12 +42,14 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
       className="group/brief flex w-full min-w-0 cursor-default items-center gap-2 rounded-2xl border border-content/10 px-4 py-2.5 text-left font-sans text-[12px] text-content/55 hover:bg-content/4 disabled:hover:bg-transparent"
     >
       <Terminal aria-hidden className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
-      <span className="min-w-0 truncate" data-briefed-words>
-        <span className="text-content/85">Briefed {team}:</span> {brief.title}
-      </span>
-      <span className="shrink-0" data-briefed-status>
-        <span aria-hidden> · </span>
-        {status.length
+      {/* The brief's words give way first; what its team has out always shows. */}
+      <span className="flex min-w-0 items-baseline">
+        <span className="min-w-0 truncate" data-briefed-words>
+          <span className="text-content/85">Briefed {team}:</span> {brief.title}
+        </span>
+        <span className="shrink-0 whitespace-pre" data-briefed-status>
+          <span aria-hidden> · </span>
+          {status.length
           ? status.map((part, index) => (
               <Fragment key={part.key}>
                 {index ? <span aria-hidden> · </span> : null}
@@ -55,6 +57,7 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
               </Fragment>
             ))
           : briefedStatus(brief)}
+        </span>
       </span>
       {brief.to ? (
         <ChevronRight

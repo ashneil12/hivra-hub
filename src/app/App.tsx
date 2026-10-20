@@ -58,8 +58,12 @@ import {
   codingTeamNamed,
   ensureMonoTeam,
   forgetMonoTeam,
+  isMonoTeamFolder,
   monoTeam,
   monoTeamName,
+  nameMonoTeam,
+  teamFor,
+  useMonoTeamsVersion,
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
@@ -177,10 +181,14 @@ import {
 import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
+  monoTeamInView,
+  monoTeamItem,
   setCodingTeamOpener,
   setHubSelection,
+  setMonoTeamOpener,
   useHubSelection,
   type CodingTeamTarget,
+  type MonoTeamTarget,
 } from "../features/hub/model/hubNav";
 import {
   codingTeamView,
@@ -5286,11 +5294,14 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string) => {
+    async (monoId: string, options: { inTeam?: boolean } = {}) => {
       // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
       const team = leadCodingTeam(monoId);
+      // Any other Mono opens on its own (people, not work), or inside its own team (monoTeams.ts) when asked: its
+      // chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
+      const own = !team && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
       if (team?.folder) {
         setHubSelection({ project: team.id, item: "coding-team" });
         nameHubProject(team);
@@ -5299,6 +5310,15 @@ function Workspace({
           selectProjectRef.current(team.folder);
           // The project's own chat must not take the focus meanwhile: a pane taking focus closes the Mono's view
           // (onFocusPane). The Lead's composer takes it once its view is up.
+          setComposerFocused(false);
+        }
+      } else if (own) {
+        const mono = findMono(monoId);
+        setHubSelection({ project: "today", item: monoTeamItem(monoId) });
+        nameMonoTeam(own.folder, mono ? monoLook(mono).name : undefined);
+        noteCodingTeamView(monoTeamItem(monoId), "lead");
+        if (!sameProjectPath(projectCwdRef.current, own.folder)) {
+          selectProjectRef.current(own.folder);
           setComposerFocused(false);
         }
       }
@@ -6787,8 +6807,9 @@ function Workspace({
           // `onCwdChange` already moved to it.
           break;
       }
-      // Every project opened is remembered, the one chosen last most recently.
-      for (const step of steps) setRecents(rememberProject(step.path));
+      // Every project opened is remembered, the one chosen last most recently. A Mono's team folder is no project of
+      // Ash's (monoTeams.ts): it opens from its Mono, never from the recent list.
+      for (const step of steps) if (!isMonoTeamFolder(step.path)) setRecents(rememberProject(step.path));
     },
     [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
   );
@@ -6841,6 +6862,36 @@ function Workspace({
     [closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
+  /**
+   * Open a Mono's own team (hubNav.ts openMonoTeam, monoTeams.ts): its folder's workspace and Sessions list, the Mono's
+   * chat pinned on top and its workers under it, on the Mono's chat by default (`owner`) or the chat Ash was last in
+   * there. A Mono with no team yet opens its chat.
+   */
+  const openMonoTeamView = useCallback(
+    (monoId: string, target: MonoTeamTarget = {}) => {
+      const mono = findMono(monoId);
+      const team = mono ? monoTeam(monoId) : undefined;
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      if (!mono || !team) {
+        if (mono) void onOpenMono(monoId);
+        return;
+      }
+      const item = monoTeamItem(monoId);
+      if (target.owner ?? codingTeamView(item) === "lead") {
+        void onOpenMono(monoId, { inTeam: true });
+        return;
+      }
+      closeMonoView();
+      setHubSelection({ project: "today", item });
+      nameMonoTeam(team.folder, monoLook(mono).name);
+      onSelectProject(team.folder);
+    },
+    [closeMonoView, onOpenMono, onSelectProject],
+  );
+  useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
   /**
    * A new chat in a project's coding team, as Ash's New session there makes one: the coding team opens and the chat
    * starts in the project's folder. Its id, or null for a project with no code folder. The benches' way in
@@ -15114,6 +15165,7 @@ function Workspace({
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();
+  useMonoTeamsVersion();
   const hubProject = hubData()
     .listProjects()
     .find((project) => project.id === hubSel.project);
@@ -15247,6 +15299,27 @@ function Workspace({
   const onOpenMonoViewSettings = monoViewMono
     ? () => setMonoSettingsFor(monoViewMono.id)
     : undefined;
+  // A Mono with a team of its own has "Team" beside Overview (monoTeams.ts): pressed while its chat shows inside its
+  // team's Sessions list. A Lead needs none: it always opens in its coding team.
+  const monoViewTeam =
+    monoViewMono && codingTeamsOn()
+      ? teamFor({ id: monoViewMono.id, name: monoLook(monoViewMono).name }, hubData().listProjects())
+      : undefined;
+  const monoViewTeamOpen =
+    !!monoViewMono &&
+    monoTeamInView(hubSel) === monoViewMono.id &&
+    sameProjectPath(sidebarCwd, monoTeam(monoViewMono.id)?.folder ?? "");
+  const monoViewTeamAction =
+    monoViewMono && monoViewTeam?.kind === "mono"
+      ? {
+          name: monoViewTeam.name,
+          open: monoViewTeamOpen,
+          onToggle: () => {
+            if (monoViewTeamOpen) setHubSelection({ project: "today", item: "inbox" });
+            else openMonoTeamView(monoViewMono.id, { owner: true });
+          },
+        }
+      : undefined;
   // A new session takes over from a Mono in view.
   const onNewFromTitleBar = () => {
     if (monoViewIdRef.current) closeMonoView();
@@ -15279,6 +15352,7 @@ function Workspace({
       onOpenMonoSettings={
         monoCovers && !insetLayout ? onOpenMonoViewSettings : undefined
       }
+      monoTeam={monoCovers && !insetLayout ? monoViewTeamAction : undefined}
       hideWindowControls={monoCovers && monoOverviewOpen && !!monoOverviewPanel}
       activeId={
         monoViewSession
@@ -15338,7 +15412,16 @@ function Workspace({
     sameProjectPath(sidebarCwd, hubProject.folder)
       ? hubProject
       : undefined;
-  const teamLeadMono = teamProject ? leadMono(leadSpecFor(teamProject)) : undefined;
+  // A Mono's own team (monoTeams.ts) is the same list on its folder: the Mono's chat pinned on top, its workers under it.
+  const teamOwnerMonoId = codingTeamsOn() && !teamProject ? monoTeamInView(hubSel) : undefined;
+  const ownTeam = teamOwnerMonoId ? monoTeam(teamOwnerMonoId) : undefined;
+  const ownTeamShown = !!ownTeam && sameProjectPath(sidebarCwd, ownTeam.folder);
+  const teamFolder = teamProject?.folder ?? (ownTeamShown ? ownTeam.folder : undefined);
+  const teamLeadMono = teamProject
+    ? leadMono(leadSpecFor(teamProject))
+    : ownTeamShown
+      ? findMono(teamOwnerMonoId!)
+      : undefined;
   const teamLeadSession = teamLeadMono?.sessionId
     ? sessions.find((session) => session.id === teamLeadMono.sessionId)
     : undefined;
@@ -15349,14 +15432,15 @@ function Workspace({
   // Kept by identity while nothing it shows changes: the Sidebar is memoized.
   const codingTeamList = useMemo<CodingTeamList | undefined>(
     () =>
-      teamProject
+      teamFolder
         ? {
+            kind: teamProject ? "coding" : "mono",
             ...(teamLeadMono && teamLeadLook
               ? {
                   lead: {
                     session: {
                       id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
-                      cwd: teamProject.folder!,
+                      cwd: teamFolder,
                       harness: teamLeadSession?.harness ?? "claude",
                       model: teamLeadSession?.model ?? "",
                       runtimeMode: teamLeadSession?.runtimeMode ?? "supervised",
@@ -15375,9 +15459,9 @@ function Workspace({
                     ),
                     active: teamLeadActive,
                     busy: teamLeadBusy,
-                    // In the time's place: what it is to the project.
-                    statusLabel: "Lead",
-                    onOpen: () => void onOpenMono(teamLeadMono.id),
+                    // In the time's place: what it is to the team.
+                    statusLabel: teamProject ? "Lead" : "Owner",
+                    onOpen: () => void onOpenMono(teamLeadMono.id, { inTeam: true }),
                   },
                 }
               : {}),
@@ -15385,6 +15469,7 @@ function Workspace({
         : undefined,
     [
       teamProject,
+      teamFolder,
       teamLeadMono?.id,
       teamLeadMono?.sessionId,
       teamLeadLook?.name,
@@ -15399,7 +15484,8 @@ function Workspace({
       onOpenMono,
     ],
   );
-  const teamProjectId = teamProject?.id;
+  // Where the team remembers the chat Ash was last in (codingTeamList.ts codingTeamView): its project, or its Mono's item.
+  const teamProjectId = teamProject?.id ?? (ownTeamShown ? monoTeamItem(teamOwnerMonoId!) : undefined);
   // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
   const onSelectSessionFromList = useCallback(
     (sessionId: string) => {
@@ -15885,6 +15971,7 @@ function Workspace({
                                             onOpenSettings={
                                               onOpenMonoViewSettings
                                             }
+                                            team={monoViewTeamAction}
                                             // The overview header's row, so both share a centre line.
                                             className="absolute right-2.5 top-0 z-10 h-10"
                                           />

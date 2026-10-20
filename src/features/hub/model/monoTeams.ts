@@ -18,6 +18,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { pathKey } from "../../../shared/lib/paths";
 import { monoWorksOn } from "../../monos/model/mono";
+import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
 import { codingTeamName } from "./codingTeam";
 import { leadFor, leadMono, leadSpecFor } from "./hubLeads";
 import { isGlobalProject } from "./hubProjects";
@@ -110,6 +111,13 @@ export function forgetMonoTeam(monoId: string): void {
 export function monoTeamName(monoName: string | undefined): string {
   const name = monoName?.trim();
   return name ? `${name}'s team` : "Team";
+}
+
+/** The workspace names the team's folder after it ("Alfred's team"), as a coding team's is named after its project. */
+export function nameMonoTeam(folder: string, monoName: string | undefined): void {
+  const key = pathKey(folder);
+  const name = monoTeamName(monoName);
+  if (loadTabGroupLabels()[key] !== name) saveTabGroupLabel(key, name);
 }
 
 export function useMonoTeamsVersion(): number {

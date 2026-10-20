@@ -302,7 +302,8 @@ export function MonoRailSection({
         {monos.map((mono) => {
           const look = monoLook(mono);
           const state = states.get(mono.id) ?? IDLE;
-          const selected = mono.id === activeId || mono.id === teamInView;
+          // A Mono's chat in view, else the Mono whose own team is (a worker's chat open in it).
+          const selected = activeId ? mono.id === activeId : mono.id === teamInView;
           // Its team, in the hub: a Lead's coding team, or its own once it has one.
           const team = rank ? teamFor({ id: mono.id, name: look.name }, hubData().listProjects()) : undefined;
           const unseen = selected ? 0 : (unseenCounts?.get(mono.id) ?? 0);
@@ -497,7 +498,7 @@ export function MonoRailSection({
 /**
  * What a Mono has out, on one line under its row, in place of the sub-chats it used to list (Ash, 20 Oct: the rail shows
  * people, not work): "2 working · 1 asking · 1 stuck", the asking part amber and the stuck part amber or red (red when one
- * failed), with the same marks. One click opens its team, where the work and its sub-chats are.
+ * failed); the row keeps its own mark. One click opens its team, where the work and its sub-chats are.
  */
 function MonoWorkLine({
   monoId,
@@ -522,8 +523,10 @@ function MonoWorkLine({
     counts.stuck ? { key: "stuck", text: `${counts.stuck} stuck`, className: stuckColor } : undefined,
   ].filter((part): part is { key: string; text: string; className: string } => !!part);
   const split = parts.map((part) => part.text).join(" · ");
-  const Mark = counts.stuck ? CircleAlert : counts.asking ? Clock : Loader;
-  const markColor = counts.stuck ? stuckColor : counts.asking ? "text-amber-400" : "text-content/45";
+  // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
+  // line's own mark says why it waits.
+  const Mark = counts.working ? Loader : counts.stuck ? CircleAlert : Clock;
+  const markColor = counts.working ? "text-content/45" : counts.stuck ? stuckColor : "text-amber-400";
   return (
     <div
       className="ml-5 flex h-6 min-w-0 items-center border-l border-content/10 pl-1.5"
