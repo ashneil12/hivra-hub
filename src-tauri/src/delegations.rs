@@ -2645,7 +2645,7 @@ mod tests {
         // A Stop.
         let stopped = record(&mut conn, launch("lead", "r4", "w4"), 10).unwrap();
         set_stall(&mut conn, stall(&stopped.id, 1, Some("quiet"), 5), 20).unwrap();
-        clear(&cancel(&mut conn, &[stopped.id.clone()], None, None, 30).unwrap()[0]);
+        clear(&cancel(&mut conn, std::slice::from_ref(&stopped.id), None, None, 30).unwrap()[0]);
         // A later request that takes the chat over.
         let older = record(&mut conn, launch("lead", "r5", "w5"), 10).unwrap();
         set_stall(&mut conn, stall(&older.id, 1, Some("quiet"), 5), 20).unwrap();
