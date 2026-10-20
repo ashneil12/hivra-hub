@@ -679,7 +679,10 @@ pub(crate) mod tests {
         let own = crate::instance::real_home().expect("a home folder in the user database");
         let path = safe_path();
         assert!(path.starts_with(SAFE_PATH), "{path}");
-        assert!(path.ends_with(&format!(":{}", own.join(".local/bin").display())), "{path}");
+        assert!(
+            path.ends_with(&format!(":{}", own.join(".local/bin").display())),
+            "{path}"
+        );
         assert!(!path.contains("/tmp"), "{path}");
     }
 
