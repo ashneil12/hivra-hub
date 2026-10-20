@@ -11914,7 +11914,8 @@ function Workspace({
             { monoId, turn: sourceTurn },
             requestId,
             sessionId,
-            { awaitAcceptance: true, generation: row?.generation ?? 1 },
+            // Its title names it in "still running: ..." while the others report (monoSessionCompletion.ts).
+            { awaitAcceptance: true, generation: row?.generation ?? 1, title: delegation?.title ?? title },
           );
           return Object.assign(
             (outcome: ControlOutcome) => {

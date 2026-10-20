@@ -7,7 +7,14 @@ import { newSession, type Block, type QueuedMessage, type Session } from "../../
 import type { Delegation } from "./delegations";
 import { FOLLOW_GRACE_MS, followStep, REPORT_REQUEST_PREFIX, reportRequestId } from "./followedBriefs";
 import { enqueueMonoMessage } from "./monoMessaging";
-import { completionMessage, completionReceipt, monoSessionCompletionResult } from "./monoSessionCompletion";
+import {
+  completionMessage,
+  completionReceipt,
+  enqueueMonoSessionCompletion,
+  MonoSessionCompletionBatches,
+  monoSessionCompletionResult,
+  REPORT_WINDOW_MS,
+} from "./monoSessionCompletion";
 
 function lead(extra: Partial<Session> = {}): Session {
   return { ...newSession("claude", "/p/hub"), id: "lead-chat", title: "MonoCode Hub lead", ...extra };
@@ -226,5 +233,40 @@ describe("a steer into the Lead's last turn never truncates its report (gap b)",
     const steered = { ...steer(brief.brief!), appRequestId: brief.requestId };
     const blocks = [user("Ash: tidy the docs"), said("Tidying."), steered, said("Docs tidied. Also did the brief: shipped.")];
     expect(followStep(brief, { chat: lead({ blocks }), children: [brief], now: 0 }).kind).toBe("ask");
+  });
+});
+
+describe("a Lead with two workers out still chats with Ash", () => {
+  it("the first worker's report reaches the Lead while the second runs, and Ash's message never waits behind it", () => {
+    let at = 0;
+    const timers: (() => void)[] = [];
+    let chat = lead({ busy: true, turnReady: true });
+    const batches = new MonoSessionCompletionBatches(
+      (_, message) => {
+        chat = enqueueMonoSessionCompletion(chat, message);
+      },
+      { now: () => at, schedule: (run) => (timers.push(run), () => undefined) },
+    );
+    const api = batches.watch({ monoId: chat.id, turn: 1 }, "api", "app-lead-chat-api", { title: "API" });
+    batches.watch({ monoId: chat.id, turn: 1 }, "ui", "app-lead-chat-ui", { title: "UI" });
+    batches.closeInactive(() => false);
+    api(
+      monoSessionCompletionResult({
+        requestId: "api",
+        sessionId: "app-lead-chat-api",
+        project: "/p/hub",
+        prompt: "API",
+        outcome: { status: "completed", text: "API-DONE" },
+      }),
+    );
+    at = REPORT_WINDOW_MS;
+    timers.splice(0).forEach((run) => run());
+    // The API report waits in the busy Lead's queue, saying the UI still runs.
+    expect(chat.queuedMessages).toHaveLength(1);
+    expect(chat.queuedMessages![0].text).toContain("1 of 2 back, still running: UI");
+    // Ash asks how it goes: his message is the head and steers into the running turn.
+    chat = enqueueMonoMessage(chat, ash("ash-1", "How's it going?"));
+    expect(queuedHead(chat)?.id).toBe("ash-1");
+    expect(canSteerQueuedHead(chat)).toBe(true);
   });
 });
