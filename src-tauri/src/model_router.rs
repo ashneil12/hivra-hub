@@ -980,6 +980,40 @@ fn handle(mut stream: TcpStream, route: &CustomRoute, token: &str) -> std::io::R
     }
 }
 
+/// Models that refused `reasoning_effort`, by route (window_key), for as long as the app runs. Every custom model
+/// offers every level unless Ash narrows it, but not every provider or model takes the field: xAI, for one, answers
+/// 400 for a model without reasoning control. Once refused, later requests for that model leave it out at once.
+static REFUSES_EFFORT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn refuses_effort(route: &CustomRoute) -> bool {
+    let name = window_key(route);
+    REFUSES_EFFORT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&name)
+}
+
+fn remember_refuses_effort(route: &CustomRoute) {
+    let name = window_key(route);
+    let mut known = REFUSES_EFFORT.lock().unwrap_or_else(|e| e.into_inner());
+    if !known.contains(&name) {
+        known.push(name);
+    }
+}
+
+/// A 400/422 whose text names the reasoning effort field (`reasoning_effort`, `reasoningEffort`, "reasoning effort").
+pub fn is_effort_refusal(code: u16, text: &str) -> bool {
+    if code != 400 && code != 422 {
+        return false;
+    }
+    let flat: String = text
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    flat.contains("reasoningeffort")
+}
+
 fn forward(
     stream: &mut TcpStream,
     route: &CustomRoute,
@@ -988,33 +1022,49 @@ fn forward(
 ) -> std::io::Result<()> {
     let model = route.model_id.trim();
     let mut upstream_body = to_openai(body, model);
+    let mut sent_effort = false;
     if let Some(effort) = &route.reasoning_effort {
-        if ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort.as_str()) {
+        if ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort.as_str())
+            && !refuses_effort(route)
+        {
             upstream_body["reasoning_effort"] = json!(effort);
+            sent_effort = true;
         }
     }
     let streaming = body["stream"] == true;
-    let mut request = agent(600)
-        .post(&chat_url(&route.provider, &route.base_url))
-        .set("Content-Type", "application/json");
-    if route.provider != "ollama" {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    // ureq's own error type; it is matched on right here, never passed further up.
+    #[allow(clippy::result_large_err)]
+    let send = |payload: &Value| {
+        let mut request = agent(600)
+            .post(&chat_url(&route.provider, &route.base_url))
+            .set("Content-Type", "application/json");
+        if route.provider != "ollama" {
+            request = request.set("Authorization", &format!("Bearer {token}"));
+        }
+        request.send_string(&payload.to_string())
+    };
+    let mut result = send(&upstream_body);
+    // Refused for the effort field alone: say it once more without it, and stop sending it for this model.
+    if sent_effort {
+        if let Err(ureq::Error::Status(code, r)) = result {
+            let text = r.into_string().unwrap_or_default();
+            if is_effort_refusal(code, &text) {
+                remember_refuses_effort(route);
+                if let Some(fields) = upstream_body.as_object_mut() {
+                    fields.remove("reasoning_effort");
+                }
+                result = send(&upstream_body);
+            } else {
+                let text = scrub(&text, token);
+                return respond_upstream_error(stream, route, code, &text);
+            }
+        }
     }
-    let resp = match request.send_string(&upstream_body.to_string()) {
+    let resp = match result {
         Ok(r) => r,
         Err(ureq::Error::Status(code, r)) => {
             let text = scrub(&r.into_string().unwrap_or_default(), token);
-            let kind = match code {
-                401 | 403 => "authentication_error",
-                429 => "rate_limit_error",
-                400 | 404 | 422 => "invalid_request_error",
-                _ => "api_error",
-            };
-            return respond(
-                stream,
-                code,
-                &anthropic_error(kind, &format!("{} said: {text}", host_of(&route.base_url))),
-            );
+            return respond_upstream_error(stream, route, code, &text);
         }
         Err(ureq::Error::Transport(_)) => {
             return respond(
@@ -1027,6 +1077,34 @@ fn forward(
             );
         }
     };
+    forward_answer(stream, resp, model, streaming)
+}
+
+fn respond_upstream_error(
+    stream: &mut TcpStream,
+    route: &CustomRoute,
+    code: u16,
+    text: &str,
+) -> std::io::Result<()> {
+    let kind = match code {
+        401 | 403 => "authentication_error",
+        429 => "rate_limit_error",
+        400 | 404 | 422 => "invalid_request_error",
+        _ => "api_error",
+    };
+    respond(
+        stream,
+        code,
+        &anthropic_error(kind, &format!("{} said: {text}", host_of(&route.base_url))),
+    )
+}
+
+fn forward_answer(
+    stream: &mut TcpStream,
+    resp: ureq::Response,
+    model: &str,
+    streaming: bool,
+) -> std::io::Result<()> {
     if !streaming {
         let parsed: Value = resp
             .into_string()
@@ -1438,6 +1516,110 @@ mod tests {
             .set("Authorization", "Bearer sk-ant-oat01-nope")
             .send_string("{}");
         assert!(matches!(refused, Err(ureq::Error::Status(403, _))));
+    }
+
+    /// A fake provider that refuses `reasoning_effort` the way xAI does for a model without reasoning control, and
+    /// answers normally without it. Returns its port and every request body it saw, in order.
+    fn effort_refusing_provider(
+        refusal: &'static str,
+    ) -> (u16, std::sync::Arc<Mutex<Vec<String>>>) {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for s in upstream.incoming() {
+                let mut s = s.unwrap();
+                let req = read_request(&mut s).unwrap();
+                let body = String::from_utf8_lossy(&req.body).to_string();
+                log.lock().unwrap().push(body.clone());
+                let (status, answer) = if body.contains("reasoning_effort") {
+                    ("400 Bad Request", refusal.to_string())
+                } else {
+                    (
+                        "200 OK",
+                        json!({"choices": [{"message": {"content": "pong"}, "finish_reason": "stop"}]})
+                            .to_string(),
+                    )
+                };
+                write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                )
+                .unwrap();
+            }
+        });
+        (port, seen)
+    }
+
+    fn ask(router: u16) -> Result<String, u16> {
+        match agent(10)
+            .post(&format!("http://127.0.0.1:{router}/v1/messages"))
+            .set("Authorization", "Bearer fake-key-123")
+            .send_string(&json!({"model": "x", "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]}).to_string())
+        {
+            Ok(r) => Ok(r.into_string().unwrap()),
+            Err(ureq::Error::Status(code, _)) => Err(code),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn a_model_that_refuses_reasoning_effort_is_asked_again_without_it_and_remembered() {
+        let (up, seen) = effort_refusing_provider(
+            r#"{"code":"Client specified an invalid argument","error":"Model grok-4.6 does not support parameter reasoningEffort."}"#,
+        );
+        let mut r = route("xai", &format!("http://127.0.0.1:{up}/v1"), "grok-4.6");
+        r.reasoning_effort = Some("medium".into());
+        let router = start_router(r.clone(), "fake-key-123".into()).unwrap();
+
+        // The chat gets its answer, not the provider's 400.
+        let first = ask(router).expect("the retry without the effort field answers");
+        assert!(first.contains("pong"), "{first}");
+        {
+            let bodies = seen.lock().unwrap();
+            assert_eq!(bodies.len(), 2, "one refused try, one retry: {bodies:?}");
+            assert!(bodies[0].contains("\"reasoning_effort\":\"medium\""));
+            assert!(!bodies[1].contains("reasoning_effort"));
+        }
+
+        // Later messages for the same model skip the field straight away, through any router for that model.
+        let again = start_router(r, "fake-key-123".into()).unwrap();
+        assert!(ask(router).unwrap().contains("pong"));
+        assert!(ask(again).unwrap().contains("pong"));
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 4, "no more refused tries: {bodies:?}");
+        assert!(bodies[2..].iter().all(|b| !b.contains("reasoning_effort")));
+    }
+
+    #[test]
+    fn other_refusals_are_not_retried_and_other_models_still_get_their_effort() {
+        // A 400 about something else goes back to Claude Code as it was, after one try.
+        let (up, seen) =
+            effort_refusing_provider(r#"{"error":{"message":"Your prompt is too long."}}"#);
+        let mut r = route(
+            "deepseek",
+            &format!("http://127.0.0.1:{up}/v1"),
+            "deepseek-chat",
+        );
+        r.reasoning_effort = Some("high".into());
+        let router = start_router(r, "fake-key-123".into()).unwrap();
+        assert_eq!(ask(router), Err(400));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(ask(router), Err(400));
+        assert!(
+            seen.lock().unwrap()[1].contains("\"reasoning_effort\":\"high\""),
+            "not remembered as refusing effort"
+        );
+
+        assert!(is_effort_refusal(400, "unknown field `reasoning_effort`"));
+        assert!(is_effort_refusal(
+            422,
+            "Reasoning effort is not supported for this model"
+        ));
+        assert!(!is_effort_refusal(500, "reasoning_effort"));
+        assert!(!is_effort_refusal(400, "max_tokens too large"));
     }
 
     #[test]
