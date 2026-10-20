@@ -22,6 +22,22 @@ export function isAppDelivery(message: QueuedMessage | undefined): boolean {
   return isWaitingBrief(message) || !!message?.monoSessionCompletion;
 }
 
+/** A message Ash typed himself: not an app delivery, a checker's note or a brief another chat sent through the app. */
+export function isOwnMessage(message: QueuedMessage): boolean {
+  return !message.appRequestId && !message.waitForIdle && !message.monoSessionCompletion;
+}
+
+/**
+ * The queue with `message` added. Ash's own messages go first: ahead of everything the app queued (workers' reports,
+ * question and PR wakes, briefs from other chats), in the order he sent them, so he is never stuck behind a report and
+ * a Mono mid-turn can steer his message straight into its work (`canSteerQueuedHead` looks at the head only). Anything
+ * else waits at the back.
+ */
+export function withQueued(queue: readonly QueuedMessage[], message: QueuedMessage): QueuedMessage[] {
+  if (!isOwnMessage(message)) return [...queue, message];
+  return [...queue.filter(isOwnMessage), message, ...queue.filter((entry) => !isOwnMessage(entry))];
+}
+
 /** The request id the delivery's user bubble carries once it went in (a report's is its receipt, its queue id). */
 function deliveredAs(message: QueuedMessage): string | undefined {
   if (isWaitingBrief(message)) return message.appRequestId;

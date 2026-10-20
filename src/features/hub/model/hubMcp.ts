@@ -3,7 +3,10 @@
 //
 // - `ash-os`: Ash's own ash-os entry (read in Rust, `hub_ash_os_mcp`; none in a dev copy) with the chat's identity in its
 //   env, for every hub chat: ASH_CHAT always; a Mono's chat and its habit runs also ASH_MONO_ID and ASH_ROLE (lead,
-//   mono, or checker for the checker); a worker (a chat a Mono or another chat started) ASH_ROLE=worker. Claude Code
+//   mono, or checker for the checker); a worker (a chat a Mono or another chat started) ASH_ROLE=worker. A project's
+//   Lead, its habit runs and every worker under it (however deep) also carry ASH_PROJECT, so Ash OS lets them read and
+//   write only that project's memory and Ash's global memory, `ash` (Ash, 19 Oct: a project never reads another
+//   project's memory). The leadership team, other Monos, plain chats and their workers carry none. Claude Code
 //   doesn't hand MCP servers the chat's identity, so it has to be in the entry. This entry replaces a user-scope
 //   `ash-os` of the same name (checked with Claude Code 2.1.302 on 19 Oct: only the --mcp-config one started). The
 //   entry's own env arrives from Rust as `${MONOCODE_ASH_OS_<KEY>}` references that harness_spawn fills in the child's
@@ -60,6 +63,11 @@ export type HubChatIdentity = {
   chat: string;
   monoId?: string;
   role?: HubRole;
+  /**
+   * The Ash OS projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
+   * under it. Absent for everyone else (the leadership team reads every project, and names one when an ask does).
+   */
+  projects?: string[];
 };
 
 /** What the identity is read from; the app's own lookups by default (hubData.ts passes them). */
@@ -69,6 +77,8 @@ export type HubChatLookups = {
   /** The Mono a habit run works for. */
   habitRunMono(sessionId: string): string | undefined;
   isLead(monoId: string): boolean;
+  /** The Ash OS project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
+  leadProject?(monoId: string): string | undefined;
 };
 
 function monoRole(monoId: string, lookups: HubChatLookups): HubRole {
@@ -76,16 +86,50 @@ function monoRole(monoId: string, lookups: HubChatLookups): HubRole {
   return lookups.isLead(monoId) ? "lead" : "mono";
 }
 
+/** A Lead's project, as the list ASH_PROJECT carries; nothing for any other Mono. */
+function projectsOf(monoId: string, role: HubRole, lookups: HubChatLookups): { projects?: string[] } {
+  const project = role === "lead" ? lookups.leadProject?.(monoId) : undefined;
+  return project ? { projects: [project] } : {};
+}
+
+/**
+ * The Mono chat a worker was started under, however deep (`app-<caller>-<request>`, where the caller may itself be a
+ * worker: `app-app-<Mono's chat>-<r1>-<r2>`): the longest prefix of what follows the `app-`s that is a Mono's own chat.
+ */
+function rootMonoChat(sessionId: string, lookups: HubChatLookups): string | undefined {
+  let rest = sessionId;
+  let best: string | undefined;
+  while (rest.startsWith("app-")) {
+    rest = rest.slice(4);
+    for (let at = rest.indexOf("-"); at > 0; at = rest.indexOf("-", at + 1)) {
+      const candidate = rest.slice(0, at);
+      if ((!best || candidate.length > best.length) && lookups.monoOf(candidate)) best = candidate;
+    }
+  }
+  return best;
+}
+
 /**
  * A Mono's chat is the Mono; a habit run works as its Mono; a chat started through the app CLI (`app-<caller>-<request>`,
- * every delegated worker) is a worker; anything else is a plain hub chat, known by its id alone.
+ * every delegated worker) is a worker, and works on its Lead's project when the chat it was started under is a Lead's;
+ * anything else is a plain hub chat, known by its id alone.
  */
 export function hubChatIdentity(sessionId: string, lookups: HubChatLookups): HubChatIdentity {
   const own = lookups.monoOf(sessionId)?.id;
-  if (own) return { kind: "mono", chat: sessionId, monoId: own, role: monoRole(own, lookups) };
+  if (own) {
+    const role = monoRole(own, lookups);
+    return { kind: "mono", chat: sessionId, monoId: own, role, ...projectsOf(own, role, lookups) };
+  }
   const habit = lookups.habitRunMono(sessionId);
-  if (habit) return { kind: "habit", chat: sessionId, monoId: habit, role: monoRole(habit, lookups) };
-  if (sessionId.startsWith("app-")) return { kind: "worker", chat: sessionId, role: "worker" };
+  if (habit) {
+    const role = monoRole(habit, lookups);
+    return { kind: "habit", chat: sessionId, monoId: habit, role, ...projectsOf(habit, role, lookups) };
+  }
+  if (sessionId.startsWith("app-")) {
+    const root = rootMonoChat(sessionId, lookups);
+    const parent = root ? hubChatIdentity(root, lookups) : undefined;
+    return { kind: "worker", chat: sessionId, role: "worker", ...(parent?.projects ? { projects: parent.projects } : {}) };
+  }
   return { kind: "chat", chat: sessionId };
 }
 
@@ -121,6 +165,7 @@ function identityEnv(identity: HubChatIdentity): Record<string, string> {
     ...(identity.monoId ? { ASH_MONO_ID: identity.monoId } : {}),
     ...(identity.role ? { ASH_ROLE: identity.role } : {}),
     ASH_CHAT: identity.chat,
+    ...(identity.projects?.length ? { ASH_PROJECT: identity.projects.join(",") } : {}),
   };
 }
 
@@ -145,6 +190,7 @@ export function hubMcpArgs(
       ASH_MONO_ID: _mono,
       ASH_ROLE: _role,
       ASH_CHAT: _chat,
+      ASH_PROJECT: _project,
       ...own
     } = ashOs.env ?? {};
     mcpServers["ash-os"] = { ...ashOs, env: { ...own, ...identityEnv(identity) } };
@@ -182,4 +228,21 @@ export function registeredHubMcpArgs(sessionId: string): string[] {
 export function hasDelegateTool(sessionId: string, harness: string): boolean {
   if (harness !== "claude" || !registered?.servers.cli) return false;
   return getsDelegateTool(hubChatIdentity(sessionId, registered.lookups));
+}
+
+/**
+ * The Ash OS projects a chat works on (its ASH_PROJECT): a Lead's chat, its habit runs and its workers get their Lead's
+ * project; anyone else none. What its memory primer (hubMemoryPrimer.ts) and its workers' briefs are about.
+ */
+export function chatProjects(sessionId: string): string[] {
+  return registered ? (hubChatIdentity(sessionId, registered.lookups).projects ?? []) : [];
+}
+
+/**
+ * Whether a chat's session can call the ash-os tools (ash_recall and the rest): only Claude Code sessions take the
+ * extra arguments that carry Ash's ash-os entry (claudeExtraArgs.ts), and it waits for the entry to be read before it
+ * starts (hubData.ts). Any other engine gets its memory in the prompt only.
+ */
+export function hasAshOsTools(harness: string): boolean {
+  return harness === "claude";
 }

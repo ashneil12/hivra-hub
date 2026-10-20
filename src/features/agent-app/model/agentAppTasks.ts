@@ -34,6 +34,7 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import type { AgentAppHost } from "./agentApp";
 
 /** The FIELDS entries of the task actions (agentApp.ts). */
@@ -98,6 +99,11 @@ export type AgentAppTasksHost = {
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
   /**
+   * The memory a worker of this chat starts with, in its brief: the chat's project's current memory and Ash's global one
+   * (hub/model/hubMemoryPrimer.ts workerMemoryBlock, the default), or undefined for a chat with no project.
+   */
+  memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
+  /**
    * Leadership team: brief a project's Lead in its own long-running chat instead of starting a worker (double
    * delegation, hub/model/leadershipDelegation.ts). `lead` is what the Mono named; the host finds it among the Leads
    * this Mono may brief, records the row (owner: this chat, child: the Lead's chat) and sends the brief in.
@@ -143,12 +149,17 @@ const WAIT_MAX_SECONDS = 25;
 /** How often a wait looks again even without a change event (one can slip between a read and the listener). */
 const WAIT_POLL_MS = 2_000;
 
-/** Every brief opens with this, so nothing mistakes it for Ash's own words (the studio's sweep skips such chats). */
-export function briefPrompt(owner: string, brief: string, goal?: string): string {
+/**
+ * Every brief opens with this, so nothing mistakes it for Ash's own words (the studio's sweep skips such chats). A worker
+ * of a project's Lead also gets that project's memory and Ash's global one after the brief (`memory`), so it starts on
+ * what holds now without calling ash_recall.
+ */
+export function briefPrompt(owner: string, brief: string, goal?: string, memory?: string): string {
   return [
     `[MonoCode brief from ${owner}]`,
     brief,
     ...(goal ? [`Done when: ${goal}`] : []),
+    ...(memory?.trim() ? [memory.trim()] : []),
   ].join("\n\n");
 }
 
@@ -355,10 +366,14 @@ async function delegate(
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
   const model = taskModel(input.model, source);
+  // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
+  const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
+    () => undefined,
+  );
   const launch = helpers.startLaunch(
     source,
     {
-      prompt: briefPrompt(mono.name || mono.id, brief, goal),
+      prompt: briefPrompt(mono.name || mono.id, brief, goal, memory),
       ...(named !== undefined
         ? { project: tasks.hubProjectFolder?.(named) ?? named }
         : {}),
@@ -391,11 +406,9 @@ async function delegate(
     harness: launch.harness,
     model: launch.model,
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
-    ...(row
-      ? {}
-      : {
-          note: "It started, but its task record could not be stored; its report still comes back to you.",
-        }),
+    note: row
+      ? "Running. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once."
+      : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }
 

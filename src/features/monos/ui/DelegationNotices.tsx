@@ -1,9 +1,11 @@
 // The two lines the delegation tree adds around a chat's composer (H4):
 // - a worker's chat runs on its own, so it shows "Runs on its own · Open <Lead>" instead of the composer; the Lead
 //   does the talking, and Ash can still jump in;
-// - a Lead waiting on delegated work reads "Waiting on N", with one Stop for everything beneath it.
+// - a Lead with delegated work out reads "2 working: API, UI" (or "Waiting on N" without names), with one Stop for
+//   everything beneath it.
 import { useState } from "react";
 import { Square } from "../../../shared/ui/icons";
+import { workingLine } from "../model/leadFlow";
 
 export function DelegatedChatNotice({
   ownerName,
@@ -59,11 +61,16 @@ export function DelegatedChatNotice({
 
 export function DelegationWaitingLine({
   count,
+  working = [],
+  asking = [],
   failed = [],
   unloaded = [],
   onStopAll,
 }: {
   count: number;
+  /** What is out by title, still running and asking: "2 working: API, UI". */
+  working?: readonly string[];
+  asking?: readonly string[];
   /** Chats the last Stop couldn't stop, by title. */
   failed?: readonly string[];
   /** Chats whose workers the last Stop couldn't load (they may still be running), by title. */
@@ -72,12 +79,19 @@ export function DelegationWaitingLine({
 }) {
   const [stopping, setStopping] = useState(false);
   if (count <= 0 && !failed.length && !unloaded.length) return null;
+  const named = count > 0 ? workingLine({ working, asking }) : undefined;
   return (
     <div
       data-delegation-waiting={count}
       className="flex items-center gap-2 px-1 pb-1.5 font-sans text-[12px] text-content/55"
     >
-      {count > 0 ? <span>Waiting on {count}</span> : null}
+      {named ? (
+        <span data-delegation-working className="min-w-0 truncate" title={[...working, ...asking].join(", ")}>
+          {named}
+        </span>
+      ) : count > 0 ? (
+        <span>Waiting on {count}</span>
+      ) : null}
       {failed.length ? (
         <span
           className="min-w-0 truncate text-amber-400"

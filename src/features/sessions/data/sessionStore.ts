@@ -1187,10 +1187,23 @@ function sanitizeBlock(
       block.notice === "error" ||
       block.notice === "interrupt" ||
       block.notice === "resume-stopped" ||
-      block.notice === "recovered"
+      block.notice === "recovered" ||
+      block.notice === "still-running"
     ) {
       next.notice = block.notice;
     }
+    const still = block.stillRunning;
+    if (
+      block.notice === "still-running" &&
+      Array.isArray(still?.taskIds) &&
+      still.taskIds.length <= 50 &&
+      still.taskIds.every((id) => typeof id === "string" && isPersistableId(id)) &&
+      (still.briefId === undefined || (typeof still.briefId === "string" && isPersistableId(still.briefId)))
+    )
+      next.stillRunning = {
+        taskIds: [...still.taskIds],
+        ...(still.briefId !== undefined ? { briefId: still.briefId } : {}),
+      };
     // The ship whose restart cut the turn: the resume carries its receipt (src-tauri/src/ship.rs).
     if (
       block.notice === "interrupt" &&
