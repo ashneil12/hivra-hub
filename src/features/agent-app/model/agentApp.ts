@@ -106,6 +106,7 @@ import {
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
+import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
@@ -260,6 +261,11 @@ export type AgentAppHost = {
   tasks?: AgentAppTasksHost;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat only. */
   prs?: AgentAppPrsHost;
+  /**
+   * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work
+   * started from a room comes back to it.
+   */
+  rooms?: AgentAppRoomsHost & { delegated?(source: Session, result: unknown): void };
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -323,6 +329,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TASK_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
+  ...ROOM_FIELDS,
 ]);
 
 /**
@@ -1171,9 +1178,12 @@ export async function handleAgentApp(
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
     if (action === "tasks.delegate" && input.lead === undefined) await harnessesProbed();
-    return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+    const result = await handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+    if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
+    return result;
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
+  if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
