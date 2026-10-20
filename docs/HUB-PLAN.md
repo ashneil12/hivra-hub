@@ -197,7 +197,7 @@ way to make it easy"; the rest comes from T3 Code's self-hosting setup):
 T3 Code ideas we skip, with reasons, are in the 19 Oct harvest. Among them: usage-cost pages, the cloud relay,
 webhook triggers (a prompt-injection door into the Mac) and line-by-line PR review tools.
 
-**5. Portable.**
+**5. Portable.** Built on `hub/5-import-export` (docs/PORTABLE.md).
 - Setup export/import v2: Monos, skills, chats, memory if ticked, connectors without secrets.
 - Engine per Mono.
 

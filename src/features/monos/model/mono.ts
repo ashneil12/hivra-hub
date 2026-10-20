@@ -58,7 +58,32 @@ export type Mono = {
    * it inherits. The folder moves under its id the first time it is read.
    */
   legacyProject?: string;
+  /** With `engine`: the model its conversation starts on (a setup import carries it). Absent: the engine's default. */
+  engineModel?: string;
 };
+
+/** A Mono's engine as an export carries it: a harness id ("claude", "codex", …) and, optionally, its model. */
+export type MonoEngine = { harness: string; model?: string };
+
+/** An engine from an export (`{harness, model}`, or a bare harness id), if it is a well-formed one. */
+export function parseMonoEngine(value: unknown): MonoEngine | undefined {
+  const entry = typeof value === "string" ? { harness: value } : record(value);
+  const harness = typeof entry.harness === "string" ? entry.harness.trim() : "";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(harness)) return undefined;
+  const model = typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : undefined;
+  return model ? { harness, model } : { harness };
+}
+
+/** The engine a Mono runs on, as an export carries it. */
+export function monoEngine(mono: Pick<Mono, "engine" | "engineModel">): MonoEngine | undefined {
+  return mono.engine ? parseMonoEngine({ harness: mono.engine, model: mono.engineModel }) : undefined;
+}
+
+/** A Mono's fields for an engine from an export. */
+export function engineFieldsOf(engine: MonoEngine | null | undefined): Pick<Mono, "engine" | "engineModel"> {
+  const parsed = parseMonoEngine(engine);
+  return parsed ? { engine: parsed.harness, ...(parsed.model ? { engineModel: parsed.model } : {}) } : {};
+}
 
 const ROSTER_KEY = "monocode:mono-roster";
 const MONOS_CHANGED = "monocode:monos-changed";
@@ -162,6 +187,7 @@ function parseMono(value: unknown): Mono | undefined {
   const name = text("name");
   const instructions = text("instructions");
   const engine = text("engine");
+  const engineModel = text("engineModel");
   const legacyProject = text("legacyProject");
   return {
     id: entry.id,
@@ -181,6 +207,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
     ...(engine ? { engine } : {}),
+    ...(engine && engineModel ? { engineModel } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
 }

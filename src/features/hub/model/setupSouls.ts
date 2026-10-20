@@ -1,9 +1,8 @@
-// Each Mono's soul in the setup file: its role, rules (SOUL.md), memory
-// (MEMORY.md), workflows (habits.json) and skills. On import, a Mono that
-// isn't seated waits for Ash's OK and is never seated automatically.
+// Each Mono's soul in a setup import: its role, rules (SOUL.md), memory (MEMORY.md), workflows (habits.json), notes,
+// skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { addMono, listMonos } from "../../monos/model/mono";
+import { addMono, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
 import { ROLE_NAMES } from "./roleNames";
 
 export type SetupSoul = {
@@ -20,9 +19,17 @@ export type SetupSoul = {
   /** Skill names from the "## Skills" list in SOUL.md. */
   skills: string[];
   mascot?: string;
+  // From a v2 export (Phase 5); a v1 file has none of these.
+  color?: string;
+  mascotPicked?: boolean;
+  /** The engine its conversation runs on, never assumed to be Claude. */
+  engine?: MonoEngine | null;
+  /** Project folders it works on here (already mapped to this Mac's folders by the import). */
+  projects?: string[];
+  /** memory/<name>.md notes, by name. Only when memory was ticked. */
+  topics?: Record<string, string>;
 };
 
-type Reader = (monoId: string, path: AgentFilePath) => Promise<{ text: string | null }>;
 function roster(): { id: string; name?: string; mascot?: string }[] {
   return listMonos();
 }
@@ -38,22 +45,6 @@ export function roleOf(name: string, rules: string): string {
 export function skillsOf(rules: string): string[] {
   const m = /^## Skills\s*\n((?:[-*] .+\n?)+)/m.exec(rules);
   return m ? m[1].split("\n").map((l) => l.replace(/^[-*]\s+/, "").trim()).filter(Boolean) : [];
-}
-
-/** Reads every seated Mono's soul. A Mono whose files can't be read is skipped, not faked. */
-export async function collectSouls(read: Reader = readAgentFile): Promise<SetupSoul[]> {
-  const out: SetupSoul[] = [];
-  for (const m of roster()) {
-    try {
-      const [soul, memory, habits] = await Promise.all([read(m.id, "SOUL.md"), read(m.id, "MEMORY.md"), read(m.id, "habits.json")]);
-      const rules = soul.text ?? "";
-      const name = m.name ?? m.id;
-      out.push({ monoId: m.id, name, role: roleOf(name, rules), rules, memory: memory.text ?? "", workflows: habits.text ?? "", skills: skillsOf(rules), mascot: m.mascot });
-    } catch {
-      /* files not reachable (no backend): leave this soul out */
-    }
-  }
-  return out;
 }
 
 // ---- Waiting for your OK -----------------------------------------------------------------------------------------------
@@ -106,15 +97,88 @@ export function importSouls(souls: SetupSoul[]): number {
 }
 
 type Writer = (monoId: string, path: AgentFilePath, text: string) => Promise<unknown>;
-/** Ash's OK: seats the Mono and writes its rules, memory and workflows. */
-export async function seatWaitingSoul(monoId: string, write: Writer = writeAgentFile, folders: string[] = []): Promise<void> {
+type Read = (monoId: string, path: AgentFilePath) => Promise<{ text: string | null }>;
+
+/** A soul's files, by agent path. */
+export function soulFiles(soul: Pick<SetupSoul, "rules" | "memory" | "workflows" | "topics">): [AgentFilePath, string][] {
+  const out: [AgentFilePath, string][] = [];
+  if (soul.rules) out.push(["SOUL.md", soul.rules]);
+  if (soul.memory) out.push(["MEMORY.md", soul.memory]);
+  if (soul.workflows) out.push(["habits.json", soul.workflows]);
+  for (const [name, text] of Object.entries(soul.topics ?? {})) {
+    if (text && /^[A-Za-z0-9 ._-]{1,80}$/.test(name) && !name.startsWith(".")) out.push([`memory/${name}.md`, text]);
+  }
+  return out;
+}
+
+/**
+ * Writes a soul's files into a Mono's folder without overwriting: a file that is already there with text stays, unless
+ * `replace` (Ash ticked "use the file's" in the preview). Returns the paths written and the ones kept.
+ */
+export async function writeSoulFiles(
+  monoId: string,
+  files: [AgentFilePath, string][],
+  { write = writeAgentFile as Writer, read = readAgentFile as Read, replace = false }: { write?: Writer; read?: Read; replace?: boolean } = {},
+): Promise<{ written: AgentFilePath[]; kept: AgentFilePath[] }> {
+  const written: AgentFilePath[] = [];
+  const kept: AgentFilePath[] = [];
+  for (const [path, text] of files) {
+    let current: string | null = null;
+    try {
+      current = (await read(monoId, path)).text;
+    } catch {
+      current = null;
+    }
+    if (current === text) continue;
+    if (current?.trim() && !replace) {
+      kept.push(path);
+      continue;
+    }
+    await write(monoId, path, text);
+    written.push(path);
+  }
+  return { written, kept };
+}
+
+/**
+ * Ash's OK: seats the Mono with its look, projects and engine, and writes its rules, memory and workflows. A Mono that
+ * left files behind here before keeps them: only missing files are written.
+ */
+export async function seatWaitingSoul(monoId: string, write: Writer = writeAgentFile, folders?: string[], read: Read = readAgentFile): Promise<void> {
   const soul = readWaiting().find((s) => s.monoId === monoId);
   if (!soul) return;
-  if (!isSeated(monoId)) addMono({ id: soul.monoId, name: soul.name, mascot: soul.mascot ?? "robot", color: "hsl(210 8% 58%)", projects: folders });
-  if (soul.rules) await write(monoId, "SOUL.md", soul.rules);
-  if (soul.memory) await write(monoId, "MEMORY.md", soul.memory);
-  if (soul.workflows) await write(monoId, "habits.json", soul.workflows);
+  if (!isSeated(monoId)) {
+    addMono({
+      id: soul.monoId,
+      name: soul.name,
+      mascot: soul.mascot ?? "robot",
+      ...(soul.mascotPicked ? { mascotPicked: true } : {}),
+      color: soul.color ?? "hsl(210 8% 58%)",
+      projects: folders ?? soul.projects ?? [],
+      ...engineFieldsOf(soul.engine),
+    });
+  }
+  await writeSoulFiles(monoId, soulFiles(soul), { write, read });
   saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
+}
+
+/**
+ * For a Mono that is already seated here: adds the file's projects it lacks, its engine when it has none, and the
+ * file's soul files that are missing (all of them with `replace`). Nothing of its own is overwritten otherwise.
+ */
+export async function mergeIntoSeated(
+  soul: SetupSoul,
+  { replace = false, write, read }: { replace?: boolean; write?: Writer; read?: Read } = {},
+): Promise<{ written: AgentFilePath[]; kept: AgentFilePath[] }> {
+  const mono = findMono(soul.monoId);
+  if (!mono) return { written: [], kept: [] };
+  const engine = engineFieldsOf(soul.engine);
+  updateMono(mono.id, (m) => ({
+    ...m,
+    projects: [...m.projects, ...(soul.projects ?? [])],
+    ...(engine.engine && (!m.engine || replace) ? engine : {}),
+  }));
+  return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}) });
 }
 /** Not now: drops the waiting soul; nothing was seated or written. */
 export function dismissWaitingSoul(monoId: string): void {

@@ -13,10 +13,36 @@
 //   so the token never appears in argv (checked with 2.1.302 on 19 Oct; an unset variable stays the literal text,
 //   which the server treats as no connection). `timeout` lets a wait run its full hour: Claude Code otherwise cuts an
 //   MCP call off after its default and a silent one after 30 minutes.
+// - connectors (hubConnectors.ts): for a Mono's own chat and its habit runs, one `<app> connector-run <id> --mono <id>
+//   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
+//   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import type { AshOsServer } from "./hubLeads";
 
-/** The checker's Mono id (the studio's tests and lanes use it; H6 makes the Mono). */
+/** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
+
+/**
+ * The checker's own Claude Code tools (H6), for its chat and its habit runs: Bash for the app CLI (which gives it its
+ * memory and soul and refuses it everything else, agentApp.ts) and reading, nothing more. No subagents and no file edits,
+ * so it can't start work through its own session either, and the obvious doors out of its lane stay shut: the `ash` CLI
+ * (it would run as Ash, with no identity) and another `claude`. A deny rule holds in every permission mode, a habit
+ * run's full access included; `--tools` keeps the rest off its tool list altogether.
+ */
+export const CHECKER_TOOLS = ["Bash", "Read", "Grep", "Glob"];
+export const CHECKER_DENIED_TOOLS = ["Agent", "Task", "Edit", "Write", "NotebookEdit", "Bash(ash:*)", "Bash(claude:*)"];
+/** Its ash-os tools need no approval: Ash OS offers the checker only its queue, its notes and a few reads. */
+export const CHECKER_ALLOWED_TOOLS = "mcp__ash-os__*";
+
+export function checkerToolArgs(): string[] {
+  return [
+    "--tools",
+    CHECKER_TOOLS.join(","),
+    "--disallowedTools",
+    CHECKER_DENIED_TOOLS.join(","),
+    "--allowedTools",
+    CHECKER_ALLOWED_TOOLS,
+  ];
+}
 
 /** Just over the longest wait (60 minutes), as T3 Code does. */
 export const MONOCODE_TOOL_TIMEOUT_MS = 3_900_000;
@@ -84,6 +110,8 @@ export type HubMcpServers = {
   ashOs: AshOsServer | null;
   /** This app's executable, or null when it couldn't be read. */
   cli: string | null;
+  /** A Mono's connector entries (hubConnectors.connectorServersForMono); none when absent. */
+  connectors?: (monoId: string) => Record<string, unknown>;
 };
 
 function identityEnv(identity: HubChatIdentity): Record<string, string> {
@@ -101,7 +129,12 @@ export function hubMcpArgs(
   lookups: HubChatLookups,
 ): string[] {
   const identity = hubChatIdentity(sessionId, lookups);
+  // The checker only reads, whatever else this chat gets.
+  const restrict = identity.role === "checker" ? checkerToolArgs() : [];
   const mcpServers: Record<string, unknown> = {};
+  // A Mono's connectors go in first, so the hub's own entries below always keep their names.
+  if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
+    Object.assign(mcpServers, servers.connectors(identity.monoId));
   if (servers.ashOs) {
     const { ashOs } = servers;
     // The server's own settings stay; who is calling is only ever this chat's identity, never Ash's config's.
@@ -115,8 +148,9 @@ export function hubMcpArgs(
   }
   const delegate = !!servers.cli && getsDelegateTool(identity);
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
-  if (!Object.keys(mcpServers).length) return [];
+  if (!Object.keys(mcpServers).length) return restrict;
   return [
+    ...restrict,
     ...(delegate ? ["--allowedTools", MONOCODE_ALLOWED_TOOLS] : []),
     "--mcp-config",
     JSON.stringify({ mcpServers }),

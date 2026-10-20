@@ -93,6 +93,7 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
+import { proposeMonoFromAgent } from "../../hub/model/hubTeams";
 import {
   sendMode,
   type Delivery,
@@ -104,6 +105,7 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 
 export type AppSessionListing = {
   id: string;
@@ -297,8 +299,36 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
+  ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
 ]);
+
+/**
+ * The checker's lane (hub/model/hubChecker.ts, docs/PHASE-2-DESIGN.md H6): its chat and its habit runs only read their
+ * own memory and soul and the model list. No sessions, delegations or tasks, no worktrees, actions, habits, notes,
+ * artifacts, cards or ship, and nothing added later: it never starts work.
+ */
+const CHECKER_ACTIONS: ReadonlySet<string> = new Set([
+  "models.list",
+  "memory.read",
+  "memory.search",
+  "memory.add",
+  "memory.replace",
+  "memory.remove",
+  "soul.read",
+]);
+
+/** Every app action there is (the checker's lane is tested against all of them). */
+export function appActions(): string[] {
+  return [...FIELDS.keys()];
+}
+
+function checkerLane(source: Session, action: string, host: AgentAppHost): void {
+  if (host.monoOf?.(source.id)?.id === CHECKER_MONO_ID && !CHECKER_ACTIONS.has(action))
+    throw new Error(
+      `The checker only reads: it may use ${[...CHECKER_ACTIONS].join(", ")}. It never starts, sends to or delegates to a session.`,
+    );
+}
 
 function fields(action: string, input: Record<string, unknown>) {
   const allowed = FIELDS.get(action);
@@ -1093,6 +1123,7 @@ export async function handleAgentApp(
   host: AgentAppHost,
 ): Promise<unknown> {
   fields(action, input);
+  checkerLane(source, action, host);
   if (action.startsWith("tasks."))
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
   if (action.startsWith("artifacts."))
@@ -1116,6 +1147,23 @@ export async function handleAgentApp(
       note: host.isMono(source.id)
         ? "It shows in the chat where you are in your reply."
         : "It goes out with your report, after its text; if you stay quiet, it is dropped.",
+    };
+  }
+  if (action === "monos.propose") {
+    // A new named Mono needs Ash's okay: this only files a proposal (hub/model/hubTeams.ts). Nothing is made until he
+    // approves it on Settings > Teams.
+    const mono = host.monoOf?.(source.id);
+    if (!mono || !host.isMono(source.id))
+      throw new Error("Only a Mono can propose a new Mono");
+    const proposal = proposeMonoFromAgent(input, {
+      monoId: mono.id,
+      projects: mono.projects,
+    });
+    return {
+      proposed: proposal.spec.name,
+      id: proposal.id,
+      status: "pending",
+      note: "Waiting for the user's okay on Settings > Teams (it also shows on Today). Nothing is created until they approve it; tell them it's there.",
     };
   }
   switch (action) {

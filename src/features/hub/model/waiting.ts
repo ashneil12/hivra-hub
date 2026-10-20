@@ -6,8 +6,10 @@ import { listBuilds } from "./hubBuilds";
 import { activeWorkers } from "./hubWork";
 import { pendingProposals } from "./proposals";
 import { pendingSignIns, signInProblem, signInState } from "./connectors";
+import { getTeam, openTeamsSettings, pendingMonoProposals } from "./hubTeams";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
+import { waitingChats } from "./waitingChats";
 
 export type WaitingItem = {
   id: string;
@@ -31,6 +33,8 @@ export type WaitingItem = {
   actionLabel?: string;
   /** Where 'Take a look' from Today/Inbox goes. */
   target?: HubSelection;
+  /** Instead of a target: what the button does (e.g. open Settings > Teams for a proposed Mono). */
+  act?: () => void;
 };
 
 /** At most 5 Needs show per project; the rest wait in Later. */
@@ -110,11 +114,11 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
 
 /**
  * The strip badge: exactly the open rows Today shows for the project (stuck rows included, at most MAX_NEEDS), the
- * same in example and real data (SPEC: "every count matches the items you can see"). Later is not counted: its own
- * line says how many wait there. A row that ticked itself off no longer counts.
+ * same in example and real data (SPEC: "every count matches the items you can see"), plus its chats waiting on Ash.
+ * Later is not counted: its own line says how many wait there. A row that ticked itself off no longer counts.
  */
 export function waitingCount(projectId: string): number {
-  return waitingOnAsh(projectId).filter((i) => !i.done).length;
+  return waitingOnAsh(projectId).filter((i) => !i.done).length + waitingChats(projectId).length;
 }
 
 export function findWaiting(id: string): WaitingItem | undefined {
@@ -136,6 +140,13 @@ export function setupItems(): WaitingItem[] {
         detail: signInProblem(c.id) ?? "", actionLabel: "Sign in", connectorId: c.id, ...(state ? { signIn: state } : {}),
       };
     }),
+    // A new named Mono an agent proposed waits for Ash's okay (hubTeams.ts); Review opens it on Settings > Teams.
+    ...pendingMonoProposals().map((p): WaitingItem => ({
+      id: `mono-proposal:${p.id}`, projectId: "", source: "proposal",
+      title: `${p.proposedBy.name} proposes a new Mono: ${p.spec.name}`,
+      detail: [p.teamId ? getTeam(p.teamId)?.name : p.teamName, p.spec.brief].filter(Boolean).join(" · "),
+      actionLabel: "Review", act: openTeamsSettings,
+    })),
     // Sign-ins Ash OS lists (nothing writes them yet). Read-only here: the Keychain sign-in is a later unit.
     ...hubData().listSetup().map((n): WaitingItem => ({
       id: `setup:${n.id}`, projectId: "", source: "inbox", title: n.title, detail: n.why, actionLabel: n.actionLabel,

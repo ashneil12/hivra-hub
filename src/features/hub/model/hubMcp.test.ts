@@ -100,7 +100,9 @@ describe("the delegate tool", () => {
   it("is for Monos only: not habit runs, workers, plain chats or the checker", () => {
     for (const session of ["habit-run-1", "app-chat-exo-r1", "plain-1", "chat-checker", "habit-run-2"]) {
       const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
-      expect(args).not.toContain("--allowedTools");
+      expect(args).not.toContain(MONOCODE_ALLOWED_TOOLS);
+      // The checker's own ash-os tools are its only pre-approval (hubChecker.test.ts has the rest of its tool list).
+      if (!session.includes("checker") && session !== "habit-run-2") expect(args).not.toContain("--allowedTools");
       expect(Object.keys(config(args)!.mcpServers)).toEqual(["ash-os"]);
     }
     // Without Ash's ash-os (a dev copy) a Mono still gets the delegate tool, and nobody else gets anything.

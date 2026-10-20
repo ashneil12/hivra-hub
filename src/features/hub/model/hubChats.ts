@@ -640,15 +640,33 @@ async function reportChimes(chatId: string, convId: string, answeredBy: string, 
   }
 }
 
-/** Restore exported chats without duplicating an existing conversation. */
-export function importChats(imported: GroupChat[]): void {
+/**
+ * Restore exported chats without duplicating an existing conversation. With `mergeConversations`, a chat that is
+ * already here gains the file's conversations it doesn't have (its own are never touched). Returns how many chats
+ * and conversations were added.
+ */
+export function importChats(imported: GroupChat[], { mergeConversations = false }: { mergeConversations?: boolean } = {}): { chats: number; conversations: number } {
   const present = new Set(chats.map((c) => c.id));
-  const additions = validGroupChats(imported).filter((c) => {
+  const valid = validGroupChats(imported);
+  let conversations = 0;
+  if (mergeConversations) {
+    chats = chats.map((c) => {
+      const from = valid.find((v) => v.id === c.id);
+      if (!from) return c;
+      const have = new Set(c.conversations.map((v) => v.id));
+      const add = from.conversations.filter((v) => !have.has(v.id));
+      conversations += add.length;
+      return add.length ? { ...c, conversations: [...c.conversations, ...add] } : c;
+    });
+  }
+  const additions = valid.filter((c) => {
     if (present.has(c.id)) return false;
     present.add(c.id); return true;
   }).map((c) => ({ ...c, replyPending: undefined }));
+  conversations += additions.reduce((n, c) => n + c.conversations.length, 0);
   chats = [...chats, ...additions];
   changed();
+  return { chats: additions.length, conversations };
 }
 export function exportChats(): GroupChat[] { return structuredClone(chats); }
 

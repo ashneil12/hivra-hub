@@ -180,7 +180,7 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
     "Check its evidence yourself",
     "mark each ask done with ash_update_ask and the evidence",
     "Your workers' questions come to you first, never to Ash",
-    "with your recommendation (ash_ask_ash)",
+    "from your own chat with your pick (as <ask_ash_rules> says)",
   ])
     expect(taught).toContain(step);
   expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(

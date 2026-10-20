@@ -8,6 +8,8 @@
 //   npm run hub:dev -- --seed            # first copy a cleaned backup of the daily chats in (scripts/hub-seed-dev.mjs)
 //   npm run hub:dev -- --background      # never take focus (the default with no terminal, e.g. an agent); --foreground to override
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
+//   npm run hub:dev -- --memory <dir>    # read Ash OS project memory from <dir> for Export (default: the slot's own
+//                                        # <data>/agent-memory; the app never writes the real ~/agent-memory from a dev copy)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
 //
@@ -330,7 +332,7 @@ export function tauriArgs(slotConfigFile, extra = [], root = ROOT) {
 }
 
 /** The environment `tauri dev` (and so cargo, vite and the app) runs with. */
-export function devEnvironment({ slot, hub, background = false, home = os.homedir(), env = process.env }) {
+export function devEnvironment({ slot, hub, memory, background = false, home = os.homedir(), env = process.env }) {
   const next = { ...env };
   // Whatever an enclosing dev copy or shell set is not this slot's.
   for (const key of Object.keys(next))
@@ -343,6 +345,8 @@ export function devEnvironment({ slot, hub, background = false, home = os.homedi
     next.MONOCODE_HUB_PORT = String(hub.port);
     next.MONOCODE_HUB_TOKEN_FILE = hub.tokenFile;
   }
+  // Only on request (--memory): where Export reads the project memory (src-tauri/src/portable.rs).
+  if (memory) next.MONOCODE_HUB_MEMORY_ROOT = path.resolve(memory);
   // An accessory app that never takes focus (src-tauri/src/lib.rs), so an agent's test copy stays out of Ash's way.
   if (background) next.MONOCODE_HUB_BACKGROUND = "1";
   return next;
@@ -414,7 +418,11 @@ export async function startHubBridge(mode, tokenFile) {
   fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
   if (mode === "stub") {
     const { startStub } = await import("./hub-stub-server.mjs");
-    const stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
+    // MONOCODE_HUB_STUB_SCENARIO adds invented scenarios to look at: "jobs", "questions" (the retired question queue).
+    const scenario = process.env.MONOCODE_HUB_STUB_SCENARIO ?? "";
+    const stub = await startStub({
+      port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex"), jobs: /\bjobs\b/.test(scenario), questions: /\bquestions\b/.test(scenario),
+    });
     return { port: stub.port, tokenFile, label: `stub on 127.0.0.1:${stub.port} (invented data)`, close: () => stub.close() };
   }
   if (mode === "live") {
@@ -536,6 +544,7 @@ export function parseArgs(argv) {
       own.includes("--replace"),
     reseed: own.includes("--reseed") || own.includes("--replace"),
     print: own.includes("--print"),
+    memory: value("memory"),
     // No terminal attached means an agent started it: keep the window from taking focus unless --foreground.
     background: own.includes("--background") || (!own.includes("--foreground") && !process.stdout.isTTY),
     extra,
@@ -576,13 +585,14 @@ async function main() {
   console.log(`  vite        http://localhost:${plan.port}`);
   console.log(`  ash os      ${bridge ? bridge.label : "off"}`);
   console.log(`  rust cache  ${tilde(plan.buildDir)}`);
+  if (options.memory) console.log(`  memory      ${tilde(path.resolve(options.memory))} (read for Export)`);
   console.log(`  config      ${path.relative(ROOT, plan.configFile)}`);
 
   const tauri = path.join(ROOT, "node_modules/.bin/tauri");
   const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
     cwd: ROOT,
     stdio: "inherit",
-    env: devEnvironment({ slot: plan.slot, hub: bridge, background: options.background }),
+    env: devEnvironment({ slot: plan.slot, hub: bridge, memory: options.memory, background: options.background }),
   });
   const signalled = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])

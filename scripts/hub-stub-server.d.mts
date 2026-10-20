@@ -7,6 +7,8 @@ export type StubOptions = {
   pendingSinceOnce?: boolean;
   /** Add the jobs scenario: leads and jobs in every state, a given-up job's Needs row, Looks right, older questions. */
   jobs?: boolean;
+  /** The retired question queue: ordinary questions are older questions (with a backlog); Needs keep gates and failures. */
+  questions?: boolean;
   /** How long an option or typed answer takes (the real one is read by the model). */
   answerDelayMs?: number;
   seq?: number;
@@ -34,6 +36,20 @@ export type StubNeed = {
   since?: number;
 };
 
+export type StubCheck = {
+  id: string;
+  dumpId: string;
+  owner: string;
+  finding: string;
+  askIds: string[];
+  status: "open" | "delivered" | "right" | "fixed";
+  createdAt: number;
+  deliveredAt?: number;
+  answer?: string;
+  answeredAt?: number;
+  answeredBy?: string;
+};
+
 export type Stub = {
   port: number;
   url: string;
@@ -49,6 +65,15 @@ export type Stub = {
   /** Pages, Change the hub and the Today layout (scripts/hub-stub-studio.mjs). */
   studio: StubStudio;
   calls: Array<{ method: string; path: string; query: Record<string, string>; headers: Record<string, string | undefined> }>;
+  /** The checker's messages and checks (scripts/hub-stub-checks.mjs). */
+  checks: {
+    dumps: Map<string, Record<string, unknown> & { id: string; owner: string }>;
+    checks: Map<string, StubCheck>;
+  };
+  /** A message the checker's rules flag (`suspect`), owned by `owner` (`mono:<id>`, `chat:<id>` or `claude:<sid>`). */
+  addDump(dump: Record<string, unknown> & { id: string; text: string }): Record<string, unknown>;
+  /** A check as if the checker had noted it (event `check.opened`). */
+  addCheck(check: Partial<StubCheck> & { dumpId: string; owner: string; finding: string }): StubCheck;
   /** The app's delegation copies (ash-hub-delegation), by id: the newest version each sent. */
   delegations: Map<string, Record<string, unknown> & { id: string; version: number; state: string }>;
   events: Array<Record<string, unknown>>;
@@ -68,6 +93,7 @@ export type Stub = {
   close(): Promise<void>;
 };
 
+export function retiredQueueScenario(needs: Array<Record<string, unknown>>, now?: number): Array<Record<string, unknown>>;
 export function jobsScenario(now?: number): { jobs: Array<Record<string, unknown>>; needs: Array<Record<string, unknown>> };
 export function seedState(now?: number): Stub["state"];
 export function startStub(options?: StubOptions): Promise<Stub>;

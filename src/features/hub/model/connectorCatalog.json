@@ -1,0 +1,426 @@
+{
+  "version": 1,
+  "googleClient": {
+    "redirect": "http://localhost:47821/callback",
+    "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token": "https://oauth2.googleapis.com/token",
+    "help": "Google's Workspace MCP servers are in Developer Preview. In your own Google Cloud project: join the Workspace Developer Preview Program, enable the API for each server you connect, then make one OAuth client (type Web application, \"Use this client for an AI-powered agent\" ticked) with the redirect URI http://localhost:47821/callback. Paste its client ID and secret once; every Google connector uses them.",
+    "getUrl": "https://console.cloud.google.com/auth/clients"
+  },
+  "connectors": [
+    {
+      "id": "github",
+      "name": "GitHub",
+      "category": "Code and deploys",
+      "blurb": "Repos, issues, pull requests and Actions.",
+      "server": "GitHub's official MCP server (api.githubcopilot.com)",
+      "docs": "https://github.com/github/github-mcp-server",
+      "launch": { "kind": "remote", "url": "https://api.githubcopilot.com/mcp/", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "Personal access token", "secret": true, "placeholder": "github_pat_…" }],
+        "getUrl": "https://github.com/settings/personal-access-tokens/new",
+        "help": "A fine-grained token limited to the repos your Monos should touch."
+      },
+      "test": { "url": "https://api.github.com/user", "headers": { "Authorization": "Bearer {token}", "User-Agent": "MonoCode-Hub" }, "account": "/login" }
+    },
+    {
+      "id": "supabase",
+      "name": "Supabase",
+      "category": "Code and deploys",
+      "blurb": "Projects, tables, migrations and logs.",
+      "server": "Supabase's hosted MCP server (mcp.supabase.com)",
+      "docs": "https://supabase.com/docs/guides/ai-tools/mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.supabase.com/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth", "token"],
+        "oauth": { "mode": "mcp" },
+        "fields": [{ "key": "token", "label": "Personal access token", "secret": true, "placeholder": "sbp_…" }],
+        "getUrl": "https://supabase.com/dashboard/account/tokens"
+      }
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "category": "Code and deploys",
+      "blurb": "Deployments, projects, domains and build logs.",
+      "server": "Vercel's official MCP server (mcp.vercel.com)",
+      "docs": "https://vercel.com/docs/mcp/vercel-mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.vercel.com", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": { "methods": ["oauth"], "oauth": { "mode": "mcp" } }
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "category": "Code and deploys",
+      "blurb": "Errors, issues and releases.",
+      "server": "Sentry's hosted MCP server (mcp.sentry.dev)",
+      "docs": "https://docs.sentry.io/product/sentry-mcp/",
+      "launch": { "kind": "remote", "url": "https://mcp.sentry.dev/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": { "methods": ["oauth"], "oauth": { "mode": "mcp" } }
+    },
+    {
+      "id": "neon",
+      "name": "Neon",
+      "category": "Code and deploys",
+      "blurb": "Postgres projects, branches and queries.",
+      "server": "Neon's hosted MCP server (mcp.neon.tech)",
+      "docs": "https://neon.com/docs/ai/neon-mcp-server",
+      "launch": { "kind": "remote", "url": "https://mcp.neon.tech/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth", "token"],
+        "oauth": { "mode": "mcp" },
+        "fields": [{ "key": "token", "label": "API key", "secret": true, "placeholder": "napi_…" }],
+        "getUrl": "https://console.neon.tech/app/settings/api-keys"
+      }
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "category": "Code and deploys",
+      "blurb": "Workers, KV, R2 and D1.",
+      "server": "Cloudflare's Workers bindings MCP server",
+      "docs": "https://github.com/cloudflare/mcp-server-cloudflare",
+      "launch": { "kind": "remote", "url": "https://bindings.mcp.cloudflare.com/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": { "methods": ["oauth"], "oauth": { "mode": "mcp" } }
+    },
+    {
+      "id": "context7",
+      "name": "Context7",
+      "category": "Code and deploys",
+      "blurb": "Up-to-date library docs for coding agents. No login.",
+      "server": "Upstash's hosted Context7 server (mcp.context7.com)",
+      "docs": "https://github.com/upstash/context7",
+      "launch": { "kind": "remote", "url": "https://mcp.context7.com/mcp", "headers": {} },
+      "auth": { "methods": ["none"] }
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "category": "Code and deploys",
+      "blurb": "Designs and variables from the Figma desktop app on this Mac.",
+      "server": "Figma's Dev Mode MCP server, local (127.0.0.1:3845)",
+      "docs": "https://help.figma.com/hc/en-us/articles/32132100833559",
+      "launch": { "kind": "remote", "url": "http://127.0.0.1:3845/mcp", "headers": {} },
+      "auth": { "methods": ["none"], "help": "Turn on the Dev Mode MCP server in Figma's desktop app first." }
+    },
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "category": "Google",
+      "blurb": "Search threads, read mail, write drafts and labels.",
+      "server": "Google's official Gmail MCP server (Developer Preview)",
+      "docs": "https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server",
+      "launch": { "kind": "remote", "url": "https://gmailmcp.googleapis.com/mcp/v1", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth"],
+        "oauth": { "mode": "google", "scopes": ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"] }
+      }
+    },
+    {
+      "id": "google-calendar",
+      "name": "Google Calendar",
+      "category": "Google",
+      "blurb": "Calendars, events and free/busy.",
+      "server": "Google's official Calendar MCP server (Developer Preview)",
+      "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "launch": { "kind": "remote", "url": "https://calendarmcp.googleapis.com/mcp/v1", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth"],
+        "oauth": {
+          "mode": "google",
+          "scopes": [
+            "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+            "https://www.googleapis.com/auth/calendar.events.freebusy",
+            "https://www.googleapis.com/auth/calendar.events.readonly"
+          ]
+        }
+      }
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "category": "Google",
+      "blurb": "Find and read files in Drive.",
+      "server": "Google's official Drive MCP server (Developer Preview)",
+      "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "launch": { "kind": "remote", "url": "https://drivemcp.googleapis.com/mcp/v1", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth"],
+        "oauth": { "mode": "google", "scopes": ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"] }
+      }
+    },
+    {
+      "id": "google-docs",
+      "name": "Google Docs",
+      "category": "Google",
+      "blurb": "Read and edit documents.",
+      "server": "Google's official Docs MCP server (Developer Preview)",
+      "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "launch": { "kind": "remote", "url": "https://docsmcp.googleapis.com/mcp/v1", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth"],
+        "oauth": {
+          "mode": "google",
+          "scopes": [
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/documents.readonly",
+            "https://www.googleapis.com/auth/documents"
+          ]
+        }
+      }
+    },
+    {
+      "id": "google-sheets",
+      "name": "Google Sheets",
+      "category": "Google",
+      "blurb": "Read and edit spreadsheets.",
+      "server": "Google's official Sheets MCP server (Developer Preview)",
+      "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+      "launch": { "kind": "remote", "url": "https://sheetsmcp.googleapis.com/mcp/v1", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth"],
+        "oauth": {
+          "mode": "google",
+          "scopes": [
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/spreadsheets"
+          ]
+        }
+      }
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "category": "Work and docs",
+      "blurb": "Pages, databases and comments.",
+      "server": "Notion's hosted MCP server (mcp.notion.com)",
+      "docs": "https://developers.notion.com/docs/mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.notion.com/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": { "methods": ["oauth"], "oauth": { "mode": "mcp" } }
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "category": "Work and docs",
+      "blurb": "Issues, projects and cycles.",
+      "server": "Linear's official MCP server (mcp.linear.app)",
+      "docs": "https://linear.app/docs/mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.linear.app/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["oauth", "token"],
+        "oauth": { "mode": "mcp" },
+        "fields": [{ "key": "token", "label": "API key", "secret": true, "placeholder": "lin_api_…" }],
+        "getUrl": "https://linear.app/settings/account/security"
+      }
+    },
+    {
+      "id": "atlassian",
+      "name": "Jira and Confluence",
+      "category": "Work and docs",
+      "blurb": "Jira issues and Confluence pages.",
+      "server": "Atlassian's Rovo MCP server (mcp.atlassian.com)",
+      "docs": "https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+      "launch": { "kind": "remote", "url": "https://mcp.atlassian.com/v1/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": { "methods": ["oauth"], "oauth": { "mode": "mcp" } }
+    },
+    {
+      "id": "airtable",
+      "name": "Airtable",
+      "category": "Work and docs",
+      "blurb": "Bases, tables and records.",
+      "server": "airtable-mcp-server (npm), run on this Mac",
+      "docs": "https://github.com/domdomegg/airtable-mcp-server",
+      "launch": { "kind": "stdio", "command": "npx", "args": ["-y", "airtable-mcp-server"], "env": { "AIRTABLE_API_KEY": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "Personal access token", "secret": true, "placeholder": "pat…" }],
+        "getUrl": "https://airtable.com/create/tokens"
+      },
+      "test": { "url": "https://api.airtable.com/v0/meta/whoami", "headers": { "Authorization": "Bearer {token}" }, "account": "/id" }
+    },
+    {
+      "id": "zapier",
+      "name": "Zapier",
+      "category": "Work and docs",
+      "blurb": "The actions you picked in your own Zapier MCP server.",
+      "server": "Zapier's hosted MCP server, your personal URL",
+      "docs": "https://zapier.com/mcp",
+      "launch": { "kind": "remote", "url": "{mcp_url}", "headers": {} },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "mcp_url", "label": "Your Zapier MCP server URL", "secret": true, "placeholder": "https://mcp.zapier.com/api/mcp/…" }],
+        "getUrl": "https://mcp.zapier.com",
+        "help": "The URL is itself the key: keep it private."
+      }
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "category": "Messages",
+      "blurb": "Channels, threads, search and messages.",
+      "server": "slack-mcp-server (npm), run on this Mac",
+      "docs": "https://github.com/korotovsky/slack-mcp-server",
+      "launch": { "kind": "stdio", "command": "npx", "args": ["-y", "slack-mcp-server@latest", "--transport", "stdio"], "env": { "SLACK_MCP_XOXP_TOKEN": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "User OAuth token", "secret": true, "placeholder": "xoxp-…" }],
+        "getUrl": "https://api.slack.com/apps",
+        "help": "Make a Slack app for your workspace, add the user scopes it needs, install it and copy its User OAuth token."
+      },
+      "test": { "url": "https://slack.com/api/auth.test", "headers": { "Authorization": "Bearer {token}" }, "account": "/user", "okField": "/ok" }
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "category": "Messages",
+      "blurb": "Send messages and read updates through your bot.",
+      "server": "Built into MonoCode Hub: the Telegram Bot API, no extra install",
+      "docs": "https://core.telegram.org/bots/api",
+      "launch": { "kind": "builtin", "server": "telegram" },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "Bot token", "secret": true, "placeholder": "123456:ABC…" }],
+        "getUrl": "https://t.me/BotFather",
+        "help": "Ask @BotFather for a new bot and paste its token."
+      }
+    },
+    {
+      "id": "stripe",
+      "name": "Stripe",
+      "category": "Money and data",
+      "blurb": "Customers, payments, invoices and subscriptions.",
+      "server": "Stripe's hosted MCP server (mcp.stripe.com)",
+      "docs": "https://docs.stripe.com/mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.stripe.com", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["token", "oauth"],
+        "oauth": { "mode": "mcp" },
+        "fields": [{ "key": "token", "label": "Restricted API key", "secret": true, "placeholder": "rk_live_…" }],
+        "getUrl": "https://dashboard.stripe.com/apikeys",
+        "help": "Use a restricted key with only the permissions the Monos need, never the full secret key."
+      }
+    },
+    {
+      "id": "posthog",
+      "name": "PostHog",
+      "category": "Money and data",
+      "blurb": "Product analytics, insights and feature flags.",
+      "server": "PostHog's hosted MCP server (mcp.posthog.com)",
+      "docs": "https://posthog.com/docs/model-context-protocol",
+      "launch": { "kind": "remote", "url": "https://mcp.posthog.com/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "Personal API key", "secret": true, "placeholder": "phx_…" }],
+        "getUrl": "https://app.posthog.com/settings/user-api-keys"
+      }
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "category": "Search and research",
+      "blurb": "Web, news and local search.",
+      "server": "Brave's official MCP server (npm), run on this Mac",
+      "docs": "https://github.com/brave/brave-search-mcp-server",
+      "launch": { "kind": "stdio", "command": "npx", "args": ["-y", "@brave/brave-search-mcp-server"], "env": { "BRAVE_API_KEY": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "API key", "secret": true }],
+        "getUrl": "https://api-dashboard.search.brave.com/app/keys"
+      }
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "category": "Search and research",
+      "blurb": "Answers with sources, and deep research.",
+      "server": "Perplexity's official MCP server (npm), run on this Mac",
+      "docs": "https://github.com/perplexityai/modelcontextprotocol",
+      "launch": { "kind": "stdio", "command": "npx", "args": ["-y", "@perplexity-ai/mcp-server"], "env": { "PERPLEXITY_API_KEY": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "API key", "secret": true, "placeholder": "pplx-…" }],
+        "getUrl": "https://www.perplexity.ai/account/api/keys"
+      }
+    },
+    {
+      "id": "firecrawl",
+      "name": "Firecrawl",
+      "category": "Search and research",
+      "blurb": "Scrape and crawl websites into clean text.",
+      "server": "Firecrawl's official MCP server (npm), run on this Mac",
+      "docs": "https://github.com/firecrawl/firecrawl-mcp-server",
+      "launch": { "kind": "stdio", "command": "npx", "args": ["-y", "firecrawl-mcp"], "env": { "FIRECRAWL_API_KEY": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "API key", "secret": true, "placeholder": "fc-…" }],
+        "getUrl": "https://www.firecrawl.dev/app/api-keys"
+      }
+    },
+    {
+      "id": "apify",
+      "name": "Apify",
+      "category": "Search and research",
+      "blurb": "Ready-made scrapers for thousands of sites.",
+      "server": "Apify's hosted MCP server (mcp.apify.com)",
+      "docs": "https://docs.apify.com/platform/integrations/mcp",
+      "launch": { "kind": "remote", "url": "https://mcp.apify.com", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "API token", "secret": true, "placeholder": "apify_api_…" }],
+        "getUrl": "https://console.apify.com/settings/integrations"
+      }
+    },
+    {
+      "id": "huggingface",
+      "name": "Hugging Face",
+      "category": "Search and research",
+      "blurb": "Models, datasets, papers and Spaces.",
+      "server": "Hugging Face's hosted MCP server (huggingface.co/mcp)",
+      "docs": "https://huggingface.co/settings/mcp",
+      "launch": { "kind": "remote", "url": "https://huggingface.co/mcp", "headers": { "Authorization": "Bearer {token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "Access token", "secret": true, "placeholder": "hf_…" }],
+        "getUrl": "https://huggingface.co/settings/tokens"
+      },
+      "test": { "url": "https://huggingface.co/api/whoami-v2", "headers": { "Authorization": "Bearer {token}" }, "account": "/name" }
+    },
+    {
+      "id": "elevenlabs",
+      "name": "ElevenLabs",
+      "category": "Media",
+      "blurb": "Voices, speech and sound effects.",
+      "server": "ElevenLabs' official MCP server (uvx), run on this Mac",
+      "docs": "https://github.com/elevenlabs/elevenlabs-mcp",
+      "launch": { "kind": "stdio", "command": "uvx", "args": ["elevenlabs-mcp"], "env": { "ELEVENLABS_API_KEY": "{token}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [{ "key": "token", "label": "API key", "secret": true, "placeholder": "sk_…" }],
+        "getUrl": "https://elevenlabs.io/app/settings/api-keys"
+      }
+    },
+    {
+      "id": "composio",
+      "name": "Composio",
+      "category": "Composio",
+      "composio": true,
+      "blurb": "The long tail: hundreds of rare apps through your Composio MCP server.",
+      "server": "Composio's hosted MCP server, your URL and API key",
+      "docs": "https://docs.composio.dev/docs/mcp-quickstart",
+      "launch": { "kind": "remote", "url": "{mcp_url}", "headers": { "x-api-key": "{api_key}" } },
+      "auth": {
+        "methods": ["token"],
+        "fields": [
+          { "key": "mcp_url", "label": "Composio MCP server URL", "secret": true, "placeholder": "https://backend.composio.dev/v3/mcp/…" },
+          { "key": "api_key", "label": "Composio API key", "secret": true }
+        ],
+        "getUrl": "https://platform.composio.dev",
+        "help": "Logins for the apps you link inside Composio live on Composio's servers, not this Mac."
+      }
+    }
+  ]
+}

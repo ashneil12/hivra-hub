@@ -10,6 +10,7 @@ import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
 import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
@@ -22,6 +23,7 @@ import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
 import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
+import { connectorServersForMono, loadConnectors } from "./hubConnectors";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
@@ -29,20 +31,24 @@ seedHubBundleDefaults();
 
 /**
  * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): Ash's ash-os entry with the chat's identity,
- * and for a Mono's own chat the delegate tool. A session that starts before the entries are read waits for them (at
+ * for a Mono's own chat the delegate tool, and for a Mono's chat and its habit runs the connectors its projects allow
+ * (hubConnectors.ts; read again whenever a window comes back to the front, and re-checked by the launcher at start). A session that starts before the entries are read waits for them (at
  * most a few seconds; then it starts without them).
  */
 function startHubMcp(): void {
-  const ashOs = tauriAshOsServer();
+  const lookups = { monoOf: monoForSession, habitRunMono, isLead: (id: string) => !!leadFor(id) };
+  // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
+  setHubMcpServers({ ashOs: null, cli: null }, lookups);
+  const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());
   const cli = invoke<string>("app_cli_path").catch(() => null);
-  const read = Promise.all([ashOs, cli]).then(([ashOs, cli]): HubMcpServers => ({ ashOs, cli }));
+  const connectors = loadConnectors();
+  window.addEventListener("focus", () => void loadConnectors());
+  const read = Promise.all([ashOs, cli, connectors]).then(
+    ([ashOs, cli]): HubMcpServers => ({ ashOs, cli, connectors: connectorServersForMono }),
+  );
   const ready = Promise.race([
     read.then((servers) => {
-      setHubMcpServers(servers, {
-        monoOf: monoForSession,
-        habitRunMono,
-        isLead: (id) => !!leadFor(id),
-      });
+      setHubMcpServers(servers, lookups);
       return true;
     }),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
@@ -139,6 +145,11 @@ export function hubData(): HubDataSource {
   return withProjectPrefs((override ?? choose()).source);
 }
 
+/** The projects as Ash OS has them, before Ash's own names, order and "Remove from hub": what a setup export carries. */
+export function registryProjects(): HubProject[] {
+  return (override ?? choose()).source.listProjects();
+}
+
 /** Every screen reads projects with Ash's own name, order and "Remove from hub" applied (projectPrefs.ts). */
 const wrapped = new WeakMap<HubDataSource, HubDataSource>();
 function withProjectPrefs(source: HubDataSource): HubDataSource {
@@ -176,6 +187,14 @@ export function useHubDataVersion(): void {
   useProjectPrefsVersion();
   const store = (override ?? choose()).store;
   useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
+}
+
+/**
+ * The live store's checks (hubChecks.ts) for the app to hand to their chats; none behind the example data. Subscribing
+ * keeps the store running, so a check reaches its chat whichever screen is open.
+ */
+export function hubCheckFeed(): Pick<HubStore, "onChecks" | "checksDelivered" | "subscribe"> | undefined {
+  return (override ?? choose()).store;
 }
 
 /** Ash left the page: Needs that ticked themselves off while he was looking go away. */

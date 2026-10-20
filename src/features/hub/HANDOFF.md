@@ -195,6 +195,24 @@ Claude Code's own environment (an unset one stays literal), and a stdio server
 inherits that environment too (the 15 Oct note that it sees only HOME, LOGNAME,
 PATH, SHELL and USER no longer holds); the identity stays in the entry anyway.
 
+**The checker (Phase 2 H6, `model/hubChecker.ts`, `model/hubChecks.ts`).** One small Mono, "Checker" (`checker`,
+Claude Code on Haiku: Haiku 5.5 when the CLI lists it, else its `haiku` alias; `Mono.model`), made by
+`app/hooks/useHubChecks.ts` in the Hub bundle's main window with an hourly habit (given once; Ash's remove or pause
+sticks): `ash_checker_queue`, one `ash_checker_note` per flagged message, always `NOTHING_TO_REPORT`. It can't start
+work, three ways, each tested (`hubChecker.test.ts`): the app lane (`agentApp.ts` `CHECKER_ACTIONS`: models.list,
+memory.*, soul.read only, for its chat and its habit runs); its tool list (`hubMcp.ts` `checkerToolArgs`: ash-os as
+role `checker`, no delegate tool, `--tools Bash,Read,Grep,Glob`, `--disallowedTools` Agent, Task, Edit, Write,
+NotebookEdit, `Bash(ash:*)`, `Bash(claude:*)`, its ash-os tools pre-approved); no delegation (tasks.* refused, its
+context is `<checker_rules>`, never the session or delegate rules). Delivery: the store pulls `ash-hub-checks` at boot
+and on feed topic `checks` (`onChecks`); `CheckDelivery` hands each to its owner's chat (a Mono's current chat, made
+if missing; a hub chat by id; never the checker, a worker or a chat outside the hub) only when that chat is idle with
+nothing queued or waiting on Ash, one per chat at a time, as an internal user turn with `monoCheck` and the receipt
+`mono-check-<id>` (so a restart only confirms it), then `ash-hub-check-delivered`. The chat shows it as one quiet
+collapsed line (`ui/CheckTurnCard.tsx`: "Checker's note · answered: right", the note and the answer behind a click);
+no unread count, no notification, never on Today. Owners learn to answer from `<check_rules>` (`checkerRules.ts`, with
+the delegate rules): `ash_record check {id, verdict, note}`, then "Right: ..." or "Fixed: ...". A dev copy can opt in
+to an ash-os stand-in that only talks to its stub (`VITE_MONOCODE_DEV_ASH_OS`, `scripts/hub-stub-ash-os-mcp.mjs`).
+
 ### The MonoCode Hub app (a separate bundle)
 `src-tauri/tauri.hub.conf.json` builds **MonoCode Hub** (`com.ash.monocode-hub`)
 next to Ash's MonoCode without touching it: its own name and bundle id, so its
@@ -284,8 +302,8 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   Lead's session could not start) are not called.
 - **Group chats** and the chat engine (`hubChats.ts`), Today's chat box.
 - **Builds & playtests** (`hubBuilds.ts`, "only Ash marks played").
-- **Connectors** and the Keychain (`connectors.ts`): Ash OS's `setup` list is
-  shown read-only (no Sign in button yet).
+- **Connectors** are wired (phase 4, below). Ash OS's own `setup` list is still
+  shown read-only.
 - **Sections, templates, proposals, Changes, Bot changes** (`templates.ts`,
   `proposals.ts`): local mock stores.
 - **Setup export/import**: still local (`addMockProject` for restored projects). New project creates through
@@ -299,6 +317,25 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 - Capture hook, heartbeat for the doctor banner, keep-alive and launch at login.
 - Not verified: the plugin inside a running Tauri window (see the report).
 
+## Connectors and teams (phase 4, 19 Oct)
+- **One catalog** (`model/connectorCatalog.json`: 28 direct connectors plus Composio) is read by the page and compiled into Rust
+  (`src-tauri/src/connectors/`). Direct ones are official or well-known MCP servers: hosted ones (GitHub, Linear,
+  Notion, Supabase, Vercel, Stripe, Google's Workspace servers, …) are bridged to stdio by the app's own binary; local
+  ones (Slack, Airtable, Brave, …) run as a child; Telegram is built in. Composio is one switch-gated entry.
+- **Logins**: Keychain only (`monocode-hub:connector:<id>`, dev copies `monocode-hub-dev:…`). `<data>/connectors.json`
+  holds which are signed in, which projects allow each (`*` everywhere, `~` Monos outside a project, else project
+  keys), per-Mono choices and the Composio switch, never a secret. Pasted keys go to `connector_save_login` once;
+  browser sign-in (`connector_oauth`) is MCP authorization (discovery, dynamic registration, PKCE) or Google with Ash's
+  own OAuth client; Ash finishes every sign-in on the provider's page.
+- **Sessions**: a Mono's chat and its habit runs get entries pointing at `<app> connector-run <id> --mono <id> --project
+  <key>…` inside the chat's one `--mcp-config` (`hubMcp.hubMcpArgs`, beside ash-os and the delegate tool;
+  `hubConnectors.connectorServersForMono`). Workers and plain chats get none. The launcher re-checks the rules and reads the Keychain at start. A Mono in two projects only
+  gets what both allow; nothing is allowed until Ash ticks a project. (The leadership team now sits in every project, so
+  it only gets connectors allowed in all of them or "Every project".) Codex and other engines get no connectors yet.
+- **Teams** (`model/hubTeams.ts`, Settings → Teams): a team has a brief, projects, named Monos and a room (a normal
+  group chat in its first project). Ash makes Monos there (name, lane → SOUL, engine, projects, connectors); agents
+  can only `app monos.propose`, which waits on Today's Setup and Settings → Teams until Ash approves.
+
 ## One "waiting on Ash" list
 - `model/waiting.ts` is the only list of things waiting on Ash. Each page adds
   its items through a provider there: Inbox (Needs and stuck items), Builds
@@ -308,6 +345,29 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   "Take a look" button (chats, builds, being built) read only from it. Never
   count separately. A new page must add a provider, not its own count.
 - At most 5 Needs per project (`MAX_NEEDS`).
+- The strip count also adds the project's chats waiting on Ash (next section).
+
+## Questions live in the chat that owns the work (19 Oct)
+- **Waiting on you** (`model/waitingChats.ts`, `ui/WaitingOnYou.tsx`): one row per chat whose agent asked Ash
+  something, above Needs you on Today and in each project's Inbox: project, chat (a Mono's name or the chat title),
+  the one-line question and the agent's pick. "Take the pick" answers in that chat in one tap, "Open" jumps in, the
+  box answers in his words; answered rows tick and stay until he leaves, "Take all N picks" clears every row with a
+  pick that is not a red line.
+- Two shapes, read by `model/chatQuestions.ts`: a live AskUserQuestion (pick = the option marked "(Recommended)",
+  answered in place through `respondHarnessQuestion`), or a finished turn ending "Needs Ash: …" / "My pick: …"
+  (answered with a message into the chat). The list is kept in local storage, so a question cut off by a restart still
+  waits and is then answered with a message naming it. App wiring: two effects next to `onQuestionReply` in App.tsx
+  (`noteChats(sessions)`, `setWaitingChatsHost`).
+- **Hooks.** Autopilot: `waitingChats()`, `subscribeWaitingChats`, `autopilotMayTake`, `takePick(id, { by: "autopilot" })`
+  (refused on a red line). H4: `setWorkerQuestionRouter` (return true when a worker's question went to its Lead; until
+  H4 sets one, every question is Ash's).
+- **Older questions** (`ui/OlderQuestions.tsx`): the retired studio queue as one quiet "Older questions (N)" line at
+  the bottom of Today, in no badge. Opened: answer any row with its sheet, or "Dismiss all older than 3 days / 1 week /
+  2 weeks / 1 month" (`ash-hub-older-dismiss`, Ash only; their asks are parked, never dropped). Ash OS (branch
+  `ash-os-questions`) adds no new questions to the queue and keeps only red-line gates and failures as Needs.
+- Agents are told how to ask (`model/askAshRules.ts`, in every Mono's context): decide what they can, ask only what
+  truly needs Ash, in their own chat, always with a pick; workers ask their Lead.
+- Stub: `MONOCODE_HUB_STUB_SCENARIO=questions npm run hub:dev` shows the retired queue (`startStub({ questions: true })`).
 
 ## Builds: only Ash marks a build played
 - "Played" is `Build.played = { by: "ash", at }`. It is set only by an action by Ash:

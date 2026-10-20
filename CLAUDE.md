@@ -63,7 +63,9 @@ A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOC
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
 made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
-only reaches that copy's own control port. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+only reaches that copy's own control port. A proof that needs ash-os tools in a dev copy can opt in to a stand-in that
+only talks to that slot's stub: start it with `VITE_MONOCODE_DEV_ASH_OS` set to the entry
+`node scripts/hub-stub-ash-os-mcp.mjs --entry --url <stub url> --token-file <slot token file>` prints. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
@@ -286,3 +288,11 @@ use a test worktree and avoid real external actions. The old MonoCode Test copy 
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
+
+## Export and import (Phase 5, docs/PORTABLE.md)
+
+Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
+`.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
+connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
+its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.

@@ -191,6 +191,22 @@ function persistableMeta(
   };
 }
 
+/** A checker's note on its turn (hub/model/hubChecks.ts): its id, the message and the finding, bounded. */
+function sanitizeMonoCheck(value: unknown): Block["monoCheck"] {
+  if (!value || typeof value !== "object") return undefined;
+  const check = value as Record<string, unknown>;
+  if (typeof check.id !== "string" || !isPersistableId(check.id)) return undefined;
+  return {
+    id: check.id,
+    ...(typeof check.dumpId === "string" && isPersistableId(check.dumpId)
+      ? { dumpId: check.dumpId }
+      : {}),
+    ...(typeof check.finding === "string" && check.finding.trim()
+      ? { finding: check.finding.slice(0, 1_000) }
+      : {}),
+  };
+}
+
 function sanitizeMonoSessionCompletion(
   value: unknown,
 ): Block["monoSessionCompletion"] {
@@ -1046,6 +1062,8 @@ function sanitizeBlock(
   const completion = sanitizeMonoSessionCompletion(block.monoSessionCompletion);
   if (block.role === "user" && block.internal && completion)
     next.monoSessionCompletion = completion;
+  const check = sanitizeMonoCheck(block.monoCheck);
+  if (block.role === "user" && block.internal && check) next.monoCheck = check;
   const spawned = sanitizeMonoSpawnedSessions(block.monoSpawnedSessions);
   if (block.role === "user" && spawned.length)
     next.monoSpawnedSessions = spawned;
