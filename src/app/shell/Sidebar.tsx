@@ -430,10 +430,10 @@ type Props = {
   /** A Mono fills the main area, which has no project sidebar. */
   monoViewActive?: boolean;
   /**
-   * Hub: this list is a team (Ash, 20 Oct: sub-chats only ever live in a team): a project's coding team
-   * (hub/model/codingTeam.ts), the main place Ash talks, or a Mono's own team (hub/model/monoTeams.ts). The chat that
-   * owns it (the Lead's, or the Mono's) is pinned at the top, and every chat a chat started nests under the chat Ash
-   * talks to, folded until one is stuck (hub/model/codingTeamList.ts).
+   * Hub: this list is a team: a project's coding team (hub/model/codingTeam.ts), the main place Ash talks (Ash, 20 Oct),
+   * or the own team Ash gave a Mono (hub/model/monoTeams.ts, optional). The chat that owns it (the Lead's, or the Mono's)
+   * is pinned at the top, and every chat a chat started nests under the chat Ash talks to, folded until one is stuck
+   * (hub/model/codingTeamList.ts).
    */
   codingTeam?: CodingTeamList;
 };
@@ -884,8 +884,8 @@ function SidebarComponent({
             .map((session) => session.id),
         ],
         listedSessions,
-        // A brief to a project's Lead is that coding team's work, never a sub-chat of the Mono that sent it: without
-        // its row, the Lead's workers can't climb through it into the Mono's own team.
+        // A brief to a project's Lead is that coding team's work: in a team's list it is never a sub-chat of the Mono that
+        // sent it, and without its row the Lead's workers can't climb through it into the Mono's own team.
         delegationRows.filter((row) => row.follow !== "lead"),
         listedBusySessionIds,
       )

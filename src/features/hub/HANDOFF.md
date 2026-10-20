@@ -1,3 +1,44 @@
+# Update: 20 October 2026, where a Mono's work goes; its own team is optional (branch hub/10-monoteams)
+
+Ash, 20 Oct: "if its stuff to fix it should either do it itself or pick it up with the coding team", then "tbh the mono
+sub chat setup is good too the one i saw, so team can be optional". The Monos rail keeps its sub-chats as shipped; a
+project's work goes to its coding team; a Mono's own team is a switch, off by default.
+- **Where a Mono's work goes** (`agent-app/model/agentAppTasks.ts` `monoWork`, `model/monoTeams.ts`): a small fix the Mono
+  does itself; a project's work goes to that project's coding team as a brief to its Lead (`delegate_task {lead}`), and
+  every Mono but a Lead and the checker may brief (`leadershipDelegation.briefsLeads`; still only Leads of projects both
+  are members of). A worker of its own in a project with a coding team is refused with that guidance. Its own work (no
+  project) starts a worker in its own folder, `<app data>/mono-teams/<mono id>` (`src-tauri/src/mono.rs`
+  `mono_team_dir`, made on first use): every copy has its own (daily app, each dev slot, the bench's HOME), beside
+  `monos/` rather than in it (a ship backs up `monos/`; the output can be big). It is no repository: its workers share
+  it, a worktree there is refused, and no automatic checkout applies. Kept by Mono id (`monocode:mono-teams`); the Mono
+  may read and steer sessions there (`monoOf.ownFolder`), and it stays off the recent projects. Leads and coding-team
+  chats work as before.
+- **The rail** (`app/shell/MonoRailSection.tsx`): as shipped. Every Mono's sub-chats nest under it, a Lead's and a
+  briefing Mono's included (a brief is the Lead's chat), folded under "N sub-chats", opening by themselves when one is
+  stuck, six at a time, one click opening one under its Mono.
+- **A Mono's own team, optional** (`monoTeams.ts` `setMonoTeam`, `monoTeamOn`): off for every Mono until Ash turns it on
+  from the Mono's menu in the rail (right-click, or "..." on hover): "Give <Mono> its own team" (never offered to a Lead
+  or the checker). On, the same folder opens as a workspace like a coding team, at once: selected as `team:<mono id>`
+  with no project (`hubNav.monoTeamItem`), its Sessions list (`Sidebar` `CodingTeamList` kind `mono`) pinning the Mono's
+  chat ("Owner") with its workers folded under it, "Team" beside Overview in its chat header toggling it, the folder
+  named "<Mono>'s team". The rail then lists none of its sub-chats: one line in the fold's place ("2 working · 1 stuck",
+  asking counted as stuck as on Today, red once one failed, the full split on hover) and "Open team" on hover open it.
+  The menu then has "Open <Mono>'s team" and "Use sub-chats instead", which takes it back (folder and chats stay; its
+  sub-chats nest under it again). Work it did before the switch is already in that folder, so it shows in the team.
+- **A Mono's chat** (`monos/model/briefedTeams.ts`, `DelegationNotices.tsx` `BriefedTeamLine`): one live line per brief
+  out ("Briefed EXO coding team: Fix the save bug · 2 working · 1 stuck", counting every worker beneath the brief), which
+  opens the coding team on its Lead; the Lead's workers never show there or under the Mono.
+- **Rules**: `<team_rules>` (`monoFiles.ts` `monoWorkRules`) for every Mono with the delegate tool but a Lead: a small fix
+  yourself, a project's work to its coding team, your own work as your sub-chats, or in "<Mono>'s team" once Ash gave
+  you one. The switch is part of the Mono's soul hash (":team"), so flipping it hands the rules over again.
+  `<lead_brief_rules>` speaks to every Mono; the room's shared rules and ROOM.md say the same. `MONO_PROMPT_VERSION` 29.
+- **Proof**: `tests/browser/mono-teams.spec.ts` (photographed: rail sub-chats, the brief line, the menu switch, a team
+  on and off), `stuck-workers.spec.ts` (as shipped); `hub:verify-live` checks 22 (`mono_briefs_coding_team`), 23
+  (`mono_sub_chats`) and 24 (`mono_own_team`, through the driver's `team` op, as the menu does).
+- **Not done**: a Mono with its team on that still starts a worker outside its folder (a project with no coding team,
+  or `app sessions.start` in a project) has that worker counted on its rail line and named in its chat, but not listed
+  in its team.
+
 # Update: 20 October 2026, the coding team (branch hub/8-codingteam)
 
 Ash, 20 Oct: "mainly the coding team is the main place i want to talk to", "I don't talk to workers. I only talk to
