@@ -63,7 +63,8 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 - **Theme tokens** are injected as CSS variables on `:root`: `--color-background-base`, `--color-content`, `--color-surface`, `--color-surface-raised`, `--color-surface-ring`, `--color-stroke`, `--color-theme-accent`, `--color-status-ok|warn|bad`, `--font-sans`. Pages follow the active theme and scheme by default.
 - **Helper library** (`window.hub`), injected into every page:
   - `hub.call(name, args)` returns a Promise. It is a call through the bridge.
-  - `hub.onData(fn)` receives data the host pushes.
+  - `hub.watch(name, [args], onData, [onError])` receives live data as it changes; it returns a stop function.
+  - `hub.onData(fn)` receives every push (`fn(data, name)`).
   - `hub.block(kind, data)` returns a bundled block element (`status`, `barlist`, `note`) already styled with the tokens.
 - **The bridge:** postMessage is the only way out. The host answers only messages from that frame.
 
@@ -82,6 +83,15 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 | `settings.read` | Read your settings |
 | `settings.write` | Change your settings |
 | `keys.read:<Name>` | Names one key, e.g. `keys.read:Anthropic` |
+| `agents.read` | See your agents, what each is doing and the work they handed out |
+| `jobs.read` | See what's being built |
+| `needs.read` | See what's waiting on you |
+| `rooms.read` | Read your rooms' messages |
+| `agents.answer` | Answer an agent's question when you tap |
+| `agents.pick` | Take an agent's suggested answer when you tap |
+| `agents.message` | Send a Mono a message when you tap |
+| `agents.stop` | Stop an agent's work when you tap |
+| `chats.open` | Open a chat when you tap |
 
 - **Key asks** sit in their own glass card above the list: **Reads your keys**, followed by each key's name. When a key is asked for, **Keep and allow** stays disabled for about one second after the card appears, so a fast click can't approve keys by accident.
 - **Keep and allow** approves every ask. The approved list is stored with the page.
@@ -93,7 +103,42 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 
   A spec asking for either is turned down.
 - **Limits line** on the empty, preview and kept screens: "This can't change the app's core screens, the sidebar, settings, keys or Monos." A page reaches settings or keys only through asks Ash approved.
-- **Not wired yet:** the bridge handlers for each capability are not wired to the backend. An approved call answers "Not connected yet" until the backend adds a `hub.rs` handler for it.
+- **Wired:** the agent capabilities below ("Connected pages"). The older ones (`tasks.*`, `project.*`, `mono.run`,
+  `automation.run`, `settings.*`, `keys.read:*`) still answer "Not connected yet".
+
+## 4b. Connected pages (live data and taps)
+
+Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, and its changes), `pageActions.ts`
+(the taps), `pageBridgeHost.ts` (one frame's side of the bridge).
+
+- **Reads** (`hub.call(name, args)` once, or `hub.watch(name, [args], onData, [onError])` live; `watch` returns a stop
+  function). Live means pushed as it changes, never polled: a burst of changes is one push, the same data is never sent
+  twice, and Undo ends the watch (`onError` hears why).
+  - `agents.read` → `{agents, counts, at}`. Each agent (the Monos roster: the team, the Leads, any Mono Ash added):
+    `{id, name, role: lead|team|mono, projects, state: asking|stuck|working|paused|idle, doing, reason?, since, chatId?,
+    question?, workers, jobs, waitingOn}`. `workers` is the work it handed out, nested:
+    `{id, title, state: asking|stuck|working|failed|done|stopped, doing, reason?, chatId, startedAt, since, endedAt?,
+    question?, workers}`. A `question` is `{chatId? | needId?, text, pick?, options?, redLine, askedAt?, canAnswer}`.
+    Stuck: a busy chat with no new word for 10 minutes, a worker whose chat ended without reporting (2 minutes), a usage
+    limit, or a stuck Being built job.
+  - `jobs.read` → `{jobs: [{id, projectId, projectName, title, agentId, agentName, state, reason?, startedAt?, lastActiveAt?, finishedAt?}]}`.
+  - `needs.read` → `{needs: [{id, projectId, projectName, title, why, action, isQuestion, since?}], waiting: [{chatId, chatName, projectId, projectName, agentId, question, pick?, redLine, askedAt}]}`.
+  - `rooms.read {projectId?, limit?}` → `{rooms: [{id, projectId, name, members, typing?, conversation: {id, title, when, messages: [{id, from, text}]}}]}`.
+- **Taps** (`await hub.call(name, args)` inside a click handler) go through the same paths as Ash's own taps:
+  - `agents.answer {chatId | needId, text}`: a chat waiting on Ash (Waiting on you's answer), a worker's live question
+    (the answer in its own chat), or an Ash OS question (`ash-hub-answer`).
+  - `agents.pick {chatId | needId}`: the agent's suggested answer (Take the pick; `quick: "agree"` for Ash OS).
+  - `agents.message {agentId | chatId, text}`: the composer's send into that chat (it steers or queues mid-turn).
+  - `agents.stop {workerId | agentId | chatId}`: the delegation tree's own Stop (it and everything it handed out).
+  - `chats.open {workerId | agentId | chatId}`: the app's own Open.
+  - Words a page sends end with "(sent from the <title> page)"; the page shows what it did under itself
+    ("Stopped “Fix the save bug” · from the Agents page · 2m ago").
+- **Rules:** a tap runs only on a kept page, only with its permission approved, and only while Ash's tap inside the
+  page is fresh (the browser's user activation): a page can never act by itself. A preview may read the live data it
+  asked for (so Ash sees what he keeps); its buttons and every other ask wait for Keep and allow.
+- **Size:** the helper tells the host the page's height and the frame follows it (160 to 4000 px).
+- **Navigation:** a frame that loads anything but its own page is cut off and given a fresh frame (the app's CSP
+  `frame-src` already refuses the trip).
 
 ## 5. Design check (bespoke pages, before the preview)
 

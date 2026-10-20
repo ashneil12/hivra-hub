@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -11,8 +11,12 @@ import { undoBotChange } from "../../hub/model/botChanges";
 import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, type BuildPageResult } from "../model/buildPage";
 import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
-import { handleBridgeCall, type BridgeCall } from "../model/bridge";
-import { SANDBOX, bespokeSrcdoc, readTokens } from "../model/sandbox";
+import { PageBridgeHost } from "../model/pageBridgeHost";
+import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
+import { appPageSources } from "../model/pageSources";
+import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
+import { SessionStateContext } from "../../sessions/model/sessionStateStore";
+import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
@@ -153,7 +157,7 @@ export function Block({ block }: { block: PageBlock }) {
 }
 
 export function PageBody({ page, live }: { page: Page; live?: boolean }) {
-  if (page.spec.kind === "bespoke") return <BespokeFrame pageId={page.id} spec={page.spec} live={live} />;
+  if (page.spec.kind === "bespoke") return <BespokeFrame key={`${page.id}:${specKey(page.spec)}`} pageId={page.id} spec={page.spec} live={live} title={page.title} />;
   return (
     <div className="grid grid-cols-2 gap-3">
       {pageBlocks(page).map((b, i) => <Block key={`${b.kind}-${i}`} block={b} />)}
@@ -161,26 +165,81 @@ export function PageBody({ page, live }: { page: Page; live?: boolean }) {
   );
 }
 
+/** Ash's tap inside the frame is fresh: the browser's own user activation (a click in a frame activates the window that
+ * holds it), or, without that API, the frame holding the focus. */
+export function tappedInside(frame: HTMLIFrameElement | null): boolean {
+  const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (activation) return activation.isActive;
+  return !!frame && document.activeElement === frame && document.hasFocus();
+}
+
 /**
  * A bespoke page in its sandbox: sandbox="allow-scripts" only, a strict CSP, the theme tokens injected. Its only way
- * out is hub.call over postMessage; the host answers only what Ash approved (none in preview), via the bridge.
+ * out is postMessage to its bridge (pageBridgeHost.ts): reads and live watches of what it asked for (a preview reads the
+ * live data it asked for, nothing else), and its taps only on a kept page and only on Ash's tap. A frame that navigates
+ * away from its own page is cut off and reloaded (the app's frame-src already refuses the trip).
  */
-export function BespokeFrame({ pageId, spec, live }: { pageId: string; spec: BespokeSpec; live?: boolean }) {
+export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; spec: BespokeSpec; live?: boolean; title?: string }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const scheme = loadActiveSchemeId();
+  const sessions = useContext(SessionStateContext);
   const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark"));
+  const [height, setHeight] = useState(460);
+  const [generation, setGeneration] = useState(0);
+  // The bridge lives as long as the frame: a re-render (the record read again) must not drop the page's watches.
+  const named = useRef(title ?? spec.title);
+  named.current = title ?? spec.title;
   useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      if (!ref.current || e.source !== ref.current.contentWindow) return;
-      const m = e.data as { type?: string } & BridgeCall;
-      if (m?.type !== "hub:call") return;
-      const approved = live ? approvedPermissions(pageId) : [];
-      void handleBridgeCall(m, approved, {}).then((reply) => ref.current?.contentWindow?.postMessage({ type: "hub:reply", ...reply }, "*"));
+    const frame = ref.current;
+    const host = new PageBridgeHost({
+      pageId, title: named.current, live: !!live, asks: spec.permissions,
+      approved: () => (live ? approvedPermissions(pageId) : []),
+      tapped: () => tappedInside(ref.current),
+      post: (message) => ref.current?.contentWindow?.postMessage(message, "*"),
+      sources: appPageSources(sessions),
+      onSize: setHeight,
+    });
+    let loads = 0;
+    const onLoad = () => {
+      loads += 1;
+      if (loads > 1) setGeneration((g) => g + 1); // it left its own page: a fresh frame, a fresh bridge
     };
+    const onMessage = (e: MessageEvent) => {
+      if (!ref.current || e.source !== ref.current.contentWindow || e.origin !== "null" || loads > 1) return;
+      host.receive(e.data);
+    };
+    frame?.addEventListener("load", onLoad);
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [pageId, live]);
-  return <iframe ref={ref} key={scheme} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page className="h-[460px] w-full rounded-xl border-0 bg-transparent" />;
+    return () => {
+      frame?.removeEventListener("load", onLoad);
+      window.removeEventListener("message", onMessage);
+      host.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one bridge per frame: the spec is fixed for a frame (a new spec is a new frame)
+  }, [pageId, live, sessions, generation]);
+  return (
+    <iframe ref={ref} key={`${scheme}:${generation}`} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page
+      style={{ height }} className="w-full rounded-xl border-0 bg-transparent" />
+  );
+}
+
+/** What this page did on Ash's taps (answered, sent, stopped), newest first: who did it is the page. */
+function PageActivity({ pageId, title }: { pageId: string; title: string }) {
+  usePageActionsVersion();
+  const now = useNow(30_000);
+  const log = pageActionLog(pageId).slice(0, 3);
+  if (!log.length) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-0.5 px-1 text-[12px] text-content/60" data-page-activity>
+      {log.map((e) => (
+        <div key={`${e.at}-${e.line}`} className="truncate">{e.line} · from the {/\bpage$/i.test(title) ? title : `${title} page`} · {agoLabel(e.at, now)}</div>
+      ))}
+    </div>
+  );
+}
+function agoLabel(at: number, now: number): string {
+  const m = Math.floor((now - at) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
 }
 
 /** The asks a bespoke page makes, in plain words. Key asks get their own card on top. */
@@ -437,6 +496,7 @@ export function PagesContent() {
           ) : null}
           {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
           <PageBody page={shown} live />
+          <PageActivity pageId={shown.id} title={shown.title} />
         </div>
       </div>
     );
