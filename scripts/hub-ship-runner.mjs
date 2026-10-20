@@ -294,39 +294,62 @@ export function backupData(data, backup) {
  * Put `backup`'s database files back byte for byte (a file it doesn't have is removed), check them against `expected`,
  * and swap monos/ back (the live one goes to `aside`). Same steps as ship.rs `restore_db`.
  *
- * Nothing changes unless the backup is all there: a backup folder that is gone (an archived ship), or a file `expected`
- * names that isn't in it, throws first. Otherwise "a file it doesn't have is removed" would empty the live database.
+ * Nothing changes unless the backup is all there and right: a backup folder that is gone (an archived ship), a file
+ * `expected` names that isn't in it, or one that doesn't match its checksum throws first. Every file is hashed and
+ * copied in beside its live file before any live file changes. `beforeChange` runs just before the first one does; an
+ * error after that carries `changedLive`, so the caller puts its own backup back instead of saying nothing changed.
  */
-export function restoreData(backup, data, expected, aside) {
+export function restoreData(backup, data, expected, aside, { beforeChange } = {}) {
   if (!exists(backup)) throw new Error(`the database copy ${backup} is missing`);
-  for (const name of DB_FILES)
-    if (expected?.[name] && !exists(path.join(backup, name))) throw new Error(`${name} is missing from the database copy in ${backup}`);
-  const restored = {};
-  for (const name of DB_FILES) {
-    const saved = path.join(backup, name);
-    const live = path.join(data, name);
-    if (exists(saved)) {
-      const temporary = path.join(data, `.${name}.restoring`);
-      fs.copyFileSync(saved, temporary);
-      fs.renameSync(temporary, live);
-      const sum = sha256File(live);
-      if (expected?.[name] && expected[name] !== sum)
-        throw new Error(`${name} doesn't match its backup after the copy (${sum} vs ${expected[name]})`);
-      restored[name] = sum;
-    } else if (exists(live)) {
-      fs.rmSync(live);
-    }
-  }
   const savedMonos = path.join(backup, MONOS);
   const liveMonos = path.join(data, MONOS);
   const staging = path.join(data, ".monos.restoring");
-  fs.rmSync(staging, { recursive: true, force: true });
-  if (exists(savedMonos)) fs.cpSync(savedMonos, staging, { recursive: true, verbatimSymlinks: true });
-  if (exists(liveMonos)) {
-    fs.rmSync(aside, { recursive: true, force: true });
-    fs.renameSync(liveMonos, aside);
+  const steps = [];
+  try {
+    for (const name of DB_FILES) {
+      const saved = path.join(backup, name);
+      const live = path.join(data, name);
+      if (!exists(saved)) {
+        if (expected?.[name]) throw new Error(`${name} is missing from the database copy in ${backup}`);
+        steps.push({ name, live });
+        continue;
+      }
+      const sum = sha256File(saved);
+      if (expected?.[name] && expected[name] !== sum) throw new Error(`${name} doesn't match its backup (${sum} vs ${expected[name]})`);
+      const temporary = path.join(data, `.${name}.restoring`);
+      steps.push({ name, live, temporary, sum });
+      fs.copyFileSync(saved, temporary);
+      const copied = sha256File(temporary);
+      if (copied !== sum) throw new Error(`the copy of ${name} doesn't match its backup (${copied} vs ${sum})`);
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    if (exists(savedMonos)) fs.cpSync(savedMonos, staging, { recursive: true, verbatimSymlinks: true });
+  } catch (error) {
+    for (const { temporary } of steps) if (temporary) fs.rmSync(temporary, { force: true });
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw error;
   }
-  if (exists(savedMonos)) fs.renameSync(staging, liveMonos);
+  beforeChange?.();
+  const restored = {};
+  try {
+    for (const { name, live, temporary, sum } of steps) {
+      if (!temporary) {
+        if (exists(live)) fs.rmSync(live);
+        continue;
+      }
+      fs.renameSync(temporary, live);
+      restored[name] = sum;
+      testFault("restoring");
+    }
+    if (exists(liveMonos)) {
+      fs.rmSync(aside, { recursive: true, force: true });
+      fs.renameSync(liveMonos, aside);
+    }
+    if (exists(savedMonos)) fs.renameSync(staging, liveMonos);
+  } catch (error) {
+    error.changedLive = true;
+    throw error;
+  }
   return restored;
 }
 
@@ -347,7 +370,8 @@ export async function runShip(dir) {
     log(`start ${ship.runner.starts}: ship ${ship.id} is ${ship.phase}`);
     if (ship.runner.starts > MAX_RUNNER_STARTS && !FINAL.has(ship.phase)) {
       ship.reason = `The runner kept stopping (${ship.runner.starts} starts) during ${ship.phase}.`;
-      setPhase(ship, step(ship, "oldMoved") && !step(ship, "dbRestored") ? "failed" : "cancelled", ship.reason);
+      const changed = step(ship, "oldMoved") || step(ship, "dbReplacing");
+      setPhase(ship, changed && !step(ship, "dbRestored") ? "failed" : "cancelled", ship.reason);
     }
     saveShip(dir, ship);
     for (;;) {
@@ -384,6 +408,14 @@ export async function runShip(dir) {
     releaseLock(ctx.instance);
     releaseLock(lock);
   }
+}
+
+/** Tests only: fail once at a named point (`MONOCODE_SHIP_TEST_FAIL_AT`), the way a full disk would. */
+const faulted = new Set();
+function testFault(at) {
+  if (process.env.MONOCODE_SHIP_TEST_FAIL_AT !== at || faulted.has(at)) return;
+  faulted.add(at);
+  throw new Error(`test fault at ${at}`);
 }
 
 /** Tests only: stop dead right after a step, the way a crash or a reboot would. */
@@ -467,11 +499,18 @@ async function swap(ctx, ship) {
   try {
     if (ship.restoreDb && !step(ship, "dbReplaced")) {
       // hub:rollback: the older build comes back with the database from before its replacement.
-      ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS));
+      ship.db.replacedWith = restoreData(ship.restoreDb, data, ship.restoreDbHashes, path.join(ctx.dir, REJECTED_MONOS), {
+        beforeChange: () => {
+          markStep(ship, "dbReplacing");
+          saveShip(ctx.dir, ship);
+        },
+      });
       markStep(ship, "dbReplaced");
       saveShip(ctx.dir, ship);
     }
   } catch (error) {
+    // Once a live file has changed (this run or one before it), only this ship's own backup puts things right.
+    if (step(ship, "dbReplacing")) return toRollback(ship, `Putting the database copy in place failed partway: ${error.message}`);
     return cancel(ship, `The database copy to roll back to can't be used, so nothing changed: ${error.message}`);
   }
   try {
@@ -486,7 +525,7 @@ async function swap(ctx, ship) {
       testCrash(ship);
     }
   } catch (error) {
-    if (ship.restoreDb && step(ship, "dbReplaced")) return toRollback(ship, `Moving the old app aside failed: ${error.message}`);
+    if (step(ship, "dbReplacing")) return toRollback(ship, `Moving the old app aside failed: ${error.message}`);
     return cancel(ship, `Moving the old app aside failed, so nothing changed: ${error.message}`);
   }
   try {

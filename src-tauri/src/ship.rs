@@ -276,6 +276,9 @@ pub struct Facts {
     pub old_moved: bool,
     /// The new build is in place (`steps.newMoved`).
     pub new_moved: bool,
+    /// A rollback's runner began putting the older database in place (`steps.dbReplacing`): live files may have
+    /// changed even though no app has moved.
+    pub db_replaced: bool,
     /// `committed.json` is there.
     pub committed: bool,
     /// Someone holds `runner.lock`.
@@ -327,10 +330,18 @@ pub fn plan(facts: &Facts) -> Plan {
         Staged | Waiting => Plan::Cancel(
             "The ship runner stopped before the swap, so nothing changed. Ship again.".into(),
         ),
-        Swapping if !facts.old_moved => Plan::Cancel(
+        Swapping if !facts.old_moved && !facts.db_replaced => Plan::Cancel(
             "The swap was interrupted before anything moved, so nothing changed. Ship again."
                 .into(),
         ),
+        // A rollback's runner was putting the older database in place: the live files may be partly that copy, so this
+        // ship's own backup goes back (no app has moved).
+        Swapping if !facts.old_moved => match facts.me {
+            Me::New | Me::Old => {
+                Plan::Restore("The rollback was cut off while its database copy went in.".into())
+            }
+            Me::Other => Plan::Leave,
+        },
         // The old app is out and the new one isn't in: no build can be running from its place. Only the runner
         // finishes this.
         Swapping if !facts.new_moved => Plan::Leave,
@@ -409,6 +420,7 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
         phase,
         old_moved: ship.step("oldMoved"),
         new_moved: ship.step("newMoved"),
+        db_replaced: ship.step("dbReplacing") || ship.step("dbReplaced"),
         committed: dir.join(COMMITTED).is_file(),
         runner_alive,
         me,
@@ -542,42 +554,41 @@ pub fn restore(ship: &mut Ship, me: Me) -> Result<(), String> {
 }
 
 /// Copy the backed-up database files back byte for byte (a file the backup didn't have goes), check each against the
-/// checksum taken at backup time, and swap `monos/` back.
+/// checksum taken at backup time, and swap `monos/` back. Same steps as the runner's `restoreData`.
+///
+/// Nothing changes unless the backup is all there and right: every file is checked against its checksum and copied in
+/// beside its live file first, and a file the checksums name that isn't in the backup is an error, not a removal.
 pub fn restore_db(ship: &Ship) -> Result<Value, String> {
     let backup = ship.dir.join(BACKUP_DIR);
     let data = ship.data_dir();
     let expected = ship.doc.pointer("/db/backup").cloned().unwrap_or(json!({}));
-    let mut restored = Map::new();
-    for name in DB_FILES {
-        let from = backup.join(name);
-        let to = data.join(name);
-        if from.is_file() {
-            let temporary = data.join(format!(".{name}.restoring"));
-            std::fs::copy(&from, &temporary)
-                .map_err(|error| format!("Couldn't copy {name} back: {error}"))?;
-            std::fs::rename(&temporary, &to).map_err(|e| e.to_string())?;
-            let sum = sha256_file(&to)?;
-            if let Some(want) = expected.get(name).and_then(Value::as_str) {
-                if want != sum {
-                    return Err(format!(
-                        "{name} doesn't match its backup after the copy ({sum} vs {want})"
-                    ));
-                }
-            }
-            restored.insert(name.into(), json!(sum));
-        } else if to.exists() {
-            std::fs::remove_file(&to).map_err(|e| e.to_string())?;
-        }
+    if !backup.is_dir() {
+        return Err(format!("The database copy {} is missing", backup.display()));
     }
     let saved = backup.join(MONOS);
-    let live = data.join(MONOS);
     let staging = data.join(".monos.restoring");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    let mut steps = Vec::new();
+    if let Err(error) = prepare_restore(&backup, &data, &expected, &saved, &staging, &mut steps) {
+        for step in &steps {
+            if let Some((temporary, _)) = &step.2 {
+                let _ = std::fs::remove_file(temporary);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
     }
-    if saved.is_dir() {
-        copy_dir(&saved, &staging)?;
+    let mut restored = Map::new();
+    for (name, to, copied) in steps {
+        match copied {
+            Some((temporary, sum)) => {
+                std::fs::rename(&temporary, &to).map_err(|e| e.to_string())?;
+                restored.insert(name.into(), json!(sum));
+            }
+            None if to.exists() => std::fs::remove_file(&to).map_err(|e| e.to_string())?,
+            None => {}
+        }
     }
+    let live = data.join(MONOS);
     if live.exists() {
         let aside = ship.dir.join(REJECTED_MONOS);
         if aside.exists() {
@@ -589,6 +600,57 @@ pub fn restore_db(ship: &Ship) -> Result<Value, String> {
         std::fs::rename(&staging, &live).map_err(|e| e.to_string())?;
     }
     Ok(Value::Object(restored))
+}
+
+/// One database file to put back: its name, its live path, and its checked copy beside it with the checksum (none:
+/// the backup didn't have it, so the live one goes).
+type RestoreStep = (&'static str, PathBuf, Option<(PathBuf, String)>);
+
+/// [`restore_db`]'s checks and copies, before any live file changes.
+fn prepare_restore(
+    backup: &Path,
+    data: &Path,
+    expected: &Value,
+    saved_monos: &Path,
+    staging: &Path,
+    steps: &mut Vec<RestoreStep>,
+) -> Result<(), String> {
+    for name in DB_FILES {
+        let from = backup.join(name);
+        let to = data.join(name);
+        let want = expected.get(name).and_then(Value::as_str);
+        if !from.is_file() {
+            if want.is_some() {
+                return Err(format!(
+                    "{name} is missing from the database copy in {}",
+                    backup.display()
+                ));
+            }
+            steps.push((name, to, None));
+            continue;
+        }
+        let sum = sha256_file(&from)?;
+        if let Some(want) = want.filter(|want| *want != sum) {
+            return Err(format!("{name} doesn't match its backup ({sum} vs {want})"));
+        }
+        let temporary = data.join(format!(".{name}.restoring"));
+        steps.push((name, to, Some((temporary.clone(), sum.clone()))));
+        std::fs::copy(&from, &temporary)
+            .map_err(|error| format!("Couldn't copy {name} back: {error}"))?;
+        let copied = sha256_file(&temporary)?;
+        if copied != sum {
+            return Err(format!(
+                "The copy of {name} doesn't match its backup ({copied} vs {sum})"
+            ));
+        }
+    }
+    if staging.exists() {
+        std::fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
+    }
+    if saved_monos.is_dir() {
+        copy_dir(saved_monos, staging)?;
+    }
+    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
@@ -1384,6 +1446,7 @@ mod tests {
             phase,
             old_moved: false,
             new_moved: false,
+            db_replaced: false,
             committed: false,
             runner_alive: false,
             me: Me::Old,
@@ -1631,6 +1694,7 @@ mod tests {
             phase: reloaded.phase().unwrap(),
             old_moved: reloaded.step("oldMoved"),
             new_moved: reloaded.step("newMoved"),
+            db_replaced: false,
             committed: false,
             runner_alive: false,
             me: Me::Old,
@@ -1660,10 +1724,62 @@ mod tests {
     fn a_tampered_backup_fails_the_restore() {
         let root = TempDir::new("tampered");
         let (mut ship, _) = swapped_fixture(&root.0);
-        std::fs::write(ship.dir.join(BACKUP_DIR).join("monocode.db"), b"changed").unwrap();
+        // The second file is the bad one: the first must not have been put in place already.
+        std::fs::write(
+            ship.dir.join(BACKUP_DIR).join("monocode.db-wal"),
+            b"changed",
+        )
+        .unwrap();
         let error = restore(&mut ship, Me::New).unwrap_err();
         assert!(error.contains("doesn't match its backup"), "{error}");
         assert!(!Ship::load(&ship.dir).unwrap().step("dbRestored"));
+        let data = ship.data_dir();
+        assert_eq!(
+            std::fs::read(data.join("monocode.db")).unwrap(),
+            b"migrated by the new build",
+            "no live file changed"
+        );
+        assert_eq!(
+            std::fs::read(data.join("monocode.db-shm")).unwrap(),
+            b"new shm"
+        );
+        assert_eq!(
+            std::fs::read(data.join("monos/frank/SOUL.md")).unwrap(),
+            b"new soul"
+        );
+        assert!(!data.join(".monocode.db.restoring").exists());
+    }
+
+    #[test]
+    fn a_backup_missing_a_file_it_took_fails_the_restore() {
+        let root = TempDir::new("missing");
+        let (ship, _) = swapped_fixture(&root.0);
+        std::fs::remove_file(ship.dir.join(BACKUP_DIR).join("monocode.db")).unwrap();
+        let error = restore_db(&ship).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        assert_eq!(
+            std::fs::read(ship.data_dir().join("monocode.db")).unwrap(),
+            b"migrated by the new build"
+        );
+        std::fs::remove_dir_all(ship.dir.join(BACKUP_DIR)).unwrap();
+        assert!(restore_db(&ship).unwrap_err().contains("missing"));
+        assert!(ship.data_dir().join("monocode.db").exists());
+        assert!(ship.data_dir().join("monos").exists());
+    }
+
+    #[test]
+    fn a_rollback_cut_off_while_its_database_went_in_is_restored_not_called_off() {
+        // hub:rollback's ship: the runner began putting the older database in place, then died before moving any app.
+        let cut = Facts {
+            db_replaced: true,
+            ..facts(Phase::Swapping)
+        };
+        assert!(matches!(plan(&cut), Plan::Restore(_)), "{:?}", plan(&cut));
+        let other = Facts {
+            me: Me::Other,
+            ..cut.clone()
+        };
+        assert_eq!(plan(&other), Plan::Leave);
     }
 
     #[test]

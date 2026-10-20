@@ -589,6 +589,58 @@ test("SH-1: a restore whose backup is missing throws and leaves the live files a
   assert.equal(fs.existsSync(aside), false, "monos/ wasn't moved aside");
 });
 
+test("SH-2: a database copy that doesn't match its checksums changes nothing", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const data = path.join(root, "data");
+  const backup = path.join(root, "backup");
+  for (const dir of [path.join(data, "monos/frank"), path.join(backup, "monos/frank")]) fs.mkdirSync(dir, { recursive: true });
+  for (const [dir, label] of [[data, "live"], [backup, "saved"]]) {
+    fs.writeFileSync(path.join(dir, "monocode.db"), `${label} db`);
+    fs.writeFileSync(path.join(dir, "monocode.db-wal"), `${label} wal`);
+    fs.writeFileSync(path.join(dir, "monos/frank/SOUL.md"), `${label} soul`);
+  }
+  const expected = {
+    "monocode.db": sha256File(path.join(backup, "monocode.db")),
+    "monocode.db-wal": sha256File(path.join(backup, "monocode.db-wal")),
+  };
+  // The second file is the bad one: the first must not have been put in place already.
+  fs.writeFileSync(path.join(backup, "monocode.db-wal"), "tampered wal");
+  const aside = path.join(root, "aside");
+  assert.throws(() => restoreData(backup, data, expected, aside), /monocode\.db-wal doesn't match/);
+  assert.deepEqual(
+    ["monocode.db", "monocode.db-wal", "monos/frank/SOUL.md"].map((name) => fs.readFileSync(path.join(data, name), "utf8")),
+    ["live db", "live wal", "live soul"],
+  );
+  assert.deepEqual(fs.readdirSync(data).sort(), ["monocode.db", "monocode.db-wal", "monos"], "no temporaries left");
+  assert.equal(fs.existsSync(aside), false);
+});
+
+test("SH-2: a rollback whose restore fails partway puts its own backup back instead of calling it off", async () => {
+  const w = world();
+  const shipped = ship(w);
+  await until("the commit", settled(shipped.answer.shipDir, "committed"));
+  remember(shipped.answer.shipDir);
+  fs.appendFileSync(path.join(w.data, "monocode.db"), "a newer chat");
+  const newer = sha256File(path.join(w.data, "monocode.db"));
+  // The runner fails once, right after the first live file was replaced (a full disk, a permissions error).
+  const done = rollbackCli(w, shipped.answer.id, ["--confirm"], { MONOCODE_SHIP_TEST_FAIL_AT: "restoring" });
+  assert.equal(done.status, 0, done.stderr || done.stdout);
+  const answer = JSON.parse(done.stdout.trim());
+  const state = await until("the rollback ship to finish", () => {
+    const now = stateOf(answer.shipDir);
+    return now && ["committed", "rolled-back", "cancelled", "failed"].includes(now.phase) && fs.existsSync(path.join(answer.shipDir, "receipt.json")) ? now : null;
+  });
+  remember(answer.shipDir);
+  assert.equal(state.phase, "rolled-back", state.reason);
+  assert.match(state.reason, /partway/);
+  assert.equal(sha256File(path.join(w.data, "monocode.db")), newer, "the live database is as it was before the rollback");
+  assert.equal(sha256File(path.join(w.data, "monocode.db-wal")), w.before.wal);
+  assert.equal(stampOf(w.app).sha, w.sha, "the committed build stays");
+  await until("the committed build reopened", () => readJson(path.join(w.data, "running.json"))?.sha === w.sha);
+  remember(answer.shipDir);
+});
+
 test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   const w = world();
   const result = spawnSync(
