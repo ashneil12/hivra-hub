@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
 import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
 import { refreshSoulsSoon } from "./soulRefresh";
+import { renameAshLeadToHubLead } from "./monoRename";
 import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
@@ -128,7 +129,13 @@ function startHubBundleLeads(store: HubStore): void {
     // After the seeds: a Mono whose soul is behind the app's template gets a proposed Bot change (soulRefresh.ts).
     void seedTeamFiles().then(() => refreshSoulsSoon());
   };
-  store.subscribe(tryLeads);
+  // ash-lead becomes hub-lead first (monoRename.ts), so the Leads are made and registered under the new id.
+  void renameAshLeadToHubLead({ unregister })
+    .catch(() => undefined)
+    .finally(() => {
+      store.subscribe(tryLeads);
+      tryLeads();
+    });
 }
 
 /**

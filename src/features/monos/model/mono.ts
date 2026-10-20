@@ -352,6 +352,20 @@ export function updateMono(
   return next;
 }
 
+/**
+ * Gives a Mono a new id in place (monoRename.ts: ash-lead → hub-lead): same place on the rail, same chat, look and
+ * projects. Nothing happens when `from` isn't on the roster or `to` is taken; returns whether it was renamed.
+ */
+export function renameMonoId(from: string, to: string, change: (mono: Mono) => Mono = (m) => m): boolean {
+  if (!/^[A-Za-z0-9-]+$/.test(to)) return false;
+  const roster = listMonos();
+  const index = roster.findIndex((mono) => mono.id === from);
+  if (index < 0 || roster.some((mono) => mono.id === to)) return false;
+  roster[index] = { ...change(roster[index]), id: to };
+  saveRoster(roster);
+  return true;
+}
+
 /** Forgets the Mono and its background. Its folder of files stays on disk. */
 export function removeMono(id: string): void {
   // A default-team Mono Ash removes stays gone (hub repair skips it until Undo clears it).

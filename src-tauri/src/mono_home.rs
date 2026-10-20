@@ -346,8 +346,8 @@ pub struct Renamed {
     pub soul_updated: bool,
 }
 
-/// Renames a Mono's folder (`from` → `to`), keeping its old soul as a topic note (`memory/<from>-soul.md`) and
-/// pointing the soul's Ash OS identity at the new id. Safe to run again: a folder already moved is left alone. Never
+/// Renames a Mono's folder (`from` → `to`), keeping its old soul as a topic note (`memory/<from>-soul.md`, when it
+/// moves) and pointing the soul's Ash OS identity at the new id. Safe to run again: a folder already moved is left alone. Never
 /// over a Mono that already has files under the new name.
 pub fn rename_mono_folder(root: &Path, from: &str, to: &str) -> Result<Renamed, String> {
     if !valid_id(from) || !valid_id(to) || from == to {
@@ -375,16 +375,16 @@ pub fn rename_mono_folder(root: &Path, from: &str, to: &str) -> Result<Renamed, 
     let Ok(soul) = std::fs::read_to_string(&soul_path) else {
         return Ok(renamed);
     };
-    let from_mark = format!("ASH_MONO_ID={from}");
-    if !soul.contains(&from_mark) {
-        return Ok(renamed);
-    }
     let note = new.join("memory").join(format!("{from}-soul.md"));
-    if !note.exists() {
+    if moved && !note.exists() {
         std::fs::create_dir_all(new.join("memory"))
             .map_err(|e| format!("{}: {e}", new.display()))?;
         write_private(&note, soul.as_bytes())?;
         renamed.kept_soul = true;
+    }
+    let from_mark = format!("ASH_MONO_ID={from}");
+    if !soul.contains(&from_mark) {
+        return Ok(renamed);
     }
     let updated = soul.replace(&from_mark, &format!("ASH_MONO_ID={to}"));
     let temp = soul_path.with_extension("md.tmp");
@@ -705,6 +705,23 @@ mod tests {
                 kept_soul: false,
                 soul_updated: false
             }
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_soul_without_the_old_identity_is_still_kept_and_left_as_it_is() {
+        let root = temp();
+        write(&root.join("ash-lead/SOUL.md"), "# Soul\nAsh's own words\n");
+        let renamed = rename_mono_folder(&root, "ash-lead", "hub-lead").unwrap();
+        assert!(renamed.moved && renamed.kept_soul && !renamed.soul_updated);
+        assert_eq!(
+            std::fs::read_to_string(root.join("hub-lead/memory/ash-lead-soul.md")).unwrap(),
+            "# Soul\nAsh's own words\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("hub-lead/SOUL.md")).unwrap(),
+            "# Soul\nAsh's own words\n"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

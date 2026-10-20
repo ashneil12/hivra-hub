@@ -137,6 +137,8 @@ mockIPC(
       const at = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
       return { status: "ok", body: JSON.stringify({ five_hour: { utilization: 3, resets_at: at(165) }, seven_day: { utilization: 99, resets_at: at((5 * 24 + 15) * 60) } }) };
     }
+    // A Mono renamed (mono.rs mono_rename: ash-lead → hub-lead): this page has no folders or database rows to move.
+    if (cmd === "mono_rename") return { folder: { moved: false, keptSoul: false, soulUpdated: false }, refs: {} };
     if (cmd === "mono_archive") { const a = args as { mono: string; stamp: string }; return `${a.mono}-${a.stamp}`; }
     // A Mono's own team folder (mono.rs mono_team_dir), in this page's stand-in data folder.
     if (cmd === "mono_team_dir") return `${DEV_DATA}/mono-teams/${(args as { mono: string }).mono}`;
