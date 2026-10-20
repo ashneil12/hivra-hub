@@ -180,7 +180,9 @@ it("teaches the delegate rules only to a chat that has the delegate tool, once, 
     "Check its evidence yourself",
     "mark each ask done with ash_update_ask and the evidence",
     "Your workers' questions come to you first, never to Ash",
-    "with your recommendation (ash_ask_ash)",
+    "each arrives as a [MonoCode question] turn",
+    "asked in this chat with your recommendation as your pick",
+    "task_cancel stops a task and everything it delegated in turn",
   ])
     expect(taught).toContain(step);
   expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(

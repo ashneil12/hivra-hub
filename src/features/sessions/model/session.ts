@@ -269,6 +269,11 @@ export type MonoSessionCompletion = {
   status: "completed" | "failed" | "cancelled";
   /** A single report covering several sessions launched in one Mono turn. */
   sessionCount?: number;
+  /**
+   * Not a report: a worker the Mono delegated to asked it a question (delegationQuestions.ts). It waits for an idle
+   * Mono like a report and is withdrawn once the question is answered.
+   */
+  question?: true;
 };
 
 export type QueuedMessage = {

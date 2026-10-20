@@ -64,9 +64,11 @@ export function sessionConversationPage(
       turnId: user.id,
       user: capped(
         user.monoSessionCompletion
-          ? user.monoSessionCompletion.sessionCount
-            ? `MonoCode: results from ${user.monoSessionCompletion.sessionCount} sessions`
-            : `MonoCode: session ${user.monoSessionCompletion.status}: ${user.monoSessionCompletion.title}`
+          ? user.monoSessionCompletion.question
+            ? `MonoCode: a question from ${user.monoSessionCompletion.title}`
+            : user.monoSessionCompletion.sessionCount
+              ? `MonoCode: results from ${user.monoSessionCompletion.sessionCount} sessions`
+              : `MonoCode: session ${user.monoSessionCompletion.status}: ${user.monoSessionCompletion.title}`
           : operatorUserPrompt(user),
         maxChars,
       ),
