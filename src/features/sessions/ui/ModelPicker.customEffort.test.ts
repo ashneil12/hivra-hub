@@ -127,3 +127,67 @@ describe("reasoning levels for custom models in the model picker", () => {
     expect(boxes.every((box) => box.checked)).toBe(true);
   });
 });
+
+describe("a level the provider refused can't look selected", () => {
+  function openEffortMenu(model: string, values: Record<string, string>, onSettingsChange = vi.fn()) {
+    act(() => root.render(createElement(ModelPicker, { harness: "claude", model, values, onChange: vi.fn(), onSettingsChange })));
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!;
+    const triggerText = trigger.textContent ?? "";
+    act(() => trigger.click());
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.startsWith("Effort"))!;
+    const rowText = row.textContent ?? "";
+    act(() => { row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+    const options = [...container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].filter((b) => ALL.some((l) => b.textContent?.startsWith(l)));
+    return { triggerText, rowText, options, onSettingsChange };
+  }
+
+  it("the picker lists it as Not supported, unticked and unclickable, and the chat's level reads Provider default", () => {
+    seed([{ ...saved, refusedEfforts: ["medium"] }]);
+    const { triggerText, rowText, options, onSettingsChange } = openEffortMenu("custom:xai-old", { effort: "medium" });
+    const medium = options.find((b) => b.textContent?.startsWith("Medium"))!;
+    expect(medium.textContent).toContain("Not supported");
+    expect(medium.getAttribute("aria-checked")).toBe("false");
+    expect(medium.disabled).toBe(true);
+    expect(options.filter((b) => b.getAttribute("aria-checked") === "true")).toHaveLength(0);
+    expect(rowText).toContain("Provider default");
+    expect(rowText).not.toContain("Medium");
+    expect(triggerText).not.toContain("Medium");
+    act(() => medium.click());
+    expect(onSettingsChange).not.toHaveBeenCalled();
+    // Every other level is still there and still works.
+    const high = options.find((b) => b.textContent === "High")!;
+    expect(high.disabled).toBe(false);
+    act(() => high.click());
+    expect(onSettingsChange).toHaveBeenCalledWith(expect.objectContaining({ effort: "high" }));
+  });
+
+  it("a level picked and accepted still shows as picked", () => {
+    seed([{ ...saved, refusedEfforts: ["medium"] }]);
+    const { rowText, options } = openEffortMenu("custom:xai-old", { effort: "high" });
+    expect(rowText).toContain("High");
+    expect(options.find((b) => b.textContent === "High")!.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("Reasoning settings shows it unticked and marked, says why in plain words, and Try again clears it", async () => {
+    const { listCustomModels } = await import("../model/customModels");
+    seed([{ ...saved, refusedEfforts: ["medium"] }]);
+    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    act(() => container.querySelector<HTMLButtonElement>('[data-model-reasoning="xai-old"]')!.click());
+    const boxes = () => [...container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Supported reasoning effort levels"] input[type="checkbox"]')];
+    const medium = boxes()[3];
+    expect(medium.parentElement!.textContent).toContain("medium · not supported");
+    expect(medium.checked).toBe(false);
+    expect(medium.disabled).toBe(true);
+    expect(boxes().filter((b) => b.checked)).toHaveLength(6);
+    expect(container.querySelector("[data-effort-refused-note]")!.textContent).toContain(
+      "xAI didn't accept Medium for this model, so chats on that level use the provider's default.",
+    );
+    // Turning another level off keeps the refused one in the saved list (it isn't Ash's choice to drop it).
+    act(() => boxes()[0].click());
+    expect(listCustomModels()[0].reasoningEfforts).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
+    act(() => container.querySelector<HTMLButtonElement>("[data-effort-retry]")!.click());
+    expect(listCustomModels()[0].refusedEfforts).toBeUndefined();
+    expect(boxes()[3].checked).toBe(true);
+    expect(container.querySelector("[data-effort-refused-note]")).toBeNull();
+  });
+});

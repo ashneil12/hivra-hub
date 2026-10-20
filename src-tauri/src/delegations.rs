@@ -877,7 +877,10 @@ pub fn set_stall(conn: &mut Connection, input: StallInput, now: i64) -> Result<C
             row: None,
         });
     };
-    if row.state != RUNNING || row.generation != input.generation || row.stall_kind == kind {
+    // The same stall again is a no-op; the same kind with a new reason (the hourly check's second stuck hour) is not.
+    let reason = text(input.reason, STALL_REASON_MAX);
+    let same = row.stall_kind == kind && (kind.is_none() || row.stall_reason == reason);
+    if row.state != RUNNING || row.generation != input.generation || same {
         return Ok(Change {
             applied: false,
             row: Some(row),
@@ -885,7 +888,6 @@ pub fn set_stall(conn: &mut Connection, input: StallInput, now: i64) -> Result<C
     }
     match kind {
         Some(kind) => {
-            let reason = text(input.reason, STALL_REASON_MAX);
             row.note(
                 now,
                 &by,
@@ -2568,6 +2570,29 @@ mod tests {
         let stored = get(&conn, &row.id).unwrap().unwrap();
         assert_eq!(stored.stall_kind.as_deref(), Some("idle"));
         assert_eq!(stored.stalled_at, Some(960));
+    }
+
+    #[test]
+    fn the_same_stall_with_a_new_reason_is_written() {
+        // The hourly progress check's second stuck hour: still a loop, but its line says what changed.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        let first = set_stall(&mut conn, stall(&row.id, 1, Some("loop"), 100), 100).unwrap();
+        assert!(first.applied);
+        let mut later = stall(&row.id, 1, Some("loop"), 100);
+        later.reason = Some("No real progress for 2 hours".into());
+        let second = set_stall(&mut conn, later, 200).unwrap();
+        assert!(second.applied);
+        let second = second.row.unwrap();
+        assert_eq!(
+            second.stall_reason.as_deref(),
+            Some("No real progress for 2 hours")
+        );
+        assert_eq!(second.stalled_at, Some(100));
+        let mut again = stall(&row.id, 1, Some("loop"), 100);
+        again.reason = Some("No real progress for 2 hours".into());
+        assert!(!set_stall(&mut conn, again, 230).unwrap().applied);
     }
 
     #[test]

@@ -22,6 +22,9 @@ import {
   REASONING_EFFORTS,
   setCustomModelEfforts,
   customModelEfforts,
+  clearRefusedEfforts,
+  effortLabel,
+  refusedEfforts,
   type ReasoningEffort,
   type CustomModel,
   type CustomModelForm,
@@ -106,7 +109,8 @@ export function OtherModelsSection({
         </div>
         <button type="button" data-model-reasoning={m.id} onClick={() => setEditingEffort(editingEffort === m.id ? null : m.id)}
           className="px-2.5 py-0.5 text-[11px] text-content/50 hover:text-content">Reasoning settings</button>
-        {editingEffort === m.id ? <EffortChoices levels={customModelEfforts(m.reasoningEfforts)} onChange={(levels) => setCustomModelEfforts(m.id, levels)} /> : null}
+        {editingEffort === m.id ? <EffortChoices levels={customModelEfforts(m.reasoningEfforts)} onChange={(levels) => setCustomModelEfforts(m.id, levels)}
+          refused={refusedEfforts(m)} provider={m.provider === "custom" ? "Your provider" : providerName(m.provider)} onRetry={() => clearRefusedEfforts(m.id)} /> : null}
         {confirming === m.id ? (
           // The title wraps onto as many lines as it needs (never cut off), with the buttons on their own row below.
           <div data-remove-confirm={m.id} className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-content/80">
@@ -341,11 +345,27 @@ export function AddModelForm({
   );
 }
 
-function EffortChoices({ levels, onChange }: { levels: ReasoningEffort[]; onChange: (levels: ReasoningEffort[]) => void }) {
+function EffortChoices({ levels, onChange, refused = [], provider, onRetry }: {
+  levels: ReasoningEffort[];
+  onChange: (levels: ReasoningEffort[]) => void;
+  /** Levels the provider itself refused for this model: shown unticked and marked, never as on. */
+  refused?: ReasoningEffort[];
+  provider?: string;
+  onRetry?: () => void;
+}) {
   return <fieldset className="px-2 py-1 text-[11px] text-content/65" aria-label="Supported reasoning effort levels">
     <p className="mb-1 leading-4">Every level is on to start. Turn off any your model doesn't support, or turn them all off to leave it to the provider.</p>
-    <div className="flex flex-wrap gap-x-3 gap-y-1">{REASONING_EFFORTS.map((level) => <label key={level} className="flex items-center gap-1">
-      <input type="checkbox" checked={levels.includes(level)} onChange={(e) => onChange(e.target.checked ? [...levels, level] : levels.filter((v) => v !== level))} />{level}
-    </label>)}</div>
+    <div className="flex flex-wrap gap-x-3 gap-y-1">{REASONING_EFFORTS.map((level) => {
+      const no = refused.includes(level);
+      return <label key={level} className={`flex items-center gap-1 ${no ? "text-content/40" : ""}`} data-effort-refused={no ? "" : undefined}
+        title={no ? `${provider ?? "The provider"} didn't accept this level for this model` : undefined}>
+        <input type="checkbox" checked={!no && levels.includes(level)} disabled={no}
+          onChange={(e) => onChange(e.target.checked ? [...levels, level] : levels.filter((v) => v !== level))} />{level}{no ? " · not supported" : ""}
+      </label>;
+    })}</div>
+    {refused.length ? <p className="mt-1 leading-4" data-effort-refused-note>
+      {provider ?? "The provider"} didn't accept {refused.map(effortLabel).join(", ")} for this model, so chats on {refused.length === 1 ? "that level" : "those levels"} use the provider's default.{" "}
+      {onRetry ? <button type="button" data-effort-retry onClick={onRetry} className="underline hover:text-content">Try {refused.length === 1 ? "it" : "them"} again</button> : null}
+    </p> : null}
   </fieldset>;
 }

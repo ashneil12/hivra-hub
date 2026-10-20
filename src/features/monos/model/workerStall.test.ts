@@ -55,11 +55,10 @@ describe("judgeStall", () => {
     expect(lookAt(chat(varied)).repeat).toBeUndefined();
   });
 
-  it("an hour without a new step is checked, even while it talks", () => {
+  it("an hour without a new step is left to the hourly progress check (workerProgress.ts), which reads real progress", () => {
     const look = lookAt(chat([asked(), tool("npm test")]));
     const presence = seen({ lastChangeAt: 59 * MIN, lastProgressAt: 0 });
-    expect(judgeStall(look, presence, 59 * MIN)).toBeNull();
-    expect(judgeStall(look, presence, 60 * MIN)).toEqual({ kind: "loop", reason: "No new steps in the last hour", since: 0 });
+    expect(judgeStall(look, presence, 60 * MIN)).toBeNull();
   });
 
   it("idle with its row still running means it stopped without reporting; a question, a queued message or a limit holds it", () => {

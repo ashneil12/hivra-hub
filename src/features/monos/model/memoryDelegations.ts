@@ -244,7 +244,8 @@ export class MemoryDelegations implements DelegationsBackend {
     const row = this.rows.get(input.id);
     if (!row) return { applied: false, row: null };
     const kind = input.kind ?? null;
-    if (row.state !== "running" || row.generation !== input.generation || (row.stallKind ?? null) === kind)
+    const same = (row.stallKind ?? null) === kind && (!kind || (row.stallReason ?? null) === (input.reason ?? null));
+    if (row.state !== "running" || row.generation !== input.generation || same)
       return { applied: false, row: this.copy(row) };
     if (kind)
       Object.assign(row, {

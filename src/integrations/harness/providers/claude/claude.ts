@@ -1,7 +1,7 @@
 import { TurnNotReadyError } from "../../core/types";
 import { claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
-import { customModelRoute, modelKeyStore } from "../../../../features/sessions/model/customModels";
+import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
   CutWork,
@@ -202,6 +202,8 @@ type Live = {
   planning: boolean;
   /** What this process was started with, as changed live since. */
   launch: ClaudeLaunch;
+  /** The chat's model and settings for its latest turn (a dropped reasoning level is said against these). */
+  target?: { model?: string; modelSettings: Record<string, string> };
   /** Control requests waiting on their answer, by request id. */
   pendingControls: Map<string, (response: ClaudeControlResponse) => void>;
   onEvent: (event: HarnessEvent) => void;
@@ -316,6 +318,22 @@ const tasksByThread = new Map<
   string,
   { providerSessionId: string; tasks: Map<string, TaskListItem> }
 >();
+/** Reasoning levels each chat was already told its provider refused (model id|level), so the line shows once. */
+const effortNoticesByThread = new Map<string, Set<string>>();
+
+/**
+ * A routed chat whose provider refused its level got the provider's default instead: say so in one plain line, once
+ * per chat and level. Read at the turn's result, after the router announced the refusal (it does so before the
+ * retried answer goes back to Claude Code).
+ */
+function noteDroppedEffort(live: Live): void {
+  if (!live.target || live.muteUpdates) return;
+  let shown = effortNoticesByThread.get(live.threadId);
+  if (!shown) effortNoticesByThread.set(live.threadId, (shown = new Set()));
+  const text = effortDroppedNotice(live.target, shown);
+  if (text) live.onEvent({ type: "notice", key: "effort-dropped", text });
+}
+
 /** Task-list block key for TaskCreate/TaskUpdate items. */
 const CLAUDE_TASKS_KEY = "claude-tasks";
 const cancelledThreads = new Set<string>();
@@ -830,6 +848,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     sameProviderAccountId(existing.providerAccountId, input.providerAccountId)
   ) {
     existing.onEvent = input.onEvent;
+    existing.target = { model: input.model, modelSettings: input.modelSettings ?? {} };
     const delta = claudeLaunchDelta(existing.launch, launchNext);
     if (delta.restart.length === 0) {
       const applied =
@@ -902,6 +921,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     runtimeMode: input.runtimeMode,
     planning,
     launch: launchNext,
+    target: { model: input.model, modelSettings: input.modelSettings ?? {} },
     pendingControls: new Map(),
     onEvent: input.onEvent,
     approvals: new Map(),
@@ -1553,6 +1573,7 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   });
   const metrics = turnMetricsFromResult(rec);
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
+  if (!live.manualCompaction) noteDroppedEffort(live);
 
   // Claude Code reports a refused API request as a "success" with is_error:
   // the class says why, so a worker refused for billing is never "completed".
@@ -2521,7 +2542,11 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
   return {
     model: options.model,
     ...(route
-      ? { route: JSON.stringify([route.provider, route.baseUrl, route.modelId]) }
+      ? {
+          route: JSON.stringify([route.provider, route.baseUrl, route.modelId]),
+          // The level the chat picked, not what is sent: a level the provider refused is dropped without a restart.
+          routeEffort: pickedCustomEffort({ model: input.model, modelSettings: input.modelSettings ?? {} })?.effort,
+        }
       : {}),
     effort: options.effort,
     permissionMode: options.permissionMode ?? "default",
@@ -2714,4 +2739,5 @@ export function __claudeTestReset(): void {
   briefOwed.clear();
   goalByThread.clear();
   goalEnded.clear();
+  effortNoticesByThread.clear();
 }

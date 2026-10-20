@@ -28,13 +28,17 @@ import { initializeProviderBinaryPaths } from "./features/providers/model/provid
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
+import { listenForEffortRefusals, setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";
 import { hydrateRosterFromHome, enableTauriHome } from "./features/monos/model/monoHome";
 import { setMonoHomeRoot } from "./features/hub/model/hubMcp";
 import { DevRibbon } from "./app/shell/DevRibbon";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
-if (isTauri()) setModelKeyStore(tauriModelKeyStore);
+if (isTauri()) {
+  setModelKeyStore(tauriModelKeyStore);
+  // A level a provider refuses is marked for that model, so the picker can't show it as picked.
+  void listenForEffortRefusals().catch(() => undefined);
+}
 // The Monos' roster and chat ids live in their home (~/agent-memory/monos for the daily app); the WebView keeps a cache.
 if (isTauri()) {
   enableTauriHome();

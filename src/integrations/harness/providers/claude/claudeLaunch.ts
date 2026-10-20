@@ -22,6 +22,8 @@ export type ClaudeLaunch = {
   model?: string;
   /** Identity of a custom model route; routed models carry their endpoint in the env. */
   route?: string;
+  /** The reasoning level a routed model was asked for (sent by the router, so a change needs a new process). */
+  routeEffort?: string;
   effort?: string;
   permissionMode: ClaudePermissionMode;
   /**
@@ -57,6 +59,7 @@ export function claudeLaunchDelta(
   const requests: ClaudeLiveRequest[] = [];
 
   if (live.route !== next.route) restart.push("model");
+  else if (next.route && live.routeEffort !== next.routeEffort) restart.push("reasoning level");
   else if (live.model !== next.model) {
     if (next.route) restart.push("model");
     else if (next.model) {

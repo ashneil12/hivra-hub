@@ -12,8 +12,9 @@
 //
 // Stuck, by kind:
 // - quiet: busy, but no change for `quietMs` (6 min), or `longToolMs` (20 min) while a tool it started still runs;
-// - loop: the same finished step (same call, same output) `loopRepeats` (6) times in a row at the end of its turn, or no
-//   new step at all for `noProgressMs` (an hour; Ash's 14 Oct rule: no progress for an hour gets checked);
+// - loop: the same finished step (same call, same output) `loopRepeats` (6) times in a row at the end of its turn, or the
+//   hourly progress check (workerProgress.ts, Ash's 14 Oct rule) found no real progress in its hour: commits, changed
+//   files, passing tests and messages, read from its folder and transcript, not just new steps;
 // - idle: not busy, nothing holding it (a question, a queued message, a limit it waits out), its row still running, for
 //   `idleMs`: it stopped without reporting back.
 // A chat that waits on its own workers is never stalled: its workers are judged instead.
@@ -29,7 +30,6 @@ export type StallOptions = {
   longToolMs: number;
   idleMs: number;
   loopRepeats: number;
-  noProgressMs: number;
 };
 
 export const STALL_DEFAULTS: StallOptions = {
@@ -37,7 +37,6 @@ export const STALL_DEFAULTS: StallOptions = {
   longToolMs: 20 * MIN,
   idleMs: 6 * MIN,
   loopRepeats: 6,
-  noProgressMs: 60 * MIN,
 };
 
 /** Minutes of silence before a busy worker counts as stuck (Settings key; the long-tool wait is at least 3x it). */
@@ -163,8 +162,7 @@ export function judgeStall(
         reason: look.runningTool ? `Still running ${look.runningTool}` : "",
         since: lastActive,
       };
-    if (now - presence.lastProgressAt >= options.noProgressMs)
-      return { kind: "loop", reason: "No new steps in the last hour", since: presence.lastProgressAt };
+    // An hour with no real progress is the hourly check's to judge (workerProgress.ts), on more than new steps.
     return null;
   }
   if ((look.asking || look.queued || look.limited) && !look.resumeStopped) return null;
@@ -186,6 +184,8 @@ export type StallWatchHost = {
   openOwned(chat: string): number;
   now?(): number;
   options?(): StallOptions;
+  /** The hourly progress check's verdict on a row, while it holds one (workerProgress.ts). */
+  hourly?(row: Delegation): Stall | null;
 };
 
 type Seen = Presence & { fingerprint: readonly unknown[] };
@@ -247,8 +247,12 @@ export class StallWatch {
     const look = lookAt(chat);
     if (mode === "both") this.progress(seen, look, now);
     const waitsOnWorkers = this.host.openOwned(row.childSession) > 0;
-    const stall = waitsOnWorkers ? null : judgeStall(look, seen, now, this.host.options?.() ?? stallOptions());
-    if (stall && stall.kind !== stored && mode === "both") this.write(row, stall);
+    const own = waitsOnWorkers ? null : judgeStall(look, seen, now, this.host.options?.() ?? stallOptions());
+    // Silence now (quiet, idle) says more than the hour's verdict; otherwise the hour's verdict stands while it holds.
+    const hourly = waitsOnWorkers ? null : (this.host.hourly?.(row) ?? null);
+    const stall = own && own.kind !== "loop" ? own : (hourly ?? own);
+    const changed = !!stall && (stall.kind !== stored || stall.reason !== (row.stallReason ?? ""));
+    if (stall && changed && mode === "both") this.write(row, stall);
     // A stall only clears on something seen: activity after it began, or the worker now waiting on its own workers.
     else if (!stall && stored && (moved || waitsOnWorkers)) this.write(row, null);
   }

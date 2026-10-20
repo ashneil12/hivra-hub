@@ -980,24 +980,82 @@ fn handle(mut stream: TcpStream, route: &CustomRoute, token: &str) -> std::io::R
     }
 }
 
-/// Models that refused `reasoning_effort`, by route (window_key), for as long as the app runs. Every custom model
-/// offers every level unless Ash narrows it, but not every provider or model takes the field: xAI, for one, answers
-/// 400 for a model without reasoning control. Once refused, later requests for that model leave it out at once.
-static REFUSES_EFFORT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Levels a model refused, by route (window_key) and level, for as long as the app runs. Every custom model offers
+/// every level unless Ash narrows it, but not every provider or model takes the field: xAI, for one, answers 400 for
+/// a model without reasoning control, and some providers take only some levels. Once refused, later requests for that
+/// model at that level leave it out at once. Kept per level, so one refused level never silently drops another.
+static REFUSES_EFFORT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-fn refuses_effort(route: &CustomRoute) -> bool {
+fn refuses_effort(route: &CustomRoute, effort: &str) -> bool {
     let name = window_key(route);
     REFUSES_EFFORT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .contains(&name)
+        .iter()
+        .any(|(n, e)| *n == name && e == effort)
 }
 
-fn remember_refuses_effort(route: &CustomRoute) {
+fn remember_refuses_effort(route: &CustomRoute, effort: &str) {
     let name = window_key(route);
     let mut known = REFUSES_EFFORT.lock().unwrap_or_else(|e| e.into_inner());
-    if !known.contains(&name) {
-        known.push(name);
+    if !known.iter().any(|(n, e)| *n == name && e == effort) {
+        known.push((name, effort.to_string()));
+    }
+    drop(known);
+    announce_refusal(EffortRefusal {
+        custom_model_id: route.custom_model_id.clone(),
+        provider: route.provider.clone(),
+        base_url: route.base_url.trim().to_string(),
+        model_id: route.model_id.trim().to_string(),
+        effort: effort.to_string(),
+    });
+}
+
+/// What the webview hears when a provider refused a level: the chat says so in one line, and the model picker marks
+/// that level as not supported for that model (a quietly dropped level would be a control that looks live but isn't).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortRefusal {
+    pub custom_model_id: String,
+    pub provider: String,
+    pub base_url: String,
+    pub model_id: String,
+    pub effort: String,
+}
+
+/// The webview event carrying an `EffortRefusal` (customModels.ts listens for it).
+pub const EFFORT_REFUSED_EVENT: &str = "model-router://effort-refused";
+
+type RefusalListener = Box<dyn Fn(&EffortRefusal) + Send + Sync>;
+static REFUSAL_LISTENERS: Mutex<Vec<RefusalListener>> = Mutex::new(Vec::new());
+
+/// Hear every refusal from now on. The app adds one that emits `EFFORT_REFUSED_EVENT`; tests add their own.
+pub fn on_effort_refused(listener: impl Fn(&EffortRefusal) + Send + Sync + 'static) {
+    REFUSAL_LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Box::new(listener));
+}
+
+/// Once per app run: refusals reach the webview as `EFFORT_REFUSED_EVENT`.
+pub fn announce_refusals_to<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    static WIRED: std::sync::Once = std::sync::Once::new();
+    let app = app.clone();
+    WIRED.call_once(move || {
+        on_effort_refused(move |refusal| {
+            use tauri::Emitter;
+            let _ = app.emit(EFFORT_REFUSED_EVENT, refusal);
+        });
+    });
+}
+
+fn announce_refusal(refusal: EffortRefusal) {
+    for listener in REFUSAL_LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
+        listener(&refusal);
     }
 }
 
@@ -1022,13 +1080,13 @@ fn forward(
 ) -> std::io::Result<()> {
     let model = route.model_id.trim();
     let mut upstream_body = to_openai(body, model);
-    let mut sent_effort = false;
+    let mut sent_effort: Option<&str> = None;
     if let Some(effort) = &route.reasoning_effort {
         if ["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort.as_str())
-            && !refuses_effort(route)
+            && !refuses_effort(route, effort)
         {
             upstream_body["reasoning_effort"] = json!(effort);
-            sent_effort = true;
+            sent_effort = Some(effort.as_str());
         }
     }
     let streaming = body["stream"] == true;
@@ -1044,12 +1102,13 @@ fn forward(
         request.send_string(&payload.to_string())
     };
     let mut result = send(&upstream_body);
-    // Refused for the effort field alone: say it once more without it, and stop sending it for this model.
-    if sent_effort {
+    // Refused for the effort field alone: say it once more without it, and stop sending that level for this model.
+    if let Some(effort) = sent_effort {
         if let Err(ureq::Error::Status(code, r)) = result {
             let text = r.into_string().unwrap_or_default();
             if is_effort_refusal(code, &text) {
-                remember_refuses_effort(route);
+                // Said before the retry's answer goes back, so the webview hears it ahead of the reply it explains.
+                remember_refuses_effort(route, effort);
                 if let Some(fields) = upstream_body.as_object_mut() {
                     fields.remove("reasoning_effort");
                 }
@@ -1591,6 +1650,55 @@ mod tests {
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 4, "no more refused tries: {bodies:?}");
         assert!(bodies[2..].iter().all(|b| !b.contains("reasoning_effort")));
+    }
+
+    #[test]
+    fn a_refusal_is_remembered_per_level_and_announced_once_with_the_model_it_belongs_to() {
+        let heard = std::sync::Arc::new(Mutex::new(Vec::<EffortRefusal>::new()));
+        let log = heard.clone();
+        on_effort_refused(move |r| {
+            if r.model_id == "grok-per-level" {
+                log.lock().unwrap().push(r.clone());
+            }
+        });
+        let (up, seen) = effort_refusing_provider(
+            r#"{"error":"Model grok-per-level does not support parameter reasoningEffort."}"#,
+        );
+        let base = format!("http://127.0.0.1:{up}/v1");
+        let mut medium = route("xai", &base, "grok-per-level");
+        medium.custom_model_id = "xai-perlevel".into();
+        medium.reasoning_effort = Some("medium".into());
+        let mut high = medium.clone();
+        high.reasoning_effort = Some("high".into());
+
+        let at_medium = start_router(medium.clone(), "fake-key-123".into()).unwrap();
+        assert!(ask(at_medium).unwrap().contains("pong"));
+        assert!(ask(at_medium).unwrap().contains("pong"));
+        // Medium was refused once and then skipped; High is still tried, because it may well be accepted.
+        let at_high = start_router(high, "fake-key-123".into()).unwrap();
+        assert!(ask(at_high).unwrap().contains("pong"));
+        let bodies = seen.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 5, "{bodies:?}");
+        assert!(bodies[0].contains("\"reasoning_effort\":\"medium\""));
+        assert!(!bodies[1].contains("reasoning_effort"));
+        assert!(
+            !bodies[2].contains("reasoning_effort"),
+            "medium is remembered"
+        );
+        assert!(bodies[3].contains("\"reasoning_effort\":\"high\""));
+        assert!(!bodies[4].contains("reasoning_effort"));
+
+        // The webview hears each refusal once, with the model and level, and never the key.
+        let heard = heard.lock().unwrap().clone();
+        assert_eq!(
+            heard.iter().map(|r| r.effort.as_str()).collect::<Vec<_>>(),
+            ["medium", "high"]
+        );
+        assert_eq!(heard[0].custom_model_id, "xai-perlevel");
+        assert_eq!(heard[0].provider, "xai");
+        assert!(!serde_json::to_string(&heard[0])
+            .unwrap()
+            .contains("fake-key"));
     }
 
     #[test]
