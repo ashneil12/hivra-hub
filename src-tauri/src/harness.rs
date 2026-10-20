@@ -951,7 +951,11 @@ pub fn harness_spawn(
         Some(_) if binary_provider.as_deref() != Some("claude") => {
             return Err("Other models run through Claude Code only".into())
         }
-        Some(route) => Some(crate::model_router::prepare_routed_session(route)?),
+        Some(route) => {
+            // A level the provider refuses is said in the chat and marked in the picker (EFFORT_REFUSED_EVENT).
+            crate::model_router::announce_refusals_to(&app);
+            Some(crate::model_router::prepare_routed_session(route)?)
+        }
     };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
