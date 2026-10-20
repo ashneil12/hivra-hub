@@ -1250,6 +1250,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     crate::autopilot::ensure_tables(conn)?;
     crate::pr_watch::ensure_tables(conn)?;
+    crate::rooms::ensure_tables(conn)?;
     Ok(())
 }
 
