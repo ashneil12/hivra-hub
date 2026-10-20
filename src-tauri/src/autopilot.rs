@@ -7,7 +7,8 @@
 //! - **Switches** (`autopilot_switches`): one row per scope. The timer thread ends each at its end time (a log row
 //!   "ended"), so autopilot never outlives the time Ash gave it, even across a restart.
 //! - **Log** (`autopilot_log`): what was decided, by whom, the recommendation taken, when, and in which chat. `dedupe`
-//!   makes the same call land once however many times it is reported.
+//!   makes the same call land once however many times it is reported. Each new row trims it to the newest
+//!   [`LOG_KEEP_ROWS`] rows or the last [`LOG_KEEP_MS`], whichever is more.
 //! - **Resumes** (`autopilot_resumes`): usage-limit auto-resumes armed for a chat (on by default for Monos, Leads and
 //!   the work they delegate; not tied to the switch). A chat's limit is in-memory only, so this row is what brings the
 //!   resume back after a crash or relaunch. `attempts` counts auto-resumes without a finished turn in between; past
@@ -53,6 +54,11 @@ pub const MAX_RELAUNCHES: usize = 3;
 pub const RELAUNCH_WINDOW_MS: i64 = 30 * 60 * 1000;
 /// How often the LaunchAgent runs the watcher.
 pub const WATCH_INTERVAL_SECS: u32 = 30;
+
+/// The log keeps its newest [`LOG_KEEP_ROWS`] rows or the last [`LOG_KEEP_MS`], whichever is more; older rows go as new
+/// ones come in.
+pub const LOG_KEEP_ROWS: i64 = 2_000;
+pub const LOG_KEEP_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
 const TEXT_MAX: usize = 2_000;
 const SHORT_MAX: usize = 300;
@@ -454,12 +460,22 @@ fn add_log_in(conn: &Connection, input: &LogInput, now: i64) -> rusqlite::Result
     if inserted == 0 {
         return Ok(None);
     }
+    prune_log(conn, now)?;
     conn.query_row(
         "SELECT * FROM autopilot_log WHERE id = ?1",
         [&id],
         entry_from,
     )
     .optional()
+}
+
+/// Rows older than [`LOG_KEEP_MS`] that aren't among the newest [`LOG_KEEP_ROWS`] go.
+fn prune_log(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM autopilot_log WHERE at < ?1 AND rowid NOT IN
+           (SELECT rowid FROM autopilot_log ORDER BY at DESC, rowid DESC LIMIT ?2)",
+        params![now - LOG_KEEP_MS, LOG_KEEP_ROWS],
+    )
 }
 
 /// One log row. `None` when `dedupe` says this call is already in the log.
@@ -1930,6 +1946,44 @@ mod tests {
             dedupe: Some(dedupe.into()),
             ..LogInput::default()
         }
+    }
+
+    fn old_rows(c: &Connection, count: usize, at: i64) {
+        let tx = c.unchecked_transaction().unwrap();
+        for i in 0..count {
+            tx.execute(
+                "INSERT INTO autopilot_log (id, at, kind, outcome, what) VALUES (?1, ?2, 'decision', 'taken', 'old call')",
+                params![format!("old-{at}-{i}"), at + i as i64],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    fn rows(c: &Connection) -> i64 {
+        c.query_row("SELECT count(*) FROM autopilot_log", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_log_keeps_its_newest_2000_rows_or_90_days_whichever_is_more() {
+        const DAY: i64 = 24 * HOUR;
+        let c = conn();
+        // 2,100 rows from 100 days ago: a new row trims them to the newest 2,000 (the new one included).
+        old_rows(&c, 2_100, T0 - 100 * DAY);
+        let fresh = add_log(&c, &decision("d:new"), T0).unwrap().unwrap();
+        assert_eq!(rows(&c), 2_000);
+        assert_eq!(list_log(&c, 1, None).unwrap()[0].id, fresh.id);
+        let oldest: i64 = c
+            .query_row("SELECT min(at) FROM autopilot_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(oldest, T0 - 100 * DAY + 101);
+        // Rows from the last 90 days stay, however many there are.
+        let c = conn();
+        old_rows(&c, 2_100, T0 - 10 * DAY);
+        old_rows(&c, 50, T0 - 100 * DAY);
+        add_log(&c, &decision("d:new"), T0).unwrap();
+        assert_eq!(rows(&c), 2_101);
     }
 
     #[test]
