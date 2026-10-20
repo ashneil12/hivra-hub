@@ -69,7 +69,10 @@ export function rewriteArgs(args) {
   }
   const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
   if (conversation && !model) out.push("--model", MODEL);
-  if (conversation && !effort) out.push("--effort", EFFORT);
+  // A Haiku helper call (titles, the room's gate) runs as the app asked: an added effort made it think for seconds on
+  // a one-line answer, which the app never does (measured 20 Oct).
+  const helper = args.some((arg, i) => (arg === "--model" && KEEP_MODELS.test(args[i + 1] ?? "")) || (arg.startsWith("--model=") && KEEP_MODELS.test(arg)));
+  if (conversation && !effort && !helper) out.push("--effort", EFFORT);
   return out;
 }
 

@@ -10,6 +10,8 @@
 // - Work a Mono delegated during a room turn comes back to that room: once the Mono has had its report turn, the room
 //   gets "X is back" from it (roomConductor.postBack).
 // - The room's cheap router: one isolated prompt to the smallest model.
+// - A room belongs to a project: each seat's room turn carries that project's memory primer, once per conversation of
+//   its chat (hub/model/roomMemory.ts).
 import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { canRunHarnessTextPrompt, canSteerHarness, runHarnessTextPrompt } from "../../integrations/harness";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
@@ -19,6 +21,7 @@ import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/
 import { monoForSession, monoLook } from "../../features/monos/model/mono";
 import {
   postBack,
+  ROUTER_TIMEOUT_MS,
   roomTurnOf,
   setGroupChatRunner,
   setRoomRouter,
@@ -27,6 +30,8 @@ import {
   type RoomWakeEnd,
 } from "../../features/hub/model/roomConductor";
 import { getChat, leadershipChatId, requestReply, sendMessage } from "../../features/hub/model/hubChats";
+import { roomMemory } from "../../features/hub/model/roomMemory";
+import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
 import { homeDir } from "../../platform/tauri/fs";
@@ -86,6 +91,32 @@ export function answerAfter(session: Session, requestId: string): { delivered: b
   }
   return { delivered: true, text, ...(error ? { error } : {}) };
 }
+
+/**
+ * A managed room turn's words so far: every message the Mono has written since the hidden prompt carrying `requestId`
+ * (tool calls left out), one paragraph each. The room shows it live (roomConductor drafts), and it is the post when the
+ * turn ends: the turn's own reply text runs the parts written around a tool call together ("now.The Lead has it").
+ */
+export function liveAnswer(session: Session, requestId: string): string {
+  const at = session.blocks.findIndex((b) => b.role === "user" && b.appRequestId === requestId);
+  if (at < 0) return "";
+  const parts: string[] = [];
+  for (const block of session.blocks.slice(at + 1)) {
+    if (block.role === "user" && !block.internal) break;
+    if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) parts.push(block.text.trim());
+  }
+  return parts.join("\n\n");
+}
+
+/** The post: the turn's words as its chat has them (parts kept apart), when they are the reply's own words. */
+function postText(session: Session | undefined, requestId: string, reply: string): string {
+  const written = session ? liveAnswer(session, requestId) : "";
+  const bare = (text: string) => text.replace(/\s+/g, "");
+  return written && bare(written) === bare(reply) ? written : reply;
+}
+
+/** How often a managed room turn's words are read into the room while it writes (hidden chats flush every 250 ms). */
+const LIVE_TEXT_MS = 300;
 
 /**
  * How a wake in a busy Mono's queue ended, once it has: it went in and the chat is idle again (done, or failed with
@@ -149,29 +180,44 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
         if (current.usageLimit && !current.busy)
           throw new Error(`${name} is out of its usage limit${resetsAt(current)}. Your message is saved.`);
+        // The room's project memory, ahead of the conversation, when this conversation of the seat's chat hasn't had it.
+        const memory = await roomMemory(current, request.projectId).catch(() => undefined);
+        const prompt = memory ? withRoomMemory(request.prompt, memory.block) : request.prompt;
+        const wakePrompt = memory ? withRoomMemory(request.wakePrompt, memory.block) : request.wakePrompt;
         if (monoTakesRoomTurnNow(current)) {
           const reply = await new Promise<string | undefined>((resolve, reject) => {
             const timer = window.setTimeout(
               () => reject(new Error(`${name} is still working on its reply after 10 minutes. Its own chat has the work.`)),
               TURN_TIMEOUT_MS,
             );
+            // Its words go into the room as it writes them, so Ash sees the answer start within seconds.
+            let shown = "";
+            const live = window.setInterval(() => {
+              const now = latest.current.sessionsRef.current.find((s) => s.id === session.id);
+              const text = now ? liveAnswer(now, request.wakeId) : "";
+              if (!text || text === shown) return;
+              shown = text;
+              request.onText?.(text);
+            }, LIVE_TEXT_MS);
             managed.current.set(request.monoId, { sessionId: session.id, wakeId: request.wakeId });
             const done = (fn: () => void) => {
               window.clearTimeout(timer);
+              window.clearInterval(live);
               if (managed.current.get(request.monoId)?.wakeId === request.wakeId) managed.current.delete(request.monoId);
               fn();
             };
             void Promise.resolve(
-              h.submit(session.id, request.prompt, {
+              h.submit(session.id, prompt, {
                 managed: true,
                 monoNote: note,
                 appRequestId: request.wakeId,
                 onSettled: (outcome) =>
-                  done(() =>
-                    outcome.status === "completed"
-                      ? resolve(outcome.text)
-                      : reject(new Error(outcome.error || (outcome.status === "cancelled" ? "The turn was stopped." : "Its turn did not finish."))),
-                  ),
+                  done(() => {
+                    if (outcome.status === "completed") {
+                      memory?.delivered();
+                      resolve(postText(latest.current.sessionsRef.current.find((s) => s.id === session.id), request.wakeId, outcome.text));
+                    } else reject(new Error(outcome.error || (outcome.status === "cancelled" ? "The turn was stopped." : "Its turn did not finish.")));
+                  }),
               }),
             )
               .then((accepted) => {
@@ -182,7 +228,10 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
           });
           if (reply !== undefined) return { kind: "reply", text: reply };
         }
-        return wake(session, request.wakeId, request.wakePrompt, note);
+        const queued = wake(session, request.wakeId, wakePrompt, note);
+        // A wake that went in carried the memory; one taken back out didn't.
+        if (memory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && memory.delivered());
+        return queued;
       },
       async stop(monoId, wakeId) {
         const h = latest.current;
@@ -220,12 +269,12 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
   }, []);
 
   // The room's cheap router (who else may add something): the smallest model, isolated and read-only. When Claude
-  // can't run one, the room falls back to its lane rules.
+  // can't run one, or it doesn't answer in time, the room falls back to its lane rules.
   useEffect(
     () =>
       setRoomRouter(async (prompt) => {
         if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
-        return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: 20_000 });
+        return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: ROUTER_TIMEOUT_MS });
       }),
     [],
   );

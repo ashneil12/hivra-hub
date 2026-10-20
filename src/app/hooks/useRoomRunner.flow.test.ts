@@ -14,6 +14,17 @@ vi.mock("../../integrations/harness", () => ({
   runHarnessTextPrompt: async () => "",
 }));
 vi.mock("../../platform/tauri/fs", () => ({ homeDir: async () => "/Users/ash" }));
+// Ash OS, as the room turns read it: the room's project's memory primer.
+const primerCalls: Record<string, unknown>[] = [];
+vi.mock("../../features/hub/model/hubTransport", () => ({
+  tauriHubTransport: {
+    call: async (action: string, payload: Record<string, unknown>) => {
+      if (action !== "ash-hub-memory-primer") throw new Error(`no ${action} here`);
+      primerCalls.push(payload);
+      return { project: String(payload.project), name: "MonoCode Hub", text: "Current memory of MonoCode Hub (hub).\n- Rooms are per project [14 Oct]" };
+    },
+  },
+}));
 
 let root: Root;
 let container: HTMLElement;
@@ -113,6 +124,85 @@ it("a free Mono's room turn is a managed turn with its quiet line; a busy one ge
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Next: the Pages round." });
 });
 
+it("the host's words show in the room while its managed turn writes them, then the post takes their place", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const requestId = submitted[0].options.appRequestId as string;
+  const cos = chatOf("chief-of-staff");
+  const write = (text: string) =>
+    setSessions(
+      sessionsRef.current.map((s) =>
+        s.id === cos
+          ? {
+              ...s,
+              busy: true,
+              blocks: [
+                { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: requestId },
+                { id: "a", role: "assistant", text, streaming: true },
+              ],
+            }
+          : s,
+      ),
+    );
+  write("Heard you. Waiting on the Tally lead");
+  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)).toMatchObject([{ monoId: "chief-of-staff", text: "Heard you. Waiting on the Tally lead" }]), { timeout: 2_000 });
+  write("Heard you. Waiting on the Tally lead's start-ack.");
+  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)[0]?.text).toBe("Heard you. Waiting on the Tally lead's start-ack."), { timeout: 2_000 });
+  settle.get(cos)!("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");
+  await chat.roomIdle(room.id);
+  expect(chat.roomDrafts(room.id)).toEqual([]);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
+});
+
+it("a reply written in two parts around a tool call keeps them apart in the room (the turn's own text runs them together)", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const cos = chatOf("chief-of-staff");
+  setSessions(
+    sessionsRef.current.map((s) =>
+      s.id === cos
+        ? {
+            ...s,
+            blocks: [
+              { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: submitted[0].options.appRequestId as string },
+              { id: "a1", role: "assistant", text: "Nothing for you yet. Briefing the Tally lead now." },
+              { id: "t", role: "assistant", text: "", tool: { callId: "c", title: "delegate_task", kind: "other", status: "completed" } as Block["tool"] },
+              { id: "a2", role: "assistant", text: "The Tally lead has the brief." },
+            ],
+          }
+        : s,
+    ),
+  );
+  settle.get(cos)!("Nothing for you yet. Briefing the Tally lead now.The Tally lead has the brief.");
+  await chat.roomIdle(room.id);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe("Nothing for you yet. Briefing the Tally lead now.\n\nThe Tally lead has the brief.");
+});
+
+it("each seat's room turn starts on the room's project memory, once per conversation of its chat", async () => {
+  const { chat, room, submitted, settle, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "wat now");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  expect(primerCalls.at(-1)).toEqual({ project: "hub" });
+  expect(submitted[0].text).toMatch(/^\[MonoCode room\] You are Chief of Staff/);
+  expect(submitted[0].text).toContain("This room is the hub project's.");
+  expect(submitted[0].text).toContain("<project_memory>");
+  expect(submitted[0].text).toContain("- Rooms are per project [14 Oct]");
+  expect(submitted[0].text.indexOf("<project_memory>")).toBeLessThan(submitted[0].text.indexOf("<room_conversation>"));
+  settle.get(chatOf("chief-of-staff"))!("Nothing needs you.");
+  await chat.roomIdle(room.id);
+  chat.sendMessage(room.id, "and now?", conv);
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(2));
+  expect(submitted[1].text).not.toContain("<project_memory>");
+  settle.get(chatOf("chief-of-staff"))!("Still nothing.");
+  await chat.roomIdle(room.id);
+});
+
 it("work delegated during a room turn comes back to that room as 'X is back' once its report turn is over", async () => {
   const { chat, room, sessionsRef, submitted, settle, origins, done, host, setSessions, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "research launch platforms in parallel");
@@ -142,6 +232,10 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
   expect(submitted[1].text).toContain('Work you delegated from this room has come back: "Launch shortlist"');
   expect(submitted[1].text).toContain("Ash, the shortlist is in");
   settle.get(chatOf("chief-of-staff"))!("Launch shortlist is back: stay on Base, Clanker v4 first. Full write-up in my chat.");
+  // No engine for the gate here: the lanes pick, and work that came back always gets frank's check against Ash's words.
+  await vi.waitFor(() => expect(submitted).toHaveLength(3));
+  expect(submitted[2]).toMatchObject({ sessionId: chatOf("frank") });
+  settle.get(chatOf("frank"))!("NO_REPLY");
   await chat.roomIdle(room.id);
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", pick: { by: "back" } });
   expect(done).toEqual(["app-mono-chief-of-staff-q1"]);

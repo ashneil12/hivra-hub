@@ -108,8 +108,9 @@ const pct = (values, p) => {
 
 /**
  * Where the time goes, from the wrapper's per-process logs: each helper call (the room's router picking who answers,
- * its chime-in pick, chat titles) from spawn to result, with the wait before the app even sent the prompt; and each
- * room turn (a Mono's "[MonoCode group chat]" prompt) from prompt to result.
+ * its chime-in pick, chat titles) from spawn to the end of its answer (its `result`, or the model's end_turn: the app
+ * takes the answer there and stops the process), with the wait before the app even sent the prompt; and each room turn
+ * (a Mono's "[MonoCode room]" prompt, "[MonoCode group chat]" before 20 Oct) from prompt to result.
  */
 export function latency(evidenceDir) {
   const dir = path.join(evidenceDir, "claude", "claude");
@@ -136,12 +137,13 @@ export function latency(evidenceDir) {
       } catch {
         continue;
       }
-      if (message.type !== "result") continue;
+      const ended = message.type === "stream_event" && !message.parent_tool_use_id && message.event?.type === "message_delta" && message.event?.delta?.stop_reason === "end_turn";
+      if (message.type !== "result" && !(helper && ended)) continue;
       const text = prompt.text ?? "";
       if (helper) {
         const kind = /route a message in a group chat to the ONE member/i.test(text) ? "router-pick" : /"chime"/.test(text) || /chime/i.test(text.slice(0, 400)) ? "router-chime" : /title/i.test(text.slice(0, 300)) ? "title" : "other";
         helpers.push({ kind, waitBeforePromptSec: (prompt.t - start.t) / 1000, totalSec: (entry.t - start.t) / 1000 });
-      } else if (text.includes("[MonoCode group chat]")) roomTurns.push({ turnSec: (entry.t - prompt.t) / 1000 });
+      } else if (text.includes("[MonoCode room]") || text.includes("[MonoCode group chat]")) roomTurns.push({ turnSec: (entry.t - prompt.t) / 1000 });
       prompt = null;
     }
   }
@@ -167,7 +169,9 @@ export function report(evidenceDir, summary, grades) {
   const results = summary?.results ?? Object.keys(grades).map((id) => ({ id }));
   for (const result of results) {
     const grade = grades[result.id];
-    const timings = (result.metrics?.replies ?? []).map((r) => `${r.label ?? r.to}: ${r.firstReplySec}s${r.from ? ` (${r.from})` : ""}`).join("; ");
+    const timings = (result.metrics?.replies ?? [])
+      .map((r) => `${r.label ?? r.to}: ${r.firstWordsSec != null && r.firstWordsSec < r.firstReplySec ? `words ${r.firstWordsSec}s, ` : ""}${r.firstReplySec}s${r.from ? ` (${r.from})` : ""}`)
+      .join("; ");
     lines.push(
       `| ${result.id} ${result.title ?? ""} | ${result.skipped ? `SKIPPED (${result.skipped})` : result.error ? `ERROR (${result.error})` : (grade?.grade ?? "UNGRADED")} | ${(result.bench ?? []).join(", ")} | ${timings || "-"} | ${(grade?.summary ?? "").replace(/\|/g, "/").replace(/\n/g, " ")} |`,
     );

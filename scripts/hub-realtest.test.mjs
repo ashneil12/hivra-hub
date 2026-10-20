@@ -8,10 +8,11 @@ import { parseGrade } from "./hub-realtest-grade.mjs";
 import { roomRounds, runChecks } from "./hub-realtest-scenarios.mjs";
 import { jobsFromDelegations, usageOf } from "./hub-realtest.mjs";
 
-test("every chat is held to Sonnet and medium; Haiku helpers and low effort stay", () => {
+test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
   assert.deepEqual(chat.slice(2), ["--model", "sonnet", "--effort", "medium"]);
-  assert.deepEqual(rewriteArgs(["-p", "--model=claude-haiku-4-5"]), ["-p", "--model=claude-haiku-4-5", "--effort", "medium"]);
+  assert.deepEqual(rewriteArgs(["-p", "--model=claude-haiku-4-5"]), ["-p", "--model=claude-haiku-4-5"]);
+  assert.deepEqual(rewriteArgs(["--input-format", "stream-json", "--model", "claude-haiku-4-5"]).slice(2), ["--model", "claude-haiku-4-5"]);
   assert.deepEqual(rewriteArgs(["--input-format", "stream-json"]).slice(2), ["--model", "sonnet", "--effort", "medium"]);
   assert.deepEqual(rewriteArgs(["--version"]), ["--version"]);
   assert.deepEqual(rewriteArgs(["--input-format", "x", "--effort", "low"]).slice(2, 4), ["--effort", "low"]);

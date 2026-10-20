@@ -31,13 +31,18 @@ import type { TurnIntent } from "../../../../features/sessions/model/session";
 import type { HarnessEvent } from "../../core/types";
 import { mergeStream } from "../../core/streamText";
 
-const TEXT_CHILD_ID = "monocode-claude-text";
-const INIT_TIMEOUT_MS = 8_000;
+// MonoCode's own small calls to Claude (chat titles, commit and PR text, the room's chime gate, "by the way"
+// questions): one isolated CLI process per call, closed as soon as its answer is in. Measured on 20 Oct (docs/REALTEST.md):
+// the CLI sends nothing before it has a prompt, so waiting for a "ready" line cost 8 s on every call; the post-turn
+// summary it writes after the answer cost about 3 s more; one call at a time put the room's gate behind chat titles;
+// and the default thinking on a one-line JSON answer cost seconds. So: the prompt goes in at once, the answer counts
+// when the model's message ends, calls run side by side, and a helper call (no model asked for) doesn't think unless
+// asked to.
+const TEXT_CHILD_PREFIX = "monocode-claude-text";
 const REQUEST_TIMEOUT_MS = 45_000;
 const TEXT_MODEL = "claude-haiku-4-5";
 
 type TextSettings = {
-  key: string;
   launchModel: string;
   effort?: string;
   promptEffort?: string;
@@ -54,42 +59,39 @@ type InFlightTool = {
   title: string;
 };
 
-type LiveText = {
-  cwd: string;
-  providerAccountId?: string;
-  model: string;
-  settingsKey: string;
-  collecting: boolean;
+/** One call: its own process, its answer as it streams, and how it ends. */
+type TextCall = {
+  id: string;
   output: string;
   closed: boolean;
-  ready: boolean;
-  turnDone: (() => void) | null;
-  turnFailed: ((error: Error) => void) | null;
-  readyDone: (() => void) | null;
+  done: (() => void) | null;
+  failed: ((error: Error) => void) | null;
   onEvent?: (event: HarnessEvent) => void;
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
 };
 
-let live: LiveText | null = null;
-let turns: Promise<void> = Promise.resolve();
+const calls = new Map<string, TextCall>();
+let callSeq = 0;
 
 function textSettings(
   model: string,
+  helper: boolean,
   modelSettings?: Record<string, string>,
   intent?: TurnIntent,
 ): TextSettings {
   const effort = modelSettings?.effort?.trim() || undefined;
   const context = modelSettings?.context?.trim() || undefined;
-  const thinking = modelSettings?.thinking === "true";
+  const thinking = modelSettings?.thinking;
   const fast = modelSettings?.fast === "true";
   const readOnly = intent === "plan";
   const settings: Record<string, boolean> = {};
-  if (thinking) settings.alwaysThinkingEnabled = true;
+  if (thinking === "true") settings.alwaysThinkingEnabled = true;
+  // The small model thinks by default; a title or a JSON pick doesn't need it.
+  else if (thinking === "false" || helper) settings.alwaysThinkingEnabled = false;
   if (fast) settings.fastMode = true;
   if (isClaudeUltracodeEffort(effort)) settings.ultracode = true;
   return {
-    key: JSON.stringify({ effort, context, thinking, fast, readOnly }),
     launchModel: resolveClaudeApiModelId(model, context),
     effort: normalizeClaudeCliEffort(effort, model),
     promptEffort: effort,
@@ -98,32 +100,36 @@ function textSettings(
   };
 }
 
+/**
+ * The model for a call: the one asked for, else the newest versioned Haiku the CLI offers. Never the bare "haiku"
+ * alias: measured 20 Oct (CLI 2.1.304), with --permission-mode plan the CLI ran it on Sonnet 5.5, and without plan mode
+ * it thought before a one-line answer even with thinking off; a versioned id answers in 2 to 3 s.
+ */
 function pickTextModel(requested?: string): string {
   const selected = requested?.trim();
   if (selected) return selected;
-  const models = modelsFor("claude");
-  const haiku = models.find((model) =>
-    /haiku/i.test(`${model.nativeId ?? ""} ${model.name} ${model.id}`),
-  );
-  return haiku?.nativeId ?? TEXT_MODEL;
+  const versioned = modelsFor("claude")
+    .map((model) => model.nativeId ?? "")
+    .map((id) => ({ id, version: /^claude-haiku-(\d+)-(\d+)$/.exec(id) }))
+    .filter((m): m is { id: string; version: RegExpExecArray } => !!m.version)
+    .sort((a, b) => Number(b.version[1]) - Number(a.version[1]) || Number(b.version[2]) - Number(a.version[2]));
+  return versioned[0]?.id ?? TEXT_MODEL;
 }
 
+/** Stop every call still running (the app is closing, or the helpers are being reset). */
 export async function stopClaudeTextPrompt(): Promise<void> {
-  await dropLive();
+  await Promise.all(
+    [...calls.values()].map((call) => {
+      call.failed?.(new Error("Claude text generator stopped"));
+      return closeCall(call);
+    }),
+  );
 }
 
-export function warmupClaudeText(cwd: string): Promise<void> {
-  if (!cwd || cwd === "~") return Promise.resolve();
-  const run = turns
-    .catch(() => undefined)
-    .then(async () => {
-      await ensureLive(cwd);
-    });
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run.catch(() => undefined);
+/** Nothing to keep warm: each call starts its own process and writes its prompt at once. Finds the CLI ahead. */
+export async function warmupClaudeText(cwd: string): Promise<void> {
+  if (!cwd || cwd === "~") return;
+  await resolveClaudeBinary().catch(() => undefined);
 }
 
 export async function runClaudeTextPrompt(input: {
@@ -137,160 +143,42 @@ export async function runClaudeTextPrompt(input: {
   signal?: AbortSignal;
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
-  const run = turns.catch(() => undefined).then(() => promptOnLive(input));
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-async function promptOnLive(input: {
-  cwd: string;
-  providerAccountId?: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  intent?: TurnIntent;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
   input.signal?.throwIfAborted();
   const model = pickTextModel(input.model);
-  const settings = textSettings(model, input.modelSettings, input.intent);
-  const session = await ensureLive(
-    input.cwd,
-    input.providerAccountId,
-    model,
-    settings,
-  );
-  input.signal?.throwIfAborted();
-  session.output = "";
-  session.collecting = true;
-  session.onEvent = input.onEvent;
-  session.toolsByIndex = new Map();
-  session.toolsById = new Map();
-  const timeoutMs = input.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  let abortHandler: (() => void) | undefined;
-  const abortPromise = input.signal
-    ? new Promise<never>((_, reject) => {
-        const cancel = () => {
-          session.turnFailed?.(new Error("By-the-way request cancelled"));
-          reject(new Error("By-the-way request cancelled"));
-        };
-        abortHandler = cancel;
-        input.signal!.addEventListener("abort", cancel, { once: true });
-        if (input.signal!.aborted) cancel();
-      })
-    : null;
-
-  try {
-    const turnPromise = new Promise<void>((resolve, reject) => {
-      session.turnDone = resolve;
-      session.turnFailed = reject;
-    });
-
-    await writeChild(
-      TEXT_CHILD_ID,
-      JSON.stringify(
-        buildClaudeUserMessage({
-          text: input.prompt,
-          effort: settings.promptEffort,
-        }),
-      ),
-    );
-
-    await Promise.race([
-      turnPromise,
-      new Promise<void>((_, reject) => {
-        setTimeout(
-          () => reject(new Error("Claude text generation timed out")),
-          timeoutMs,
-        );
-      }),
-      ...(abortPromise ? [abortPromise] : []),
-    ]);
-
-    const output = session.output.trim();
-    if (!output) throw new Error("Claude returned empty output.");
-    return output;
-  } catch (error) {
-    if (session.closed) await dropLive();
-    throw error;
-  } finally {
-    if (abortHandler && input.signal) {
-      input.signal.removeEventListener("abort", abortHandler);
-    }
-    session.collecting = false;
-    session.turnDone = null;
-    session.turnFailed = null;
-    await dropLive();
-  }
-}
-
-async function ensureLive(
-  cwd: string,
-  providerAccountId?: string,
-  requestedModel?: string,
-  requestedSettings?: TextSettings,
-): Promise<LiveText> {
-  const model = pickTextModel(requestedModel);
-  const settings = requestedSettings ?? textSettings(model);
-  if (
-    live &&
-    !live.closed &&
-    live.cwd === cwd &&
-    live.providerAccountId === providerAccountId &&
-    live.model === model &&
-    live.settingsKey === settings.key
-  ) {
-    return live;
-  }
-  await dropLive();
-  return startLive(cwd, providerAccountId, model, settings);
-}
-
-async function startLive(
-  cwd: string,
-  providerAccountId?: string,
-  model = pickTextModel(),
-  settings = textSettings(model),
-): Promise<LiveText> {
+  const settings = textSettings(model, !input.model?.trim(), input.modelSettings, input.intent);
   const { path } = await resolveClaudeBinary();
-  const session: LiveText = {
-    cwd,
-    providerAccountId,
-    model,
-    settingsKey: settings.key,
-    collecting: false,
+  input.signal?.throwIfAborted();
+  const call: TextCall = {
+    id: `${TEXT_CHILD_PREFIX}-${++callSeq}`,
     output: "",
     closed: false,
-    ready: false,
-    turnDone: null,
-    turnFailed: null,
-    readyDone: null,
+    done: null,
+    failed: null,
+    onEvent: input.onEvent,
     toolsByIndex: new Map(),
     toolsById: new Map(),
   };
-
-  watchChild(
-    TEXT_CHILD_ID,
-    (line) => handleLine(session, line),
-    () => {
-      session.closed = true;
-      if (live === session) live = null;
-      session.turnFailed?.(new Error("Claude text generator exited"));
-      session.readyDone?.();
-      session.turnDone = null;
-      session.turnFailed = null;
-      session.readyDone = null;
-    },
-  );
-
+  calls.set(call.id, call);
+  const finished = new Promise<void>((resolve, reject) => {
+    call.done = resolve;
+    call.failed = reject;
+  });
+  // A call that fails before anyone waits on it must not count as unhandled.
+  finished.catch(() => undefined);
+  const timeoutMs = input.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
+    watchChild(
+      call.id,
+      (line) => handleLine(call, line),
+      () => {
+        call.closed = true;
+        call.failed?.(new Error("Claude text generator exited"));
+      },
+    );
     await spawnChild(
-      TEXT_CHILD_ID,
+      call.id,
       path,
       buildClaudeSpawnArgs({
         isolated: true,
@@ -300,75 +188,98 @@ async function startLive(
         permissionMode: settings.permissionMode,
         maxTurns: settings.maxTurns,
       }),
-      cwd,
-      { provider: "claude", id: providerAccountId ?? "default" },
+      input.cwd,
+      { provider: "claude", id: input.providerAccountId ?? "default" },
       "claude",
     );
-    live = session;
-    await waitForReady(session, INIT_TIMEOUT_MS);
-    return session;
-  } catch (error) {
-    session.closed = true;
-    unwatchChild(TEXT_CHILD_ID);
-    await killChild(TEXT_CHILD_ID).catch(() => undefined);
-    throw error;
+    // The CLI reads its prompt once it is up and only then says anything: never wait for it first.
+    await writeChild(
+      call.id,
+      JSON.stringify(
+        buildClaudeUserMessage({
+          text: input.prompt,
+          effort: settings.promptEffort,
+        }),
+      ),
+    );
+    await Promise.race([
+      finished,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Claude text generation timed out")),
+          timeoutMs,
+        );
+      }),
+      ...(input.signal
+        ? [
+            new Promise<never>((_, reject) => {
+              abortHandler = () => reject(new Error("By-the-way request cancelled"));
+              input.signal!.addEventListener("abort", abortHandler, { once: true });
+              if (input.signal!.aborted) abortHandler();
+            }),
+          ]
+        : []),
+    ]);
+    const output = call.output.trim();
+    if (!output) throw new Error("Claude returned empty output.");
+    return output;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (abortHandler && input.signal) {
+      input.signal.removeEventListener("abort", abortHandler);
+    }
+    await closeCall(call);
   }
 }
 
-async function dropLive(): Promise<void> {
-  const current = live;
-  live = null;
-  if (current) {
-    current.closed = true;
-    current.readyDone?.();
-    current.turnFailed?.(new Error("Claude text generator stopped"));
-    current.turnDone = null;
-    current.turnFailed = null;
-    current.readyDone = null;
-  }
-  unwatchChild(TEXT_CHILD_ID);
-  await killChild(TEXT_CHILD_ID).catch(() => undefined);
+async function closeCall(call: TextCall): Promise<void> {
+  calls.delete(call.id);
+  call.closed = true;
+  call.done = null;
+  call.failed = null;
+  unwatchChild(call.id);
+  await killChild(call.id).catch(() => undefined);
 }
 
-function handleLine(session: LiveText, line: string): void {
+function finish(call: TextCall, error?: Error): void {
+  if (error) call.failed?.(error);
+  else call.done?.();
+  call.done = null;
+  call.failed = null;
+}
+
+function handleLine(call: TextCall, line: string): void {
+  if (call.closed) return;
   const rec = parseJsonLine(line);
   if (!rec) return;
   const type = stringField(rec, "type");
-  if (
-    type === "system" &&
-    (stringField(rec, "subtype") === "init" ||
-      stringField(rec, "subtype") === "initialized")
-  ) {
-    session.ready = true;
-    session.readyDone?.();
-    session.readyDone = null;
-  }
-  if (!session.collecting) return;
   if (type === "assistant") {
     const snapshot = assistantTextBlocks(rec).join("");
-    if (snapshot) session.output = mergeStream(session.output, snapshot);
+    if (snapshot) call.output = mergeStream(call.output, snapshot);
     return;
   }
   if (type === "stream_event") {
-    handleStreamEvent(session, rec);
+    handleStreamEvent(call, rec);
     return;
   }
   if (type === "result") {
     const result = turnStatusFromResult(rec);
-    if (result.status === "failed") {
-      session.turnFailed?.(new Error(result.error ?? "Claude turn failed"));
-    } else {
-      session.turnDone?.();
-    }
-    session.turnDone = null;
-    session.turnFailed = null;
+    finish(call, result.status === "failed" ? new Error(result.error ?? "Claude turn failed") : undefined);
   }
 }
 
 function handleStreamEvent(
-  session: LiveText,
+  session: TextCall,
   rec: Record<string, unknown>,
 ): void {
+  // The model's message is over: its text is all in. The CLI's post-turn summary and result come seconds later.
+  // (A subagent's own messages carry their parent tool call and don't end the turn.)
+  const event = rec.event as { type?: unknown; delta?: { stop_reason?: unknown } } | undefined;
+  const stop = event?.type === "message_delta" ? event.delta?.stop_reason : undefined;
+  if (!rec.parent_tool_use_id && (stop === "end_turn" || stop === "stop_sequence")) {
+    finish(session);
+    return;
+  }
   const delta = streamDeltaFromEvent(rec);
   if (delta) {
     if (delta.kind === "assistant") {
@@ -425,23 +336,5 @@ function handleStreamEvent(
     status: "pending",
     detail: summarizeToolRequest(tool.name, parsed),
     preview: previewFromTool(tool.name, parsed),
-  });
-}
-
-function waitForReady(session: LiveText, timeoutMs: number): Promise<void> {
-  if (session.ready) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      session.readyDone = null;
-      resolve();
-    }, timeoutMs);
-    session.readyDone = () => {
-      clearTimeout(timer);
-      if (session.closed) {
-        reject(new Error("Claude text generator exited"));
-        return;
-      }
-      resolve();
-    };
   });
 }
