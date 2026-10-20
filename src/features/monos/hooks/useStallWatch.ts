@@ -3,7 +3,8 @@
 // judged, so a stalled worker shows everywhere within about a minute of crossing its limit. The same look runs the
 // hourly progress check and self-repair (model/workerProgress.ts, board H2): its stuck verdict is written on the row by
 // the stall watcher, so it shows wherever a stall does. The same window announces stuck workers with a native banner
-// (useStuckNotifications).
+// (useStuckNotifications), except a Lead's own stalled or crashed workers: their Lead handles those, and tells Ash in
+// its own chat when only he can help.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
@@ -12,7 +13,6 @@ import { StallWatch } from "../model/workerStall";
 import { ProgressCheck, progressNoteMessage, type FolderLook } from "../model/workerProgress";
 import { sendToChat } from "../../hub/model/waitingChats";
 import { gitDiffStats, gitHistory } from "../../../platform/tauri/fs";
-import { announceStuckWorker } from "../../notifications/model/notifications";
 import { dismissQueuedMonoSessionCompletion, type MonoSessionCompletionBatches } from "../model/monoSessionCompletion";
 import { appIdentity } from "../../../app/model/appIdentity";
 import { useStuckNotifications } from "../../notifications/hooks/useStuckNotifications";
@@ -76,14 +76,6 @@ export function useStallWatch(options: {
         ),
       );
     },
-    flagAsh: (row: Delegation, text: string) =>
-      void announceStuckWorker({
-        sessionId: row.childSession,
-        cwd: session(row.childSession)?.cwd ?? row.project ?? "",
-        title: "MonoCode",
-        subtitle: row.title?.trim() || "Delegated work",
-        body: text,
-      }).catch(() => undefined),
   });
   const watch = useRef<StallWatch | null>(null);
   watch.current ??= new StallWatch({
@@ -94,7 +86,7 @@ export function useStallWatch(options: {
   });
   const main = useRef<boolean | null>(null);
   main.current ??= isMainWindow();
-  // The same window announces them: one native banner per worker that fails or stalls.
+  // The same window announces them: one native banner per stuck worker its Lead can't handle by itself.
   useStuckNotifications({ sessionsRef: options.sessionsRef, enabled: main.current });
 
   const { sessions } = options;

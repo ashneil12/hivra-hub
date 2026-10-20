@@ -1,14 +1,18 @@
 // The hourly progress check and self-repair (board H2), with a fake clock and fake workers: each worker is a chat the
 // test writes blocks into and a folder whose commits and diff the test sets. The app's hands (tell the Lead, message
 // the worker, stop its turn, banner Ash) are recorded, and the stuck line is read the way the rail reads it.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
+import { StuckNotifier } from "../../notifications/model/stuckNotifications";
 import type { Block, Session } from "../../sessions/model/session";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import { DelegationTracker, type Delegation } from "./delegations";
 import { MemoryDelegations } from "./memoryDelegations";
 import { StallWatch } from "./workerStall";
-import { countWork, shortSplit, stuckWorkers } from "./workerStuck";
+import { countWork, delegationLine, failureLine, shortSplit, stuckWorkers } from "./workerStuck";
 import {
+  failingTestName,
+  gaveUpReason,
   judgeProgress,
   progressNoteMessage,
   progressSignals,
@@ -27,6 +31,12 @@ const edit = (file = "save.ts"): Block => ({ id: `b${++seq}`, role: "tool", text
 const test = (detail: string, status = "completed"): Block => ({ id: `b${++seq}`, role: "tool", text: "npm test", tool: { kind: "execute", title: "npm test", status, detail } });
 const failing = (detail: string): Block => ({ id: `b${++seq}`, role: "tool", text: "npm run build", tool: { kind: "execute", title: "npm run build", status: "failed", detail } });
 const turn = (tokens: number): Block => ({ id: `b${++seq}`, role: "user", text: "go on", turnMetrics: { inputTokens: tokens } });
+
+// The Lead is a coding-team chat (an orchestrator), as a Mono's Lead would be: its workers are its to handle.
+beforeEach(() => {
+  resetCodingTeamChats();
+  noteCodingTeamChat("lead", "vg-game");
+});
 
 type Chat = Pick<Session, "busy" | "blocks" | "cwd" | "pendingQuestion" | "usageLimit" | "queuedMessages" | "queueStatus">;
 
@@ -49,6 +59,8 @@ async function setup(options: { folder?: boolean } = {}) {
   let now = 0;
   const lead: string[] = [];
   const worker: string[] = [];
+  // Ash's banners: what the stuck notifier would push, looked at the way useStuckNotifications does.
+  const notifier = new StuckNotifier(0);
   const ash: string[] = [];
   const stopped: string[] = [];
   const dropped: string[] = [];
@@ -62,7 +74,6 @@ async function setup(options: { folder?: boolean } = {}) {
     message: async (_row: Delegation, text: string) => (worker.push(text), true),
     stopTurn: async (r: Delegation) => (stopped.push(r.childSession), true),
     dropReport: (r: Delegation) => void dropped.push(r.id),
-    flagAsh: (_row: Delegation, text: string) => void ash.push(text),
     now: () => now,
   };
   const check = new ProgressCheck(hands);
@@ -88,6 +99,7 @@ async function setup(options: { folder?: boolean } = {}) {
     watch.sync();
     watch.tick();
     await settle();
+    for (const stuck of notifier.due(stuckWorkers(tracker.known(), now))) ash.push(stuck.line);
   };
   return {
     fake, backend, tracker, row, chats, chat, push, folder, commitTimes, check, look, lead, worker, ash, stopped, dropped,
@@ -103,24 +115,46 @@ async function setup(options: { folder?: boolean } = {}) {
 }
 
 describe("judging an hour", () => {
-  it("counts edits, passing and failing test runs, distinct messages, the newest error run and tokens", () => {
+  it("counts edits, passing and failing test runs, distinct messages, the newest error run and the failing test", () => {
     const tally = tallyTranscript([
-      asked(), said("a"), said("a"), said("b"), edit(), test("12 passed"), test("2 failed, 10 passed"),
+      asked(), said("a"), said("a"), said("b"), edit(), test("12 passed"), test(" FAIL  src/save.test.ts > saves > survives a restart\n2 failed, 10 passed"),
       failing("tsc: error TS2322"), failing("tsc: error TS2322"), turn(1000),
     ]);
-    expect(tally).toMatchObject({ edits: 1, testsPassed: 1, testsFailed: 1, messages: 2, errorRun: { text: "tsc: error TS2322", count: 2 }, tokens: 1000 });
+    expect(tally).toEqual({
+      edits: 1, testsPassed: 1, testsFailed: 1, messages: 2,
+      errorRun: { text: "tsc: error TS2322", count: 2 },
+      testRun: { name: "survives a restart", count: 1 },
+    });
   });
 
-  it("a commit, a changed file or a passing test is progress; only talk passes once; nothing, failing tests or a repeated error is stuck", () => {
+  it("names the failing test in the words of the common runners", () => {
+    expect(failingTestName(" FAIL  src/save.test.ts > saves > survives a restart")).toBe("survives a restart");
+    expect(failingTestName("  × keeps the slot 12ms")).toBe("keeps the slot 12ms");
+    expect(failingTestName("--- FAIL: TestSaveSlot (0.01s)")).toBe("TestSaveSlot");
+    expect(failingTestName("FAILED tests/test_save.py::test_restart - AssertionError")).toBe("test_restart");
+    expect(failingTestName("test save::restart ... FAILED")).toBe("save::restart");
+    expect(failingTestName("1 failing\nsomething")).toBe("1 failing");
+    expect(failingTestName("")).toBe("the test run");
+  });
+
+  it("a commit, a changed file or a passing test is progress; only talk passes once; the rest is stuck, saying what happened", () => {
     const none = { commits: 0, filesChanged: false, testsPassed: 0, testsFailed: 0, messages: 0 };
-    expect(judgeProgress({ ...none, commits: 1 }, false).verdict).toBe("keep_going");
-    expect(judgeProgress({ ...none, filesChanged: true }, true).verdict).toBe("keep_going");
-    expect(judgeProgress({ ...none, testsPassed: 1 }, false).verdict).toBe("keep_going");
-    expect(judgeProgress({ ...none, messages: 4 }, false)).toMatchObject({ verdict: "keep_going", talkOnly: true });
-    expect(judgeProgress({ ...none, messages: 4 }, true)).toMatchObject({ verdict: "stuck", reason: "Talking, but nothing saved or tested for two hours" });
-    expect(judgeProgress(none, false)).toMatchObject({ verdict: "stuck", reason: "Nothing moved in the last hour" });
-    expect(judgeProgress({ ...none, testsFailed: 3, messages: 2 }, false).reason).toBe("Tests keep failing and nothing has changed");
-    expect(judgeProgress({ ...none, commits: 2, repeatedError: { text: "x", count: 5 } }, false).reason).toBe("The same error came up 5 times in a row");
+    expect(judgeProgress({ ...none, commits: 1 }, 0).verdict).toBe("keep_going");
+    expect(judgeProgress({ ...none, filesChanged: true }, 3).verdict).toBe("keep_going");
+    expect(judgeProgress({ ...none, testsPassed: 1 }, 0).verdict).toBe("keep_going");
+    expect(judgeProgress({ ...none, messages: 4 }, 0)).toMatchObject({ verdict: "keep_going", talkOnly: true });
+    expect(judgeProgress({ ...none, messages: 4 }, 1)).toMatchObject({ verdict: "stuck", reason: "Talked for 2 hours, no code or test changes yet" });
+    expect(judgeProgress(none, 0)).toMatchObject({ verdict: "stuck", reason: "No commits, file changes or test runs for an hour" });
+    expect(judgeProgress(none, 2).reason).toBe("No commits, file changes or test runs for 3 hours");
+    expect(judgeProgress({ ...none, testsFailed: 3, messages: 2, failingTest: "survives a restart" }, 0).reason).toBe(
+      "Tests failing for an hour, no code changes: survives a restart",
+    );
+    expect(judgeProgress({ ...none, commits: 2, repeatedTest: { name: "survives a restart", count: 5 } }, 0).reason).toBe(
+      "Same test failing 5 times: survives a restart",
+    );
+    expect(judgeProgress({ ...none, commits: 2, repeatedError: { text: "ECONNREFUSED 127.0.0.1:5432", count: 6 } }, 0).reason).toBe(
+      "Same error 6 times: ECONNREFUSED 127.0.0.1:5432",
+    );
   });
 
   it("a repeated error only counts when it is new or longer since the last check", () => {
@@ -162,39 +196,65 @@ describe("ProgressCheck: the hour", () => {
     expect(t.stored().stallKind ?? null).toBeNull();
   });
 
-  it("an hour with nothing moved: the worker is asked to try another way, its Lead hears why, and it shows as stuck where 'N stuck' opens", async () => {
+  it("an hour with nothing moved: the worker is asked to try another way, its Lead hears what happened, and it shows red stuck", async () => {
     const t = await setup();
     await t.look(0);
     await t.look(60 * MIN);
     expect(t.worker).toHaveLength(1);
-    expect(t.worker[0]).toMatch(/^Hourly check from your Lead: no real progress toward "Saves survive a restart" in the last hour \(nothing moved in the last hour\)\. .*try a different way/);
+    expect(t.worker[0]).toMatch(/^Hourly check from your Lead: no real progress toward "Saves survive a restart" \(no commits, file changes or test runs for an hour\)\. .*try a different way/);
     expect(t.lead).toEqual([
-      'Hourly check on "Fix the save bug": no real progress in the last hour (nothing moved in the last hour). I asked it to try another way and I\'ll check again in an hour. If you can see it won\'t move, split it into smaller pieces or stop it.',
+      'Hourly check on "Fix the save bug": no commits, file changes or test runs for an hour. I asked it to try another way. If it\'s still stuck in an hour, it\'s yours to stop, split or retry.',
     ]);
-    expect(t.ash).toEqual([]);
-    expect(t.stored()).toMatchObject({ state: "running", stallKind: "loop", stallReason: "No real progress in the last hour: nothing moved in the last hour · asked it to try another way" });
-    // The rail: one stuck, and its line is the plain reason (the card under it has the one-tap reply).
+    expect(t.stored()).toMatchObject({ state: "running", stallKind: "loop", stallReason: "No commits, file changes or test runs for an hour · asked it to try another way" });
+    // The rail: one stuck, and its red card's line is what happened.
     const rows = t.tracker.known();
     expect(shortSplit(countWork(rows, 61 * MIN)).stuck).toBe(1);
     const [stuck] = stuckWorkers(rows, 61 * MIN);
-    expect(stuck).toMatchObject({ kind: "stalled" });
-    expect(stuck.line).toMatch(/No real progress in the last hour/);
+    expect(stuck).toMatchObject({ kind: "stalled", line: "No commits, file changes or test runs for an hour · asked it to try another way" });
+    expect(t.ash).toEqual([]); // Its Lead's to handle: no banner.
   });
 
-  it("a second stuck hour asks the Lead to stop, split or retry it and flags Ash once; it stays stuck, never stopped by itself", async () => {
+  it("hour 2: its Lead handles it by itself, without asking, and Ash isn't flagged while the Lead works on it; the red line stays", async () => {
     const t = await setup();
     await t.look(0);
     await t.look(60 * MIN);
     await t.look(120 * MIN);
-    expect(t.lead[1]).toMatch(/^Hourly check on "Fix the save bug": still no real progress after 2 hours .*Decide now: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief\./);
-    expect(t.ash).toEqual(["Stuck: no real progress for 2 hours. Its Lead has been asked to stop, split or retry it."]);
-    expect(t.stored()).toMatchObject({ state: "running", stallKind: "loop" });
-    expect(t.stored().stallReason).toMatch(/^No real progress for 2 hours: .* its Lead was asked to stop, split or retry it$/);
-    await t.look(180 * MIN);
-    expect(t.lead).toHaveLength(3);
-    expect(t.ash.filter((line) => line.startsWith("Stuck"))).toHaveLength(1); // Hour 3: the Lead again, not Ash again.
-    expect(t.stopped).toEqual([]);
-    expect(t.worker).toHaveLength(1); // The retry goes once; then it's the Lead's call.
+    expect(t.lead[1]).toBe(
+      'Hourly check on "Fix the save bug": no commits, file changes or test runs for 2 hours, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief. Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
+    );
+    expect(t.ash).toEqual([]);
+    expect(t.stored()).toMatchObject({ state: "running", stallKind: "loop", stallReason: "No commits, file changes or test runs for 2 hours · its Lead is on it" });
+    expect(stuckWorkers(t.tracker.known(), 121 * MIN)).toHaveLength(1);
+    // The Lead retries it (a message into its chat); the worker talks, nothing real moves: still not Ash's.
+    t.keepTalking(1);
+    await t.look(150 * MIN);
+    expect(t.ash).toEqual([]);
+    expect(t.stopped).toEqual([]); // The app never stops it by itself.
+    expect(t.worker).toHaveLength(1); // The app's retry went once; then it's the Lead's call.
+  });
+
+  it("hour 3, still stuck after what its Lead did: its Lead is told to tell Ash, in its own chat, the one thing it needs; once", async () => {
+    const t = await setup();
+    await t.look(0);
+    for (const h of [1, 2, 3]) await t.look(h * HOUR);
+    expect(t.lead[2]).toBe(
+      'Hourly check on "Fix the save bug": still stuck after what you did (no commits, file changes or test runs for 3 hours). Tell Ash now, in one plain line here: what\'s wrong and the one thing you need from him.',
+    );
+    expect(t.stored().stallReason).toBe("No commits, file changes or test runs for 3 hours · its Lead couldn't unstick it");
+    await t.look(4 * HOUR);
+    await t.look(5 * HOUR);
+    expect(t.lead).toHaveLength(3); // Nobody is told again; the line keeps saying how long.
+    expect(t.stored().stallReason).toBe("No commits, file changes or test runs for 5 hours · its Lead couldn't unstick it");
+    expect(t.ash).toEqual([]); // Ash hears it from the Lead's chat, not from a banner.
+    expect(stuckWorkers(t.tracker.known(), 5 * HOUR)).toHaveLength(1);
+  });
+
+  it("a worker without a Lead (its chat isn't an orchestrator) still raises the banner: there's no one else to tell", async () => {
+    resetCodingTeamChats();
+    const t = await setup();
+    await t.look(0);
+    await t.look(60 * MIN);
+    expect(t.ash).toEqual(["No commits, file changes or test runs for an hour · asked it to try another way"]);
   });
 
   it("real progress clears the stuck mark within a couple of minutes, without waiting for the next hour", async () => {
@@ -214,7 +274,7 @@ describe("ProgressCheck: the hour", () => {
     expect(t.lead).toHaveLength(1);
   });
 
-  it("only talk passes one hour; a second hour of only talk is stuck", async () => {
+  it("only talk passes one hour; a second hour of only talk is stuck: 'Talked for 2 hours, no code or test changes yet'", async () => {
     const t = await setup();
     await t.look(0);
     t.keepTalking(1);
@@ -222,24 +282,34 @@ describe("ProgressCheck: the hour", () => {
     expect(t.lead).toEqual([]);
     t.keepTalking(2);
     await t.look(120 * MIN);
-    expect(t.lead[0]).toMatch(/talking, but nothing saved or tested for two hours/);
-    expect(t.stored().stallKind).toBe("loop");
+    expect(t.lead[0]).toMatch(/^Hourly check on "Fix the save bug": talked for 2 hours, no code or test changes yet\./);
+    expect(t.stored().stallReason).toBe("Talked for 2 hours, no code or test changes yet · asked it to try another way");
   });
 
-  it("the same error five times in a row is stuck even though files changed", async () => {
+  it("the same error five times in a row is stuck even though files changed, and says which error", async () => {
     const t = await setup();
     await t.look(0);
     t.push(edit(), ...Array.from({ length: 5 }, () => failing("error TS2322: Type 'string' is not assignable")));
     await t.look(60 * MIN);
-    expect(t.lead[0]).toMatch(/the same error came up 5 times in a row/);
+    expect(t.stored().stallReason).toBe("Same error 5 times: error TS2322: Type 'string' is not assignable · asked it to try another way");
+  });
+
+  it("the same test failing five runs in a row names the test, on the card and in the Lead's note", async () => {
+    const t = await setup();
+    await t.look(0);
+    const run = () => test(" FAIL  src/save.test.ts > saves > survives a restart\n1 failed, 11 passed");
+    t.push(edit(), run(), run(), run(), run(), run());
+    await t.look(60 * MIN);
+    expect(t.lead[0]).toMatch(/: same test failing 5 times: survives a restart\./);
+    expect(stuckWorkers(t.tracker.known(), 61 * MIN)[0].line).toBe("Same test failing 5 times: survives a restart · asked it to try another way");
   });
 
   it("failing tests with nothing changed are stuck; passing tests are progress", async () => {
     const t = await setup();
     await t.look(0);
-    t.push(test("3 failed, 9 passed"), test("3 failed, 9 passed"));
+    t.push(test("--- FAIL: TestSaveSlot (0.01s)"), test("--- FAIL: TestSaveSlot (0.01s)"));
     await t.look(60 * MIN);
-    expect(t.lead[0]).toMatch(/tests keep failing and nothing has changed/);
+    expect(t.lead[0]).toMatch(/: tests failing for an hour, no code changes: TestSaveSlot\./);
     t.push(test("12 passed"));
     await t.look(62 * MIN);
     expect(t.stored().stallKind ?? null).toBeNull();
@@ -262,23 +332,19 @@ describe("ProgressCheck: the hour", () => {
     expect(t.stored().stallKind ?? null).toBeNull();
   });
 
-  it("a long run is flagged to Ash every three hours and a costly one every five million tokens, never stopped", async () => {
+  it("no pushes for time or cost: a six-hour, six-million-token run says nothing to anyone; its line shows how long, quietly", async () => {
     const t = await setup();
     await t.look(0);
     for (let h = 1; h <= 6; h++) {
       t.commit();
+      if (h === 5) t.push(turn(4_000_000), turn(2_000_000));
       await t.look(h * HOUR);
     }
-    expect(t.ash).toEqual([
-      "Running 3 h and it's still moving. There's no time cap; just letting you know.",
-      "Running 6 h and it's still moving. There's no time cap; just letting you know.",
-    ]);
-    t.push(turn(4_000_000), turn(2_000_000));
-    await t.look(6 * HOUR + MIN);
-    expect(t.ash[2]).toBe("Has used about 6.0 million tokens on this run. There's no cost cap; just letting you know.");
-    await t.look(6 * HOUR + 2 * MIN);
-    expect(t.ash).toHaveLength(3);
+    expect([...t.ash, ...t.lead, ...t.worker]).toEqual([]);
     expect(t.stopped).toEqual([]);
+    const row = { ...t.stored(), createdAt: 0 };
+    expect(delegationLine(row, 6 * HOUR + 20 * MIN)).toBe("working · 6 h 20 min");
+    expect(delegationLine(row, 59 * MIN)).toBe("working");
   });
 
   it("with no git folder it judges on the chat alone: edits are progress", async () => {
@@ -299,6 +365,7 @@ describe("ProgressCheck: self-repair", () => {
       row.retryable = undefined;
       row.settledAt = at;
       row.delivery = "pending"; // Its failure report is waiting for its Lead.
+      row.log = [...row.log, { at, by: "app", event: "settled", state: "failed" }];
     });
     t.chats.set("w1", { ...t.chat(), busy: false });
   };
@@ -357,13 +424,30 @@ describe("ProgressCheck: self-repair", () => {
     await t.look(3 * HOUR);
     expect(t.worker).toHaveLength(3);
     expect(t.lead).toEqual([
-      'Self-repair gave up on "Fix the save bug" after 3 tries: claude exited with code 1. It\'s marked stuck; decide whether to retry it differently or tell Ash.',
+      '"Fix the save bug": crashed 4 times, retries gave up: Claude exited with code 1. Handle it yourself, without asking Ash: retry it differently, split it, or stop it, then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
     ]);
     expect(t.dropped).toHaveLength(3); // The last failure reaches its Lead.
-    expect(stuckWorkers(t.tracker.known(), 3 * HOUR)[0]).toMatchObject({ kind: "failed" });
+    // Its red card says what happened; no banner pushed while it's its Lead's.
+    expect(stuckWorkers(t.tracker.known(), 3 * HOUR)[0]).toMatchObject({ kind: "failed", line: "Crashed 4 times, retries gave up: Claude exited with code 1" });
+    expect(t.ash).toEqual([]);
   });
 
-  it("never retries a billing failure or one its Lead already read", async () => {
+  it("says in plain words what it saw before it gave up", () => {
+    expect(gaveUpReason({ state: "running", stallKind: "quiet", errorClass: null, error: null }, 4)).toBe("Went quiet 4 times, retries gave up");
+    expect(gaveUpReason({ state: "running", stallKind: "idle", errorClass: null, error: null }, 4)).toBe(
+      "Stopped without reporting back 4 times, retries gave up",
+    );
+    expect(gaveUpReason({ state: "failed", stallKind: null, errorClass: "overloaded", error: "529" }, 4)).toBe("Provider overloaded 4 times, retries gave up");
+    const failures = (n: number) => Array.from({ length: n }, () => ({ at: 0, by: "app", event: "settled", state: "failed" }));
+    const row = { state: "failed" as const, errorClass: null, error: "Claude exited with code 1.", resetsAt: null };
+    expect(failureLine({ ...row, log: failures(1) })).toBe("Failed: claude exited with code 1");
+    expect(failureLine({ ...row, log: failures(2) })).toBe("Crashed 2 times: Claude exited with code 1");
+    expect(failureLine({ ...row, log: failures(4) })).toBe("Crashed 4 times, retries gave up: Claude exited with code 1");
+    // A refusal only Ash can fix is never a crash, however often it came back.
+    expect(failureLine({ ...row, errorClass: "billing", log: failures(4) })).toMatch(/^Failed: /);
+  });
+
+  it("never retries a billing failure or one its Lead already read; a billing refusal is still Ash's banner", async () => {
     const t = await setup();
     await t.look(0);
     await crash(t, MIN, "Credit balance is too low");
@@ -375,6 +459,7 @@ describe("ProgressCheck: self-repair", () => {
     await other.mutate((row) => void (row.delivery = "delivered"));
     await other.look(30 * MIN);
     expect([...t.worker, ...other.worker]).toEqual([]);
+    expect(t.ash).toEqual(["Failed: billing refused"]);
   });
 
   it("a hung busy worker is nudged first, then its turn is stopped and continued once the stop lands", async () => {
