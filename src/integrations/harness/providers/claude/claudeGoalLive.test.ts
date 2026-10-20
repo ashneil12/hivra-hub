@@ -39,8 +39,16 @@ vi.mock("../../../../features/settings/model/settings", async (original) => ({
   loadClaudeHooks: () => hooks.on,
 }));
 
-const { sendClaudeTurn, stopClaudeSession, bindClaudeSession, forgetClaudeSession, restoreClaudeGoal, __claudeTestReset } =
-  await import("./claude");
+const {
+  sendClaudeTurn,
+  stopClaudeSession,
+  cancelClaudeTurn,
+  compactClaudeContext,
+  bindClaudeSession,
+  forgetClaudeSession,
+  restoreClaudeGoal,
+  __claudeTestReset,
+} = await import("./claude");
 const { GOAL_CHECK_CAP } = await import("./claudeGoal");
 
 const parse = () => sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -262,6 +270,71 @@ describe("/goal through the live adapter", () => {
     expect(fresh.outcome).toBe("completed");
     expect(goals(fresh).at(-1)).toMatchObject({ status: "met" });
   });
+
+  it("Stop, then a /compact, never marks the goal met: the CLI still enforces it, so the app keeps it", async () => {
+    const turn = await start(BRIEF);
+    emit(said("Started."));
+    emit(result("Started."));
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit(synthetic(`Goal set: ${GOAL}`));
+    // Claude speaks, so its next stop would be checked; Stop cuts the turn before that, and mutes its result.
+    emit(said("Working on it."));
+    await cancelClaudeTurn("worker");
+    emit(result("", { subtype: "error_during_execution", is_error: true, num_turns: 2 }));
+    await turn.done;
+
+    // The next /compact (manual, or the idle one before a message) ends in a zero-turn success: not a check.
+    const events: HarnessEvent[] = [];
+    const before = parse().length;
+    const compact = compactClaudeContext({
+      sessionId: "worker",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => parse().slice(before).some((m) => m.type === "user"), "the /compact");
+    expect(prompts().at(-1)).toBe("/compact");
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit({ type: "system", subtype: "compact_boundary", session_id: "sess_1" });
+    emit(result("", { num_turns: 0, stop_reason: null }));
+    await compact;
+    expect(events.flatMap((e) => (e.type === "goal.updated" ? [e.goal] : []))).toEqual([]);
+
+    // Still the chat's open goal: a fresh conversation gets it again.
+    await forgetClaudeSession("worker");
+    const fresh = await start("Here is where we were: …", "worker", "sess_2");
+    expect(prompts().slice(-2)).toEqual(["Here is where we were: …", `/goal ${GOAL}`]);
+    emit({ ...result("ok"), session_id: "sess_2" });
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_2" });
+    emit({ ...said("Done."), session_id: "sess_2" });
+    emit({ ...result("Done."), session_id: "sess_2" });
+    await fresh.done;
+  });
+
+  for (const how of ["Stop", "stopping the process"] as const) {
+    it(`${how} leaves no stop pending: the next turn's result checks only what that turn said`, async () => {
+      const turn = await start(BRIEF);
+      emit(said("Started."));
+      emit(result("Started."));
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(synthetic(`Goal set: ${GOAL}`));
+      emit(said("Working on it."));
+      if (how === "Stop") await cancelClaudeTurn("worker");
+      else await stopClaudeSession("worker");
+      await turn.done;
+      // Stopping the process: the app starts it again on the same conversation, the goal carried with its state.
+      if (how !== "Stop") bindClaudeSession("worker", "sess_1", "/repo");
+      const next = await start("how far did you get?");
+      // A turn that ends before Claude says anything (a hook can end one) checked nothing: the cut stop never counts.
+      emit({ type: "system", subtype: "init", session_id: "sess_1" });
+      emit(result("", { num_turns: 1 }));
+      await next.done;
+      expect(goals(next).filter((goal) => goal?.status === "met")).toEqual([]);
+    });
+  }
 
   it("a turn waiting on a /goal that never starts is let go after the grace period", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

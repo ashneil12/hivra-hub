@@ -555,6 +555,8 @@ function goalToSet(live: Live, input: SendTurnInput): string | undefined {
  */
 function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): boolean {
   if (isSubagentMessage(rec)) return false;
+  // A compaction's result ends no turn of Claude's: whatever stop was pending is still unchecked.
+  if (live.manualCompaction && stringField(rec, "type") === "result") return false;
   // The CLI refusing /goal ("/goal can't run while hooks are restricted …") is a status line, never the reply a
   // worker's report would carry.
   if (
@@ -593,6 +595,16 @@ function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): 
   const said = assistantTextBlocks(rec).join("").trim();
   if (said) live.onEvent({ type: "status", text: said });
   return true;
+}
+
+/**
+ * Stop mutes the cut turn's result, so the stop Claude was making never reaches the goal's evaluator: nothing is
+ * pending any more, and a later result can't count it as a pass.
+ */
+function dropPendingGoalCheck(sessionId: string, live: Live): void {
+  if (live.goal?.pendingCheck) live.goal = { ...live.goal, pendingCheck: false };
+  const carried = goalByThread.get(sessionId);
+  if (carried?.pendingCheck) goalByThread.set(sessionId, { ...carried, pendingCheck: false });
 }
 
 /** A result for a background wake Claude ran by itself (a task finished), not for a prompt MonoCode wrote. */
@@ -648,6 +660,7 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
   settleWorkflows(live, "stopped");
   live.cancelled = true;
   live.muteUpdates = true;
+  dropPendingGoalCheck(sessionId, live);
   for (const [, pending] of live.approvals) pending.resolve("deny");
   live.approvals.clear();
   for (const [, pending] of live.questions)
@@ -681,6 +694,7 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   if (live) {
     settleWorkflows(live, "stopped");
     live.muteUpdates = true;
+    dropPendingGoalCheck(sessionId, live);
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
     for (const [, pending] of live.questions)
