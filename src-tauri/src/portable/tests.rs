@@ -976,6 +976,113 @@ fn history_with_a_secret_in_an_old_commit_stays_behind() {
     assert_no_secrets(&dest);
 }
 
+/// A memory folder whose history holds `notes -> <somewhere else>`, and an export of it that carries files under
+/// `notes/`: restoring the history would check the link out and the files after it would be written through it.
+fn export_with_a_linked_memory_folder(source: &Env, outside: &Path, dest: &Path) {
+    let dir = source.memory_root.join("evil");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("MEMORY.md"), "# evil\n").unwrap();
+    std::os::unix::fs::symlink(outside, dir.join("notes")).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "a link out"]);
+    // A real notes/ folder by the same name on disk, so the export lists files under it.
+    fs::remove_file(dir.join("notes")).unwrap();
+    fs::create_dir_all(dir.join("notes")).unwrap();
+    fs::write(dir.join("notes/planted.md"), "planted\n").unwrap();
+    fs::write(dir.join("notes/existing.md"), "theirs\n").unwrap();
+    let mut request = export_request(dest, Form::Folder);
+    request.files.clear();
+    request.workspace = false;
+    request.memory = Some(MemoryChoice {
+        projects: vec!["evil".into()],
+        history: true,
+    });
+    export(source, &request).unwrap();
+    assert!(dest.join("memory/evil.git.bundle").is_file());
+}
+
+/// Everything in `dir`, as name → text.
+fn folder_texts(dir: &Path) -> BTreeMap<String, String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                fs::read_to_string(e.path()).unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn memory_never_lands_outside_its_folder_through_a_link() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    fs::write(outside.0.join("existing.md"), "mine\n").unwrap();
+    let before = folder_texts(&outside.0);
+    let dest = out.0.join("export");
+    export_with_a_linked_memory_folder(&source, &outside.0, &dest);
+    let request = |history: bool| ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: Some(MemoryImport {
+            projects: vec!["evil".into()],
+            keep_both: true,
+            history,
+        }),
+        workspace: None,
+    };
+
+    // With history: the bundle's link is refused, said plainly, and the files come in as plain files inside.
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import(&target, &conn, &request(true)).unwrap();
+    assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
+    assert!(report.memory_history.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of evil") && n.contains("link")),
+        "{:?}",
+        report.notes
+    );
+    let notes = target.memory_root.join("evil/notes");
+    assert!(!fs::symlink_metadata(&notes)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read_to_string(notes.join("planted.md")).unwrap(),
+        "planted\n"
+    );
+    assert!(!target.memory_root.join("evil/.git").exists());
+
+    // A link already in the memory folder here (left by anything): no write follows it, and each skip is said.
+    fs::remove_dir_all(&notes).unwrap();
+    std::os::unix::fs::symlink(&outside.0, &notes).unwrap();
+    let report = import(&target, &conn, &request(true)).unwrap();
+    assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
+    assert_eq!(
+        (report.memory_files_added, report.memory_files_beside),
+        (0, 0),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("notes/planted.md") && n.contains("outside")),
+        "{:?}",
+        report.notes
+    );
+}
+
 #[test]
 fn a_newer_or_damaged_export_is_refused_and_a_v1_file_is_recognised() {
     let source_dir = TestDir::new("source");
