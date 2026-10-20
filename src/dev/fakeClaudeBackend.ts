@@ -23,6 +23,8 @@ const RECORDED: Record<string, string> = { "402": fixture402, "529": fixture529 
 export function fakeClaudeBackend(): ChildBackend {
   const handlers = new Map<string, Handler>();
   const conversations = new Map<string, string>();
+  /** The app's own helper calls (a title, a room pick: `--no-session-persistence`) get a plain answer, not the script. */
+  const helpers = new Set<string>();
   const waiting = new Map<string, (response: Record<string, unknown>) => void>();
   const held: Array<() => void> = [];
   let counter = 0;
@@ -64,6 +66,10 @@ export function fakeClaudeBackend(): ChildBackend {
   };
 
   async function play(sessionId: string, prompt: string) {
+    if (helpers.has(sessionId)) {
+      await later(60);
+      return say(sessionId, JSON.stringify({ title: "Chat", workItem: null }));
+    }
     const what = state.next.shift() ?? "reply";
     await later(120);
     emit(sessionId, { type: "system", subtype: "init", session_id: conversation(sessionId), model: "claude-sonnet-5", tools: [] });
@@ -145,6 +151,7 @@ export function fakeClaudeBackend(): ChildBackend {
           const named = (flag: string) => (list.indexOf(flag) >= 0 ? list[list.indexOf(flag) + 1] : undefined);
           const id = named("--resume") ?? named("--session-id");
           if (id && args?.sessionId) conversations.set(String(args.sessionId), id);
+          if (list.includes("--no-session-persistence") && args?.sessionId) helpers.add(String(args.sessionId));
           return (4000 + (counter += 1)) as T;
         }
         case "harness_write": {
@@ -162,6 +169,10 @@ export function fakeClaudeBackend(): ChildBackend {
               done(response.response ?? {});
             }
           } else if (record.type === "user") {
+            if (helpers.has(sessionId)) {
+              void play(sessionId, "");
+              return undefined as T;
+            }
             const content = (record.message as { content?: unknown } | undefined)?.content;
             const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (part as { text?: string }).text ?? "").join("\n") : "";
             state.prompts.push({ sessionId, text });
