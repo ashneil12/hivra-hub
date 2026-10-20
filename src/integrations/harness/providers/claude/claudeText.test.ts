@@ -68,7 +68,9 @@ vi.mock("../../core/child", () => ({
   },
 }));
 
-vi.mock("../../../../features/sessions/model/models", () => ({ modelsFor: () => [] }));
+/** The models the CLI advertises (list_models), as the app's catalog has them. */
+let catalog: { id: string; name: string; nativeId?: string }[] = [];
+vi.mock("../../../../features/sessions/model/models", () => ({ modelsFor: () => catalog }));
 
 const text = await import("./claudeText");
 
@@ -76,6 +78,7 @@ beforeEach(() => {
   fakes.clear();
   watchers.clear();
   script = () => ({ text: "ok" });
+  catalog = [];
 });
 afterEach(async () => {
   await text.stopClaudeTextPrompt();
@@ -127,4 +130,24 @@ it("a failed turn, a timeout and a cancel each reject and leave no process behin
   setTimeout(() => controller.abort(), 50);
   await expect(cancelled).rejects.toThrow(/cancelled/);
   await vi.waitFor(() => expect([...fakes.values()].every((f) => f.killed)).toBe(true));
+});
+
+it("a helper call runs on a versioned Haiku, never the bare alias (in plan mode the CLI ran it on Sonnet; outside, it thought)", async () => {
+  const modelOf = () => {
+    const f = [...fakes.values()].at(-1)!;
+    return f.args[f.args.indexOf("--model") + 1];
+  };
+  catalog = [
+    { id: "claude:haiku", name: "Haiku", nativeId: "haiku" },
+    { id: "claude:haiku-4.5", name: "Haiku 4.5", nativeId: "claude-haiku-4-5" },
+    { id: "claude:haiku-5.5", name: "Haiku 5.5", nativeId: "claude-haiku-5-5" },
+  ];
+  await text.runClaudeTextPrompt({ cwd: "/p", prompt: "x", intent: "plan" });
+  expect(modelOf()).toBe("claude-haiku-5-5");
+  catalog = [{ id: "claude:haiku", name: "Haiku", nativeId: "haiku" }];
+  await text.runClaudeTextPrompt({ cwd: "/p", prompt: "x" });
+  expect(modelOf()).toBe("claude-haiku-4-5");
+  // A model the caller names is used as named.
+  await text.runClaudeTextPrompt({ cwd: "/p", prompt: "x", model: "sonnet" });
+  expect(modelOf()).toBe("sonnet");
 });

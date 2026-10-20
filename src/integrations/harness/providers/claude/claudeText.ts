@@ -100,14 +100,20 @@ function textSettings(
   };
 }
 
+/**
+ * The model for a call: the one asked for, else the newest versioned Haiku the CLI offers. Never the bare "haiku"
+ * alias: measured 20 Oct (CLI 2.1.304), with --permission-mode plan the CLI ran it on Sonnet 5.5, and without plan mode
+ * it thought before a one-line answer even with thinking off; a versioned id answers in 2 to 3 s.
+ */
 function pickTextModel(requested?: string): string {
   const selected = requested?.trim();
   if (selected) return selected;
-  const models = modelsFor("claude");
-  const haiku = models.find((model) =>
-    /haiku/i.test(`${model.nativeId ?? ""} ${model.name} ${model.id}`),
-  );
-  return haiku?.nativeId ?? TEXT_MODEL;
+  const versioned = modelsFor("claude")
+    .map((model) => model.nativeId ?? "")
+    .map((id) => ({ id, version: /^claude-haiku-(\d+)-(\d+)$/.exec(id) }))
+    .filter((m): m is { id: string; version: RegExpExecArray } => !!m.version)
+    .sort((a, b) => Number(b.version[1]) - Number(a.version[1]) || Number(b.version[2]) - Number(a.version[2]));
+  return versioned[0]?.id ?? TEXT_MODEL;
 }
 
 /** Stop every call still running (the app is closing, or the helpers are being reset). */
