@@ -1069,14 +1069,14 @@ async function runTurn(
   settlePendingTurn(live);
 
   try {
-    await writeJson(input.sessionId, message);
     // A brief's finish line goes in right behind it, so Claude reads the brief first and then keeps going until
-    // Claude Code's own evaluator says the condition holds; the turn ends when both are answered.
+    // Claude Code's own evaluator says the condition holds; the turn ends when both are answered. Both are owed before
+    // the brief is written: Claude can answer the brief before its write call returns here (on a busy window its
+    // output arrives first), and that answer must not end the turn while the /goal is still to go in.
     const goal = goalToSet(live, input, options.briefGoal);
-    if (goal) {
-      live.promptsOwed += 1;
-      await writeJson(input.sessionId, buildClaudeUserMessage({ text: goalCommand(goal) }));
-    }
+    if (goal) live.promptsOwed += 1;
+    await writeJson(input.sessionId, message);
+    if (goal) await writeJson(input.sessionId, buildClaudeUserMessage({ text: goalCommand(goal) }));
     input.onAccepted?.();
     // Claude has this prompt now, and with it any note about work a restart cut: from here the chat's background
     // work is this turn's own (none yet), not what a resumed turn carried forward.

@@ -23,14 +23,16 @@ export const GOAL_MAX = 1_000;
 
 const BRIEF_HEAD = "[MonoCode brief from ";
 const DONE_WHEN = /\n\nDone when: ([^\n][\s\S]*)$/;
+/** The project memory a Lead's worker gets after the finish line (hub/model/hubMemoryPrimer.ts): the last such block. */
+const MEMORY_TAIL = /\n\n<project_memory>(?:(?!<project_memory>)[\s\S])*<\/project_memory>\s*$/;
 
 /**
- * The finish line a delegated brief carries (agentAppTasks.briefPrompt): its last paragraph, "Done when: <goal>".
- * Only a MonoCode brief counts, never Ash's own text.
+ * The finish line a delegated brief carries (agentAppTasks.briefPrompt): its last paragraph, "Done when: <goal>",
+ * before the project memory that may follow it. Only a MonoCode brief counts, never Ash's own text.
  */
 export function goalFromBrief(text: string): string | undefined {
   if (!text.startsWith(BRIEF_HEAD)) return undefined;
-  const condition = DONE_WHEN.exec(text)?.[1]?.replace(/\s+/g, " ").trim();
+  const condition = DONE_WHEN.exec(text.replace(MEMORY_TAIL, ""))?.[1]?.replace(/\s+/g, " ").trim();
   return condition ? condition.slice(0, GOAL_MAX) : undefined;
 }
 
