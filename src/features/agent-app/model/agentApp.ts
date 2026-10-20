@@ -110,6 +110,8 @@ import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRoom
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
+import { mergeSoul, readForMerge, type SoulMergeCaller } from "../../hub/model/soulMerge";
+import type { SoulTemplate } from "../../hub/model/soulRefresh";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import {
   AUTOPILOT_FIELDS,
@@ -250,6 +252,8 @@ export type AgentAppHost = {
   ): Promise<string>;
   /** The clock entries are dated by; tests pin it. */
   now?(): Date;
+  /** The app's soul for each Mono that has one (soulRefresh.ts soulTemplates); tests pass their own. */
+  soulTemplates?(): SoulTemplate[];
   /** This app's identity and build stamp; defaults to what the app injected into the window. */
   identity?(): AppIdentity | null;
   /**
@@ -325,6 +329,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["artifacts.write", ["id", "kind", "title", "body", "summary"]],
   ["soul.read", []],
   ["soul.update", ["text", "expectedHash"]],
+  ["souls.read", ["mono"]],
+  ["souls.merge", ["mono", "text", "expectedHash"]],
   ["memory.read", ["topic"]],
   ["memory.search", ["query", "since"]],
   ["memory.add", ["fact", "topic", "until"]],
@@ -1201,6 +1207,30 @@ export async function handleAgentApp(
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
     return handleSoul(source, action, input, host);
+  if (action.startsWith("souls.")) {
+    // Alfred's lane only (hub/model/soulMerge.ts): the app checks who asks, the read-before-write guard and the soul.
+    const caller: SoulMergeCaller = {
+      monoId: host.isMono(source.id) ? host.monoOf?.(source.id)?.id : undefined,
+      isOwnChat: host.isMono(source.id) && !host.isHabitRun?.(source.id),
+    };
+    const files = {
+      read: (monoId: string, path: AgentFilePath) => host.readAgentFile(monoId, path),
+      write: (monoId: string, path: AgentFilePath, text: string, hash?: string) =>
+        host.writeAgentFile(monoId, path, text, hash ?? ""),
+    };
+    const mono = requiredString(input.mono, "mono", 128);
+    const templates = host.soulTemplates?.();
+    if (action === "souls.read") return readForMerge(caller, mono, files, templates);
+    if (typeof input.text !== "string" || input.text.length > 240_000)
+      throw new Error("text must be a string under 240000 characters");
+    return mergeSoul(
+      caller,
+      { mono, text: input.text, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
+      files,
+      templates,
+      host.now?.() ?? new Date(),
+    );
+  }
   if (action.startsWith("memory."))
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))

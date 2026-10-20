@@ -20,6 +20,13 @@ soul, chat ids only in WebView storage).
   live 15 Oct leads) is swapped only when it is exactly a soul the app once seeded (`knownSouls.generated.ts`, SHA-256s
   from git history: `node scripts/known-souls.mjs`, `--check` to verify); otherwise it is left alone with a plain row
   and no Undo ("Hivra lead's soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.").
+- **"Ask Alfred to merge it"** (`model/soulMerge.ts`, app actions `souls.read` / `souls.merge`): only Alfred's own chat
+  (by Mono id; never a habit run, worker or other Mono) may merge another Mono's soul update. The app refuses a soul
+  that changed since Alfred read it, a blank or non-soul text, any line that is in neither the soul nor the app's version
+  (merge only, never add), and a merge that drops a part Ash added; then it saves the old soul, records the template and
+  logs one plain row ("Alfred merged the app's update into Hivra lead's soul and kept your changes to 'Your job'.") with
+  Undo and Redo. Alfred's soul has the matching section. The real-model scene ("merge hivra leads update") is for the
+  conversation runner.
 - **ash-lead is hub-lead** (`model/monoRename.ts`, `mono_rename`), once, old soul kept in `memory/ash-lead-soul.md`.
 - **Chief of Staff's Grok Bot line** (`model/memoryLineFixes.ts`): "The hub runs on its own without Grok Bot. Grok Bot
   leadership can oversee it and set tasks, but isn't required."

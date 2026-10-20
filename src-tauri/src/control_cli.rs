@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 53] = [
+const APP_ACTIONS: [&str; 55] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -109,6 +109,8 @@ const APP_ACTIONS: [&str; 53] = [
     "artifacts.write",
     "soul.read",
     "soul.update",
+    "souls.read",
+    "souls.merge",
     "memory.read",
     "memory.search",
     "memory.add",
@@ -283,6 +285,15 @@ Actions:
                   Preserve the other instructions. If the file changed since
                   soul.read, read it again and reapply the requested changes.
                   Habit runs and other sessions cannot change a Mono's soul.
+  souls.read     {"mono":"hivra-lead"}  Alfred's own chat only. Another Mono's
+                  soul, its hash and the app's newer version, to merge.
+  souls.merge    {"mono":"hivra-lead","text":"<complete merged soul>",
+                  "expectedHash":"<hash from souls.read>"}
+                  Alfred's own chat only, when Ash asks. Take the app's new
+                  wording and keep every change Ash made (his wording wins);
+                  add nothing new. The app checks it, refuses it if the soul
+                  changed since souls.read, keeps the old soul and logs it in
+                  Bot changes with Undo.
   memory.read    {"topic":"releases"}  Mono only. Without topic:
                   MEMORY.md, how much of it loads, and the topic names.
   memory.search  {"query":"release tags","since":"7d"}
@@ -875,6 +886,25 @@ mod tests {
         assert!(app_help().contains("only when the user asks"));
         assert!(app_help().contains("expectedHash"));
         assert!(app_help().contains("Habit runs and other sessions cannot change"));
+    }
+
+    #[test]
+    fn app_mode_exposes_alfreds_soul_merge() {
+        for (action, input) in [
+            ("souls.read", r#"{"mono":"hivra-lead"}"#),
+            (
+                "souls.merge",
+                r##"{"mono":"hivra-lead","text":"# Soul\n","expectedHash":"h"}"##,
+            ),
+        ] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", input]), true),
+                Ok(Parsed::Call(parsed_action, _, _)) if parsed_action == action
+            ));
+            assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert!(app_help().contains(action));
+        }
+        assert!(app_help().contains("Alfred's own chat only"));
     }
 
     #[test]

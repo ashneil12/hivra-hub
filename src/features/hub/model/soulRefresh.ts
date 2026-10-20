@@ -211,6 +211,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "How I work": "{name}'s review steps are updated.",
   "The look I defend (hub design rules)": "{name} will now judge screens against the newer hub design rules.",
   "How I work with the others": "{name} will now work with the other Monos the newer way.",
+  "Merging a Mono's soul update": "{name} will now merge a Mono's soul update when Ash asks, keeping his own changes, and tell him in plain words what changed.",
   "How a delegated job comes back": "{name} will now report delegated jobs from the board and wait for a yes instead of acting itself.",
   "In the room": "{name} will now follow the room's newer rules: speak only with something new, keep posts short, and hand off by name.",
   "What I never do": "{name}'s list of things it never does is updated.",
@@ -274,7 +275,7 @@ export async function isKnownSeededSoul(soul: string, values: SoulValues = {}): 
   return KNOWN_SOUL_HASHES.has(await sha256(text));
 }
 
-type Files = {
+export type SoulFiles = {
   read(monoId: string, path: AgentFilePath): Promise<{ text: string | null; hash: string }>;
   write(monoId: string, path: AgentFilePath, text: string, expectedHash?: string): Promise<unknown>;
 };
@@ -283,9 +284,23 @@ const today = (now: Date) =>
   `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
 /** Save `text` and read it back; false when it didn't go in. */
-async function saveChecked(files: Files, monoId: string, path: AgentFilePath, text: string, hash: string): Promise<boolean> {
+async function saveChecked(files: SoulFiles, monoId: string, path: AgentFilePath, text: string, hash: string): Promise<boolean> {
   await files.write(monoId, path, text, hash);
   return (await files.read(monoId, path)).text === text;
+}
+
+/**
+ * Save the whole old soul as a topic note in that Mono's memory before it changes: today's note, or, when today's
+ * already holds a different soul, one named with `tag` as well. Read back; false when it didn't go in.
+ */
+export async function saveOldSoul(files: SoulFiles, monoId: string, soul: string, now: Date, tag: string): Promise<boolean> {
+  let note = oldSoulNote(today(now));
+  let existing = await files.read(monoId, note);
+  if (existing.text != null && existing.text !== soul) {
+    note = oldSoulNote(today(now), tag);
+    existing = await files.read(monoId, note);
+  }
+  return existing.text === soul || saveChecked(files, monoId, note, soul, existing.hash);
 }
 
 /**
@@ -294,7 +309,7 @@ async function saveChecked(files: Files, monoId: string, path: AgentFilePath, te
  * row. Returns the ids it refreshed, recorded the template for, and skipped.
  */
 export async function refreshSouls(
-  files: Files = { read: readAgentFile, write: writeAgentFile },
+  files: SoulFiles = { read: readAgentFile, write: writeAgentFile },
   templates: SoulTemplate[] = soulTemplates(),
   now: Date = new Date(),
 ): Promise<{ refreshed: string[]; recorded: string[]; skipped: string[] }> {
@@ -334,13 +349,7 @@ export async function refreshSouls(
       // Made once per template: one Ash undid stays undone.
       if (findBotChange(id)) continue;
       // 1. The whole old soul, saved first (a second refresh the same day gets its own note).
-      let note = oldSoulNote(today(now));
-      let existing = await files.read(monoId, note);
-      if (existing.text != null && existing.text !== soul.text) {
-        note = oldSoulNote(today(now), fp);
-        existing = await files.read(monoId, note);
-      }
-      if (existing.text !== soul.text && !(await saveChecked(files, monoId, note, soul.text, existing.hash))) continue;
+      if (!(await saveOldSoul(files, monoId, soul.text, now, fp))) continue;
       // 2. The soul itself, over the hash it was read at (a soul Ash saved meanwhile is left alone until the next pass).
       if (!(await saveChecked(files, monoId, "SOUL.md", plan.after, soul.hash))) continue;
       // 3. The template it now follows, so his later edits are known.
