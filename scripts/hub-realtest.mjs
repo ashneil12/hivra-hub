@@ -138,7 +138,9 @@ export function jobsFromDelegations(delegations, projects, names = {}) {
   const jobs = new Map();
   for (const row of rows) {
     const top = topOf(row);
-    const project = projects.find((p) => p.folder && (top.project === p.folder || String(top.project ?? "").startsWith(`${p.folder}/`)));
+    // The row's project is the hub project id (older rows: a folder, maybe a worktree beside it).
+    const where = String(top.project ?? "");
+    const project = projects.find((p) => p.id === where || (p.folder && (where === p.folder || where.startsWith(`${p.folder}/`) || where.startsWith(`${p.folder}-worktrees/`))));
     if (!project) continue;
     const id = `d_${String(top.id).replace(/[^A-Za-z0-9]/g, "").slice(-24)}`;
     const group = jobs.get(id) ?? { top, project, rows: [] };
@@ -214,7 +216,9 @@ async function main() {
   const evidence = path.join(ROOT, "evidence/realtest", id);
   const state = path.join(evidence, "claude");
   fs.mkdirSync(state, { recursive: true });
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "monocode-realtest-"));
+  // Canonical (macOS's /var is /private/var): the app, git and Claude all report real paths, and the stub's project
+  // folder has to match what they say.
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "monocode-realtest-")));
   const home = path.join(scratch, "home");
   const projects = path.join(scratch, "projects");
   const project = path.join(projects, spec.project.id);
@@ -263,6 +267,16 @@ async function main() {
       }
     }
     await stub?.close().catch(() => undefined);
+    // Claude processes this run started that outlived the app (every real chat's arguments name this run's folder).
+    const left = spawnSync("pgrep", ["-f", scratch], { encoding: "utf8" }).stdout.split("\n").map(Number).filter((pid) => pid && pid !== process.pid);
+    for (const pid of left) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // gone
+      }
+    }
+    if (left.length) log(`stopped ${left.length} leftover process(es) of this run`);
   };
   const ending = cleanupOnExit(
     async () => {

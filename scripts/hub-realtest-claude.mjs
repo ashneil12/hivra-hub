@@ -251,7 +251,17 @@ function main() {
     }
     child.stdin.write(`${line}\n`);
   });
-  input.on("close", () => child.stdin.end());
+  // The app closed our stdin (it ended the chat, quit or died): Claude gets EOF, and a stop if it lingers.
+  input.on("close", () => {
+    child.stdin.end();
+    setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // gone
+      }
+    }, 10_000).unref();
+  });
 
   const output = readline.createInterface({ input: child.stdout });
   output.on("line", (line) => {
