@@ -2,7 +2,12 @@
 // scenario, the planted failure, the verdict and exit codes, and the config layering. The live walk itself is
 // `npm run hub:verify-live` (and `-- --fail-gate`), which leaves evidence/<run>/verdict.json.
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
@@ -22,6 +27,7 @@ import {
   TREE_LEAD,
   WALK,
   WORKER,
+  cleanupOnExit,
   exitCode,
   goalFor,
   mergePatch,
@@ -29,6 +35,9 @@ import {
   scenario,
   verdictOf,
 } from "./hub-verify-live.mjs";
+import { ROOT, shortHash } from "./hub-dev.mjs";
+
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "hub-verify-live.mjs");
 
 const RESUME_NOTE = `Note: MonoCode Hub restarted while this turn was running, and this background work was cut before it finished.\n- subagent: Verify subagent (id ${SUBAGENT_ID})\n\n${CONTINUE}.`;
 
@@ -189,4 +198,90 @@ test("configs layer like tauri --config (JSON merge patch) and run ids are safe 
   const id = runId(new Date("2026-10-19T22:05:09.123Z"), true);
   assert.match(id, /^20261019-220509-[0-9a-f]{4}-fail-gate$/);
   assert.match(runId(new Date("2026-10-19T22:05:09Z")), /^[A-Za-z0-9._-]{1,64}$/);
+});
+
+// ---- cleanup (SH-6) ---------------------------------------------------------------------------
+
+/** A fresh folder that stands in for Ash's real HOME, a TMPDIR to watch, and a way to put the worktree back as it was. */
+function sandbox(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "verify-live-test-")));
+  const home = path.join(root, "home");
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(home);
+  fs.mkdirSync(tmp);
+  const evidence = path.join(ROOT, "evidence");
+  const before = new Set(fs.existsSync(evidence) ? fs.readdirSync(evidence) : []);
+  t.after(() => {
+    for (const name of fs.existsSync(evidence) ? fs.readdirSync(evidence) : [])
+      if (!before.has(name)) fs.rmSync(path.join(evidence, name), { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  return { home, tmp };
+}
+
+function verifyLive(box, args) {
+  return spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", SCRIPT, ...args], {
+    cwd: ROOT,
+    env: { ...process.env, HOME: box.home, TMPDIR: box.tmp },
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+}
+
+test("SH-6: a run that fails while setting up still removes its temporary HOME", (t) => {
+  const box = sandbox(t);
+  // Both the slot's name and its hashed fallback belong to other worktrees that exist: planSlot refuses.
+  const base = `verify-clash-${process.pid}`;
+  fs.mkdirSync(path.join(box.home, ".monocode-hub-dev"), { recursive: true });
+  fs.writeFileSync(
+    path.join(box.home, ".monocode-hub-dev/slots.json"),
+    JSON.stringify({ version: 1, slots: { [base]: { worktree: "/" }, [`${base}-${shortHash(fs.realpathSync(ROOT))}`]: { worktree: "/" } } }),
+  );
+  const result = verifyLive(box, ["--no-build", "--slot", base]);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /belong to other worktrees/);
+  assert.deepEqual(fs.readdirSync(box.tmp), [], "the temporary HOME is gone");
+});
+
+test("SH-6: SIGINT or SIGTERM stops what the run started and removes its temporary folder", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "verify-live-test-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const program = path.join(root, "run.mjs");
+  fs.writeFileSync(
+    program,
+    `import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { cleanupOnExit } from ${JSON.stringify(pathToFileURL(SCRIPT).href)};
+const scratch = process.argv[2];
+fs.mkdirSync(scratch, { recursive: true });
+const child = spawn("/bin/sleep", ["60"], { stdio: "ignore" });
+cleanupOnExit(async () => {
+  child.kill("SIGTERM");
+  fs.rmSync(scratch, { recursive: true, force: true });
+});
+console.log(child.pid);
+setInterval(() => {}, 1000);
+`,
+  );
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130]]) {
+    const scratch = path.join(root, `scratch-${signal}`);
+    const run = spawn(process.execPath, [program, scratch], { stdio: ["ignore", "pipe", "inherit"] });
+    const sleeper = await new Promise((resolve) => run.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim()))));
+    assert.ok(alive(sleeper) && fs.existsSync(scratch));
+    const exited = new Promise((resolve) => run.on("exit", (exit) => resolve(exit)));
+    run.kill(signal);
+    assert.equal(await exited, code, signal);
+    assert.equal(fs.existsSync(scratch), false, `${signal}: the temporary folder is gone`);
+    const deadline = Date.now() + 5_000;
+    while (alive(sleeper) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(alive(sleeper), false, `${signal}: what it started is stopped`);
+  }
 });
