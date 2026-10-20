@@ -192,12 +192,6 @@ export class QuestionRouter {
     !!this.ownerRow(chat.sessionId) ||
     (chat.source === "line" && !!this.host.reportsTo?.(chat.sessionId));
 
-  /** The wake this child's question has (or had) in its owner's queue, if any. */
-  wakeFor(child: string): { owner: string; id: string } | undefined {
-    const entry = this.routed.get(child);
-    return entry && { owner: entry.owner, id: entry.wakeId };
-  }
-
   /**
    * Someone is about to answer this question (the Lead's task_answer): the row's log names them and what they
    * answered. Called before the answer goes to the worker, so whichever path clears the row logs the same answer.

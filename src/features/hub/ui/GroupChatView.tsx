@@ -17,6 +17,7 @@ import {
   addMember,
   createChat,
   ensureLeadership,
+  chatSaveProblem,
   getChat,
   removeMember,
   renameChat,
@@ -304,6 +305,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                 ? "The team paused here and is waiting for you."
                 : null}
         </div>
+        {chatSaveProblem() ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-amber-400" data-hub-chat-save-error>
+          {chatSaveProblem()}
+        </div> : null}
         {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-content/70" data-hub-chat-error>
           {roomPick(chat.id) ? <span data-hub-chat-error-pick={roomPick(chat.id)!.id}>{nameOf(roomPick(chat.id)!.id)} was picked to answer ({roomPick(chat.id)!.why}). </span> : null}
           {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>

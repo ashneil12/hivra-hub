@@ -15,6 +15,7 @@ import {
 } from "../../sessions/model/session";
 import {
   bootStep,
+  bootUntilLoaded,
   DelegationTracker,
   isOpenDelegation,
   storedResult,
@@ -787,5 +788,112 @@ describe("the delegate tool's tasks on the rows (H3)", () => {
     const child = { ...newSession("claude", PROJECT), id: "app-mono-exo-p" };
     expect(storedResult(finished, child).project).toBe(PROJECT);
     expect(storedResult(finished).project).toBe("vg-game");
+  });
+});
+
+describe("a boot whose open rows can't be loaded", () => {
+  it("doesn't count as loaded, so a child's next turn still re-attaches to its open row; a later boot loads them", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-mono-exo-a", "Fix the save bug");
+    const relaunch = new AppRun(store, app.quit());
+    const listOpen = store.listOpen.bind(store);
+    store.listOpen = async () => {
+      throw new Error("database is locked");
+    };
+    await expect(relaunch.tracker.boot(true)).rejects.toThrow("database is locked");
+    expect(relaunch.tracker.isLoaded()).toBe(false);
+    // Ash's own message to the child (not a resume): with the open rows unknown, the store decides, so it re-attaches.
+    expect(relaunch.tracker.resumeMonitor("app-mono-exo-a", "also check the autosave", false)).toBeDefined();
+    store.listOpen = listOpen;
+    await relaunch.tracker.boot(true);
+    expect(relaunch.tracker.isLoaded()).toBe(true);
+    expect(relaunch.tracker.openRowFor("app-mono-exo-a")?.childSession).toBe("app-mono-exo-a");
+  });
+
+  it("is tried again, further apart each time, until it loads (and recovery goes with the attempt that claims it)", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-mono-exo-a", "Fix the save bug");
+    const relaunch = new AppRun(store, app.quit());
+    const listOpen = store.listOpen.bind(store);
+    let failures = 2;
+    store.listOpen = async () => {
+      if (failures-- > 0) throw new Error("database is locked");
+      return listOpen();
+    };
+    const waits: number[] = [];
+    const attempts: boolean[] = [];
+    const boot = vi.spyOn(relaunch.tracker, "boot");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loaded = await bootUntilLoaded(relaunch.tracker, {
+      live: () => true,
+      recover: () => true,
+      attempted: ({ loaded }) => void attempts.push(loaded),
+      wait: async (ms) => void waits.push(ms),
+    });
+    error.mockRestore();
+    expect(loaded).toBe(true);
+    expect(attempts).toEqual([false, false, true]);
+    expect(waits).toEqual([2_000, 5_000]);
+    expect(boot.mock.calls).toEqual([[true], [true], [true]]);
+    expect(relaunch.tracker.isLoaded()).toBe(true);
+  });
+
+  it("stops trying once its window has gone", async () => {
+    const store = new MemoryStore();
+    const relaunch = new AppRun(store);
+    store.listOpen = async () => {
+      throw new Error("database is locked");
+    };
+    let live = true;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loaded = await bootUntilLoaded(relaunch.tracker, {
+      live: () => live,
+      recover: () => false,
+      wait: async () => {
+        live = false;
+      },
+    });
+    error.mockRestore();
+    expect(loaded).toBe(false);
+    expect(relaunch.tracker.isLoaded()).toBe(false);
+  });
+});
+
+describe("the rows a window keeps", () => {
+  it("lets go of a row once its work is settled and its report reached the owner (or was thrown away)", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const done = await app.start("app-mono-exo-a", "Fix the save bug");
+    done.finish("Fixed.");
+    app.endMonoTurn();
+    await app.settledDown();
+    // Finished, its report queued: still owed, still kept.
+    expect(app.tracker.row(done.row!.id)).toMatchObject({ delivery: "queued" });
+    app.deliverHead();
+    await app.settledDown();
+    expect(store.rows.get(done.row!.id)).toMatchObject({ delivery: "delivered" });
+    expect(app.tracker.row(done.row!.id)).toBeUndefined();
+    const running = await app.start("app-mono-exo-b", "Fix the audio");
+    expect(app.tracker.known().map((row) => row.childSession)).toEqual(["app-mono-exo-b"]);
+    expect(app.tracker.openRowFor("app-mono-exo-b")?.id).toBe(running.row!.id);
+  });
+
+  it("keeps a Lead's delivered report until its room post is done", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const launch = app.tracker.launch({ ownerSession: MONO, requestId: "app-cos-b1", childSession: "lead-chat", follow: "lead" });
+    const lead = (await launch.row)!;
+    // This store doesn't keep `follow` (followedBriefs.test.ts covers it): set it as delegations.rs would.
+    store.rows.get(lead.id)!.follow = "lead";
+    await store.settle({ id: lead.id, generation: 1, state: "completed", result: "Shipped." });
+    await store.setDelivery({ ids: [lead.id], delivery: "queued", queuedMessage: "mono-completion-app-cos-b1-g1" });
+    await app.tracker.refresh([lead.id], MONO);
+    app.tracker.delivered("mono-completion-app-cos-b1-g1");
+    await app.settledDown();
+    expect(app.tracker.row(lead.id)).toMatchObject({ delivery: "delivered" });
+    app.tracker.forget(lead.id);
+    expect(app.tracker.row(lead.id)).toBeUndefined();
   });
 });

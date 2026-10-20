@@ -375,6 +375,43 @@ export function bootStep(
   };
 }
 
+/** How long to wait before each further boot attempt; the last repeats. */
+export const BOOT_RETRY_MS = [2_000, 5_000, 15_000, 60_000] as const;
+
+/**
+ * Boot until the open rows load: a failed load is tried again, further apart each time, while `live()`. Whether an
+ * attempt also recovers is asked per attempt, so a recovery that failed is taken up by whichever attempt comes next.
+ * Resolves true once loaded, false when it stopped because the window went.
+ */
+export async function bootUntilLoaded(
+  tracker: Pick<DelegationTracker, "boot">,
+  options: {
+    live(): boolean;
+    recover(): boolean;
+    /** After each attempt, with whether it recovered and whether the rows loaded. */
+    attempted?(outcome: { recover: boolean; loaded: boolean }): void;
+    wait?(ms: number): Promise<void>;
+  },
+): Promise<boolean> {
+  const wait =
+    options.wait ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; options.live(); attempt++) {
+    const recover = options.recover();
+    try {
+      await tracker.boot(recover);
+      options.attempted?.({ recover, loaded: true });
+      return true;
+    } catch (error) {
+      console.error("Could not load the open delegations; trying again", error);
+      options.attempted?.({ recover, loaded: false });
+    }
+    if (!options.live()) break;
+    await wait(BOOT_RETRY_MS[Math.min(attempt, BOOT_RETRY_MS.length - 1)]);
+  }
+  return false;
+}
+
 /** What the tracker needs from the app. */
 export type DelegationHost = {
   /** A session as this window has it. */
@@ -410,6 +447,18 @@ export type BootSummary = Record<BootStep["kind"], number>;
 
 const key = (owner: string, request: string) => `${owner}\u0000${request}`;
 
+/**
+ * A row this window still needs: one whose work runs or whose report is owed, and a Lead's report that reached its
+ * owner until its room post is done (`forget`). A settled row whose report was delivered, acknowledged or thrown away
+ * is let go, so a long-running window doesn't keep every row it ever saw.
+ */
+function retained(row: Delegation): boolean {
+  return (
+    isOwed(row) ||
+    (row.follow === "lead" && row.delivery !== "disposed" && !!row.deliveryMessage)
+  );
+}
+
 /** The app's side of the delegation rows: one instance per window, every store call in order. */
 export class DelegationTracker {
   private tail: Promise<unknown> = Promise.resolve();
@@ -433,13 +482,24 @@ export class DelegationTracker {
 
   private remember(row: Delegation | null | undefined) {
     if (!row) return;
-    this.rows.set(row.id, row);
-    this.requests.set(key(row.ownerSession, row.requestId), row.id);
+    if (retained(row)) {
+      this.rows.set(row.id, row);
+      this.requests.set(key(row.ownerSession, row.requestId), row.id);
+    } else this.forget(row.id);
     // A followed brief never re-attaches to a turn in its chat (the watcher reports it), so it isn't "the row this
     // chat works for" either.
     if (isOpenDelegation(row) && !row.follow) this.openChildren.set(row.childSession, row.id);
     else if (this.openChildren.get(row.childSession) === row.id)
       this.openChildren.delete(row.childSession);
+  }
+
+  /** Let go of a row this window no longer needs (a Lead's report once its room post is done). */
+  forget(id: string): void {
+    const row = this.rows.get(id);
+    if (!row) return;
+    this.rows.delete(id);
+    const request = key(row.ownerSession, row.requestId);
+    if (this.requests.get(request) === id) this.requests.delete(request);
   }
 
   /** The followed briefs still open (followedBriefs.ts watches their chats). */
@@ -749,13 +809,11 @@ export class DelegationTracker {
       queued: 0,
       queue: 0,
     };
-    let rows: Delegation[] = [];
-    try {
-      rows = await this.serial(() => this.backend.listOpen());
-      rows.forEach((row) => this.remember(row));
-    } finally {
-      this.loaded = true;
-    }
+    // Loaded only when they were: until then a chat's next turn asks the store whether it works for an open row
+    // (resumeMonitor), so a failed load never leaves a child unable to re-attach. bootUntilLoaded tries again.
+    const rows = await this.serial(() => this.backend.listOpen());
+    rows.forEach((row) => this.remember(row));
+    this.loaded = true;
     if (!recover) return summary;
     for (const listed of rows) {
       await this.serial(async () => {

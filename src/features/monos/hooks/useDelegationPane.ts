@@ -6,6 +6,7 @@ import {
   jumpIn,
   noteStopFailures,
   stopFailures,
+  stopUnloaded,
   useDelegationRows,
 } from "../model/delegationStore";
 import { isOpenDelegation } from "../model/delegations";
@@ -28,6 +29,8 @@ export type DelegationPane =
       kind: "lead";
       count: number;
       failed: string[];
+      /** Chats whose workers the last Stop couldn't load: they may still be running. */
+      unloaded: string[];
       onStopAll?: () => Promise<unknown>;
     };
 
@@ -41,20 +44,27 @@ export function useDelegationPane(
     const failed = stopFailures(sessionId).map(
       (id) => delegationOf(id, rows)?.title?.trim() || "a worker",
     );
-    if (!count && !failed.length) return undefined;
+    const unloaded = stopUnloaded(sessionId).map((id) => {
+      if (id === sessionId) return "this chat";
+      const mono = monoForSession(id);
+      return (
+        delegationOf(id, rows)?.title?.trim() ||
+        (mono ? monoLook(mono).name : "a worker")
+      );
+    });
+    if (!count && !failed.length && !unloaded.length) return undefined;
     const actions = delegationActions();
     return {
       kind: "lead",
       count,
       failed,
+      unloaded,
       ...(actions
         ? {
             onStopAll: () =>
               actions
                 .stopTree(sessionId)
-                .then((result) =>
-                  noteStopFailures(sessionId, result.stopFailed),
-                ),
+                .then((result) => noteStopFailures(sessionId, result)),
           }
         : {}),
     };

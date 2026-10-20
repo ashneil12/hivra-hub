@@ -213,6 +213,74 @@ describe("stopTree", () => {
   });
 });
 
+describe("a Stop whose rows can't be loaded", () => {
+  it("stops the chat and says its workers may still be running, instead of reporting a clean Stop", async () => {
+    const t = await tree();
+    const { api, events } = host(t.store, ["lead", "w1", "w2"]);
+    api.listOpen = async () => {
+      throw new Error("database is locked");
+    };
+    const result = await stopTree("lead", api, {
+      reason: "Stopped by Ash.",
+      by: "user",
+    });
+    expect(stops(events)).toEqual(["lead"]);
+    expect(result.unloaded).toEqual(["lead"]);
+    expect(result.stopFailed).toEqual([]);
+  });
+
+  it("a tree that fails to load is reported too (a finished row linking the workers may be missing)", async () => {
+    const t = await tree();
+    const { api } = host(t.store, ["lead", "w1"]);
+    api.tree = async () => {
+      throw new Error("database is locked");
+    };
+    const result = await stopTree("lead", api, {
+      reason: "Stopped by Ash.",
+      by: "user",
+    });
+    expect(result.unloaded).toEqual(["lead"]);
+  });
+
+  it("a task's Stop names the task's chat when what is beneath it can't be loaded", async () => {
+    const t = await tree();
+    const { api } = host(t.store, ["w1", "h1"]);
+    api.listOpen = async () => {
+      throw new Error("database is locked");
+    };
+    const result = await stopTask(t.w1 as Delegation, api, {
+      reason: "Not needed any more",
+      by: "user",
+    });
+    expect(result.stopped).toEqual(["w1"]);
+    expect(result.unloaded).toEqual(["w1"]);
+  });
+
+  it("a row that can't be cancelled is reported as not stopped (its report could restart the work)", async () => {
+    const t = await tree();
+    const { api } = host(t.store, ["lead", "w1"]);
+    api.cancel = async () => {
+      throw new Error("database is locked");
+    };
+    const result = await stopTree("lead", api, {
+      reason: "Stopped by Ash.",
+      by: "user",
+    });
+    expect(result.stopFailed).toContain("w1");
+    expect(result.unloaded).toBeUndefined();
+  });
+
+  it("a clean Stop carries no unloaded note", async () => {
+    const t = await tree();
+    const { api } = host(t.store, ["lead"]);
+    const result = await stopTree("lead", api, {
+      reason: "Stopped by Ash.",
+      by: "user",
+    });
+    expect(result.unloaded).toBeUndefined();
+  });
+});
+
 describe("stopTask (task_cancel, a row's Stop)", () => {
   it("stops that task's worker and what it delegated, nothing else", async () => {
     const t = await tree();

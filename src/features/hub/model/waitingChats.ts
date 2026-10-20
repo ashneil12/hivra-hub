@@ -6,6 +6,8 @@
 // - Kept across restarts (local storage): an agent that asked and was cut off by a restart is still waiting. Its live
 //   question died with the turn, so it is answered with a message into that chat instead.
 // - A chat stops waiting the moment it moves on: answered in place, a new turn started, or the agent stopped asking.
+// - A chat archived or deleted leaves with it (`forgetWaitingChat`, from the app's remove path); at launch the app
+//   prunes any whose saved conversation is gone (`pruneWaitingChats`), since `noteChats` only sees open chats.
 // - Hooks for the parallel packages: Autopilot reads the list and calls `takePick(id, { by: "autopilot" })` (red lines
 //   refused); H4 routes a worker's question to the Lead that delegated it with `setWorkerQuestionRouter`.
 import { useSyncExternalStore } from "react";
@@ -212,6 +214,22 @@ function drop(sessionId: string): void {
   const next = { ...prev };
   delete next[sessionId];
   save(next);
+}
+
+/** The chat was archived or deleted: it doesn't wait on Ash any more. */
+export function forgetWaitingChat(sessionId: string): void {
+  drop(sessionId);
+}
+
+/**
+ * Take off every waiting chat whose saved conversation no longer exists (`exists` false). One that couldn't be looked
+ * up (it throws) stays, to be checked next time.
+ */
+export async function pruneWaitingChats(exists: (sessionId: string) => Promise<boolean>): Promise<void> {
+  for (const sessionId of Object.keys(load())) {
+    const there = await exists(sessionId).catch(() => true);
+    if (!there) drop(sessionId);
+  }
 }
 
 /**

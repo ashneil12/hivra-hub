@@ -89,6 +89,15 @@ describe("retire the Lead with its project", () => {
     expect(prefs.pendingUndo()).toBeUndefined();
   });
 
+  it("a Lead that can't be retired leaves the project on the hub, so nothing is left without an Undo", async () => {
+    const { mono, disk, prefs } = await load();
+    disk.archive.mockRejectedValueOnce(new Error("The archive folder is read-only"));
+    await expect(prefs.removeFromHub(hivra, { retireLead: true })).rejects.toThrow("read-only");
+    expect(prefs.applyProjectPrefs([hivra]).map((p) => p.id)).toEqual(["hivra"]);
+    expect(mono.findMono("hivra-lead")).toBeDefined();
+    expect(prefs.pendingUndo()).toBeUndefined();
+  });
+
   it("keeping the Lead (the default) touches no Mono folder", async () => {
     const { mono, disk, prefs } = await load();
     await prefs.removeFromHub(hivra);
