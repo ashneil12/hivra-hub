@@ -63,7 +63,9 @@ A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOC
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
 made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
-only reaches that copy's own control port. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+only reaches that copy's own control port. The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
+the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
+only) points it at a stand-in. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
