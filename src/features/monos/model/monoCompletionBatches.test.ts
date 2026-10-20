@@ -6,9 +6,11 @@ import {
 } from "../../sessions/model/messageQueue";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
+  dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
+  REPORT_WINDOW_MS,
 } from "./monoSessionCompletion";
 
 const origin = { monoId: "mono", turn: 1 };
@@ -30,7 +32,7 @@ function result(
 }
 
 describe("Mono completion batches", () => {
-  it("waits for the launching turn and all children, even when a fast child finishes before the others launch", () => {
+  it("waits for the launching turn, and children that finish together go as one report, even when a fast child finishes before the others launch", () => {
     const ready = vi.fn();
     const batches = new MonoSessionCompletionBatches(ready);
     const a = batches.watch(origin, "a");
@@ -63,7 +65,7 @@ describe("Mono completion batches", () => {
     expect(ready).toHaveBeenCalledOnce();
   });
 
-  it("counts failures and cancellations as finished without releasing partial results", async () => {
+  it("counts failures and cancellations as finished, reported with the others that finish within the window", async () => {
     const ready = vi.fn();
     const batches = new MonoSessionCompletionBatches(ready);
     const failed = batches.watch(origin, "failed");
@@ -431,5 +433,133 @@ describe("Mono completion batches", () => {
       ),
     ).toBe(true);
     expect(message.text.length).toBeLessThan(60_000);
+  });
+});
+
+/** A clock and timers the batches run on, moved by hand. */
+function manualClock() {
+  let at = 0;
+  const timers: { at: number; run: () => void; live: boolean }[] = [];
+  return {
+    now: () => at,
+    schedule: (run: () => void, ms: number) => {
+      const timer = { at: at + ms, run, live: true };
+      timers.push(timer);
+      return () => {
+        timer.live = false;
+      };
+    },
+    advance(ms: number) {
+      at += ms;
+      for (const timer of timers.filter((entry) => entry.live && entry.at <= at)) {
+        timer.live = false;
+        timer.run();
+      }
+    },
+    pending: () => timers.filter((entry) => entry.live).length,
+  };
+}
+
+describe("reports as each worker finishes (Ash, 20 Oct)", () => {
+  const titled = (batches: MonoSessionCompletionBatches, id: string, title: string, turn = origin) =>
+    batches.watch(turn, id, id, { title });
+
+  it("one slow worker never holds back the others: each result reaches the Mono within the window, with N of M back", () => {
+    const clock = manualClock();
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready, clock);
+    const api = titled(batches, "api", "API");
+    const ui = titled(batches, "ui", "UI");
+    const docs = titled(batches, "docs", "Docs");
+    batches.closeInactive(() => false);
+    api(result("api"));
+    clock.advance(REPORT_WINDOW_MS - 1);
+    expect(ready).not.toHaveBeenCalled();
+    clock.advance(1);
+    expect(ready).toHaveBeenCalledOnce();
+    const [monoId, first, current, requestIds] = ready.mock.calls[0];
+    expect(monoId).toBe("mono");
+    expect(requestIds).toEqual(["api"]);
+    expect(first.id).toBe("mono-completion-api-g1");
+    expect(first.text).toContain("1 of 3 back, still running: UI, Docs");
+    expect(first.text).toContain("without waiting for the rest");
+    expect(current()?.id).toBe(first.id);
+
+    // The other two finish 10 s apart: the last one completes the turn, so both go at once.
+    clock.advance(30_000);
+    ui(result("ui"));
+    expect(ready).toHaveBeenCalledOnce();
+    clock.advance(10_000);
+    docs(result("docs"));
+    expect(ready).toHaveBeenCalledTimes(2);
+    const second = ready.mock.calls[1][1];
+    expect(ready.mock.calls[1][3]).toEqual(["ui", "docs"]);
+    expect(second.monoSessionCompletion).toMatchObject({ sessionCount: 2 });
+    expect(second.text).toContain("all 3 of 3 back");
+    expect(JSON.parse(second.text.split("\n\n")[1]).progress).toEqual({ back: 3, total: 3, running: [] });
+    expect(clock.pending()).toBe(0);
+    // Nothing goes twice.
+    api(result("api"));
+    batches.closeInactive(() => false);
+    clock.advance(REPORT_WINDOW_MS * 2);
+    expect(ready).toHaveBeenCalledTimes(2);
+  });
+
+  it("results that come in within the window go together; one that waited out the launching turn goes when it ends", () => {
+    const clock = manualClock();
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready, clock);
+    const a = titled(batches, "a", "API");
+    const b = titled(batches, "b", "UI");
+    titled(batches, "c", "Docs");
+    // Still inside the launching turn: nothing goes, however long.
+    a(result("a"));
+    clock.advance(REPORT_WINDOW_MS * 3);
+    batches.closeInactive(() => true);
+    expect(ready).not.toHaveBeenCalled();
+    // The turn ends: the result that waited past the window goes at once.
+    batches.closeInactive(() => false);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(ready.mock.calls[0][1].text).toContain("1 of 3 back, still running: UI, Docs");
+    b(result("b"));
+    clock.advance(REPORT_WINDOW_MS);
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect(ready.mock.calls[1][1].text).toContain("2 of 3 back, still running: Docs");
+  });
+
+  it("tells the Mono what still runs from its other turns", () => {
+    const clock = manualClock();
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready, clock);
+    titled(batches, "slow", "Migration", { monoId: "mono", turn: 1 });
+    const quick = titled(batches, "quick", "Typo fix", { monoId: "mono", turn: 2 });
+    titled(batches, "theirs", "Not mine", { monoId: "another", turn: 1 });
+    batches.closeInactive(() => false);
+    quick(result("quick"));
+    expect(ready).toHaveBeenCalledOnce();
+    const text = ready.mock.calls[0][1].text;
+    expect(text).toContain("a session you are monitoring has now stopped");
+    expect(text).toContain("Also still running from your other turns: Migration.");
+    expect(text).not.toContain("Not mine");
+  });
+
+  it("a queued report keeps its progress when one of its sessions is dismissed", () => {
+    const clock = manualClock();
+    let mono = { ...newSession("claude", "/code/project"), busy: true, turnReady: true };
+    const batches = new MonoSessionCompletionBatches((_, message) => {
+      mono = enqueueMonoSessionCompletion(mono, message);
+    }, clock);
+    const a = titled(batches, "a", "API");
+    const b = titled(batches, "b", "UI");
+    titled(batches, "c", "Docs");
+    batches.closeInactive(() => false);
+    a(result("a"));
+    b(result("b"));
+    clock.advance(REPORT_WINDOW_MS);
+    expect(mono.queuedMessages).toHaveLength(1);
+    const trimmed = dismissQueuedMonoSessionCompletion(mono, "a");
+    const message = trimmed.queuedMessages![0];
+    expect(message.text).toContain("2 of 3 back, still running: Docs");
+    expect(JSON.parse(message.text.split("\n\n")[1]).sessionId).toBe("b");
   });
 });

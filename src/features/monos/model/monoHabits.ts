@@ -4,7 +4,9 @@ import {
   nextAutomationRunAt,
   type AutomationScheduleKind,
 } from "../../automations/model/automations";
+import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import type { Block, MonoSpawnedSession } from "../../sessions/model/session";
+import { USAGE_LIMIT_RESUME_GRACE_MS } from "../../sessions/model/usageLimit";
 import type { MonoLook } from "./mono";
 import {
   MonoFileConflict,
@@ -258,6 +260,23 @@ export function dueHabits(
   return { run, skipped };
 }
 
+/**
+ * When a habit whose run the provider refused for its usage limit may run
+ * again: just after the limit resets, with the grace a chat's resume gets.
+ * Every run before then is refused the same way. Undefined for any other
+ * outcome, and when the provider gave no reset or it has passed.
+ */
+export function usageLimitHold(
+  outcome: Pick<ControlOutcome, "status" | "errorClass" | "resetsAt">,
+  now: number,
+): number | undefined {
+  const { status, errorClass, resetsAt } = outcome;
+  if (status !== "failed" || errorClass !== "usage_limit") return undefined;
+  if (resetsAt == null || !Number.isFinite(resetsAt) || resetsAt <= now)
+    return undefined;
+  return resetsAt + USAGE_LIMIT_RESUME_GRACE_MS;
+}
+
 /** The habit as it stands after a run, or a skip, at `now`. */
 export function afterRun(
   habit: Habit,
@@ -267,16 +286,23 @@ export function afterRun(
     error?: string;
     report?: string;
     startedAt?: number;
+    /** No run before this (usageLimitHold): the next is the first one after. */
+    notBefore?: number;
   },
 ): Habit {
   const { runRequested, ...scheduled } = habit;
+  // A requested run leaves the schedule where it was.
+  const due =
+    runRequested && habit.nextRunAt > now
+      ? habit.nextRunAt
+      : nextHabitRunAt(habit.schedule, now);
+  const notBefore = outcome?.notBefore;
   const next: Habit = {
     ...scheduled,
-    // A requested run leaves the schedule where it was.
     nextRunAt:
-      runRequested && habit.nextRunAt > now
-        ? habit.nextRunAt
-        : nextHabitRunAt(habit.schedule, now),
+      notBefore != null && notBefore > due
+        ? nextHabitRunAt(habit.schedule, notBefore - 1)
+        : due,
   };
   if (!outcome) return next;
   const { lastError: _previous, ...rest } = next;

@@ -16,7 +16,11 @@
 //                         saved/<name>.json (app calls a step kept) and gates/<name> files a step can wait for.
 //
 // A rules file: {"version": 1, "rules": [{ "name", "match": "<regex on the prompt>", "tag"?, "notTag"?, "setTag"?,
-// "times"?, "steps": [...] }]}. The first rule that matches (and still has times left) plays its steps:
+// "times"?, "steerable"?, "steps": [...] }]}. The first rule that matches (and still has times left) plays its steps.
+// Prompts written while a turn runs wait for it and get turns of their own, except under a `steerable` rule: there one
+// joins the running turn at its next step (also while it waits on a gate), the way Claude Code reads a message sent
+// mid-turn at its next tool boundary. Its own rule plays right there (logged with "steered": true), and the turn still
+// ends with one result. Steps:
 //   {"say": "text"}                                   an assistant message
 //   {"app": "sessions.start", "input": {...}, "save"?: "name"}
 //                                                     a `monocode app` call over MONOCODE_APP_ENDPOINT with the turn's
@@ -386,14 +390,15 @@ export async function main(argv = process.argv.slice(2)) {
       })),
     });
 
-  const playRules = async (prompt, { quietMiss = false } = {}) => {
+  const playRules = async (prompt, { quietMiss = false, steered = false } = {}) => {
     const conversation = readJson(conversationFile, { tags: [] });
     const fired = readJson(path.join(dir, "rules.json"), {});
     const rule = pickRule(scenario.rules, prompt, conversation.tags ?? [], fired);
     append(path.join(dir, "prompts.ndjson"), {
       conversation: conversationId,
-      resumed: Boolean(args.resume) && firstPrompt,
+      resumed: Boolean(args.resume) && firstPrompt && !steered,
       rule: rule?.name ?? null,
+      ...(steered ? { steered: true } : {}),
       prompt,
     });
     if (!rule) return quietMiss ? "" : "fake-claude: no rule matched this prompt.";
@@ -415,7 +420,17 @@ export async function main(argv = process.argv.slice(2)) {
       }
       return undefined;
     };
+    // Under a steerable rule, a prompt written mid-turn joins it here and its rule plays inside this turn.
+    const takeSteers = async () => {
+      while (rule.steerable && queue.length && !closed && !interrupted) {
+        const steeredPrompt = queue.shift();
+        const answer = await playRules(steeredPrompt, { steered: true });
+        if (answer && !answer.startsWith("fake-claude:")) last = answer;
+        else if (answer) assistant([{ type: "text", text: answer }]);
+      }
+    };
     for (const step of rule.steps ?? []) {
+      await takeSteers();
       if (closed || interrupted) break;
       if (typeof step.say === "string") {
         last = fillTemplate(step.say, lookup);
@@ -552,7 +567,10 @@ export async function main(argv = process.argv.slice(2)) {
       } else if (step.waitFile) {
         const gate = path.join(dir, "gates", safeName(step.waitFile));
         const deadline = Date.now() + (step.timeoutMs ?? 30 * 60_000);
-        while (!fs.existsSync(gate) && !closed && !interrupted && Date.now() < deadline) await sleep(100);
+        while (!fs.existsSync(gate) && !closed && !interrupted && Date.now() < deadline) {
+          await takeSteers();
+          await sleep(100);
+        }
       } else if (step.goalCheck != null) {
         const goal = goalNow();
         if (goal)
@@ -572,6 +590,7 @@ export async function main(argv = process.argv.slice(2)) {
         process.exit(step.exit);
       }
     }
+    await takeSteers();
     return last;
   };
 

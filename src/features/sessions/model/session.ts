@@ -461,7 +461,11 @@ export type Block = {
     /** The app restarted three times under this turn, so it stopped resuming it (`inFlight.ts`); Needs you. */
     | "resume-stopped"
     /** The provider's saved conversation was gone; a fresh one started from the chat's brief (`claude.ts`). */
-    | "recovered";
+    | "recovered"
+    /** A Lead said the job is done while work it delegated still runs (`monos/model/leadFlow.ts`). */
+    | "still-running";
+  /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
+  stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */
   shipUpdate?: string;
   statusKey?: string;

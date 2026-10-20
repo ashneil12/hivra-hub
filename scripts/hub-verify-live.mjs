@@ -29,6 +29,15 @@
 //   10. the briefs that waited go in by themselves once their chat's resumed turn is over, each once, in order;
 //   11. the brief cancelled while it waited in the busy Lead's queue stays out, and the Lead was never stopped for it;
 //   12. one more restart repeats nothing: no brief twice, no /goal again, no goal back.
+//   Then coding with a Lead (Ash, 20 Oct: "a good chat and delegate if needed ... and still chat"), on a fourth plan:
+//   Chief of Staff briefs the Verify lead, which hands the API and the UI to two workers and says it is done, and Ash
+//   writes to the Lead through his own path (the stub's ash-hub-verify-messages, sent by the window as he types):
+//   13. the Lead's "done" while both workers run gets one "Still running: 2" note and the brief stays open;
+//   14. Ash's message to the Lead while both workers run is answered within one turn;
+//   15. the API worker's report reaches the Lead while the UI still runs, saying "1 of 2 back";
+//   16. Ash's message, sent while the UI's report waits in the busy Lead's queue, goes in first: it steers into the
+//       running turn and is answered before the report's turn starts;
+//   17. Ash steers into the Lead's last turn on the brief, and leadership still gets the Lead's complete report.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -74,6 +83,11 @@ export const WALK = [
   "queued_brief_after_restart",
   "cancelled_brief_stays_out",
   "nothing_repeats_after_restart",
+  "still_running_noted",
+  "lead_chats_while_workers_run",
+  "reports_per_worker",
+  "ash_first_over_report",
+  "leadership_report_complete",
 ];
 
 /** Thrown between phases when the negative control has already caught its failure: no more launches needed. */
@@ -99,6 +113,14 @@ export const GOAL_A_WORKER = "VERIFY-GOAL-A-WORKER";
 export const GOAL_B_WORKER = "VERIFY-GOAL-B-WORKER";
 export const QUEUED_A = "VERIFY-QUEUED-A";
 export const LEAD_BRIEF = (n) => `VERIFY-LEAD-BRIEF-${n}`;
+/** Coding with a Lead (checks 13 to 17): the fourth plan's kickoff, the Lead's brief, its two workers, Ash's words. */
+export const FLOW_KICKOFF = "VERIFY-FLOW-KICKOFF";
+export const FLOW_BRIEF = "VERIFY-FLOW-BRIEF";
+export const FLOW_API = "VERIFY-FLOW-API";
+export const FLOW_UI = "VERIFY-FLOW-UI";
+export const FLOW_ASH = (n) => `VERIFY-FLOW-ASH-${n}`;
+/** The Verify lead's Mono id (hubLeads.ts leadSpecFor: `<project id>-lead`): Ash's messages go to its chat. */
+export const FLOW_LEAD_MONO = `${TREE_PROJECT.id}-lead`;
 /** A worker's finish line: what the brief's "Done when" says, and so what MonoCode sends as `/goal`. */
 export const goalFor = (worker, runId) => `${worker.replace("-WORKER", "")} run ${runId}: the transcript says ${worker.replace("VERIFY-", "").replace("-WORKER", "")}-DONE`;
 /** An app notification as the turn's own message: first in the prompt, or right after the Mono's context block. */
@@ -354,7 +376,110 @@ export function scenario({ runId, failGate = false }) {
     // Its resume comes last: a brief that waited behind it is a prompt of its own.
     { name: "durable-lead-resume", tag: "durable-lead", match: CONTINUE, steps: [{ mark: "durable-lead-resumed" }, { say: "BRIEF-1-DONE" }] },
   ];
+  // Coding with a Lead. First in the list: the Verify lead's and Chief of Staff's conversations still carry the earlier
+  // phases' tags, whose catch-all report rules would otherwise take these prompts.
+  const reportWith = (marker) => `${said("\\[MonoCode report\\]")}[\\s\\S]*${marker}`;
+  const flow = [
+    {
+      name: "flow-cos-kickoff",
+      match: said(FLOW_KICKOFF),
+      setTag: "flow-cos",
+      times: 1,
+      steps: [
+        { say: "Briefing the Verify lead on the API and the UI." },
+        {
+          app: "tasks.delegate",
+          input: { lead: TREE_LEAD, title: "Ship the API and the UI", brief: `${FLOW_BRIEF} run ${runId}: ship the API and the UI.` },
+          save: "flow-brief",
+        },
+        { mark: "flow-cos-briefed" },
+        { say: "Handed it to the Verify lead." },
+      ],
+    },
+    { name: "flow-cos-report", match: reportWith("FLOW-REPORT"), times: 1, steps: [{ mark: "flow-cos-got-report" }, { say: "Good, noted." }] },
+    { name: "flow-cos-other-report", tag: "flow-cos", match: said("\\[MonoCode report\\]"), steps: [{ mark: "flow-cos-got-other-report" }, { say: "Noted." }] },
+    {
+      name: "flow-lead-brief",
+      match: brief(FLOW_BRIEF),
+      setTag: "flow-lead",
+      times: 1,
+      steps: [
+        { say: "Start-ack: the API and the UI go to two workers." },
+        { app: "tasks.delegate", input: { title: "Flow API", brief: `${FLOW_API} run ${runId}: build the API.` }, save: "flow-api-task" },
+        { app: "tasks.delegate", input: { title: "Flow UI", brief: `${FLOW_UI} run ${runId}: build the UI.` }, save: "flow-ui-task" },
+        { mark: "flow-lead-delegated" },
+        // Says it's done while both still run: the app notes "Still running: 2" and the brief stays open.
+        { say: "Done: the API and the UI are handed off." },
+      ],
+    },
+    {
+      name: "flow-api",
+      match: brief(FLOW_API),
+      setTag: "flow-api",
+      times: 1,
+      steps: [{ say: "On the API." }, { mark: "flow-api-started" }, { waitFile: "flow-api-go", timeoutMs: 900_000 }, { say: `FLOW-API-DONE run ${runId}` }],
+    },
+    {
+      name: "flow-ui",
+      match: brief(FLOW_UI),
+      setTag: "flow-ui",
+      times: 1,
+      steps: [{ say: "On the UI." }, { mark: "flow-ui-started" }, { waitFile: "flow-ui-go", timeoutMs: 900_000 }, { say: `FLOW-UI-DONE run ${runId}` }],
+    },
+    {
+      name: "flow-ash-1",
+      match: said(FLOW_ASH(1)),
+      times: 1,
+      steps: [{ mark: "flow-ash-1-answered" }, { say: "ASH-1-ANSWER: the API and the UI are both being built; you'll hear as each lands." }],
+    },
+    // The API's report: the Lead holds this turn open (steerable, so Ash's next message joins it, as with Claude Code).
+    {
+      name: "flow-lead-api-report",
+      tag: "flow-lead",
+      match: reportWith("FLOW-API-DONE"),
+      times: 1,
+      steerable: true,
+      steps: [
+        { mark: "flow-lead-got-api" },
+        { say: "The API is back (1 of 2); the UI is still running." },
+        { waitFile: "flow-lead-hold", timeoutMs: 900_000 },
+        { say: "Back to waiting on the UI." },
+      ],
+    },
+    {
+      name: "flow-ash-2",
+      match: said(FLOW_ASH(2)),
+      times: 1,
+      steps: [{ mark: "flow-ash-2-answered" }, { say: "ASH-2-ANSWER: the UI just finished; its report is next." }],
+    },
+    // The UI's report: the Lead's last turn on the brief, which Ash steers into before its final words.
+    {
+      name: "flow-lead-ui-report",
+      tag: "flow-lead",
+      match: reportWith("FLOW-UI-DONE"),
+      times: 1,
+      steerable: true,
+      steps: [
+        { mark: "flow-lead-got-ui" },
+        { say: "Both are back. Writing the final report." },
+        { waitFile: "flow-final-hold", timeoutMs: 900_000 },
+        { say: `FLOW-FINAL run ${runId}: the API and the UI are shipped.` },
+      ],
+    },
+    { name: "flow-ash-3", match: said(FLOW_ASH(3)), times: 1, steps: [{ mark: "flow-ash-3-answered" }, { say: "ASH-3-ANSWER: nothing needs you." }] },
+    {
+      name: "flow-lead-report-request",
+      tag: "flow-lead",
+      match: said("\\[MonoCode report request\\]"),
+      times: 1,
+      steps: [
+        { mark: "flow-lead-asked-report" },
+        { say: `FLOW-REPORT run ${runId}: the API and the UI are shipped; evidence FLOW-API-DONE and FLOW-UI-DONE; nothing open.` },
+      ],
+    },
+  ];
   const rules = [
+    ...flow,
     ...durable,
     ...tree,
     // The Lead after its transcript was lost: a fresh conversation whose first prompt carries the chat's brief.
@@ -1534,6 +1659,236 @@ async function main() {
         { evidence: finalCounts },
       );
     else fail("nothing_repeats_after_restart", "Another restart repeats nothing: no brief twice, no /goal again, no finished goal back", JSON.stringify(finalCounts));
+
+    phase();
+    // 13 to 17. Coding with a Lead, on a fourth plan: Chief of Staff briefs the Verify lead, which starts two workers,
+    // and Ash writes to the Lead the way he types (the stub lists his messages; the window sends each once).
+    await kill("for the lead-flow plan");
+    const flowPlan = {
+      ...plan,
+      runId: `${id}-flow`,
+      kickoff: {
+        project,
+        monoName: "Chief of Staff",
+        monoId: TEAM_MONO,
+        prompt: `${FLOW_KICKOFF} run ${id}: brief the Verify lead on the API and the UI.`,
+      },
+    };
+    fs.writeFileSync(planFile, `${JSON.stringify(flowPlan, null, 2)}\n`);
+    fs.writeFileSync(path.join(evidence, "plan-flow.json"), `${JSON.stringify(flowPlan, null, 2)}\n`);
+    await launch();
+    /** Ash types into the Verify lead's chat: the window sends it within a second. Returns when it was listed. */
+    const ashSays = (n, text) => {
+      stub.state.verifyMessages = [
+        ...(stub.state.verifyMessages ?? []),
+        { id: `flow-ash-${n}`, monoId: FLOW_LEAD_MONO, prompt: `${FLOW_ASH(n)} run ${id}: ${text}` },
+      ];
+      return Date.now();
+    };
+    const busy = async (sessionId) => (await inFlight()).some((entry) => entry.session_id === sessionId);
+    const blocksOf = (sessionId) =>
+      query(db, "SELECT block_json FROM mono_blocks WHERE session_id = ? ORDER BY seq", sessionId).then((rows) =>
+        rows.map((row) => JSON.parse(row.block_json)),
+      );
+    const promptsOf = (rule) => prompts().filter((entry) => entry.rule === rule);
+    const after = (mark, sentAt) => (mark ? Date.parse(mark.at) - sentAt : null);
+
+    // 13. The Lead hands both jobs out and says it's done: one "Still running: 2" note, and the brief stays open.
+    const flowBriefed = await waitMark("flow-cos-briefed", 180_000);
+    const flowBrief = savedCall("flow-brief")?.response?.result;
+    const flowTaskId = flowBrief?.taskId;
+    const flowLeadChat = flowBrief?.childSessionId;
+    const flowDelegated = await waitMark("flow-lead-delegated", 90_000);
+    const apiTask = savedCall("flow-api-task")?.response?.result;
+    const uiTask = savedCall("flow-ui-task")?.response?.result;
+    const apiStarted = await waitMark("flow-api-started", 90_000);
+    const uiStarted = await waitMark("flow-ui-started", 90_000);
+    const noteFound = flowLeadChat
+      ? await until(async () => {
+          if (await busy(flowLeadChat)) return null;
+          const notes = (await blocksOf(flowLeadChat)).filter((block) => block.notice === "still-running");
+          return notes.length ? notes : null;
+        }, scale(30_000))
+      : null;
+    // Time for a second (wrong) note.
+    await sleep(scale(3_000));
+    const notes = flowLeadChat ? (await blocksOf(flowLeadChat)).filter((block) => block.notice === "still-running") : [];
+    const briefWhileOut = await rowById(flowTaskId);
+    const noteEvidence = { notes, brief: brief(briefWhileOut), api: apiTask?.taskId, ui: uiTask?.taskId };
+    if (
+      flowBriefed &&
+      flowBrief?.lead &&
+      flowDelegated &&
+      apiStarted &&
+      uiStarted &&
+      noteFound &&
+      notes.length === 1 &&
+      notes[0].text.startsWith("Still running: 2 (Flow API, Flow UI).") &&
+      notes[0].stillRunning?.briefId === flowTaskId &&
+      [apiTask?.taskId, uiTask?.taskId].every((taskId) => notes[0].stillRunning?.taskIds?.includes(taskId)) &&
+      briefWhileOut?.state === "running"
+    )
+      pass(
+        "still_running_noted",
+        "A Lead that says it's done while its workers run gets one \"Still running\" note, and its brief stays open",
+        `Chief of Staff briefed ${flowBrief.lead} (task ${flowTaskId}); the Lead started Flow API and Flow UI and said "Done"; its chat shows "${notes[0].text}" once, and the brief is still ${briefWhileOut.state}`,
+        { evidence: noteEvidence },
+      );
+    else
+      fail(
+        "still_running_noted",
+        "A Lead that says it's done while its workers run gets one \"Still running\" note, and its brief stays open",
+        JSON.stringify({ briefed: !!flowBriefed, brief: flowBrief ?? null, delegated: !!flowDelegated, started: [!!apiStarted, !!uiStarted], ...noteEvidence }),
+      );
+
+    phase();
+    // 14. Ash writes to the idle Lead while both workers run: it answers him within one turn.
+    const sent1 = ashSays(1, "how is it going?");
+    const ash1 = await waitMark("flow-ash-1-answered", 30_000);
+    const ash1Done = flowLeadChat ? await until(async () => (await busy(flowLeadChat) ? null : true), scale(20_000)) : null;
+    const answered1 = (blocks) => blocks.some((block) => block.role === "assistant" && String(block.text).startsWith("ASH-1-ANSWER"));
+    const ash1Blocks = flowLeadChat
+      ? ((await until(async () => {
+          const blocks = await blocksOf(flowLeadChat);
+          return answered1(blocks) ? blocks : null;
+        }, scale(15_000))) ?? [])
+      : [];
+    const ash1Rows = { api: (await rowById(apiTask?.taskId))?.state, ui: (await rowById(uiTask?.taskId))?.state };
+    const ash1Evidence = {
+      latencyMs: after(ash1, sent1),
+      sameConversationAsLead: ash1?.conversation === flowDelegated?.conversation,
+      steered: promptsOf("flow-ash-1")[0]?.steered ?? false,
+      answerShown: answered1(ash1Blocks),
+      workers: ash1Rows,
+      prompts: promptsOf("flow-ash-1").length,
+    };
+    if (
+      ash1 &&
+      ash1Done &&
+      ash1Evidence.sameConversationAsLead &&
+      ash1Evidence.answerShown &&
+      ash1Evidence.prompts === 1 &&
+      ash1Evidence.latencyMs < scale(15_000) &&
+      ash1Rows.api === "running" &&
+      ash1Rows.ui === "running"
+    )
+      pass(
+        "lead_chats_while_workers_run",
+        "Ash's message to a Lead with two workers running is answered within one turn",
+        `answered ${ash1Evidence.latencyMs} ms after it was sent, in one turn of the Lead's own conversation, while Flow API and Flow UI were both still running`,
+        { evidence: ash1Evidence },
+      );
+    else fail("lead_chats_while_workers_run", "Ash's message to a Lead with two workers running is answered within one turn", JSON.stringify(ash1Evidence));
+
+    phase();
+    // 15. The API finishes first: its report reaches the Lead (within the report window) while the UI still runs.
+    const apiReleased = Date.now();
+    open("flow-api-go");
+    const apiReport = await waitMark("flow-lead-got-api", 90_000);
+    const uiAtApiReport = (await rowById(uiTask?.taskId))?.state;
+    const apiPrompt = apiReport?.prompt ?? "";
+    const perWorkerEvidence = {
+      afterMs: after(apiReport, apiReleased),
+      uiAtApiReport,
+      progress: apiPrompt.match(/\d+ of \d+ back[^.]*\./)?.[0] ?? null,
+      carriesUi: apiPrompt.includes("FLOW-UI-DONE"),
+    };
+    if (apiReport && uiAtApiReport === "running" && apiPrompt.includes("1 of 2 back, still running: Flow UI") && !perWorkerEvidence.carriesUi)
+      pass(
+        "reports_per_worker",
+        "One worker's report reaches its Lead while the other still runs, saying how many are back",
+        `the API's report reached the Lead ${perWorkerEvidence.afterMs} ms after it finished, while Flow UI was still ${uiAtApiReport}: "${perWorkerEvidence.progress}"`,
+        { evidence: perWorkerEvidence },
+      );
+    else fail("reports_per_worker", "One worker's report reaches its Lead while the other still runs, saying how many are back", JSON.stringify(perWorkerEvidence));
+
+    phase();
+    // 16. The UI finishes while the Lead is mid-turn on the API's report: the UI's report waits in its queue. Ash writes:
+    // his message goes in first, steering into the running turn, and is answered before the UI's report goes in.
+    open("flow-ui-go");
+    const uiReceipt = async () => {
+      const request = (await query(db, "SELECT request_id AS r FROM delegations WHERE id = ?", uiTask?.taskId ?? "?"))[0]?.r;
+      return request ? `mono-completion-${request}-g1` : null;
+    };
+    const uiQueued = flowLeadChat
+      ? await until(async () => {
+          const receipt = await uiReceipt();
+          const queue = await queueOf(flowLeadChat);
+          return receipt && queue.messages.some((message) => message.id === receipt) ? { receipt, queue: queue.messages.map((m) => m.id) } : null;
+        }, scale(60_000))
+      : null;
+    const sent2 = ashSays(2, "is the UI done?");
+    const ash2 = await waitMark("flow-ash-2-answered", 30_000);
+    const uiTurnAtAsh2 = mark("flow-lead-got-ui");
+    const ash2Prompt = promptsOf("flow-ash-2")[0];
+    const ash2Evidence = {
+      uiQueued,
+      latencyMs: after(ash2, sent2),
+      steered: ash2Prompt?.steered ?? false,
+      sameTurnAsApiReport: !!ash2 && ash2.conversation === apiReport?.conversation,
+      uiReportTurnBeforeAsh: !!uiTurnAtAsh2,
+      leadOrder: rulesIn(apiReport?.conversation).filter((rule) => rule?.startsWith("flow-")),
+    };
+    open("flow-lead-hold");
+    const uiTurn = await waitMark("flow-lead-got-ui", 60_000);
+    ash2Evidence.leadOrder = rulesIn(apiReport?.conversation).filter((rule) => rule?.startsWith("flow-"));
+    const order = ash2Evidence.leadOrder;
+    if (
+      uiQueued &&
+      ash2 &&
+      ash2Evidence.steered &&
+      ash2Evidence.sameTurnAsApiReport &&
+      !ash2Evidence.uiReportTurnBeforeAsh &&
+      ash2Evidence.latencyMs < scale(15_000) &&
+      uiTurn &&
+      order.indexOf("flow-ash-2") >= 0 &&
+      order.indexOf("flow-ash-2") < order.indexOf("flow-lead-ui-report")
+    )
+      pass(
+        "ash_first_over_report",
+        "Ash's message never waits behind a worker's report: it steers into the Lead's running turn ahead of it",
+        `the UI's report waited in the busy Lead's queue (${uiQueued.receipt}); Ash's message went ahead of it, joined the running turn and was answered in ${ash2Evidence.latencyMs} ms; the UI's report went in after (${order.join(" > ")})`,
+        { evidence: ash2Evidence },
+      );
+    else fail("ash_first_over_report", "Ash's message never waits behind a worker's report: it steers into the Lead's running turn ahead of it", JSON.stringify(ash2Evidence));
+
+    phase();
+    // 17. Ash steers into the Lead's last turn on the brief, before its final words: leadership still gets the Lead's
+    // complete report (the Lead is asked for it on its own), never the words cut off at Ash's message.
+    const sent3 = ashSays(3, "anything for me?");
+    const ash3 = await waitMark("flow-ash-3-answered", 30_000);
+    open("flow-final-hold");
+    const askedReport = await waitMark("flow-lead-asked-report", 90_000);
+    const cosGot = await waitMark("flow-cos-got-report", 90_000);
+    const reported = await until(async () => {
+      const row = await rowById(flowTaskId);
+      return row && row.state !== "running" ? row : null;
+    }, scale(30_000));
+    const completeReport = `FLOW-REPORT run ${id}: the API and the UI are shipped; evidence FLOW-API-DONE and FLOW-UI-DONE; nothing open.`;
+    const reportEvidence = {
+      ash3: { latencyMs: after(ash3, sent3), steered: promptsOf("flow-ash-3")[0]?.steered ?? false, sameTurnAsUiReport: ash3?.conversation === uiTurn?.conversation },
+      askedReport: !!askedReport,
+      row: brief(reported),
+      cosPromptHasReport: !!cosGot?.prompt?.includes(completeReport),
+      otherReports: promptsOf("flow-cos-other-report").length,
+    };
+    if (
+      ash3 &&
+      reportEvidence.ash3.steered &&
+      askedReport &&
+      cosGot &&
+      reported?.state === "completed" &&
+      reported.result === completeReport &&
+      reportEvidence.cosPromptHasReport &&
+      reportEvidence.otherReports === 0
+    )
+      pass(
+        "leadership_report_complete",
+        "A message Ash steers into the Lead's last turn never truncates its report to leadership",
+        `Ash steered into the Lead's last turn on the brief (answered in ${reportEvidence.ash3.latencyMs} ms); the Lead was asked for its report on its own and Chief of Staff got all of it: "${reported.result}"`,
+        { evidence: reportEvidence },
+      );
+    else fail("leadership_report_complete", "A message Ash steers into the Lead's last turn never truncates its report to leadership", JSON.stringify(reportEvidence));
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))

@@ -11,6 +11,7 @@ import {
   queuedMessageForSubmit,
   restoredQueue,
   waitsOnCutTurn,
+  withQueued,
 } from "./messageQueue";
 import { CONTINUE_PROMPT, markResumeStopped, markTurnInterrupted } from "./inFlight";
 import { newSession, type QueuedMessage, type Session } from "./session";
@@ -266,5 +267,21 @@ describe("restoredQueue", () => {
     ];
     expect(restoredQueue([brief("a"), brief("b")], blocks, { status: "active" }).queuedMessages).toEqual([brief("b")]);
     expect(restoredQueue([brief("a")], blocks, {})).toEqual({});
+  });
+});
+
+describe("withQueued", () => {
+  const report: QueuedMessage = { ...queued("r1"), monoSessionCompletion: { sessionId: "w", title: "API", status: "completed" } };
+  const brief: QueuedMessage = { ...queued("b1"), appRequestId: "b1", waitForIdle: true };
+
+  it("puts Ash's own message ahead of the app's deliveries, behind his earlier ones", () => {
+    expect(withQueued([report, brief], queued("ash")).map((m) => m.id)).toEqual(["ash", "r1", "b1"]);
+    expect(withQueued([queued("ash1"), report], queued("ash2")).map((m) => m.id)).toEqual(["ash1", "ash2", "r1"]);
+  });
+
+  it("mends a queue saved before the rule (his message behind a report) and keeps app deliveries at the back", () => {
+    expect(withQueued([report, queued("ash1")], queued("ash2")).map((m) => m.id)).toEqual(["ash1", "ash2", "r1"]);
+    expect(withQueued([queued("ash1")], report).map((m) => m.id)).toEqual(["ash1", "r1"]);
+    expect(withQueued([report], brief).map((m) => m.id)).toEqual(["r1", "b1"]);
   });
 });

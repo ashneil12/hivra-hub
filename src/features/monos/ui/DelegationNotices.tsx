@@ -1,12 +1,21 @@
 // The two lines the delegation tree adds around a chat's composer (H4):
 // - a worker's chat runs on its own, so it shows "Runs on its own · Open <Lead>" instead of the composer; the Lead
 //   does the talking, and Ash can still jump in;
-// - a Lead with delegated work out reads its rollup ("Delegated 3: 2 working, 1 failed"; "Waiting on N" without one),
-//   with one Stop for everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx).
+// - a Lead with delegated work out reads what is out by name ("2 working: API, UI · 1 asking: Docs · 1 stuck: Tests";
+//   "Waiting on N" without names; its count, "Delegated 3: 2 working, 1 failed", on hover), with one Stop for
+//   everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx).
 import { useState } from "react";
 import { Square } from "../../../shared/ui/icons";
+import { workingLine } from "../model/leadFlow";
 import type { StuckWorker } from "../model/workerStuck";
-import { StuckList } from "./StuckWorkerCard";
+import { StuckList, stuckTitle } from "./StuckWorkerCard";
+
+/** "Tests, Upload" (at most three names, then "+2"), as the working line names them. */
+function names(list: readonly string[]): string {
+  return list.length > 3
+    ? `${list.slice(0, 3).join(", ")} +${list.length - 3}`
+    : list.join(", ");
+}
 
 export function DelegatedChatNotice({
   ownerName,
@@ -74,6 +83,8 @@ export function DelegatedChatNotice({
 
 export function DelegationWaitingLine({
   count,
+  working = [],
+  asking = [],
   rollup,
   stuck = [],
   now = Date.now(),
@@ -82,7 +93,10 @@ export function DelegationWaitingLine({
   onStopAll,
 }: {
   count: number;
-  /** "Delegated 3: 2 working, 1 failed", in place of "Waiting on N". */
+  /** What is out by title, still running (not stalled) and asking: "2 working: API, UI". */
+  working?: readonly string[];
+  asking?: readonly string[];
+  /** "Delegated 3: 2 working, 1 failed": the count of what it has out, on hover. */
   rollup?: string;
   /** Its workers that are stuck: a card each, above the line. */
   stuck?: readonly StuckWorker[];
@@ -96,7 +110,19 @@ export function DelegationWaitingLine({
   const [stopping, setStopping] = useState(false);
   if (count <= 0 && !failed.length && !unloaded.length && !stuck.length)
     return null;
-  const line = rollup ?? (count > 0 ? `Waiting on ${count}` : undefined);
+  // Stalled and failed workers are named as stuck; their cards above say how.
+  const stuckNames = stuck
+    .filter((s) => s.kind !== "asking")
+    .map((s) => stuckTitle(s));
+  const named = [
+    workingLine({ working, asking }),
+    stuckNames.length
+      ? `${stuckNames.length} stuck: ${names(stuckNames)}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const line = named || (count > 0 ? `Waiting on ${count}` : undefined);
   return (
     <>
       <StuckList stuck={stuck} now={now} variant="chat" label="Stuck workers" />
@@ -104,7 +130,15 @@ export function DelegationWaitingLine({
         data-delegation-waiting={count}
         className="flex items-center gap-2 px-1 pb-1.5 font-sans text-[12px] text-content/55"
       >
-        {line ? <span data-delegation-rollup-line>{line}</span> : null}
+        {line ? (
+          <span
+            data-delegation-working
+            className="min-w-0 truncate"
+            title={rollup ?? [...working, ...asking, ...stuckNames].join(", ")}
+          >
+            {line}
+          </span>
+        ) : null}
         {failed.length ? (
           <span
             className="min-w-0 truncate text-amber-400"

@@ -14,6 +14,12 @@ import {
   ASKER,
   CONTINUE,
   DURABLE_KICKOFF,
+  FLOW_API,
+  FLOW_ASH,
+  FLOW_BRIEF,
+  FLOW_KICKOFF,
+  FLOW_LEAD_MONO,
+  FLOW_UI,
   GOAL_A_WORKER,
   GOAL_B_WORKER,
   HELPER,
@@ -167,7 +173,45 @@ test("restart durability: goal workers, the Lead's waiting briefs and the recove
   // None of the earlier phases' prompts reach the new rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${QUEUED} run r1`, `${TREE_KICKOFF} run r1`])
     assert.equal(pick(prompt)?.startsWith("durable") ?? false, false, prompt);
-  assert.deepEqual(WALK.slice(-4), ["goal_survives_restart", "queued_brief_after_restart", "cancelled_brief_stays_out", "nothing_repeats_after_restart"]);
+  const durable = WALK.indexOf("goal_survives_restart");
+  assert.deepEqual(WALK.slice(durable, durable + 4), ["goal_survives_restart", "queued_brief_after_restart", "cancelled_brief_stays_out", "nothing_repeats_after_restart"]);
+});
+
+test("coding with a Lead: Ash's messages, the workers' reports and the report request each reach their own rule", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const pick = (prompt, tags = [], fired = {}) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  const context = "<monocode_context>\nReports start with [MonoCode report]; briefs with [MonoCode brief from …].\n</monocode_context>\n\n";
+  // Chief of Staff's conversation still carries the earlier phases' tags: the flow's rules come first.
+  const cosTags = ["tree-cos", "durable-cos", "flow-cos"];
+  assert.equal(pick(`${context}${FLOW_KICKOFF} run r1: brief`, ["tree-cos", "durable-cos"]), "flow-cos-kickoff");
+  const cos = rules.find((rule) => rule.name === "flow-cos-kickoff");
+  const leadBrief = cos.steps.find((step) => step.app === "tasks.delegate").input;
+  assert.equal(leadBrief.lead, TREE_LEAD);
+  const report = (result) => `${context}[MonoCode report] MonoCode completion notification: a session you are monitoring has now stopped.\n\n${JSON.stringify({ result })}`;
+  assert.equal(pick(report("FLOW-REPORT run r1: shipped"), cosTags), "flow-cos-report");
+  assert.equal(pick(report("Both are back. Writing the final report."), cosTags), "flow-cos-other-report", "a cut-off report is caught, not taken for the full one");
+  // The Verify lead: its brief, then its workers' reports, Ash's messages (steered or not) and the report request.
+  const leadTags = ["tree-lead", "durable-lead", "flow-lead"];
+  assert.equal(pick(`${context}[MonoCode brief from Chief of Staff]\n\n${leadBrief.brief}`, ["tree-lead", "durable-lead"]), "flow-lead-brief");
+  const lead = rules.find((rule) => rule.name === "flow-lead-brief");
+  const [api, ui] = lead.steps.filter((step) => step.app === "tasks.delegate").map((step) => step.input);
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${api.brief}`), "flow-api");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${ui.brief}`), "flow-ui");
+  assert.ok(api.brief.startsWith(FLOW_API) && ui.brief.startsWith(FLOW_UI) && leadBrief.brief.startsWith(FLOW_BRIEF));
+  assert.equal(pick(report("FLOW-API-DONE run r1"), leadTags), "flow-lead-api-report");
+  assert.equal(pick(report("FLOW-UI-DONE run r1"), leadTags), "flow-lead-ui-report");
+  assert.equal(pick(`${context}[MonoCode report request] MonoCode notification: you have finished the brief`, leadTags), "flow-lead-report-request");
+  // Ash's messages: a new turn (with the context) or steered into a running one (bare).
+  assert.equal(pick(`${context}${FLOW_ASH(1)} run r1: how is it going?`, leadTags), "flow-ash-1");
+  assert.equal(pick(`${FLOW_ASH(2)} run r1: is the UI done?`, leadTags), "flow-ash-2");
+  assert.equal(pick(`${FLOW_ASH(3)} run r1: anything for me?`, leadTags), "flow-ash-3");
+  // The turns Ash steers into take his message inside the turn, the way Claude Code does at a tool boundary.
+  for (const name of ["flow-lead-api-report", "flow-lead-ui-report"]) assert.equal(rules.find((rule) => rule.name === name).steerable, true);
+  assert.equal(FLOW_LEAD_MONO, "verify-lead");
+  // None of the earlier phases' prompts reach the flow's rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, report("WORKER-DONE")])
+    assert.equal(pick(prompt, ["lead", "tree-lead", "durable-lead"])?.startsWith("flow") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-5), ["still_running_noted", "lead_chats_while_workers_run", "reports_per_worker", "ash_first_over_report", "leadership_report_complete"]);
 });
 
 test("the negative control plants a failure the walk must notice", () => {

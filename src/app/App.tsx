@@ -47,6 +47,7 @@ import {
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { hasDelegateTool } from "../features/hub/model/hubMcp";
+import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
 import {
@@ -731,7 +732,10 @@ import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
   verifyKickoffMono,
+  verifyRun,
+  watchVerifyMessages,
 } from "./model/verifyKickoff";
+import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import {
   loadShipNote,
   reportShipReady,
@@ -8638,9 +8642,14 @@ function Workspace({
             agentPlan &&
             (agentPlan.soul || agentPlan.memory)
           ) {
+            // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
+            const projectMemory = agentPlan.soul
+              ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
+              : undefined;
             appContext.push(
               monoContext(agentLook, agentFiles, agentPlan, {
                 delegate: delegateTool,
+                ...(projectMemory ? { projectMemory } : {}),
                 // The leadership team briefs project Leads (double delegation).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
@@ -8923,6 +8932,20 @@ function Workspace({
       await onOpenMono(monoId);
       const sessionId = monoViewIdRef.current;
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
+    });
+  }, [onOpenMono, onSubmit, windowTransfer]);
+  // ...and Ash's messages the bench sends mid-run (the stub's ash-hub-verify-messages): each into its Mono's chat, as
+  // he would type it there, once per run.
+  useEffect(() => {
+    const runId = verifyRun();
+    if (!runId || windowTransfer) return;
+    return watchVerifyMessages(runId, {
+      list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
+      send: async (message) => {
+        await onOpenMono(message.monoId);
+        const sessionId = monoViewIdRef.current;
+        if (sessionId) onSubmit(sessionId, message.prompt);
+      },
     });
   }, [onOpenMono, onSubmit, windowTransfer]);
 
@@ -9265,6 +9288,17 @@ function Workspace({
     tracker: delegations,
     sessions,
     sessionsRef,
+    // A Lead asked for its report on its own (a message steered into its last turn on the brief): like a report.
+    ask: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+    // "Still running: N" when a Lead says it's done with work it delegated still out (monos/model/leadFlow.ts).
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
     onLeadReport: ({ row, receipt, report, answer }) =>
       row.project && row.ownerMono
         ? postLeadReport({
@@ -11912,7 +11946,8 @@ function Workspace({
             { monoId, turn: sourceTurn },
             requestId,
             sessionId,
-            { awaitAcceptance: true, generation: row?.generation ?? 1 },
+            // Its title names it in "still running: ..." while the others report (monoSessionCompletion.ts).
+            { awaitAcceptance: true, generation: row?.generation ?? 1, title: delegation?.title ?? title },
           );
           return Object.assign(
             (outcome: ControlOutcome) => {

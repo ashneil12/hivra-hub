@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 // A stuck worker in its Lead's chat (H4; Ash 20 Oct): a card per worker that asks, stalled or failed, above the Lead's
 // line, answerable in one or two clicks: an option of its question, its pick or Ash's words, a message to a stalled
-// worker, Open (its chat under the Mono), Stop, and Dismiss for a failure. The line reads like the batch ("Delegated 3:
-// 1 working, 1 asking, 1 failed"), never just "busy".
+// worker, Open (its chat under the Mono), Stop, and Dismiss for a failure. The line names what is out, the stuck ones
+// too ("1 working: API · 1 stuck: Tests"), with the batch's count on hover; never just "busy".
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +80,8 @@ function LeadLine() {
   return pane?.kind === "lead"
     ? createElement(DelegationWaitingLine, {
         count: pane.count,
+        working: pane.working,
+        asking: pane.asking,
         rollup: pane.rollup,
         stuck: pane.stuck,
         now: pane.now,
@@ -153,9 +155,9 @@ describe("stuck workers in the Lead's chat", () => {
     expect(card("w2")!.textContent).toContain("· asking");
     // Its stored question reads without the "(Recommended)" marker.
     expect(card("w2")!.querySelector("[data-stuck-line]")!.textContent).toBe("Which save format? [JSON | Binary]");
-    expect(container.querySelector("[data-delegation-rollup-line]")!.textContent).toBe(
-      "Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed",
-    );
+    const line = container.querySelector("[data-delegation-working]")!;
+    expect(line.textContent).toBe("1 working: Job w1 · 1 asking: Job w2 · 2 stuck: Job w3, Job w4");
+    expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed");
   });
 
   it("answers a question with one click on an option, the worker's pick first, and names Ash in the row's log", async () => {

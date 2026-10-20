@@ -1,6 +1,7 @@
 // What a chat's pane adds for the delegation tree (H4): a worker's chat runs on its own ("Runs on its own · Open
-// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads its rollup ("Delegated 3: 2
-// working, 1 failed") with one Stop, and a card for each worker that is stuck (asking, stalled or failed).
+// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads "2 working: API, UI" with one
+// Stop (leadFlow.ts), while it goes on talking with Ash, and a card for each worker that is stuck (asking, stalled or
+// failed; workerStuck.ts), which the line names too ("1 stuck: Tests").
 import {
   delegationActions,
   hasJumpedIn,
@@ -16,6 +17,7 @@ import {
   startedByMono,
   waitingOn,
 } from "../model/delegationView";
+import { workingOn } from "../model/leadFlow";
 import { findMono, listMonos, monoForSession, monoLook } from "../model/mono";
 import {
   leadRollup,
@@ -40,7 +42,10 @@ export type DelegationPane =
   | {
       kind: "lead";
       count: number;
-      /** "Delegated 3: 2 working, 1 failed": the work it has out now. */
+      /** What is out, by title: still running (a stalled one is stuck instead), and asking this chat a question. */
+      working: string[];
+      asking: string[];
+      /** "Delegated 3: 2 working, 1 failed": the count of the work it has out now. */
       rollup?: string;
       /** Its workers that are stuck, oldest first, read at `now`. */
       stuck: StuckWorker[];
@@ -79,6 +84,11 @@ export function useDelegationPane(
     return {
       kind: "lead",
       count,
+      // A stalled worker is named as stuck, not working.
+      ...workingOn(
+        sessionId,
+        rows.filter((row) => !(row.state === "running" && row.stallKind)),
+      ),
       ...(rollup ? { rollup } : {}),
       stuck,
       now,

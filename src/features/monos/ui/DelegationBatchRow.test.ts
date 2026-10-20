@@ -227,6 +227,14 @@ describe("the notices", () => {
       ),
     );
     expect(container.textContent).toContain("Waiting on 2");
+    // With the names of what is out: "2 working: API, UI · 1 asking: Docs".
+    act(() =>
+      root.render(
+        createElement(DelegationWaitingLine, { count: 3, working: ["API", "UI"], asking: ["Docs"], onStopAll }),
+      ),
+    );
+    expect(container.querySelector("[data-delegation-working]")?.textContent).toBe("2 working: API, UI · 1 asking: Docs");
+    expect(container.textContent).not.toContain("Waiting on");
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>("[data-delegation-stop-all]")!

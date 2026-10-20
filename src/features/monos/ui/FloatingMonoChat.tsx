@@ -539,6 +539,8 @@ function FloatingConversation({
         {delegationPane?.kind === "lead" ? (
           <DelegationWaitingLine
             count={delegationPane.count}
+            working={delegationPane.working}
+            asking={delegationPane.asking}
             rollup={delegationPane.rollup}
             failed={delegationPane.failed}
             unloaded={delegationPane.unloaded}

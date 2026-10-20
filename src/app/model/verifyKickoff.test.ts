@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readAppIdentity } from "./appIdentity";
-import { claimVerifyKickoff, pendingVerifyKickoff, verifyKickoffMono } from "./verifyKickoff";
+import {
+  claimVerifyKickoff,
+  claimVerifyMessage,
+  pendingVerifyKickoff,
+  unsentVerifyMessages,
+  verifyKickoffMono,
+  verifyRun,
+  watchVerifyMessages,
+} from "./verifyKickoff";
 
 const base = {
   product: "MonoCode Hub",
@@ -81,5 +89,49 @@ describe("the fake-Claude test bench's kickoff", () => {
     // Without monoId: a new Mono on the project, with the plan's name.
     expect(await verifyKickoffMono(kickoff, host)).toBe("new-mono");
     expect(created).toEqual(["Verify Lead@/tmp/verify/repo"]);
+  });
+});
+
+describe("Ash's messages the bench sends mid-run", () => {
+  const listed = {
+    messages: [
+      { id: "flow-ash-1", monoId: "verify-lead", prompt: "VERIFY-FLOW-ASH-1 how is it going?" },
+      { id: "bad id!", monoId: "verify-lead", prompt: "ignored" },
+      { id: "flow-ash-2", monoId: "", prompt: "no Mono" },
+      { id: "flow-ash-3", monoId: "verify-lead", prompt: "VERIFY-FLOW-ASH-3" },
+    ],
+  };
+
+  it("are sent by a dev copy with a plan only, each once per run (a restart of the run never sends one again)", () => {
+    const dev = readAppIdentity({ ...base, kind: "dev", identifier: "com.ash.monocode-hub.dev.verify", verify: { runId: "run-9" } });
+    const daily = readAppIdentity({ ...base, kind: "daily", identifier: "com.ash.monocode-hub", verify: { runId: "run-9" } });
+    expect(verifyRun(dev)).toBe("run-9");
+    expect(verifyRun(daily)).toBeNull();
+    const storage = memory();
+    expect(unsentVerifyMessages("run-9", listed, storage).map((m) => m.id)).toEqual(["flow-ash-1", "flow-ash-3"]);
+    claimVerifyMessage("run-9", "flow-ash-1", storage);
+    expect(unsentVerifyMessages("run-9", listed, storage).map((m) => m.id)).toEqual(["flow-ash-3"]);
+    // Another run starts over; junk answers send nothing.
+    expect(unsentVerifyMessages("run-10", listed, storage).map((m) => m.id)).toEqual(["flow-ash-1", "flow-ash-3"]);
+    expect(unsentVerifyMessages("run-9", null, storage)).toEqual([]);
+    expect(unsentVerifyMessages("run-9", { messages: "x" }, storage)).toEqual([]);
+  });
+
+  it("are looked for every second and sent in order, one pass at a time", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: string[] = [];
+      const stop = watchVerifyMessages("run-11", {
+        list: async () => listed,
+        send: async (message) => void sent.push(message.id),
+        everyMs: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sent).toEqual(["flow-ash-1", "flow-ash-3"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -2,17 +2,20 @@
 // and leadership briefs to a project Lead's long-running chat. On every change to the chats (and every few seconds while
 // any is open) it decides each open one: still waiting, settled (its report goes to the sender through the H2
 // report-back path, once), or cancelled (taken out of the queue, its chat gone). A Lead's report, once its owner has
-// had its turn on it, also lands in the project's Leadership room (hub/model/roomReports.ts).
+// had its turn on it, also lands in the project's Leadership room (hub/model/roomReports.ts). A chat that says the job
+// is done while work it delegated still runs gets a "Still running: N" note (model/leadFlow.ts).
 import { useEffect, useRef, type MutableRefObject } from "react";
 import { getSession } from "../../sessions/data/sessionStore";
-import type { Session } from "../../sessions/model/session";
+import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 import {
+  isOpenDelegation,
   tauriDelegations,
   type Delegation,
   type DelegationTracker,
   type DelegationsBackend,
 } from "../model/delegations";
-import { answeredReport, followStep } from "../model/followedBriefs";
+import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
+import { stillRunningNote } from "../model/leadFlow";
 import { completionReceipt } from "../model/monoSessionCompletion";
 
 /** How often an open brief is looked at again even when no chat changed (the queue grace, a store-side move). */
@@ -63,6 +66,16 @@ export function useFollowedBriefs(options: {
   sessionsRef: MutableRefObject<Session[]>;
   /** A Lead's report reached its owner and the owner answered: post it to the room (once per receipt). */
   onLeadReport?: (report: FollowedReport) => Promise<unknown> | void;
+  /**
+   * Put an app request in a Lead's queue: its report on a brief, asked for on its own when a message steered into its
+   * last turn on it mixed that turn's reply (followedBriefs.ts `reportRequest`). Without it the turn's last words go.
+   */
+  ask?: (chatId: string, message: QueuedMessage) => Promise<unknown> | void;
+  /**
+   * Add a note to a chat (leadFlow.ts `stillRunningNote`): it said the job is done while work it delegated still runs.
+   * A note is never added twice (its id is the tasks it names).
+   */
+  note?: (chatId: string, block: Block) => void;
   backend?: DelegationsBackend;
   now?: () => number;
 }): void {
@@ -71,6 +84,8 @@ export function useFollowedBriefs(options: {
   const running = useRef(false);
   const again = useRef(false);
   const reported = useRef(new Set<string>());
+  const asked = useRef(new Map<string, number>());
+  const noted = useRef(new Set<string>());
 
   const sweepRef = useRef<() => Promise<void>>(async () => undefined);
   sweepRef.current = async () => {
@@ -97,15 +112,33 @@ export function useFollowedBriefs(options: {
       sessionsRef.current.find((s) => s.id === id) ?? (await getSession(id).catch(() => null));
     for (const row of tracker.openFollowed()) {
       const chat = await chatOf(row.childSession);
-      let step = followStep(row, { chat, children: [], now });
+      let step = followStep(row, { chat, children: [], now, asked: asked.current });
       // A Lead's brief also waits for every worker it started for it: read its tree only when that is all left.
-      if (step.kind === "settle" && row.follow === "lead") {
+      if ((step.kind === "settle" || step.kind === "ask") && row.follow === "lead") {
         const tree = await backend.tree(row.id).catch(() => null);
         if (!tree) continue;
-        step = followStep(row, { chat, children: tree, now });
+        step = followStep(row, { chat, children: tree, now, asked: asked.current });
       }
-      if (step.kind === "settle") await tracker.settleFollowed(row, step.result).catch(() => false);
+      if (step.kind === "ask") {
+        // Once per brief in this window; with nobody to ask, the turn's last words settle it after the grace period.
+        asked.current.set(step.request.id, now);
+        const ask = latest.current.ask;
+        if (ask) await Promise.resolve(ask(row.childSession, step.request)).catch(() => undefined);
+      } else if (step.kind === "settle") await tracker.settleFollowed(row, step.result).catch(() => false);
       else if (step.kind === "cancel") await tracker.cancelFollowed(row, step.reason).catch(() => undefined);
+    }
+    const note = latest.current.note;
+    if (note) {
+      const known = tracker.known();
+      for (const owner of new Set(known.filter(isOpenDelegation).map((row) => row.ownerSession))) {
+        const chat = sessionsRef.current.find((s) => s.id === owner);
+        if (!chat) continue;
+        const block = stillRunningNote(chat, known, currentLeadBrief(known, chat));
+        // Also once per window: the chat's loaded blocks are only its latest turns.
+        if (!block || noted.current.has(block.id)) continue;
+        noted.current.add(block.id);
+        note(owner, block);
+      }
     }
     const onLeadReport = latest.current.onLeadReport;
     if (!onLeadReport) return;

@@ -12,7 +12,7 @@
 // reports through the H2 report-back path exactly once (its receipt). This module only decides; useFollowedBriefs acts.
 import { wasTurnInterrupted } from "../../sessions/model/inFlight";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
-import type { QueuedMessage, Session } from "../../sessions/model/session";
+import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 import { isOwed, type Delegation } from "./delegations";
 import {
   completionReceipt,
@@ -105,17 +105,20 @@ export function withoutQueuedBrief(chat: Session, message: QueuedMessage): Sessi
 }
 
 export type FollowStep =
-  | { kind: "wait"; why: "queued" | "working" | "workers" }
+  | { kind: "wait"; why: "queued" | "working" | "workers" | "report" }
   | { kind: "settle"; result: MonoSessionCompletionResult }
+  /** The Lead's last turn on the brief also took a message steered into it: ask it for its report on its own. */
+  | { kind: "ask"; request: QueuedMessage }
   | { kind: "cancel"; reason: string };
 
 /**
  * What to do with one open followed brief now. `chat` is the chat it went to (null when that chat is gone), `children`
- * the rows of its tree (a Lead's workers have it as their parent), `now` the clock.
+ * the rows of its tree (a Lead's workers have it as their parent), `now` the clock, `asked` the report requests this
+ * window already queued (a Lead's, `reportRequest`) and when.
  */
 export function followStep(
   row: Delegation,
-  look: { chat: Session | null; children: readonly Delegation[]; now: number },
+  look: { chat: Session | null; children: readonly Delegation[]; now: number; asked?: ReadonlyMap<string, number> },
 ): FollowStep {
   const { chat } = look;
   if (!chat) return { kind: "cancel", reason: "The chat it was sent to is gone." };
@@ -133,7 +136,118 @@ export function followStep(
   // A Lead reports once every worker it started for this brief has reported to it (and it has had its say on that).
   if (row.follow === "lead" && look.children.some((child) => child.parentId === row.id && isOwed(child)))
     return { kind: "wait", why: "workers" };
+  if (row.follow === "lead") return leadReportStep(row, chat, look.children, look.asked ?? new Map(), look.now);
   return { kind: "settle", result: followedResult(row, chat, look.children) };
+}
+
+/** A report request's first words (the studio's sweep skips "[MonoCode ", so it is never read as Ash's). */
+export const REPORT_REQUEST_PREFIX = "[MonoCode report request]";
+
+/** The id of the report request a Lead gets for one brief (its queue id, and the request id its turn carries). */
+export function reportRequestId(row: Pick<Delegation, "id" | "generation">): string {
+  return `report-request-${row.id}-g${row.generation}`;
+}
+
+/** Who sent the brief, as its first line names them ("[MonoCode brief from Chief of Staff]"). */
+function briefSender(row: Pick<Delegation, "brief">): string {
+  return /^\[MonoCode brief from ([^\]\n]{1,80})\]/.exec(row.brief ?? "")?.[1]?.trim() || "the Mono that briefed you";
+}
+
+/**
+ * The app's request for a Lead's report on one brief, when its last turn on it also answered a message steered in
+ * meanwhile (so that reply is not a clean report). It waits for the Lead to be idle like a worker's report, never
+ * steers, and its turn's reply is the report.
+ */
+export function reportRequest(row: Delegation): QueuedMessage {
+  const owner = briefSender(row);
+  const title = row.title?.trim() || "your brief";
+  return {
+    id: reportRequestId(row),
+    attachments: [],
+    monoSessionCompletion: { sessionId: row.ownerSession, title: `Report for ${owner}`, status: "completed" },
+    text: `${REPORT_REQUEST_PREFIX} MonoCode notification: you have finished the brief "${title}" from ${owner} and every task you started for it is back, but your last turn on it also answered a message that came in while you wrote it, so that reply is not a clean report. Write your final report on that brief for ${owner} now, in one message: what was done, how it was checked (the evidence), and anything unresolved or waiting on Ash. Only the report: it goes back to ${owner} exactly as you write it. This is an app notification, not a new message from Ash.`,
+  };
+}
+
+/** A message that joined a turn already running (appendSteerUser): sent, never started. */
+function isSteer(block: Block): boolean {
+  return block.role === "user" && block.sentAt != null && block.startedAt == null;
+}
+
+/**
+ * One turn of a Lead's chat, from the user bubble at `at`: its last reply, the error that ended it, and whether a
+ * message joined it meanwhile (`mixed`), so its reply also answers that. A message still waiting in the queue isn't in
+ * the conversation yet and is skipped; one that waited there and went in as a new turn is shown where it was sent, so
+ * if it was sent before this turn ended its answer is mixed in with this turn's words too.
+ */
+function leadTurn(chat: Session, at: number): { reply: string; cleanReply: string; failure?: string; mixed: boolean } {
+  const opening = chat.blocks[at];
+  const pending = new Set((chat.queuedMessages ?? []).flatMap((message) => (message.blockId ? [message.blockId] : [])));
+  const ended = opening?.startedAt != null && opening.durationMs != null ? opening.startedAt + opening.durationMs : undefined;
+  let mixed = !!opening && isSteer(opening);
+  let reply = "";
+  let cleanReply = "";
+  let failure: string | undefined;
+  for (const block of chat.blocks.slice(at + 1)) {
+    if (block.role === "user") {
+      if (block.draft || pending.has(block.id)) continue;
+      if (isSteer(block)) {
+        mixed = true;
+        continue;
+      }
+      if (block.sentAt != null && (ended == null || block.sentAt < ended)) mixed = true;
+      break;
+    }
+    if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) {
+      reply = block.text;
+      if (!mixed) cleanReply = block.text;
+      failure = undefined;
+    } else if (block.role === "system" && block.notice === "error") failure = block.text;
+  }
+  return { reply, cleanReply, ...(failure && !reply ? { failure } : {}), mixed };
+}
+
+/**
+ * A Lead's brief whose work is all back: its report is the Lead's answer in its last turn on the brief. When a message
+ * was steered into that turn (Ash asking how it goes, another brief), the turn's last words may answer that instead,
+ * and its first words may be cut off before it: then the Lead is asked once for the report on its own, and that turn's
+ * reply is the report. Never a trap: a request that went missing settles on the turn's last words.
+ */
+function leadReportStep(
+  row: Delegation,
+  chat: Session,
+  children: readonly Delegation[],
+  asked: ReadonlyMap<string, number>,
+  now: number,
+): FollowStep {
+  const turn = reportTurn(row, chat, children);
+  const last = leadTurn(chat, turn.at);
+  const settle = (reply: string, failure?: string, requestId = turn.requestId): FollowStep => ({
+    kind: "settle",
+    result: monoSessionCompletionResult({
+      requestId,
+      sessionId: chat.id,
+      project: chat.cwd,
+      prompt: row.brief ?? "",
+      outcome: failure ? { status: "failed", text: "", error: failure } : { status: "completed", text: "" },
+      session: chat,
+      reply,
+    }),
+  });
+  if (!last.mixed) return settle(last.reply, last.failure);
+  const id = reportRequestId(row);
+  const sent = briefSentAt({ requestId: id }, chat);
+  if (sent > turn.at) {
+    const answer = leadTurn(chat, sent);
+    // A message steered into this turn too: what it wrote before that is the report it was asked for.
+    const reply = (answer.mixed ? answer.cleanReply : answer.reply) || answer.reply || last.reply;
+    return settle(reply, reply ? undefined : answer.failure, id);
+  }
+  if (chat.queuedMessages?.some((message) => message.id === id)) return { kind: "wait", why: "report" };
+  const at = asked.get(id);
+  // Just asked: it may not be in the queue yet. Taken out of it since (Ash removed it): the turn's last words go.
+  if (at !== undefined) return now - at < FOLLOW_GRACE_MS ? { kind: "wait", why: "report" } : settle(last.reply, last.failure);
+  return { kind: "ask", request: reportRequest(row) };
 }
 
 /**

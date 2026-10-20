@@ -104,9 +104,12 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
   await expect(cards.nth(0).locator("[data-stuck-line]")).toHaveText("No output for 9 min · still running npm test");
   await expect(cards.nth(1).locator("[data-stuck-line]")).toHaveText("Failed: billing refused");
   await expect(cards.nth(2).locator("[data-stuck-line]")).toContainText("How long should the air dodge last?");
-  await expect(page.locator("[data-delegation-rollup-line]").first()).toHaveText(
-    "Delegated 6: 1 working, 1 asking, 1 stuck, 1 failed, 2 done",
+  // The Lead's line names what is out (leadFlow.ts), the stuck ones too; its count is on hover.
+  const line = page.locator("[data-delegation-working]").first();
+  await expect(line).toHaveText(
+    "1 working: Wire the dodge input · 1 asking: Pick the dodge timing · 2 stuck: Run the movement tests, Upload the playtest build",
   );
+  await expect(line).toHaveAttribute("title", "Delegated 6: 1 working, 1 asking, 1 stuck, 1 failed, 2 done");
   await shot(page, "1-lead-chat-and-rail");
 
   // Folding the sub-chats holds until something new is stuck; the fold still says what is stuck.

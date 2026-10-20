@@ -332,6 +332,94 @@ it("lets a long-running habit finish and post after thirty minutes", async () =>
   }
 });
 
+it("holds a habit the provider refused for a usage limit until the limit resets", async () => {
+  // The Checker on 20 Oct: hourly, and its account at its weekly limit until the next morning.
+  vi.useFakeTimers();
+  try {
+    const resetsAt = Date.now() + 13.5 * 60 * 60 * 1000;
+    stored = [
+      {
+        id: "h1",
+        name: "Check Ash's messages",
+        instructions: "Call ash_checker_queue.",
+        schedule: {
+          scheduleKind: "hourly",
+          minute: 23,
+          time: "09:00",
+          dayOfWeek: 1,
+        },
+        enabled: true,
+        createdAt: 0,
+        nextRunAt: Date.now() - 60_000,
+      },
+    ];
+    const host = makeHost("NOTHING_TO_REPORT");
+    const run = host.run.getMockImplementation()!;
+    host.run.mockImplementation(async (id: string, prompt: string) =>
+      Date.now() < resetsAt
+        ? {
+            status: "failed" as const,
+            text: "",
+            error:
+              "Usage limit reached (429): You've hit your weekly limit · resets 5am (Europe/London)",
+            errorClass: "usage_limit" as const,
+            retryable: true,
+            resetsAt,
+          }
+        : run(id, prompt),
+    );
+    mountHost(host);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(host.run).toHaveBeenCalledTimes(1);
+    expect(stored[0]).toMatchObject({
+      lastOutcome: "failed",
+      lastError: expect.stringContaining("weekly limit"),
+    });
+    // Next: its first hourly time after the reset, not the next hour.
+    const resumes = stored[0].nextRunAt;
+    expect(resumes).toBeGreaterThan(resetsAt);
+    expect(resumes - resetsAt).toBeLessThanOrEqual(60 * 60 * 1000 + 30_000);
+
+    // Every hour until then comes and goes without starting it into the same refusal.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(resumes - Date.now() - 60_000);
+    });
+    expect(host.run).toHaveBeenCalledTimes(1);
+
+    // Then it runs on its schedule again.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+    });
+    expect(host.run).toHaveBeenCalledTimes(2);
+    expect(stored[0].lastOutcome).toBe("quiet");
+    expect(stored[0].runs?.map((entry) => entry.outcome)).toEqual([
+      "quiet",
+      "failed",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("keeps the schedule for a usage limit with no reset time", async () => {
+  const host = setup("NOTHING_TO_REPORT");
+  host.run.mockImplementation(async () => ({
+    status: "failed" as const,
+    text: "",
+    error: "Usage limit reached: You've hit your limit",
+    errorClass: "usage_limit" as const,
+    retryable: true,
+  }));
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("failed"));
+  // Nothing says when it lifts, so the next run is the next scheduled one.
+  const daily = new Date();
+  daily.setHours(9, 0, 0, 0);
+  if (daily.getTime() <= Date.now()) daily.setDate(daily.getDate() + 1);
+  expect(stored[0].nextRunAt).toBe(daily.getTime());
+});
+
 it("stops and records a habit that is still running after one hour", async () => {
   vi.useFakeTimers();
   const hold = deferred();
