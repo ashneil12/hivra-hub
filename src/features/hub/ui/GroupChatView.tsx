@@ -11,7 +11,6 @@ import {
 } from "../../monos/model/mono";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import { MonoRailMascot } from "../../monos/ui/MonoRailMascot";
-import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { hubData } from "../model/hubData";
 import {
   addMember,
@@ -27,15 +26,16 @@ import {
   simulateReplies,
   replyProblem,
   retryReply,
+  roomDrafts,
   roomPick,
   roomWorking,
   useHubChatsVersion,
 } from "../model/hubChats";
 import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
-import type { GroupChat } from "../model/types";
+import type { ChatMessage, GroupChat } from "../model/types";
 import { StatusMark } from "./StatusMark";
-import { RoomMessage, RoomStatusLine } from "./RoomMessage";
+import { RoomMessage, RoomStatusLine, RoomText } from "./RoomMessage";
 
 function useMonos(): Mono[] {
   const snap = useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
@@ -94,10 +94,20 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   };
   // Who is working on a room turn right now: their mascot moves, and the line above the composer says so.
   const working = new Set(roomWorking(chat.id).map((w) => w.monoId));
-  // The room talks on its own: new messages keep the view at the bottom unless Ash scrolled up to read.
+  // Turns writing now: their words show as live messages at the end, and become the message in the same place.
+  const drafts = conv ? roomDrafts(chat.id, conv.id) : [];
+  const shown: { message: ChatMessage; live: boolean }[] = [
+    ...(conv?.messages ?? []).map((message) => ({ message, live: false })),
+    ...drafts.map((d) => ({
+      message: { id: d.id, from: d.monoId, kind: "mono" as const, text: d.text, quiet: d.quiet, pick: d.pick, ...(d.replyTo ? { replyTo: d.replyTo } : {}) },
+      live: true,
+    })),
+  ];
+  // The room talks on its own: new messages (and words as they are written) keep the view at the bottom unless Ash
+  // scrolled up to read.
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const count = conv?.messages.length ?? 0;
+  const count = `${conv?.messages.length ?? 0}:${drafts.map((d) => d.text.length).join(",")}`;
   useEffect(() => {
     pinned.current = true;
   }, [conv?.id]);
@@ -272,19 +282,22 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             className="min-h-0 flex-1 overflow-y-auto"
           >
             <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 py-6 text-[13px] leading-5">
-              {conv && conv.messages.length ? (
-                conv.messages.map((msg, index) =>
+              {conv && shown.length ? (
+                shown.map(({ message: msg, live }, index) =>
                   msg.from === "ash" || msg.kind === "notice" || msg.kind === "system" ? (
-                    <RoomMessage key={msg.id} chatId={chat.id} message={msg} previous={conv.messages[index - 1]} messages={conv.messages} nameOf={nameOf} />
+                    <RoomMessage key={msg.id} chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} />
                   ) : (
+                    // A live message keeps its key when it lands, so it fills in where it is instead of being replaced.
                     <div
                       key={msg.id}
                       data-hub-msg-ref={msg.refId}
                       data-hub-msg-quiet={msg.quiet || undefined}
+                      data-hub-msg-draft={live || undefined}
+                      aria-busy={live || undefined}
                       className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
-                      <RoomMessage chatId={chat.id} message={msg} previous={conv.messages[index - 1]} messages={conv.messages} nameOf={nameOf}>
-                        <AgentMarkdown text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
+                      <RoomMessage chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} live={live}>
+                        <RoomText text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
                       </RoomMessage>
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;

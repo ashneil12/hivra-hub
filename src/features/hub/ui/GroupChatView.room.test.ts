@@ -85,3 +85,50 @@ it("a notice says which Mono couldn't answer, with Try again; reactions show und
   });
   expect([...container.querySelectorAll("[data-hub-msg-reactions]")].map((x) => x.textContent)).toContain("👍frank✅You");
 }, 20_000);
+
+it("the host's answer fills in where it will stay: a live message while it writes, the same message once it lands", async () => {
+  const { chat, room, conv, q } = await render();
+  let write!: (text: string) => void;
+  let end!: (text: string) => void;
+  chat.setGroupChatRunner({
+    run: (request) => {
+      write = (text) => request.onText?.(text);
+      return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
+    },
+  });
+  await act(async () => {
+    void chat.requestReply(room.id, conv);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  // Not started yet: the line above the composer says so.
+  expect(q("[data-hub-typing]")!.textContent).toContain("Chief of Staff is writing…");
+  await act(async () => write("Heard you. Waiting on the Tally lead's start-ack."));
+  const live = q("[data-hub-msg-draft]")!;
+  expect(live.textContent).toContain("Chief of Staff");
+  expect(live.textContent).toContain("Heard you. Waiting on the Tally lead's start-ack.");
+  // Its words are on screen, so the line doesn't repeat that it is writing.
+  expect(q("[data-hub-typing]")!.textContent).not.toContain("Chief of Staff is writing");
+  await act(async () => {
+    end("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");
+    await chat.roomIdle(room.id);
+  });
+  expect(q("[data-hub-msg-draft]")).toBeNull();
+  // The same element, now the message: it filled in rather than being replaced.
+  expect(live.isConnected).toBe(true);
+  expect(live.textContent).toContain("Nothing needs you.");
+}, 20_000);
+
+it("a long post shows its first lines with Show more; a short one shows whole", async () => {
+  const { chat, room, conv, q } = await render();
+  const long = ["Heard you: seven things for this week.", "", ...Array.from({ length: 14 }, (_, i) => `${i + 1}. Item ${i + 1} with its owner and what done looks like.`)].join("\n");
+  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? long : "NO_REPLY"));
+  await act(async () => {
+    await chat.requestReply(room.id, conv);
+  });
+  const folded = q("[data-hub-msg-folded]")!;
+  expect(folded.textContent).toContain("Heard you: seven things");
+  expect(folded.textContent).not.toContain("Item 14");
+  await act(async () => q("[data-hub-msg-more]")!.click());
+  expect(container.textContent).toContain("Item 14 with its owner");
+  expect(q("[data-hub-msg-more]")!.textContent).toBe("Show less");
+}, 20_000);

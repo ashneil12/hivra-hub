@@ -280,6 +280,9 @@ export async function runScenario(scenario, ctx) {
     if (send.to.room) {
       const after = room.filter((m) => m.t > send.t && m.from !== ASH);
       send.firstReply = after[0] ? { from: after[0].from, afterSec: Math.round((after[0].t - send.t) / 100) / 10 } : null;
+      // First words Ash could read: a live message (the turn's words as it writes them) or a landed one.
+      const shown = events.filter((e) => (e.kind === "room-draft" || e.kind === "room-message") && e.room === send.to.room && e.t > send.t && e.from !== ASH)[0];
+      send.firstWords = shown ? { from: shown.from, afterSec: Math.round((shown.t - send.t) / 100) / 10, live: shown.kind === "room-draft" } : null;
     } else {
       const session = send.answer?.session ?? send.to.session;
       const own = texts.filter((line) => line.session === session && line.t > send.t);
@@ -300,7 +303,9 @@ export async function runScenario(scenario, ctx) {
       states: rows.reduce((acc, row) => ({ ...acc, [row.state]: (acc[row.state] ?? 0) + 1 }), {}),
     },
     workersInRoom: room.filter((m) => m.from && !["ash", "chief-of-staff", "projects-manager", "frank", "alfred", "critiquito"].includes(m.from)).map((m) => m.from),
-    replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? s.to.session, firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null })),
+    replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? s.to.session, firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null, firstWordsSec: s.firstWords?.afterSec ?? null })),
+    // Room posts' length (Ash: short, a few lines).
+    postChars: room.filter((m) => m.from !== ASH && m.text).map((m) => m.text.length),
   };
   if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
   const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "" };

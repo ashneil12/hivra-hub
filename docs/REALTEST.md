@@ -33,7 +33,8 @@ login (`~/.monocode-hub-dev/claude-config`, Ash's Max account). Budget matters: 
   token. Memory is the run's own invented folder (below), never `~/agent-memory`.
 - **Not Opus, not max effort.** Every Claude chat goes through `scripts/hub-realtest-claude.mjs`, which holds `--model`
   to `sonnet` and `--effort` to `medium` at spawn and on live `set_model` / `apply_flag_settings` (Haiku helper calls,
-  such as the room's router, stay Haiku). The window's own defaults are set to Sonnet 5 + medium as well.
+  such as the room's router, stay Haiku and get no effort added, as the app runs them: an added effort made each one
+  think for 5 to 7 s). The window's own defaults are set to Sonnet 5 + medium as well.
 - **The temporary HOME's keychain list** is pointed at the login keychain so `claude` can read the dev login (written
   to `<tmp HOME>/Library/Preferences/com.apple.security.plist`; the real one is untouched), and
   `<tmp HOME>/.monocode-hub-dev/claude-config` is a link to the shared dev config, so the app and Claude agree on where
@@ -161,7 +162,8 @@ every later message to that Lead (see the baseline findings).
 ## Grading
 
 Rule metrics come from the player, not a model: time to first reply per message (room: first non-Ash message; chat:
-first assistant text in that chat's Claude stream), who answered, replies per Ash message, delegations by owner and
+first assistant text in that chat's Claude stream), for the room also the first words Ash could read (a live message
+as the turn writes it, the driver's `room-draft` event) and every post's length, who answered, replies per Ash message, delegations by owner and
 state, workers seen in the room, em dashes in what agents wrote to Ash, another project's facts anywhere, duplicate room
 messages, console errors, memory calls. Then `scripts/hub-realtest-grade.mjs` sends each scenario's transcript and
 metrics with its benchmark items to Sonnet (medium, no tools, no MCP), which answers PASS / PARTIAL / FAIL /
