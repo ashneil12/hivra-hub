@@ -20,6 +20,10 @@ import {
   FLOW_KICKOFF,
   FLOW_LEAD_MONO,
   FLOW_UI,
+  ROOM_ASH,
+  ROOM_BUSY,
+  ROOM_DM,
+  ROOM_ID,
   GOAL_A_WORKER,
   GOAL_B_WORKER,
   HELPER,
@@ -211,7 +215,59 @@ test("coding with a Lead: Ash's messages, the workers' reports and the report re
   // None of the earlier phases' prompts reach the flow's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, report("WORKER-DONE")])
     assert.equal(pick(prompt, ["lead", "tree-lead", "durable-lead"])?.startsWith("flow") ?? false, false, prompt);
-  assert.deepEqual(WALK.slice(-5), ["still_running_noted", "lead_chats_while_workers_run", "reports_per_worker", "ash_first_over_report", "leadership_report_complete"]);
+  const flowAt = WALK.indexOf("still_running_noted");
+  assert.deepEqual(WALK.slice(flowAt, flowAt + 5), ["still_running_noted", "lead_chats_while_workers_run", "reports_per_worker", "ash_first_over_report", "leadership_report_complete"]);
+});
+
+test("the room: each Mono's room turn, frank's busy work, its wake and the private message reach their own rule", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const pick = (prompt, tags = [], fired = {}) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  const context = "<monocode_context>\nReports start with [MonoCode report].\n</monocode_context>\n\n";
+  // What roomTurns.ts turnPrompt writes: the opening, the task, how its words reach the room, the transcript.
+  const turn = (name, task, transcript, viaTool = false) =>
+    `[MonoCode room] You are ${name}, in the group chat "Leadership team" (room ${ROOM_ID}) for project "verify".\n\nRoom rules: ... ${task}\n\n${
+      viaTool ? `Read anything newer with room_read (room "${ROOM_ID}"), then answer in the room with room_post (room "${ROOM_ID}"), once, and carry on with your work.` : "Your reply is posted to the room for you, under your name."
+    }\n<room_conversation>\n${transcript}\n</room_conversation>`;
+  const ash1 = `Ash: ${ROOM_ASH(1)}: plan round 1`;
+  const round = "Projects Manager: Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. frank, please pass or flag.";
+  const flag = "frank: PM, one flag: the label still says stand-in, and Ash asked for real words.";
+  const retake = "Projects Manager: Fair, frank. The label is fixed in commit def5678. frank, please re-check.";
+  const fired = {};
+  const step = (prompt, tags = []) => {
+    const name = pick(prompt, tags, fired);
+    if (name) fired[name] = (fired[name] ?? 0) + 1;
+    return name;
+  };
+  // Chief of Staff's conversation carries every earlier phase's tag: the room's rules still come first.
+  const cosTags = ["tree-cos", "durable-cos", "flow-cos"];
+  assert.equal(step(`${context}${turn("Chief of Staff", "Ash just wrote. You host this room", ash1)}`, cosTags), "room-cos-answer-1");
+  const cos1 = "Chief of Staff: Heard. PM, post round 1 for review.";
+  assert.equal(step(turn("Projects Manager", "Chief of Staff addressed you in the message marked >> below.", `${ash1}\n\n>> ${cos1}`)), "room-pm-round");
+  assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n>> ${round}`)), "room-frank-flag");
+  assert.equal(step(turn("Projects Manager", "frank addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n>> ${flag}`)), "room-pm-retake");
+  assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n${flag}\n\n>> ${retake}`)), "room-frank-pass");
+  assert.equal(step(turn("Chief of Staff", "3 seats have spoken since Ash's last message.", `${ash1}\n\n${round}`), cosTags), "room-cos-digest");
+  // A room turn no rule is for stays quiet instead of posting the fake's "no rule matched".
+  assert.equal(step(turn("Alfred", "Chief of Staff answered Ash. You may add ONE short message", ash1)), "room-quiet");
+  // Exchange 2: frank's own work, Chief of Staff's answer (with its private message to Alfred), frank's wake.
+  assert.equal(step(`${context}${ROOM_BUSY} run r1: work on the label copy.`), "room-frank-busy");
+  assert.equal(rules.find((rule) => rule.name === "room-frank-busy").steerable, true);
+  const ash2 = `Ash: ${ROOM_ASH(2)}: is the label in?`;
+  assert.equal(step(turn("Chief of Staff", "Ash just wrote. You host this room", `${ash1}\n\n${ash2}`), cosTags), "room-cos-answer-2");
+  const dm = rules.find((rule) => rule.name === "room-cos-answer-2").steps.find((s) => s.app === "monos.message").input;
+  assert.equal(dm.to, "alfred");
+  assert.ok(dm.text.startsWith(ROOM_DM));
+  assert.equal(
+    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`, true)),
+    "room-frank-wake",
+  );
+  const post = rules.find((rule) => rule.name === "room-frank-wake").steps.find((s) => s.app === "rooms.post").input;
+  assert.equal(post.room, ROOM_ID);
+  assert.equal(step(`${context}[MonoCode message from Chief of Staff]\n<message from="Chief of Staff">\n${dm.text}\n</message>`), "room-alfred-dm");
+  // None of the earlier phases' prompts reach the room's rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, "[MonoCode report] done"])
+    assert.equal(pick(prompt, ["lead", "tree-lead", "durable-lead", "flow-cos"])?.startsWith("room") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-3), ["room_agents_talk", "room_busy_mono_answers", "room_private_message"]);
 });
 
 test("the negative control plants a failure the walk must notice", () => {

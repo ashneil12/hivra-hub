@@ -21,12 +21,14 @@ it("shows backend failure and retries the saved message without inventing a repl
   const id = chat.startConversation(c.id, "Fix it");
   chat.setGroupChatRunner(async () => { throw new Error("Provider is unavailable"); });
   await chat.requestReply(c.id, id);
-  expect(chat.replyProblem(c.id)).toBe("Provider is unavailable");
-  expect(chat.getChat(c.id)!.conversations[0].messages).toHaveLength(1);
+  // Never silent: the thread says which Mono couldn't answer and why, and nothing is made up.
+  const notice = chat.getChat(c.id)!.conversations[0].messages.at(-1)!;
+  expect(notice).toMatchObject({ from: "app", kind: "notice", text: "lead couldn't answer: Provider is unavailable", notice: { mono: "lead", retry: true } });
+  expect(chat.getChat(c.id)!.conversations[0].messages.filter((m) => m.from === "lead")).toHaveLength(0);
   chat.setGroupChatRunner(async () => "Recovered");
-  await chat.requestReply(c.id, id);
+  await chat.retryNotice(c.id, notice.id);
   expect(chat.replyProblem(c.id)).toBeUndefined();
-  expect(chat.getChat(c.id)!.conversations[0].messages).toHaveLength(2);
+  expect(chat.getChat(c.id)!.conversations[0].messages.map((m) => m.from)).toEqual(["ash", "app", "lead"]);
 });
 it("blocks a second dispatch while a reply is pending and does not leak membership into other groups", async () => {
   const chat = await import("./hubChats");
@@ -64,10 +66,11 @@ it("retries the failed conversation even after another conversation is selected"
   const a = chat.startConversation(c.id, "Original failed request");
   chat.setGroupChatRunner(async () => { throw new Error("Offline"); });
   await chat.requestReply(c.id, a);
+  const notice = chat.getChat(c.id)!.conversations.find((x) => x.id === a)!.messages.at(-1)!;
   const b = chat.startConversation(c.id, "Do not repeat this other request");
   expect(chat.replyProblem(c.id, b)).toBeUndefined();
   const run = vi.fn(async (_id: string, _prompt: string) => "Recovered A"); chat.setGroupChatRunner(run);
-  await chat.retryReply(c.id);
+  await chat.retryNotice(c.id, notice.id);
   expect(run.mock.calls[0][1]).toContain("Original failed request");
   expect(run.mock.calls[0][1]).not.toContain("Do not repeat this other request");
   expect(chat.getChat(c.id)!.conversations.find((x) => x.id === b)!.messages).toHaveLength(1);
@@ -78,8 +81,9 @@ it("keeps the newest 500 messages of each conversation on disk", async () => {
   const c = chat.createChat("qa", "Busy room", []);
   const id = chat.startConversation(c.id, "message 0");
   for (let i = 1; i < 520; i++) chat.sendMessage(c.id, `message ${i}`, id);
-  // This session still has all of it; what is stored is capped.
-  expect(chat.getChat(c.id)!.conversations[0].messages).toHaveLength(520);
+  // The window keeps the newest 500 and knows there are more (the app database keeps them all).
+  expect(chat.getChat(c.id)!.conversations[0].messages).toHaveLength(500);
+  expect(chat.getChat(c.id)!.conversations[0].more).toBe(true);
   vi.resetModules();
   chat = await import("./hubChats");
   const kept = chat.getChat(c.id)!.conversations[0].messages;

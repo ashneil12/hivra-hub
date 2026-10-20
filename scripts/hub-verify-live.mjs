@@ -38,6 +38,15 @@
 //   16. Ash's message, sent while the UI's report waits in the busy Lead's queue, goes in first: it steers into the
 //       running turn and is answered before the report's turn starts;
 //   17. Ash steers into the Lead's last turn on the brief, and leadership still gets the Lead's complete report.
+//   Then the room (docs/leadership/ROOM.md), in the same launch: Ash writes in the Verify project's Leadership team the
+//   way he types there (a room message from the stub):
+//   18. the host answers him first, then the Monos run a review round among themselves (round, flag, retake, "pass
+//       from me") by naming each other, and the host closes it with a digest; every message is a row in the app
+//       database, and each Mono's own chat shows its room turns as quiet lines;
+//   19. a Mono busy in its own chat still answers: the room's wake is steered into its running turn and it posts with
+//       room_post, answering the message that woke it;
+//   20. a private message between Monos (mono_message) arrives as a hidden turn in the other Mono's own chat, shown as
+//       from the sender, and nothing of it reaches the room.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -88,6 +97,9 @@ export const WALK = [
   "reports_per_worker",
   "ash_first_over_report",
   "leadership_report_complete",
+  "room_agents_talk",
+  "room_busy_mono_answers",
+  "room_private_message",
 ];
 
 /** Thrown between phases when the negative control has already caught its failure: no more launches needed. */
@@ -121,6 +133,13 @@ export const FLOW_UI = "VERIFY-FLOW-UI";
 export const FLOW_ASH = (n) => `VERIFY-FLOW-ASH-${n}`;
 /** The Verify lead's Mono id (hubLeads.ts leadSpecFor: `<project id>-lead`): Ash's messages go to its chat. */
 export const FLOW_LEAD_MONO = `${TREE_PROJECT.id}-lead`;
+/** The room (checks 18 to 20): Ash's messages in the Verify project's Leadership team, frank's own work, the DM. */
+export const ROOM_ID = `${TREE_PROJECT.id}:leadership`;
+export const ROOM_ASH = (n) => `VERIFY-ROOM-ASH-${n}`;
+export const ROOM_BUSY = "VERIFY-ROOM-BUSY";
+export const ROOM_DM = "VERIFY-ROOM-DM";
+/** A room turn's prompt for one Mono (roomTurns.ts turnPrompt opens with it). */
+export const roomTurn = (name) => `(?:^|</monocode_context>\\s*)\\[MonoCode room\\] You are ${name},`;
 /** A worker's finish line: what the brief's "Done when" says, and so what MonoCode sends as `/goal`. */
 export const goalFor = (worker, runId) => `${worker.replace("-WORKER", "")} run ${runId}: the transcript says ${worker.replace("VERIFY-", "").replace("-WORKER", "")}-DONE`;
 /** An app notification as the turn's own message: first in the prompt, or right after the Mono's context block. */
@@ -478,7 +497,72 @@ export function scenario({ runId, failGate = false }) {
       ],
     },
   ];
+  // The room. First of all: a room turn's prompt quotes the room's transcript, so only its own opening may match, and
+  // the last rule keeps any other room turn quiet (a room prompt no rule matched would otherwise be posted).
+  const room = [
+    {
+      name: "room-cos-answer-2",
+      match: `${roomTurn("Chief of Staff")}[\\s\\S]*Ash just wrote[\\s\\S]*${ROOM_ASH(2)}`,
+      times: 1,
+      steps: [
+        { app: "monos.message", input: { to: "alfred", text: `${ROOM_DM} run ${runId}: keep the label rule in mind.` }, save: "room-dm" },
+        { mark: "room-cos-answered-2" },
+        { say: "Heard. frank, is the label in?" },
+      ],
+    },
+    {
+      name: "room-cos-answer-1",
+      match: `${roomTurn("Chief of Staff")}[\\s\\S]*Ash just wrote[\\s\\S]*${ROOM_ASH(1)}`,
+      times: 1,
+      steps: [{ mark: "room-cos-answered" }, { say: "Heard. PM, post round 1 for review." }],
+    },
+    {
+      name: "room-pm-round",
+      match: `${roomTurn("Projects Manager")}[\\s\\S]*Chief of Staff addressed you`,
+      times: 1,
+      steps: [{ say: "Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. frank, please pass or flag." }],
+    },
+    {
+      name: "room-frank-flag",
+      match: `${roomTurn("frank")}[\\s\\S]*Projects Manager addressed you[\\s\\S]*>> Projects Manager: Round 1`,
+      times: 1,
+      steps: [{ say: "PM, one flag: the label still says stand-in, and Ash asked for real words." }],
+    },
+    {
+      name: "room-pm-retake",
+      match: `${roomTurn("Projects Manager")}[\\s\\S]*frank addressed you`,
+      times: 1,
+      steps: [{ say: "Fair, frank. The label is fixed in commit def5678. frank, please re-check." }],
+    },
+    { name: "room-frank-pass", match: `${roomTurn("frank")}[\\s\\S]*>> Projects Manager: Fair, frank`, times: 1, steps: [{ say: "Pass from me." }] },
+    {
+      name: "room-cos-digest",
+      match: `${roomTurn("Chief of Staff")}[\\s\\S]*seats have spoken`,
+      times: 1,
+      steps: [{ mark: "room-digest" }, { say: "Locked: round 1 passes. Nothing for Ash." }],
+    },
+    // frank, busy in its own chat: the room's wake is steered into this turn and answered with room_post.
+    {
+      name: "room-frank-busy",
+      match: said(ROOM_BUSY),
+      times: 1,
+      steerable: true,
+      steps: [{ say: "On the label copy." }, { mark: "room-frank-busy" }, { waitFile: "room-frank-release", timeoutMs: 600_000 }, { say: "Label copy done." }],
+    },
+    {
+      name: "room-frank-wake",
+      match: `${roomTurn("frank")}[\\s\\S]*answer in the room with room_post`,
+      times: 1,
+      steps: [
+        { app: "rooms.post", input: { room: ROOM_ID, text: "The label is in. Pass from me." }, save: "room-frank-post" },
+        { mark: "room-frank-posted" },
+      ],
+    },
+    { name: "room-alfred-dm", match: said("\\[MonoCode message from Chief of Staff\\]"), times: 1, steps: [{ mark: "room-alfred-dm" }, { say: "NO_REPLY" }] },
+    { name: "room-quiet", match: said("\\[MonoCode room\\]"), steps: [{ say: "NO_REPLY" }] },
+  ];
   const rules = [
+    ...room,
     ...flow,
     ...durable,
     ...tree,
@@ -1889,6 +1973,133 @@ async function main() {
         { evidence: reportEvidence },
       );
     else fail("leadership_report_complete", "A message Ash steers into the Lead's last turn never truncates its report to leadership", JSON.stringify(reportEvidence));
+
+    phase();
+    // 18 to 20. The room, in the same launch: Ash writes in the Verify project's Leadership team.
+    const roomRows = () =>
+      query(db, "SELECT seq, id, author, kind, text, reply_to, meta_json FROM room_messages WHERE room_id = ? ORDER BY seq", ROOM_ID).then((rows) =>
+        rows.map((row) => ({ ...row, meta: JSON.parse(row.meta_json || "{}") })),
+      );
+    const ashInRoom = (n, text) => {
+      stub.state.verifyMessages = [
+        ...(stub.state.verifyMessages ?? []),
+        { id: `room-ash-${n}`, room: TREE_PROJECT.id, prompt: `${ROOM_ASH(n)}: ${text}` },
+      ];
+      return Date.now();
+    };
+    const notesIn = async (kind) =>
+      (await query(db, "SELECT session_id, block_json FROM mono_blocks WHERE block_json LIKE '%\"monoNote\"%'"))
+        .map((row) => ({ session: row.session_id, block: JSON.parse(row.block_json) }))
+        .filter((row) => row.block.role === "user" && row.block.internal && row.block.monoNote?.kind === kind);
+    const roomSent = ashInRoom(1, "plan round 1");
+    const cosAnswered = await waitMark("room-cos-answered", 60_000);
+    const digest = await waitMark("room-digest", 120_000);
+    const loop = await until(async () => {
+      const rows = await roomRows();
+      const at = rows.findIndex((row) => row.author === "ash" && row.text.startsWith(ROOM_ASH(1)));
+      const tail = at >= 0 ? rows.slice(at) : [];
+      return tail.some((row) => row.text.startsWith("Locked: round 1")) ? tail : null;
+    }, scale(30_000));
+    const roomNotes = await notesIn("room");
+    const loopEvidence = {
+      latencyMs: after(cosAnswered, roomSent),
+      authors: (loop ?? []).map((row) => row.author),
+      picks: (loop ?? []).map((row) => row.meta.pick?.by ?? null),
+      texts: (loop ?? []).map((row) => row.text),
+      quietLines: [...new Set(roomNotes.map((row) => row.session))],
+    };
+    if (
+      cosAnswered &&
+      digest &&
+      loop &&
+      JSON.stringify(loopEvidence.authors) === JSON.stringify(["ash", TEAM_MONO, "projects-manager", "frank", "projects-manager", "frank", TEAM_MONO]) &&
+      JSON.stringify(loopEvidence.picks) === JSON.stringify([null, "lead", "addressed", "addressed", "addressed", "addressed", "digest"]) &&
+      loop[1].reply_to === loop[0].id &&
+      loopEvidence.latencyMs < scale(15_000) &&
+      loopEvidence.quietLines.length >= 3
+    )
+      pass(
+        "room_agents_talk",
+        "Ash writes in a room: the host answers first, the Monos run a review round among themselves by naming each other, and the host locks it",
+        `Chief of Staff answered ${loopEvidence.latencyMs} ms after Ash's message; then ${loopEvidence.authors.slice(2, -1).join(", ")} without Ash (round, flag, retake, "Pass from me."), then "${loopEvidence.texts.at(-1)}"; all ${loop.length} rows are in room_messages, and ${loopEvidence.quietLines.length} Mono chats show their room turns as quiet lines`,
+        { evidence: loopEvidence },
+      );
+    else fail("room_agents_talk", "Ash writes in a room: the host answers first, the Monos run a review round among themselves by naming each other, and the host locks it", JSON.stringify({ cosAnswered: !!cosAnswered, digest: !!digest, ...loopEvidence }));
+
+    phase();
+    // 19. frank works in its own chat; Ash asks the room; frank answers from that work with room_post.
+    stub.state.verifyMessages = [...(stub.state.verifyMessages ?? []), { id: "room-busy", monoId: "frank", prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` }];
+    const frankBusy = await waitMark("room-frank-busy", 60_000);
+    const askSent = ashInRoom(2, "is the label in?");
+    const cosAnswered2 = await waitMark("room-cos-answered-2", 60_000);
+    const frankPosted = await waitMark("room-frank-posted", 90_000);
+    const frankCall = savedCall("room-frank-post");
+    const answeredRows = await until(async () => {
+      const rows = await roomRows();
+      const at = rows.findIndex((row) => row.author === "ash" && row.text.startsWith(ROOM_ASH(2)));
+      const tail = at >= 0 ? rows.slice(at) : [];
+      return tail.some((row) => row.author === "frank") ? tail : null;
+    }, scale(30_000));
+    const frankWake = prompts().find((entry) => entry.rule === "room-frank-wake");
+    const frankRow = answeredRows?.find((row) => row.author === "frank");
+    const cosRow = answeredRows?.find((row) => row.author === TEAM_MONO);
+    open("room-frank-release");
+    const busyEvidence = {
+      frankBusy: !!frankBusy,
+      cosAnsweredMs: after(cosAnswered2, askSent),
+      steered: frankWake?.steered ?? false,
+      sameConversationAsWork: frankWake?.conversation === frankBusy?.conversation,
+      call: frankCall?.response ?? null,
+      frankRow: frankRow ? { text: frankRow.text, pick: frankRow.meta.pick?.by, replyTo: frankRow.reply_to } : null,
+      cosRow: cosRow ? cosRow.id : null,
+    };
+    if (
+      frankBusy &&
+      cosAnswered2 &&
+      frankPosted &&
+      frankCall?.response?.ok === true &&
+      busyEvidence.steered &&
+      busyEvidence.sameConversationAsWork &&
+      frankRow?.text === "The label is in. Pass from me." &&
+      frankRow.meta.pick?.by === "addressed" &&
+      frankRow.reply_to === cosRow?.id
+    )
+      pass(
+        "room_busy_mono_answers",
+        "A Mono busy in its own chat still answers the room: the wake is steered into its work and it posts with room_post",
+        `frank was mid-turn on its own work; Chief of Staff named it ${busyEvidence.cosAnsweredMs} ms after Ash asked; the room's wake joined frank's running turn and frank posted "${frankRow.text}" with room_post, as the answer to Chief of Staff's message`,
+        { evidence: busyEvidence },
+      );
+    else fail("room_busy_mono_answers", "A Mono busy in its own chat still answers the room: the wake is steered into its work and it posts with room_post", JSON.stringify(busyEvidence));
+
+    phase();
+    // 20. Chief of Staff's private message to Alfred (sent from its room turn).
+    const dmCall = savedCall("room-dm");
+    const alfredGot = await waitMark("room-alfred-dm", 60_000);
+    const dmNotes = alfredGot ? ((await until(async () => {
+      const notes = await notesIn("message");
+      return notes.length ? notes : null;
+    }, scale(15_000))) ?? []) : [];
+    const roomNow = await roomRows();
+    const dmEvidence = {
+      call: dmCall?.response ?? null,
+      delivered: !!alfredGot,
+      notes: dmNotes.map((row) => ({ session: row.session, note: row.block.monoNote })),
+      inRoom: roomNow.some((row) => row.author === "alfred" || row.text.includes(ROOM_DM)),
+    };
+    if (
+      dmCall?.response?.ok === true &&
+      alfredGot &&
+      dmNotes.some((row) => row.block.monoNote?.from === "Chief of Staff" && row.block.monoNote?.ref === TEAM_MONO && row.block.text.includes(ROOM_DM)) &&
+      !dmEvidence.inRoom
+    )
+      pass(
+        "room_private_message",
+        "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room",
+        `mono_message from Chief of Staff (sent during its room turn) reached Alfred's own chat as a quiet "From Chief of Staff" turn; nothing of it is in the room`,
+        { evidence: dmEvidence },
+      );
+    else fail("room_private_message", "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room", JSON.stringify(dmEvidence));
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))

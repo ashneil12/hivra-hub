@@ -256,11 +256,40 @@ export interface HubDataSource {
   listChanges?(): HubChangeRecord[];
 }
 
-/** One message in a group chat. `from` is "ash" or a Mono id. */
+/** What a room message is: Ash's, a Mono's, the app's quiet line ("Ash asked the team to keep going"), or a notice. */
+export type ChatMessageKind = "ash" | "mono" | "system" | "notice";
+
+/** How a Mono came to speak (shown behind its name). */
+export type ChatPickSource =
+  | "mention"
+  | "only"
+  | "named"
+  | "lead"
+  | "router"
+  | "lanes"
+  | "chime"
+  | "addressed"
+  | "digest"
+  | "report"
+  | "back"
+  | "post";
+
+/**
+ * One message in a group chat. `from` is "ash", a Mono id, or "app" (a system line or a notice). A notice is the room
+ * never going silent: a Mono's turn that failed, ran out of budget or was stopped says so in the thread.
+ */
 export type ChatMessage = {
   id: string;
-  from: "ash" | string;
+  from: "ash" | "app" | string;
   text: string;
+  /** Absent on older messages: "ash" from Ash, else "mono". */
+  kind?: ChatMessageKind;
+  /** The message this one answers. */
+  replyTo?: string;
+  /** Acknowledgements instead of "got it" bubbles: emoji to who reacted ("ash" or Mono ids), in order. */
+  reactions?: Record<string, string[]>;
+  /** When it was written (epoch ms). */
+  at?: number;
   /** Only stuck or given-up items carry a status. */
   status?: StuckState;
   /** An extra reply after the picked answerer: lands quietly, no notification. */
@@ -268,15 +297,17 @@ export type ChatMessage = {
   /** The Need or stuck item this message is about (same data as Today). */
   refId?: string;
   /**
-   * Why this Mono spoke: how the answerer was picked, or that it chimed in or was addressed (behind its name). "report":
-   * a Lead's report on a brief from the room's leadership team, or the briefing Mono's answer to it (roomReports.ts).
+   * Why this Mono spoke: how the answerer was picked, or that it chimed in, was addressed, closed a stretch (digest),
+   * reported (a Lead's report, or work it delegated from the room coming back), or posted on its own (room_post).
    */
-  pick?: { by: "mention" | "only" | "named" | "router" | "lanes" | "chime" | "addressed" | "report"; why: string };
+  pick?: { by: ChatPickSource; why: string };
+  /** A notice about a Mono: who, and whether Try again can run its turn once more. */
+  notice?: { mono?: string; retry?: boolean };
 };
 
 export type ChatConversation = {
   id: string;
-  /** "Today", "Yesterday", "12 Oct". */
+  /** "Today", "Yesterday", "12 Oct" (from `createdAt` when it is known). */
   when: string;
   title: string;
   /** Ash renamed it: the first message no longer names it. */
@@ -284,6 +315,10 @@ export type ChatConversation = {
   messages: ChatMessage[];
   /** The last of Ash's messages the room has taken up; the ones after it wait for the next exchange. */
   answeredThrough?: string;
+  /** When it was started (epoch ms). */
+  createdAt?: number;
+  /** Older messages are in the room store than were loaded. */
+  more?: boolean;
 };
 
 /** A project's group chat. The Leadership team is the default one. */
@@ -294,6 +329,10 @@ export type GroupChat = {
   isDefault: boolean;
   memberIds: string[];
   conversations: ChatConversation[];
+  /** Who answers Ash first. Unset: Chief of Staff when seated, else the first member. */
+  leadId?: string;
+  /** The default team was seated in it once (a Mono Ash takes out stays out). */
+  seated?: boolean;
   replyPending?: string;
   replyError?: string;
   replyConversationId?: string;

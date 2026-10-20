@@ -62,6 +62,7 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+mod rooms;
 mod search;
 mod session_store;
 mod ship;
@@ -477,6 +478,16 @@ pub fn run() {
             pr_watch::pr_watch_list,
             pr_watch::pr_watch_wakes_open,
             pr_watch::pr_watch_wake_delivery,
+            rooms::rooms_load,
+            rooms::rooms_upsert,
+            rooms::rooms_conversation_upsert,
+            rooms::rooms_message_add,
+            rooms::rooms_message_update,
+            rooms::rooms_read,
+            rooms::rooms_import,
+            rooms::rooms_origin_add,
+            rooms::rooms_origins_open,
+            rooms::rooms_origin_done,
             automations::automations_list,
             automations::automations_upsert,
             automations::automations_delete,

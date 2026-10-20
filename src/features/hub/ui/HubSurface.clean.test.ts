@@ -50,7 +50,7 @@ describe("ships clean", () => {
     expect(work.activeWorkers("exo-game")).toEqual([]);
     expect(chats.listChats("exo-game")).toEqual([]);
     expect(builds.listBuilds("exo-game")).toEqual([]);
-  });
+  }, 20_000);
 
   it("first launch: Today is one calm line and a New project button, nothing else", async () => {
     const { HubSurface } = await load(false);

@@ -10,7 +10,8 @@ import {
   enqueueMonoMessage,
   monoMessageDeliveries,
   monoPendingTranscriptBlocks,
-  monoRefusesRoomTurn,
+  monoTakesRoomTurnNow,
+  queueMonoNote,
 } from "./monoMessaging";
 
 function message(id: string): QueuedMessage {
@@ -219,13 +220,25 @@ describe("optimistic Mono messages", () => {
 });
 
 describe("a room turn", () => {
-  it("is refused by a Mono that is working or has messages waiting, so it never lands in the outbox", () => {
+  it("runs now only on a free Mono; one that works, has messages waiting or is out of budget takes it as a wake", () => {
     const idle = newSession("claude", "/tmp");
-    expect(monoRefusesRoomTurn(idle)).toBe(false);
-    expect(monoRefusesRoomTurn({ ...idle, busy: true })).toBe(true);
-    // Stop paused the queue: the Mono is idle, but a managed message would be queued behind Ash's waiting ones.
+    expect(monoTakesRoomTurnNow(idle)).toBe(true);
+    expect(monoTakesRoomTurnNow({ ...idle, busy: true })).toBe(false);
+    // Stop paused the queue: the Mono is idle, but a room turn must not overtake Ash's waiting messages.
     const waiting = enqueueMonoMessage(idle, message("queued before Stop"));
-    expect(monoRefusesRoomTurn({ ...waiting, queueStatus: "paused" })).toBe(true);
-    expect(monoRefusesRoomTurn({ ...waiting, queueStatus: "active" })).toBe(true);
+    expect(monoTakesRoomTurnNow({ ...waiting, queueStatus: "paused" })).toBe(false);
+    expect(monoTakesRoomTurnNow({ ...idle, usageLimit: { resetsAt: 1 } })).toBe(false);
+  });
+
+  it("a wake or another Mono's message waits hidden in the queue: no pending bubble, no delivery row, never twice", () => {
+    const busy = { ...newSession("claude", "/tmp"), busy: true };
+    const note = { kind: "room" as const, from: "Leadership team", ref: "hub:leadership", line: "Answered Ash" };
+    const woken = queueMonoNote(busy, { id: "room-1", text: "[MonoCode room] ...", note });
+    expect(woken.queuedMessages).toEqual([{ id: "room-1", text: "[MonoCode room] ...", attachments: [], appRequestId: "room-1", monoNote: note }]);
+    expect(queueMonoNote(woken, { id: "room-1", text: "again", note })).toBe(woken);
+    expect(monoPendingTranscriptBlocks(woken, woken.blocks)).toBe(woken.blocks);
+    expect(monoMessageDeliveries(woken).size).toBe(0);
+    const told = queueMonoNote(busy, { id: "m-1", text: "[MonoCode message from frank] ...", note: { kind: "message", from: "frank" }, waitForIdle: true });
+    expect(told.queuedMessages![0].waitForIdle).toBe(true);
   });
 });
