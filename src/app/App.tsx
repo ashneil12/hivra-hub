@@ -23,6 +23,7 @@ import {
 import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
+  monoRefusesRoomTurn,
 } from "../features/monos/model/monoMessaging";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -9576,7 +9577,8 @@ function Workspace({
       },
     });
     if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
-    if (session.busy) throw new MonoBusyError("This Mono is already working. Wait for it to finish before trying again.");
+    if (monoRefusesRoomTurn(sessionsRef.current.find((entry) => entry.id === session.id) ?? session))
+      throw new MonoBusyError("This Mono is already working or has messages waiting. Wait for it to finish before trying again.");
     return new Promise<string>((resolve, reject) => {
       const timer = window.setTimeout(() => reject(new Error("The Mono is still taking time to reply. Check its conversation before retrying.")), 600_000);
       void Promise.resolve(submitSessionRef.current(session.id, prompt, [], {

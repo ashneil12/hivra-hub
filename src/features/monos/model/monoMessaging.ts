@@ -47,6 +47,16 @@ export function enqueueMonoMessage(
   };
 }
 
+/**
+ * A room (group chat) turn runs managed: its reply settles the room's wait. A message that waits in the outbox loses
+ * that (`enqueueMonoMessage` keeps only what Ash would see), so the hidden room prompt would land in the Mono's chat as
+ * a visible message and the room would wait out its timer. A Mono that is working, or has messages waiting (a queue Stop
+ * paused included: the submit path queues behind them), refuses the room turn instead.
+ */
+export function monoRefusesRoomTurn(session: Session): boolean {
+  return !!session.busy || !!session.queuedMessages?.length;
+}
+
 /** Acknowledgement updates the existing bubble instead of appending it again. */
 export function acknowledgeMonoMessage(
   session: Session,
