@@ -278,6 +278,57 @@ describe("a chat whose Claude conversation is gone", () => {
     await turn;
   });
 
+  it("keeps a live conversation whose /goal answer repeats \"no conversation found\" (recorded zero-turn success)", async () => {
+    // `/goal` with no argument, as Claude Code 2.1.302 answers it (goal-block-cap-status.ndjson), for a goal whose
+    // words happen to be the dead-conversation refusal's.
+    const recorded = readFileSync(
+      new URL("./fixtures/claude-cli-2.1.302/goal-block-cap-status.ndjson", import.meta.url),
+      "utf8",
+    )
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const objective = "the log says No conversation found with session ID: abc";
+    const [synthetic, status] = recorded.slice(-2).map((rec) =>
+      JSON.parse(
+        JSON.stringify({ ...rec, session_id: "live-conversation" }).replaceAll(
+          "some condition that stays unmet",
+          objective,
+        ),
+      ) as Record<string, unknown>,
+    );
+    expect(status).toMatchObject({ type: "result", subtype: "success", num_turns: 0 });
+
+    bindClaudeSession("chat", "live-conversation", "/repo");
+    const events: HarnessEvent[] = [];
+    let accepted = 0;
+    let settled = false;
+    const turn = sendClaudeTurn({
+      sessionId: "chat",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      text: "/goal",
+      attachments: [],
+      resumeFallback: (prompt) => `BRIEF OF THE CHAT\n\n${prompt}`,
+      onAccepted: () => void (accepted += 1),
+      onEvent: (event) => events.push(event),
+    }).finally(() => void (settled = true));
+    await waitFor(() => initializes() === 1, "initialize");
+    answerInitialize();
+    await waitFor(() => prompts().length === 1, "the prompt");
+    emit({ type: "system", subtype: "init", session_id: "live-conversation" });
+    emit(synthetic);
+    emit(status);
+    await waitFor(() => settled || initializes() === 2, "the turn to end or a restart");
+    expect(spawned).toHaveLength(1);
+    expect(prompts()).toEqual(["/goal"]);
+    expect(accepted).toBe(1);
+    expect(events.some((e) => e.type === "session.providerLost")).toBe(false);
+    await turn;
+  });
+
   it("leaves an ordinary error result alone", async () => {
     bindClaudeSession("chat", "live-conversation", "/repo");
     const events: HarnessEvent[] = [];

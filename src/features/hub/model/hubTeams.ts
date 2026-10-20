@@ -11,7 +11,7 @@
 import { useSyncExternalStore } from "react";
 import { addMember, createChat } from "./hubChats";
 import { catalogEntry, setMonoConnectors } from "./hubConnectors";
-import { createMono, findMono, listMonos, monoLook, saveMonoName, updateMono, type Mono } from "../../monos/model/mono";
+import { createMono, discardNewMono, findMono, listMonos, monoLook, saveMonoName, updateMono, type Mono } from "../../monos/model/mono";
 import { loadMonoFiles, saveMonoFile } from "../../monos/model/monoFiles";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { projectKey } from "../../../shared/lib/paths";
@@ -201,6 +201,8 @@ export type MakeDeps = {
   writeSoul(monoId: string, soul: string): Promise<void>;
   setConnectors(monoId: string, ids: string[]): Promise<unknown>;
   addToRoom(chatId: string, monoId: string): void;
+  /** Take back a Mono whose making failed part way (and any connector choice it got). */
+  discard(monoId: string): void;
 };
 
 export const appDeps: MakeDeps = {
@@ -214,6 +216,10 @@ export const appDeps: MakeDeps = {
   // Only these connectors, and only where its projects allow them (connectors/settings.rs decides at launch).
   setConnectors: (monoId, ids) => setMonoConnectors(monoId, { mode: "only", ids }),
   addToRoom: addMember,
+  discard: (monoId) => {
+    discardNewMono(monoId);
+    void setMonoConnectors(monoId, null).catch(() => undefined);
+  },
 };
 
 /**
@@ -225,10 +231,17 @@ export async function addNamedMono(teamId: string | undefined, input: MonoSpec, 
   const team = teamId ? getTeam(teamId) : undefined;
   if (teamId && !team) throw new Error("That team is gone.");
   const mono = deps.createMono(spec.projects);
-  deps.name(mono.id, spec.name);
-  deps.engine(mono.id, spec.engine);
-  await deps.writeSoul(mono.id, spec.soul?.trim() ? spec.soul : soulFromBrief(spec, team?.name));
-  await deps.setConnectors(mono.id, spec.connectors);
+  // All or nothing: a Mono left with no connector choice may use everything its projects allow, and a second Approve
+  // would fail on its name. Its choice goes first, so it is never without one for long.
+  try {
+    deps.name(mono.id, spec.name);
+    deps.engine(mono.id, spec.engine);
+    await deps.setConnectors(mono.id, spec.connectors);
+    await deps.writeSoul(mono.id, spec.soul?.trim() ? spec.soul : soulFromBrief(spec, team?.name));
+  } catch (error) {
+    deps.discard(mono.id);
+    throw error;
+  }
   if (team) {
     save({ ...state, teams: state.teams.map((t) => (t.id === team.id ? { ...t, memberIds: [...t.memberIds, mono.id] } : t)) });
     if (team.roomChatId) deps.addToRoom(team.roomChatId, mono.id);

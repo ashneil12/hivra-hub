@@ -104,16 +104,22 @@ function writeModels(list: CustomModel[]): void {
 
 /**
  * Models from a setup import: each one whose id isn't here yet is added, metadata only (writeModels drops anything
- * key-like). Its key is entered again on this Mac. Returns how many were added.
+ * key-like). Its key is entered again on this Mac. An address the form would refuse (baseUrlProblem) is never taken
+ * from a file either: that model is left out, and `onSkipped` hears why. Returns how many were added.
  */
-export function importCustomModels(models: readonly unknown[]): number {
+export function importCustomModels(models: readonly unknown[], onSkipped?: (reason: string) => void): number {
   const have = listCustomModels();
   const ids = new Set(have.map((m) => m.id));
-  const add = models.filter(
+  const shaped = models.filter(
     (m): m is CustomModel =>
       !!m && typeof m === "object" && typeof (m as CustomModel).id === "string" && typeof (m as CustomModel).name === "string" &&
       typeof (m as CustomModel).modelId === "string" && CUSTOM_PROVIDERS.some((p) => p.id === (m as CustomModel).provider) && !ids.has((m as CustomModel).id),
   );
+  const add = shaped.filter((m) => {
+    const problem = baseUrlProblem(m.baseUrl);
+    if (problem) onSkipped?.(`Left out the custom model "${m.name}": ${problem}.`);
+    return !problem;
+  });
   if (add.length) writeModels([...have, ...add]);
   return add.length;
 }
@@ -126,6 +132,16 @@ export function emptyForm(provider: CustomProvider = "xai"): CustomModelForm {
   return { name: "", provider, baseUrl: defaultBaseUrl(provider), modelId: defaultModelId(provider), key: "" };
 }
 
+/** What is wrong with a provider address, in plain words, or nothing. The form and an import check it the same way. */
+export function baseUrlProblem(baseUrl: unknown): string | undefined {
+  const url = typeof baseUrl === "string" ? baseUrl.trim() : "";
+  if (!url) return "Add your provider's address";
+  if (!/^https?:\/\/[^\s/]+/.test(url)) return "The address starts with https://";
+  if (/anthropic\.com|\/anthropic\b|claude\.ai/i.test(url))
+    return "Use the provider's OpenAI-style address (usually ending in /v1), not an Anthropic one";
+  return undefined;
+}
+
 /** Plain-words problems with the form, by field. Empty when it can be tested. */
 export function validateCustomModel(form: CustomModelForm): Partial<Record<keyof CustomModelForm, string>> {
   const errors: Partial<Record<keyof CustomModelForm, string>> = {};
@@ -133,11 +149,8 @@ export function validateCustomModel(form: CustomModelForm): Partial<Record<keyof
   if (!form.modelId.trim()) errors.modelId = "Add the model id";
   else if (/\s/.test(form.modelId.trim())) errors.modelId = "The model id has no spaces";
   if (showsBaseUrl(form.provider)) {
-    const url = form.baseUrl.trim();
-    if (!url) errors.baseUrl = "Add your provider's address";
-    else if (!/^https?:\/\/[^\s/]+/.test(url)) errors.baseUrl = "The address starts with https://";
-    else if (/anthropic\.com|\/anthropic\b|claude\.ai/i.test(url))
-      errors.baseUrl = "Use the provider's OpenAI-style address (usually ending in /v1), not an Anthropic one";
+    const problem = baseUrlProblem(form.baseUrl);
+    if (problem) errors.baseUrl = problem;
   }
   if (needsKey(form.provider) && !form.key.trim()) errors.key = "Add the key";
   return errors;

@@ -430,7 +430,8 @@ function FloatingConversation({
   const transcript = useMonoTranscript(session, true);
   const delegationPane = useDelegationPane(session.id, true);
   const stopWorkflow = useCallback(
-    (taskId: string) => void action({ kind: "stopWorkflow", taskId }),
+    // The panel waits on this: false (the error line says why) puts its Stop back instead of "Stopping…" for good.
+    (taskId: string) => action({ kind: "stopWorkflow", taskId }),
     [action],
   );
   return (
@@ -539,6 +540,7 @@ function FloatingConversation({
           <DelegationWaitingLine
             count={delegationPane.count}
             failed={delegationPane.failed}
+            unloaded={delegationPane.unloaded}
             onStopAll={delegationPane.onStopAll}
           />
         ) : null}

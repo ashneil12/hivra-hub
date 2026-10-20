@@ -72,3 +72,37 @@ it("retries the failed conversation even after another conversation is selected"
   expect(run.mock.calls[0][1]).not.toContain("Do not repeat this other request");
   expect(chat.getChat(c.id)!.conversations.find((x) => x.id === b)!.messages).toHaveLength(1);
 });
+
+it("keeps the newest 500 messages of each conversation on disk", async () => {
+  let chat = await import("./hubChats");
+  const c = chat.createChat("qa", "Busy room", []);
+  const id = chat.startConversation(c.id, "message 0");
+  for (let i = 1; i < 520; i++) chat.sendMessage(c.id, `message ${i}`, id);
+  // This session still has all of it; what is stored is capped.
+  expect(chat.getChat(c.id)!.conversations[0].messages).toHaveLength(520);
+  vi.resetModules();
+  chat = await import("./hubChats");
+  const kept = chat.getChat(c.id)!.conversations[0].messages;
+  expect(kept).toHaveLength(500);
+  expect(kept[0].text).toBe("message 20");
+  expect(kept.at(-1)!.text).toBe("message 519");
+});
+
+it("says once when the chats couldn't be saved, and clears it when a save works", async () => {
+  const chat = await import("./hubChats");
+  const c = chat.createChat("qa", "Room", []);
+  const setItem = vi.spyOn(localStorage, "setItem").mockImplementation((key) => {
+    if (key === "monocode:hub-chats") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  chat.sendMessage(c.id, "first");
+  chat.sendMessage(c.id, "second");
+  expect(chat.chatSaveProblem()).toBe(
+    "Group chats couldn't be saved (The quota has been exceeded). New messages may be gone after a restart.",
+  );
+  expect(error).toHaveBeenCalledTimes(1);
+  setItem.mockRestore();
+  error.mockRestore();
+  chat.sendMessage(c.id, "third");
+  expect(chat.chatSaveProblem()).toBeUndefined();
+});

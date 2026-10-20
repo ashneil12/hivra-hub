@@ -235,3 +235,26 @@ test("hub:doctor --json runs on a fixture HOME; a running copy is a live pid tha
   assert.equal(report.dataFolders.find((d) => d.identifier === `${DEV}feat-a`).running, false);
   assert.deepEqual(report.running, []);
 });
+
+test("SH-8: the doctor reports the ship archive's count and size, and never prunes it", { skip }, async (t) => {
+  const { collect, render } = await load();
+  const { home, repo } = fixture(t);
+  const roots = [path.join(home, "Worktrees")];
+  let report = await collect({ home, repo, worktreeRoots: roots });
+  const archive = path.join(home, "Archive/monocode/ships");
+  assert.deepEqual(report.shipArchive, { path: archive, count: 0, size: 0 });
+  assert.ok(render(report).includes("Ship archive  ~/Archive/monocode/ships  empty"), render(report));
+
+  for (const id of ["20261019-210405-aaaaaaa", "20261019-220000-bbbbbbb", "legacy-20261018-101010"]) {
+    fs.mkdirSync(path.join(archive, id, "backup"), { recursive: true });
+    fs.writeFileSync(path.join(archive, id, "backup/monocode.db"), Buffer.alloc(64 * 1024));
+  }
+  fs.writeFileSync(path.join(archive, ".DS_Store"), "");
+  report = await collect({ home, repo, worktreeRoots: roots });
+  assert.equal(report.shipArchive.count, 3);
+  assert.ok(report.shipArchive.size >= 3 * 64 * 1024, `${report.shipArchive.size}`);
+  assert.match(render(report), /Ship archive {2}~\/Archive\/monocode\/ships {2}3 ships, \d+ KB \(kept: nothing is deleted/);
+  // Without sizes it still counts them; and it only read: every archived ship is still there.
+  assert.equal((await collect({ home, repo, worktreeRoots: roots, sizes: false })).shipArchive.count, 3);
+  assert.equal(fs.readdirSync(archive).length, 4);
+});

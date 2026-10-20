@@ -21,7 +21,7 @@ import {
   useAutopilotVersion,
   type LogEntry,
 } from "../model/autopilot";
-import { byDay, heldThisRun, isCall, outcomeLabel, switchLines, timeLabel } from "../model/autopilotView";
+import { byDay, heldThisRun, isCall, outcomeLabel, switchLines, timeLabel, type SwitchLine } from "../model/autopilotView";
 import { formatUntil, untilPresets } from "../model/endTime";
 import { exampleAutopilot } from "../model/memoryAutopilot";
 import { RED_LIST } from "../model/redList";
@@ -43,6 +43,12 @@ function localInput(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** A switch row's words (Ash's whole message when a Mono switched it), kept to one line. */
+function shortDetail(text: string, max = 160): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
 }
 
 function openChat(chatId: string): void {
@@ -92,14 +98,7 @@ export function AutopilotView() {
                 {lines.length ? (
                   <div className="flex flex-col gap-2">
                     {lines.map((line) => (
-                      <div key={line.scope} className="flex items-start gap-3 rounded-lg border border-stroke px-3 py-2.5 hub-fade-in" data-autopilot-on={line.scope}>
-                        <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[14px] font-medium text-content">{line.text}</p>
-                          <p className="text-[12px] leading-5 text-content/60">{line.remaining} · {line.setBy}</p>
-                        </div>
-                        <TurnOff scopes={[line.scope]} />
-                      </div>
+                      <SwitchRow key={line.scope} line={line} />
                     ))}
                     <KeepsGoing />
                   </div>
@@ -118,7 +117,7 @@ export function AutopilotView() {
               {held.length ? (
                 <section aria-label="Waiting for you" data-autopilot-held>
                   <h2 className="mb-1 text-xs text-content/60">Waiting for you</h2>
-                  <p className="px-2 pb-1 text-[12px] text-content/50">Red-list calls autopilot left for you. Each waits in the chat that asked.</p>
+                  <p className="px-2 pb-1 text-[12px] text-content/50">Calls autopilot left for you: the red list, and approvals it doesn't allow by itself. Each waits in the chat that asked.</p>
                   <div className="flex flex-col">
                     {held.map((entry) => (
                       <LogRow key={entry.id} entry={entry} projectName={projectName} fresh={false} />
@@ -167,7 +166,31 @@ function KeepsGoing() {
   );
 }
 
-function TurnOff({ scopes }: { scopes: string[] }) {
+function SwitchRow({ line }: { line: SwitchLine }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-stroke px-3 py-2.5 hub-fade-in" data-autopilot-on={line.scope}>
+      <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[14px] font-medium text-content">{line.text}</p>
+        <p className="text-[12px] leading-5 text-content/60">{line.remaining} · {line.setBy}</p>
+        {error ? (
+          <p role="alert" className="text-[12px] leading-5 text-content/70">
+            Couldn't turn it off: {error}
+          </p>
+        ) : null}
+      </div>
+      <TurnOff scopes={[line.scope]} onError={setError} />
+    </div>
+  );
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Ends a switch. A failure is said, and the screen reads the store again so it shows what is really on. */
+function TurnOff({ scopes, onError }: { scopes: string[]; onError: (error: string | null) => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <button
@@ -178,10 +201,14 @@ function TurnOff({ scopes }: { scopes: string[] }) {
         const backend = autopilotBackend();
         if (!backend) return;
         setBusy(true);
+        onError(null);
         void backend
           .off({ scopes, by: "ash", who: "Ash" })
           .then(adoptStatus)
-          .catch(() => undefined)
+          .catch((e: unknown) => {
+            onError(message(e));
+            void refreshAutopilot();
+          })
           .finally(() => setBusy(false));
       }}
     >
@@ -226,7 +253,7 @@ function TurnOn({ projects, on, now }: { projects: { id: string; name: string }[
         setUntil(null);
         setCustom(false);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(message(e)))
       .finally(() => setBusy(false));
   };
   const chip = (selected: boolean) => `${CHIP} ${selected ? "bg-content/12 text-content" : "bg-content/5 text-content/70 hover:bg-content/10"}`;
@@ -335,7 +362,7 @@ function LogRow({ entry, projectName, fresh }: { entry: LogEntry; projectName: (
           <span className={held ? "text-accent" : undefined}>{outcomeLabel(entry)}</span>
           {entry.who ? ` · ${entry.who}` : ""}
           {entry.project ? ` · ${projectName(entry.project)}` : ""}
-          {entry.kind === "switch" && entry.detail ? ` · “${entry.detail}”` : ""}
+          {entry.kind === "switch" && entry.detail ? ` · “${shortDetail(entry.detail)}”` : ""}
         </p>
       </div>
       {entry.chatId ? (
@@ -350,8 +377,18 @@ function LogRow({ entry, projectName, fresh }: { entry: LogEntry; projectName: (
 function AutoResume({ projects }: { projects: { id: string; name: string }[] }) {
   const status = autopilotSnapshot();
   const settings = status?.autoResume;
+  const [error, setError] = useState<string | null>(null);
   const set = (input: { default?: boolean; project?: string; value?: boolean | null }) => {
-    void autopilotBackend()?.setAutoResume(input).then(() => refreshAutopilot()).catch(() => undefined);
+    const backend = autopilotBackend();
+    if (!backend) return;
+    setError(null);
+    void backend
+      .setAutoResume(input)
+      .then(() => refreshAutopilot())
+      .catch((e: unknown) => {
+        setError(message(e));
+        void refreshAutopilot();
+      });
   };
   if (!settings) return null;
   return (
@@ -364,6 +401,11 @@ function AutoResume({ projects }: { projects: { id: string; name: string }[] }) 
         </span>
         <Toggle label="Agents resume by themselves" on={settings.default} onChange={(value) => set({ default: value })} />
       </div>
+      {error ? (
+        <p role="alert" className="px-2 text-[12px] leading-5 text-content/70">
+          Couldn't change it: {error}
+        </p>
+      ) : null}
       {projects.length ? (
         <div className="flex flex-wrap gap-1.5 px-2 pt-1">
           {projects.map((p) => {

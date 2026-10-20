@@ -65,6 +65,7 @@ import {
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
+  approvalCall,
   toClaudePermissionResult,
   toolKindFromName,
   toolResultsFromUserMessage,
@@ -93,6 +94,7 @@ import {
   type GoalTrack,
 } from "./claudeGoal";
 import {
+  appliedLaunch,
   claudeLaunchDelta,
   joinLabels,
   type ClaudeLaunch,
@@ -112,6 +114,7 @@ import {
 import { formatTokens } from "../../../../features/sessions/model/contextUsage";
 import { RUNTIME_MODE_LABEL } from "../../../../features/sessions/model/session";
 import {
+  CLAUDE_WORKFLOW_TASK_TYPE,
   applyWorkflowProgress,
   endWorkflowRun,
   isClaudeWorkflowTaskType,
@@ -381,6 +384,8 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
     throw error;
   }
   if (cancelledThreads.delete(input.sessionId)) return;
+  // Read before any wrapping below: a wrapped brief no longer starts as one, and its finish line would be lost.
+  const briefGoal = goalFromBrief(input.text);
   // The first turn of a fresh conversation after a dead one: the chat so far comes with it.
   if (briefOwed.delete(input.sessionId) && input.resumeFallback) {
     input = { ...input, text: input.resumeFallback(input.text) };
@@ -396,7 +401,7 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
       try {
         await compactIfIdle(live, input);
         if (live.cancelled) return;
-        await runTurn(live, input);
+        await runTurn(live, input, { briefGoal });
       } catch (error) {
         if (live.cancelled) return;
         throw error;
@@ -534,13 +539,14 @@ export function goalsAllowed(): boolean {
 }
 
 /**
- * The /goal this turn sets, if any: a MonoCode brief's "Done when: …", or the goal this chat had in a conversation it
- * no longer has (a rotation, a dead conversation started again, a restart that found its transcript gone). None when
- * this copy sends no /goal (goalsAllowed), or for /compact.
+ * The /goal this turn sets, if any: a MonoCode brief's "Done when: …" (read from the text as it was sent, before any
+ * recovery wrapping), or the goal this chat had in a conversation it no longer has (a rotation, a dead conversation
+ * started again, a restart that found its transcript gone). None when this copy sends no /goal (goalsAllowed), or for
+ * /compact.
  */
-function goalToSet(live: Live, input: SendTurnInput): string | undefined {
+function goalToSet(live: Live, input: SendTurnInput, briefGoal: string | undefined): string | undefined {
   if (live.manualCompaction || !goalsAllowed()) return undefined;
-  const fresh = goalFromBrief(input.text);
+  const fresh = briefGoal ?? goalFromBrief(input.text);
   if (fresh) return fresh;
   const carried = goalByThread.get(input.sessionId);
   return goalOpen(carried) && carried.providerSessionId !== live.claudeSessionId
@@ -555,6 +561,8 @@ function goalToSet(live: Live, input: SendTurnInput): string | undefined {
  */
 function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): boolean {
   if (isSubagentMessage(rec)) return false;
+  // A compaction's result ends no turn of Claude's: whatever stop was pending is still unchecked.
+  if (live.manualCompaction && stringField(rec, "type") === "result") return false;
   // The CLI refusing /goal ("/goal can't run while hooks are restricted …") is a status line, never the reply a
   // worker's report would carry.
   if (
@@ -575,11 +583,29 @@ function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): 
   if (next && !live.goal && carried && carried.objective === next.objective && next.checks === 0)
     next = { ...next, checks: carried.checks, setAt: carried.setAt, ...(carried.lastCheck ? { lastCheck: carried.lastCheck } : {}) };
   if (next) next = { ...next, providerSessionId: live.claudeSessionId };
-  if (goalOpen(next) && next.checks >= GOAL_CHECK_CAP && !next.clearing) {
-    next = { ...next, clearing: true, status: "stopped" };
-    if (live.activeTurn) live.promptsOwed += 1;
-    void writeJson(sessionId, buildClaudeUserMessage({ text: GOAL_CLEAR })).catch(() => undefined);
-  }
+  const capped = goalOpen(next) && next.checks >= GOAL_CHECK_CAP && !next.clearing;
+  if (capped) next = { ...next!, clearing: true };
+  setGoal(sessionId, live, next, before);
+  if (capped) clearCappedGoal(sessionId, live, next!);
+  if (stringField(rec, "type") !== "assistant") return false;
+  if ((rec.message as { model?: unknown } | undefined)?.model !== "<synthetic>") return false;
+  const said = assistantTextBlocks(rec).join("").trim();
+  if (said) live.onEvent({ type: "status", text: said });
+  return true;
+}
+
+/**
+ * Stop mutes the cut turn's result, so the stop Claude was making never reaches the goal's evaluator: nothing is
+ * pending any more, and a later result can't count it as a pass.
+ */
+function dropPendingGoalCheck(sessionId: string, live: Live): void {
+  if (live.goal?.pendingCheck) live.goal = { ...live.goal, pendingCheck: false };
+  const carried = goalByThread.get(sessionId);
+  if (carried?.pendingCheck) goalByThread.set(sessionId, { ...carried, pendingCheck: false });
+}
+
+/** Keep the chat's goal and tell the chat when what it shows changed. */
+function setGoal(sessionId: string, live: Live, next: GoalTrack | null, before = goalView(live.goal)): void {
   live.goal = next;
   if (goalOpen(next)) goalByThread.set(sessionId, next);
   else {
@@ -588,11 +614,37 @@ function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): 
   }
   const view = goalView(next);
   if (JSON.stringify(view) !== JSON.stringify(before)) live.onEvent({ type: "goal.updated", goal: view });
-  if (stringField(rec, "type") !== "assistant") return false;
-  if ((rec.message as { model?: unknown } | undefined)?.model !== "<synthetic>") return false;
-  const said = assistantTextBlocks(rec).join("").trim();
-  if (said) live.onEvent({ type: "status", text: said });
-  return true;
+}
+
+/**
+ * Past GOAL_CHECK_CAP checks MonoCode clears the goal itself. It reads stopped once `/goal clear` has gone in, and the
+ * turn waits for that prompt's answer too; a clear that can't be written leaves the goal open (the next check tries
+ * again), owes nothing, and says so.
+ */
+function clearCappedGoal(sessionId: string, live: Live, goal: GoalTrack): void {
+  const owed = live.activeTurn;
+  if (owed) live.promptsOwed += 1;
+  const same = (current: GoalTrack | null): current is GoalTrack =>
+    !!current && goalKey(current) === goalKey(goal);
+  writeJson(sessionId, buildClaudeUserMessage({ text: GOAL_CLEAR })).then(
+    () => {
+      if (same(live.goal) && goalOpen(live.goal)) setGoal(sessionId, live, { ...live.goal, status: "stopped" });
+    },
+    (error: unknown) => {
+      if (owed) live.promptsOwed = Math.max(0, live.promptsOwed - 1);
+      if (same(live.goal) && live.goal.clearing) {
+        const { clearing: _clearing, ...open } = live.goal;
+        setGoal(sessionId, live, open);
+      }
+      if (live.muteUpdates) return;
+      live.onEvent({
+        type: "notice",
+        key: "claude-goal-clear",
+        level: "warning",
+        text: `Could not clear the goal after ${GOAL_CHECK_CAP} checks (${error instanceof Error ? error.message : String(error)}); Claude Code still holds it.`,
+      });
+    },
+  );
 }
 
 /** A result for a background wake Claude ran by itself (a task finished), not for a prompt MonoCode wrote. */
@@ -648,6 +700,7 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
   settleWorkflows(live, "stopped");
   live.cancelled = true;
   live.muteUpdates = true;
+  dropPendingGoalCheck(sessionId, live);
   for (const [, pending] of live.approvals) pending.resolve("deny");
   live.approvals.clear();
   for (const [, pending] of live.questions)
@@ -681,6 +734,7 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   if (live) {
     settleWorkflows(live, "stopped");
     live.muteUpdates = true;
+    dropPendingGoalCheck(sessionId, live);
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
     for (const [, pending] of live.questions)
@@ -703,6 +757,15 @@ export async function forgetClaudeSession(sessionId: string): Promise<void> {
   briefOwed.delete(sessionId);
   forgetPromptCache(sessionId);
   await stopClaudeSession(sessionId);
+}
+
+/**
+ * The chat was deleted: its goal state goes too. Kept apart from forgetClaudeSession, which a Mono's rotation uses and
+ * whose fresh conversation must get the open goal again.
+ */
+export function dropClaudeSession(sessionId: string): void {
+  goalByThread.delete(sessionId);
+  goalEnded.delete(sessionId);
 }
 
 export function bindClaudeSession(
@@ -776,7 +839,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         if (delta.requests.length > 0) {
           noteAppliedLive(existing, delta.requests, input);
         }
-        existing.launch = launchNext;
+        existing.launch = appliedLaunch(existing.launch, launchNext);
         existing.planning = planning;
         existing.runtimeMode = input.runtimeMode;
         return existing;
@@ -912,9 +975,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.sessionId,
     path,
     [
-      // Allowing bypass at launch lets a later switch to Full access apply
-      // live; only this app can ask for it, over the control channel.
-      ...buildClaudeSpawnArgs({ ...launch, allowBypass: true }),
+      // Only a chat in Full access starts able to skip permissions; Full
+      // access chosen later on any other process restarts it (claudeLaunchDelta).
+      ...buildClaudeSpawnArgs({ ...launch, allowBypass: launchNext.allowBypass }),
       ...(await claudeExtraArgs(input.sessionId)),
     ],
     input.cwd,
@@ -966,7 +1029,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 async function runTurn(
   live: Live,
   input: SendTurnInput,
-  options: { reportErrors?: boolean } = {},
+  options: {
+    reportErrors?: boolean;
+    /** The finish line of the brief this turn sends, read before the text was wrapped. */
+    briefGoal?: string;
+  } = {},
 ): Promise<void> {
   const effort = input.modelSettings?.effort;
   const message = buildClaudeUserMessage({
@@ -1005,7 +1072,7 @@ async function runTurn(
     await writeJson(input.sessionId, message);
     // A brief's finish line goes in right behind it, so Claude reads the brief first and then keeps going until
     // Claude Code's own evaluator says the condition holds; the turn ends when both are answered.
-    const goal = goalToSet(live, input);
+    const goal = goalToSet(live, input, options.briefGoal);
     if (goal) {
       live.promptsOwed += 1;
       await writeJson(input.sessionId, buildClaudeUserMessage({ text: goalCommand(goal) }));
@@ -1640,6 +1707,7 @@ async function handleControlRequest(
     kind: toolKindFromName(toolName),
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
+    call: approvalCall(toolName, input),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
@@ -1777,6 +1845,16 @@ function handleAgentLifecycle(
       const run = startWorkflowRun(rec, Date.now());
       const next = run && applyWorkflowProgress(run, rec, Date.now());
       if (next) {
+        // Tracked like a run whose start was seen, so its Stop (and the
+        // turn's) reaches it and the turn waits for it to end.
+        if (!live.backgroundTasks.has(progress.taskId)) {
+          live.backgroundTasks.set(progress.taskId, {
+            description: progress.description || "Workflow",
+            toolUseId: progress.toolUseId,
+            kind: cutWorkKind(CLAUDE_WORKFLOW_TASK_TYPE),
+          });
+          syncBackgroundWait(live);
+        }
         trackWorkflow(
           live,
           progress.toolUseId ?? `workflow:${progress.taskId}`,
@@ -2447,6 +2525,8 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
       : {}),
     effort: options.effort,
     permissionMode: options.permissionMode ?? "default",
+    // Full access, even while in plan mode: leaving plan for it then applies live.
+    allowBypass: input.runtimeMode === "full-access",
     thinking: options.settings?.alwaysThinkingEnabled === true,
     fast: options.settings?.fastMode === true,
     ultracode: options.settings?.ultracode === true,
@@ -2566,7 +2646,7 @@ export async function applyClaudeSettings(
     later(joinLabels(delta.requests.map((request) => request.label)));
     return "next-turn";
   }
-  live.launch = next;
+  live.launch = appliedLaunch(live.launch, next);
   live.runtimeMode = input.runtimeMode;
   if (!live.muteUpdates) noteAppliedLive(live, delta.requests, input);
   return "applied";
@@ -2615,6 +2695,11 @@ function launchOptions(
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
   };
+}
+
+/** Exported for tests: whether the harness still keeps a chat's open goal, or the record of one it finished. */
+export function __claudeGoalState(threadId: string): { open: boolean; ended: boolean } {
+  return { open: goalByThread.has(threadId), ended: goalEnded.has(threadId) };
 }
 
 /** Exported for tests. */

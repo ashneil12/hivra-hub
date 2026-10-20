@@ -432,17 +432,31 @@ fn trust_path(data_dir: &Path) -> PathBuf {
     data_dir.join(TRUST_FILE)
 }
 
-fn load_store(data_dir: &Path) -> TrustStore {
-    std::fs::read(trust_path(data_dir))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// The imported files. Only a store that isn't there is empty: one that can't be read or parsed is an error, because
+/// saving over it would drop every other project's import.
+fn load_store(data_dir: &Path) -> Result<TrustStore, String> {
+    let path = trust_path(data_dir);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "{} can't be read ({error}), so nothing was changed. Move it aside to start again.",
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(TrustStore::default()),
+        Err(error) => Err(format!("Couldn't read {}: {error}", path.display())),
+    }
 }
 
 fn save_store(data_dir: &Path, store: &TrustStore) -> Result<(), String> {
     std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let path = trust_path(data_dir);
-    let temporary = data_dir.join(format!(".{TRUST_FILE}.{}", std::process::id()));
+    // Its own name per save: two saves at once never write or rename each other's file.
+    let temporary = data_dir.join(format!(
+        ".{TRUST_FILE}.{}.{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     let bytes = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
     std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, path).map_err(|e| e.to_string())
@@ -452,8 +466,9 @@ fn key(main: &Path) -> String {
     path_to_js(main)
 }
 
+/// The imported copy, if any. A store that can't be read trusts nothing (the next import or forget says why).
 pub fn trusted(data_dir: &Path, main: &Path) -> Option<Trusted> {
-    load_store(data_dir).projects.remove(&key(main))
+    load_store(data_dir).ok()?.projects.remove(&key(main))
 }
 
 /// The actions that may run for this project: the imported copy, or nothing.
@@ -477,7 +492,7 @@ pub fn import(data_dir: &Path, main: &Path, expected_hash: &str) -> Result<Trust
                 text,
                 imported_at: now_ms(),
             };
-            let mut store = load_store(data_dir);
+            let mut store = load_store(data_dir)?;
             store.version = 1;
             store.projects.insert(key(main), entry.clone());
             save_store(data_dir, &store)?;
@@ -492,7 +507,7 @@ pub fn import(data_dir: &Path, main: &Path, expected_hash: &str) -> Result<Trust
 }
 
 pub fn forget(data_dir: &Path, main: &Path) -> Result<(), String> {
-    let mut store = load_store(data_dir);
+    let mut store = load_store(data_dir)?;
     if store.projects.remove(&key(main)).is_some() {
         save_store(data_dir, &store)?;
     }
@@ -779,6 +794,75 @@ pub(crate) mod tests {
         for bad in ["", "..", "a/../b", "/abs", "./a", "a\\b", "a/./b"] {
             assert!(!valid_relative_path(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_damaged_trust_store_is_never_saved_over() {
+        let temp = temp("monocode-trust-damaged");
+        let main = repo(&temp.0);
+        write_file(&main, GOOD);
+        let data = temp.0.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = data.join(TRUST_FILE);
+        std::fs::write(
+            &store,
+            b"{\"version\":1,\"projects\":{\"/other\": {\"hash\"",
+        )
+        .unwrap();
+        let hash = status(&data, &main).file_hash.unwrap();
+        let error = import(&data, &main, &hash).unwrap_err();
+        assert!(error.contains(TRUST_FILE), "{error}");
+        assert!(forget(&data, &main).is_err());
+        assert_eq!(
+            std::fs::read(&store).unwrap(),
+            b"{\"version\":1,\"projects\":{\"/other\": {\"hash\"",
+            "the other projects' imports are still there to recover"
+        );
+        assert!(trusted_file(&data, &main).is_none(), "and nothing runs");
+        // A missing store is simply empty.
+        std::fs::remove_file(&store).unwrap();
+        import(&data, &main, &hash).unwrap();
+        assert!(trusted_file(&data, &main).is_some());
+    }
+
+    #[test]
+    fn saves_at_the_same_time_each_land_whole() {
+        let temp = temp("monocode-trust-concurrent");
+        let data = temp.0.clone();
+        let threads: Vec<_> = (0..8)
+            .map(|thread| {
+                let data = data.clone();
+                std::thread::spawn(move || {
+                    for round in 0..40 {
+                        let mut store = TrustStore {
+                            version: 1,
+                            ..TrustStore::default()
+                        };
+                        store.projects.insert(
+                            format!("/p{thread}"),
+                            Trusted {
+                                hash: format!("{round}"),
+                                text: "{}".into(),
+                                imported_at: 0,
+                            },
+                        );
+                        save_store(&data, &store)?;
+                    }
+                    Ok::<(), String>(())
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        assert!(load_store(&data).is_ok());
+        let leftovers: Vec<_> = std::fs::read_dir(&data)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != TRUST_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     fn write_file(root: &Path, text: &str) {

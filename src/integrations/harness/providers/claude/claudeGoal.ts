@@ -118,9 +118,11 @@ export function nextGoal(
     return undefined;
   }
   if (type === "result" && current?.status === "active" && current.pendingCheck) {
-    // A stop that wasn't sent back: the evaluator passed it, and the CLI cleared the goal itself. A failed or cut turn
-    // never reached the check.
+    // A failed or cut turn never reached the check.
     if (rec.is_error === true || text(rec.subtype) !== "success") return { ...current, pendingCheck: false };
+    // A zero-turn result (a /compact, `/goal`, `/goal clear`) ran no model turn, so no stop was checked in it.
+    if (typeof rec.num_turns !== "number" || rec.num_turns <= 0) return undefined;
+    // A stop that wasn't sent back: the evaluator passed it, and the CLI cleared the goal itself.
     return { ...current, checks: current.checks + 1, status: "met", pendingCheck: false };
   }
   return undefined;

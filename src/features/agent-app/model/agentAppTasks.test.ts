@@ -552,4 +552,22 @@ describe("sessions.stop with cascade (H4)", () => {
     await handleAgentApp(source, "sc3", "sessions.stop", { sessionId: worker.id }, host);
     expect(host.stop).toHaveBeenCalledWith(worker.id);
   });
+
+  it("says when it couldn't load the workers under the session, so the Stop isn't read as clean", async () => {
+    const { source, host } = fixture();
+    const worker: Session = { ...newSession("claude", PROJECT), id: "app-mono-exo-r2" };
+    host.session = vi.fn(async (id: string) => (id === worker.id ? worker : null));
+    host.sessions = vi.fn(async () => [{ id: worker.id }] as never);
+    host.isMono = (id: string) => id === source.id;
+    host.stopTree = vi.fn(async () => ({ stopFailed: [], stopped: [worker.id], cancelled: [], unloaded: [worker.id] }));
+    expect(await handleAgentApp(source, "sc4", "sessions.stop", { sessionId: worker.id, cascade: true }, host)).toEqual({
+      sessionId: worker.id,
+      stopped: true,
+      cascade: true,
+      cancelled: 0,
+      stopFailed: [],
+      unloaded: [worker.id],
+      note: `Couldn't load the workers under ${worker.id}; they may still be running.`,
+    });
+  });
 });

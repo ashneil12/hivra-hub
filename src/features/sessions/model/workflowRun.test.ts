@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_TEXT_CHARS,
+  MAX_WORKFLOW_AGENTS,
   currentPhase,
   mergeWorkflowFrame,
   parseWorkflowRun,
@@ -135,5 +136,52 @@ describe("an agent's brief and report", () => {
     expect(saved?.agents[1].prompt).toHaveLength(AGENT_TEXT_CHARS);
     expect(saved?.agents[1].prompt?.endsWith("…")).toBe(true);
     expect(saved?.agents[1].error).toBe("API Error: 400");
+  });
+});
+
+describe("a run with more agents than it keeps", () => {
+  // Every frame Claude Code streams is a snapshot of every agent so far (workflow-run.ndjson).
+  const snapshot = (count: number, state: (index: number) => WorkflowAgent["state"]) =>
+    Array.from({ length: count }, (_, i) => agent(i + 1, state(i + 1)));
+
+  it(`keeps ${MAX_WORKFLOW_AGENTS}: the ones at work and the newest finished, and counts the rest`, () => {
+    const total = MAX_WORKFLOW_AGENTS + 50;
+    // Agent 3 is still at work; agent 10 failed; every other agent up to 330 is done, the last 20 at work.
+    const state = (index: number) =>
+      index === 3 || index > total - 20 ? "working" : index === 10 ? "failed" : "done";
+    const merged = mergeWorkflowFrame(run(), { phases: [], agents: snapshot(total, state) });
+    expect(merged.agents).toHaveLength(MAX_WORKFLOW_AGENTS);
+    const kept = new Set(merged.agents.map((a) => a.index));
+    expect(kept.has(3)).toBe(true);
+    expect(kept.has(10)).toBe(true);
+    expect(kept.has(total)).toBe(true);
+    expect(kept.has(1)).toBe(false);
+    // The counts still cover every agent.
+    expect(workflowCounts(merged)).toEqual({ total, done: total - 22, working: 21, queued: 0, failed: 1, skipped: 0 });
+    expect(workflowStatusLine(merged)).toBe(`Find · ${total - 22} of ${total} agents done · 1 failed`);
+
+    // The next snapshot repeats every agent: the ones left out stay out and are not counted twice.
+    const next = mergeWorkflowFrame(merged, {
+      phases: [],
+      agents: snapshot(total + 1, (index) => (index === total + 1 ? "working" : state(index))),
+    });
+    expect(next.agents).toHaveLength(MAX_WORKFLOW_AGENTS);
+    expect(workflowCounts(next).total).toBe(total + 1);
+    expect(workflowCounts(next).done).toBe(total - 22);
+  });
+
+  it("stays bounded when saved, and keeps its count across a restart", () => {
+    const total = MAX_WORKFLOW_AGENTS + 10;
+    const saved = { ...run(snapshot(total, () => "done")), status: "completed" as const };
+    const parsed = parseWorkflowRun(JSON.parse(JSON.stringify(saved)))!;
+    expect(parsed.agents).toHaveLength(MAX_WORKFLOW_AGENTS);
+    expect(workflowCounts(parsed)).toMatchObject({ total, done: total });
+    // Saved bounded, read back the same.
+    const again = parseWorkflowRun(JSON.parse(JSON.stringify(parsed)))!;
+    expect(again).toEqual(parsed);
+    // A run still marked running after a restart: what was at work, kept or not, reads skipped.
+    const running = mergeWorkflowFrame(run(), { phases: [], agents: snapshot(total, () => "working") });
+    const hydrated = parseWorkflowRun(JSON.parse(JSON.stringify(running)), { hydrate: true })!;
+    expect(workflowCounts(hydrated)).toMatchObject({ total, working: 0, skipped: total });
   });
 });

@@ -10,6 +10,7 @@ import {
   enqueueMonoMessage,
   monoMessageDeliveries,
   monoPendingTranscriptBlocks,
+  monoRefusesRoomTurn,
 } from "./monoMessaging";
 
 function message(id: string): QueuedMessage {
@@ -214,5 +215,17 @@ describe("optimistic Mono messages", () => {
     });
     expect(accepted.blocks).toHaveLength(1);
     expect(accepted.blocks[0].text).toBe("legacy");
+  });
+});
+
+describe("a room turn", () => {
+  it("is refused by a Mono that is working or has messages waiting, so it never lands in the outbox", () => {
+    const idle = newSession("claude", "/tmp");
+    expect(monoRefusesRoomTurn(idle)).toBe(false);
+    expect(monoRefusesRoomTurn({ ...idle, busy: true })).toBe(true);
+    // Stop paused the queue: the Mono is idle, but a managed message would be queued behind Ash's waiting ones.
+    const waiting = enqueueMonoMessage(idle, message("queued before Stop"));
+    expect(monoRefusesRoomTurn({ ...waiting, queueStatus: "paused" })).toBe(true);
+    expect(monoRefusesRoomTurn({ ...waiting, queueStatus: "active" })).toBe(true);
   });
 });

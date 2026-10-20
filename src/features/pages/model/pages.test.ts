@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+import type { HubStore } from "../../hub/model/hubStore";
 import { buildPreview, keepPage, keptPages, pageBlocks, resetPagesForTest } from "./pages";
 import { botChangeRows, redoBotChange, undoBotChange } from "../../hub/model/botChanges";
 
@@ -33,11 +34,27 @@ it("each project keeps its own Pages", () => {
   expect(keptPages("today")).toEqual([]);
 });
 
+it("pages imported into Ash OS count only once it took them; one it refused is named with why", async () => {
+  const { importPages, setPagesBackend } = await import("./pages");
+  const { HubCallError } = await import("../../hub/model/hubTransport");
+  const act = vi.fn(async (_action: string, payload: Record<string, unknown>) => {
+    if (payload.pageId === "imp-bad") throw new HubCallError("refused", "That project isn't in Ash OS.");
+    return { id: payload.pageId, spec: payload.spec, state: "kept", keptAt: 1, projectId: payload.projectId, by: payload.by, request: payload.request, permissions: [] };
+  });
+  const store = { getSnapshot: () => ({ pages: [] }), subscribe: () => () => undefined, reload: async () => undefined, act } as unknown as HubStore;
+  setPagesBackend(store);
+  const good = { ...buildPreview("EXO bugs", "Projects Manager", 1, "hivra"), id: "imp-good", keptAt: 1 };
+  const bad = { ...buildPreview("Hivra sign-ups", "Projects Manager", 2, "nowhere"), id: "imp-bad", keptAt: 2 };
+  const r = await importPages([good, bad]);
+  expect(act).toHaveBeenCalledTimes(2);
+  expect(r).toEqual({ added: 1, failed: [`${bad.title}: That project isn't in Ash OS.`] });
+});
+
 it("an imported page asks again: nothing works until Keep and allow, and Undo revokes it", async () => {
   const { importPages, allowPage, needsAllow, approvedPermissions, keptPages } = await import("./pages");
   const { botChangeRows, undoBotChange } = await import("../../hub/model/botChanges");
   const spec = { kind: "bespoke", title: "Example: room", html: "<p>x</p>", css: "", js: "", permissions: ["keys.read:Anthropic"] };
-  importPages([{ id: "imp-1", projectId: "hivra", title: "Example: room", request: "r", by: "Hivra lead", spec, permissions: ["keys.read:Anthropic"], keptAt: 1 } as never]);
+  expect(await importPages([{ id: "imp-1", projectId: "hivra", title: "Example: room", request: "r", by: "Hivra lead", spec, permissions: ["keys.read:Anthropic"], keptAt: 1 } as never])).toEqual({ added: 1, failed: [] });
   const page = keptPages("hivra").find((p) => p.id === "imp-1")!;
   expect(needsAllow(page)).toBe(true);
   expect(approvedPermissions("imp-1")).toEqual([]);

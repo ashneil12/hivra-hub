@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { claudeLaunchDelta, joinLabels, type ClaudeLaunch } from "./claudeLaunch";
+import { appliedLaunch, claudeLaunchDelta, joinLabels, type ClaudeLaunch } from "./claudeLaunch";
 import { promptCacheTtlFromUsage } from "./claudePromptCache";
 
 const base: ClaudeLaunch = {
   model: "claude-opus-4-6",
   effort: "high",
   permissionMode: "default",
+  allowBypass: true,
   thinking: false,
   fast: false,
   ultracode: false,
@@ -33,6 +34,21 @@ describe("claudeLaunchDelta", () => {
       { subtype: "apply_flag_settings", settings: { effortLevel: "max", fastMode: true, autoCompactWindow: null } },
       { subtype: "set_permission_mode", mode: "bypassPermissions" },
     ]);
+  });
+
+  it("needs a new process for Full access on one started without it (CLI 2.1.302 refuses it live)", () => {
+    const started = { ...base, allowBypass: false };
+    expect(claudeLaunchDelta(started, { ...started, permissionMode: "bypassPermissions" })).toEqual({
+      restart: ["permission mode"],
+      requests: [],
+    });
+    // Any other mode still changes live.
+    expect(claudeLaunchDelta(started, { ...started, permissionMode: "acceptEdits" }).requests).toEqual([
+      { label: "permission mode", request: { subtype: "set_permission_mode", mode: "acceptEdits" } },
+    ]);
+    // Applied live, the process is still the one it was started as.
+    expect(appliedLaunch(started, { ...base, permissionMode: "acceptEdits" }).allowBypass).toBe(false);
+    expect(appliedLaunch(base, { ...started, permissionMode: "acceptEdits" }).allowBypass).toBe(true);
   });
 
   it("needs a new process for thinking, hooks, a custom route and going back to default effort", () => {

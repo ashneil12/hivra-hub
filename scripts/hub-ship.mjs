@@ -37,12 +37,14 @@ import {
   STATE,
   dirSize,
   exists,
+  launchctl,
   loadShip,
   moveDir,
   nowIso,
   readJson,
   receiptFor,
   releaseLock,
+  removeLaunchAgent,
   retainShips,
   saveShip,
   setPhase,
@@ -297,10 +299,6 @@ ${strings}
 `;
 }
 
-function launchctl(args) {
-  return spawnSync("/bin/launchctl", args, { encoding: "utf8" });
-}
-
 /** Start the runner: a LaunchAgent (the real path), or a plain detached process (tests). */
 function startRunner(ship, dir, launcher) {
   const node = ship.node;
@@ -379,7 +377,8 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
   if (supersedes) supersede(paths, supersedes, id);
   writeJson(path.join(paths.ships, "current.json"), { id });
   try {
-    retainShips(paths.ships, paths.archive, id);
+    // Never the ship a rollback restores from: its backup is what this ship puts back.
+    retainShips(paths.ships, paths.archive, [id, requestedBy?.rollsBack]);
   } catch {
     // archiving old ships is housekeeping; it never blocks a ship
   }
@@ -395,7 +394,7 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
   return { id, dir, ship };
 }
 
-/** A staged ship whose runner is gone is called off when a new one is staged. */
+/** A staged ship whose runner is gone is called off when a new one is staged (its LaunchAgent goes first). */
 function supersede(paths, id, by) {
   const dir = path.join(paths.ships, id);
   const lock = tryLock(path.join(dir, "runner.lock"));
@@ -403,6 +402,7 @@ function supersede(paths, id, by) {
   try {
     const doc = loadShip(dir);
     if (FINAL.has(doc.phase)) return;
+    removeLaunchAgent(doc);
     doc.reason = `Replaced by ship ${by} before it ran.`;
     setPhase(doc, "cancelled", doc.reason);
     saveShip(dir, doc);
@@ -418,17 +418,48 @@ export function legacyInstall({ bundle, paths }) {
   const refusals = verified.errors.map((error) => `Wrong bundle: ${error}`);
   if (exists(bundle)) {
     const signature = signatureOf(bundle);
-    if (signature.adhoc) refusals.push("The bundle is signed ad hoc; a ship needs a real signature. Build with npm run hub:build.");
+    if (!signature.signed) refusals.push("The bundle isn't signed; a ship needs a real signature. Build with npm run hub:build.");
+    else if (signature.adhoc) refusals.push("The bundle is signed ad hoc; a ship needs a real signature. Build with npm run hub:build.");
   }
   if (refusals.length) return { ok: false, refusals };
+  // Copied in beside the app first, then renamed into place: a copy that fails leaves the installed app as it was.
+  fs.mkdirSync(path.dirname(paths.app), { recursive: true });
+  const incoming = path.join(path.dirname(paths.app), `.${APP_NAME}.installing-${process.pid}`);
+  fs.rmSync(incoming, { recursive: true, force: true });
+  try {
+    execFileSync("/usr/bin/ditto", [bundle, incoming], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (error) {
+    fs.rmSync(incoming, { recursive: true, force: true });
+    const why = String(error.stderr ?? "").trim().split("\n").pop() || error.message;
+    return { ok: false, refusals: [`Copying the bundle failed, so nothing changed: ${why}`] };
+  }
   let keptAt = null;
   if (exists(paths.app)) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     keptAt = path.join(paths.archive, `legacy-${stamp}`, "previous.app.off");
-    moveDir(paths.app, keptAt);
+    try {
+      moveDir(paths.app, keptAt);
+    } catch (error) {
+      fs.rmSync(incoming, { recursive: true, force: true });
+      return { ok: false, refusals: [`Moving the old app aside failed, so nothing changed: ${error.message}`] };
+    }
   }
-  fs.mkdirSync(path.dirname(paths.app), { recursive: true });
-  execFileSync("/usr/bin/ditto", [bundle, paths.app]);
+  try {
+    fs.renameSync(incoming, paths.app);
+  } catch (error) {
+    // Put the old app back where it was.
+    let back = "";
+    if (keptAt) {
+      try {
+        moveDir(keptAt, paths.app);
+        back = " The old app is back in place.";
+      } catch (restoring) {
+        back = ` Putting the old app back failed too (${restoring.message}); it is at ${keptAt}.`;
+      }
+    }
+    fs.rmSync(incoming, { recursive: true, force: true });
+    return { ok: false, refusals: [`Moving the new build into place failed: ${error.message}.${back}`] };
+  }
   const installed = readStamp(paths.app);
   return {
     ok: readIdentifier(paths.app) === HUB_IDENTIFIER && installed?.sha === verified.stamp.sha,

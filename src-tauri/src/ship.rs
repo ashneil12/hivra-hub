@@ -276,6 +276,9 @@ pub struct Facts {
     pub old_moved: bool,
     /// The new build is in place (`steps.newMoved`).
     pub new_moved: bool,
+    /// A rollback's runner began putting the older database in place (`steps.dbReplacing`): live files may have
+    /// changed even though no app has moved.
+    pub db_replaced: bool,
     /// `committed.json` is there.
     pub committed: bool,
     /// Someone holds `runner.lock`.
@@ -327,10 +330,18 @@ pub fn plan(facts: &Facts) -> Plan {
         Staged | Waiting => Plan::Cancel(
             "The ship runner stopped before the swap, so nothing changed. Ship again.".into(),
         ),
-        Swapping if !facts.old_moved => Plan::Cancel(
+        Swapping if !facts.old_moved && !facts.db_replaced => Plan::Cancel(
             "The swap was interrupted before anything moved, so nothing changed. Ship again."
                 .into(),
         ),
+        // A rollback's runner was putting the older database in place: the live files may be partly that copy, so this
+        // ship's own backup goes back (no app has moved).
+        Swapping if !facts.old_moved => match facts.me {
+            Me::New | Me::Old => {
+                Plan::Restore("The rollback was cut off while its database copy went in.".into())
+            }
+            Me::Other => Plan::Leave,
+        },
         // The old app is out and the new one isn't in: no build can be running from its place. Only the runner
         // finishes this.
         Swapping if !facts.new_moved => Plan::Leave,
@@ -409,6 +420,7 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
         phase,
         old_moved: ship.step("oldMoved"),
         new_moved: ship.step("newMoved"),
+        db_replaced: ship.step("dbReplacing") || ship.step("dbReplaced"),
         committed: dir.join(COMMITTED).is_file(),
         runner_alive,
         me,
@@ -542,42 +554,41 @@ pub fn restore(ship: &mut Ship, me: Me) -> Result<(), String> {
 }
 
 /// Copy the backed-up database files back byte for byte (a file the backup didn't have goes), check each against the
-/// checksum taken at backup time, and swap `monos/` back.
+/// checksum taken at backup time, and swap `monos/` back. Same steps as the runner's `restoreData`.
+///
+/// Nothing changes unless the backup is all there and right: every file is checked against its checksum and copied in
+/// beside its live file first, and a file the checksums name that isn't in the backup is an error, not a removal.
 pub fn restore_db(ship: &Ship) -> Result<Value, String> {
     let backup = ship.dir.join(BACKUP_DIR);
     let data = ship.data_dir();
     let expected = ship.doc.pointer("/db/backup").cloned().unwrap_or(json!({}));
-    let mut restored = Map::new();
-    for name in DB_FILES {
-        let from = backup.join(name);
-        let to = data.join(name);
-        if from.is_file() {
-            let temporary = data.join(format!(".{name}.restoring"));
-            std::fs::copy(&from, &temporary)
-                .map_err(|error| format!("Couldn't copy {name} back: {error}"))?;
-            std::fs::rename(&temporary, &to).map_err(|e| e.to_string())?;
-            let sum = sha256_file(&to)?;
-            if let Some(want) = expected.get(name).and_then(Value::as_str) {
-                if want != sum {
-                    return Err(format!(
-                        "{name} doesn't match its backup after the copy ({sum} vs {want})"
-                    ));
-                }
-            }
-            restored.insert(name.into(), json!(sum));
-        } else if to.exists() {
-            std::fs::remove_file(&to).map_err(|e| e.to_string())?;
-        }
+    if !backup.is_dir() {
+        return Err(format!("The database copy {} is missing", backup.display()));
     }
     let saved = backup.join(MONOS);
-    let live = data.join(MONOS);
     let staging = data.join(".monos.restoring");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    let mut steps = Vec::new();
+    if let Err(error) = prepare_restore(&backup, &data, &expected, &saved, &staging, &mut steps) {
+        for step in &steps {
+            if let Some((temporary, _)) = &step.2 {
+                let _ = std::fs::remove_file(temporary);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
     }
-    if saved.is_dir() {
-        copy_dir(&saved, &staging)?;
+    let mut restored = Map::new();
+    for (name, to, copied) in steps {
+        match copied {
+            Some((temporary, sum)) => {
+                std::fs::rename(&temporary, &to).map_err(|e| e.to_string())?;
+                restored.insert(name.into(), json!(sum));
+            }
+            None if to.exists() => std::fs::remove_file(&to).map_err(|e| e.to_string())?,
+            None => {}
+        }
     }
+    let live = data.join(MONOS);
     if live.exists() {
         let aside = ship.dir.join(REJECTED_MONOS);
         if aside.exists() {
@@ -589,6 +600,57 @@ pub fn restore_db(ship: &Ship) -> Result<Value, String> {
         std::fs::rename(&staging, &live).map_err(|e| e.to_string())?;
     }
     Ok(Value::Object(restored))
+}
+
+/// One database file to put back: its name, its live path, and its checked copy beside it with the checksum (none:
+/// the backup didn't have it, so the live one goes).
+type RestoreStep = (&'static str, PathBuf, Option<(PathBuf, String)>);
+
+/// [`restore_db`]'s checks and copies, before any live file changes.
+fn prepare_restore(
+    backup: &Path,
+    data: &Path,
+    expected: &Value,
+    saved_monos: &Path,
+    staging: &Path,
+    steps: &mut Vec<RestoreStep>,
+) -> Result<(), String> {
+    for name in DB_FILES {
+        let from = backup.join(name);
+        let to = data.join(name);
+        let want = expected.get(name).and_then(Value::as_str);
+        if !from.is_file() {
+            if want.is_some() {
+                return Err(format!(
+                    "{name} is missing from the database copy in {}",
+                    backup.display()
+                ));
+            }
+            steps.push((name, to, None));
+            continue;
+        }
+        let sum = sha256_file(&from)?;
+        if let Some(want) = want.filter(|want| *want != sum) {
+            return Err(format!("{name} doesn't match its backup ({sum} vs {want})"));
+        }
+        let temporary = data.join(format!(".{name}.restoring"));
+        steps.push((name, to, Some((temporary.clone(), sum.clone()))));
+        std::fs::copy(&from, &temporary)
+            .map_err(|error| format!("Couldn't copy {name} back: {error}"))?;
+        let copied = sha256_file(&temporary)?;
+        if copied != sum {
+            return Err(format!(
+                "The copy of {name} doesn't match its backup ({copied} vs {sum})"
+            ));
+        }
+    }
+    if staging.exists() {
+        std::fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
+    }
+    if saved_monos.is_dir() {
+        copy_dir(saved_monos, staging)?;
+    }
+    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
@@ -782,21 +844,44 @@ pub fn holding() -> bool {
 /// thread; when all three are up, the build commits.
 #[tauri::command]
 pub fn ship_ready(app: AppHandle) -> Value {
-    let start = {
-        let mut trial = TRIAL.lock().unwrap_or_else(|poison| poison.into_inner());
-        match trial.as_mut() {
-            Some(trial) if !trial.committed && !trial.checking => {
-                trial.checking = true;
-                Some((trial.id.clone(), trial.dir.clone()))
-            }
-            _ => None,
-        }
-    };
-    if let Some((id, dir)) = start {
+    if let Some((id, dir)) = begin_checks(&TRIAL) {
         let app = app.clone();
         std::thread::spawn(move || run_trial_checks(&app, &id, &dir));
     }
     status()
+}
+
+/// The trial's checks start once at a time, and never after it committed: `(id, dir)` when they start now.
+fn begin_checks(trial: &Mutex<Option<TrialState>>) -> Option<(String, PathBuf)> {
+    let mut trial = trial.lock().unwrap_or_else(|poison| poison.into_inner());
+    match trial.as_mut() {
+        Some(trial) if !trial.committed && !trial.checking => {
+            trial.checking = true;
+            Some((trial.id.clone(), trial.dir.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The checks are over: committed or not, the next `ship_ready` may start them again unless this build committed.
+fn end_checks(trial: &Mutex<Option<TrialState>>, committed: bool) {
+    let mut trial = trial.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(trial) = trial.as_mut() {
+        trial.committed |= committed;
+        trial.checking = false;
+    }
+}
+
+/// Write `committed.json`. A write that fails ends this round of checks uncommitted, so the next `ship_ready` tries
+/// again (the runner rolls back if none succeeds in time).
+fn record_commit(
+    trial: &Mutex<Option<TrialState>>,
+    dir: &Path,
+    note: &Value,
+) -> Result<(), String> {
+    let written = write_json(&dir.join(COMMITTED), note);
+    end_checks(trial, written.is_ok());
+    written
 }
 
 fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
@@ -810,11 +895,7 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
     if db.is_err() || bridge.is_err() {
         log(dir, &format!("trial checks failed: {checks}"));
         let _ = write_json(&dir.join(TRIAL_CHECKS), &checks);
-        if let Ok(mut trial) = TRIAL.lock() {
-            if let Some(trial) = trial.as_mut() {
-                trial.checking = false;
-            }
-        }
+        end_checks(&TRIAL, false);
         return;
     }
     let stamp = instance::stamp();
@@ -827,15 +908,9 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
         "at": now_iso(),
         "checks": checks,
     });
-    if let Err(error) = write_json(&dir.join(COMMITTED), &note) {
+    if let Err(error) = record_commit(&TRIAL, dir, &note) {
         log(dir, &format!("couldn't write {COMMITTED}: {error}"));
         return;
-    }
-    if let Ok(mut trial) = TRIAL.lock() {
-        if let Some(trial) = trial.as_mut() {
-            trial.committed = true;
-            trial.checking = false;
-        }
     }
     log(dir, "committed");
     // The runner writes it down; if it is gone, this app does.
@@ -1264,7 +1339,7 @@ pub fn ship_start(
         }
         command.args(["--when-busy", when]);
     }
-    let output = command.output().map_err(|e| e.to_string())?;
+    let output = output_within(command, SHIP_START_LIMIT, "hub-ship.mjs")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let answer = stdout
         .lines()
@@ -1303,6 +1378,83 @@ pub fn ship_start(
 }
 
 // ---- small helpers ---------------------------------------------------------------------------------------------------
+
+/// How long `app.ship` waits for `hub-ship.mjs`, which checks, stages and schedules (seconds, normally). Above the
+/// script's own 300 s healthcheck of the new build plus staging, so a slow but healthy check is never cut off.
+const SHIP_START_LIMIT: Duration = Duration::from_secs(420);
+
+/// Run `command` to the end and collect what it printed, or stop it and everything it started (its own process group)
+/// once `limit` has passed.
+fn output_within(
+    mut command: Command,
+    limit: Duration,
+    what: &str,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    ];
+    for (which, pipe) in pipes.into_iter().enumerate() {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            let _ = sender.send((which, bytes));
+        });
+    }
+    drop(sender);
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{what} didn't finish within {} s, so it was stopped. Run it from the checkout to see why.",
+                    limit.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    let mut output = std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    // Something it left running may hold a pipe open: read what is there, never wait on it for long.
+    for _ in 0..2 {
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok((0, bytes)) => output.stdout = bytes,
+            Ok((_, bytes)) => output.stderr = bytes,
+            Err(_) => break,
+        }
+    }
+    Ok(output)
+}
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
@@ -1384,6 +1536,7 @@ mod tests {
             phase,
             old_moved: false,
             new_moved: false,
+            db_replaced: false,
             committed: false,
             runner_alive: false,
             me: Me::Old,
@@ -1502,6 +1655,70 @@ mod tests {
             ..facts(Phase::RollingBack)
         };
         assert_eq!(plan(&other), Plan::Leave);
+    }
+
+    #[test]
+    fn a_commit_that_couldnt_be_written_is_tried_again() {
+        let root = TempDir::new("commit");
+        let trial = Mutex::new(Some(TrialState {
+            id: "20261019-210405-bbbbbbb".into(),
+            // No such folder: writing committed.json fails.
+            dir: root.0.join("gone"),
+            committed: false,
+            checking: false,
+        }));
+        let (_, dir) = begin_checks(&trial).expect("the first ship_ready starts the checks");
+        assert!(begin_checks(&trial).is_none(), "one round at a time");
+        assert!(record_commit(&trial, &dir, &json!({})).is_err());
+        let (_, dir) = begin_checks(&trial).expect("the next ship_ready tries again");
+        std::fs::create_dir_all(&dir).unwrap();
+        record_commit(&trial, &dir, &json!({})).unwrap();
+        assert!(dir.join(COMMITTED).is_file());
+        assert!(begin_checks(&trial).is_none(), "committed: no more checks");
+        assert!(trial.lock().unwrap().as_ref().unwrap().committed);
+    }
+
+    #[test]
+    fn the_ship_script_gets_a_deadline() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo out; echo err >&2"]);
+        let output = output_within(command, Duration::from_secs(20), "the script").unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"out\n");
+        assert_eq!(output.stderr, b"err\n");
+
+        // One that hangs is stopped at the limit, with whatever it started.
+        let root = TempDir::new("deadline");
+        let pid_file = root.0.join("sleeper.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+        ]);
+        let started = Instant::now();
+        let error = output_within(command, Duration::from_millis(800), "hub-ship.mjs").unwrap_err();
+        assert!(
+            error.contains("hub-ship.mjs didn't finish within"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        #[cfg(unix)]
+        {
+            let sleeper: i32 = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while unsafe { libc::kill(sleeper, 0) } == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_ne!(
+                unsafe { libc::kill(sleeper, 0) },
+                0,
+                "what it started is stopped too"
+            );
+        }
     }
 
     #[test]
@@ -1631,6 +1848,7 @@ mod tests {
             phase: reloaded.phase().unwrap(),
             old_moved: reloaded.step("oldMoved"),
             new_moved: reloaded.step("newMoved"),
+            db_replaced: false,
             committed: false,
             runner_alive: false,
             me: Me::Old,
@@ -1660,10 +1878,62 @@ mod tests {
     fn a_tampered_backup_fails_the_restore() {
         let root = TempDir::new("tampered");
         let (mut ship, _) = swapped_fixture(&root.0);
-        std::fs::write(ship.dir.join(BACKUP_DIR).join("monocode.db"), b"changed").unwrap();
+        // The second file is the bad one: the first must not have been put in place already.
+        std::fs::write(
+            ship.dir.join(BACKUP_DIR).join("monocode.db-wal"),
+            b"changed",
+        )
+        .unwrap();
         let error = restore(&mut ship, Me::New).unwrap_err();
         assert!(error.contains("doesn't match its backup"), "{error}");
         assert!(!Ship::load(&ship.dir).unwrap().step("dbRestored"));
+        let data = ship.data_dir();
+        assert_eq!(
+            std::fs::read(data.join("monocode.db")).unwrap(),
+            b"migrated by the new build",
+            "no live file changed"
+        );
+        assert_eq!(
+            std::fs::read(data.join("monocode.db-shm")).unwrap(),
+            b"new shm"
+        );
+        assert_eq!(
+            std::fs::read(data.join("monos/frank/SOUL.md")).unwrap(),
+            b"new soul"
+        );
+        assert!(!data.join(".monocode.db.restoring").exists());
+    }
+
+    #[test]
+    fn a_backup_missing_a_file_it_took_fails_the_restore() {
+        let root = TempDir::new("missing");
+        let (ship, _) = swapped_fixture(&root.0);
+        std::fs::remove_file(ship.dir.join(BACKUP_DIR).join("monocode.db")).unwrap();
+        let error = restore_db(&ship).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        assert_eq!(
+            std::fs::read(ship.data_dir().join("monocode.db")).unwrap(),
+            b"migrated by the new build"
+        );
+        std::fs::remove_dir_all(ship.dir.join(BACKUP_DIR)).unwrap();
+        assert!(restore_db(&ship).unwrap_err().contains("missing"));
+        assert!(ship.data_dir().join("monocode.db").exists());
+        assert!(ship.data_dir().join("monos").exists());
+    }
+
+    #[test]
+    fn a_rollback_cut_off_while_its_database_went_in_is_restored_not_called_off() {
+        // hub:rollback's ship: the runner began putting the older database in place, then died before moving any app.
+        let cut = Facts {
+            db_replaced: true,
+            ..facts(Phase::Swapping)
+        };
+        assert!(matches!(plan(&cut), Plan::Restore(_)), "{:?}", plan(&cut));
+        let other = Facts {
+            me: Me::Other,
+            ..cut.clone()
+        };
+        assert_eq!(plan(&other), Plan::Leave);
     }
 
     #[test]

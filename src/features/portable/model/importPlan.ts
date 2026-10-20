@@ -14,7 +14,7 @@ import { addMockProject } from "../../hub/model/mockData";
 import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../../hub/model/setupSouls";
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
-import type { PortableConnector, PortableMono, PortableProject, PortableTeam, ProjectPrefsFile, SetupDoc } from "./setupDoc";
+import { isPortableSetting, settingLooksSecret, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
 
 // ---- what Rust found (src-tauri/src/portable.rs, Inspection) ---------------------------------------------------------
 
@@ -345,6 +345,32 @@ export type ImportDeps = {
 
 export type ImportSummary = { lines: string[]; rust: RustImportReport | null; problems: string[] };
 
+/**
+ * A Mono's habits.json as it comes in: every habit paused and none waiting to run, so nothing starts on this Mac until
+ * Ash turns it on (a seated Mono's scheduler would otherwise pick them up at once). Text that isn't a list of habits
+ * runs nothing and stays as it is.
+ */
+export function pausedHabits(text: string | undefined): string {
+  if (!text?.trim()) return "";
+  let list: unknown;
+  try {
+    list = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (!Array.isArray(list)) return text;
+  let changed = false;
+  const paused = list.map((habit: unknown) => {
+    if (!habit || typeof habit !== "object" || Array.isArray(habit)) return habit;
+    const { runRequested, ...rest } = habit as Record<string, unknown>;
+    if (rest.enabled === false && runRequested === undefined) return habit;
+    changed = true;
+    return { ...rest, enabled: false };
+  });
+  // Already paused: byte for byte as written.
+  return changed ? `${JSON.stringify(paused, null, 2)}\n` : text;
+}
+
 function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): SetupSoul {
   const topics: Record<string, string> = {};
   if (withMemory) {
@@ -359,7 +385,7 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     role: mono.role,
     rules: mono.files["SOUL.md"] ?? "",
     memory: withMemory ? (mono.files["MEMORY.md"] ?? "") : "",
-    workflows: mono.files["habits.json"] ?? "",
+    workflows: pausedHabits(mono.files["habits.json"]),
     skills: mono.skills,
     mascot: mono.mascot,
     color: mono.color,
@@ -472,6 +498,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     try {
       const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), { replace: choices.replaceSouls.has(m.mono.id), ...deps.agentFiles });
       if (r.written.length) merged++;
+      for (const problem of r.problems) problems.push(`${m.mono.name}: ${problem}`);
     } catch (e) {
       problems.push(`${m.mono.name}: ${e instanceof Error ? e.message : "its files couldn't be written"}`);
     }
@@ -500,18 +527,25 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   addConnectors(connectors.map(({ connector }) => ({ id: connector.id, name: connector.name, projectId: connector.projectId })));
   if (connectors.length) lines.push(`${plural(connectors.length, "connector")} added: sign in to each again in Setup.`);
 
-  const pages = importPages(plan.pages.filter((x) => choices.pages.has(x.page.id)).map((x) => x.page));
-  if (pages) lines.push(`${plural(pages, "Page")} added, with no permissions until you allow them again.`);
+  const pages = await importPages(plan.pages.filter((x) => choices.pages.has(x.page.id)).map((x) => x.page));
+  if (pages.added) lines.push(`${plural(pages.added, "Page")} added, with no permissions until you allow them again.`);
+  for (const why of pages.failed) problems.push(`Page not added: ${why}`);
 
-  const models = importCustomModels(plan.customModels.filter((x) => choices.customModels.has(x.model.id)).map((x) => x.model));
+  const models = importCustomModels(
+    plan.customModels.filter((x) => choices.customModels.has(x.model.id)).map((x) => x.model),
+    (reason) => problems.push(reason),
+  );
   if (models) lines.push(`${plural(models, "custom model")} added: enter each key again.`);
 
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
     let set = 0;
     for (const key of keys) {
+      // Checked again where it is written: only a real preference, and never one that looks like a secret.
+      const value = doc.settings[key];
+      if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;
       try {
-        localStorage.setItem(key, doc.settings[key]);
+        localStorage.setItem(key, value);
         set++;
       } catch {
         /* storage full or unavailable */

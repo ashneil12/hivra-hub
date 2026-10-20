@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyHarnessSettings,
+  dropHarnessSession,
   registerHarness,
   resetHarnessIdlePark,
   sendHarnessTurn,
@@ -87,5 +88,21 @@ describe("the registry for long-running Leads", () => {
     expect(applySettings).toHaveBeenCalledWith(input);
     expect(await applyHarnessSettings({ ...input, harness: "codex" })).toBe("idle");
     expect(await stopHarnessTask("codex", "lead", "w1")).toBe(false);
+  });
+
+  it("hands a deleted chat to every adapter that keeps state past forget", () => {
+    const dropSession = vi.fn();
+    const base = {
+      live: true,
+      sendTurn: async () => undefined,
+      respondApproval: () => undefined,
+      stopSession: async () => undefined,
+      forgetSession: async () => undefined,
+      bindSession: () => undefined,
+    } satisfies Omit<HarnessAdapter, "id">;
+    registerHarness({ ...base, id: "claude", dropSession });
+    registerHarness({ ...base, id: "codex" });
+    dropHarnessSession("gone");
+    expect(dropSession).toHaveBeenCalledWith("gone");
   });
 });

@@ -22,8 +22,11 @@ let rows: readonly Delegation[] = [];
 let actions: DelegationActions | undefined;
 let version = 0;
 const jumpedIn = new Set<string>();
-/** The chats a Stop couldn't stop, by the chat whose Stop it was. */
-const failures = new Map<string, string[]>();
+/** What a Stop couldn't do, by the chat whose Stop it was: chats it couldn't stop, and chats whose workers it couldn't load. */
+const failures = new Map<
+  string,
+  { stopFailed: readonly string[]; unloaded: readonly string[] }
+>();
 const listeners = new Set<() => void>();
 
 function changed() {
@@ -83,19 +86,30 @@ export function hasJumpedIn(sessionId: string): boolean {
   return jumpedIn.has(sessionId);
 }
 
-/** What a Stop reported: the chats that would not stop (an empty list clears the note). */
+/**
+ * What a Stop reported: the chats that would not stop, and the chats whose workers couldn't be loaded (they may still
+ * be running). A Stop with neither clears the note.
+ */
 export function noteStopFailures(
   chat: string,
-  sessionIds: readonly string[],
+  result: Pick<StopTreeResult, "stopFailed" | "unloaded">,
 ): void {
-  if (!sessionIds.length && !failures.has(chat)) return;
-  if (sessionIds.length) failures.set(chat, [...sessionIds]);
+  const stopFailed = [...result.stopFailed];
+  const unloaded = [...(result.unloaded ?? [])];
+  if (!stopFailed.length && !unloaded.length && !failures.has(chat)) return;
+  if (stopFailed.length || unloaded.length)
+    failures.set(chat, { stopFailed, unloaded });
   else failures.delete(chat);
   changed();
 }
 
 export function stopFailures(chat: string): readonly string[] {
-  return failures.get(chat) ?? [];
+  return failures.get(chat)?.stopFailed ?? [];
+}
+
+/** The chats whose workers the last Stop couldn't load. */
+export function stopUnloaded(chat: string): readonly string[] {
+  return failures.get(chat)?.unloaded ?? [];
 }
 
 /** Tests: forget everything. */

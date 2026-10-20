@@ -450,6 +450,34 @@ export function readNdjson(file) {
 
 // ---- the run --------------------------------------------------------------------------------------------------------
 
+/**
+ * Run `stop` once however the run ends: the caller awaits `finish()` when it returns or throws, and SIGINT/SIGTERM run
+ * it too, then exit 130/143. `dispose()` takes the signal handlers off again.
+ */
+export function cleanupOnExit(stop, { onSignal = () => undefined, exit = (code) => process.exit(code) } = {}) {
+  let done = null;
+  const finish = () => (done ??= Promise.resolve().then(stop));
+  const handlers = [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ].map(([signal, code]) => {
+    const handler = () => {
+      onSignal(signal);
+      finish()
+        .catch(() => undefined)
+        .finally(() => exit(code));
+    };
+    process.on(signal, handler);
+    return [signal, handler];
+  });
+  return {
+    finish,
+    dispose: () => {
+      for (const [signal, handler] of handlers) process.off(signal, handler);
+    },
+  };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function until(read, timeoutMs, everyMs = 250) {
@@ -591,12 +619,12 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const id = runId(new Date(), options.failGate);
   const evidence = path.join(ROOT, "evidence", id);
+  fs.mkdirSync(evidence, { recursive: true });
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "monocode-verify-"));
   const home = path.join(scratch, "home");
   const project = path.join(scratch, "project");
   const bin = path.join(scratch, "bin");
   const fake = path.join(evidence, "fake");
-  for (const dir of [evidence, home, project, bin, fake]) fs.mkdirSync(dir, { recursive: true });
   const log = (line) => {
     const text = `[verify-live ${new Date().toISOString().slice(11, 19)}] ${line}`;
     console.log(text);
@@ -620,38 +648,12 @@ async function main() {
   let stub = null;
   let app = null;
   let launches = 0;
-
-  // -- the slot, the fake and the plan ---------------------------------------------------------------------------------
-  const slot = await planSlot({ requested: options.slot });
-  if (kindOf(slot.identifier) !== "dev" || !slot.identifier.startsWith(DEV_IDENTIFIER_PREFIX))
-    throw new Error(`refusing: ${slot.identifier} is not a dev copy's identifier`);
-  const dataDir = path.join(home, "Library/Application Support", slot.identifier);
-  const db = path.join(dataDir, "monocode.db");
-  log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
-
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: project });
-  fs.writeFileSync(path.join(project, "README.md"), "Scratch project for hub:verify-live.\n");
-  execFileSync("git", ["add", "README.md"], { cwd: project });
-  execFileSync(
-    "git",
-    ["-c", "user.name=verify", "-c", "user.email=verify@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
-    { cwd: project },
-  );
-
-  const claude = path.join(bin, "claude");
-  fs.writeFileSync(claude, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, "scripts/fake-claude.mjs")}" "$@"\n`, { mode: 0o755 });
-  const rulesFile = path.join(evidence, "scenario.json");
-  fs.writeFileSync(rulesFile, `${JSON.stringify(scenario({ runId: id, failGate: options.failGate }), null, 2)}\n`);
-  const planFile = path.join(scratch, "verify-plan.json");
-  const plan = {
-    version: 1,
-    runId: id,
-    claudeBinary: claude,
-    autoResume: true,
-    kickoff: { project, monoName: "Verify Lead", prompt: `${KICKOFF} run ${id}: delegate the verify worker, then wait for its report.` },
-  };
-  fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
-  fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
+  let slot;
+  let dataDir = null;
+  let db;
+  let rulesFile;
+  let planFile;
+  let plan;
 
   const cleanup = async () => {
     if (app && alive(app.pid)) {
@@ -672,10 +674,73 @@ async function main() {
     }
     await stub?.close().catch(() => undefined);
   };
+  // However the run ends (it returns, it throws, even while setting up, or it is killed with SIGINT/SIGTERM): the copy,
+  // the build, vite and the stub stop, the database is kept as evidence and the temporary HOME goes (unless --keep).
+  const ending = cleanupOnExit(
+    async () => {
+      await cleanup();
+      // The database, after the app is gone (WAL and all).
+      if (dataDir) {
+        try {
+          fs.mkdirSync(path.join(evidence, "db"), { recursive: true });
+          for (const name of ["monocode.db", "monocode.db-wal", "monocode.db-shm"]) {
+            const from = path.join(dataDir, name);
+            if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidence, "db", name));
+          }
+        } catch (error) {
+          log(`couldn't copy the database: ${error.message}`);
+        }
+      }
+      if (!options.keep) fs.rmSync(scratch, { recursive: true, force: true });
+    },
+    { onSignal: (signal) => log(`${signal}: stopping what this run started${options.keep ? "" : " and removing its temporary HOME"}`) },
+  );
+
+  try {
+    for (const dir of [home, project, bin, fake]) fs.mkdirSync(dir, { recursive: true });
+
+    // -- the slot, the fake and the plan -------------------------------------------------------------------------------
+    // Planned against the real slot registry (read only) so it never takes another worktree's slot, but registered only
+    // under the temporary HOME: in the real slots.json a later plain hub:dev in this worktree could pick it.
+    slot = await planSlot({ requested: options.slot });
+    if (kindOf(slot.identifier) !== "dev" || !slot.identifier.startsWith(DEV_IDENTIFIER_PREFIX))
+      throw new Error(`refusing: ${slot.identifier} is not a dev copy's identifier`);
+    dataDir = path.join(home, "Library/Application Support", slot.identifier);
+    db = path.join(dataDir, "monocode.db");
+    log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
+
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: project });
+    fs.writeFileSync(path.join(project, "README.md"), "Scratch project for hub:verify-live.\n");
+    execFileSync("git", ["add", "README.md"], { cwd: project });
+    execFileSync(
+      "git",
+      ["-c", "user.name=verify", "-c", "user.email=verify@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+      { cwd: project },
+    );
+
+    const claude = path.join(bin, "claude");
+    fs.writeFileSync(claude, `#!/bin/sh\nexec "${process.execPath}" "${path.join(ROOT, "scripts/fake-claude.mjs")}" "$@"\n`, { mode: 0o755 });
+    rulesFile = path.join(evidence, "scenario.json");
+    fs.writeFileSync(rulesFile, `${JSON.stringify(scenario({ runId: id, failGate: options.failGate }), null, 2)}\n`);
+    planFile = path.join(scratch, "verify-plan.json");
+    plan = {
+      version: 1,
+      runId: id,
+      claudeBinary: claude,
+      autoResume: true,
+      kickoff: { project, monoName: "Verify Lead", prompt: `${KICKOFF} run ${id}: delegate the verify worker, then wait for its report.` },
+    };
+    fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
+    fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
+  } catch (error) {
+    await ending.finish();
+    ending.dispose();
+    throw error;
+  }
 
   try {
     // -- build ---------------------------------------------------------------------------------------------------------
-    registerSlot(slot);
+    registerSlot(slot, home);
     writeSlotConfig(slot);
     const config = mergePatch(readJson(path.join(ROOT, "src-tauri/tauri.hub.conf.json")), readJson(slot.configFile));
     const binary = path.join(ROOT, "target/debug/monocode");
@@ -692,6 +757,7 @@ async function main() {
             CARGO_BUILD_BUILD_DIR: slot.buildDir,
           },
         });
+        children.push(child);
         child.on("exit", (exit) => resolve(exit ?? 1));
       });
       if (code !== 0) throw new Error(`cargo build failed (${path.relative(ROOT, path.join(evidence, "build.log"))})`);
@@ -1449,18 +1515,8 @@ async function main() {
         skip(name, name, "not run: the negative control stops at its first failure");
     } else fail("run", "The walk ran to the end", error.message);
   } finally {
-    await cleanup();
-    // The database, after the app is gone (WAL and all).
-    try {
-      fs.mkdirSync(path.join(evidence, "db"), { recursive: true });
-      for (const name of ["monocode.db", "monocode.db-wal", "monocode.db-shm"]) {
-        const from = path.join(dataDir, name);
-        if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidence, "db", name));
-      }
-    } catch (error) {
-      log(`couldn't copy the database: ${error.message}`);
-    }
-    if (!options.keep) fs.rmSync(scratch, { recursive: true, force: true });
+    await ending.finish();
+    ending.dispose();
   }
 
   const verdict = verdictOf(checks);

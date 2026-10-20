@@ -11,7 +11,7 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import { refreshAutopilot, setAutopilotBackend } from "../model/autopilot";
 import { memoryAutopilot, type MemoryAutopilot } from "../model/memoryAutopilot";
-import { useAutopilot } from "./useAutopilot";
+import { pruneAutopilotMemory, useAutopilot, type AutopilotMemory } from "./useAutopilot";
 
 const HOUR = 3_600_000;
 let root: Root;
@@ -27,10 +27,22 @@ function session(id: string, cwd: string, patch: Partial<Session> = {}): Session
 }
 
 let delegated = new Set<string>();
+/** Folders that are links to elsewhere, as the app resolves them (fs.rs git_locate_files); outside git: null. */
+let links: Record<string, string> = {};
+const OUTSIDE_GIT = "/Users/ash/Scratch";
+const locate = async (paths: string[]) =>
+  paths.map((path) => {
+    if (path.startsWith(`${OUTSIDE_GIT}/`)) return null;
+    const link = Object.keys(links).find((from) => path.startsWith(`${from}/`));
+    const real = link ? `${links[link]}${path.slice(link.length)}` : path;
+    return { root: "/Users/ash", relative: real.slice("/Users/ash/".length) };
+  });
+let setAll: (change: (sessions: Session[]) => Session[]) => void = () => undefined;
 
 function Harness({ initial }: { initial: Session[] }) {
   const [sessions, setSessions] = useState(initial);
   current = sessions;
+  setAll = setSessions;
   const ref = { current: sessions };
   // As App.tsx wires Today's waiting list: it reads the chats and borrows these hands.
   useEffect(() => noteChats(sessions), [sessions]);
@@ -55,6 +67,7 @@ function Harness({ initial }: { initial: Session[] }) {
     openSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     isDelegated: (id) => delegated.has(id),
     openChat: () => undefined,
+    locate,
   });
   return null;
 }
@@ -83,6 +96,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetWaitingChats();
   delegated = new Set();
+  links = {};
   backend = memoryAutopilot();
   setAutopilotBackend(backend);
   setHubDataSource({
@@ -106,7 +120,41 @@ const question = (id: string, prompt: string, options: { id: string; label: stri
   id,
 });
 
-const approval = (title: string): Block => ({ id: crypto.randomUUID(), role: "tool", text: title, tool: { title, kind: "execute" }, approval: { requestId: 9 } });
+/** A tool approval; `null` for one whose provider didn't say exactly what it runs. */
+const approval = (title: string, call: NonNullable<Block["approval"]>["call"] | null = { tool: "Bash", command: title }, detail?: string): Block => ({
+  id: crypto.randomUUID(),
+  role: "tool",
+  text: title,
+  tool: { title, kind: call?.tool === "Bash" ? "execute" : call?.tool.toLowerCase(), ...(detail ? { detail } : {}) },
+  approval: { requestId: 9, ...(call ? { call } : {}) },
+});
+
+describe("what the hook remembers", () => {
+  it("forgets decided approvals, closed chats' calls and past resets, and keeps what can still come back", () => {
+    const now = Date.now();
+    const open = session("open", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] });
+    const memory: AutopilotMemory = {
+      handled: new Map([
+        // an approval of a chat that closed, and a question of a chat that closed and isn't waiting any more
+        ["a:closed:3:y", "closed"],
+        ["w:closed:line:z", "closed"],
+        // a question of a closed chat that is still on the waiting list, and one of the open chat
+        ["w:listed:5:q", "listed"],
+        ["w:open:line:q", "open"],
+      ]),
+      retryAt: new Map([["w:closed:line:z", now + 30_000]]),
+      triedArm: new Map([
+        ["open:future", { id: "open", resetsAt: now + 3_600_000 }],
+        ["open:past", { id: "open", resetsAt: now - 1 }],
+        ["closed:future", { id: "closed", resetsAt: now + 3_600_000 }],
+      ]),
+    };
+    pruneAutopilotMemory(memory, [open], ["listed"], now);
+    expect([...memory.handled.keys()]).toEqual(["w:listed:5:q", "w:open:line:q"]);
+    expect(memory.retryAt.size).toBe(0);
+    expect([...memory.triedArm.keys()]).toEqual(["open:future"]);
+  });
+});
 
 describe("useAutopilot", () => {
   it("while a project's switch is on, its chats take their recommendation; the red list and other projects wait", async () => {
@@ -134,6 +182,65 @@ describe("useAutopilot", () => {
     expect(byChat.line).toMatchObject({ kind: "question", outcome: "taken", recommendation: "yes, behind a flag" });
     expect(sent.find((m) => m.id === "nopick")?.text).toMatch(/^Ash is away on autopilot until .* Decide this yourself/);
     expect(byChat.nopick).toMatchObject({ kind: "question", outcome: "handed_back" });
+  });
+
+  it("allows only reads, listed checks and edits in the chat's own folder; every other approval waits for Ash", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const hivra = "/Users/ash/Projects/hivra";
+    const filler = "x".repeat(6_100);
+    await mount([
+      // What autopilot used to allow because the red list's words missed them.
+      session("py", hivra, { blocks: [approval(`python3 -c "import shutil; shutil.rmtree('backups')"`)] }),
+      session("b64", hivra, { blocks: [approval("echo cm0gLXJmIH4vZGF0YQ== | base64 -d | sh")] }),
+      session("merge", hivra, { blocks: [approval("gh pr merge 12 --admin")] }),
+      session("long", hivra, { blocks: [approval(`Write ${hivra}/notes.md`, { tool: "Write", paths: [`${hivra}/notes.md`] }, `${filler} DROP TABLE users`)] }),
+      session("home", hivra, { blocks: [approval("Edit ~/.zshrc", { tool: "Edit", paths: ["/Users/ash/.zshrc"] })] }),
+      session("tool", hivra, { blocks: [approval("Slack: post", { tool: "mcp__slack__post" })] }),
+      session("bare", hivra, { blocks: [approval("npm test", null)] }),
+      // What it allows by itself.
+      session("check", hivra, { blocks: [approval("npm run check")] }),
+      session("read", hivra, { blocks: [approval("Read /etc/hosts", { tool: "Read", paths: ["/etc/hosts"] })] }),
+      session("edit", hivra, { blocks: [approval(`Edit ${hivra}/src/a.ts`, { tool: "Edit", paths: [`${hivra}/src/a.ts`] })] }),
+      session("tree", hivra, { worktreeCwd: "/Users/ash/Worktrees/hivra-x", blocks: [approval("Edit a.ts", { tool: "Edit", paths: ["/Users/ash/Worktrees/hivra-x/a.ts"] })] }),
+    ]);
+    expect(approvals.map((a) => a.id).sort()).toEqual(["check", "edit", "read", "tree"]);
+    const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
+    for (const id of ["py", "b64", "merge", "long", "home", "tool", "bare"])
+      expect(byChat[id], id).toMatchObject({ kind: "approval", outcome: "held", detail: expect.stringMatching(/^Not allowed by itself: /) });
+    expect(byChat.long.detail).toContain("too long");
+    expect(byChat.check).toMatchObject({ kind: "approval", outcome: "taken" });
+  });
+
+  it("checks where an edit really lands: through a link out of the chat's folder, or outside git, it waits for Ash", async () => {
+    await backend.set({ scopes: ["*"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const tree = "/Users/ash/Worktrees/hivra-x";
+    links = { [`${tree}/shared`]: "/Users/ash/Projects/hivra/shared" };
+    const edit = (path: string) => approval(`Edit ${path}`, { tool: "Edit", paths: [path] });
+    await mount([
+      session("linked", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/shared/config.ts`)] }),
+      session("plain", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/src/a.ts`)] }),
+      session("nogit", `${OUTSIDE_GIT}/notes`, { blocks: [edit(`${OUTSIDE_GIT}/notes/a.md`)] }),
+    ]);
+    expect(approvals.map((a) => a.id)).toEqual(["plain"]);
+    const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
+    expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/Users/ash/Projects/hivra/shared/config.ts, outside the chat's folder") });
+    expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
+  });
+
+  it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    await mount([session("tests", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] })]);
+    expect(approvals).toHaveLength(1);
+    // The app applies the decision; later (a new Claude process numbers its approvals from the start again) the same
+    // request id asks for the same command.
+    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: s.blocks.map((b) => ({ ...b, approval: { ...b.approval!, decided: "allow" as const } })) }))));
+    await settle();
+    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: [...s.blocks, approval("npm test")] }))));
+    await settle();
+    expect(approvals).toHaveLength(2);
   });
 
   it("leaves a delegated worker's question to its Lead, but still decides its approvals", async () => {

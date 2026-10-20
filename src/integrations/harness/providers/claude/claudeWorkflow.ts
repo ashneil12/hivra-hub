@@ -1,6 +1,7 @@
 import {
   agentText,
   mergeWorkflowFrame,
+  settleDroppedAgents,
   type WorkflowAgent,
   type WorkflowAgentState,
   type WorkflowPhase,
@@ -204,15 +205,18 @@ export function endWorkflowRun(
   now: number,
   summary?: string,
 ): WorkflowRunMeta {
+  const settled = status === "completed" ? "done" : "skipped";
   const settledAgent = (agent: WorkflowAgent): WorkflowAgent =>
     agent.state === "working" || agent.state === "queued"
-      ? { ...agent, state: status === "completed" ? "done" : "skipped" }
+      ? { ...agent, state: settled }
       : agent;
+  const dropped = settleDroppedAgents(run.dropped, settled);
   return {
     ...run,
     status,
     updatedAt: now,
     agents: run.agents.map(settledAgent),
+    ...(dropped ? { dropped } : {}),
     ...(summary ? { summary } : {}),
   };
 }

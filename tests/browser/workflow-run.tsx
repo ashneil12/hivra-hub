@@ -19,9 +19,22 @@ import "../../src/styles/index.css";
 
 // The real Claude adapter, registry, transcript and Being built, fed what Claude Code 2.1.302 streamed for a real
 // Workflow run against a fake API (the recorded fixtures). Only the child process and native IPC are fake.
+// "stop-unseen" is the stopped run minus the two frames that announced it (a run that began before this turn, known
+// only from its progress frames); "stop-fails" is the stopped run with the stop itself failing to reach Claude Code.
 const scenarioParam = new URLSearchParams(location.search).get("scenario");
-const scenario = scenarioParam === "stop" ? "stop" : scenarioParam === "ended" ? "ended" : "run";
-const lines = (scenario === "stop" ? stopFixture : runFixture).split("\n").filter((line) => line.trim());
+const scenario =
+  scenarioParam === "stop" || scenarioParam === "stop-unseen" || scenarioParam === "stop-fails" || scenarioParam === "ended"
+    ? scenarioParam
+    : "run";
+const stops = scenario.startsWith("stop");
+const lines = (stops ? stopFixture : runFixture)
+  .split("\n")
+  .filter((line) => line.trim())
+  .filter(
+    (line) =>
+      scenario !== "stop-unseen" ||
+      !["task_started", "background_tasks_changed"].includes((JSON.parse(line) as { subtype?: string }).subtype ?? ""),
+  );
 const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
 const agentsIn = (rec: Record<string, unknown>) =>
   Array.isArray(rec.workflow_progress)
@@ -32,7 +45,7 @@ const agentsIn = (rec: Record<string, unknown>) =>
 // (Claude Code picks the thread back up after the run's notification).
 const runEnds = records.findIndex((rec) => rec.subtype === "task_updated");
 const holdAt =
-  scenario === "stop"
+  stops
     ? records.findIndex((rec) => agentsIn(rec).length > 0)
     : scenario === "ended"
       ? runEnds - 1
@@ -92,6 +105,7 @@ const backend: ChildBackend = {
       if (rec.type === "control_request" && request?.subtype === "initialize") {
         setTimeout(() => emit(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: rec.request_id } })), 10);
       } else if (rec.type === "control_request" && request?.subtype === "stop_task") {
+        if (scenario === "stop-fails") throw new Error("the pipe to Claude Code broke");
         setTimeout(() => void replay(lines.length), 50);
       } else if (rec.type === "user") {
         setTimeout(() => void replay(holdAt), 50);

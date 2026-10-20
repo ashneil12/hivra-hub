@@ -943,7 +943,7 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId },
+      approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
     };
     return { ...session, blocks };
   }
@@ -961,7 +961,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId },
+    approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
   });
 }
 
@@ -1158,11 +1158,6 @@ const MAX_AGENT_STEPS = 300;
 const MAX_AGENT_STEP_CHARS = 2_000;
 
 /**
- * Mirrors one subagent action onto its parent Agent tool block. Steps merge by
- * provider id, so a call that starts pending and later completes stays one row
- * instead of appearing twice.
- */
-/**
  * A workflow run's snapshot onto the tool call that launched it. A run whose
  * launching call never reached the transcript still gets a row of its own, so
  * a busy Lead never looks idle.
@@ -1209,6 +1204,11 @@ function recordWorkflowRun(
   return { ...session, blocks };
 }
 
+/**
+ * Mirrors one subagent action onto its parent Agent tool block. Steps merge by
+ * provider id, so a call that starts pending and later completes stays one row
+ * instead of appearing twice.
+ */
 function recordAgentStep(
   session: Session,
   event: Extract<HarnessEvent, { type: "agent.step" }>,

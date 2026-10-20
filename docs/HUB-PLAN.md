@@ -121,13 +121,15 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
 **1b. One app, one clean way to develop it** (Ash 19 Oct: "there's multiple versions of the app ... i'd like a
 way to make it easy"; the rest comes from T3 Code's self-hosting setup):
 - **Dev slots.** Running the hub from any worktree opens "MonoCode Hub Dev - <branch>". It has its own data folder,
-  its own port and a DEV ribbon, so it can never touch the daily app's chats, Keychain or Ash OS. Today `hub:dev` runs
-  as `com.ash.monocode-hub` on the live data folder.
+  its own port and a DEV ribbon, so it can never touch the daily app's chats, Keychain or Ash OS. (Done: `hub:dev` used
+  to run as `com.ash.monocode-hub` on the live data folder; each worktree now runs its own
+  `com.ash.monocode-hub.dev.<slot>`, `scripts/hub-dev.mjs`.)
 - **One app per data folder.** A second copy says which build owns the data and exits. Every window and bundle shows
   its commit and branch. One command lists every hub bundle, data folder, dev slot and worktree on the Mac.
 - **Ship with a safety net.** One Ship command or button installs a verified build into the daily app. It keeps the
   previous app and a database snapshot, rolls back by itself if the new build doesn't boot, and tells the Lead that
-  shipped it what happened. Today `hub:install` is `rm -rf` then `cp -R`.
+  shipped it what happened. (Done: `hub:install` used to be `rm -rf` then `cp -R`; now `hub:ship`,
+  `scripts/hub-ship.mjs`, installs, and `hub:install` is only the one-time `--legacy` install, which keeps the old app.)
 - **Project file** (`.monocode/project.json`):
   - It sets up each new worktree before the first turn (dependencies, a shared Rust cache).
   - It adds one-click actions: Run dev slot, Check, Ship.
@@ -151,7 +153,8 @@ way to make it easy"; the rest comes from T3 Code's self-hosting setup):
 - The checker Mono on Haiku.
 - From T3 Code:
   - **Delegations survive restarts.** Owed reports are stored and recovered when the app starts, so a Lead always
-    gets exactly one report. Today they live only in memory (`App.tsx:8586`).
+    gets exactly one report. (Done: they used to live only in memory, `App.tsx:8586`; each is now a row in the hub's
+    database, `src-tauri/src/delegations.rs`, recovered when the app starts.)
   - **Workers ask their Lead, not Ash.** A worker's question wakes the chat that delegated it. Only real choices go up
     to Ash, with the Lead's recommendation.
   - **A delegation tree you can see and stop.**

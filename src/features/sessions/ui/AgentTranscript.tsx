@@ -122,7 +122,7 @@ import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
 import type { TranscriptLayout } from "../../settings/model/appearance";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { MonoWorkTicker } from "./MonoWorkTicker";
-import { WorkflowRunPanel } from "./WorkflowRunPanel";
+import { WorkflowRunPanel, type StopWorkflow } from "./WorkflowRunPanel";
 import { stopHarnessTask } from "../../../integrations/harness/core/registry";
 import { monoWorkStatus } from "../model/monoWorkStatus";
 import { isEmojiOnlyMessage } from "../model/emojiMessage";
@@ -298,7 +298,7 @@ type Props = {
    * Stops a workflow run, for a view of a session another window runs (the
    * floating chat). Without it, only the window running the session stops one.
    */
-  onStopWorkflow?: (taskId: string) => void;
+  onStopWorkflow?: StopWorkflow;
 };
 
 function AgentTranscriptComponent({
@@ -367,7 +367,7 @@ function AgentTranscriptComponent({
     () =>
       stopWorkflowElsewhere ??
       (harness && sessionId
-        ? (taskId: string) => void stopHarnessTask(harness, sessionId, taskId)
+        ? (taskId: string) => stopHarnessTask(harness, sessionId, taskId)
         : undefined),
     [stopWorkflowElsewhere, harness, sessionId],
   );
@@ -3570,7 +3570,7 @@ type MonoWorkApprovalsProps = Pick<
   "blocks" | "cwd" | "onApproval" | "onOpenFile" | "onOpenDiff"
 > & {
   live?: boolean;
-  onStopWorkflow?: (taskId: string) => void;
+  onStopWorkflow?: StopWorkflow;
 };
 
 /**
@@ -4034,7 +4034,7 @@ function SubagentStack({
   embedded?: boolean;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
-  onStopWorkflow?: (taskId: string) => void;
+  onStopWorkflow?: StopWorkflow;
 }) {
   return (
     <div className={`flex min-w-0 flex-col ${embedded ? "" : "px-4"}`}>
@@ -4073,7 +4073,7 @@ function SubagentRow({
   live?: boolean;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
-  onStopWorkflow?: (taskId: string) => void;
+  onStopWorkflow?: StopWorkflow;
 }) {
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? toolCallState(block) === "rejected";

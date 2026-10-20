@@ -374,12 +374,16 @@ fn take(
 
 /// The app's own file commands refuse the lock file. Closing any handle to a file drops this process's POSIX locks
 /// on it, and SQLite's lock is one, so opening, copying or replacing the file from inside the app would let a second
-/// copy in. Deleting or renaming it would do the same from any process.
+/// copy in. Deleting or renaming it would do the same from any process. A link to it is refused too: the name asked
+/// for and the file it resolves to are both checked.
 pub fn guard_lock_file(path: &Path) -> Result<(), String> {
-    let is_lock = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == LOCK_FILE || name == format!("{LOCK_FILE}-journal"));
+    let named_lock = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == LOCK_FILE || name == format!("{LOCK_FILE}-journal"))
+    };
+    let is_lock =
+        named_lock(path) || std::fs::canonicalize(path).is_ok_and(|real| named_lock(&real));
     if is_lock {
         Err(format!(
             "{} is MonoCode Hub's instance lock. The app won't open, copy, move or remove it.",
@@ -1290,6 +1294,27 @@ mod tests {
         ] {
             assert!(guard_lock_file(Path::new(fine)).is_ok(), "{fine}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_the_lock_file_is_refused_too() {
+        let dir = std::env::temp_dir().join(format!("monocode-lock-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(LOCK_FILE);
+        std::fs::write(&lock, b"").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        let link = dir.join("innocent.txt");
+        std::os::unix::fs::symlink(&lock, &link).unwrap();
+        let chained = dir.join("also-innocent.md");
+        std::os::unix::fs::symlink(&link, &chained).unwrap();
+        for path in [&link, &chained] {
+            let error = guard_lock_file(path).unwrap_err();
+            assert!(error.contains("instance lock"), "{error}");
+        }
+        assert!(guard_lock_file(&dir.join("notes.txt")).is_ok());
+        assert!(guard_lock_file(&dir.join("not-there-yet.txt")).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

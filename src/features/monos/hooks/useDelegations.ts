@@ -7,6 +7,7 @@ import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import {
+  bootUntilLoaded,
   DelegationTracker,
   tauriDelegations,
   type ChatBindInput,
@@ -14,8 +15,11 @@ import {
 } from "../model/delegations";
 import { isMonoSession, monoForSession } from "../model/mono";
 
-/** Boot recovery runs once per page load of the main window (React's dev double mount runs it once too). */
-let recovered = false;
+/**
+ * Boot recovery runs once per page load of the main window (React's dev double mount runs it once too): one attempt
+ * claims it, and a failed one hands it back for the next attempt.
+ */
+let recovery: "pending" | "running" | "done" = "pending";
 
 function isMainWindow(): boolean {
   try {
@@ -82,37 +86,45 @@ export function useDelegations(options: {
       }),
   );
 
-  const [loaded, setLoaded] = useState(false);
+  // Each finished boot attempt; the rows may have loaded on a later one (it is retried until they do).
+  const [attempts, setAttempts] = useState(0);
   useEffect(() => {
-    const recover = !recovered && isMainWindow();
-    if (recover) recovered = true;
     let live = true;
-    void tracker
-      .boot(recover)
-      .catch((error: unknown) => {
-        console.error("Delegation boot recovery failed", error);
-      })
-      .finally(() => {
-        if (live) setLoaded(true);
-      });
+    void bootUntilLoaded(tracker, {
+      live: () => live,
+      recover: () => {
+        if (recovery !== "pending" || !isMainWindow()) return false;
+        recovery = "running";
+        return true;
+      },
+      attempted: ({ recover, loaded }) => {
+        if (recover) recovery = loaded ? "done" : "pending";
+        if (live) setAttempts((count) => count + 1);
+      },
+    });
     return () => {
       live = false;
     };
   }, [tracker]);
 
-  // On every provider bind (a new chat, a rotated Mono chat), once the open rows are known so a worker says so.
+  // On every provider bind (a new chat, a rotated Mono chat), after the first boot attempt so a worker says so. A chat
+  // bound before the open rows loaded is bound once more when they do (the tracker sends only what changed).
   const bound = useRef(new Map<string, string>());
   const { sessions } = options;
   useEffect(() => {
-    if (!loaded) return;
+    if (!attempts) return;
+    const loaded = tracker.isLoaded();
     for (const session of sessions) {
       if (session.harness !== "claude" || !session.providerSessionId) continue;
-      if (bound.current.get(session.id) === session.providerSessionId) continue;
-      bound.current.set(session.id, session.providerSessionId);
+      const done = `${session.providerSessionId}\u0000loaded`;
+      const seen = loaded ? done : `${session.providerSessionId}\u0000early`;
+      const previous = bound.current.get(session.id);
+      if (previous === seen || previous === done) continue;
+      bound.current.set(session.id, seen);
       const binding = chatBinding(session, tracker.openRowFor(session.id)?.id);
       if (binding) tracker.bindChat(binding);
     }
-  }, [loaded, sessions, tracker]);
+  }, [attempts, sessions, tracker]);
 
   return tracker;
 }
