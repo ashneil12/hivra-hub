@@ -36,6 +36,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import {
+  briefCancelled,
   briefSentAt,
   briefWaiting,
   currentLeadBrief,
@@ -607,7 +608,9 @@ import {
   canDispatchQueuedHead,
   canSteerQueuedHead,
   dequeueQueuedMessage,
+  isWaitingBrief,
   queuedMessageForSubmit,
+  waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
@@ -2761,6 +2764,9 @@ function Workspace({
         const queueChanged =
           previouslyObserved?.queuedMessages !== session.queuedMessages ||
           previouslyObserved?.queueStatus !== session.queueStatus;
+        // A /goal is saved as it changes, mid-turn too: a restart must find the latest one (set, checked, ended).
+        const goalChanged =
+          !!previouslyObserved && previouslyObserved.goal !== session.goal;
         const parked = !visibleIds.has(session.id);
         const newlyBound =
           !!session.providerSessionId &&
@@ -2777,7 +2783,7 @@ function Workspace({
           lastPersistedUserBlock.current.set(session.id, lastUserId);
         }
         if (
-          (newlyBound || newUserTurn || queueChanged) &&
+          (newlyBound || newUserTurn || queueChanged || goalChanged) &&
           shouldPersistSession(session)
         ) {
           persistSession(session);
@@ -4916,6 +4922,7 @@ function Workspace({
           sessionWorkCwd(restored),
           restored.providerAccountId,
           restored.blocks,
+          restored.goal,
         );
       }
       lastPersisted.current.set(restored.id, persistFingerprint(restored));
@@ -7525,10 +7532,21 @@ function Workspace({
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
+      // Two go in ahead of what waits: the resume of a turn a restart cut (everything queued waited behind that turn),
+      // and Ash's own message to a chat whose app deliveries are held behind such a turn (messageQueue waitsOnCutTurn),
+      // so "send a message to carry on" works.
+      const aheadOfQueue =
+        !!options?.autoResume ||
+        (waitsOnCutTurn(current) &&
+          !options?.appRequestId &&
+          !options?.waitForIdle &&
+          !options?.monoCheck &&
+          !options?.managed &&
+          !options?.monoSessionCompletion);
       if (
         mono &&
         !options?.queuedMessageId &&
-        (current.busy || current.queuedMessages?.length)
+        (current.busy || (!!current.queuedMessages?.length && !aheadOfQueue))
       ) {
         const next = sessionsRef.current.map((session) =>
           session.id === sessionId
@@ -8172,6 +8190,15 @@ function Workspace({
       let nativeProposalText = "";
       let completedProposal: OrchestrationProposal | undefined;
       void (async () => {
+        // A brief that waited in the queue is saved as gone in before Claude reads it, so a crash in between can't
+        // bring it back from the saved queue and send it twice.
+        if (options?.queuedMessageId && options.appRequestId) {
+          const sent = sessionsRef.current.find(
+            (session) => session.id === sessionId,
+          );
+          if (sent && shouldPersistSession(sent))
+            await upsertSession(sent).catch(() => null);
+        }
         let workCwd = initialWorkCwd;
         if (createDraftWorktree) {
           const tree = await createWorktree(
@@ -9783,6 +9810,31 @@ function Workspace({
           ) {
             queueDispatchingRef.current.delete(session.id);
             return;
+          }
+          // A brief that waited is checked against its row first: one cancelled meanwhile (task_cancel, a cascade
+          // Stop) leaves the queue instead of going in, even when a restart brought it back from a queue saved before
+          // the cancel took it out.
+          if (isWaitingBrief(head) && !latest.busy) {
+            const requestId = head.appRequestId!;
+            const rows = await (tauriDelegations.followedInto?.(session.id, [requestId]) ?? Promise.resolve([])).catch(
+              () => [],
+            );
+            const now = sessionsRef.current.find((entry) => entry.id === session.id);
+            if (briefCancelled(rows, requestId)) {
+              setSessions((prev) =>
+                prev.map((entry) =>
+                  entry.id === session.id ? withoutQueuedBrief(entry, head) : entry,
+                ),
+              );
+              queueDispatchingRef.current.delete(session.id);
+              setQueueDispatchVersion((value) => value + 1);
+              return;
+            }
+            if (!now || now.queuedMessages?.[0]?.id !== head.id || !canDispatchQueuedHead(now)) {
+              queueDispatchingRef.current.delete(session.id);
+              setQueueDispatchVersion((value) => value + 1);
+              return;
+            }
           }
           const steering = latest.busy;
           if (steering)

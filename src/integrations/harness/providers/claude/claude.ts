@@ -6,6 +6,7 @@ import { sameProviderAccountId } from "../../../../features/providers/model/prov
 import type {
   CutWork,
   RuntimeMode,
+  SessionGoal,
   TaskListItem,
   TaskListMeta,
 } from "../../../../features/sessions/model/session";
@@ -79,7 +80,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { claudeRetryFromMessage } from "./claudeFailure";
-import { isDevCopy } from "../../../../app/model/appIdentity";
+import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
   GOAL_CLEAR,
@@ -88,6 +89,7 @@ import {
   goalOpen,
   goalView,
   nextGoal,
+  restoredGoal,
   type GoalTrack,
 } from "./claudeGoal";
 import {
@@ -321,6 +323,9 @@ const briefOwed = new Set<string>();
  * Mono's rotation, a dead conversation started again) has lost it, so the next turn sets it again.
  */
 const goalByThread = new Map<string, GoalTrack>();
+/** The goal each chat last finished in this process (met, cleared, stopped): a saved copy of it is never restored. */
+const goalEnded = new Map<string, string>();
+const goalKey = (goal: Pick<GoalTrack, "objective" | "setAt">) => `${goal.setAt}\u0000${goal.objective}`;
 
 let resolveClaudeBinaryImpl: () => Promise<{ path: string }> =
   resolveClaudeBinary;
@@ -519,13 +524,22 @@ export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
 }
 
 /**
+ * Whether this copy sends /goal at all. Not while Claude's hooks are off (the CLI refuses /goal then: "Done when" in
+ * the brief is all there is), which a dev copy always runs with (harness.rs keeps Ash's hooks out of it); the one
+ * exception is the fake-Claude bench, whose plan says its fake takes /goal (verify_live.rs `goals`).
+ */
+export function goalsAllowed(): boolean {
+  if (!loadClaudeHooks()) return false;
+  return !isDevCopy() || appIdentity()?.verify?.goals === true;
+}
+
+/**
  * The /goal this turn sets, if any: a MonoCode brief's "Done when: …", or the goal this chat had in a conversation it
- * no longer has (a rotation, a dead conversation started again). None while Claude's hooks are off (the CLI refuses
- * /goal then: "Done when" in the brief is all there is), which a dev copy always runs with (harness.rs keeps Ash's
- * hooks out of it), or for /compact.
+ * no longer has (a rotation, a dead conversation started again, a restart that found its transcript gone). None when
+ * this copy sends no /goal (goalsAllowed), or for /compact.
  */
 function goalToSet(live: Live, input: SendTurnInput): string | undefined {
-  if (live.manualCompaction || !loadClaudeHooks() || isDevCopy()) return undefined;
+  if (live.manualCompaction || !goalsAllowed()) return undefined;
   const fresh = goalFromBrief(input.text);
   if (fresh) return fresh;
   const carried = goalByThread.get(input.sessionId);
@@ -568,7 +582,10 @@ function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): 
   }
   live.goal = next;
   if (goalOpen(next)) goalByThread.set(sessionId, next);
-  else goalByThread.delete(sessionId);
+  else {
+    goalByThread.delete(sessionId);
+    if (next) goalEnded.set(sessionId, goalKey(next));
+  }
   const view = goalView(next);
   if (JSON.stringify(view) !== JSON.stringify(before)) live.onEvent({ type: "goal.updated", goal: view });
   if (stringField(rec, "type") !== "assistant") return false;
@@ -701,6 +718,17 @@ export function bindClaudeSession(
   if (tasksByThread.get(threadId)?.providerSessionId !== sessionId) {
     tasksByThread.delete(threadId);
   }
+}
+
+/**
+ * A restored chat's saved /goal (after a restart): the harness carries on with it. A resumed conversation still has it
+ * in Claude Code, so nothing is sent and its checks go on from the saved count; a fresh one (the transcript was gone,
+ * a rotation) gets `/goal` once with its next turn (goalToSet). A goal this process already follows wins.
+ */
+export function restoreClaudeGoal(threadId: string, goal: SessionGoal): void {
+  if (!threadId || goalByThread.has(threadId) || liveByThread.get(threadId)?.goal) return;
+  const restored = restoredGoal(goal);
+  if (restored && goalEnded.get(threadId) !== goalKey(restored)) goalByThread.set(threadId, restored);
 }
 
 /**
@@ -2600,4 +2628,5 @@ export function __claudeTestReset(): void {
   cancelledThreads.clear();
   briefOwed.clear();
   goalByThread.clear();
+  goalEnded.clear();
 }

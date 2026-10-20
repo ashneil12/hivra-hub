@@ -44,6 +44,10 @@ pub struct Plan {
     pub claude_binary: Option<String>,
     #[serde(default)]
     pub auto_resume: bool,
+    /// Let this dev copy send `/goal` (a dev copy never does: it runs Claude with hooks off, and the real CLI refuses
+    /// it then). Only with `claudeBinary`, so only ever to the fake Claude, which keeps a goal the way 2.1.302 does.
+    #[serde(default)]
+    pub goals: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kickoff: Option<Kickoff>,
 }
@@ -72,6 +76,11 @@ pub fn parse(text: &str) -> Result<Plan, String> {
                 "verify plan: claudeBinary must be an absolute path to a file named claude".into(),
             );
         }
+    }
+    if plan.goals && plan.claude_binary.is_none() {
+        return Err(
+            "verify plan: goals needs claudeBinary (only the fake Claude gets /goal)".into(),
+        );
     }
     if let Some(kickoff) = &plan.kickoff {
         if !Path::new(&kickoff.project).is_absolute() || !Path::new(&kickoff.project).is_dir() {
@@ -139,10 +148,14 @@ pub fn plan() -> Option<&'static Plan> {
 
 /// The plan as the window sees it (`window.__MONOCODE_APP__.verify`).
 pub fn window_info(plan: &Plan) -> Value {
-    serde_json::json!({
+    let mut info = serde_json::json!({
         "runId": plan.run_id,
         "kickoff": plan.kickoff,
-    })
+    });
+    if plan.goals {
+        info["goals"] = Value::Bool(true);
+    }
+    info
 }
 
 #[cfg(test)]
@@ -179,6 +192,13 @@ mod tests {
         );
         let plan = parse(&good).unwrap();
         assert!(plan.auto_resume);
+        assert!(!plan.goals);
+        assert!(window_info(&plan).get("goals").is_none());
+        let goals =
+            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","goals":true}"#)
+                .unwrap();
+        assert!(goals.goals);
+        assert_eq!(window_info(&goals)["goals"], true);
         assert_eq!(plan.kickoff.as_ref().unwrap().mono_name, "Verify Lead");
         assert_eq!(window_info(&plan)["runId"], "20261019-a1");
         assert_eq!(plan.kickoff.as_ref().unwrap().mono_id, None);
@@ -220,6 +240,7 @@ mod tests {
                 format!(r#"{{"version":1,"runId":"a","kickoff":{{"project":"{project}","monoName":"x","prompt":"y","monoId":"no such/id"}}}}"#),
                 "monoId",
             ),
+            (r#"{"version":1,"runId":"a","goals":true}"#.to_string(), "goals"),
             (r#"{"version":1,"runId":"a","extra":1}"#.to_string(), "unknown field"),
         ];
         for (text, expected) in cases {

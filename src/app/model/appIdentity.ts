@@ -36,6 +36,8 @@ export type VerifyPlan = {
   runId: string;
   /** monoId: open that existing Mono (a built-in team Mono) once it works on project, instead of making a new one. */
   kickoff?: { project: string; monoName: string; prompt: string; monoId?: string };
+  /** The bench's fake Claude takes /goal (a dev copy otherwise never sends it: claude.ts goalsAllowed). */
+  goals?: boolean;
 };
 
 export type AppIdentity = {
@@ -55,6 +57,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
   const kickoff = value.kickoff;
   return {
     runId: value.runId,
+    ...(value.goals === true ? { goals: true } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

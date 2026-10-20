@@ -1,6 +1,7 @@
 import type {
   Block,
   HarnessId,
+  SessionGoal,
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
@@ -99,6 +100,8 @@ export type HarnessAdapter = {
   ): void;
   /** Seed provider task state from a restored session's persisted panels. */
   restoreTaskLists?(threadId: string, lists: TaskListMeta[]): void;
+  /** Carry on with a restored session's saved goal (Claude Code's /goal). */
+  restoreGoal?(threadId: string, goal: SessionGoal): void;
   /** Refresh the model catalog overlay when supported. */
   refreshCatalog?(): Promise<void>;
   /** Optional LLM tab title for the first turn. */
@@ -477,9 +480,12 @@ export function bindHarnessSession(
   providerAccountId?: string,
   /** Restored transcript, so the adapter can reseed its task state. */
   blocks?: Block[],
+  /** The chat's saved /goal, so a restart carries on with it. */
+  goal?: SessionGoal,
 ): void {
   const adapter = getHarness(harness);
   adapter?.bindSession(threadId, providerSessionId, cwd, providerAccountId);
+  if (goal) adapter?.restoreGoal?.(threadId, goal);
   if (!blocks || !adapter?.restoreTaskLists) return;
   const lists = blocks.flatMap((block) =>
     block.role === "tasks" && block.taskList ? [block.taskList] : [],

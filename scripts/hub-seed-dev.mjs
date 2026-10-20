@@ -16,8 +16,8 @@
 //    is ever written back to it.
 // 4. In the copy only, clear what would make a dev copy act on Ash's behalf or resume his real Claude transcripts:
 //    in-flight turns, queued messages, the open-tab snapshot, pending worktree removals, automations and their runs,
-//    reminders, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, and every
-//    provider_session_id.
+//    reminders, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, every chat's
+//    open /goal, and every provider_session_id.
 // 5. Check the copy's integrity, move it into place, and record what was done in seeded.json beside it.
 //
 // Only monocode.db is copied: not monos/ (habits), not checkpoints, not the Keychain (a dev copy uses its own names).
@@ -148,6 +148,12 @@ export function scrub(db) {
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");
     }
     if (hasColumn(db, "sessions", "queue_status")) db.exec("UPDATE sessions SET queue_status = NULL");
+    // A chat's open /goal (session_store.rs goal_json) belongs to Ash's real Claude conversations; a dev copy never sends
+    // one, and must not show or carry on with his.
+    if (hasColumn(db, "sessions", "goal_json")) {
+      cleared.goals = count(db, "SELECT count(*) FROM sessions WHERE goal_json IS NOT NULL");
+      db.exec("UPDATE sessions SET goal_json = NULL");
+    }
     if (hasColumn(db, "sessions", "provider_session_id")) {
       cleared.providerSessionIds = count(db, "SELECT count(*) FROM sessions WHERE provider_session_id IS NOT NULL");
       db.exec("UPDATE sessions SET provider_session_id = NULL");

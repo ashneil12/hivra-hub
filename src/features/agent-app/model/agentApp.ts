@@ -1138,8 +1138,12 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, input);
   checkerLane(source, action, host);
-  if (action.startsWith("tasks."))
+  if (action.startsWith("tasks.")) {
+    // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
+    // a Mono briefed right after a launch was told "claude is not available").
+    if (action === "tasks.delegate" && input.lead === undefined) await harnessesProbed();
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
+  }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);

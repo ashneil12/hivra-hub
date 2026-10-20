@@ -40,6 +40,7 @@ import type {
   RuntimeMode,
   SecondOpinionMeta,
   Session,
+  SessionGoal,
   TaskListMeta,
   PlanBlockMeta,
   QueuedMessage,
@@ -47,6 +48,7 @@ import type {
   TurnModel,
   TurnMetrics,
 } from "../model/session";
+import { restoredQueue } from "../model/messageQueue";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
 import type { InFlightRef } from "../model/inFlight";
@@ -104,6 +106,9 @@ type SessionRecord = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem | null;
   automationId?: string | null;
+  /** The open /goal saved with the chat (session_store.rs `goal_json`). */
+  goal?: unknown;
+  archived?: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -129,6 +134,7 @@ type SessionUpsertPayload = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
+  goal?: SessionGoal;
 };
 
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
@@ -188,6 +194,33 @@ function persistableMeta(
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(session.automationId && isPersistableId(session.automationId)
       ? { automationId: session.automationId }
+      : {}),
+    // Only a goal still open is saved; a met, cleared or stopped one is dropped from the row, so it never comes back.
+    ...(openGoal(session.goal) ? { goal: openGoal(session.goal) } : {}),
+  };
+}
+
+/**
+ * Claude Code's /goal as the chat saves and restores it: one still open (active or paused), well formed and bounded,
+ * or nothing.
+ */
+export function openGoal(value: unknown): SessionGoal | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const goal = value as Record<string, unknown>;
+  const objective = typeof goal.objective === "string" ? goal.objective.trim().slice(0, 1_000) : "";
+  if (!objective || (goal.status !== "active" && goal.status !== "paused")) return undefined;
+  const checks = typeof goal.checks === "number" && Number.isFinite(goal.checks) ? Math.max(0, Math.floor(goal.checks)) : 0;
+  const setAt = typeof goal.setAt === "number" && Number.isFinite(goal.setAt) ? goal.setAt : 0;
+  return {
+    objective,
+    checks,
+    status: goal.status,
+    setAt,
+    ...(typeof goal.lastCheck === "string" && goal.lastCheck.trim()
+      ? { lastCheck: goal.lastCheck.slice(0, 1_000) }
+      : {}),
+    ...(typeof goal.providerSessionId === "string" && isPersistableId(goal.providerSessionId)
+      ? { providerSessionId: goal.providerSessionId }
       : {}),
   };
 }
@@ -1557,6 +1590,7 @@ function recordToSession(record: SessionRecord): Session {
     : [];
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
+  const goal = openGoal(record.goal);
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
@@ -1570,10 +1604,14 @@ function recordToSession(record: SessionRecord): Session {
     runtimeMode: asRuntimeMode(record.runtimeMode),
     title: record.title,
     blocks,
-    // A restart interrupted the active turn. Let the user resume pending work.
-    ...(queuedMessages.length
-      ? { queuedMessages, queueStatus: "paused" as const }
-      : {}),
+    // A restart interrupted the active turn: Ash resumes his own pending messages; what the app queued (briefs other
+    // chats sent, a Mono's reports) goes in by itself once the chat is idle again (messageQueue.restoredQueue).
+    ...restoredQueue(queuedMessages, blocks, {
+      status: record.queueStatus,
+      archived: record.archived === true,
+    }),
+    // Its /goal, if one was still open: the Goal row is back, and the harness carries on with it once bound.
+    ...(goal ? { goal } : {}),
     ...(record.monoTranscript ? { monoTranscript: record.monoTranscript } : {}),
     busy: false,
     orchestrationLeadId:

@@ -109,6 +109,7 @@ fn add_session(
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            goal: None,
         },
     )
     .unwrap();

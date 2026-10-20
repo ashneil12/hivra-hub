@@ -135,10 +135,27 @@ export function goalView(goal: GoalTrack | null): SessionGoal | null {
     status: goal.status,
     setAt: goal.setAt,
     ...(goal.lastCheck ? { lastCheck: goal.lastCheck } : {}),
+    ...(goal.providerSessionId ? { providerSessionId: goal.providerSessionId } : {}),
+  };
+}
+
+/**
+ * A goal the chat had saved, as the harness picks it back up after a restart: only one still open. Its conversation
+ * decides the rest: resumed, Claude Code still has it (checks go on from the saved count); fresh, MonoCode sets it again.
+ */
+export function restoredGoal(goal: SessionGoal | null | undefined): GoalTrack | null {
+  if (!goal || !goalOpen(goal) || !goal.objective.trim()) return null;
+  return {
+    objective: goal.objective,
+    checks: Math.max(0, goal.checks),
+    status: goal.status,
+    setAt: goal.setAt,
+    ...(goal.lastCheck ? { lastCheck: goal.lastCheck } : {}),
+    ...(goal.providerSessionId ? { providerSessionId: goal.providerSessionId } : {}),
   };
 }
 
 /** The goal still asks Claude to keep going. */
-export function goalOpen(goal: GoalTrack | null | undefined): goal is GoalTrack {
+export function goalOpen<T extends SessionGoal>(goal: T | null | undefined): goal is T {
   return !!goal && (goal.status === "active" || goal.status === "paused");
 }

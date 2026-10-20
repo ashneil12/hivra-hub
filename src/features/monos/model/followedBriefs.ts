@@ -87,6 +87,15 @@ export function queueBriefForIdle(
   };
 }
 
+/**
+ * A waiting brief whose followed row was cancelled meanwhile (task_cancel, a cascade Stop): it must never go in, even
+ * when the queue that still held it was saved before the cancel took it out (a crash, a restart). `rows` are the rows
+ * sent into the brief's chat (delegations.rs `followed_into`).
+ */
+export function briefCancelled(rows: readonly Pick<Delegation, "requestId" | "state">[], requestId: string): boolean {
+  return rows.some((row) => row.requestId === requestId && row.state === "cancelled");
+}
+
 /** Take a queued brief back out of a chat: the queue row, and a Mono's pending bubble for it. */
 export function withoutQueuedBrief(chat: Session, message: QueuedMessage): Session {
   const next = dequeueQueuedMessage(chat, message.id);

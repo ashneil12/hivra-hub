@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseTranscript, transcriptTurns } from "./claude-fixtures.mjs";
-import { FAKE_VERSION, fillTemplate, noConversationFrame, parseCliArgs, pickRule, promptPayload } from "./fake-claude.mjs";
+import { FAKE_VERSION, fillTemplate, goalCommand, noConversationFrame, parseCliArgs, pickRule, promptPayload } from "./fake-claude.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(HERE, "fake-claude.mjs");
@@ -186,6 +186,59 @@ test("resumes a conversation it has, and answers a missing one exactly like Clau
   assert.deepEqual(frame.errors, ["No conversation found with session ID: gone"]);
   assert.match(dead.stderr(), /No conversation found with session ID: gone/);
   assert.deepEqual(noConversationFrame("x").errors, ["No conversation found with session ID: x"]);
+});
+
+test("/goal like Claude Code 2.1.302: kept by --resume, gone in a fresh conversation, checked and met by steps", async () => {
+  assert.deepEqual(goalCommand("/goal the tests pass"), { kind: "set", condition: "the tests pass" });
+  assert.deepEqual(goalCommand("/goal"), { kind: "status" });
+  assert.deepEqual(goalCommand(" /goal clear "), { kind: "clear" });
+  assert.equal(goalCommand("please /goal x"), null);
+  const dir = scratch();
+  const scenario = rules(dir, [
+    { name: "goal", match: "^/goal GOAL-1", times: 1, steps: [{ say: "On it." }, { goalCheck: "no GOAL-DONE yet" }, { say: "Still on it." }] },
+    { name: "done", match: "finish", steps: [{ goalCheck: "nearly" }, { say: "GOAL-DONE" }, { goalMet: true }] },
+  ]);
+  const env = { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: scenario };
+  const synth = (fake, text) => fake.frames.some((f) => f.type === "assistant" && f.message.model === "<synthetic>" && f.message.content[0].text === text);
+  const feedback = (fake) =>
+    fake.frames.filter((f) => f.type === "user" && f.isSynthetic).map((f) => f.message.content[0].text);
+
+  const first = start(["--session-id", "g1"], env);
+  await first.initialize();
+  first.prompt("/goal GOAL-1 the transcript says GOAL-DONE");
+  await first.until((f) => f.type === "result", "goal result");
+  assert.ok(synth(first, "Goal set: GOAL-1 the transcript says GOAL-DONE"));
+  assert.deepEqual(feedback(first), ["Stop hook feedback:\n[GOAL-1 the transcript says GOAL-DONE]: no GOAL-DONE yet"]);
+  first.child.stdin.end();
+  await first.exited;
+
+  // --resume keeps it: the status query says so, and a step checks it, then meets it.
+  const resumed = start(["--resume", "g1"], env);
+  await resumed.initialize();
+  resumed.prompt("/goal");
+  await resumed.until((f) => f.type === "result", "status");
+  assert.ok(synth(resumed, "Goal active: GOAL-1 the transcript says GOAL-DONE (not yet evaluated)"));
+  resumed.prompt("finish");
+  await resumed.until((f) => f.type === "result" && f.result === "GOAL-DONE", "met");
+  assert.equal(feedback(resumed).length, 1);
+  resumed.prompt("/goal");
+  await resumed.until((f) => f.type === "result" && f.result === "No goal set", "cleared by the passing check");
+  resumed.child.stdin.end();
+  await resumed.exited;
+
+  // A fresh conversation never had it; a /goal with no rule just sets it.
+  const fresh = start(["--session-id", "g2"], env);
+  await fresh.initialize();
+  fresh.prompt("/goal");
+  await fresh.until((f) => f.type === "result" && f.result === "No goal set", "fresh status");
+  fresh.prompt("/goal OTHER");
+  await fresh.until((f) => f.type === "result" && f.result === "Goal set: OTHER", "set without a rule");
+  fresh.prompt("/goal clear");
+  await fresh.until((f) => f.type === "result" && f.result === "Goal cleared: OTHER", "clear");
+  fresh.child.stdin.end();
+  await fresh.exited;
+  const prompts = fs.readFileSync(path.join(dir, "prompts.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(prompts.filter((p) => p.prompt.startsWith("/goal GOAL-1")).length, 1);
 });
 
 test("makes `monocode app` calls over the app's endpoint with the turn's token", async () => {

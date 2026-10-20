@@ -19,6 +19,15 @@
 //   8. the Lead delegates another worker for the same brief, and Chief of Staff cancels its brief (task_cancel): the
 //      worker beneath the Lead is stopped, both rows end cancelled with their reports dropped, and the Lead's own
 //      long-running chat is not stopped for it.
+//   Then restarts, on a third plan whose fake Claude takes /goal (verify_live.rs `goals`): Chief of Staff starts two
+//   workers with a finish line (delegate_task `goal`), briefs the Verify lead, queues two more briefs behind the Lead's
+//   work and one behind worker A's, and cancels one of the Lead's waiting briefs; the app is killed with all of them
+//   busy, and worker B's transcript is deleted meanwhile:
+//   9. each /goal survives: A's resumed conversation keeps it (not sent again, its checks go on from the stored count),
+//      B's fresh conversation gets it again exactly once; both end met and stay cleared;
+//   10. the briefs that waited go in by themselves once their chat's resumed turn is over, each once, in order;
+//   11. the brief cancelled while it waited in the busy Lead's queue stays out, and the Lead was never stopped for it;
+//   12. one more restart repeats nothing: no brief twice, no /goal again, no goal back.
 //
 // Every run leaves evidence/<run>/: verdict.json, the fake's event stream and prompts, each launch's log, and a copy
 // of the dev copy's database. `-- --fail-gate` plants a failure (the fake worker leaves no background work and has no
@@ -59,6 +68,10 @@ export const WALK = [
   "crash_loop_capped",
   "question_routed",
   "cascade_stop",
+  "goal_survives_restart",
+  "queued_brief_after_restart",
+  "cancelled_brief_stays_out",
+  "nothing_repeats_after_restart",
 ];
 
 /** Thrown between phases when the negative control has already caught its failure: no more launches needed. */
@@ -78,6 +91,14 @@ export const ASKER = "VERIFY-ASKER";
 export const HELPER = "VERIFY-TREE-HELPER";
 export const QUESTION = "Which colour should the verify widget be?";
 export const PICK = "Green";
+/** Restart durability (checks 9 to 12): the third plan's kickoff, two goal workers, the briefs that wait. */
+export const DURABLE_KICKOFF = "VERIFY-DURABLE-KICKOFF";
+export const GOAL_A_WORKER = "VERIFY-GOAL-A-WORKER";
+export const GOAL_B_WORKER = "VERIFY-GOAL-B-WORKER";
+export const QUEUED_A = "VERIFY-QUEUED-A";
+export const LEAD_BRIEF = (n) => `VERIFY-LEAD-BRIEF-${n}`;
+/** A worker's finish line: what the brief's "Done when" says, and so what MonoCode sends as `/goal`. */
+export const goalFor = (worker, runId) => `${worker.replace("-WORKER", "")} run ${runId}: the transcript says ${worker.replace("VERIFY-", "").replace("-WORKER", "")}-DONE`;
 /** An app notification as the turn's own message: first in the prompt, or right after the Mono's context block. */
 export const said = (prefix) => `(?:^|</monocode_context>\\s*)${prefix}`;
 
@@ -222,7 +243,117 @@ export function scenario({ runId, failGate = false }) {
       steps: [{ say: "On it." }, { mark: "helper-started" }, { waitFile: "never" }],
     },
   ];
+  // Restart durability. The goal workers' /goal prompts are exactly "/goal <goal>"; A's conversation survives the
+  // restart, B's is deleted while the app is down, so B comes back in a fresh conversation from its chat's brief.
+  const goalA = goalFor(GOAL_A_WORKER, runId);
+  const goalB = goalFor(GOAL_B_WORKER, runId);
+  const goalPrompt = (goal) => `^/goal ${goal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
+  const durable = [
+    {
+      name: "durable-cos-kickoff",
+      match: said(DURABLE_KICKOFF),
+      setTag: "durable-cos",
+      times: 1,
+      steps: [
+        { say: "Two workers with a finish line, then briefs for the Verify lead." },
+        {
+          app: "tasks.delegate",
+          input: { title: "Goal A", project: TREE_PROJECT.id, brief: `${GOAL_A_WORKER} run ${runId}: work until the goal is met.`, goal: goalA },
+          save: "goal-a",
+        },
+        {
+          app: "tasks.delegate",
+          input: { title: "Goal B", project: TREE_PROJECT.id, brief: `${GOAL_B_WORKER} run ${runId}: work until the goal is met.`, goal: goalB },
+          save: "goal-b",
+        },
+        { app: "tasks.delegate", input: { lead: TREE_LEAD, title: "Lead brief 1", brief: `${LEAD_BRIEF(1)} run ${runId}: hold on to this one.` }, save: "lead-1" },
+        { mark: "durable-started" },
+        // The walk opens this once both goals are stored and the Lead is busy on brief 1.
+        { waitFile: "durable-queue", timeoutMs: 300_000 },
+        { app: "tasks.delegate", input: { lead: TREE_LEAD, title: "Lead brief 2", brief: `${LEAD_BRIEF(2)} run ${runId}: cancelled before it starts.` }, save: "lead-2" },
+        { app: "tasks.delegate", input: { lead: TREE_LEAD, title: "Lead brief 3", brief: `${LEAD_BRIEF(3)} run ${runId}: after brief 1.` }, save: "lead-3" },
+        {
+          app: "sessions.send",
+          input: {
+            sessionId: "{{saved.goal-a.response.result.childSessionId}}",
+            // Chief of Staff works on several projects: it names the worker's.
+            project: "{{saved.goal-a.response.result.cwd}}",
+            prompt: `${QUEUED_A} run ${runId}: one more thing after your goal.`,
+            notifyOnComplete: true,
+          },
+          save: "queued-a",
+        },
+        { mark: "durable-queued" },
+        { waitFile: "durable-cancel", timeoutMs: 300_000 },
+        { app: "tasks.cancel", input: { taskId: "{{saved.lead-2.response.result.taskId}}", reason: "Verify: not needed after all." }, save: "cancel-2" },
+        { mark: "durable-cancelled" },
+        { say: "Queued what I could; cancelled brief 2." },
+      ],
+    },
+    { name: "durable-cos-report", tag: "durable-cos", match: said("\\[MonoCode report\\]"), steps: [{ say: "Noted." }] },
+    // Worker A: the brief's turn, then its /goal turn, which is still going when the app dies.
+    { name: "durable-goal-a", match: brief(GOAL_A_WORKER), setTag: "goal-a", times: 1, steps: [{ say: "Starting on A." }] },
+    {
+      name: "durable-goal-a-set",
+      tag: "goal-a",
+      match: goalPrompt(goalA),
+      times: 1,
+      steps: [{ say: "Working toward A." }, { goalCheck: "no GOAL-A-DONE in the transcript yet" }, { mark: "goal-a-set" }, { waitFile: "never" }],
+    },
+    { name: "durable-queued-a", tag: "goal-a", match: said(QUEUED_A), steps: [{ mark: "queued-a-delivered" }, { say: "QUEUED-A-DONE" }] },
+    {
+      name: "durable-goal-a-resume",
+      tag: "goal-a",
+      match: CONTINUE,
+      steps: [
+        { goalCheck: "still no GOAL-A-DONE" },
+        { mark: "goal-a-resumed" },
+        { waitFile: "goal-a-finish", timeoutMs: 120_000 },
+        { say: "GOAL-A-DONE" },
+        { goalMet: true },
+      ],
+    },
+    { name: "durable-goal-a-again", match: goalPrompt(goalA), steps: [{ mark: "goal-a-sent-again" }, { say: "Again?" }] },
+    // Worker B: the same, but its transcript is gone after the restart.
+    { name: "durable-goal-b", match: brief(GOAL_B_WORKER), setTag: "goal-b", times: 1, steps: [{ say: "Starting on B." }] },
+    {
+      name: "durable-goal-b-set",
+      match: goalPrompt(goalB),
+      times: 1,
+      steps: [{ say: "Working toward B." }, { goalCheck: "no GOAL-B-DONE in the transcript yet" }, { mark: "goal-b-set" }, { waitFile: "never" }],
+    },
+    {
+      name: "durable-goal-b-recovered",
+      match: `<chat_brief>[\\s\\S]*${GOAL_B_WORKER}`,
+      setTag: "goal-b",
+      steps: [{ mark: "goal-b-recovered" }, { say: "Picking B up again." }],
+    },
+    {
+      name: "durable-goal-b-reset",
+      match: goalPrompt(goalB),
+      steps: [
+        { goalCheck: "nearly: no GOAL-B-DONE yet" },
+        { mark: "goal-b-reset" },
+        { waitFile: "goal-b-finish", timeoutMs: 120_000 },
+        { say: "GOAL-B-DONE" },
+        { goalMet: true },
+      ],
+    },
+    // The Verify lead: busy on brief 1 when the app dies; briefs 2 and 3 wait behind it, and 2 is cancelled there.
+    {
+      name: "durable-lead-1",
+      match: brief(LEAD_BRIEF(1)),
+      setTag: "durable-lead",
+      times: 1,
+      steps: [{ say: "Holding brief 1." }, { mark: "durable-lead-busy" }, { waitFile: "never" }],
+    },
+    { name: "durable-lead-2", match: brief(LEAD_BRIEF(2)), steps: [{ mark: "durable-lead-2-delivered" }, { say: "BRIEF-2-DONE" }] },
+    { name: "durable-lead-3", match: brief(LEAD_BRIEF(3)), steps: [{ mark: "durable-lead-3-delivered" }, { say: "BRIEF-3-DONE" }] },
+    // Its resume comes last: a brief that waited behind it is a prompt of its own.
+    { name: "durable-lead-resume", tag: "durable-lead", match: CONTINUE, steps: [{ mark: "durable-lead-resumed" }, { say: "BRIEF-1-DONE" }] },
+  ];
   const rules = [
+    ...durable,
     ...tree,
     // The Lead after its transcript was lost: a fresh conversation whose first prompt carries the chat's brief.
     { name: "lead-recovered", match: "<chat_brief>", setTag: "lead", steps: [{ mark: "lead-recovered" }, { waitFile: "never" }] },
@@ -1063,6 +1194,255 @@ async function main() {
           late,
         }),
       );
+
+    phase();
+    // 9 to 12. Restarts. A third plan whose fake Claude takes /goal; the kickoff goes to Chief of Staff again.
+    await kill("for the durability plan");
+    const durablePlan = {
+      ...plan,
+      runId: `${id}-durable`,
+      goals: true,
+      kickoff: {
+        project,
+        monoName: "Chief of Staff",
+        monoId: TEAM_MONO,
+        prompt: `${DURABLE_KICKOFF} run ${id}: start the goal workers and brief the Verify lead.`,
+      },
+    };
+    fs.writeFileSync(planFile, `${JSON.stringify(durablePlan, null, 2)}\n`);
+    fs.writeFileSync(path.join(evidence, "plan-durable.json"), `${JSON.stringify(durablePlan, null, 2)}\n`);
+    await launch();
+
+    /** A chat's stored /goal (sessions.goal_json) and conversation; goal null when none is stored. */
+    const storedGoal = async (sessionId) => {
+      const row = sessionId
+        ? (await query(db, "SELECT goal_json AS g, provider_session_id AS p FROM sessions WHERE id = ?", sessionId))[0]
+        : undefined;
+      if (!row) return null;
+      let goal = null;
+      try {
+        goal = row.g ? JSON.parse(row.g) : null;
+      } catch {
+        goal = null;
+      }
+      return { goal, provider: row.p ?? null };
+    };
+    const queueOf = async (sessionId) => {
+      const raw = sessionId ? (await query(db, "SELECT queued_messages_json AS q, queue_status AS s FROM sessions WHERE id = ?", sessionId))[0] : null;
+      try {
+        return { messages: raw?.q ? JSON.parse(raw.q) : [], status: raw?.s ?? null };
+      } catch {
+        return { messages: [], status: raw?.s ?? null };
+      }
+    };
+    const rulesIn = (conversation) => prompts().filter((entry) => entry.conversation === conversation).map((entry) => entry.rule);
+    const fired = (rule) => prompts().filter((entry) => entry.rule === rule).length;
+    const goalPrompts = (goal) => prompts().filter((entry) => entry.prompt === `/goal ${goal}`);
+    const requestOf = async (taskId) =>
+      taskId ? ((await query(db, "SELECT request_id AS r FROM delegations WHERE id = ?", taskId))[0]?.r ?? null) : null;
+    const goalA = goalFor(GOAL_A_WORKER, id);
+    const goalB = goalFor(GOAL_B_WORKER, id);
+
+    const durableStarted = await waitMark("durable-started", 120_000);
+    const taskA = savedCall("goal-a")?.response?.result;
+    const taskB = savedCall("goal-b")?.response?.result;
+    const lead1 = savedCall("lead-1")?.response?.result;
+    const chatA = taskA?.childSessionId;
+    const chatB = taskB?.childSessionId;
+    const durableLead = lead1?.childSessionId;
+    const setA = await waitMark("goal-a-set", 60_000);
+    const setB = await waitMark("goal-b-set", 60_000);
+    const leadBusy1 = await waitMark("durable-lead-busy", 60_000);
+    // The finish line is stored with the chat while it works: set, and its first check counted.
+    const storedOpen = (sessionId, conversation, checks) =>
+      until(async () => {
+        const stored = await storedGoal(sessionId);
+        return stored?.goal?.status === "active" && stored.goal.checks === checks && stored.goal.providerSessionId === conversation ? stored : null;
+      }, scale(20_000));
+    const beforeA = setA ? await storedOpen(chatA, setA.conversation, 1) : null;
+    const beforeB = setB ? await storedOpen(chatB, setB.conversation, 1) : null;
+    open("durable-queue");
+    const durableQueued = await waitMark("durable-queued", 60_000);
+    const lead2 = savedCall("lead-2")?.response?.result;
+    const lead3 = savedCall("lead-3")?.response?.result;
+    const sendA = savedCall("queued-a")?.response?.result;
+    open("durable-cancel");
+    const cancelledMark = await waitMark("durable-cancelled", 60_000);
+    const cancel2 = savedCall("cancel-2")?.response;
+    const lead2Row = () => rowById(lead2?.taskId);
+    const waitingBefore = await until(async () => {
+      const lead = await queueOf(durableLead);
+      const worker = await queueOf(chatA);
+      const has = (queue, requestId) => !!requestId && queue.messages.some((message) => message.appRequestId === requestId);
+      const rows = { two: await lead2Row(), three: await rowById(lead3?.taskId) };
+      return rows.two?.state === "cancelled" &&
+        !has(lead, await requestOf(lead2?.taskId)) &&
+        rows.three &&
+        has(lead, await requestOf(lead3?.taskId)) &&
+        worker.messages.some((message) => message.waitForIdle && String(message.text).startsWith(QUEUED_A))
+        ? { lead: lead.messages.map((m) => m.appRequestId), worker: worker.messages.map((m) => m.appRequestId), rows }
+        : null;
+    }, scale(15_000));
+    const leadConversation1 = leadBusy1?.conversation;
+    const leadStoppedForCancel = interruptedIn(leadConversation1);
+    // Chief of Staff's own turn ends first, so only the three busy chats are cut.
+    const cosChat = (await rowById(lead1?.taskId))?.owner_session;
+    await until(async () => (cosChat && !(await inFlight()).some((entry) => entry.session_id === cosChat) ? true : null), scale(10_000));
+    const busyAtKill = (await inFlight()).map((entry) => entry.session_id);
+    await kill("goal workers and the Lead busy, briefs waiting");
+    if (setB?.conversation) fs.rmSync(path.join(fake, "conversations", `${setB.conversation}.json`), { force: true });
+    await launch();
+
+    // A: the same conversation, still holding its goal; nothing is sent again and the checks go on from the stored one.
+    const resumedA = await waitMark("goal-a-resumed", 90_000);
+    const duringA = resumedA ? await storedOpen(chatA, setA?.conversation, 2) : null;
+    open("goal-a-finish");
+    // B: a fresh conversation from its brief, and its /goal once more in it, with the checks it had.
+    const recoveredB = await waitMark("goal-b-recovered", 90_000);
+    const resetB = await waitMark("goal-b-reset", 60_000);
+    const duringB = resetB ? await storedOpen(chatB, resetB.conversation, 2) : null;
+    open("goal-b-finish");
+    const clearedA = await until(async () => ((await storedGoal(chatA))?.goal === null ? true : null), scale(20_000));
+    const clearedB = await until(async () => ((await storedGoal(chatB))?.goal === null ? true : null), scale(20_000));
+    const goalEvidence = {
+      before: { a: beforeA?.goal ?? null, b: beforeB?.goal ?? null },
+      afterRestart: { a: duringA?.goal ?? null, b: duringB?.goal ?? null },
+      cleared: { a: !!clearedA, b: !!clearedB },
+      goalPrompts: { a: goalPrompts(goalA).map((p) => p.conversation), b: goalPrompts(goalB).map((p) => p.conversation) },
+      conversations: { a: setA?.conversation, b: [setB?.conversation, recoveredB?.conversation] },
+      busyAtKill,
+    };
+    if (
+      beforeA &&
+      beforeB &&
+      resumedA?.resumed &&
+      resumedA.conversation === setA.conversation &&
+      duringA &&
+      goalPrompts(goalA).length === 1 &&
+      recoveredB &&
+      recoveredB.conversation !== setB.conversation &&
+      resetB?.conversation === recoveredB.conversation &&
+      duringB &&
+      goalPrompts(goalB).length === 2 &&
+      goalPrompts(goalB)[1].conversation === recoveredB.conversation &&
+      clearedA &&
+      clearedB
+    )
+      pass(
+        "goal_survives_restart",
+        "A chat's /goal survives a restart: kept by a resumed conversation, set again once in a fresh one, then cleared when met",
+        `stored before the kill: A ${beforeA.goal.checks} check, B ${beforeB.goal.checks}; A resumed ${resumedA.conversation} with its goal (no /goal sent again, checks ${duringA.goal.checks}); B's transcript was gone, fresh conversation ${recoveredB.conversation} got /goal once (checks carried: ${duringB.goal.checks}); both met and cleared`,
+        { evidence: goalEvidence },
+      );
+    else fail("goal_survives_restart", "A chat's /goal survives a restart: kept by a resumed conversation, set again once in a fresh one, then cleared when met", JSON.stringify(goalEvidence));
+
+    // 10. The briefs that waited go in once each chat's resumed turn is over.
+    const deliveredA = await waitMark("queued-a-delivered", 60_000);
+    const leadResumed = await waitMark("durable-lead-resumed", 60_000);
+    const delivered3 = await waitMark("durable-lead-3-delivered", 60_000);
+    const settled = await until(async () => {
+      const followA = (await query(db, "SELECT id, state, delivery, follow FROM delegations WHERE child_session = ? AND follow = 'queue'", chatA ?? "?"))[0];
+      const three = await rowById(lead3?.taskId);
+      return followA?.state === "completed" && three?.state === "completed" ? { followA, three: brief(three) } : null;
+    }, scale(30_000));
+    const orderA = rulesIn(setA?.conversation);
+    const orderLead = rulesIn(leadConversation1);
+    const queueEvidence = {
+      sends: { a: sendA?.delivery ?? null, lead2: lead2?.delivery ?? null, lead3: lead3?.delivery ?? null },
+      waitingBefore,
+      orderA,
+      orderLead,
+      settled,
+      queuesAfter: { a: await queueOf(chatA), lead: await queueOf(durableLead) },
+    };
+    if (
+      durableQueued &&
+      sendA?.delivery === "queued" &&
+      lead3?.delivery === "queued" &&
+      waitingBefore &&
+      deliveredA &&
+      leadResumed &&
+      delivered3 &&
+      orderA.indexOf("durable-goal-a-resume") >= 0 &&
+      orderA.indexOf("durable-goal-a-resume") < orderA.indexOf("durable-queued-a") &&
+      orderLead.indexOf("durable-lead-resume") >= 0 &&
+      orderLead.indexOf("durable-lead-resume") < orderLead.indexOf("durable-lead-3") &&
+      fired("durable-queued-a") === 1 &&
+      fired("durable-lead-3") === 1 &&
+      settled
+    )
+      pass(
+        "queued_brief_after_restart",
+        "Briefs queued before a restart go in by themselves once their chat's resumed turn is over, once each",
+        `worker A's brief and the Lead's brief 3 waited through the restart (queued), went in after the resumed turns (${orderA.join(" > ")}; ${orderLead.join(" > ")}), once each, and their rows settled (${settled.followA.state}, ${settled.three.state})`,
+        { evidence: queueEvidence },
+      );
+    else fail("queued_brief_after_restart", "Briefs queued before a restart go in by themselves once their chat's resumed turn is over, once each", JSON.stringify(queueEvidence));
+
+    // 11. The brief cancelled while it waited in the busy Lead's queue stays out.
+    const twoAfter = await lead2Row();
+    const cancelEvidence = {
+      send: lead2?.delivery ?? null,
+      cancel: cancel2 ?? null,
+      row: brief(twoAfter),
+      leadStoppedForCancel,
+      deliveredAfterRestart: fired("durable-lead-2"),
+    };
+    if (
+      lead2?.delivery === "queued" &&
+      cancelledMark &&
+      cancel2?.ok &&
+      cancel2.result?.status === "cancelled" &&
+      waitingBefore &&
+      twoAfter?.state === "cancelled" &&
+      twoAfter.delivery === "disposed" &&
+      !leadStoppedForCancel &&
+      leadResumed &&
+      fired("durable-lead-2") === 0
+    )
+      pass(
+        "cancelled_brief_stays_out",
+        "A brief cancelled while it waits in a busy Lead's queue leaves the queue, the Lead isn't stopped, and a restart doesn't bring it back",
+        `task_cancel on Lead brief 2 (queued) -> ${cancel2.result.status}; row cancelled and disposed, out of the Lead's queue before the restart, the Lead's own turn not interrupted, and after the restart brief 3 went in but brief 2 never did`,
+        { evidence: cancelEvidence },
+      );
+    else fail("cancelled_brief_stays_out", "A brief cancelled while it waits in a busy Lead's queue leaves the queue, the Lead isn't stopped, and a restart doesn't bring it back", JSON.stringify(cancelEvidence));
+
+    // 12. One more restart, with everything idle: nothing goes in twice and no goal comes back.
+    await sleep(scale(2_000));
+    await kill("everything idle");
+    await launch();
+    await sleep(scale(8_000));
+    const finalCounts = {
+      queuedA: fired("durable-queued-a"),
+      lead2: fired("durable-lead-2"),
+      lead3: fired("durable-lead-3"),
+      goalA: goalPrompts(goalA).length,
+      goalB: goalPrompts(goalB).length,
+      goalAgain: fired("durable-goal-a-again"),
+      storedA: (await storedGoal(chatA))?.goal ?? null,
+      storedB: (await storedGoal(chatB))?.goal ?? null,
+      inFlight: (await inFlight()).map((entry) => entry.session_id),
+    };
+    if (
+      finalCounts.queuedA === 1 &&
+      finalCounts.lead2 === 0 &&
+      finalCounts.lead3 === 1 &&
+      finalCounts.goalA === 1 &&
+      finalCounts.goalB === 2 &&
+      finalCounts.goalAgain === 0 &&
+      finalCounts.storedA === null &&
+      finalCounts.storedB === null &&
+      clearedA &&
+      clearedB
+    )
+      pass(
+        "nothing_repeats_after_restart",
+        "Another restart repeats nothing: no brief twice, no /goal again, no finished goal back",
+        `after launch ${launches}: worker A's brief 1x, Lead brief 3 1x, brief 2 0x; /goal A 1x, /goal B 2x (once per conversation); no stored goal`,
+        { evidence: finalCounts },
+      );
+    else fail("nothing_repeats_after_restart", "Another restart repeats nothing: no brief twice, no /goal again, no finished goal back", JSON.stringify(finalCounts));
   } catch (error) {
     if (error instanceof Halt) {
       for (const name of WALK.filter((name) => !checks.some((check) => check.id === name)))

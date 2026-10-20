@@ -255,6 +255,10 @@ pub struct SessionUpsert {
     pub linked_work_item: Option<Value>,
     #[serde(default)]
     pub automation_id: Option<String>,
+    /// Claude Code's /goal while it is still open (the webview's `SessionGoal`), kept so a restart can restore it.
+    /// None clears it: a met or cleared goal never comes back.
+    #[serde(default)]
+    pub goal: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,8 +339,29 @@ pub struct SessionRecord {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// The open /goal stored with the chat (see `SessionUpsert::goal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<Value>,
+    /// Archived chats keep their waiting queue paused after a restart: nothing is delivered to them.
+    #[serde(default)]
+    pub archived: bool,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// The longest stored goal (its condition is capped at 1,000 characters; the rest is a few counters).
+const GOAL_JSON_MAX: usize = 4_096;
+
+/// A goal worth storing: an object with a non-empty `objective`, small enough. Anything else stores nothing.
+fn goal_json(goal: Option<&Value>) -> Option<String> {
+    let goal = goal?;
+    let objective = goal.get("objective")?.as_str()?;
+    if objective.trim().is_empty() || !goal.is_object() {
+        return None;
+    }
+    serde_json::to_string(goal)
+        .ok()
+        .filter(|json| json.len() <= GOAL_JSON_MAX)
 }
 
 #[tauri::command(async)]
@@ -1011,6 +1036,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("queued_messages_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("queue_status", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
+        // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
+        ("goal_json", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -1463,8 +1490,8 @@ pub(crate) fn upsert_session(
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id, queued_messages_json, queue_status, sidebar_hidden
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+           automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1487,7 +1514,8 @@ pub(crate) fn upsert_session(
            automation_id = excluded.automation_id,
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
-           sidebar_hidden = excluded.sidebar_hidden",
+           sidebar_hidden = excluded.sidebar_hidden,
+           goal_json = excluded.goal_json",
         params![
             session.id,
             session.cwd,
@@ -1513,6 +1541,7 @@ pub(crate) fn upsert_session(
             queued_messages_json,
             session.queue_status,
             i64::from(session.sidebar_hidden),
+            goal_json(session.goal.as_ref()),
         ],
     )?;
 
@@ -2176,7 +2205,8 @@ fn get_session_record(
                 provider_session_id, {blocks}, created_at, updated_at,
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
-                automation_id, queued_messages_json, queue_status, sidebar_hidden
+                automation_id, queued_messages_json, queue_status, sidebar_hidden,
+                goal_json, archived
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL"
         ),
@@ -2226,6 +2256,8 @@ fn get_session_record(
                 linked_work_item: optional_json(row.get(15)?),
                 provider_account_id: row.get(16)?,
                 automation_id: nonempty(row.get(18)?),
+                goal: optional_json(row.get(22)?),
+                archived: row.get::<_, i64>(23)? != 0,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2458,7 +2490,53 @@ mod tests {
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            goal: None,
         }
+    }
+
+    #[test]
+    fn an_open_goal_is_kept_with_its_chat_and_a_finished_one_is_cleared() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let goal = json!({ "objective": "the save test passes", "checks": 2, "status": "active", "setAt": 5,
+                           "providerSessionId": "conv-1" });
+        let mut session = SessionUpsert {
+            goal: Some(goal.clone()),
+            ..sample("worker", "/tmp/project", "Worker")
+        };
+        upsert_session(&conn, &session).unwrap();
+        let stored = get_session(&conn, "worker").unwrap().unwrap();
+        assert_eq!(stored.goal, Some(goal.clone()));
+        assert!(!stored.archived);
+        // The webview stops sending it once the goal is met or cleared: the row forgets it.
+        session.goal = None;
+        upsert_session(&conn, &session).unwrap();
+        assert_eq!(get_session(&conn, "worker").unwrap().unwrap().goal, None);
+        // Nothing malformed or oversized is stored.
+        for bad in [
+            json!({ "checks": 1, "status": "active" }),
+            json!({ "objective": "   " }),
+            json!("the save test passes"),
+            json!({ "objective": "x".repeat(GOAL_JSON_MAX) }),
+        ] {
+            session.goal = Some(bad.clone());
+            upsert_session(&conn, &session).unwrap();
+            assert_eq!(
+                get_session(&conn, "worker").unwrap().unwrap().goal,
+                None,
+                "{bad}"
+            );
+        }
+        // An archived chat says so, so its waiting queue stays paused after a restart.
+        set_archived(&conn, "worker", true).unwrap();
+        assert!(get_session(&conn, "worker").unwrap().unwrap().archived);
+        // The Mono metadata read (mono_session_get) carries the goal too.
+        session.goal = Some(goal.clone());
+        upsert_session(&conn, &session).unwrap();
+        assert_eq!(
+            get_session_metadata(&conn, "worker").unwrap().unwrap().goal,
+            Some(goal)
+        );
     }
 
     #[test]

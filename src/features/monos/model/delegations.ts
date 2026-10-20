@@ -165,6 +165,8 @@ export type DelegationsBackend = {
   owned(query: OwnedQuery): Promise<Delegation[]>;
   reportsSeen(ownerSession: string, messageIds: string[]): Promise<string[]>;
   bindChat(input: ChatBindInput): Promise<boolean>;
+  /** The followed-brief rows (any state) behind briefs waiting in one chat's queue, by request id. */
+  followedInto?(childSession: string, requestIds: string[]): Promise<Delegation[]>;
 };
 
 export const tauriDelegations: DelegationsBackend = {
@@ -184,6 +186,7 @@ export const tauriDelegations: DelegationsBackend = {
   reportsSeen: (ownerSession, messageIds) =>
     invoke("delegations_reports_seen", { ownerSession, messageIds }),
   bindChat: (input) => invoke("delegations_bind_chat", { input }),
+  followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
 };
 
 /** delegations.rs's event after any change to a row. */

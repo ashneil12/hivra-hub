@@ -1058,6 +1058,29 @@ pub fn owned(conn: &Connection, input: OwnedQuery) -> Result<Vec<Delegation>, St
     Ok(rows)
 }
 
+/// The followed-brief rows (any state) behind briefs waiting in one chat's queue, by their request ids: the app checks
+/// a waiting brief against its row before it goes in, so one cancelled meanwhile (task_cancel, a cascade Stop) never
+/// does, even when the queue that still held it was saved before the cancel.
+pub fn followed_into(
+    conn: &Connection,
+    child: &str,
+    request_ids: &[String],
+) -> Result<Vec<Delegation>, String> {
+    let child = session_id(child, "child session")?;
+    if request_ids.len() > OWNED_MAX {
+        return Err(format!("At most {OWNED_MAX} briefs at once"));
+    }
+    let mut rows = Vec::new();
+    for request in request_ids {
+        rows.extend(query(
+            conn,
+            "WHERE child_session = ?1 AND request_id = ?2 AND follow IS NOT NULL",
+            &[&child, &request.trim()],
+        )?);
+    }
+    Ok(rows)
+}
+
 /// The whole delegation tree a row belongs to, oldest first.
 pub fn tree(conn: &Connection, id: &str) -> Result<Vec<Delegation>, String> {
     let Some(row) = get(conn, id)? else {
@@ -1571,6 +1594,15 @@ pub fn delegations_owned(
     input: OwnedQuery,
 ) -> Result<Vec<Delegation>, String> {
     owned(&*store.lock_conn()?, input)
+}
+
+#[tauri::command(async)]
+pub fn delegations_followed_into(
+    store: State<'_, SessionStore>,
+    child_session: String,
+    request_ids: Vec<String>,
+) -> Result<Vec<Delegation>, String> {
+    followed_into(&*store.lock_conn()?, &child_session, &request_ids)
 }
 
 #[tauri::command(async)]
@@ -2095,6 +2127,57 @@ mod tests {
                 .unwrap_err()
                 .contains("follow must be")
         );
+    }
+
+    #[test]
+    fn a_waiting_briefs_row_is_found_by_its_chat_and_request_in_any_state() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let kept = record(
+            &mut conn,
+            followed("cos", "lead-a", "lead-chat", "lead"),
+            10,
+        )
+        .unwrap();
+        let dropped = record(
+            &mut conn,
+            followed("cos", "lead-b", "lead-chat", "lead"),
+            11,
+        )
+        .unwrap();
+        // A plain launch's row into the same chat is not a brief that waits in its queue.
+        record(&mut conn, launch("frank", "r1", "lead-chat"), 12).unwrap();
+        cancel(
+            &mut conn,
+            std::slice::from_ref(&dropped.id),
+            Some("Verify: cancelled".into()),
+            Some("owner:cos".into()),
+            13,
+        )
+        .unwrap();
+        let ids = |rows: Vec<Delegation>| {
+            rows.into_iter()
+                .map(|row| (row.request_id, row.state))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(followed_into(
+                &conn,
+                "lead-chat",
+                &["lead-a".into(), "lead-b".into(), "r1".into()]
+            )
+            .unwrap()),
+            vec![
+                ("lead-a".to_string(), RUNNING.to_string()),
+                ("lead-b".to_string(), CANCELLED.to_string())
+            ]
+        );
+        assert!(followed_into(&conn, "other-chat", &["lead-a".into()])
+            .unwrap()
+            .is_empty());
+        assert_eq!(kept.state, RUNNING);
+        let many: Vec<String> = (0..=OWNED_MAX).map(|n| format!("r{n}")).collect();
+        assert!(followed_into(&conn, "lead-chat", &many).is_err());
     }
 
     #[test]

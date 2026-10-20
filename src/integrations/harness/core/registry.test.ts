@@ -522,4 +522,15 @@ describe("harness registry", () => {
     expect(restoreTaskLists).toHaveBeenCalledTimes(1);
     expect(restoreTaskLists).toHaveBeenCalledWith("s1", [taskList]);
   });
+
+  it("hands a restored session's saved /goal to the adapter, and nothing when it has none", () => {
+    const bindSession = vi.fn();
+    const restoreGoal = vi.fn();
+    registerHarness(stub("claude", { bindSession, restoreGoal }));
+    const goal = { objective: "the save test passes", checks: 2, status: "active" as const, setAt: 1, providerSessionId: "sess_1" };
+    bindHarnessSession("claude", "s1", "sess_1", "/repo", undefined, [], goal);
+    bindHarnessSession("claude", "s2", "sess_2", "/repo");
+    expect(restoreGoal).toHaveBeenCalledTimes(1);
+    expect(restoreGoal).toHaveBeenCalledWith("s1", goal);
+  });
 });

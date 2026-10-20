@@ -11,8 +11,15 @@ import type { Delegation } from "../../monos/model/delegations";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import { briefPrompt, type AgentAppTasksHost } from "./agentAppTasks";
 
+const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 vi.mock("../../../integrations/harness/core/availability", () => ({
-  isHarnessAvailable: (id: string) => id === "claude" || id === "codex",
+  // Before the first probe ends every harness reads as missing.
+  isHarnessAvailable: (id: string) => probe.probed && (id === "claude" || id === "codex"),
+  hasProbedHarnessAvailability: () => probe.probed,
+  probeHarnessAvailability: async () => {
+    probe.runs += 1;
+    probe.probed = true;
+  },
 }));
 
 const storedValues = new Map<string, string>();
@@ -228,6 +235,17 @@ describe("tasks.delegate", () => {
       status: "running",
       isolation: "worktree",
     });
+  });
+
+  it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
+    const { source, host, started } = fixture([]);
+    probe.probed = false;
+    probe.runs = 0;
+    await handleAgentApp(source, "r-early", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(probe.runs).toBe(1);
+    expect(started).toHaveLength(1);
+    await handleAgentApp(source, "r-later", "tasks.delegate", { brief: "Fix it again." }, host);
+    expect(probe.runs).toBe(1);
   });
 
   it("names a project by its hub id and defaults to the shared checkout and the Mono's own model", async () => {

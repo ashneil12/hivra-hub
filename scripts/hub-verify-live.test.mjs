@@ -8,6 +8,9 @@ import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./f
 import {
   ASKER,
   CONTINUE,
+  DURABLE_KICKOFF,
+  GOAL_A_WORKER,
+  GOAL_B_WORKER,
   HELPER,
   KICKOFF,
   PICK,
@@ -20,6 +23,7 @@ import {
   WALK,
   WORKER,
   exitCode,
+  goalFor,
   mergePatch,
   runId,
   scenario,
@@ -106,7 +110,52 @@ test("double delegation: each prompt reaches its role, and the wakes only as the
   // None of the first walk's prompts reach the new rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${QUEUED} run r1`])
     assert.equal(rules.find((rule) => rule.name === pick(prompt))?.name.startsWith("tree") ?? false, false, prompt);
-  assert.deepEqual(WALK.slice(-2), ["question_routed", "cascade_stop"]);
+  const at = WALK.indexOf("question_routed");
+  assert.deepEqual(WALK.slice(at, at + 2), ["question_routed", "cascade_stop"]);
+});
+
+test("restart durability: goal workers, the Lead's waiting briefs and the recovered worker each reach their own rule", () => {
+  const { rules } = scenario({ runId: "r1" });
+  const pick = (prompt, tags = [], fired = {}) => pickRule(rules, prompt, tags, fired)?.name ?? null;
+  const context = "<monocode_context>\nReports start with [MonoCode report]; briefs with [MonoCode brief from …].\n</monocode_context>\n\n";
+  assert.equal(pick(`${context}${DURABLE_KICKOFF} run r1: start`), "durable-cos-kickoff");
+  const cos = rules.find((rule) => rule.name === "durable-cos-kickoff");
+  const delegated = cos.steps.filter((step) => step.app === "tasks.delegate").map((step) => step.input);
+  const goalA = goalFor(GOAL_A_WORKER, "r1");
+  const goalB = goalFor(GOAL_B_WORKER, "r1");
+  assert.deepEqual(delegated.slice(0, 2).map((input) => input.goal), [goalA, goalB]);
+  assert.equal(goalA, "VERIFY-GOAL-A run r1: the transcript says GOAL-A-DONE");
+  // A worker's prompt is the brief agentAppTasks.briefPrompt writes, then "/goal <goal>" right behind it.
+  const workerBrief = (input) => `[MonoCode brief from Chief of Staff]\n\n${input.brief}\n\nDone when: ${input.goal}`;
+  assert.equal(pick(workerBrief(delegated[0])), "durable-goal-a");
+  assert.equal(pick(`/goal ${goalA}`, ["goal-a"]), "durable-goal-a-set");
+  assert.equal(pick(`/goal ${goalA}`, ["goal-a"], { "durable-goal-a-set": 1 }), "durable-goal-a-again", "a second /goal in A's conversation is counted");
+  assert.equal(pick(`${CONTINUE}.`, ["goal-a"]), "durable-goal-a-resume");
+  const queuedA = cos.steps.find((step) => step.app === "sessions.send").input;
+  assert.equal(pick(queuedA.prompt, ["goal-a"]), "durable-queued-a");
+  assert.equal(pick(workerBrief(delegated[1])), "durable-goal-b");
+  assert.equal(pick(`/goal ${goalB}`, ["goal-b"]), "durable-goal-b-set");
+  // B after its transcript was lost: a fresh conversation (no tags) from its chat's brief, then its /goal once more.
+  const recovered = `Your earlier conversation ... <chat_brief>\n## Session so far\nUser: [MonoCode brief from Chief of Staff] ${delegated[1].brief}\n</chat_brief>\n\n${CONTINUE}.`;
+  assert.equal(pick(recovered), "durable-goal-b-recovered");
+  assert.equal(pick(`/goal ${goalB}`, ["goal-b"], { "durable-goal-b-set": 1 }), "durable-goal-b-reset");
+  // The first walk's recovered Lead still reaches its own rule.
+  assert.equal(pick(`Your earlier conversation ... <chat_brief>\nUser: ${KICKOFF}\n</chat_brief>\n\n${CONTINUE}.`), "lead-recovered");
+  // The Verify lead's briefs: 1 holds it busy, 2 and 3 wait behind it; a waiting brief is never taken for its resume.
+  const leadBriefs = delegated
+    .filter((input) => input.lead === TREE_LEAD)
+    .map((input) => `${context}[MonoCode brief from Chief of Staff]\n\n${input.brief}\n\nHow: you are this project's Lead.`);
+  assert.equal(leadBriefs.length, 3);
+  assert.equal(pick(leadBriefs[0], ["tree-lead"]), "durable-lead-1");
+  assert.equal(pick(leadBriefs[1], ["tree-lead", "durable-lead"]), "durable-lead-2");
+  assert.equal(pick(leadBriefs[2], ["tree-lead", "durable-lead"]), "durable-lead-3");
+  assert.equal(pick(`${context}${CONTINUE}.`, ["tree-lead", "durable-lead"]), "durable-lead-resume");
+  // Brief 2 is cancelled by its task id while it waits.
+  assert.equal(cos.steps.find((step) => step.app === "tasks.cancel").input.taskId, "{{saved.lead-2.response.result.taskId}}");
+  // None of the earlier phases' prompts reach the new rules.
+  for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${QUEUED} run r1`, `${TREE_KICKOFF} run r1`])
+    assert.equal(pick(prompt)?.startsWith("durable") ?? false, false, prompt);
+  assert.deepEqual(WALK.slice(-4), ["goal_survives_restart", "queued_brief_after_restart", "cancelled_brief_stays_out", "nothing_repeats_after_restart"]);
 });
 
 test("the negative control plants a failure the walk must notice", () => {

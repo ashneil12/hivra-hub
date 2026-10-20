@@ -2096,6 +2096,8 @@ fn insert_session(
         worktree_removed: file["worktreeRemoved"].as_bool().unwrap_or(false),
         linked_work_item: file.get("linkedWorkItem").filter(|v| !v.is_null()).cloned(),
         automation_id: text("automationId"),
+        // A /goal belongs to its Claude conversation on this Mac; it never travels.
+        goal: None,
     };
     session_store::upsert_session(conn, &session)?;
     // Keep the chat's own dates, place and flags rather than "made just now".

@@ -1,8 +1,63 @@
 import { isPreparingHandoff } from "./handoff";
-import type { QueuedMessage, Session } from "./session";
+import { resumeStopped, wasTurnInterrupted } from "./inFlight";
+import type { Block, MessageQueueStatus, QueuedMessage, Session } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
   return session.queuedMessages?.[0];
+}
+
+/**
+ * A brief another chat sent through the app that waits for this chat to be idle (sessions.send in queue mode, a brief
+ * queued behind a Lead's work): it goes in as its own turn, under its request id.
+ */
+export function isWaitingBrief(message: QueuedMessage | undefined): boolean {
+  return !!message?.waitForIdle && !!message.appRequestId && !message.monoSessionCompletion;
+}
+
+/**
+ * Something the app queued for an idle chat, not Ash: a waiting brief, or a notification for a Mono (a worker's report,
+ * a PR wake), which never steers its work either.
+ */
+export function isAppDelivery(message: QueuedMessage | undefined): boolean {
+  return isWaitingBrief(message) || !!message?.monoSessionCompletion;
+}
+
+/** The request id the delivery's user bubble carries once it went in (a report's is its receipt, its queue id). */
+function deliveredAs(message: QueuedMessage): string | undefined {
+  if (isWaitingBrief(message)) return message.appRequestId;
+  return message.monoSessionCompletion ? message.id : undefined;
+}
+
+/**
+ * The head is an app delivery behind a turn a restart cut: it waits for that turn's resume, and for Ash when the chat
+ * stopped resuming itself (Needs you). The resume itself, and Ash's own message, go in ahead of it.
+ */
+export function waitsOnCutTurn(session: Session): boolean {
+  return isAppDelivery(queuedHead(session)) && (wasTurnInterrupted(session) || resumeStopped(session));
+}
+
+/**
+ * The queue a restart hands back. Ash's own queued messages wait for him, as they always have (the restart cut the turn
+ * they were queued behind), and so does a queue he paused or stopped and any queue in an archived chat. A queue of
+ * nothing but app deliveries (briefs other chats sent, a Mono's reports) keeps going: each goes in by itself, in order,
+ * once its chat is idle again, after the cut turn's resume (`waitsOnCutTurn`). One the transcript shows already went in
+ * is dropped, so none goes in twice.
+ */
+export function restoredQueue(
+  queued: QueuedMessage[],
+  blocks: readonly Block[],
+  saved: { status?: MessageQueueStatus; archived?: boolean },
+): Pick<Session, "queuedMessages" | "queueStatus"> {
+  const sent = new Set(
+    blocks.flatMap((block) => (block.role === "user" && !block.draft && block.appRequestId ? [block.appRequestId] : [])),
+  );
+  const left = queued.filter((message) => {
+    const id = deliveredAs(message);
+    return !(id && sent.has(id));
+  });
+  if (!left.length) return {};
+  const keepsGoing = saved.status !== "paused" && !saved.archived && left.every(isAppDelivery);
+  return { queuedMessages: left, queueStatus: keepsGoing ? "active" : "paused" };
 }
 
 /** Hold auto-dispatch only while the item about to send is being edited. */
@@ -45,6 +100,7 @@ export function canDispatchQueuedHead(session: Session): boolean {
   if (!head) return false;
   if (isEditingQueuedHead(session)) return false;
   if (isPreparingHandoff(session)) return false;
+  if (waitsOnCutTurn(session)) return false;
   return true;
 }
 

@@ -31,7 +31,15 @@
 //   {"mark": "name"}                                  write marks/<name>.json (when, which conversation, the prompt)
 //   {"waitFile": "name", "timeoutMs"?}                wait until gates/<name> exists (the app can be killed meanwhile)
 //   {"sleep": ms}, {"exit": code}
-// then a `result`. A prompt no rule matches gets a one-line reply. Helper calls (titles: --no-session-persistence)
+//   {"goalCheck": "reason"}                           the conversation's /goal evaluator says "not yet" (a synthetic
+//                                                     "Stop hook feedback" user line, as Claude Code 2.1.302 prints it)
+//   {"goalMet": true}                                 a check passes: the goal clears itself, and nothing is printed
+// then a `result`. A prompt no rule matches gets a one-line reply.
+//
+// `/goal` the way Claude Code 2.1.302 answers it (fixtures/claude-cli-2.1.302/goal-*.ndjson): `/goal <condition>` keeps
+// the goal in the conversation (so `--resume` still has it and a fresh conversation doesn't) and prints the synthetic
+// "Goal set: <condition>", then plays the first rule matching the `/goal …` prompt, if any; `/goal` prints
+// "Goal active: … (not yet evaluated)" or "No goal set"; `/goal clear` prints "Goal cleared: …". Helper calls (titles: --no-session-persistence)
 // never run rules.
 //
 // Strings in `say` and in an app step's input (keys too) may hold {{...}}, filled in when the step plays; a string that
@@ -111,6 +119,16 @@ export function promptPayload(prompt) {
 export function askToolResult(answers) {
   const pairs = Object.entries(answers ?? {}).map(([question, answer]) => `"${question}"="${answer}"`);
   return `User has answered your questions: ${pairs.join(", ")}. You can now continue with the user's answers in mind.`;
+}
+
+/** A `/goal` prompt: set (with its condition), clear, or the bare status query; null for any other prompt. */
+export function goalCommand(prompt) {
+  const match = /^\/goal(?:\s+([\s\S]*))?$/.exec(String(prompt).trim());
+  if (!match) return null;
+  const rest = (match[1] ?? "").replace(/\s+/g, " ").trim();
+  if (!rest) return { kind: "status" };
+  if (rest === "clear") return { kind: "clear" };
+  return { kind: "set", condition: rest };
 }
 
 /** The command line as far as the fake cares. */
@@ -328,6 +346,33 @@ export async function main(argv = process.argv.slice(2)) {
       },
     });
   };
+  // Claude Code's own lines about a /goal: a synthetic assistant message, and the evaluator's "not yet" as a user line.
+  const synthetic = (text) => {
+    messages += 1;
+    out({
+      type: "assistant",
+      session_id: conversationId,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      message: {
+        id: `msg_fake_${process.pid}_${messages}`,
+        type: "message",
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text }],
+        stop_reason: "stop_sequence",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    });
+  };
+  const goalNow = () => readJson(conversationFile, {}).goal ?? null;
+  const setGoal = (goal) =>
+    update(conversationFile, { tags: [] }, (value) => {
+      const next = { ...value };
+      if (goal) next.goal = goal;
+      else delete next.goal;
+      return next;
+    });
   const backgroundList = () =>
     out({
       type: "system",
@@ -341,7 +386,7 @@ export async function main(argv = process.argv.slice(2)) {
       })),
     });
 
-  const playRules = async (prompt) => {
+  const playRules = async (prompt, { quietMiss = false } = {}) => {
     const conversation = readJson(conversationFile, { tags: [] });
     const fired = readJson(path.join(dir, "rules.json"), {});
     const rule = pickRule(scenario.rules, prompt, conversation.tags ?? [], fired);
@@ -351,7 +396,7 @@ export async function main(argv = process.argv.slice(2)) {
       rule: rule?.name ?? null,
       prompt,
     });
-    if (!rule) return "fake-claude: no rule matched this prompt.";
+    if (!rule) return quietMiss ? "" : "fake-claude: no rule matched this prompt.";
     update(path.join(dir, "rules.json"), {}, (counts) => ({ ...counts, [rule.name]: (counts[rule.name] ?? 0) + 1 }));
     if (rule.setTag)
       update(conversationFile, { tags: [] }, (value) => ({
@@ -508,6 +553,19 @@ export async function main(argv = process.argv.slice(2)) {
         const gate = path.join(dir, "gates", safeName(step.waitFile));
         const deadline = Date.now() + (step.timeoutMs ?? 30 * 60_000);
         while (!fs.existsSync(gate) && !closed && !interrupted && Date.now() < deadline) await sleep(100);
+      } else if (step.goalCheck != null) {
+        const goal = goalNow();
+        if (goal)
+          out({
+            type: "user",
+            isSynthetic: true,
+            session_id: conversationId,
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            message: { role: "user", content: [{ type: "text", text: `Stop hook feedback:\n[${goal}]: ${String(step.goalCheck)}` }] },
+          });
+      } else if (step.goalMet) {
+        setGoal(null);
       } else if (typeof step.sleep === "number") {
         await sleep(step.sleep);
       } else if (typeof step.exit === "number") {
@@ -564,6 +622,19 @@ export async function main(argv = process.argv.slice(2)) {
       if (played?.delivered) return;
       text = played;
       if (text) assistant([{ type: "text", text }]);
+    } else if (goalCommand(prompt)) {
+      const command = goalCommand(prompt);
+      const goal = goalNow();
+      if (command.kind === "set") {
+        setGoal(command.condition);
+        synthetic(`Goal set: ${command.condition}`);
+        text = (await playRules(prompt, { quietMiss: true })) || `Goal set: ${command.condition}`;
+      } else {
+        append(path.join(dir, "prompts.ndjson"), { conversation: conversationId, resumed: Boolean(args.resume) && firstPrompt, rule: null, prompt });
+        if (command.kind === "clear" && goal) setGoal(null);
+        text = !goal ? "No goal set" : command.kind === "clear" ? `Goal cleared: ${goal}` : `Goal active: ${goal} (not yet evaluated)`;
+        synthetic(text);
+      }
     } else {
       text = await playRules(prompt);
       if (text.startsWith("fake-claude:")) assistant([{ type: "text", text }]);

@@ -16,6 +16,7 @@ import {
 } from "./delegations";
 import {
   answeredReport,
+  briefCancelled,
   briefSentAt,
   briefWaiting,
   currentLeadBrief,
@@ -394,5 +395,20 @@ describe("task_cancel on a followed brief", () => {
     expect(unqueued).toEqual([["lead-chat", "app-cos-chat-b1"]]);
     expect(stopped).toEqual([]);
     expect(store.rows.get(lead!.id)).toMatchObject({ state: "cancelled", error: "Ash changed his mind." });
+  });
+});
+
+describe("briefCancelled", () => {
+  it("is true only for the brief's own row, and only once that row is cancelled", () => {
+    const rows = [
+      { requestId: "app-cos-lead-1", state: "running" as const },
+      { requestId: "app-cos-lead-2", state: "cancelled" as const },
+      { requestId: "app-cos-lead-3", state: "completed" as const },
+    ];
+    expect(briefCancelled(rows, "app-cos-lead-2")).toBe(true);
+    expect(briefCancelled(rows, "app-cos-lead-1")).toBe(false);
+    expect(briefCancelled(rows, "app-cos-lead-3")).toBe(false);
+    // A brief without a followed row (no report asked for) is never held back by one.
+    expect(briefCancelled([], "app-cos-lead-4")).toBe(false);
   });
 });

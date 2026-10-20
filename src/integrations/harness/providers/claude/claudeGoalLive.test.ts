@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../core/types";
+import type { SessionGoal } from "../../../../features/sessions/model/session";
 
 // /goal through the live adapter (H5): a brief's "Done when: …" goes in as `/goal …` right behind the brief, the turn
 // lasts until both are answered, the chat hears each check, MonoCode clears a goal past its cap, and a fresh
@@ -26,17 +27,20 @@ vi.mock("../../core/child", () => ({
     sent.push(line);
   }),
 }));
-const copy = { dev: false };
+const copy = { dev: false, benchGoals: false };
 vi.mock("../../../../app/model/appIdentity", async (original) => ({
   ...(await original<typeof import("../../../../app/model/appIdentity")>()),
   isDevCopy: () => copy.dev,
+  // The fake-Claude bench's plan (verify_live.rs `goals`): only a dev copy under a temporary HOME ever has one.
+  appIdentity: () => (copy.benchGoals ? ({ verify: { runId: "r1", goals: true } } as never) : null),
 }));
 vi.mock("../../../../features/settings/model/settings", async (original) => ({
   ...(await original<typeof import("../../../../features/settings/model/settings")>()),
   loadClaudeHooks: () => hooks.on,
 }));
 
-const { sendClaudeTurn, stopClaudeSession, bindClaudeSession, forgetClaudeSession, __claudeTestReset } = await import("./claude");
+const { sendClaudeTurn, stopClaudeSession, bindClaudeSession, forgetClaudeSession, restoreClaudeGoal, __claudeTestReset } =
+  await import("./claude");
 const { GOAL_CHECK_CAP } = await import("./claudeGoal");
 
 const parse = () => sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -125,6 +129,7 @@ beforeEach(async () => {
   spawned.length = 0;
   hooks.on = true;
   copy.dev = false;
+  copy.benchGoals = false;
   __claudeTestReset();
 });
 
@@ -146,10 +151,12 @@ describe("/goal through the live adapter", () => {
     emit(result("Fixed: the save test passes.", { num_turns: 2 }));
     await turn.done;
     expect(turn.outcome).toBe("completed");
+    // Each update names the conversation it was set in, so the goal saved with the chat knows where it lives.
+    const at = { setAt: expect.any(Number), providerSessionId: "sess_1" };
     expect(goals(turn)).toEqual([
-      { objective: GOAL, checks: 0, status: "active", setAt: expect.any(Number) },
-      { objective: GOAL, checks: 1, status: "active", lastCheck: "the test still fails", setAt: expect.any(Number) },
-      { objective: GOAL, checks: 2, status: "met", lastCheck: "the test still fails", setAt: expect.any(Number) },
+      { objective: GOAL, checks: 0, status: "active", ...at },
+      { objective: GOAL, checks: 1, status: "active", lastCheck: "the test still fails", ...at },
+      { objective: GOAL, checks: 2, status: "met", lastCheck: "the test still fails", ...at },
     ]);
     // The CLI's "Goal set: …" is a status line, never words in the worker's reply.
     const text = turn.events.flatMap((e) => (e.type === "message.delta" ? [e.text] : [])).join("");
@@ -280,5 +287,98 @@ describe("/goal through the live adapter", () => {
     onExit!(1);
     await turn.done;
     expect(turn.outcome).toBe("failed");
+  });
+});
+
+describe("/goal after a restart (the goal saved with the chat)", () => {
+  const saved = (patch: Partial<SessionGoal> = {}): SessionGoal => ({
+    objective: GOAL,
+    checks: 3,
+    status: "active",
+    setAt: 7,
+    lastCheck: "the test still fails",
+    providerSessionId: "sess_1",
+    ...patch,
+  });
+  const CONTINUE = "Continue from where you left off.";
+
+  it("a resumed conversation keeps it: nothing is sent again, the checks go on from the saved count, and met is final", async () => {
+    restoreClaudeGoal("worker", saved());
+    bindClaudeSession("worker", "sess_1", "/repo");
+    const resumed = await start(CONTINUE);
+    expect(spawned.at(-1)).toContain("--resume");
+    expect(prompts()).toEqual([CONTINUE]);
+    emit(feedback("still red"));
+    emit(said("Fixed: the save test passes."));
+    emit(result("Fixed: the save test passes."));
+    await resumed.done;
+    expect(goals(resumed)).toEqual([
+      { objective: GOAL, checks: 4, status: "active", lastCheck: "still red", setAt: 7, providerSessionId: "sess_1" },
+      { objective: GOAL, checks: 5, status: "met", lastCheck: "still red", setAt: 7, providerSessionId: "sess_1" },
+    ]);
+    // A stale copy of the saved goal (a reload before the row was written) can't bring the finished goal back.
+    await forgetClaudeSession("worker");
+    restoreClaudeGoal("worker", saved());
+    sent.length = 0;
+    const fresh = await start("next", "worker", "sess_2");
+    expect(prompts()).toEqual(["next"]);
+    emit({ ...said("ok"), session_id: "sess_2" });
+    emit({ ...result("ok"), session_id: "sess_2" });
+    await fresh.done;
+    expect(goals(fresh)).toEqual([]);
+  });
+
+  it("a fresh conversation (the transcript was gone) gets the saved goal exactly once, with the checks it had", async () => {
+    restoreClaudeGoal("worker", saved({ status: "paused", checks: 2 }));
+    const fresh = await start("Here is where we were: …", "worker", "sess_2");
+    expect(prompts()).toEqual(["Here is where we were: …", `/goal ${GOAL}`]);
+    emit({ ...said("Read it."), session_id: "sess_2" });
+    emit({ ...result("Read it."), session_id: "sess_2" });
+    emit({ type: "system", subtype: "init", session_id: "sess_2" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_2" });
+    emit({ ...feedback("nearly"), session_id: "sess_2" });
+    emit({ ...said("Still going."), session_id: "sess_2" });
+    emit({ type: "system", subtype: "informational", content: "A hook blocked the turn from ending 9 consecutive times — overriding and ending turn." });
+    emit({ ...result("", { num_turns: 10 }), session_id: "sess_2" });
+    await fresh.done;
+    expect(goals(fresh).at(0)).toMatchObject({ checks: 2, status: "active", setAt: 7, providerSessionId: "sess_2" });
+    expect(goals(fresh).at(-1)).toMatchObject({ checks: 3, status: "paused", lastCheck: "nearly", providerSessionId: "sess_2" });
+    // Its next turn in that conversation sends nothing again.
+    const next = await start("keep going", "worker", "sess_2");
+    expect(prompts().filter((text) => text.startsWith("/goal"))).toEqual([`/goal ${GOAL}`]);
+    emit({ ...said("ok"), session_id: "sess_2" });
+    emit({ ...result("ok"), session_id: "sess_2" });
+    await next.done;
+  });
+
+  it("a finished goal is never restored, and a dev copy never sends a restored one; the bench's fake Claude may", async () => {
+    for (const status of ["met", "cleared", "stopped"] as const) {
+      __claudeTestReset();
+      sent.length = 0;
+      restoreClaudeGoal("worker", saved({ status }));
+      const turn = await start("Here is where we were: …", "worker", `sess_${status}`);
+      expect(prompts()).toEqual(["Here is where we were: …"]);
+      emit({ ...result("ok"), session_id: `sess_${status}` });
+      await turn.done;
+      await stopClaudeSession("worker");
+    }
+    __claudeTestReset();
+    sent.length = 0;
+    copy.dev = true;
+    restoreClaudeGoal("worker", saved());
+    const dev = await start("Here is where we were: …", "worker", "sess_dev");
+    expect(prompts()).toEqual(["Here is where we were: …"]);
+    emit({ ...result("ok"), session_id: "sess_dev" });
+    await dev.done;
+    await stopClaudeSession("worker");
+    sent.length = 0;
+    copy.benchGoals = true;
+    const bench = await start("Here is where we were: …", "worker", "sess_bench");
+    expect(prompts()).toEqual(["Here is where we were: …", `/goal ${GOAL}`]);
+    emit({ ...result("ok"), session_id: "sess_bench" });
+    emit({ type: "system", subtype: "init", session_id: "sess_bench" });
+    emit({ ...synthetic(`Goal set: ${GOAL}`), session_id: "sess_bench" });
+    emit({ ...result(`Goal set: ${GOAL}`), session_id: "sess_bench" });
+    await bench.done;
   });
 });

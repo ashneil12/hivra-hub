@@ -4,10 +4,15 @@ import {
   canDispatchQueuedHead,
   canSteerQueuedHead,
   dequeueQueuedMessage,
+  isAppDelivery,
   isEditingQueuedHead,
+  isWaitingBrief,
   queuedHead,
   queuedMessageForSubmit,
+  restoredQueue,
+  waitsOnCutTurn,
 } from "./messageQueue";
+import { CONTINUE_PROMPT, markResumeStopped, markTurnInterrupted } from "./inFlight";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
 function queued(id: string, text = id): QueuedMessage {
@@ -178,5 +183,88 @@ describe("queuedMessageForSubmit", () => {
       queuedMessageForSubmit(chat({ queueStatus: "paused" }), "a", "steer")?.id,
     ).toBe("a");
     expect(queuedMessageForSubmit(chat(), "missing", "steer")).toBeUndefined();
+  });
+});
+
+describe("a brief waiting behind a turn a restart cut", () => {
+  const brief: QueuedMessage = {
+    id: "app-cos-1",
+    text: "[MonoCode brief from Chief of Staff]\n\nOne more thing.",
+    attachments: [],
+    appRequestId: "app-cos-1",
+    waitForIdle: true,
+  };
+  const cut = (patch: Partial<Session> = {}) =>
+    markTurnInterrupted(
+      chat({
+        busy: true,
+        providerSessionId: "conv-1",
+        blocks: [{ id: "u1", role: "user", text: "work" }],
+        queuedMessages: [brief],
+        ...patch,
+      }),
+    );
+
+  it("waits for the cut turn's resume, then goes in once the chat is idle", () => {
+    const interrupted = cut();
+    expect(isWaitingBrief(brief)).toBe(true);
+    expect(waitsOnCutTurn(interrupted)).toBe(true);
+    expect(canDispatchQueuedHead(interrupted)).toBe(false);
+    // The resume went in and finished: the brief is next.
+    const resumed: Session = {
+      ...interrupted,
+      blocks: [...interrupted.blocks, { id: "u2", role: "user", text: CONTINUE_PROMPT }, { id: "a2", role: "assistant", text: "Done." }],
+    };
+    expect(canDispatchQueuedHead(resumed)).toBe(true);
+    expect(canDispatchQueuedHead({ ...resumed, busy: true })).toBe(false);
+  });
+
+  it("waits for Ash when the chat stopped resuming itself", () => {
+    const stopped = markResumeStopped(cut());
+    expect(waitsOnCutTurn(stopped)).toBe(true);
+    expect(canDispatchQueuedHead(stopped)).toBe(false);
+  });
+
+  it("holds what the app queued (a brief, a report) and nothing of Ash's: his own queued message is as before", () => {
+    expect(canDispatchQueuedHead(cut({ queuedMessages: [queued("ash")] }))).toBe(true);
+    expect(isWaitingBrief({ ...brief, waitForIdle: undefined })).toBe(false);
+    expect(isWaitingBrief({ ...brief, appRequestId: undefined })).toBe(false);
+    const report: QueuedMessage = { ...queued("mono-completion-r1-g1"), monoSessionCompletion: { results: [] } as never };
+    expect(isWaitingBrief(report)).toBe(false);
+    expect(isAppDelivery(report)).toBe(true);
+    expect(canDispatchQueuedHead(cut({ queuedMessages: [report] }))).toBe(false);
+    expect(isAppDelivery(queued("ash"))).toBe(false);
+  });
+});
+
+describe("restoredQueue", () => {
+  const brief = (id: string): QueuedMessage => ({ id, text: id, attachments: [], appRequestId: id, waitForIdle: true });
+
+  it("keeps a queue of waiting briefs going, in order, and pauses anything else", () => {
+    expect(restoredQueue([brief("a"), brief("b")], [], { status: "active" })).toEqual({
+      queuedMessages: [brief("a"), brief("b")],
+      queueStatus: "active",
+    });
+    expect(restoredQueue([brief("a")], [], {}).queueStatus).toBe("active");
+    expect(restoredQueue([brief("a"), queued("ash")], [], { status: "active" }).queueStatus).toBe("paused");
+    expect(restoredQueue([brief("a")], [], { status: "paused" }).queueStatus).toBe("paused");
+    expect(restoredQueue([brief("a")], [], { status: "active", archived: true }).queueStatus).toBe("paused");
+    expect(restoredQueue([], [], {})).toEqual({});
+  });
+
+  it("keeps a Mono's reports going too, and drops one whose receipt already went in", () => {
+    const report = (id: string): QueuedMessage => ({ ...queued(id), monoSessionCompletion: { results: [] } as never });
+    expect(restoredQueue([report("r1"), brief("a")], [], { status: "active" }).queueStatus).toBe("active");
+    const blocks = [{ id: "u1", role: "user" as const, text: "[MonoCode report]", appRequestId: "r1" }];
+    expect(restoredQueue([report("r1"), report("r2")], blocks, {}).queuedMessages).toEqual([report("r2")]);
+  });
+
+  it("drops a brief the transcript shows already went in, never one still waiting", () => {
+    const blocks = [
+      { id: "u1", role: "user" as const, text: "a", appRequestId: "a" },
+      { id: "u2", role: "user" as const, text: "draft", appRequestId: "b", draft: true },
+    ];
+    expect(restoredQueue([brief("a"), brief("b")], blocks, { status: "active" }).queuedMessages).toEqual([brief("b")]);
+    expect(restoredQueue([brief("a")], blocks, {})).toEqual({});
   });
 });

@@ -324,6 +324,11 @@ export type SessionGoal = {
    */
   status: "active" | "paused" | "met" | "cleared" | "stopped";
   setAt: number;
+  /**
+   * The Claude conversation the goal was set in. `--resume` of that conversation keeps it; any other conversation
+   * never had it, so MonoCode sets it there again.
+   */
+  providerSessionId?: string;
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -539,7 +544,11 @@ export type Session = {
    * In-memory only otherwise.
    */
   cutWork?: CutWork[];
-  /** Claude Code's /goal for this chat, while one is set or just ended. In-memory only. */
+  /**
+   * Claude Code's /goal for this chat, while one is set or just ended. Saved with the chat while it is still open
+   * (active or paused), so a restart brings back its Goal row and the harness carries on with it; a met, cleared or
+   * stopped goal is never saved, so it never comes back.
+   */
   goal?: SessionGoal;
   /**
    * How many times this turn has resumed itself after a restart without finishing (`inFlight.ts`). Saved with the

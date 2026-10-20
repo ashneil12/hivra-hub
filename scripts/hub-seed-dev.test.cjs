@@ -43,11 +43,11 @@ function dailyFixture(root, { schema = 19 } = {}) {
       id TEXT PRIMARY KEY, cwd TEXT NOT NULL, harness TEXT NOT NULL, model TEXT NOT NULL, runtime_mode TEXT NOT NULL,
       title TEXT NOT NULL, provider_session_id TEXT, blocks_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, automation_id TEXT,
-      queued_messages_json TEXT NOT NULL DEFAULT '[]', queue_status TEXT);
+      queued_messages_json TEXT NOT NULL DEFAULT '[]', queue_status TEXT, goal_json TEXT);
     INSERT INTO sessions VALUES
-      ('s1', '/p/a', 'claude', 'opus', 'agent', 'Chat one', 'claude-real-1', '[{"role":"user","text":"hi"}]', 1, 2, NULL, '[]', NULL),
-      ('s2', '/p/b', 'claude', 'opus', 'agent', 'Chat two', 'claude-real-2', '[{"role":"user","text":"yo"}]', 1, 3, 'auto-1', '[{"text":"queued"}]', 'waiting'),
-      ('s3', '/p/c', 'codex', 'gpt', 'agent', 'Chat three', NULL, '[]', 1, 4, NULL, '[]', NULL);
+      ('s1', '/p/a', 'claude', 'opus', 'agent', 'Chat one', 'claude-real-1', '[{"role":"user","text":"hi"}]', 1, 2, NULL, '[]', NULL, '{"objective":"the save test passes","checks":2,"status":"active","setAt":1}'),
+      ('s2', '/p/b', 'claude', 'opus', 'agent', 'Chat two', 'claude-real-2', '[{"role":"user","text":"yo"}]', 1, 3, 'auto-1', '[{"text":"queued"}]', 'waiting', NULL),
+      ('s3', '/p/c', 'codex', 'gpt', 'agent', 'Chat three', NULL, '[]', 1, 4, NULL, '[]', NULL, NULL);
     CREATE TABLE in_flight_sessions (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, sort_index INTEGER NOT NULL);
     INSERT INTO in_flight_sessions VALUES ('s1', '/p/a', 0);
     CREATE TABLE workspace_snapshot (id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -139,8 +139,10 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     prWatchWakes: 2,
     prWatches: 1,
     queuedMessages: 1,
+    goals: 1,
     providerSessionIds: 2,
   });
+  assert.deepEqual(rows(path.join(to, "monocode.db"), "SELECT count(*) AS n FROM sessions WHERE goal_json IS NOT NULL"), [{ n: 0 }], "no chat's /goal comes along");
   const copy = path.join(to, "monocode.db");
   // The chats, including the write still in the source's WAL (an online backup sees it).
   assert.deepEqual(rows(copy, "SELECT id, title, blocks_json, provider_session_id, queued_messages_json, queue_status FROM sessions ORDER BY id"), [
