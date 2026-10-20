@@ -17,7 +17,7 @@ const ROOT = path.resolve(HERE, "..");
 export const BENCHMARK = JSON.parse(fs.readFileSync(path.join(ROOT, "tests/realtest/benchmark.json"), "utf8"));
 
 const SYSTEM = `You grade one scenario of a real end-to-end test of "MonoCode Hub", an app where AI agents (Monos) work for one person, Ash.
-Ash has a leadership room (group chat: Chief of Staff, Projects Manager, frank, Alfred), a project Lead per project (here "tally-lead"), and temporary workers the Lead delegates to.
+Ash has a leadership room (group chat: Chief of Staff, Projects Manager, frank, Alfred), a project Lead per project (here "tally-lead"), a coding team per project (chats Ash starts in the project's code folder, each an orchestrator like the Lead, shown as "coding-team chat"), and temporary workers the Lead or a coding-team chat delegates to.
 You get: the benchmark items this scenario covers (Ash's own standard, from a team he liked), the scenario's intent, a timeline (times are seconds after the scenario started; "Ash ->" lines are what the test sent as Ash), delegation rows, what the app's views showed, and metrics computed by the test (trust these numbers).
 Grade each item strictly against what the timeline shows, never against what an agent claims. Use:
 - PASS: the item's behaviour clearly happened, within its time limit.

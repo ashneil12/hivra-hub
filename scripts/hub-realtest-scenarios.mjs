@@ -1,6 +1,7 @@
 // The real-Claude bench's scenario player (scripts/hub-realtest.mjs, docs/REALTEST.md). A scenario is Ash's side of a
-// conversation: timed messages to the leadership room, a Lead or a worker, a Stop, an outage, waits on what the team
-// does, and looks at Today / Being built / the rail. Every wait is bounded by the scenario's minutes and the run's
+// conversation: timed messages to the leadership room, a Lead, a chat in the project's coding team (a new one, named
+// with `as`, then by that name) or a worker, a Stop, an outage, waits on what the team does, and looks at Today /
+// Being built / the coding team / the rail. Every wait is bounded by the scenario's minutes and the run's
 // deadline; a scenario that spends its turn budget stops waiting. After the steps it writes the evidence:
 // scenarios/<id>/evidence.json (sends, every room message and Claude reply with times, delegation rows, views,
 // metrics) and transcript.md (what the grader and a person read).
@@ -51,6 +52,9 @@ export async function runScenario(scenario, ctx) {
   fs.mkdirSync(dir, { recursive: true });
   const record = { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], started: t0, sends: [], waits: [], views: [], shots: [], marks: [], faults: [], notes: [] };
   const lastSendTo = new Map();
+  /** Coding-team chats this scenario started, by the name its steps give them (`as`). */
+  const chats = new Map();
+  const chatSession = (name) => chats.get(name) ?? null;
   const overBudget = () => usage(t0).turns >= turnsCap;
   const expired = () => Date.now() > stop;
   const resolveMono = (name) => (name === "lead" ? leadId : name);
@@ -59,6 +63,12 @@ export async function runScenario(scenario, ctx) {
   const target = async (to) => {
     if (to.room) return { room: resolveRoom(to.room) };
     if (to.mono) return { mono: resolveMono(to.mono) };
+    // A new chat in a project's coding team ("project": the test project), as Ash's New session there makes one.
+    if (to.codingTeam) return { codingTeam: to.codingTeam === "project" ? ctx.project.id : to.codingTeam };
+    if (to.chat) {
+      const session = chatSession(to.chat);
+      return session ? { session } : null;
+    }
     if (to.worker) {
       const rows = await ctx.delegationRows();
       const leadSession = await ctx.monoSession(leadId);
@@ -95,6 +105,14 @@ export async function runScenario(scenario, ctx) {
       if (cond.monoText) return lines.some((line) => line.text && new RegExp(cond.pattern, "i").test(line.text));
       return lines.some((line) => line.result);
     }
+    if (cond.chatReply || cond.chatText) {
+      const session = chatSession(cond.chatReply ?? cond.chatText);
+      if (!session) return false;
+      const since = cond.chatText ? t0 : (lastSendTo.get(session) ?? ref);
+      const lines = (await ctx.claudeTexts(since)).filter((line) => line.session === session);
+      if (cond.chatText) return lines.some((line) => line.text && new RegExp(cond.pattern, "i").test(line.text));
+      return lines.some((line) => line.result);
+    }
     if (cond.monoQuestion) {
       const snap = await act("snapshot");
       return (snap.sessions ?? []).some((x) => x.mono === resolveMono(cond.monoQuestion) && x.question);
@@ -104,6 +122,7 @@ export async function runScenario(scenario, ctx) {
       const match = rows.filter(
         (row) =>
           (!cond.delegation.owner || row.owner_mono === resolveMono(cond.delegation.owner)) &&
+          (!cond.delegation.ownerChat || row.owner_session === chatSession(cond.delegation.ownerChat)) &&
           (!cond.delegation.state || [].concat(cond.delegation.state).includes(row.state)) &&
           (!cond.delegation.title || new RegExp(cond.delegation.title, "i").test(`${row.title ?? ""} ${row.brief ?? ""}`)),
       );
@@ -166,12 +185,16 @@ export async function runScenario(scenario, ctx) {
           }
         }
       }
-      const answer = await act("send", { to: to.room ? { room: to.room } : to.mono ? { mono: to.mono } : { session: to.session }, owner: to.owner, text }, 60_000).catch((error) => ({ ok: false, error: error.message }));
+      const answer = await act("send", { to: to.room ? { room: to.room } : to.mono ? { mono: to.mono } : to.codingTeam ? { codingTeam: to.codingTeam } : { session: to.session }, owner: to.owner, text }, 60_000).catch((error) => ({ ok: false, error: error.message }));
       const t = answer.at ?? Date.now();
       record.sends.push({ t, to, label: step.label ?? null, text, answer: { ok: answer.ok, error: answer.error ?? null, session: answer.session ?? null, conversation: answer.conversation ?? null } });
       if (to.mono) lastSendTo.set(to.mono, t);
       if (to.session) lastSendTo.set(to.session, t);
-      log(`  Ash -> ${to.room ?? to.mono ?? to.session}: ${text.slice(0, 90).replace(/\n/g, " ")}${answer.ok === false ? ` (NOT ACCEPTED: ${answer.error ?? "refused"})` : ""}`);
+      if (to.codingTeam && answer.session) {
+        chats.set(step.as ?? "team", answer.session);
+        lastSendTo.set(answer.session, t);
+      }
+      log(`  Ash -> ${to.room ?? to.mono ?? (to.codingTeam ? `${to.codingTeam}'s coding team (new chat ${answer.session ?? "?"})` : to.session)}: ${text.slice(0, 90).replace(/\n/g, " ")}${answer.ok === false ? ` (NOT ACCEPTED: ${answer.error ?? "refused"})` : ""}`);
     } else if (step.wait) {
       const ref = record.sends.at(-1)?.t ?? t0;
       const limit = Math.min(stop, Date.now() + (step.wait.maxSec ?? 300) * 1000);
@@ -229,10 +252,11 @@ export async function runScenario(scenario, ctx) {
   const monoOfSession = Object.fromEntries((snap?.monos ?? []).filter((m) => m.sessionId).map((m) => [m.sessionId, m.id]));
   const titleOf = Object.fromEntries((snap?.sessions ?? []).map((s) => [s.id, s.title]));
   const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000 || ms(row.updated_at) >= t0);
-  const childOwner = Object.fromEntries((await ctx.delegationRows()).map((row) => [row.child_session, row.owner_mono ?? monoOfSession[row.owner_session] ?? row.owner_session]));
+  const teamName = Object.fromEntries([...chats].map(([name, session]) => [session, `coding-team chat "${name}"`]));
+  const childOwner = Object.fromEntries((await ctx.delegationRows()).map((row) => [row.child_session, row.owner_mono ?? monoOfSession[row.owner_session] ?? teamName[row.owner_session] ?? row.owner_session]));
   const texts = (await ctx.claudeTexts(t0)).map((line) => ({
     ...line,
-    who: monoOfSession[line.session] ?? (childOwner[line.session] ? `worker of ${childOwner[line.session]}` : line.session ? `chat ${titleOf[line.session] ?? line.session}` : "app helper call (room router or title; never shown to Ash)"),
+    who: monoOfSession[line.session] ?? teamName[line.session] ?? (childOwner[line.session] ? `worker of ${childOwner[line.session]}` : line.session ? `chat ${titleOf[line.session] ?? line.session}` : "app helper call (room router or title; never shown to Ash)"),
   }));
   const room = roomMessages(events, roomId, t0);
   const otherRooms = events.filter((e) => e.kind === "room-message" && e.room !== roomId && e.t >= t0);
@@ -267,8 +291,11 @@ export async function runScenario(scenario, ctx) {
       byOwner: rows.reduce((acc, row) => ({ ...acc, [row.owner_mono ?? monoOfSession[row.owner_session] ?? "chat"]: (acc[row.owner_mono ?? monoOfSession[row.owner_session] ?? "chat"] ?? 0) + 1 }), {}),
       states: rows.reduce((acc, row) => ({ ...acc, [row.state]: (acc[row.state] ?? 0) + 1 }), {}),
     },
+    // Parallel workers (baseline, 20 Oct: two shared port 4317 and one killed the other's server): each brief's port,
+    // and which workers had a checkout of their own.
+    workers: workerSpread(rows, snap?.sessions ?? []),
     workersInRoom: room.filter((m) => m.from && !["ash", "chief-of-staff", "projects-manager", "frank", "alfred", "critiquito"].includes(m.from)).map((m) => m.from),
-    replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? s.to.session, firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null, firstWordsSec: s.firstWords?.afterSec ?? null })),
+    replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? (s.to.codingTeam ? `coding team (${s.answer?.session})` : s.to.session), firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null, firstWordsSec: s.firstWords?.afterSec ?? null })),
     // Room posts' length (Ash: short, a few lines).
     postChars: room.filter((m) => m.from !== ASH && m.text).map((m) => m.text.length),
   };
@@ -278,6 +305,23 @@ export async function runScenario(scenario, ctx) {
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
   return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits };
+}
+
+/** The workers of the rows: the port each brief gave it, whether those ports are all different, and their checkouts. */
+export function workerSpread(rows, sessions) {
+  const workers = rows.filter((row) => !row.follow && String(row.brief ?? "").startsWith("[MonoCode brief from "));
+  const ports = workers.map((row) => {
+    const found = /\bPORT=(\d{4,5})\b/.exec(String(row.brief ?? ""));
+    return found ? Number(found[1]) : null;
+  });
+  const given = ports.filter((port) => port != null);
+  const worktreeOf = Object.fromEntries(sessions.map((session) => [session.id, session.worktree ?? null]));
+  return {
+    count: workers.length,
+    ports,
+    distinctPorts: new Set(given).size === given.length,
+    ownCheckouts: workers.filter((row) => worktreeOf[row.child_session]).length,
+  };
 }
 
 /**
@@ -325,7 +369,7 @@ export function transcript(scenario, result, t0) {
     else
       timeline.push({
         t: send.t,
-        line: `**Ash -> ${send.to.room ? `room ${send.to.room}` : send.to.mono ? `${send.to.mono} (1:1)` : `worker chat ${send.to.session}`}**${send.answer?.ok === false ? ` (NOT accepted: ${send.answer.error ?? ""})` : ""}: ${send.text}`,
+        line: `**Ash -> ${send.to.room ? `room ${send.to.room}` : send.to.mono ? `${send.to.mono} (1:1)` : send.to.codingTeam ? `a new chat in ${send.to.codingTeam}'s coding team` : `chat ${send.to.session}`}**${send.answer?.ok === false ? ` (NOT accepted: ${send.answer.error ?? ""})` : ""}: ${send.text}`,
       });
   }
   for (const m of result.room) if (m.from !== ASH) timeline.push({ t: m.t, line: `[room] **${m.from}**${m.quiet ? " (quiet)" : ""}: ${m.text}` });

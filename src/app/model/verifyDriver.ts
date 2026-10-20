@@ -22,6 +22,7 @@ import {
 } from "../../features/hub/model/hubChats";
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
+import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import type { Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
@@ -97,6 +98,8 @@ function sessionRow(session: Session) {
     orchestrationLeadId: session.orchestrationLeadId ?? null,
     mono: mono?.id ?? null,
     monoState: mono ? monoState(session) : null,
+    // A chat in a project's coding team (an orchestrator like the Lead): its project.
+    codingTeam: codingTeamChatProject(session.id) ?? null,
     blocks: session.blocks.length,
     last: lastAssistantText(session),
   };
