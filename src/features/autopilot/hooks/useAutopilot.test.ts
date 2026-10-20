@@ -11,7 +11,7 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import { refreshAutopilot, setAutopilotBackend } from "../model/autopilot";
 import { memoryAutopilot, type MemoryAutopilot } from "../model/memoryAutopilot";
-import { useAutopilot } from "./useAutopilot";
+import { pruneAutopilotMemory, useAutopilot, type AutopilotMemory } from "./useAutopilot";
 
 const HOUR = 3_600_000;
 let root: Root;
@@ -27,10 +27,12 @@ function session(id: string, cwd: string, patch: Partial<Session> = {}): Session
 }
 
 let delegated = new Set<string>();
+let setAll: (change: (sessions: Session[]) => Session[]) => void = () => undefined;
 
 function Harness({ initial }: { initial: Session[] }) {
   const [sessions, setSessions] = useState(initial);
   current = sessions;
+  setAll = setSessions;
   const ref = { current: sessions };
   // As App.tsx wires Today's waiting list: it reads the chats and borrows these hands.
   useEffect(() => noteChats(sessions), [sessions]);
@@ -115,6 +117,33 @@ const approval = (title: string, call: NonNullable<Block["approval"]>["call"] | 
   approval: { requestId: 9, ...(call ? { call } : {}) },
 });
 
+describe("what the hook remembers", () => {
+  it("forgets decided approvals, closed chats' calls and past resets, and keeps what can still come back", () => {
+    const now = Date.now();
+    const open = session("open", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] });
+    const memory: AutopilotMemory = {
+      handled: new Map([
+        // an approval of a chat that closed, and a question of a chat that closed and isn't waiting any more
+        ["a:closed:3:y", "closed"],
+        ["w:closed:line:z", "closed"],
+        // a question of a closed chat that is still on the waiting list, and one of the open chat
+        ["w:listed:5:q", "listed"],
+        ["w:open:line:q", "open"],
+      ]),
+      retryAt: new Map([["w:closed:line:z", now + 30_000]]),
+      triedArm: new Map([
+        ["open:future", { id: "open", resetsAt: now + 3_600_000 }],
+        ["open:past", { id: "open", resetsAt: now - 1 }],
+        ["closed:future", { id: "closed", resetsAt: now + 3_600_000 }],
+      ]),
+    };
+    pruneAutopilotMemory(memory, [open], ["listed"], now);
+    expect([...memory.handled.keys()]).toEqual(["w:listed:5:q", "w:open:line:q"]);
+    expect(memory.retryAt.size).toBe(0);
+    expect([...memory.triedArm.keys()]).toEqual(["open:future"]);
+  });
+});
+
 describe("useAutopilot", () => {
   it("while a project's switch is on, its chats take their recommendation; the red list and other projects wait", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
@@ -169,6 +198,20 @@ describe("useAutopilot", () => {
       expect(byChat[id], id).toMatchObject({ kind: "approval", outcome: "held", detail: expect.stringMatching(/^Not allowed by itself: /) });
     expect(byChat.long.detail).toContain("too long");
     expect(byChat.check).toMatchObject({ kind: "approval", outcome: "taken" });
+  });
+
+  it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    await mount([session("tests", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] })]);
+    expect(approvals).toHaveLength(1);
+    // The app applies the decision; later (a new Claude process numbers its approvals from the start again) the same
+    // request id asks for the same command.
+    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: s.blocks.map((b) => ({ ...b, approval: { ...b.approval!, decided: "allow" as const } })) }))));
+    await settle();
+    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: [...s.blocks, approval("npm test")] }))));
+    await settle();
+    expect(approvals).toHaveLength(2);
   });
 
   it("leaves a delegated worker's question to its Lead, but still decides its approvals", async () => {
