@@ -1962,6 +1962,7 @@ function SidebarComponent({
       <>
         {renderSessionRow(session, compact, {
           badge: stuck.length ? <StuckMark stuck={stuck} hideOnHover={false} /> : undefined,
+          subChatsBelow: true,
         })}
         <TeamSubChats
           parent={session.id}
@@ -2067,12 +2068,14 @@ function SidebarComponent({
       startedOpen = false,
       startedInView = false,
       badge,
+      subChatsBelow = false,
     }: {
       nested?: boolean;
       startedCount?: number;
       startedOpen?: boolean;
       startedInView?: boolean;
       badge?: ReactNode;
+      subChatsBelow?: boolean;
     } = {},
   ) =>
     renamingSessionId === session.id && onRenameSession ? (
@@ -2103,6 +2106,7 @@ function SidebarComponent({
         startedOpen={startedOpen}
         startedInView={startedInView}
         badge={badge}
+        subChatsBelow={subChatsBelow}
         now={now}
         onSelect={cardActions.select}
         onOpenWorkItem={
@@ -5028,6 +5032,7 @@ export const SessionCard = memo(function SessionCard({
   statusLabel,
   mark,
   badge,
+  subChatsBelow = false,
   project,
   now,
   onSelect,
@@ -5072,6 +5077,9 @@ export const SessionCard = memo(function SessionCard({
   mark?: ReactNode;
   /** Beside its status: a coding team's chat is marked when one of its sub-chats is stuck. */
   badge?: ReactNode;
+  /** Its sub-chats' fold sits right under it, as under a coding team's Lead: a footer line with nothing in it but
+   * the hover archive button is not held open, and the button takes the time's place on hover instead. */
+  subChatsBelow?: boolean;
   /** Names its project before the branch, where sessions span several. */
   project?: string;
   now: number;
@@ -5177,6 +5185,19 @@ export const SessionCard = memo(function SessionCard({
     compact && !orchestrationExpanded
       ? null
       : resolveModel(session.harness, session.model).name;
+  // The footer line holds the branch, the work item and the hover archive button. With no branch or work item to show
+  // it would be an empty band between this row and its sub-chats' fold, so the archive button moves up to take the
+  // time's place on hover, as in the dense list.
+  const archiveInHeader =
+    subChatsBelow &&
+    !dense &&
+    !!onArchive &&
+    !gitLabel &&
+    !project &&
+    !(modelInFooter && model) &&
+    !session.linkedWorkItem &&
+    !session.automationId &&
+    !orchestration;
   const statusClass = needsApproval
     ? "text-amber-400"
     : busy
@@ -5188,7 +5209,9 @@ export const SessionCard = memo(function SessionCard({
           : "text-content/45";
   const status = (
     <span
-      className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}`}
+      className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}${
+        archiveInHeader ? " group-focus-within:hidden group-hover:hidden" : ""
+      }`}
     >
       {needsApproval ? (
         <>
@@ -5256,6 +5279,26 @@ export const SessionCard = memo(function SessionCard({
         <CircleDot className="size-3" strokeWidth={1.75} />
       )}
       {dense ? null : <span>#{linkedWorkItem.number}</span>}
+    </button>
+  ) : null;
+
+  const archiveLabel = session.archived ? "Unarchive" : "Archive";
+  const headerArchive = archiveInHeader ? (
+    <button
+      type="button"
+      data-no-drag
+      data-tauri-drag-region="false"
+      title={archiveLabel}
+      aria-label={`${archiveLabel} ${title}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onArchive?.(session.id, !session.archived);
+      }}
+      // Pulled out by its padding so the row keeps its height when it shows.
+      className="-my-0.5 -mr-[3px] hidden size-5 place-items-center rounded-md text-content/50 hover:bg-content/10 hover:text-content group-focus-within:grid group-hover:grid"
+    >
+      <Archive className="size-3 shrink-0" strokeWidth={1.75} />
     </button>
   ) : null;
 
@@ -5409,7 +5452,6 @@ export const SessionCard = memo(function SessionCard({
     prefetchTimer.current = null;
   };
 
-  const archiveLabel = session.archived ? "Unarchive" : "Archive";
   // Expanding an orchestration card must not move its existing header. Keep
   // the collapsed top inset and give only the new detail area extra room at
   // the bottom.
@@ -5650,6 +5692,7 @@ export const SessionCard = memo(function SessionCard({
                   {linkedUpdateDot}
                   {badge}
                   {status}
+                  {headerArchive}
                 </span>
               </span>
             ) : null}
@@ -5674,6 +5717,7 @@ export const SessionCard = memo(function SessionCard({
                     {linkedUpdateDot}
                     {badge}
                     {status}
+                    {headerArchive}
                   </span>
                 )}
               </span>
@@ -5729,7 +5773,7 @@ export const SessionCard = memo(function SessionCard({
                     />
                   </span>
                 ) : null}
-                {onArchive ? (
+                {onArchive && !archiveInHeader ? (
                   <button
                     type="button"
                     data-no-drag

@@ -78,6 +78,16 @@ function rows(lead: string, now: number) {
   ];
 }
 
+/** The space between a chat's own lines (its model and title) and its sub-chats' fold, in pixels: the row's padding and
+ * footer line are in it. */
+const gapUnder = (page: Page, id: string) =>
+  page.evaluate((chat) => {
+    const row = document.querySelector(`[data-session-select="${chat}"]`)!.getBoundingClientRect();
+    const fold = document.querySelector(`[data-sub-chats-toggle="${chat}"]`)!.getBoundingClientRect();
+    return Math.round((fold.top - row.bottom) * 10) / 10;
+  }, id);
+const heightOf = (page: Page, id: string) =>
+  page.evaluate((chat) => document.querySelector(`[data-session-card="${chat}"]`)!.getBoundingClientRect().height, id);
 const leadRow = (page: Page) => page.locator("[data-coding-team-lead]");
 const card = (page: Page, id: string) => page.locator(`[data-session-card="${id}"]`);
 const monoViewShown = (page: Page) =>
@@ -138,7 +148,22 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   await expect(page.locator(`[data-sub-chats="${TEAM_CHAT}"]`)).toHaveCount(0);
   // The Lead's own chat shows what is out and a card per stuck worker, as before.
   await expect(page.locator("[data-delegation-working]:visible").first()).toContainText("1 working: Wire the dodge input");
+  // A chat's fold sits right under its row, as the Lead's does: the row holds no empty line open for a hover button
+  // (Ash, 20 Oct: an empty band between "Fix the save bug" and its "2 sub-chats"), and its Archive still shows on hover
+  // without the row moving.
+  const leadGap = await gapUnder(page, lead);
+  expect(leadGap).toBeLessThan(20);
+  expect(await gapUnder(page, TEAM_CHAT)).toBe(leadGap);
   await shot(page, "1-lead-default-stuck-open");
+  const restingHeight = await heightOf(page, TEAM_CHAT);
+  await card(page, TEAM_CHAT).hover();
+  await expect(card(page, TEAM_CHAT).locator('button[aria-label="Archive Fix the save bug"]')).toBeVisible();
+  await expect(card(page, TEAM_CHAT).getByText("1m")).toBeHidden();
+  expect(await heightOf(page, TEAM_CHAT)).toBe(restingHeight);
+  // (photographed straight away: `shot` closes the layout offer, which moves the pointer off the row)
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: `${SHOTS}/1b-chat-hovered-archive.png` });
+  await page.mouse.move(1200, 600);
 
   // Folded, the Lead's sub-chats say what is stuck; Ash's chat's unfold on a click.
   await page.locator(`[data-sub-chats-toggle="${lead}"]`).click();
