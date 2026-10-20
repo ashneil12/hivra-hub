@@ -414,13 +414,22 @@ function pump(chatId: string): void {
   const r = roomOf(chatId);
   while (r.running.size < MAX_PARALLEL_TURNS) {
     const at = r.queue.findIndex(
-      (w) => !r.running.has(w.monoId) && (w.kind === "back" || !threadOf(r, w.convId).paused) && !roundOpen(r, w),
+      (w) => free(r, w) && (w.kind === "back" || !threadOf(r, w.convId).paused) && !roundOpen(r, w),
     );
     if (at < 0) break;
     const [wake] = r.queue.splice(at, 1);
     void start(chatId, wake);
   }
   settleIfIdle(chatId);
+}
+
+/**
+ * The Mono can take this turn now: it runs nothing else in the room, or (for an answer to Ash) its last turn here went
+ * into its own busy work, where a second wake can follow at once instead of waiting for that work to end.
+ */
+function free(r: RoomRun, wake: Wake): boolean {
+  const run = r.running.get(wake.monoId);
+  return !run || (wake.kind === "answer" && run.mode !== "turn");
 }
 
 /** Turns of the round `wake` answers are still out (in this conversation; a busy Mono's own work doesn't hold it). */
@@ -503,6 +512,8 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   }
   running.mode = outcome.delivery;
   notify();
+  // A newer answer to Ash may have been waiting on this Mono: it can follow into its busy work now.
+  pump(chatId);
   let end: RoomWakeEnd;
   try {
     end = await outcome.done;

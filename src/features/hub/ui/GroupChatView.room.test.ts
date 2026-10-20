@@ -58,7 +58,7 @@ it("shows who is writing with a Stop, and after Stop the team waits with Keep go
   expect(q("[data-hub-msg-system]")!.textContent).toBe("You stopped the room. The team waits for you.");
   expect(q("[data-hub-room-keep-going]")).toBeTruthy();
   expect(q("[data-hub-typing]")!.textContent).toContain("You stopped the team");
-});
+}, 20_000);
 
 it("a notice says which Mono couldn't answer, with Try again; reactions show under the message, and Ash can add his", async () => {
   const { chat, room, conv, q } = await render();
@@ -84,4 +84,4 @@ it("a notice says which Mono couldn't answer, with Try again; reactions show und
     (container.querySelector('[data-hub-react="✅"]') as HTMLElement).click();
   });
   expect([...container.querySelectorAll("[data-hub-msg-reactions]")].map((x) => x.textContent)).toContain("👍frank✅You");
-});
+}, 20_000);

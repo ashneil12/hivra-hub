@@ -337,6 +337,25 @@ it("a Mono busy in its own chat still answers: the turn goes into its work and i
   expect(posts(said(conv))).toEqual(["chief-of-staff", "frank"]);
 });
 
+it("Ash writing again to a host that is busy in its own chat sends a second wake at once, not after that work", async () => {
+  const { chat, id, said } = await room();
+  const script = scripted({
+    "chief-of-staff": () => ({ kind: "wake", delivery: "steered", done: new Promise(() => undefined) }),
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "status?");
+  void chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(script.calls).toHaveLength(1));
+  chat.sendMessage(id, "and the label?", conv);
+  void chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(script.calls).toHaveLength(2));
+  expect(script.calls[1].wakePrompt).toContain("Ash: and the label?");
+  // Its post now answers the newer wake: both of Ash's messages are taken up.
+  chat.postFromMono(id, "chief-of-staff", "Status: round 1 passed; the label is in.");
+  expect(said(conv).at(-1)).toMatchObject({ from: "chief-of-staff", pick: { by: "lead" }, replyTo: said(conv)[1].id });
+  expect(chat.getChat(id)!.conversations[0].answeredThrough).toBe(said(conv)[1].id);
+});
+
 it("never silent: a failed turn leaves a notice naming the Mono, and Try again runs it once more", async () => {
   const { chat, id, said } = await room();
   chat.setGroupChatRunner(
