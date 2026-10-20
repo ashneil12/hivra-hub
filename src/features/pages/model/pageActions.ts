@@ -35,6 +35,10 @@ export type PageActionsHost = {
 };
 
 let host: PageActionsHost | undefined;
+/** The app's hands, when it has lent them (Change the hub sends a screen change to the MonoCode Hub lead with them). */
+export function pageActionsHost(): PageActionsHost | undefined {
+  return host;
+}
 export function setPageActionsHost(next: PageActionsHost): () => void {
   host = next;
   return () => {

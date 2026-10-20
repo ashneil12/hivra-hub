@@ -183,7 +183,10 @@ export function createStudio(ctx) {
     if (!page) throw new Error(`There is no kept page called “${word}”.`);
     if (page.state === "removed") throw new Error("That page was removed. Restore it first (Redo in Bot changes).");
     if (page.state !== "kept") throw new Error("Keep the page first; then it can be rebuilt.");
-    const mono = whoBuilds({ monoId: v.monoId || v.mono_id || page.monoId }, SEATED_ONLY_PAGES);
+    // A Mono's rebuild (ash_page_rebuild) is as itself; a worker never builds.
+    const caller = v._caller && typeof v._caller === "object" ? v._caller : undefined;
+    if (caller?.role === "worker") throw new Error(`${caller.mono_id ?? "unknown"} (worker) cannot do that: workers report to the Lead and never change the ledger.`);
+    const mono = whoBuilds({ monoId: v.monoId || v.mono_id || caller?.mono_id || page.monoId }, SEATED_ONLY_PAGES);
     const prompt = promptOf(v, "Say what should change on the page.");
     const by = monoName(mono);
     const key = `rebuild|${page.id}|${mono}|${words(prompt)}`;
@@ -346,6 +349,9 @@ export function createStudio(ctx) {
   /** The stub's stand-in for the Mono: a few plain requests become operations; anything else is turned down. */
   function interpret(flow, prompt) {
     const t = prompt.toLowerCase();
+    // A screen's look or behaviour is the app itself: the MonoCode Hub lead's work, not a change here.
+    if (/\b(bigger|smaller|colou?r|font|rounder|button|screen|dark mode|look)\b/.test(t))
+      return { appCode: true, turnDown: "Example: that's how a screen looks, which the app draws itself." };
     if (flow === "today") {
       const layout = studio.today;
       const on = (id) => layout.some((s) => s.id === id);
@@ -451,6 +457,7 @@ export function createStudio(ctx) {
     const key = `change|${flow}|${sid}|${mono}|${words(prompt)}`;
     const row = await run(key, by, "preview", () => {
       const got = interpret(flow, prompt);
+      if (got.turnDown && got.appCode) throw new Error(`${by} says this is a change to the app itself: ${got.turnDown}`);
       if (got.turnDown) throw new Error(`${by} turned it down: ${got.turnDown}`);
       let planned;
       try {

@@ -8,7 +8,7 @@
 //   node scripts/hub-stub-ash-os-mcp.mjs --entry --url http://127.0.0.1:<stub port> --token-file <the slot's stub token file>
 //
 // It offers each chat what the real server offers its role (docs/HUB-BACKEND.md in exo-cc-studio): the checker its two
-// tools and a read; anyone else ash_record (only its `check` answer is wired here) and the read. Who is calling comes
+// tools and a read; anyone else ash_record (only its `check` answer is wired here), ash_page_rebuild and the read. Who is calling comes
 // from the entry's env (ASH_MONO_ID, ASH_ROLE, ASH_CHAT, set per chat by the app) and rides on every call as `_caller`,
 // as studio/client.py does; the stub refuses what the studio's lanes refuse.
 import fs from "node:fs";
@@ -82,6 +82,14 @@ const CHAT_TOOLS = [
       check: obj({ id: { type: "string" }, verdict: { type: "string", enum: ["right", "fixed"] }, note: { type: "string" } }, ["id", "verdict"]),
     }),
     action: "check-answer",
+  },
+  {
+    // exo-cc-studio's ash_page_rebuild: a Lead or Mono changes one of Ash's kept Pages from his words; the new version
+    // waits on the page for his tap.
+    name: "ash_page_rebuild",
+    description: "Change one of Ash's kept Pages from his words (page: its title or id; prompt: his words). The new version waits on the page for Ash's one tap (Use it), keeping what he allowed.",
+    inputSchema: obj({ page: { type: "string" }, prompt: { type: "string" }, wait: { type: "number" } }, ["page", "prompt"]),
+    action: "build-page",
   },
   READ,
 ];

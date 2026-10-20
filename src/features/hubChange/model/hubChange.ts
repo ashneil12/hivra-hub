@@ -5,6 +5,7 @@ import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "
 import { clearLocalProjectOrder } from "../../hub/model/projectPrefs";
 import type { HubChangeRecord } from "../../hub/model/types";
 import { BUILD_WAIT_SECONDS, isSeatedMono, isStillBuilding } from "../../pages/model/buildPage";
+import { isAppChange } from "./appChange";
 
 /**
  * The seam for Level 2 changes (docs/hub-change-contract.md): Change the hub, Edit Today by chat, and Connect data.
@@ -22,6 +23,8 @@ export type ChangeResult =
   | { status: "not-connected"; reason: string }
   /** The Mono is still building the preview: Try again collects it (the same request never builds twice). */
   | { status: "building"; reason: string }
+  /** It changes the app itself (a screen's look or behaviour): the MonoCode Hub lead's work (appChange.ts). */
+  | { status: "app-change"; reason: string }
   | { status: "error"; reason: string };
 
 export const CHANGE_ACTIONS = { preview: "ash-hub-change-preview", apply: "ash-hub-change-apply", discard: "ash-hub-change-discard", undo: "ash-hub-change-undo", redo: "ash-hub-change-redo" } as const;
@@ -44,6 +47,8 @@ export function changeStubOn(): boolean {
 
 export type ChangeDeps = { transport?: HubTransport; roster?: readonly { id: string }[]; stub?: boolean };
 const NAMES: Record<string, string> = { "projects-manager": "Projects Manager", "chief-of-staff": "Chief of Staff" };
+/** Dev stub only: words that ask for a screen's look or behaviour. */
+const STUB_SCREEN = /\b(bigger|smaller|colou?r|font|rounder|button|screen|dark mode|look)\b/i;
 
 function validPreview(raw: unknown): ChangePreview | undefined {
   const x = raw as ChangePreview | undefined;
@@ -65,6 +70,7 @@ function notConnected(flow: ChangeFlow, e: unknown): ChangeResult {
   if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: NOT_WIRED[flow] };
   if (err.kind === "timeout") return { status: "building", reason: "The preview is taking a while. Press Try again in a moment to see it." };
   if (isStillBuilding(err.message)) return { status: "building", reason: err.message };
+  if (isAppChange(err.message)) return { status: "app-change", reason: err.message };
   // Ash OS says "isn't wired" for Connect data before any Mono runs.
   if (/isn't wired/i.test(err.message)) return { status: "not-connected", reason: err.message };
   if (/turned it down|doesn't fit/i.test(err.message) || err.message === SEATED_ONLY) return { status: "turned-down", reason: err.message };
@@ -74,7 +80,11 @@ function notConnected(flow: ChangeFlow, e: unknown): ChangeResult {
 export async function requestChange(req: ChangeRequest, deps: ChangeDeps = {}): Promise<ChangeResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY };
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what should change." };
-  if (deps.stub ?? changeStubOn()) return { status: "ready", preview: stubPreview(req) };
+  if (deps.stub ?? changeStubOn()) {
+    if (req.flow !== "connect" && STUB_SCREEN.test(req.prompt))
+      return { status: "app-change", reason: `${NAMES[req.monoId] ?? req.monoId} says this is a change to the app itself: Example: that's how a screen looks.` };
+    return { status: "ready", preview: stubPreview(req) };
+  }
   try {
     const raw = await call<unknown>(CHANGE_ACTIONS.preview, { ...req, wait: BUILD_WAIT_SECONDS }, deps, ["changes"]);
     const preview = validPreview(raw);

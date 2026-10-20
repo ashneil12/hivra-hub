@@ -34,6 +34,11 @@ type ChangePreview = { previewId: string; title: string; by: string /* the Mono'
   - `hub`: changes to the hub itself, such as the sidebar or layout. Limits: no keys or Keychain, no account sign-ins, no deleting projects or Monos, no skipping the preview.
   - `today`: changes to the Today board. Same limits and same flow.
   - `connect`: hooks a page or dashboard to Ash's own backend or private data, set up by the Mono with no source download. Passwords and keys go only to the Mac Keychain, through the existing key flow.
+- **A change to the app itself** (how a screen looks or works): not a change here. The Mono answers `turnDown` with
+  `appCode: true` and Ash OS says "<Mono> says this is a change to the app itself: <why>". The app shows **This changes
+  the app itself** with why, and **Send to MonoCode Hub lead** (`appChange.ts`): his words go into that Lead's own chat
+  through the composer's send, ending "(sent from Change the hub)"; the Lead makes it in a worktree, shows him a dev copy
+  to try, and ships it when he says so. The Change the hub and Edit Today screens say so under the limits line.
 - **Dev only:** example previews show when `localStorage["monocode:hub-change-dev-stub"] = "1"`. Every made-up row starts with "Example:".
 
 ## What the Mono is told

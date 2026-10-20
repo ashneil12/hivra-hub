@@ -7,6 +7,7 @@ import {
   applyChange, changeLine, discardChange, FLOW_LABEL, HUB_CANT, redoChange, requestChange, SEATED_ONLY, undoChange, type ChangeFlow, type ChangeResult,
   type ChangeSide,
 } from "../model/hubChange";
+import { APP_CHANGE_NOTE, APP_CHANGE_WHY, openHubLead, sendToHubLead } from "../model/appChange";
 
 /**
  * Level 2: a seated Mono builds the change as a preview; Now beside Preview; Apply or Discard. Ash OS keeps every change
@@ -95,7 +96,7 @@ function History({ flow }: { flow: ChangeFlow }) {
 
 export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projectId: string }) {
   const [text, setText] = useState("");
-  const [state, setState] = useState<{ prompt: string; result?: ChangeResult; applied?: boolean; undoProblem?: string }>();
+  const [state, setState] = useState<{ prompt: string; result?: ChangeResult; applied?: boolean; undoProblem?: string; lead?: { sending?: boolean; sent?: string; problem?: string } }>();
   // Who builds it: any seated Mono (never a temporary worker), Projects Manager first.
   const seated = listMonos().map((m) => ({ id: m.id, name: m.name ?? m.id }));
   const [picked, setPicked] = useState<string>();
@@ -111,7 +112,8 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
     <div className="mx-auto w-full max-w-4xl px-8 py-6" data-hub-change={flow}>
       <h1 className="text-[17px] font-medium text-content">{FLOW_LABEL[flow]}</h1>
       <p className="mt-1 text-[12px] text-content/60" data-hub-change-cant>{HUB_CANT}</p>
-      <p className="mb-4 mt-1 text-[12px] text-content/60">{SEATED_ONLY}</p>
+      <p className={`${flow === "connect" ? "mb-4 " : ""}mt-1 text-[12px] text-content/60`}>{SEATED_ONLY}</p>
+      {flow === "connect" ? null : <p className="mb-4 mt-1 text-[12px] text-content/60" data-hub-change-app-note>{APP_CHANGE_NOTE}</p>}
       {!state ? (
         <form className={`${card} flex items-center gap-2 px-3 py-2`} onSubmit={(e) => { e.preventDefault(); if (text.trim()) ask(text.trim()); }}>
           <input aria-label={`Ask for: ${FLOW_LABEL[flow]}`} value={text} onChange={(e) => setText(e.target.value)} placeholder={PLACEHOLDER[flow]}
@@ -141,6 +143,31 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
             <button type="button" className={quietBtn} onClick={reset}>Back</button>
             <button type="button" className={primaryBtn} data-hub-change-try-again onClick={() => ask(state.prompt)}>Try again</button>
           </div>
+        </div>
+      ) : r.status === "app-change" ? (
+        <div className={`${card} p-5`} data-hub-change-app-change>
+          <div className="text-[14px] text-content">This changes the app itself</div>
+          <p className="mt-1 text-[13px] leading-5 text-content/70">{r.reason}</p>
+          <p className="mt-2 text-[13px] leading-5 text-content/70">{APP_CHANGE_WHY}</p>
+          {state.lead?.sent ? (
+            <div className="mt-3 flex items-center gap-2" role="status" data-hub-change-sent-lead>
+              <span className="min-w-0 flex-1 text-[13px] text-content/85">Sent to {state.lead.sent}. It shows you a copy of the app to try before anything changes.</span>
+              <button type="button" className={quietBtn} onClick={openHubLead}>Open the chat</button>
+              <button type="button" className={quietBtn} onClick={reset}>Ask for another</button>
+            </div>
+          ) : (
+            <>
+              {state.lead?.problem ? <div className="mt-2 text-[12px] text-content/70" role="alert">{state.lead.problem}</div> : null}
+              <div className="mt-3 flex gap-2">
+                <button type="button" className={quietBtn} onClick={() => setState(undefined)}>Back</button>
+                <button type="button" className={primaryBtn} data-hub-change-send-lead disabled={!!state.lead?.sending}
+                  onClick={() => {
+                    setState({ ...state, lead: { sending: true } });
+                    void sendToHubLead(state.prompt).then((out) => setState((now) => now && { ...now, lead: out.ok ? { sent: out.lead } : { problem: out.reason } }));
+                  }}>Send to MonoCode Hub lead</button>
+              </div>
+            </>
+          )}
         </div>
       ) : r.status === "not-connected" ? (
         <div className={`${card} p-5`} data-hub-change-not-connected>
