@@ -3,6 +3,7 @@
 // the Lead's batch row, a worker's "Runs on its own" line, a Lead's "Waiting on N" and the Monos sidebar read them, so
 // none of them needs props threaded through the workspace.
 import { useSyncExternalStore } from "react";
+import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { Delegation } from "./delegations";
 import type { StopTreeResult } from "./stopTree";
 
@@ -16,6 +17,12 @@ export type DelegationActions = {
   stopTree(chat: string): Promise<StopTreeResult>;
   /** Ash's Stop on one row of a Lead's batch: that task and everything beneath it. */
   stopRow(row: Delegation): Promise<StopTreeResult>;
+  /** Ash is about to answer a worker's question himself (a stuck card): its row's log names him and the answer. */
+  noteAnswer?(
+    childSession: string,
+    requestId: number,
+    reply: UserQuestionReply,
+  ): void;
 };
 
 let rows: readonly Delegation[] = [];

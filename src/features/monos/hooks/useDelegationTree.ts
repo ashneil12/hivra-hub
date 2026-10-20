@@ -230,6 +230,8 @@ export function useDelegationTree(options: {
             return result;
           }),
         stopRow: (row) => taskStop(row, ASH_STOP_REASON, "user"),
+        noteAnswer: (child, requestId, reply) =>
+          questions.current!.noteAnswer(child, requestId, "user", reply),
       }),
     [treeStop, taskStop],
   );

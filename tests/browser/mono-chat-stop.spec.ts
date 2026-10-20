@@ -27,7 +27,7 @@ test("the pop-out chat shows the main chat's Stops while there is work, and they
   const popout = page.frameLocator("#floating");
   await expect.poll(async () => (await proof(page)).held).toBe(true);
 
-  // Working: the run's Stop and "Waiting on 1 · Stop all" in the main chat, and the same in the pop-out.
+  // Working: the run's Stop and "Delegated 1: 1 working · Stop all" in the main chat, and the same in the pop-out.
   const runStatus = main.locator("[data-workflow-run] [data-workflow-status]").first();
   await expect(runStatus).toHaveText("Scan · 0 of 2 agents done");
   await expect(main.locator("[data-workflow-stop]")).toBeVisible();
@@ -36,7 +36,7 @@ test("the pop-out chat shows the main chat's Stops while there is work, and they
     "Scan · 0 of 2 agents done",
   );
   await expect(popout.locator("[data-workflow-stop]")).toBeVisible();
-  await expect(popout.locator('[data-delegation-waiting="1"]')).toContainText("Waiting on 1");
+  await expect(popout.locator('[data-delegation-waiting="1"]')).toContainText("Delegated 1: 1 working");
   await expect(popout.locator('[data-delegation-waiting="1"] [data-delegation-stop-all]')).toBeVisible();
   await expect(popout.getByRole("button", { name: "Stop reply" })).toBeVisible();
   await shot(page, "mono-chat-stop-1-working");

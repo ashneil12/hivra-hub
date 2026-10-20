@@ -1,5 +1,6 @@
 // What a chat's pane adds for the delegation tree (H4): a worker's chat runs on its own ("Runs on its own · Open
-// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads "Waiting on N" with one Stop.
+// <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads its rollup ("Delegated 3: 2
+// working, 1 failed") with one Stop, and a card for each worker that is stuck (asking, stalled or failed).
 import {
   delegationActions,
   hasJumpedIn,
@@ -16,6 +17,13 @@ import {
   waitingOn,
 } from "../model/delegationView";
 import { findMono, listMonos, monoForSession, monoLook } from "../model/mono";
+import {
+  leadRollup,
+  stuckOwnedBy,
+  useStuckDismissalsVersion,
+  type StuckWorker,
+} from "../model/workerStuck";
+import { useClock } from "./useStuckWorkers";
 
 export type DelegationPane =
   | {
@@ -28,6 +36,11 @@ export type DelegationPane =
   | {
       kind: "lead";
       count: number;
+      /** "Delegated 3: 2 working, 1 failed": the work it has out now. */
+      rollup?: string;
+      /** Its workers that are stuck, oldest first, read at `now`. */
+      stuck: StuckWorker[];
+      now: number;
       failed: string[];
       /** Chats whose workers the last Stop couldn't load: they may still be running. */
       unloaded: string[];
@@ -39,8 +52,12 @@ export function useDelegationPane(
   isMono: boolean,
 ): DelegationPane | undefined {
   const rows = useDelegationRows();
+  useStuckDismissalsVersion();
+  const now = useClock();
   if (isMono) {
     const count = waitingOn(sessionId, rows);
+    const stuck = stuckOwnedBy(sessionId, rows, now);
+    const rollup = leadRollup(sessionId, rows, now);
     const failed = stopFailures(sessionId).map(
       (id) => delegationOf(id, rows)?.title?.trim() || "a worker",
     );
@@ -52,11 +69,15 @@ export function useDelegationPane(
         (mono ? monoLook(mono).name : "a worker")
       );
     });
-    if (!count && !failed.length && !unloaded.length) return undefined;
+    if (!count && !failed.length && !unloaded.length && !stuck.length)
+      return undefined;
     const actions = delegationActions();
     return {
       kind: "lead",
       count,
+      ...(rollup ? { rollup } : {}),
+      stuck,
+      now,
       failed,
       unloaded,
       ...(actions

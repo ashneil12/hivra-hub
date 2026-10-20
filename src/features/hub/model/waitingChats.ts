@@ -286,6 +286,28 @@ export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine">): b
   return !!chat.pick && !chat.redLine;
 }
 
+// ---- the same hands, for a stuck worker (H4: monos/model/stuckActions.ts) --------------------------------------------
+// A worker's question is its Lead's first, so it isn't in this list; Ash can still answer it from the stuck card.
+
+/** A chat's live AskUserQuestion, if this window has it. */
+export function liveChatQuestion(sessionId: string): UserQuestionPrompt | undefined {
+  return host?.liveQuestion(sessionId);
+}
+
+/** Answer a chat's live question in place; false when the app's hands aren't there or it moved on. */
+export function respondInChat(sessionId: string, requestId: number, reply: UserQuestionReply): boolean {
+  const prompt = host?.liveQuestion(sessionId);
+  if (!host || prompt?.requestId !== requestId) return false;
+  host.respond(sessionId, requestId, reply);
+  return true;
+}
+
+/** Ash's words into a chat as his next message (mid-turn it steers or queues, as the composer does). */
+export async function sendToChat(sessionId: string, text: string): Promise<boolean> {
+  if (!host || !text.trim()) return false;
+  return host.send(sessionId, text.trim()).catch(() => false);
+}
+
 /** The app lends its hands; the returned function takes them back. */
 export function setWaitingChatsHost(next: WaitingChatsHost): () => void {
   host = next;

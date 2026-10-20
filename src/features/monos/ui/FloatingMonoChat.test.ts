@@ -361,7 +361,7 @@ it("has the main chat's Stops: the run's, and Stop all while work is out, both d
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   const waiting = container.querySelector('[data-delegation-waiting="1"]')!;
-  expect(waiting.textContent).toContain("Waiting on 1");
+  expect(waiting.textContent).toContain("Delegated 1: 1 working");
   await act(async () => {
     (
       waiting.querySelector("[data-delegation-stop-all]") as HTMLButtonElement

@@ -66,7 +66,12 @@ export function launchState(
   view: LaunchedSessionView | undefined,
   row: Pick<Delegation, "state" | "stallKind"> | undefined,
 ): RollupState | undefined {
-  if (row?.state === "running" && row.stallKind && (!view || view.state === "working")) return "stuck";
+  if (
+    row?.state === "running" &&
+    row.stallKind &&
+    (!view || view.state === "working")
+  )
+    return "stuck";
   return view?.state ?? (row ? ROW_STATE[row.state] : undefined);
 }
 

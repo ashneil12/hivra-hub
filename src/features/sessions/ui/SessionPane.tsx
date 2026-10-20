@@ -1197,6 +1197,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   {delegationPane?.kind === "lead" ? (
                     <DelegationWaitingLine
                       count={delegationPane.count}
+                      rollup={delegationPane.rollup}
+                      stuck={delegationPane.stuck}
+                      now={delegationPane.now}
                       failed={delegationPane.failed}
                       unloaded={delegationPane.unloaded}
                       onStopAll={delegationPane.onStopAll}

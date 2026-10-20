@@ -1,0 +1,191 @@
+// @vitest-environment happy-dom
+// A stuck worker in its Lead's chat (H4; Ash 20 Oct): a card per worker that asks, stalled or failed, above the Lead's
+// line, answerable in one or two clicks: an option of its question, its pick or Ash's words, a message to a stalled
+// worker, Open (its chat under the Mono), Stop, and Dismiss for a failure. The line reads like the batch ("Delegated 3:
+// 1 working, 1 asking, 1 failed"), never just "busy".
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetWaitingChats, setWaitingChatsHost } from "../../hub/model/waitingChats";
+import type { UserQuestionPrompt } from "../../sessions/model/userQuestion";
+import { useDelegationPane } from "../hooks/useDelegationPane";
+import type { Delegation } from "../model/delegations";
+import { resetDelegationStore, setDelegationActions, setDelegationRows } from "../model/delegationStore";
+import { createMono, updateMono } from "../model/mono";
+import { resetStuckDismissals } from "../model/workerStuck";
+import { DelegationWaitingLine } from "./DelegationNotices";
+
+let root: Root;
+let container: HTMLElement;
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const stored = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+    removeItem: (key: string) => stored.delete(key),
+  });
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  resetDelegationStore();
+  resetWaitingChats();
+  resetStuckDismissals();
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+const now = Date.now();
+function row(id: string, child: string, patch: Partial<Delegation> = {}): Delegation {
+  return {
+    id,
+    ownerSession: "lead-chat",
+    ownerMono: null,
+    batchId: "turn-1",
+    parentId: null,
+    rootId: id,
+    childSession: child,
+    requestId: child,
+    generation: 1,
+    project: "vg-game",
+    title: `Job ${child}`,
+    brief: null,
+    goal: null,
+    askIds: [],
+    state: "running",
+    errorClass: null,
+    error: null,
+    retryable: null,
+    resetsAt: null,
+    result: null,
+    pendingQuestion: null,
+    delivery: "pending",
+    deliveryMessage: null,
+    createdAt: now - 20 * 60_000,
+    updatedAt: now - 20 * 60_000,
+    settledAt: null,
+    log: [],
+    version: 1,
+    mirroredVersion: 0,
+    mirrorError: null,
+    ...patch,
+  };
+}
+
+function LeadLine() {
+  const pane = useDelegationPane("lead-chat", true);
+  return pane?.kind === "lead"
+    ? createElement(DelegationWaitingLine, {
+        count: pane.count,
+        rollup: pane.rollup,
+        stuck: pane.stuck,
+        now: pane.now,
+        failed: pane.failed,
+        unloaded: pane.unloaded,
+        onStopAll: pane.onStopAll,
+      })
+    : null;
+}
+
+const question: UserQuestionPrompt = {
+  requestId: 7,
+  questions: [
+    {
+      id: "q1",
+      prompt: "Which save format?",
+      multiSelect: false,
+      allowCustom: true,
+      options: [
+        { id: "json", label: "JSON" },
+        { id: "bin", label: "Binary (Recommended)" },
+      ],
+    },
+  ],
+};
+
+describe("stuck workers in the Lead's chat", () => {
+  function setup() {
+    const lead = createMono(["/code/vg-game"]);
+    updateMono(lead.id, (mono) => ({ ...mono, name: "EXO lead", sessionId: "lead-chat" }));
+    setDelegationRows([
+      row("t-1", "w1"),
+      row("t-2", "w2", {
+        state: "question",
+        pendingQuestion: "Which save format? [JSON | Binary (Recommended)]",
+        log: [{ at: now - 30_000, by: "worker:w2", event: "asked" }],
+      }),
+      row("t-3", "w3", { stallKind: "quiet", stallReason: "Still running npm test", stalledAt: now - 9 * 60_000 }),
+      row("t-4", "w4", { state: "failed", errorClass: "billing", error: "402 Payment Required", settledAt: now - 60_000 }),
+    ]);
+    const actions = {
+      openOwner: vi.fn(),
+      openChild: vi.fn(),
+      stopTree: vi.fn(),
+      stopRow: vi.fn(async () => ({ stopped: ["w3"], cancelled: ["t-3"], stopFailed: [] })),
+      noteAnswer: vi.fn(),
+    };
+    setDelegationActions(actions);
+    const host = {
+      liveQuestion: (id: string) => (id === "w2" ? question : undefined),
+      respond: vi.fn(),
+      send: vi.fn(async () => true),
+      open: vi.fn(),
+    };
+    setWaitingChatsHost(host);
+    act(() => root.render(createElement(LeadLine)));
+    const card = (child: string) => container.querySelector<HTMLElement>(`[data-stuck-worker="${child}"]`);
+    return { actions, host, card };
+  }
+
+  it("shows one card per stuck worker, oldest first, with what it asked, why it failed and how it stalled", () => {
+    const { card } = setup();
+    expect([...container.querySelectorAll<HTMLElement>("[data-stuck-worker]")].map((c) => [c.dataset.stuckWorker, c.dataset.stuckKind])).toEqual([
+      ["w3", "stalled"],
+      ["w4", "failed"],
+      ["w2", "asking"],
+    ]);
+    expect(card("w3")!.querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · still running npm test");
+    expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Failed: billing refused");
+    expect(card("w2")!.querySelector("[data-stuck-where]")!.textContent).toBe("Job w2");
+    expect(card("w2")!.textContent).toContain("asking EXO lead");
+    expect(container.querySelector("[data-delegation-rollup-line]")!.textContent).toBe(
+      "Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed",
+    );
+  });
+
+  it("answers a question with one click on an option, the worker's pick first, and names Ash in the row's log", async () => {
+    const { card, host, actions } = setup();
+    const options = [...card("w2")!.querySelectorAll<HTMLButtonElement>("[data-stuck-option]")];
+    expect(options.map((b) => b.textContent)).toEqual(["Binary", "JSON"]);
+    await act(async () => options[0].click());
+    expect(actions.noteAnswer).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
+    expect(host.respond).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
+  });
+
+  it("tells a stalled worker what to do, stops it, or opens its chat under its Mono", async () => {
+    const { card, host, actions } = setup();
+    const input = card("w3")!.querySelector<HTMLInputElement>("[data-stuck-reply]")!;
+    act(() => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(input, "Skip the flaky test and carry on");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => card("w3")!.querySelector<HTMLButtonElement>("[data-stuck-send]")!.click());
+    expect(host.send).toHaveBeenCalledWith("w3", "Skip the flaky test and carry on");
+    expect(container.querySelector('[data-stuck-done="w3"]')?.textContent).toContain("Skip the flaky test");
+    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
+    expect(actions.openChild).toHaveBeenCalledWith("lead-chat", "w4");
+    await act(async () => card("w2")!.querySelector<HTMLButtonElement>("[data-stuck-stop]")!.click());
+    expect(actions.stopRow).toHaveBeenCalledWith(expect.objectContaining({ id: "t-2" }));
+  });
+
+  it("sets a failure aside with Dismiss; the rest stay", () => {
+    const { card } = setup();
+    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!.click());
+    expect(card("w4")).toBeNull();
+    expect(card("w3")).not.toBeNull();
+  });
+});
