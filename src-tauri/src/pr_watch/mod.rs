@@ -233,6 +233,7 @@ impl Watch {
             url: &self.url,
             title: &self.title,
             base_ref: &self.base_ref,
+            head_ref: &self.head_ref,
             head_sha: self.head_sha.as_deref(),
         }
     }

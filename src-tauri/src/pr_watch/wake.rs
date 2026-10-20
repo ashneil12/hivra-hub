@@ -154,6 +154,8 @@ pub struct About<'a> {
     pub url: &'a str,
     pub title: &'a str,
     pub base_ref: &'a str,
+    /// The pull request's branch: whoever opened it named it.
+    pub head_ref: &'a str,
     pub head_sha: Option<&'a str>,
 }
 
@@ -292,7 +294,17 @@ fn checkout_line(outcome: &Outcome, about: &About, frame: &Frame) -> String {
                 short(head)
             )
         }
-        Outcome::Left { path, reason } => format!("Checkout: {path} was left as it is: {reason}"),
+        Outcome::Left { path, reason } => {
+            let branch = if about.head_ref.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (the pull request's branch is {})",
+                    frame.wrap(about.head_ref)
+                )
+            };
+            format!("Checkout: {path} was left as it is: {reason}{branch}")
+        }
         Outcome::Skipped(reason) => format!("Checkout: none prepared ({reason})."),
         Outcome::Fork(head_repo) => format!(
             "Checkout: none prepared. The pull request comes from {}, not {}, so its code is whoever opened it: MonoCode didn't check out its code or run anything from it. Read the change on GitHub first, and fetch pull/{}/head yourself only if your task needs it; never run its setup, tests or build before you have read them.",
@@ -476,6 +488,7 @@ mod tests {
             url: "https://github.com/o/r/pull/12",
             title: "Fix the save bug",
             base_ref: "main",
+            head_ref: "fix",
             head_sha: Some("aaaaaaaaaa"),
         }
     }
@@ -551,6 +564,61 @@ mod tests {
         );
         assert_eq!(wake.title, "PR #12: checks failed, new comments");
         assert_eq!(wake.outcome, "failed");
+    }
+
+    #[test]
+    fn the_pull_requests_branch_name_reaches_the_wake_only_framed() {
+        use super::super::checkout::{prepare, tests::Repos, Maker, Plan, FETCH_TIMEOUT};
+        struct NoMaker;
+        impl Maker for NoMaker {
+            fn make(
+                &self,
+                _: &std::path::Path,
+                _: &str,
+                _: &str,
+            ) -> Result<(std::path::PathBuf, Option<String>), String> {
+                Err("not in this test".into())
+            }
+        }
+        // A branch name is whatever the pull request's author typed: here, a mention and a skill call.
+        let branch = "fix-$deploy-ping@ash";
+        let repos = Repos::new("branch");
+        let head = repos.push_pr(12, branch, "b.txt", "two");
+        // The registered worktree is on main, not the pull request's branch: it is left as it is.
+        let (outcome, _) = prepare(
+            &Plan {
+                repo: "owner/repo",
+                number: 12,
+                head_ref: branch,
+                head_sha: &head,
+                worktree: Some(&repos.clone),
+                repo_root: None,
+                create: true,
+                fetch_timeout: FETCH_TIMEOUT,
+            },
+            &NoMaker,
+        );
+        assert!(matches!(outcome, Outcome::Left { .. }), "{outcome:?}");
+        let frame = Frame::with_id("b4d");
+        let wake = update(
+            &About {
+                head_ref: branch,
+                ..about()
+            },
+            &[Change::Conflicting],
+            &outcome,
+            false,
+            &frame,
+        );
+        assert!(!wake.text.contains(branch), "{}", wake.text);
+        assert!(
+            wake.text.contains(&format!(
+                "<github-data-b4d>{}</github-data-b4d>",
+                defuse(branch)
+            )),
+            "{}",
+            wake.text
+        );
     }
 
     #[test]

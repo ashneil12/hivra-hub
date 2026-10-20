@@ -178,9 +178,9 @@ fn sync(dir: &Path, plan: &Plan, ours: bool) -> Outcome {
     let mine = format!("mc/pr-{}", plan.number);
     if let Some(branch) = branch.as_deref() {
         if branch != plan.head_ref && branch != mine && !ours {
+            // The pull request's branch name is its author's words: the wake frames it (wake.rs), never this reason.
             return left(format!(
-                "it is on branch {branch}, not the pull request's {}",
-                plan.head_ref
+                "it is on branch {branch}, not the pull request's branch"
             ));
         }
     }
