@@ -270,6 +270,16 @@ function statusView(row: Delegation, child: TaskChild | undefined) {
     activity: activity(row, child),
     lastActiveAt: lastActiveAt(row, child),
     hasPendingQuestion: row.state === "question",
+    // Stuck without asking or failing (workerStall.ts): steer it with a message, or cancel it and brief again.
+    ...(row.state === "running" && row.stallKind
+      ? {
+          stalled: {
+            kind: row.stallKind,
+            ...(row.stallReason ? { reason: row.stallReason } : {}),
+            ...(iso(row.stalledAt) ? { since: iso(row.stalledAt) } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -497,17 +507,22 @@ async function wait(source: Session, input: Record<string, unknown>, host: Agent
   try {
     let rows = ids ? await ownRows(source, tasks, ids) : await tasks.owned(source.id, {});
     const watched = ids ?? rows.filter(isOpenDelegation).map((row) => row.id);
+    // A worker that stalls during the wait ends it too (one already stalled when it began is only reported).
+    const stalledBefore = new Set(rows.filter((row) => row.stallKind).map((row) => row.id));
     for (;;) {
       const mine = watched.flatMap((id) => rows.filter((row) => row.id === id));
       const settled = mine.filter((row) => row.state !== "running").map((row) => row.id);
       const running = mine.length - settled.length;
+      const stalled = mine.filter((row) => row.state === "running" && row.stallKind).map((row) => row.id);
+      const newlyStalled = stalled.some((id) => !stalledBefore.has(id));
       const left = deadline - now();
-      if (settled.length || !running || left <= 0)
+      if (settled.length || !running || newlyStalled || left <= 0)
         return {
           tasks: mine.map((row) => statusView(row, tasks.child?.(row.childSession))),
           settled,
           running,
-          timedOut: !settled.length && running > 0,
+          ...(stalled.length ? { stalled } : {}),
+          timedOut: !settled.length && !newlyStalled && running > 0,
           ...(mine.some((row) => row.state === "question") ? { hasPendingQuestion: true } : {}),
         };
       await tasks.nextChange(Math.min(left, WAIT_POLL_MS));

@@ -44,6 +44,7 @@ import {
   type StopTreeResult,
 } from "../model/stopTree";
 import { useDelegationFeed } from "./useDelegationFeed";
+import { useStallWatch } from "./useStallWatch";
 
 /** What Ash's own Stop records on the rows it cancels. */
 export const ASH_STOP_REASON = "Stopped by Ash.";
@@ -119,6 +120,8 @@ export function useDelegationTree(options: {
   }, [sessions]);
 
   useDelegationFeed(backend);
+  // Workers that went quiet, loop or stopped without a report are marked stalled on their rows (workerStall.ts).
+  useStallWatch(options);
 
   const host = useRef<StopTreeHost | null>(null);
   host.current ??= {

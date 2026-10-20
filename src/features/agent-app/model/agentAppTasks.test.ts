@@ -512,6 +512,30 @@ describe("questions and the tree (H4)", () => {
     expect(waiting).toEqual([true, false, true, false]);
   });
 
+  it("ends a wait when a worker stalls, and says how it is stuck, so the Lead can steer or stop it", async () => {
+    const rows = [row({ id: "t-1" }), row({ id: "t-2" })];
+    const { source, host, api } = fixture(rows);
+    api.nextChange = vi.fn(async () => {
+      Object.assign(rows[0], { stallKind: "quiet", stallReason: "Still running npm test", stalledAt: 1_500 });
+    });
+    const result = await handleAgentApp(source, "sw1", "tasks.wait", { timeoutSeconds: 25 }, host);
+    expect(result).toMatchObject({
+      settled: [],
+      running: 2,
+      stalled: ["t-1"],
+      timedOut: false,
+      tasks: [
+        {
+          taskId: "t-1",
+          status: "running",
+          stalled: { kind: "quiet", reason: "Still running npm test", since: new Date(1_500).toISOString() },
+        },
+        { taskId: "t-2", status: "running" },
+      ],
+    });
+    expect((result as { tasks: Array<Record<string, unknown>> }).tasks[1].stalled).toBeUndefined();
+  });
+
   it("says how many tasks beneath a cancelled one stopped with it", async () => {
     const rows = [row({ id: "t-1" })];
     const { source, host, api } = fixture(rows);

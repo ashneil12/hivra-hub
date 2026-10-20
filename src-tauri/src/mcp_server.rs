@@ -15,7 +15,7 @@
 //!
 //! Stdout carries only JSON-RPC; nothing else may be written to it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,10 +40,12 @@ const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job 
 under yours and is stored as a task: it reports back to you as a new turn ([MonoCode report]) once you are idle, even \
 across restarts. Put Ash's own words and the full context in brief, the Ash OS ask ids it covers in asks, and the \
 finish line in goal. After an async delegation, say in one line what you started and end your turn instead of polling. \
-task_status reads results (a result read here is not reported again), task_wait blocks until a task finishes or asks \
-a question, task_cancel stops a task and everything beneath it, task_answer answers your worker's question. A \
+task_status reads results (a result read here is not reported again), task_wait blocks until a task finishes, asks \
+a question or stalls, task_cancel stops a task and everything beneath it, task_answer answers your worker's question. A \
 worker's question reaches you as a [MonoCode question] turn (or task_wait returns hasPendingQuestion): answer it from \
-the brief or Ash's words; only a real choice goes to Ash, asked in your own chat with your pick. pr_watch has \
+the brief or Ash's words; only a real choice goes to Ash, asked in your own chat with your pick. A worker that went \
+quiet, loops or stopped without reporting shows `stalled` (task_status, task_wait): send it a message to steer it, or \
+task_cancel it and brief again. pr_watch has \
 MonoCode watch a pull request you opened and wake you only when a required check fails or they all pass, someone else \
 comments, the branch conflicts, or it merges: register every pull request, then end your turn instead of polling.";
 
@@ -238,7 +240,7 @@ fn tools() -> Value {
         {
             "name": "task_wait",
             "title": "Wait for your tasks",
-            "description": "Block until one of your running tasks finishes or asks a question, or timeoutMinutes pass. Returns status only (read results with task_status). Prefer ending your turn: finished tasks report back on their own.",
+            "description": "Block until one of your running tasks finishes, asks a question or stalls (`stalled`: no output for minutes, the same step over and over, or idle without a report), or timeoutMinutes pass. Returns status only (read results with task_status). Prefer ending your turn: finished tasks report back on their own.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "taskIds": task_ids, "timeoutMinutes": wait_minutes },
@@ -381,7 +383,7 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         return Ok(out);
     };
     let ids = vec![task.to_string()];
-    let (last, timed_out) = wait_slices(call, &ids, budget)?;
+    let (last, timed_out) = wait_slices(call, &ids, &HashSet::new(), budget)?;
     if timed_out {
         out["waitTimedOut"] = json!(true);
         if let Some(status) = status_of(&last, task) {
@@ -436,6 +438,19 @@ fn running_ids(wait: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The tasks a wait answer says are stalled (still running, but stuck: workerStall.ts).
+fn stalled_ids(wait: &Value) -> HashSet<String> {
+    wait.get("stalled")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A wait answer with news: a task left running (finished or asking), or nothing runs any more.
 fn settled(wait: &Value) -> bool {
     wait.get("settled")
@@ -457,7 +472,8 @@ fn wait(call: &mut Call, args: &Value) -> Result<Value, String> {
     if running.is_empty() {
         return Ok(with_timed_out(now, false));
     }
-    let (last, timed_out) = wait_slices(call, &running, budget)?;
+    // A task already stalled when the wait began is only reported; one that stalls during it ends the wait.
+    let (last, timed_out) = wait_slices(call, &running, &stalled_ids(&now), budget)?;
     if object.get("taskIds").is_none() {
         return Ok(with_timed_out(last, timed_out));
     }
@@ -468,6 +484,7 @@ fn wait(call: &mut Call, args: &Value) -> Result<Value, String> {
             "tasks": all.get("tasks").cloned().unwrap_or_else(|| json!([])),
             "settled": last.get("settled").cloned().unwrap_or_else(|| json!([])),
             "running": all.get("running").cloned().unwrap_or(Value::Null),
+            "stalled": all.get("stalled").cloned().unwrap_or_else(|| json!([])),
         }),
         timed_out,
     ))
@@ -480,10 +497,12 @@ fn with_timed_out(mut wait: Value, timed_out: bool) -> Value {
     wait
 }
 
-/// Wait on `ids` in app calls of at most 25 s until one settles or `budget` runs out (`true`: it ran out).
+/// Wait on `ids` in app calls of at most 25 s until one settles, one not in `stalled_before` stalls, or `budget` runs
+/// out (`true`: it ran out).
 pub(crate) fn wait_slices(
     call: &mut Call,
     ids: &[String],
+    stalled_before: &HashSet<String>,
     budget: Duration,
 ) -> Result<(Value, bool), String> {
     let start = call.clock.now();
@@ -504,7 +523,7 @@ pub(crate) fn wait_slices(
             &json!({ "taskIds": ids, "timeoutSeconds": seconds }),
             &new_request_id(),
         )?;
-        if settled(&last) {
+        if settled(&last) || !stalled_ids(&last).is_subset(stalled_before) {
             return Ok((last, false));
         }
         let waited = call.clock.now().saturating_sub(start);
@@ -1050,6 +1069,29 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_ends_when_a_task_stalls_but_not_for_one_that_was_stalled_already() {
+        let clock = Arc::new(FakeClock::default());
+        let stalled = |ids: &[&str]| {
+            let mut answer = running(&["t-1", "t-2"]);
+            answer["stalled"] = json!(ids);
+            answer
+        };
+        let app = FakeApp::new(clock, move |_, _, n| {
+            Ok(match n {
+                // t-2 was already stuck when the wait began: reported, never the reason it ends.
+                1 | 2 => stalled(&["t-2"]),
+                // t-1 goes quiet during the wait: that ends it.
+                _ => stalled(&["t-1", "t-2"]),
+            })
+        });
+        let (outcome, _) = run_tool(&app, "task_wait", json!({}));
+        let out = outcome.unwrap();
+        assert_eq!(app.waits(), [0, 25, 25]);
+        assert_eq!(out["timedOut"], false);
+        assert_eq!(out["stalled"], json!(["t-1", "t-2"]));
+    }
+
+    #[test]
     fn a_wait_with_nothing_running_returns_at_once() {
         let clock = Arc::new(FakeClock::default());
         let app = FakeApp::new(clock.clone(), |_, _, _| {
@@ -1137,6 +1179,7 @@ mod tests {
                 progress: &mut progress,
             },
             &["t-1".into()],
+            &HashSet::new(),
             Duration::from_secs(3600),
         );
         assert_eq!(outcome.unwrap_err(), "Cancelled.");

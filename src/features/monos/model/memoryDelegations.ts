@@ -12,6 +12,7 @@ import {
   type OwnedQuery,
   type RecordInput,
   type SettleInput,
+  type StallInput,
 } from "./delegations";
 
 const RANK = { pending: 0, queued: 1, delivered: 2, acknowledged: 3 } as const;
@@ -105,6 +106,7 @@ export class MemoryDelegations implements DelegationsBackend {
       error: input.error ?? null,
       pendingQuestion: null,
       settledAt: this.now,
+      ...UNSTALLED,
     });
     this.note(row, input.by ?? "app", "settled");
     return { applied: true, row: this.copy(row) };
@@ -133,6 +135,7 @@ export class MemoryDelegations implements DelegationsBackend {
       return { applied: false, row: this.copy(row) };
     row.state = next;
     row.pendingQuestion = question;
+    Object.assign(row, UNSTALLED);
     this.note(
       row,
       by ?? "app",
@@ -181,6 +184,7 @@ export class MemoryDelegations implements DelegationsBackend {
           error: reason ?? "Stopped by its owner.",
           pendingQuestion: null,
           settledAt: this.now,
+          ...UNSTALLED,
         });
       row.delivery = "disposed";
       this.note(row, by ?? "app", "cancelled");
@@ -233,4 +237,25 @@ export class MemoryDelegations implements DelegationsBackend {
   async bindChat(_input: ChatBindInput) {
     return true;
   }
+
+  /** delegations.rs `set_stall`: only a running row of that generation, once per kind. */
+  async setStall(input: StallInput) {
+    this.calls.push(`stall:${input.id}:${input.kind ?? "clear"}`);
+    const row = this.rows.get(input.id);
+    if (!row) return { applied: false, row: null };
+    const kind = input.kind ?? null;
+    if (row.state !== "running" || row.generation !== input.generation || (row.stallKind ?? null) === kind)
+      return { applied: false, row: this.copy(row) };
+    if (kind)
+      Object.assign(row, {
+        stallKind: kind,
+        stallReason: input.reason ?? null,
+        stalledAt: input.since ?? this.now,
+      });
+    else Object.assign(row, UNSTALLED);
+    this.note(row, input.by ?? "app", kind ? "stalled" : "unstalled");
+    return { applied: true, row: this.copy(row) };
+  }
 }
+
+const UNSTALLED = { stallKind: null, stallReason: null, stalledAt: null };
