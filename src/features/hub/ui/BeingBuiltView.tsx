@@ -13,6 +13,11 @@ import { workflowWorkers } from "../model/workflowJobs";
 import { useWorkflowActivityVersion } from "../../sessions/model/workflowActivity";
 import { usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
 import { prWatchWorkers } from "../../pr-watch/model/prWatchJobs";
+import { useDelegationRows } from "../../monos/model/delegationStore";
+import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
+import { openLead, openStuck } from "../../monos/model/stuckActions";
+import { StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
+import { withStuckWorkers } from "../model/stuckJobs";
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -25,8 +30,14 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   const now = useNow(30_000);
   // Watched pull requests are this app's own jobs: "Waiting on CI" under the Mono that registered them.
   const prWatches = usePrWatchesVersion();
+  // This app's own rows behind each job: a stuck worker makes its job Stuck, whatever its siblings do (stuckJobs.ts).
+  const delegations = useDelegationRows();
+  useStuckDismissalsVersion();
   const liveWorkers = live
-    ? [...workersFromJobs(data.listJobs?.(projectId) ?? [], now), ...prWatchWorkers(prWatches?.all() ?? [], projectId, now)]
+    ? [
+        ...withStuckWorkers(workersFromJobs(data.listJobs?.(projectId) ?? [], now), delegations, now),
+        ...prWatchWorkers(prWatches?.all() ?? [], projectId, now),
+      ]
     : [];
   // Leads running a Claude Code workflow in this app, with where the run is.
   const folder = data.listProjects().find((p) => p.id === projectId)?.folder;
@@ -75,7 +86,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {open ? (
-          <Activity worker={open} />
+          <Activity worker={open} now={now} />
         ) : active.length || done.length ? (
           <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-8 py-8">
             {active.length ? (
@@ -83,7 +94,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                 {byMono(active).map(([mono, jobs]) => (
                   <div key={mono} className="flex flex-col gap-0.5" data-hub-mono-jobs={mono}>
                     <div className="px-3 text-xs text-content/60">{mono}<PausedNote who={mono} /></div>
-                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} />)}
+                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} now={now} />)}
                   </div>
                 ))}
               </div>
@@ -123,8 +134,9 @@ export function jobTimeLabel(w: Worker): string {
   return `for ${durationLabel(w.minutes)}`;
 }
 
-function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) => void; showWho: boolean }) {
+function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpen: (id: string) => void; showWho: boolean; now?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const [answering, setAnswering] = useState(false);
   const parts = w.parts;
   const toggle = () => (parts ? setExpanded((v) => !v) : onOpen(w.id));
   return (
@@ -154,18 +166,29 @@ function WorkerLine({ w, onOpen, showWho }: { w: Worker; onOpen: (id: string) =>
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
         {jobTimeLabel(w)}
       </span>
-      <span className="flex w-24 shrink-0 justify-end">{w.stuck && !w.finishedAt ? <WorkerTakeLook w={w} /> : null}</span>
+      <span className="flex w-24 shrink-0 justify-end">
+        {w.finishedAt ? null : w.stuckWorker ? (
+          <StuckJobAction w={w} answering={answering} onAnswer={() => setAnswering((v) => !v)} />
+        ) : w.stuck ? (
+          <WorkerTakeLook w={w} />
+        ) : null}
+      </span>
     </div>
+    {answering && w.stuckWorker && !w.finishedAt ? (
+      <div className="pl-1" data-hub-job-answer={w.id}>
+        <StuckWorkerCard stuck={w.stuckWorker} now={now} variant="row" onDone={() => setAnswering(false)} />
+      </div>
+    ) : null}
     {parts && expanded ? (
       <div className="flex flex-col gap-0.5 pl-6" data-hub-parts-of={w.id}>
-        {parts.map((p) => <WorkerLine key={p.id} w={p} onOpen={onOpen} showWho={false} />)}
+        {parts.map((p) => <WorkerLine key={p.id} w={p} onOpen={onOpen} showWho={false} now={now} />)}
       </div>
     ) : null}
     </>
   );
 }
 
-function Activity({ worker }: { worker: Worker }) {
+function Activity({ worker, now }: { worker: Worker; now: number }) {
   const live = !worker.finishedAt && !worker.stuck;
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-8 py-8" data-hub-activity>
@@ -183,7 +206,7 @@ function Activity({ worker }: { worker: Worker }) {
           ) : null}
         </div>
         <JobStateLabel w={worker} />
-        {worker.stuck ? <WorkerTakeLook w={worker} /> : null}
+        {worker.stuck && !worker.stuckWorker ? <WorkerTakeLook w={worker} /> : null}
         {worker.prWatch ? <StopWatching w={worker} /> : null}
         {worker.kind === "coding" ? (
           <button type="button" data-hub-open-coding onClick={() => setHubSelection({ project: worker.projectId, item: "coding-team" })}
@@ -192,6 +215,12 @@ function Activity({ worker }: { worker: Worker }) {
           </button>
         ) : null}
       </div>
+      {worker.stuckWorker && !worker.finishedAt ? (
+        <section className="flex flex-col gap-1" data-hub-job-stuck-worker>
+          <h2 className="px-2 text-xs text-content/60">{worker.stuckWorker.kind === "asking" ? "Waiting on an answer" : "Stuck"}</h2>
+          <StuckWorkerCard stuck={worker.stuckWorker} now={now} variant="row" />
+        </section>
+      ) : null}
       <section className="flex flex-col gap-1">
         <h2 className="px-2 text-xs text-content/60">Recent steps</h2>
         {worker.steps.map((s, i) => (
@@ -230,10 +259,47 @@ function StopWatching({ w: worker }: { w: Worker }) {
   );
 }
 
-/** Reads the shared waiting list; opens the item in the project's Inbox. */
+/**
+ * A job with a stuck worker under it: one click from the row. A question opens its answer under the row (Answer); a
+ * stalled or failed worker opens its chat (Open chat).
+ */
+function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: boolean; onAnswer: () => void }) {
+  const stuck = w.stuckWorker!;
+  const asking = stuck.kind === "asking";
+  return (
+    <button
+      type="button"
+      data-hub-stuck-action={asking ? "answer" : "open"}
+      aria-expanded={asking ? answering : undefined}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (asking) onAnswer();
+        else openStuck(stuck);
+      }}
+      className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+    >
+      {asking ? "Answer" : "Open chat"}
+    </button>
+  );
+}
+
+/** Reads the shared waiting list; opens the item in the project's Inbox. Without one, a stuck job opens its Lead's chat. */
 function WorkerTakeLook({ w: worker }: { w: Worker }) {
   const w = findWaiting(worker.waitingId ?? `worker:${worker.id}`);
-  if (!w) return null;
+  if (!w)
+    return worker.lead && !worker.finishedAt ? (
+      <button
+        type="button"
+        data-hub-open-lead={worker.lead}
+        onClick={(e) => {
+          e.stopPropagation();
+          openLead(worker.lead);
+        }}
+        className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+      >
+        Open chat
+      </button>
+    ) : null;
   return (
     <button
       type="button"

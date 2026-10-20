@@ -365,6 +365,12 @@ export type Worker = {
   /** A pull request its Mono registered (features/pr-watch): the app waits on its CI for the Mono. */
   prWatch?: { id: string; ownerSession: string; url: string; line: string };
   archived?: boolean;
+  /** Where Ash OS made the job from (HubJob.sourceRef): the app finds its own delegation rows by it. */
+  sourceRef?: string;
+  /** The Mono running it (a live job's lead id). */
+  lead?: string | null;
+  /** A worker under it that is stuck (asking, stalled or failed): what makes the row Stuck, and what Ash can answer. */
+  stuckWorker?: import("../../monos/model/workerStuck").StuckWorker;
 };
 
 export type JobState = "working" | "checking" | "waiting" | "stuck" | "gave_up" | "needs_you" | "done_unseen" | "done" | "parked" | "waiting_ci" | "unknown";

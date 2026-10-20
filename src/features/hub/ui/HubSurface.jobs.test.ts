@@ -15,6 +15,9 @@ import { HubSurface } from "./HubSurface";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { MonoRailSection } from "../../../app/shell/MonoRailSection";
 import { hubMonoRank } from "../model/hubData";
+import type { Delegation } from "../../monos/model/delegations";
+import { resetDelegationStore, setDelegationActions, setDelegationRows } from "../../monos/model/delegationStore";
+import { resetStuckDismissals } from "../../monos/model/workerStuck";
 
 /** Calls over plain node http (happy-dom's fetch won't talk to a local server); no live feed, so the store polls. */
 function httpTransport(baseUrl: () => string, token: () => string): HubTransport {
@@ -345,5 +348,66 @@ describe("point 13, item 3: a big job's workers show only in Being built, and on
     await until(() => !rowsNow().includes("big:big"), "big job gone");
     expect(sidebar()).toEqual(ROSTER);
     expect(JSON.parse(localStorage.getItem("monocode:mono-roster")!).length).toBe(ROSTER.length);
+  });
+});
+
+describe("a stuck worker under a job (H4: a running sibling never hides it)", () => {
+  const view = () => createElement(BeingBuiltView, { projectId: "hivra" });
+  const at = Date.now();
+  function delegation(id: string, patch: Partial<Delegation> = {}): Delegation {
+    return {
+      id, ownerSession: "hivra-chat", ownerMono: "hivra-lead", batchId: null, parentId: "t-top", rootId: "t-top",
+      childSession: `w-${id}`, requestId: id, generation: 1, project: "hivra", title: "Write the welcome email", brief: null,
+      goal: null, askIds: [], state: "running", errorClass: null, error: null, retryable: null, resetsAt: null, result: null,
+      pendingQuestion: null, delivery: "pending", deliveryMessage: null, createdAt: at - 20 * 60_000, updatedAt: at - 20 * 60_000,
+      settledAt: null, log: [], version: 1, mirroredVersion: 0, mirrorError: null, ...patch,
+    };
+  }
+  const top = delegation("t-top", { parentId: null, askIds: ["a_j_mail"], ownerSession: "cos-chat", childSession: "hivra-chat" });
+  let actions: { openOwner: ReturnType<typeof vi.fn>; openChild: ReturnType<typeof vi.fn>; stopTree: ReturnType<typeof vi.fn>; stopRow: ReturnType<typeof vi.fn> };
+  beforeEach(() => {
+    resetDelegationStore();
+    resetStuckDismissals();
+    actions = { openOwner: vi.fn(), openChild: vi.fn(), stopTree: vi.fn(), stopRow: vi.fn() };
+    setDelegationActions(actions);
+  });
+  afterEach(() => resetDelegationStore());
+
+  it("a failed worker beside a running one makes the job Stuck, with its reason, and Open chat opens that worker", async () => {
+    setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", errorClass: "billing", settledAt: at - 60_000 })]);
+    mount(view());
+    const job = () => container.querySelector('[data-hub-worker="j_mail"]');
+    await until(() => job()?.querySelector('[data-hub-job-state="stuck"]'), "the stuck job");
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Failed: billing refused");
+    act(() => job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!.click());
+    expect(actions.openChild).toHaveBeenCalledWith("hivra-chat", "w-b");
+  });
+
+  it("a question on its Lead reads Waiting with the question, and Answer opens the answer under the row", async () => {
+    setDelegationRows([
+      top,
+      delegation("q", { state: "question", pendingQuestion: "Which sender? [Resend | SES]", log: [{ at: at - 30_000, by: "worker", event: "asked" }] }),
+    ]);
+    mount(view());
+    const job = () => container.querySelector('[data-hub-worker="j_mail"]');
+    await until(() => job()?.querySelector('[data-hub-job-state="waiting"]'), "the waiting job");
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Asked: Which sender? [Resend | SES]");
+    act(() => job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="answer"]')!.click());
+    const card = container.querySelector('[data-hub-job-answer="j_mail"] [data-stuck-worker="w-q"]');
+    expect(card?.querySelector("[data-stuck-line]")?.textContent).toBe("Which sender? [Resend | SES]");
+    expect(card?.querySelector("[data-stuck-reply]")).not.toBeNull();
+  });
+
+  it("Today flags every stuck worker under Stuck, with its project, answerable there; Being built on Today says Stuck", async () => {
+    setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 })]);
+    mount(surface());
+    await until(() => container.querySelector("[data-hub-stuck] [data-stuck-worker]"), "the Stuck section");
+    const row = container.querySelector('[data-hub-stuck] [data-stuck-worker="w-s"]')!;
+    expect(row.querySelector("[data-stuck-where]")?.textContent).toBe("Hivra · its Lead · Write the welcome email");
+    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped without reporting back · 7 min ago");
+    act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
+    expect(actions.openChild).toHaveBeenCalledWith("hivra-chat", "w-s");
+    await until(() => container.querySelector('[data-hub-today-job="j_mail"]'), "Being built on Today");
+    expect(container.querySelector('[data-hub-today-job="j_mail"]')?.textContent).toContain("· Stuck");
   });
 });

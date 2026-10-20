@@ -67,6 +67,7 @@ export function StuckList({
   variant,
   where,
   label,
+  heading,
 }: {
   stuck: readonly StuckWorker[];
   now: number;
@@ -75,12 +76,14 @@ export function StuckList({
   /** What goes before the title on the top line (Today: "Hivra · EXO lead"). */
   where?: (stuck: StuckWorker) => string | undefined;
   label?: string;
+  /** A section heading over the list (Today's "Stuck"); the list and its heading go once nothing is left. */
+  heading?: string;
 }) {
   const [done, setDone] = useState<Record<string, Done>>({});
   const held = Object.values(done).filter((d) => !stuck.some((s) => s.key === d.stuck.key));
   if (!stuck.length && !held.length) return null;
   const finished = (s: StuckWorker, said: string) => setDone((prev) => ({ ...prev, [s.key]: { stuck: s, said } }));
-  return (
+  const list = (
     <div data-stuck-list={variant} aria-label={label} className={variant === "chat" ? "flex flex-col gap-1.5 pb-1.5" : "flex flex-col"}>
       {stuck.map((s) =>
         done[s.key] ? (
@@ -93,6 +96,13 @@ export function StuckList({
         <DoneRow key={d.stuck.key} done={d} variant={variant} />
       ))}
     </div>
+  );
+  if (!heading) return list;
+  return (
+    <section aria-label={heading} data-hub-stuck>
+      <h2 className="mb-1 text-xs text-content/60">{heading}</h2>
+      {list}
+    </section>
   );
 }
 

@@ -12,6 +12,7 @@ import {
 import { liveChatQuestion, respondInChat, sendToChat } from "../../hub/model/waitingChats";
 import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model/userQuestion";
 import { delegationActions, noteStopFailures } from "./delegationStore";
+import { findMono } from "./mono";
 import { dismissStuck, type StuckWorker } from "./workerStuck";
 
 export type StuckResult = { ok: true; said: string } | { ok: false; reason: string };
@@ -91,6 +92,15 @@ export async function sendWords(stuck: StuckWorker, text: string): Promise<Stuck
 /** Open the worker's chat under the Mono that started it. */
 export function openStuck(stuck: StuckWorker): void {
   delegationActions()?.openChild(stuck.row.ownerSession, stuck.row.childSession);
+}
+
+/** Open a Mono's own chat (a stuck job whose worker this app has no row for: its Lead's chat is where it stands). */
+export function openLead(monoId: string | null | undefined): boolean {
+  const session = monoId ? findMono(monoId)?.sessionId : undefined;
+  const actions = delegationActions();
+  if (!session || !actions) return false;
+  actions.openOwner(session);
+  return true;
 }
 
 /** Stop the worker and everything it delegated in turn (Ash's Stop: no report follows). */

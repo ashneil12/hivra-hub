@@ -40,10 +40,19 @@ function summarise(parts: Worker[]): Partial<Worker> {
     return { minutes, activeAgo, steps, finishedAt: last, seen: parts.every((p) => p.seen) };
   }
   const stuck = open.find((p) => p.stuck);
-  if (stuck) return { minutes, activeAgo, steps, stuck: stuck.stuck, stuckReason: stuck.stuckReason, waitingId: stuck.waitingId, sentNote: stuck.sentNote };
-  const order: NonNullable<Worker["state"]>[] = ["needs_you", "working", "checking", "parked"];
+  if (stuck)
+    return {
+      minutes, activeAgo, steps, stuck: stuck.stuck, stuckReason: stuck.stuckReason, waitingId: stuck.waitingId, sentNote: stuck.sentNote,
+      ...(stuck.stuckWorker ? { stuckWorker: stuck.stuckWorker } : {}), lead: stuck.lead,
+    };
+  const order: NonNullable<Worker["state"]>[] = ["needs_you", "waiting", "working", "checking", "parked", "unknown"];
   const state = order.find((s) => open.some((p) => (p.state ?? "working") === s)) ?? "working";
-  return { minutes, activeAgo, steps, state };
+  const waiting = state === "waiting" ? open.find((p) => p.state === "waiting") : undefined;
+  return {
+    minutes, activeAgo, steps, state,
+    ...(waiting?.stateReason ? { stateReason: waiting.stateReason } : {}),
+    ...(waiting?.stuckWorker ? { stuckWorker: waiting.stuckWorker } : {}),
+  };
 }
 
 /** "9:05am" < "11:56am" < "2:10pm". */

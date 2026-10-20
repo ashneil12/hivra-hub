@@ -18,6 +18,10 @@ import { CircleWord, StatusMark, needMark } from "./StatusMark";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
+import { StuckToday, stuckProject } from "./StuckToday";
+import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
+import { stuckForJob } from "../../monos/model/workerStuck";
+import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
@@ -100,6 +104,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
 
 function TodayBody({ projectId }: { projectId: string | undefined }) {
   useWaitingChatsVersion();
+  const { stuck: stuckWorkersNow } = useStuckWorkers();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(25);
@@ -114,7 +119,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const waiting = waitingOnAsh(projectId);
   const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
-  const chatsWaiting = waitingChats(projectId).length > 0;
+  const chatsWaiting =
+    waitingChats(projectId).length > 0 ||
+    stuckWorkersNow.some((s) => !projectId || stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
   // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox keeps its own fixed order.
@@ -187,7 +194,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     s.kind === "since" ? sinceBlock(s)
     : s.kind === "setup" ? setupBlock(s)
     // Waiting on you sits right above Needs you, wherever the board puts it.
-    : s.kind === "needs" ? <Fragment key={s.id}><WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
+    : s.kind === "needs" ? <Fragment key={s.id}><StuckToday projectId={projectId} /><WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
     : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} />
     : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
     : null;
@@ -205,7 +212,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         </div>)}
       </section> : null}
       {/* The board took Needs you off Today: the chats waiting on Ash still lead it. */}
-      {sections.some((s) => s.kind === "needs") ? null : <WaitingOnYou projectId={projectId} />}
+      {sections.some((s) => s.kind === "needs") ? null : <><StuckToday projectId={projectId} /><WaitingOnYou projectId={projectId} /></>}
       {sections.map(block)}
       {!query.trim() ? <OlderQuestions projectId={projectId} renderRow={(n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />} /> : null}
       {!projectId ? <LastChange /> : null}
@@ -223,6 +230,14 @@ const jobWord = (j: HubJob) => (j.state === "unknown" ? plainStateWord(j.rawStat
 /** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
 function BeingBuiltToday({ title }: { title: string }) {
   const data = hubData();
+  // This app's own workers under each job: a stuck one makes the job read Stuck, whatever its siblings do.
+  const { stuck: stuckNow, now } = useStuckWorkers();
+  const delegations = useDelegationRows();
+  const word = (j: HubJob) => {
+    const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
+    if (!stuck || j.state === "lead_gave_up") return jobWord(j);
+    return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : "Stuck";
+  };
   const rows = data.listProjects().flatMap((p) =>
     (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
   );
@@ -235,7 +250,7 @@ function BeingBuiltToday({ title }: { title: string }) {
           <button key={j.id} type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
             className="flex items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-content/5" data-hub-today-job={j.id}>
             <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
-            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {jobWord(j)}</span>
+            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {word(j)}</span>
           </button>
         ))}
         {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}

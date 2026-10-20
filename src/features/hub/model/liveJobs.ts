@@ -49,6 +49,8 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
     steps: stepsOf(job),
     activeAgo: minutesBetween(job.lastActiveAt, now),
     ...(job.parentId ? { parentId: job.parentId, parentTitle: job.parentTitle ?? job.title } : {}),
+    ...(job.sourceRef ? { sourceRef: job.sourceRef } : {}),
+    lead: job.lead,
   };
   switch (job.state) {
     case "checking":
