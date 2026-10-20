@@ -210,6 +210,12 @@ export async function loadRooms(from: RoomBackend, now = Date.now()): Promise<vo
   let problemText: string | undefined;
   try {
     let snapshot = await from.load();
+    // No store answering (the browser preview's stand-in for the app): keep the rooms in the window's storage.
+    if (!snapshot || !Array.isArray((snapshot as { rooms?: unknown }).rooms)) {
+      backend = undefined;
+      loadLocal();
+      return;
+    }
     let raw: string | null = null;
     try {
       raw = localStorage.getItem(CHAT_KEY);
@@ -270,6 +276,18 @@ function withCutOff(chat: GroupChat, now: number): GroupChat {
   return chat;
 }
 
+/** The window's storage: the roster as an older build (or the preview) left it. */
+function loadLocal(): void {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(CHAT_KEY) ?? "[]");
+    const seated = readSeated();
+    chats = validGroupChats(saved).map((c) => ({
+      ...(c.replyPending ? { ...c, replyPending: undefined, replyError: "The previous reply was interrupted. Check the Mono's conversation before trying again." } : c),
+      ...(seated.has(c.id) ? { seated: true } : {}),
+    }));
+  } catch { /* keep a clean roster if storage is unavailable */ }
+}
+
 // The live copy at start: the examples, the app database (read now, in the background), or the window's storage.
 if (!examplesOn()) {
   let inApp = false;
@@ -279,16 +297,7 @@ if (!examplesOn()) {
     inApp = false;
   }
   if (inApp) void loadRooms(tauriRooms);
-  else {
-    try {
-      const saved: unknown = JSON.parse(localStorage.getItem(CHAT_KEY) ?? "[]");
-      const seated = readSeated();
-      chats = validGroupChats(saved).map((c) => ({
-        ...(c.replyPending ? { ...c, replyPending: undefined, replyError: "The previous reply was interrupted. Check the Mono's conversation before trying again." } : c),
-        ...(seated.has(c.id) ? { seated: true } : {}),
-      }));
-    } catch { /* keep a clean roster if storage is unavailable */ }
-  }
+  else loadLocal();
 }
 
 /** The store in use, for the agents' reads of older messages ("app" or "window"). */
