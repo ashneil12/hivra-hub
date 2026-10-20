@@ -1339,7 +1339,7 @@ pub fn ship_start(
         }
         command.args(["--when-busy", when]);
     }
-    let output = command.output().map_err(|e| e.to_string())?;
+    let output = output_within(command, SHIP_START_LIMIT, "hub-ship.mjs")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let answer = stdout
         .lines()
@@ -1378,6 +1378,82 @@ pub fn ship_start(
 }
 
 // ---- small helpers ---------------------------------------------------------------------------------------------------
+
+/// How long `app.ship` waits for `hub-ship.mjs`, which checks, stages and schedules (seconds, normally).
+const SHIP_START_LIMIT: Duration = Duration::from_secs(120);
+
+/// Run `command` to the end and collect what it printed, or stop it and everything it started (its own process group)
+/// once `limit` has passed.
+fn output_within(
+    mut command: Command,
+    limit: Duration,
+    what: &str,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    ];
+    for (which, pipe) in pipes.into_iter().enumerate() {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            let _ = sender.send((which, bytes));
+        });
+    }
+    drop(sender);
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{what} didn't finish within {} s, so it was stopped. Run it from the checkout to see why.",
+                    limit.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    let mut output = std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    // Something it left running may hold a pipe open: read what is there, never wait on it for long.
+    for _ in 0..2 {
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok((0, bytes)) => output.stdout = bytes,
+            Ok((_, bytes)) => output.stderr = bytes,
+            Err(_) => break,
+        }
+    }
+    Ok(output)
+}
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
@@ -1599,6 +1675,49 @@ mod tests {
         assert!(dir.join(COMMITTED).is_file());
         assert!(begin_checks(&trial).is_none(), "committed: no more checks");
         assert!(trial.lock().unwrap().as_ref().unwrap().committed);
+    }
+
+    #[test]
+    fn the_ship_script_gets_a_deadline() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo out; echo err >&2"]);
+        let output = output_within(command, Duration::from_secs(20), "the script").unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"out\n");
+        assert_eq!(output.stderr, b"err\n");
+
+        // One that hangs is stopped at the limit, with whatever it started.
+        let root = TempDir::new("deadline");
+        let pid_file = root.0.join("sleeper.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+        ]);
+        let started = Instant::now();
+        let error = output_within(command, Duration::from_millis(800), "hub-ship.mjs").unwrap_err();
+        assert!(
+            error.contains("hub-ship.mjs didn't finish within"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        #[cfg(unix)]
+        {
+            let sleeper: i32 = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while unsafe { libc::kill(sleeper, 0) } == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_ne!(
+                unsafe { libc::kill(sleeper, 0) },
+                0,
+                "what it started is stopped too"
+            );
+        }
     }
 
     #[test]
