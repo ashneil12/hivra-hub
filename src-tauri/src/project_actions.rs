@@ -398,6 +398,21 @@ impl ActionRuns {
 }
 
 fn spawn(request: &RunRequest<'_>) -> Result<Child, String> {
+    command(request)
+        .spawn()
+        .map_err(|error| format!("Failed to start the action: {error}"))
+}
+
+/// What control.rs hands an agent's process; a project action gets none of it.
+const AGENT_CREDENTIALS: [&str; 4] = [
+    "MONOCODE_APP_ENDPOINT",
+    "MONOCODE_APP_TOKEN",
+    "MONOCODE_CONTROL_ENDPOINT",
+    "MONOCODE_CONTROL_TOKEN",
+];
+
+/// The action's command line, environment and process group, not started yet.
+fn command(request: &RunRequest<'_>) -> Command {
     #[cfg(windows)]
     let mut command = {
         let mut command = Command::new("cmd");
@@ -419,10 +434,19 @@ fn spawn(request: &RunRequest<'_>) -> Result<Child, String> {
         .env("MONOCODE_PROJECT_ROOT", request.project_root)
         .env("MONOCODE_WORKTREE_PATH", request.cwd)
         .env("MONOCODE_ACTION_ID", &request.action.id)
-        .env("NO_COLOR", "1")
-        // The control endpoint belongs to a lead agent's process, never to a project script.
-        .env_remove("MONOCODE_CONTROL_ENDPOINT")
-        .env_remove("MONOCODE_CONTROL_TOKEN");
+        .env("NO_COLOR", "1");
+    // The app and control endpoints belong to an agent's own process (control.rs `configure_child`), never to a project
+    // script: whatever this app inherited goes, the known names and anything else under those prefixes.
+    for name in AGENT_CREDENTIALS {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|name| {
+            name.starts_with("MONOCODE_APP_") || name.starts_with("MONOCODE_CONTROL_")
+        }) {
+            command.env_remove(&name);
+        }
+    }
     if let Some(path) = &request.path_env {
         command.env("PATH", path);
     }
@@ -433,8 +457,6 @@ fn spawn(request: &RunRequest<'_>) -> Result<Child, String> {
         command.process_group(0);
     }
     command
-        .spawn()
-        .map_err(|error| format!("Failed to start the action: {error}"))
 }
 
 fn signal(child: &mut Child, kill: bool) {
@@ -723,6 +745,37 @@ mod tests {
         assert!(log.contains("oops") && log.contains("failed (exit 3)"));
         assert_eq!(runs.list(Some(&temp.0)).len(), 1);
         assert!(runs.list(Some(&root)).is_empty());
+    }
+
+    #[test]
+    fn an_action_never_gets_an_agents_app_or_control_credentials() {
+        let temp = temp("monocode-actions-env");
+        let action = action("true");
+        let request = RunRequest {
+            project_root: &temp.0,
+            cwd: &temp.0,
+            action: &action,
+            trigger: "app",
+            log_dir: &temp.0,
+            path_env: None,
+        };
+        let command = command(&request);
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in [
+            "MONOCODE_APP_ENDPOINT",
+            "MONOCODE_APP_TOKEN",
+            "MONOCODE_CONTROL_ENDPOINT",
+            "MONOCODE_CONTROL_TOKEN",
+        ] {
+            assert!(removed.iter().any(|name| name == key), "{key}: {removed:?}");
+        }
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "MONOCODE_ACTION_ID" && value.is_some()));
     }
 
     #[test]
