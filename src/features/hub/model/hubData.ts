@@ -35,6 +35,9 @@ seedHubBundleDefaults();
  * most a few seconds; then it starts without them).
  */
 function startHubMcp(): void {
+  const lookups = { monoOf: monoForSession, habitRunMono, isLead: (id: string) => !!leadFor(id) };
+  // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
+  setHubMcpServers({ ashOs: null, cli: null }, lookups);
   const ashOs = tauriAshOsServer();
   const cli = invoke<string>("app_cli_path").catch(() => null);
   const connectors = loadConnectors();
@@ -44,11 +47,7 @@ function startHubMcp(): void {
   );
   const ready = Promise.race([
     read.then((servers) => {
-      setHubMcpServers(servers, {
-        monoOf: monoForSession,
-        habitRunMono,
-        isLead: (id) => !!leadFor(id),
-      });
+      setHubMcpServers(servers, lookups);
       return true;
     }),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),

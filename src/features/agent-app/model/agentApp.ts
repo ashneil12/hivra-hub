@@ -100,6 +100,7 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 
 export type AppSessionListing = {
   id: string;
@@ -277,6 +278,33 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
 ]);
+
+/**
+ * The checker's lane (hub/model/hubChecker.ts, docs/PHASE-2-DESIGN.md H6): its chat and its habit runs only read their
+ * own memory and soul and the model list. No sessions, delegations or tasks, no worktrees, actions, habits, notes,
+ * artifacts, cards or ship, and nothing added later: it never starts work.
+ */
+const CHECKER_ACTIONS: ReadonlySet<string> = new Set([
+  "models.list",
+  "memory.read",
+  "memory.search",
+  "memory.add",
+  "memory.replace",
+  "memory.remove",
+  "soul.read",
+]);
+
+/** Every app action there is (the checker's lane is tested against all of them). */
+export function appActions(): string[] {
+  return [...FIELDS.keys()];
+}
+
+function checkerLane(source: Session, action: string, host: AgentAppHost): void {
+  if (host.monoOf?.(source.id)?.id === CHECKER_MONO_ID && !CHECKER_ACTIONS.has(action))
+    throw new Error(
+      `The checker only reads: it may use ${[...CHECKER_ACTIONS].join(", ")}. It never starts, sends to or delegates to a session.`,
+    );
+}
 
 function fields(action: string, input: Record<string, unknown>) {
   const allowed = FIELDS.get(action);
@@ -1071,6 +1099,7 @@ export async function handleAgentApp(
   host: AgentAppHost,
 ): Promise<unknown> {
   fields(action, input);
+  checkerLane(source, action, host);
   if (action.startsWith("tasks."))
     return handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
   if (action.startsWith("artifacts."))
