@@ -45,6 +45,12 @@ function localInput(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** A switch row's words (Ash's whole message when a Mono switched it), kept to one line. */
+function shortDetail(text: string, max = 160): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
+}
+
 function openChat(chatId: string): void {
   window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: chatId }));
 }
@@ -335,7 +341,7 @@ function LogRow({ entry, projectName, fresh }: { entry: LogEntry; projectName: (
           <span className={held ? "text-accent" : undefined}>{outcomeLabel(entry)}</span>
           {entry.who ? ` · ${entry.who}` : ""}
           {entry.project ? ` · ${projectName(entry.project)}` : ""}
-          {entry.kind === "switch" && entry.detail ? ` · “${entry.detail}”` : ""}
+          {entry.kind === "switch" && entry.detail ? ` · “${shortDetail(entry.detail)}”` : ""}
         </p>
       </div>
       {entry.chatId ? (

@@ -109,6 +109,33 @@ describe("switching autopilot from a chat", () => {
     expect(ashSaidIt(chat("x", [said("OK. Go auto-pilot till Monday, back at 9")]), "go autopilot till monday")).toBe(true);
   });
 
+  it("takes only an exact quote of 20+ characters from one turn of Ash's that asks for it, and logs that turn", async () => {
+    const s = setup();
+    const set = (blocks: Block[], ashSaid: string) => call(chat("cos-chat", blocks), "autopilot.set", { until: "Monday 9:00", ashSaid }, s);
+    // He said no: a quote of the rest of the sentence is not a yes.
+    await expect(set([said("Don't go autopilot this weekend, I want to review everything")], "go autopilot this weekend")).rejects.toThrow("Ash's own words");
+    await expect(set([said("Turn autopilot off, I'm back early from the trip")], "I'm back early from the trip")).rejects.toThrow("Ash's own words");
+    await expect(set([said("No autopilot until we've fixed the deploy script")], "autopilot until we've fixed the deploy")).rejects.toThrow("Ash's own words");
+    // He asked what it is; he didn't ask for it.
+    await expect(set([said("What does autopilot actually do for the team?")], "what does autopilot actually do")).rejects.toThrow("Ash's own words");
+    // Too short to be his words rather than a word of his.
+    await expect(set([said("go autopilot")], "go autopilot")).rejects.toThrow("Ash's own words");
+    // A room turn, a checker's note or any app-written turn is not Ash speaking, whatever it quotes.
+    await expect(set([said("go autopilot until Monday 9:00", { internal: true })], "go autopilot until Monday 9:00")).rejects.toThrow("Ash's own words");
+    // Words split across two of his turns are not one quote.
+    await expect(set([said("go autopilot"), said("until Monday 9:00 please")], "go autopilot until Monday 9:00")).rejects.toThrow("Ash's own words");
+    // Words that aren't his at all.
+    await expect(set([said("I'm off for the weekend")], "you have full control until Monday")).rejects.toThrow("Ash's own words");
+    expect(s.backend.switches.size).toBe(0);
+
+    // "Take over" and "I'm off" ask for it too; the log keeps his whole turn beside the quote.
+    const turn = "Take over until Monday 9:00, I'm off to the coast with no signal";
+    await set([said("how is the build going?"), said(turn)], "take over until Monday 9:00");
+    expect(s.backend.switches.get("*")).toMatchObject({ said: "take over until Monday 9:00" });
+    expect(s.backend.entries.at(-1)).toMatchObject({ kind: "switch", outcome: "on", detail: turn });
+    expect(ashSaidIt(chat("x", [said("I'm off for the weekend. Go autopilot until Monday 9:00")]), "go autopilot until monday 9:00")).toBe(true);
+  });
+
   it("refuses end times it can't read and ones out of range", async () => {
     const s = setup();
     const cos = chat("cos-chat", [said("go autopilot whenever")]);

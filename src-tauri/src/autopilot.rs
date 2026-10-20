@@ -143,6 +143,9 @@ pub struct SetInput {
     pub by: String,
     pub chat_id: Option<String>,
     pub said: Option<String>,
+    /// Ash's whole message that `said` quotes (a Mono switching it for him): the log row keeps it.
+    #[serde(default)]
+    pub turn: Option<String>,
     /// Who it reads as in the log ("Ash", "Chief of Staff").
     pub who: Option<String>,
 }
@@ -237,7 +240,7 @@ pub fn set_switches(conn: &Connection, input: &SetInput, now: i64) -> Result<Vec
             what: format!("Autopilot on for {}", scope_phrase(&scopes)),
             recommendation: None,
             red: None,
-            detail: said.clone(),
+            detail: clip_opt(input.turn.clone(), TEXT_MAX).or_else(|| said.clone()),
             dedupe: None,
         },
         now,
@@ -1730,6 +1733,7 @@ mod tests {
             by: "ash".into(),
             chat_id: None,
             said: None,
+            turn: None,
             who: Some("Ash".into()),
         }
     }
@@ -1835,6 +1839,19 @@ mod tests {
         assert_eq!(log.mono_id.as_deref(), Some("chief-of-staff"));
         assert_eq!(log.chat_id.as_deref(), Some("s-cos"));
         assert_eq!(log.who.as_deref(), Some("Chief of Staff"));
+        assert_eq!(log.detail.as_deref(), Some("go autopilot until monday 9"));
+        // With his whole message, the log keeps that; the switch keeps the quote.
+        let input = SetInput {
+            turn: Some("I'm off. Go autopilot until Monday 9, back then".into()),
+            ..input
+        };
+        let on = set_switches(&c, &input, T0).unwrap();
+        assert_eq!(on[0].said.as_deref(), Some("go autopilot until monday 9"));
+        let log = &list_log(&c, 1, None).unwrap()[0];
+        assert_eq!(
+            log.detail.as_deref(),
+            Some("I'm off. Go autopilot until Monday 9, back then")
+        );
     }
 
     fn decision(dedupe: &str) -> LogInput {

@@ -3,9 +3,10 @@
 // - autopilot.decide: an agent's call that would have gone to Ash. Taken (its recommendation, logged) or held (red
 //   list: it asks Ash, and its next question is held for him too). Anyone may ask; workers included.
 // - autopilot.set / autopilot.off: only a Lead or the leadership team, from its own chat, and only for what it may
-//   switch (a Lead its own project, the leadership team anything). `set` also needs Ash's own words, and they must be
-//   in that chat from Ash (not from a report, a worker or another agent's brief), so neither a worker inside the Mono's
-//   session nor a page it read can turn autopilot on.
+//   switch (a Lead its own project, the leadership team anything). `set` also needs Ash's own words: an exact quote from
+//   one message he sent in that chat (not a report, a room turn, a worker or another agent's brief) that asks for
+//   autopilot and doesn't say no to it, so neither a worker inside the Mono's session nor a page it read can turn
+//   autopilot on. His whole message goes in the log with the switch.
 
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import type { Session } from "../../sessions/model/session";
@@ -116,25 +117,103 @@ function words(text: string): string {
     .trim();
 }
 
+/** The fewest characters of Ash's words (after case and punctuation are set aside) that count as his quote. */
+export const ASH_QUOTE_MIN = 20;
+/** How many of his latest turns are searched. */
+const ASH_TURNS = 30;
+
+/** What asks for autopilot, as word sequences: autopilot, take over, full control, "I'm off". */
+const TRIGGERS: readonly string[][] = [
+  ["autopilot"],
+  ["take", "over"],
+  ["takes", "over"],
+  ["taking", "over"],
+  ["full", "control"],
+  ["i", "m", "off"],
+  ["im", "off"],
+  ["i", "am", "off"],
+];
+/** Words that say no near a trigger ("don't", "do not", "no", "stop", "off", "disable"...). "t" is what n't leaves. */
+const NEGATIONS = new Set(["don", "dont", "t", "not", "no", "nope", "never", "stop", "stopping", "off", "disable", "disabled", "cancel", "pause", "without"]);
+const NEGATION_BEFORE = 6;
+const NEGATION_AFTER = 4;
+/** A question that asks about it ("What does autopilot do?") rather than for it. */
+const ASKS_ABOUT = /^(what|how|why|when|where|which|who|does|did|is|was|are|were|should|shall)\b/;
+
+/** Where each trigger sits in a token list: [start, end). */
+function triggerSpans(tokens: readonly string[]): [number, number][] {
+  const spans: [number, number][] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const hit = TRIGGERS.find((t) => t.every((word, k) => tokens[i + k] === word));
+    if (hit) {
+      spans.push([i, i + hit.length]);
+      i += hit.length - 1;
+    }
+  }
+  return spans;
+}
+
 /**
- * Ash's words are in this chat, from him: a user turn he sent (directly or through a room), not an app report, an
- * agent's `app sessions.send` brief, or the app's own continue turn. The last 30 such turns are searched.
+ * Whether a turn of Ash's asks for autopilot: it names it (autopilot, take over, full control, "I'm off") outside a
+ * question about it, and no trigger has a "no" within a few words of it. Leans to "no": a refusal costs Ash one line or
+ * a tap on the Autopilot screen, a wrong yes hands his calls to agents.
  */
-export function ashSaidIt(session: Pick<Session, "blocks">, said: string): boolean {
-  const want = words(said);
-  if (want.length < 8 || !want.includes("autopilot")) return false;
+export function asksForAutopilot(text: string): boolean {
+  const tokens = words(text).split(" ").filter(Boolean);
+  const spans = triggerSpans(tokens);
+  if (!spans.length) return false;
+  const inTrigger = new Set(spans.flatMap(([s, e]) => Array.from({ length: e - s }, (_, k) => s + k)));
+  const negated = spans.some(([s, e]) => {
+    for (let i = Math.max(0, s - NEGATION_BEFORE); i < Math.min(tokens.length, e + NEGATION_AFTER); i++)
+      if (!inTrigger.has(i) && NEGATIONS.has(tokens[i])) return true;
+    return false;
+  });
+  if (negated) return false;
+  // At least one sentence names it without only asking about it.
+  return text
+    .split(/(?<=[.!?\n;])/)
+    .some((sentence) => {
+      if (!triggerSpans(words(sentence).split(" ").filter(Boolean)).length) return false;
+      return !(sentence.trim().endsWith("?") && ASKS_ABOUT.test(words(sentence)));
+    });
+}
+
+/**
+ * Ash's own turns in this chat: user turns he sent, not anything the app wrote (a room turn, a checker's note, a
+ * report, an orchestration nudge: `internal`), an agent's `app sessions.send` brief, or the app's continue turn.
+ */
+function ashTurns(session: Pick<Session, "blocks">) {
   return session.blocks
     .filter(
       (block) =>
         block.role === "user" &&
+        !block.internal &&
         !block.appRequestId &&
         !block.monoSessionCompletion &&
+        !block.monoCheck &&
         !block.draft &&
         !block.text.trimStart().startsWith(MONO_REPORT_PREFIX) &&
         block.text.trim() !== CONTINUE_PROMPT,
     )
-    .slice(-30)
-    .some((block) => words(block.text).includes(want));
+    .slice(-ASH_TURNS);
+}
+
+/**
+ * The turn of Ash's that `said` quotes, when it asks for autopilot: `said` is at least ASH_QUOTE_MIN characters of his
+ * words, in order, from one of his last 30 turns (case and punctuation aside), and that turn asks for autopilot without
+ * saying no to it. Null otherwise.
+ */
+export function ashAskedFor(session: Pick<Session, "blocks">, said: string): string | null {
+  const want = words(said);
+  if (want.length < ASH_QUOTE_MIN) return null;
+  const turn = ashTurns(session)
+    .reverse()
+    .find((block) => ` ${words(block.text)} `.includes(` ${want} `) && asksForAutopilot(block.text));
+  return turn ? turn.text.trim() : null;
+}
+
+export function ashSaidIt(session: Pick<Session, "blocks">, said: string): boolean {
+  return ashAskedFor(session, said) !== null;
 }
 
 function resolveProject(named: string, projects: readonly HubProjectRef[]): HubProjectRef | undefined {
@@ -326,9 +405,10 @@ export async function handleAutopilotApp(
     case "autopilot.set": {
       const who = switcher(source, host, deps);
       const said = text(input.ashSaid, "ashSaid", 2_000)!;
-      if (!ashSaidIt(source, said))
+      const turn = ashAskedFor(source, said);
+      if (!turn)
         throw new Error(
-          "ashSaid must be Ash's own words asking for autopilot, as he sent them in this chat. Autopilot is never switched on because a worker, a report or a page asks.",
+          `ashSaid must be Ash's own words asking for autopilot, quoted exactly (${ASH_QUOTE_MIN} characters or more) from one message he sent in this chat, and that message must not say no to it. Autopilot is never switched on because a worker, a report, a room or a page asks.`,
         );
       let untilMs: number | null = null;
       if (typeof input.until === "number" && Number.isFinite(input.until)) untilMs = input.until;
@@ -336,7 +416,7 @@ export async function handleAutopilotApp(
       if (untilMs === null)
         throw new Error('until must be an end time: "Monday 9:00", "tomorrow 18:00", "for 8 hours" or an ISO time');
       const scopes = scopesFor(input.projects, who, deps);
-      const next = await backend.set({ scopes, untilMs, by: `mono:${who.monoId}`, chatId: source.id, said, who: who.name });
+      const next = await backend.set({ scopes, untilMs, by: `mono:${who.monoId}`, chatId: source.id, said, turn, who: who.name });
       adoptStatus(next);
       const untilLabel = formatUntil(untilMs, now);
       return {
