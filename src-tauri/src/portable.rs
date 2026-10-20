@@ -2394,7 +2394,7 @@ pub fn mono_files_in(
             if let Some(legacy) = mono
                 .legacy_project
                 .as_deref()
-                .and_then(|project| legacy_folder(&root, project))
+                .and_then(|project| legacy_folder(root, project))
             {
                 dir = legacy;
             }
