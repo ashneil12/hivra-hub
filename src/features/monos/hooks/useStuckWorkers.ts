@@ -6,14 +6,17 @@ import { stuckWorkers, useStuckDismissalsVersion, type StuckWorker } from "../mo
 
 export const STUCK_CLOCK_MS = 30_000;
 
-/** Now, ticking every `ms`; the order of anything shown never depends on it. */
+/**
+ * Now, read at every render and at least every `ms` (so "9 min" counts up on its own); a render for new rows reads the
+ * time afresh, so a row is never measured against an older clock. The order of anything shown never depends on it.
+ */
 export function useClock(ms = STUCK_CLOCK_MS): number {
-  const [now, setNow] = useState(() => Date.now());
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), ms);
+    const timer = setInterval(() => setTick((tick) => tick + 1), ms);
     return () => clearInterval(timer);
   }, [ms]);
-  return now;
+  return Date.now();
 }
 
 /** Every stuck worker, oldest first, with the clock it was read at. */

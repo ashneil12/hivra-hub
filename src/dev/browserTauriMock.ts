@@ -123,6 +123,15 @@ mockIPC(
       return { status: "ok", body: JSON.stringify({ five_hour: { utilization: 3, resets_at: at(165) }, seven_day: { utilization: 99, resets_at: at((5 * 24 + 15) * 60) } }) };
     }
     if (cmd === "mono_archive") { const a = args as { mono: string; stamp: string }; return `${a.mono}-${a.stamp}`; }
+    // Dev only: delegation rows a browser test seeds (`monocode:dev-delegations`), as delegations_recent returns them;
+    // `__devDelegationsChanged()` tells the app they changed, as delegations.rs does.
+    if (cmd === "delegations_recent") {
+      try {
+        return JSON.parse(localStorage.getItem("monocode:dev-delegations") ?? "[]");
+      } catch {
+        return [];
+      }
+    }
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;
@@ -148,3 +157,9 @@ void import("../features/hub/model/projectPrefs").then(({ setProjectFileActions 
       }),
   }),
 );
+
+Object.assign(window, {
+  __devDelegationsChanged: () => void emit("monocode:delegations-changed", { ids: [] }),
+  __devHubSelect: (selection: { project: string; item: string }) =>
+    import("../features/hub/model/hubNav").then(({ setHubSelection }) => setHubSelection(selection)),
+});

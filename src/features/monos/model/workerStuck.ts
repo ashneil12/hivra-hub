@@ -135,6 +135,23 @@ export function stallLine(row: Pick<Delegation, "stallKind" | "stallReason" | "s
   }
 }
 
+const RECOMMENDED = /\s*[([]\s*recommended\s*[)\]]\s*/i;
+
+/**
+ * A worker's question as its row stores it ("How long? [0.25 s (Recommended) | 0.4 s]"): the words to show, without the
+ * "(Recommended)" marker, and the option it recommends (one question only).
+ */
+export function storedQuestion(summary: string | null | undefined): { text: string; pick?: string } {
+  const raw = summary?.trim() ?? "";
+  const options = /\[([^[\]]+)\]\s*$/.exec(raw);
+  const single = !raw.includes(" / ");
+  const pick = single && options ? options[1].split(" | ").find((option) => RECOMMENDED.test(option)) : undefined;
+  return {
+    text: raw.replace(RECOMMENDED, " ").replace(/\s+\]/g, "]").replace(/\s+\|/g, " |").replace(/\s{2,}/g, " ").trim(),
+    ...(pick ? { pick: pick.replace(RECOMMENDED, " ").trim() } : {}),
+  };
+}
+
 /** When a row's question was asked: its newest `asked` log line, else its last change. */
 function askedAt(row: Delegation): number {
   for (let i = row.log.length - 1; i >= 0; i--) {
@@ -164,7 +181,7 @@ export function stuckOf(row: Delegation, now: number): StuckWorker | undefined {
   if (row.state === "question") {
     kind = "asking";
     since = askedAt(row);
-    line = row.pendingQuestion?.trim() || "Asked its Lead a question";
+    line = storedQuestion(row.pendingQuestion).text || "Asked its Lead a question";
   } else if (row.state === "running" && row.stallKind) {
     kind = "stalled";
     since = row.stalledAt ?? row.updatedAt;

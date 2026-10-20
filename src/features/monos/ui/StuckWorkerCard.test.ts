@@ -150,7 +150,9 @@ describe("stuck workers in the Lead's chat", () => {
     expect(card("w3")!.querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · still running npm test");
     expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Failed: billing refused");
     expect(card("w2")!.querySelector("[data-stuck-where]")!.textContent).toBe("Job w2");
-    expect(card("w2")!.textContent).toContain("asking EXO lead");
+    expect(card("w2")!.textContent).toContain("· asking");
+    // Its stored question reads without the "(Recommended)" marker.
+    expect(card("w2")!.querySelector("[data-stuck-line]")!.textContent).toBe("Which save format? [JSON | Binary]");
     expect(container.querySelector("[data-delegation-rollup-line]")!.textContent).toBe(
       "Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed",
     );
@@ -187,5 +189,19 @@ describe("stuck workers in the Lead's chat", () => {
     act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!.click());
     expect(card("w4")).toBeNull();
     expect(card("w3")).not.toBeNull();
+  });
+});
+
+describe("many stuck workers in one Lead's chat", () => {
+  it("shows three cards so the composer stays in view, and the rest behind one click", () => {
+    setDelegationRows(
+      [1, 2, 3, 4].map((n) => row(`t-${n}`, `w${n}`, { state: "failed", settledAt: now - n * 60_000, error: "Disk full." })),
+    );
+    act(() => root.render(createElement(LeadLine)));
+    expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(3);
+    const more = container.querySelector<HTMLButtonElement>("[data-stuck-more]")!;
+    expect(more.textContent).toBe("1 more stuck");
+    act(() => more.click());
+    expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(4);
   });
 });

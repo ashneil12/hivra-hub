@@ -500,7 +500,7 @@ function MonoSubChats({
         />
         <span className="min-w-0 truncate">
           {count}
-          {!open && stuckSplit ? ` · ${stuckSplit}` : ""}
+          {!open && attention.stuck.size ? ` · ${attention.stuck.size} stuck` : ""}
         </span>
       </button>
       {open ? (

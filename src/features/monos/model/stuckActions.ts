@@ -13,7 +13,7 @@ import { liveChatQuestion, respondInChat, sendToChat } from "../../hub/model/wai
 import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model/userQuestion";
 import { delegationActions, noteStopFailures } from "./delegationStore";
 import { findMono } from "./mono";
-import { dismissStuck, type StuckWorker } from "./workerStuck";
+import { dismissStuck, storedQuestion, type StuckWorker } from "./workerStuck";
 
 export type StuckResult = { ok: true; said: string } | { ok: false; reason: string };
 
@@ -39,9 +39,12 @@ export function questionOptions(prompt: UserQuestionPrompt | undefined): StuckOp
   return [...options.filter((o) => o.recommended), ...options.filter((o) => !o.recommended)];
 }
 
-/** The worker's recommended answer, in plain words, when every question has one. */
-export function suggestion(prompt: UserQuestionPrompt | undefined): string | undefined {
-  if (!prompt?.questions.length) return undefined;
+/**
+ * The worker's recommended answer, in plain words, when every question has one: from its live question, else from the
+ * question its row stores (a window that doesn't run it, or a turn cut off by a restart).
+ */
+export function suggestion(prompt: UserQuestionPrompt | undefined, stuck?: Pick<StuckWorker, "kind" | "row">): string | undefined {
+  if (!prompt?.questions.length) return stuck?.kind === "asking" ? storedQuestion(stuck.row.pendingQuestion).pick : undefined;
   const picks = prompt.questions.map(recommendedOption);
   return picks.every(Boolean) ? picks.map((o) => plainOptionLabel(o!.label)).join("; ") : undefined;
 }
@@ -62,12 +65,14 @@ export function answerWithOption(stuck: StuckWorker, optionId: string): StuckRes
   return answerLive(stuck, prompt, { kind: "answered", answers: { [question.id]: [option.id] } }, plainOptionLabel(option.label));
 }
 
-/** Take the worker's own recommendation, for every question it asked. */
-export function takeSuggestion(stuck: StuckWorker): StuckResult {
+/** Take the worker's own recommendation, for every question it asked (in place, else as Ash's message naming it). */
+export async function takeSuggestion(stuck: StuckWorker): Promise<StuckResult> {
   const prompt = liveQuestion(stuck);
   const reply = prompt ? pickReply(prompt) : undefined;
-  if (!prompt || !reply) return { ok: false, reason: "It didn't suggest an answer. Answer in your words or open the chat." };
-  return answerLive(stuck, prompt, reply, suggestion(prompt) ?? "its pick");
+  if (prompt && reply) return answerLive(stuck, prompt, reply, suggestion(prompt) ?? "its pick");
+  const pick = suggestion(undefined, stuck);
+  if (!pick) return { ok: false, reason: "It didn't suggest an answer. Answer in your words or open the chat." };
+  return sendWords(stuck, `Go with your pick: ${pick}`);
 }
 
 /**
@@ -80,10 +85,8 @@ export async function sendWords(stuck: StuckWorker, text: string): Promise<Stuck
   const prompt = liveQuestion(stuck);
   const reply = prompt ? wordsReply(prompt, words) : undefined;
   if (prompt && reply) return answerLive(stuck, prompt, reply, words);
-  const message =
-    stuck.kind === "asking" && stuck.row.pendingQuestion
-      ? wordsMessage({ source: "ask", question: stuck.row.pendingQuestion }, words)
-      : words;
+  const asked = storedQuestion(stuck.row.pendingQuestion).text;
+  const message = stuck.kind === "asking" && asked ? wordsMessage({ source: "ask", question: asked }, words) : words;
   return (await sendToChat(stuck.row.childSession, message))
     ? { ok: true, said: words }
     : { ok: false, reason: "It couldn't take a message right now. Open the chat instead." };

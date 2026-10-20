@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
 import {
   ASK_ESCALATE_MS,
+  storedQuestion,
   delegationLine,
   dismissStuck,
   leadRollup,
@@ -110,6 +111,15 @@ describe("stuckWorkers", () => {
     // Failing again later is new.
     expect(stuckWorkers([{ ...failed, generation: 2, settledAt: NOW }], NOW)).toHaveLength(1);
     resetStuckDismissals();
+  });
+});
+
+describe("storedQuestion", () => {
+  it("reads a question as its row stores it, without the marker, with the worker's pick", () => {
+    expect(storedQuestion("How long? [0.25 s (Recommended) | 0.4 s]")).toEqual({ text: "How long? [0.25 s | 0.4 s]", pick: "0.25 s" });
+    expect(storedQuestion("Which? [a | b]")).toEqual({ text: "Which? [a | b]" });
+    expect(storedQuestion("One? [a (Recommended) | b] / Two? [c | d (Recommended)]").pick).toBeUndefined();
+    expect(storedQuestion(null)).toEqual({ text: "" });
   });
 });
 

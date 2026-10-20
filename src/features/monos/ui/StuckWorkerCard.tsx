@@ -53,11 +53,14 @@ export function StuckMark({ kind, className = "size-3.5" }: { kind: StuckWorker[
   );
 }
 
-/** What the worker is doing about it, after its title: "asking EXO lead", "EXO lead hasn't answered", "stuck", "failed". */
+/** What the worker is doing about it, after its title: "asking", "not answered yet", "stuck", "failed". */
 export function stuckWord(stuck: StuckWorker): string {
-  if (stuck.kind === "asking") return stuck.escalated ? `${leadNameOf(stuck)} hasn't answered` : `asking ${leadNameOf(stuck)}`;
+  if (stuck.kind === "asking") return stuck.escalated ? "not answered yet" : "asking";
   return stuck.kind === "failed" ? "failed" : "stuck";
 }
+
+/** How many cards a Lead's chat shows before "N more stuck": its composer stays in view. */
+export const CHAT_CARDS_SHOWN = 3;
 
 type Done = { stuck: StuckWorker; said: string };
 
@@ -80,12 +83,15 @@ export function StuckList({
   heading?: string;
 }) {
   const [done, setDone] = useState<Record<string, Done>>({});
+  const [all, setAll] = useState(false);
   const held = Object.values(done).filter((d) => !stuck.some((s) => s.key === d.stuck.key));
   if (!stuck.length && !held.length) return null;
+  const more = variant === "chat" && !all ? Math.max(0, stuck.length - CHAT_CARDS_SHOWN) : 0;
+  const cards = more ? stuck.slice(0, CHAT_CARDS_SHOWN) : stuck;
   const finished = (s: StuckWorker, said: string) => setDone((prev) => ({ ...prev, [s.key]: { stuck: s, said } }));
   const list = (
     <div data-stuck-list={variant} aria-label={label} className={variant === "chat" ? "flex flex-col gap-1.5 pb-1.5" : "flex flex-col"}>
-      {stuck.map((s) =>
+      {cards.map((s) =>
         done[s.key] ? (
           <DoneRow key={s.key} done={done[s.key]} variant={variant} />
         ) : (
@@ -95,6 +101,16 @@ export function StuckList({
       {held.map((d) => (
         <DoneRow key={d.stuck.key} done={d} variant={variant} />
       ))}
+      {more ? (
+        <button
+          type="button"
+          data-stuck-more
+          onClick={() => setAll(true)}
+          className="self-start rounded-lg px-2 py-0.5 font-sans text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
+        >
+          {more} more stuck
+        </button>
+      ) : null}
     </div>
   );
   if (!heading) return list;
@@ -124,7 +140,7 @@ export function StuckWorkerCard({
   const [problem, setProblem] = useState<string | null>(null);
   const prompt = liveQuestion(stuck);
   const options = questionOptions(prompt);
-  const pick = suggestion(prompt);
+  const pick = suggestion(prompt, stuck);
   const run = async (call: () => StuckResult | Promise<StuckResult>) => {
     setBusy(true);
     setProblem(null);
