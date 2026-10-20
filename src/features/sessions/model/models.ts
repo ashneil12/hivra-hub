@@ -1,7 +1,7 @@
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
-import { customModelEfforts, findCustomModel, isCustomModelId } from "./customModels";
+import { customModelEfforts, effortLabel, findCustomModel, isCustomModelId, refusedEfforts } from "./customModels";
 import {
   hasProbedHarnessAvailability,
   isHarnessAvailable,
@@ -10,6 +10,8 @@ import {
 export type ModelSettingChoice = {
   value: string;
   label: string;
+  /** The provider refused this choice for this model: listed, marked "Not supported", never picked or shown as picked. */
+  unsupported?: boolean;
 };
 
 export type ModelSetting = {
@@ -364,10 +366,12 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
   if (id && isCustomModelId(id)) {
     const custom = findCustomModel(id);
     const levels = custom ? customModelEfforts(custom.reasoningEfforts) : [];
+    const refused = refusedEfforts(custom);
+    const usable = levels.filter((level) => !refused.includes(level));
     return { id, harness, name: custom?.name ?? "Custom model", nativeId: custom?.modelId,
       ...(levels.length ? { settings: [{ id: "effort", label: "Reasoning", kind: "select" as const,
-        value: levels.includes("medium") ? "medium" : levels[0],
-        options: levels.map((value) => ({ value, label: value === "xhigh" ? "Extra high" : value[0].toUpperCase() + value.slice(1) })) }] } : {}) };
+        value: usable.includes("medium") ? "medium" : (usable[0] ?? levels[0]),
+        options: levels.map((value) => ({ value, label: effortLabel(value), ...(refused.includes(value) ? { unsupported: true } : {}) })) }] } : {}) };
 
   }
   const available = modelsFor(harness);

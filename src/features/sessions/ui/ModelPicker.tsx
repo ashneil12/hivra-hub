@@ -235,14 +235,19 @@ function settingValue(
   return values[setting.id] ?? setting.value;
 }
 
+/** What the trigger and setting rows say when the chat's level was refused by its provider. */
+export const UNSUPPORTED_VALUE_LABEL = "Provider default";
+const UNSUPPORTED_NOTE = "Not supported";
+
 function settingValueLabel(
   setting: ModelSetting,
   values: Record<string, string>,
 ): string {
   const value = settingValue(setting, values);
-  return (
-    setting.options.find((option) => option.value === value)?.label ?? value
-  );
+  const option = setting.options.find((choice) => choice.value === value);
+  // A level the provider refused is never shown as the chat's level: the reply uses the provider's default.
+  if (option?.unsupported) return UNSUPPORTED_VALUE_LABEL;
+  return option?.label ?? value;
 }
 
 function recentMenuModels(
@@ -608,6 +613,7 @@ export function ModelPicker({
   }, [hotkeys, source]);
 
   const setSetting = (setting: ModelSetting, value: string) => {
+    if (setting.options.find((option) => option.value === value)?.unsupported) return;
     onSettingsChange({ ...values, [setting.id]: value });
   };
 
@@ -991,6 +997,7 @@ export function ModelPicker({
             >
               {submenu.setting.options.map((option, index) => {
                 const selected =
+                  !option.unsupported &&
                   option.value === settingValue(submenu.setting, values);
                 const highlighted = index === activeSetting;
                 const tileTone = effortTileTone(submenu.setting, option.value);
@@ -1000,6 +1007,9 @@ export function ModelPicker({
                     type="button"
                     role="menuitemradio"
                     aria-checked={selected}
+                    disabled={option.unsupported}
+                    aria-disabled={option.unsupported || undefined}
+                    data-unsupported={option.unsupported ? "" : undefined}
                     onMouseDown={(event) => event.preventDefault()}
                     onMouseEnter={() => setActiveSetting(index)}
                     onClick={() => pickSetting(submenu.setting, option.value)}
@@ -1011,9 +1021,12 @@ export function ModelPicker({
                     data-effort-tone={tileTone}
                   >
                     {tileTone ? <EffortTileShimmer /> : null}
-                    <span className="min-w-0 flex-1 truncate">
+                    <span className={`min-w-0 flex-1 truncate ${option.unsupported ? "text-content/40" : ""}`}>
                       {option.label}
                     </span>
+                    {option.unsupported ? (
+                      <span className="shrink-0 text-[11px] text-content/40">{UNSUPPORTED_NOTE}</span>
+                    ) : null}
                     {selected ? (
                       <Check
                         className="size-3.5 shrink-0 text-content/50"
@@ -1377,6 +1390,7 @@ function SelectPill({
     setOpen(true);
   };
   const pick = (pickedSetting: ModelSetting, optionValue: string) => {
+    if (pickedSetting.options.find((option) => option.value === optionValue)?.unsupported) return;
     onSettingsChange({ ...values, [pickedSetting.id]: optionValue });
     dismiss(true);
   };
@@ -1463,6 +1477,7 @@ function SelectPill({
                       item.option.value === option.value,
                   );
                   const selected =
+                    !option.unsupported &&
                     option.value === settingValue(menuSetting, values);
                   const highlighted = index === active;
                   const tileTone = effortTileTone(menuSetting, option.value);
@@ -1473,6 +1488,9 @@ function SelectPill({
                       type="button"
                       role="menuitemradio"
                       aria-checked={selected}
+                      disabled={option.unsupported}
+                      aria-disabled={option.unsupported || undefined}
+                      data-unsupported={option.unsupported ? "" : undefined}
                       onMouseDown={(event) => event.preventDefault()}
                       onMouseEnter={() => setActive(index)}
                       onClick={() => pick(menuSetting, option.value)}
@@ -1482,9 +1500,12 @@ function SelectPill({
                       data-effort-tone={tileTone}
                     >
                       {tileTone ? <EffortTileShimmer /> : null}
-                      <span className="min-w-0 flex-1 truncate">
+                      <span className={`min-w-0 flex-1 truncate ${option.unsupported ? "text-content/40" : ""}`}>
                         {option.label}
                       </span>
+                      {option.unsupported ? (
+                        <span className="shrink-0 text-[11px] text-content/40">{UNSUPPORTED_NOTE}</span>
+                      ) : null}
                       {selected ? (
                         <Check
                           className="size-3.5 shrink-0 text-content/50"
