@@ -31,6 +31,7 @@ import {
 } from "../../features/hub/model/roomConductor";
 import { getChat, leadershipChatId, requestReply, sendMessage } from "../../features/hub/model/hubChats";
 import { roomMemory } from "../../features/hub/model/roomMemory";
+import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
 import { homeDir } from "../../platform/tauri/fs";
@@ -171,11 +172,10 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
         if (current.usageLimit && !current.busy)
           throw new Error(`${name} is out of its usage limit${resetsAt(current)}. Your message is saved.`);
-        // The room's project memory, after the turn (so the turn still opens "[MonoCode room]"), when this conversation
-        // of the seat's chat hasn't had it.
+        // The room's project memory, ahead of the conversation, when this conversation of the seat's chat hasn't had it.
         const memory = await roomMemory(current, request.projectId).catch(() => undefined);
-        const prompt = memory ? `${request.prompt}\n\n${memory.block}` : request.prompt;
-        const wakePrompt = memory ? `${request.wakePrompt}\n\n${memory.block}` : request.wakePrompt;
+        const prompt = memory ? withRoomMemory(request.prompt, memory.block) : request.prompt;
+        const wakePrompt = memory ? withRoomMemory(request.wakePrompt, memory.block) : request.wakePrompt;
         if (monoTakesRoomTurnNow(current)) {
           const reply = await new Promise<string | undefined>((resolve, reject) => {
             const timer = window.setTimeout(

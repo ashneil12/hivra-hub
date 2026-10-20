@@ -166,6 +166,7 @@ it("each seat's room turn starts on the room's project memory, once per conversa
   expect(submitted[0].text).toContain("This room is the hub project's.");
   expect(submitted[0].text).toContain("<project_memory>");
   expect(submitted[0].text).toContain("- Rooms are per project [14 Oct]");
+  expect(submitted[0].text.indexOf("<project_memory>")).toBeLessThan(submitted[0].text.indexOf("<room_conversation>"));
   settle.get(chatOf("chief-of-staff"))!("Nothing needs you.");
   await chat.roomIdle(room.id);
   chat.sendMessage(room.id, "and now?", conv);

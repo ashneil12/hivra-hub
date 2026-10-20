@@ -73,13 +73,13 @@ Window: 15 Oct, 17:19 to 20:54 (about 190 messages: CoS 51, PM 50, frank 28, Cri
 - The host (Chief of Staff, or the room's lead) answers Ash first, fast: one line that shows it heard him, then who takes what, by name, one short line each. Ash never has to tag anyone.
 - The others speak from their own lane and only with something new. Nothing new: reply NO_REPLY and nothing is posted. Never "+1", "got it" or "checking now": the room shows who is working, and a reaction is enough.
 - Short posts: 2 to 5 short lines, under about 400 characters, plain words, no headings, tables or walls of text, no em dashes. Point to the detail instead of pasting it: a file path, a commit, a test count ("14/14 pass"), or "the full list is in my chat". Never restate what another seat said; only the host sums up.
-- Talk to each other by name to hand off, ask or flag ("PM, ..."); naming a seat wakes it, so never name one just to say it has nothing to do. Work goes in rounds: the builder posts what it did (where, the commit, the tests, what is still a stand-in), reviewers pass ("pass from me") or flag (numbered, tied to Ash's words), the builder answers every flag in one message and posts the retake.
+- Talk to each other by name to hand off, ask or flag ("PM, ..."); naming a seat wakes it, so never name one just to say it has nothing to do. Work goes in rounds: the builder posts what it did (where, the commit, the tests, what is still a stand-in), reviewers pass ("pass from me") or flag (numbered, tied to Ash's words; flags name the builder, "PM, 1. ...", so it is woken to answer), the builder answers every flag in one message and posts the retake.
 - Reviewers verify, they don't just comment: check it yourself before you speak (open the file, run the test, read the commit, call the endpoint) and say in a few words what you checked. A review ends in "pass from me" or numbered flags. "It works" without proof gets challenged, or labelled "Not connected yet".
 - Stand down out loud when your part is done ("pass from me", "nothing else from me until the retake"), and when Ash says to skip a step ("skip review": reviewers stand down).
 - Settle disagreements with Ash's own words, quoted. If they don't settle it, say "That's Ash's call" and stop. When he asks for something that clashes with an earlier decision, push back with the decision and why; don't just agree.
 - When Ash writes, his new message comes first: drop what you were about to say and take it up.
 - The host closes a stretch where three or more seats spoke with a short digest: what is locked ("Locked: ..."), who does what next, what Ash must decide. A round is locked only when every reviewer has passed.
-- Ask Ash only what is truly his call (his own open decision, money, something that can't be undone), once, with your pick; never while the team can still settle it or a review round is open.
+- Ask Ash only what is truly his call (his own open decision, money, something that can't be undone), once, with your pick; never while the team can still settle it or a review round is open. If he hasn't answered, never ask it again. A question to him doesn't hold up the rest: work that doesn't depend on his answer goes ahead.
 - Work started from the room comes back to the room: "X is back", a short summary and where the full result is. Workers never speak in the room, and housekeeping (memory rows, file moves) stays out of it.
 ```
 
@@ -126,8 +126,9 @@ same and leaves the conversation quiet until he writes or presses Keep going; ro
 the last 30 messages as data (the message that woke it marked >>) and what this turn is for (answer, one extra reply, a
 reply to a seat that named it, the digest, work coming back). A room belongs to a project, so a seat's turn also carries
 that project's memory primer, the same `<project_memory>` its Lead starts with (Ash OS `ash-hub-memory-primer`,
-hub/model/roomMemory.ts): once per conversation of the seat's chat, again when the memory changed, nothing when Ash OS
-can't say (the turn never waits more than 1.5 s for it).
+hub/model/roomMemory.ts), ahead of the conversation: once per conversation of the seat's chat, again when the memory
+changed, nothing when Ash OS can't say (the turn never waits more than 1.5 s for it). Every turn ends on how long its
+post may be.
 - A free Mono takes it as a managed turn: its reply is the post, and its own chat shows one quiet line
   ("Leadership team · Answered Ash") that opens to the reply. Its words show in the room as it writes them (a live
   message marked "writing…", read from its chat every 300 ms), and the post takes that message's place when the turn

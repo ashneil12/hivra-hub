@@ -23,6 +23,7 @@ import {
   roomTranscript,
   sameSaying,
   turnPrompt,
+  withRoomMemory,
   type Seat,
 } from "./roomTurns";
 import { ROOM_RULES } from "./teamSouls";
@@ -217,6 +218,27 @@ describe("the gate and the prompts", () => {
     const digest = turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 });
     expect(digest).toContain("Locked:");
     expect(digest).toContain("only when every reviewer has passed");
+  });
+
+  it("a turn ends on how long its post may be; the project's memory goes ahead of the conversation, not after it", () => {
+    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
+    const answer = turnPrompt({ ...base, me: COS, kind: "answer" });
+    expect(answer.trimEnd().split("\n").at(-1)).toBe(`Now write your post: 2 to 5 short lines, under about 400 characters, or exactly ${"NO_REPLY"}.`);
+    const busy = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "PM", viaTool: true });
+    expect(busy.trimEnd().split("\n").at(-1)).toBe("Now answer with room_post (2 to 5 short lines, under about 400 characters), or post nothing.");
+    const withMemory = withRoomMemory(answer, "<project_memory>\nTeal is the brand colour.\n</project_memory>");
+    expect(withMemory.startsWith("[MonoCode room] You are Chief of Staff")).toBe(true);
+    expect(withMemory.indexOf("<project_memory>")).toBeLessThan(withMemory.indexOf("<room_conversation>"));
+    expect(withMemory.trimEnd().endsWith("or exactly NO_REPLY.")).toBe(true);
+    // A prompt without the conversation marker still gets it, at the end.
+    expect(withRoomMemory("hello", "<m/>")).toBe("hello\n\n<m/>");
+  });
+
+  it("an unanswered question to Ash is never asked again and never holds up the rest; flags name the builder", () => {
+    for (const rule of ["never ask it again", "doesn't hold up", "name the builder"])
+      expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
+    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
+    expect(turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 })).toContain("don't ask it again");
   });
 
   it("the room rules carry what the Grok room did and what it must not copy", () => {
