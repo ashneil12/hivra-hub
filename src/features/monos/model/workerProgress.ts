@@ -426,7 +426,7 @@ export class ProgressCheck {
       w.verdict = { kind: "loop", reason: `${reason} · its Lead is on it`, since };
       await this.host.tellLead(
         row,
-        `Hourly check on "${title}": ${lowerFirst(reason)}, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it, split it into smaller pieces and brief them, or retry it with a clearer brief. Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
+        `Hourly check on "${title}": ${lowerFirst(reason)}, after I asked it to try another way. Handle it yourself now, without asking Ash: stop it (task_cancel ${row.id}), split it into smaller pieces and brief them, or retry it with a clearer brief (delegate_task with redoes "${row.id}" on each, so its card shows what you did). Then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
       );
       return;
     }
@@ -509,7 +509,7 @@ export class ProgressCheck {
       }
       await this.host.tellLead(
         row,
-        `"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently, split it, or stop it, then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
+        `"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "${row.id}"), or stop it (task_cancel ${row.id}), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
       );
       return;
     }

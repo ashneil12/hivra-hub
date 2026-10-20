@@ -47,7 +47,7 @@ import type { AgentAppHost } from "./agentApp";
 export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   [
     "tasks.delegate",
-    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "lead", "whenBusy"],
+    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "lead", "whenBusy", "redoes"],
   ],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
@@ -83,6 +83,8 @@ export type AgentAppTasksHost = {
   acknowledge(owner: string, rows: Delegation[]): Promise<void>;
   /** Resolves on the next change to any row, or after `ms`. */
   nextChange(ms: number): Promise<void>;
+  /** The caller retried or split its task `row` with the new task `task` (delegate_task `redoes`): noted on the row. */
+  redo?(owner: string, row: Delegation, task: string): Promise<void>;
   /** Stop a task and everything beneath it (H4's stopTree), cancelling what is still owed. */
   cancel(
     owner: string,
@@ -427,7 +429,11 @@ async function delegate(
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
   const goal = input.goal === undefined ? undefined : text(input.goal, "goal", 1_000);
+  // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
+  const redoes =
+    input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
   if (input.lead !== undefined) {
+    if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
     if (!owner.mono)
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
@@ -518,6 +524,8 @@ async function delegate(
   }
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
+  // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
+  if (redoes && row) await tasks.redo?.(source.id, redoes, row.id).catch(() => undefined);
   return {
     taskId: row?.id ?? null,
     childSessionId: id,

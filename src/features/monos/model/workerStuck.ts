@@ -325,14 +325,74 @@ export function leadRollup(ownerSession: string, rows: readonly Delegation[], no
   return batchRollup(wave.sort((a, b) => a.createdAt - b.createdAt).map(rollupState));
 }
 
+/**
+ * How long a running worker has run, from its first hour ("6 h 20 min"): shown apart from its state, in muted text,
+ * never as a status of its own (no time or cost pushes to Ash).
+ */
+export function runningFor(row: Pick<Delegation, "state" | "createdAt">, now: number): string | undefined {
+  if (row.state !== "running" || now - row.createdAt < 60 * 60_000) return undefined;
+  return minutes(now - row.createdAt);
+}
+
+/** What its Lead last did about a stuck worker: retried it, split it (into `count`), or stopped it. */
+export type LeadAction = { kind: "retried" | "split" | "stopped"; count: number; at: number };
+
+/** Redos this close together are one go: several delegations naming one stuck task in a turn split it. */
+export const REDO_TOGETHER_MS = 15 * 60_000;
+
+type LogEntry = { at?: unknown; by?: unknown; event?: unknown };
+const atOf = (entry: LogEntry) => (typeof entry.at === "number" ? entry.at : 0);
+const byLead = (entry: LogEntry) => typeof entry.by === "string" && entry.by.startsWith("owner:");
+
+/**
+ * Its Lead's latest action, from the row's log (kept by the store, so it is there after a restart): a `lead_redo`
+ * (delegate_task `redoes`; one is a retry, several together a split) or a cancel by its owner (task_cancel).
+ */
+export function leadAction(row: Pick<Delegation, "log">): LeadAction | undefined {
+  const log = (row.log ?? []) as LogEntry[];
+  for (let i = log.length - 1; i >= 0; i--) {
+    const entry = log[i];
+    if (!byLead(entry)) continue;
+    if (entry.event === "cancelled") return { kind: "stopped", count: 1, at: atOf(entry) };
+    if (entry.event !== "lead_redo") continue;
+    // The go this redo belongs to: the redos just before it, each within REDO_TOGETHER_MS of the next.
+    let count = 1;
+    let first = atOf(entry);
+    for (let j = i - 1; j >= 0; j--) {
+      const earlier = log[j];
+      if (earlier.event !== "lead_redo" || !byLead(earlier)) continue;
+      if (first - atOf(earlier) > REDO_TOGETHER_MS) break;
+      count++;
+      first = atOf(earlier);
+    }
+    return { kind: count > 1 ? "split" : "retried", count, at: first };
+  }
+  return undefined;
+}
+
+/** "at 2h", "at 2h 10m", "at 40m": how far into the worker's run. */
+function runAt(ms: number): string {
+  const min = Math.max(0, Math.floor(ms / 60_000));
+  if (min < 60) return `${min}m`;
+  return min % 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${Math.floor(min / 60)}h`;
+}
+
+/** One plain line for its card: "Hivra lead retried it at 2h", "Hivra lead split it into 2 cards", "… stopped it at 3h". */
+export function leadActionLine(row: Pick<Delegation, "log" | "createdAt">, leadName: string): string | undefined {
+  const action = leadAction(row);
+  if (!action) return undefined;
+  const who = leadName.charAt(0).toUpperCase() + leadName.slice(1);
+  if (action.kind === "split") return `${who} split it into ${action.count} cards`;
+  return `${who} ${action.kind} it at ${runAt(action.at - row.createdAt)}`;
+}
+
 /** One row as the rail reads it: how it is stuck, else its state word. */
 export function delegationLine(row: Delegation, now: number): string {
   const stuck = stuckOf(row, now);
   if (stuck?.kind === "stalled") return stuck.line;
   if (stuck?.kind === "failed") return stuck.line;
   if (stuck?.kind === "asking") return "asking its Lead";
-  // How long it has run shows quietly from the first hour on (no time or cost pushes to Ash).
-  if (row.state === "running" && now - row.createdAt >= 60 * 60_000) return `working · ${minutes(now - row.createdAt)}`;
+  if (row.state === "cancelled" && leadAction(row)?.kind === "stopped") return "stopped by its Lead";
   return { running: "working", question: "asking its Lead", completed: "done", failed: "failed", cancelled: "stopped" }[row.state];
 }
 

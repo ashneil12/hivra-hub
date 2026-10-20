@@ -198,6 +198,35 @@ function fixture(
   return { source, host, started, ...tasks };
 }
 
+describe("tasks.delegate redoes: the Lead retries or splits its stuck task", () => {
+  it("notes the new task on the stuck one, after the worker starts", async () => {
+    const stuck = row({ id: "t-stuck", stallKind: "loop", stallReason: "No commits, file changes or test runs for 2 hours" });
+    const rows = [stuck];
+    const { source, host, api, started } = fixture(rows);
+    const redone: Array<[string, string, string]> = [];
+    api.redo = vi.fn(async (owner, entry, task) => void redone.push([owner, entry.id, task]));
+    const result = await handleAgentApp(source, "r-retry", "tasks.delegate", { brief: "Fix the save bug, smaller: only the slot file.", redoes: "t-stuck" }, host);
+    expect(started).toHaveLength(1);
+    expect(redone).toEqual([["mono-exo", "t-stuck", (result as { taskId: string }).taskId]]);
+  });
+
+  it("refuses another chat's task, or a Lead brief, before anything starts", async () => {
+    const theirs = row({ id: "t-theirs", ownerSession: "mono-hivra" });
+    const { source, host, api, started } = fixture([theirs]);
+    api.redo = vi.fn(async () => undefined);
+    await expect(
+      handleAgentApp(source, "r-x", "tasks.delegate", { brief: "Take it over.", redoes: "t-theirs" }, host),
+    ).rejects.toThrow(/No task t-theirs of yours/);
+    const mine = row({ id: "t-mine" });
+    const second = fixture([mine]);
+    await expect(
+      handleAgentApp(second.source, "r-y", "tasks.delegate", { brief: "Hand it on.", lead: "hub", redoes: "t-mine" }, second.host),
+    ).rejects.toThrow(/redoes is for your own workers' tasks/);
+    expect([...started, ...second.started]).toEqual([]);
+    expect(api.redo).not.toHaveBeenCalled();
+  });
+});
+
 describe("tasks.delegate", () => {
   it("starts a worker nested under the Mono, monitored, with a signed brief and a row that carries the job", async () => {
     const rows: Delegation[] = [];

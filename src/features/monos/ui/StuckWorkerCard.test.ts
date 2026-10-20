@@ -242,3 +242,36 @@ describe("a stuck worker's own chat", () => {
     expect(host.respond).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
   });
 });
+
+describe("what its Lead did, on the red card (Critiquito, 21 Oct)", () => {
+  function render(rows: Delegation[]) {
+    const lead = createMono(["/code/vg-game"]);
+    updateMono(lead.id, (mono) => ({ ...mono, name: "EXO lead", sessionId: "lead-chat" }));
+    setDelegationRows(rows);
+    setDelegationActions({ openOwner: vi.fn(), openChild: vi.fn(), stopTree: vi.fn(), stopRow: vi.fn(), noteAnswer: vi.fn() });
+    setWaitingChatsHost({ liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() });
+    act(() => root.render(createElement(LeadLine)));
+    return (child: string) => container.querySelector<HTMLElement>(`[data-stuck-worker="${child}"]`)!;
+  }
+  const HOUR_MS = 60 * 60_000;
+  const stalled = { stallKind: "loop" as const, stallReason: "No commits, file changes or test runs for 2 hours · its Lead is on it", stalledAt: now - HOUR_MS };
+
+  it("shows the Lead's latest action as one plain line under the reason, and nothing when it hasn't acted", () => {
+    const card = render([
+      row("t-1", "w1", { ...stalled, createdAt: now - 3 * HOUR_MS, log: [{ at: now - HOUR_MS, by: "owner:lead-chat", event: "lead_redo", task: "t-9" }] }),
+      row("t-2", "w2", {
+        ...stalled,
+        createdAt: now - 3 * HOUR_MS,
+        log: [
+          { at: now - 30 * 60_000, by: "owner:lead-chat", event: "lead_redo", task: "t-7" },
+          { at: now - 29 * 60_000, by: "owner:lead-chat", event: "lead_redo", task: "t-8" },
+        ],
+      }),
+      row("t-3", "w3", stalled),
+    ]);
+    expect(card("w1").querySelector("[data-stuck-line]")!.textContent).toBe("No commits, file changes or test runs for 2 hours · its Lead is on it");
+    expect(card("w1").querySelector("[data-stuck-lead-action]")!.textContent).toBe("EXO lead retried it at 2h");
+    expect(card("w2").querySelector("[data-stuck-lead-action]")!.textContent).toBe("EXO lead split it into 2 cards");
+    expect(card("w3").querySelector("[data-stuck-lead-action]")).toBeNull();
+  });
+});

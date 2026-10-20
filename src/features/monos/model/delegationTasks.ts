@@ -62,6 +62,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       for (const row of rows) deps.dropReport(owner, row.childSession);
     },
     nextChange: deps.nextChange ?? nextDelegationChange,
+    redo: (owner, row, task) => tracker().noteRedo(owner, row, task),
     cancel: async (owner, row, reason) => {
       // The cascade (H4) takes a followed brief out of its chat's queue and never stops that chat for it.
       if (deps.stopTask) {

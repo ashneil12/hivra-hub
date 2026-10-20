@@ -191,6 +191,8 @@ export type DelegationsBackend = {
   followedInto?(childSession: string, requestIds: string[]): Promise<Delegation[]>;
   /** Mark a running row stalled, or (no kind) clear its stall. */
   setStall?(input: StallInput): Promise<Change>;
+  /** Its owner retried or split it: `task` is the new task taking it on (delegate_task `redoes`), kept in its log. */
+  noteRedo?(ownerSession: string, id: string, task: string): Promise<Change>;
 };
 
 export const tauriDelegations: DelegationsBackend = {
@@ -212,6 +214,7 @@ export const tauriDelegations: DelegationsBackend = {
   bindChat: (input) => invoke("delegations_bind_chat", { input }),
   followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
   setStall: (input) => invoke("delegations_set_stall", { input }),
+  noteRedo: (ownerSession, id, task) => invoke("delegations_note_redo", { ownerSession, id, task }),
 };
 
 /** delegations.rs's event after any change to a row. */
@@ -747,6 +750,16 @@ export class DelegationTracker {
       });
       this.remember(change.row);
       return change;
+    });
+  }
+
+  /** Its owner retried or split this task with `task` (delegate_task `redoes`): kept on the row for its card. */
+  noteRedo(ownerId: string, row: Pick<Delegation, "id">, task: string): Promise<void> {
+    const write = this.backend.noteRedo?.bind(this.backend);
+    if (!write) return Promise.resolve();
+    return this.serial(async () => {
+      const change = await write(ownerId, row.id, task);
+      this.remember(change.row);
     });
   }
 
