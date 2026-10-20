@@ -124,15 +124,18 @@ export function startedByMono<M extends { id: string; sessionId?: string }>(
   return best;
 }
 
-/** A child chat as the Monos sidebar nests it under its Mono. */
+/** A child chat as the Monos sidebar nests it under its Mono (and the coding team's Sessions list under its chat). */
 export type ChildChat = {
   sessionId: string;
   ownerSession: string;
   title: string;
   state: DelegationState;
   createdAt: number;
-  /** The row it was read from (how it is stuck, if it is: workerStuck.ts). */
-  row: Delegation;
+  /**
+   * The row it was read from (how it is stuck, if it is: workerStuck.ts). None for a chat started without one (an
+   * /operator launch the Sessions list nests by its id alone).
+   */
+  row?: Delegation;
 };
 
 export const CHILD_CHATS_RECENT_MS = 6 * 60 * 60 * 1000;

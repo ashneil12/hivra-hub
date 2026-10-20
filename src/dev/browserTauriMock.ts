@@ -132,6 +132,23 @@ mockIPC(
         return [];
       }
     }
+    // Dev only: chats a browser test seeds (`monocode:dev-sessions`, as session_list_by_project returns them) for their
+    // folder; session_get reads one back with an empty transcript, so opening it from the list works.
+    if (cmd === "session_list_by_project" || cmd === "session_get") {
+      let seeded: Array<Record<string, unknown>> = [];
+      try {
+        seeded = JSON.parse(localStorage.getItem("monocode:dev-sessions") ?? "[]");
+      } catch {
+        seeded = [];
+      }
+      const a = args as { cwd?: string; sessionId?: string };
+      if (cmd === "session_get") {
+        const found = seeded.find((entry) => entry.id === a.sessionId);
+        return found ? { modelSettings: {}, blocks: [], ...found } : null;
+      }
+      const key = (path: unknown) => String(path ?? "").replace(/\/+$/, "");
+      return seeded.filter((entry) => key(entry.cwd) === key(a.cwd));
+    }
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;

@@ -50,12 +50,13 @@ import {
   codingTeamChatProject,
   codingTeamName,
   codingTeamProjectFor,
+  codingTeamsOn,
   forgetCodingTeamChat,
   noteCodingTeamChat,
 } from "../features/hub/model/codingTeam";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
-import { leadFor, leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -169,9 +170,17 @@ import {
 import "../features/hub/model/stripBackdrop";
 import {
   hubSurfaceOpen,
+  setCodingTeamOpener,
   setHubSelection,
   useHubSelection,
+  type CodingTeamTarget,
 } from "../features/hub/model/hubNav";
+import {
+  codingTeamView,
+  noteCodingTeamView,
+} from "../features/hub/model/codingTeamList";
+import { MonoRailMascot } from "../features/monos/ui/MonoRailMascot";
+import type { CodingTeamList } from "./shell/Sidebar";
 import {
   forgetWaitingChat,
   noteChats,
@@ -1247,16 +1256,30 @@ function currentWorkspace(project: string): string {
 
 /**
  * The hub project whose coding team this chat is in, noted the first time (hub/model/codingTeam.ts): a top-level chat
- * in a hub project's code folder. None outside the Hub bundle.
+ * in a hub project's code folder. None in plain MonoCode.
  */
 function codingTeamOf(session: Session): HubProject | undefined {
-  if (!IS_HUB_BUNDLE) return undefined;
+  if (!codingTeamsOn()) return undefined;
   const projects = hubData().listProjects();
   const noted = codingTeamChatProject(session.id);
   if (noted) return projects.find((project) => project.id === noted && !!project.folder);
   const project = codingTeamProjectFor(session, projects, { isMono: isMonoSession, isHabitRun });
   if (project) noteCodingTeamChat(session.id, project.id);
   return project;
+}
+
+/**
+ * The coding team a project's Lead lives in: its project, when that has a code folder (Ash, 20 Oct: the coding team is
+ * the main place he talks, and the Lead is its default chat). None in plain MonoCode, or for any other Mono.
+ */
+function leadCodingTeam(monoId: string): HubProject | undefined {
+  if (!codingTeamsOn()) return undefined;
+  const lead = leadFor(monoId);
+  return lead
+    ? hubData()
+        .listProjects()
+        .find((project) => project.id === lead.projectId && !!project.folder)
+    : undefined;
 }
 
 export default function App(props: AppProps) {
@@ -5230,9 +5253,27 @@ function Workspace({
   /** The last Mono opened, which the shortcut brings back. */
   const lastMonoIdRef = useRef<string | undefined>(undefined);
 
+  /** The project rail's selection (onSelectProject, declared below), for a Lead opening in its coding team. */
+  const selectProjectRef = useRef<(path: string) => void>(() => undefined);
+
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
     async (monoId: string) => {
+      // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
+      // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
+      // project's Sessions list beside its chat.
+      const team = leadCodingTeam(monoId);
+      if (team?.folder) {
+        setHubSelection({ project: team.id, item: "coding-team" });
+        nameHubProject(team);
+        noteCodingTeamView(team.id, "lead");
+        if (!sameProjectPath(projectCwdRef.current, team.folder)) {
+          selectProjectRef.current(team.folder);
+          // The project's own chat must not take the focus meanwhile: a pane taking focus closes the Mono's view
+          // (onFocusPane). The Lead's composer takes it once its view is up.
+          setComposerFocused(false);
+        }
+      }
       setMonoActivity(null);
       workspaceNavigation.cancel();
       const request = ++monoViewRequest.current;
@@ -6736,6 +6777,40 @@ function Workspace({
       workspaceNavigation.selectProject,
     ],
   );
+  selectProjectRef.current = onSelectProject;
+
+  /**
+   * Open a hub project's coding team (hubNav.ts openCodingTeam): its folder's workspace and Sessions list, on its
+   * Lead's chat by default (`lead`), or the chat Ash was last in there. A project with no code folder has no coding
+   * team: it opens on its own Inbox.
+   */
+  const openCodingTeam = useCallback(
+    (projectId: string, target: CodingTeamTarget = {}) => {
+      const project = hubData()
+        .listProjects()
+        .find((entry) => entry.id === projectId);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      if (!project?.folder) {
+        closeMonoView();
+        setHubSelection({ project: projectId, item: "inbox" });
+        return;
+      }
+      const lead = leadMono(leadSpecFor(project));
+      if (lead && (target.lead ?? codingTeamView(project.id) === "lead")) {
+        void onOpenMono(lead.id);
+        return;
+      }
+      closeMonoView();
+      setHubSelection({ project: project.id, item: "coding-team" });
+      nameHubProject(project);
+      onSelectProject(project.folder);
+    },
+    [closeMonoView, onOpenMono, onSelectProject],
+  );
+  useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
 
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
@@ -15102,20 +15177,75 @@ function Workspace({
     />
   );
 
+  // The coding team (hub/model/codingTeam.ts): the selected project's folder in the workspace. Its Sessions list pins
+  // the project's Lead at the top and nests every chat a chat started under the chat Ash talks to.
+  const teamProject =
+    codingTeamsOn() &&
+    hubSel.item === "coding-team" &&
+    hubProject?.folder &&
+    sameProjectPath(sidebarCwd, hubProject.folder)
+      ? hubProject
+      : undefined;
+  const teamLeadMono = teamProject ? leadMono(leadSpecFor(teamProject)) : undefined;
+  const teamLeadSession = teamLeadMono?.sessionId
+    ? sessions.find((session) => session.id === teamLeadMono.sessionId)
+    : undefined;
+  const codingTeamList: CodingTeamList | undefined = teamProject
+    ? {
+        ...(teamLeadMono
+          ? {
+              lead: {
+                session: {
+                  id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
+                  cwd: teamProject.folder!,
+                  harness: teamLeadSession?.harness ?? "claude",
+                  model: teamLeadSession?.model ?? "",
+                  runtimeMode: teamLeadSession?.runtimeMode ?? "supervised",
+                  title: monoLook(teamLeadMono).name,
+                  createdAt: 0,
+                  updatedAt: 0,
+                  pinned: true,
+                },
+                mark: (
+                  <MonoRailMascot
+                    name={monoLook(teamLeadMono).mascot}
+                    color={monoLook(teamLeadMono).color}
+                    status={monoRail.states.get(teamLeadMono.id)?.status ?? "idle"}
+                    className="size-3.5 shrink-0"
+                  />
+                ),
+                active: monoCovers && monoViewMono?.id === teamLeadMono.id,
+                busy: !!teamLeadSession?.busy,
+                // In the time's place: what it is to the project.
+                statusLabel: "Lead",
+                onOpen: () => void onOpenMono(teamLeadMono.id),
+              },
+            }
+          : {}),
+      }
+    : undefined;
+  // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
+  const onSelectSessionFromList = (sessionId: string) => {
+    if (teamProject && !isMonoSession(sessionId)) {
+      noteCodingTeamView(teamProject.id, "chat");
+      if (monoViewIdRef.current) closeMonoView();
+    }
+    return onSelectHistorySession(sessionId);
+  };
+  const onNewFromList = () => {
+    if (teamProject) noteCodingTeamView(teamProject.id, "chat");
+    if (monoViewIdRef.current) closeMonoView();
+    return onNew();
+  };
+
   const projectStrip = (
     <ProjectStrip
       selection={hubSel}
       onPickProject={(project) => {
         closeChromeViews();
-        // A project with no code folder has no Coding team: it opens on its own Inbox.
-        setHubSelection({
-          project: project.id,
-          item: project.folder ? "coding-team" : "inbox",
-        });
-        if (project.folder) {
-          nameHubProject(project);
-          onSelectProject(project.folder);
-        }
+        // Its coding team, on the Lead's chat or the one Ash was last in there. A project with no code folder has no
+        // coding team: it opens on its own Inbox.
+        openCodingTeam(project.id);
       }}
       onCreateProject={pickProject}
       onLeaveCovers={closeChromeViews}
@@ -15131,13 +15261,12 @@ function Workspace({
           selection={hubSel}
           onPick={(item) => {
             closeChromeViews();
-            if (item.kind === "coding-team" && hubProject?.folder) {
-              nameHubProject(hubProject);
-              onSelectProject(hubProject.folder);
-            }
+            if (item.kind === "coding-team" && hubProject?.folder)
+              openCodingTeam(hubProject.id);
           }}
         />
       }
+      codingTeam={codingTeamList}
       hubSurfaceActive={hubShown}
       cwd={sidebarCwd}
       gitCwd={gitCwd}
@@ -15172,10 +15301,11 @@ function Workspace({
       sessions={sidebarHistory}
       busySessionIds={busySessionIds}
       approvalSessionIds={approvalSessionIds}
-      activeSessionId={activeSessionId}
+      // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
+      activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
-      onSelectSession={onSelectHistorySession}
+      onSelectSession={onSelectSessionFromList}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}
@@ -15225,8 +15355,9 @@ function Workspace({
       onOpenProject={pickProject}
       onRemoveProject={onRemoveProject}
       monos={hubMonos}
-      monoViewActive={monoCovers}
-      onNew={onNew}
+      // The coding team's Lead opens beside its Sessions list, which stays.
+      monoViewActive={monoCovers && !codingTeamList?.lead?.active}
+      onNew={onNewFromList}
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}

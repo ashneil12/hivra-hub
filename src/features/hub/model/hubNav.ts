@@ -49,3 +49,24 @@ export function useHubSelection(): HubSelection {
 export function hubSurfaceOpen(sel: HubSelection): boolean {
   return sel.project === "today" || sel.item !== "coding-team";
 }
+
+/**
+ * Opening a project's coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to talk to"): its
+ * folder's workspace with the Sessions list, on its Lead's chat by default (`lead`), or the chat Ash was last in there.
+ * The app lends the way (App.tsx); a hub view that offers "Open in coding team" (Being built) calls it. Without the app
+ * (a browse-only page) it only selects the item.
+ */
+export type CodingTeamTarget = { lead?: boolean };
+let codingTeamOpener: ((projectId: string, target?: CodingTeamTarget) => void) | undefined;
+
+export function setCodingTeamOpener(open: (projectId: string, target?: CodingTeamTarget) => void): () => void {
+  codingTeamOpener = open;
+  return () => {
+    if (codingTeamOpener === open) codingTeamOpener = undefined;
+  };
+}
+
+export function openCodingTeam(projectId: string, target?: CodingTeamTarget): void {
+  if (codingTeamOpener) codingTeamOpener(projectId, target);
+  else setHubSelection({ project: projectId, item: "coding-team" });
+}

@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
 import { dismissWaitingSoul, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
@@ -8,11 +9,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, ImagePlus, Loader, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
+import { ChevronDown, CircleAlert, ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
-import { childChatsByMono, type ChildChat } from "../../features/monos/model/delegationView";
-import { countWork, delegationLine, useStuckDismissalsVersion, workSplit, type StuckWorker } from "../../features/monos/model/workerStuck";
-import { shownSubChats, subChatAttention, subChatsOpen, toggleSubChats, useSubChatFolds } from "../../features/monos/model/subChats";
+import { childChatsByMono } from "../../features/monos/model/delegationView";
+import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
+import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
@@ -65,35 +66,6 @@ export type MonoRailProps = {
 };
 
 const IDLE: MonoState = { status: "idle" };
-
-/** A child chat's state as a small mark: working, asking its Lead, stuck, done, failed or stopped. */
-function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; stalled?: boolean }) {
-  const props = { className: "size-3.5 shrink-0", strokeWidth: 1.75 };
-  if (state === "running" && stalled) return <CircleAlert {...props} className={`${props.className} text-amber-400`} />;
-  if (state === "running")
-    return <Loader {...props} className={`${props.className} animate-spin text-content/50 motion-reduce:animate-none`} />;
-  if (state === "question") return <Clock {...props} className={`${props.className} text-amber-400`} />;
-  if (state === "completed") return <CheckCircle {...props} className={`${props.className} text-emerald-400/90`} />;
-  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-red-400`} />;
-  return <CircleX {...props} className={`${props.className} text-content/40`} />;
-}
-
-/** The Mono's own mark when a sub-chat is stuck: the most urgent one's (red failed, amber stalled, amber clock asking). */
-function MonoStuckMark({ stuck }: { stuck: readonly StuckWorker[] }) {
-  if (!stuck.length) return null;
-  const kind = stuck.some((s) => s.kind === "failed") ? "failed" : stuck.some((s) => s.kind === "stalled") ? "stalled" : "asking";
-  const Icon = kind === "asking" ? Clock : CircleAlert;
-  return (
-    <span
-      aria-hidden
-      data-mono-stuck={stuck.length}
-      data-mono-stuck-kind={kind}
-      className="flex shrink-0 items-center group-hover:hidden group-has-[button:focus-visible]:hidden"
-    >
-      <Icon className={`size-3.5 ${kind === "failed" ? "text-red-400" : "text-amber-400"}`} strokeWidth={1.75} />
-    </span>
-  );
-}
 
 /** A Mono's unread count as its badge shows it. */
 export function unreadBadge(count: number): string {
@@ -319,7 +291,7 @@ export function MonoRailSection({
           // What it has out, split (Ash, 20 Oct): "2 working · 1 asking · 1 stuck". Idle shows nothing else, unless it
           // waits on something (a watched pull request's CI); busy, its own status first, then what is stuck.
           const attention = subChatAttention(children, now);
-          const counts = countWork(children.map((chat) => chat.row), now);
+          const counts = countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now);
           const stuckSplit = workSplit({ ...counts, working: 0 });
           const status =
             state.status === "idle"
@@ -401,7 +373,7 @@ export function MonoRailSection({
                     ) : null}
                   </span>
                 )}
-                <MonoStuckMark stuck={[...attention.stuck.values()]} />
+                <StuckMark stuck={[...attention.stuck.values()]} />
                 {unseen ? (
                   <span
                     aria-hidden
@@ -429,7 +401,17 @@ export function MonoRailSection({
               </button>
             </div>
             {children.length ? (
-              <MonoSubChats monoId={mono.id} children={children} attention={attention} stuckSplit={stuckSplit} now={now} />
+              <SubChatList
+                foldKey={mono.id}
+                owner={mono.id}
+                children={children}
+                attention={attention}
+                stuckSplit={stuckSplit}
+                now={now}
+                variant="rail"
+                // One click on a sub-chat opens it under its Mono.
+                onOpen={(chat) => delegationActions()?.openChild(chat.ownerSession, chat.sessionId)}
+              />
             ) : null}
             </Fragment>
           );
@@ -458,83 +440,6 @@ export function MonoRailSection({
           locked
           onClose={() => setBackground(undefined)}
         />
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * A Mono's sub-chats (its delegated work), folded under a count unless Ash opened them or one is stuck, six at a time.
- * One click on a sub-chat opens it under its Mono.
- */
-function MonoSubChats({
-  monoId,
-  children,
-  attention,
-  stuckSplit,
-  now,
-}: {
-  monoId: string;
-  children: readonly ChildChat[];
-  attention: ReturnType<typeof subChatAttention>;
-  stuckSplit: string | undefined;
-  now: number;
-}) {
-  const [all, setAll] = useState(false);
-  const open = subChatsOpen(monoId, attention.key);
-  const { shown, more } = shownSubChats(children, attention.stuck, all);
-  const count = `${children.length} ${children.length === 1 ? "sub-chat" : "sub-chats"}`;
-  return (
-    <div className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">
-      <button
-        type="button"
-        data-mono-children-toggle={monoId}
-        aria-expanded={open}
-        aria-label={`${open ? "Hide" : "Show"} ${count}${stuckSplit ? `, ${stuckSplit}` : ""}`}
-        onClick={() => toggleSubChats(monoId, attention.key)}
-        className="flex h-6 min-w-0 cursor-default items-center gap-1 rounded-md px-1.5 text-left text-[12px] text-content/45 hover:bg-content/6 hover:text-content"
-      >
-        <ChevronDown
-          aria-hidden
-          className={`size-3 shrink-0 transition-transform motion-reduce:transition-none ${open ? "" : "-rotate-90"}`}
-        />
-        <span className="min-w-0 truncate">
-          {count}
-          {!open && attention.stuck.size ? ` · ${attention.stuck.size} stuck` : ""}
-        </span>
-      </button>
-      {open ? (
-        <div data-mono-children={monoId} className="flex flex-col gap-px">
-          {shown.map((chat) => {
-            const stalled = chat.state === "running" && !!chat.row.stallKind;
-            const line = delegationLine(chat.row, now);
-            return (
-              <button
-                key={chat.sessionId}
-                type="button"
-                data-mono-child={chat.sessionId}
-                data-state={stalled ? "stalled" : chat.state}
-                title={`${chat.title}, ${line}`}
-                aria-label={`Open ${chat.title}, ${line}`}
-                onClick={() => delegationActions()?.openChild(chat.ownerSession, chat.sessionId)}
-                className="flex h-6 min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/60 hover:bg-content/6 hover:text-content"
-              >
-                <ChildChatMark state={chat.state} stalled={stalled} />
-                <span className="min-w-0 truncate">{chat.title}</span>
-              </button>
-            );
-          })}
-          {more ? (
-            <button
-              type="button"
-              data-mono-children-more={monoId}
-              onClick={() => setAll(true)}
-              className="flex h-6 min-w-0 cursor-default items-center rounded-md px-1.5 pl-6 text-left text-[12px] text-content/45 hover:bg-content/6 hover:text-content"
-            >
-              Show {more} more
-            </button>
-          ) : null}
-        </div>
       ) : null}
     </div>
   );

@@ -13,6 +13,13 @@ import {
   useProjectLabel,
 } from "../../features/projects/ui/CurrentProjectIcon";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
+import { useDelegationRows } from "../../features/monos/model/delegationStore";
+import type { ChildChat } from "../../features/monos/model/delegationView";
+import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
+import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
+import { useClock } from "../../features/monos/hooks/useStuckWorkers";
+import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
+import { subChatsByParent } from "../../features/hub/model/codingTeamList";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -422,6 +429,28 @@ type Props = {
   hubSurfaceActive?: boolean;
   /** A Mono fills the main area, which has no project sidebar. */
   monoViewActive?: boolean;
+  /**
+   * Hub: this list is a project's coding team (hub/model/codingTeam.ts), the main place Ash talks (Ash, 20 Oct). Its
+   * Lead's chat is pinned at the top, and every chat a chat started nests under the chat Ash talks to, folded until
+   * one is stuck (hub/model/codingTeamList.ts).
+   */
+  codingTeam?: CodingTeamList;
+};
+
+/** The coding team's Lead, as its pinned row shows it. */
+export type CodingTeamList = {
+  lead?: {
+    /** Its chat as a row (a stand-in id until its chat exists). */
+    session: SessionSummary;
+    /** Its mascot, in the provider mark's place. */
+    mark: ReactNode;
+    /** Its chat is the one in view. */
+    active: boolean;
+    busy: boolean;
+    /** Stands in for the time until its chat has loaded ("Lead"). */
+    statusLabel?: string;
+    onOpen: () => void;
+  };
 };
 
 function SidebarComponent({
@@ -521,6 +550,7 @@ function SidebarComponent({
   hubItems,
   hubSurfaceActive = false,
   monoViewActive = false,
+  codingTeam,
 }: Props) {
   const trafficLightsVisible = useTrafficLightsVisible();
   const remoteProject = isRemoteProjectPath(cwd);
@@ -806,6 +836,9 @@ function SidebarComponent({
       .filter((session) => !session.sidebarHidden)
       .map((session) => session.id),
   );
+  // The coding team's Lead is listed (pinned at the top), so the chats it started are too, under it.
+  const teamLead = codingTeam?.lead;
+  if (teamLead) shownSessionIds.add(teamLead.session.id);
   const listedSessions = listableSessions.filter(
     (session) =>
       !session.sidebarHidden ||
@@ -834,10 +867,28 @@ function SidebarComponent({
     ),
   ].sort(compareSessionSummaries);
   // The inset list hangs the sessions an /operator thread started under it,
-  // like an orchestrator's agents, rather than listing them on their own.
-  const startedSessions = inset
-    ? groupStartedSessions(visibleSessions)
-    : NO_STARTED_SESSIONS;
+  // like an orchestrator's agents, rather than listing them on their own. A
+  // coding team nests every chat a chat started under the chat Ash talks to
+  // (its sub-chats), from its delegation rows and its started chats' ids.
+  const delegationRows = useDelegationRows();
+  const teamSubChats = codingTeam
+    ? subChatsByParent(
+        [
+          ...(teamLead ? [teamLead.session.id] : []),
+          ...visibleSessions
+            .filter((session) => !session.id.startsWith("app-"))
+            .map((session) => session.id),
+        ],
+        listedSessions,
+        delegationRows,
+        listedBusySessionIds,
+      )
+    : undefined;
+  const startedSessions = teamSubChats
+    ? { byParent: new Map<string, SessionSummary[]>(), childIds: teamSubChats.childIds }
+    : inset
+      ? groupStartedSessions(visibleSessions)
+      : NO_STARTED_SESSIONS;
   // Launches the sidebar has already shown for this project. Anything newer
   // grows in under its caller; what is there when a project opens does not.
   const knownStarted = useRef<{ cwd: string; ids: Set<string> } | null>(null);
@@ -1899,8 +1950,65 @@ function SidebarComponent({
     for (const session of listedSessions) motion.seen.add(session.id);
   });
 
+  // A coding team's chat with the chats it started folded under it (its
+  // sub-chats), its row marked when one of them is stuck.
+  const renderTeamCard = (
+    session: SessionSummary,
+    compact: boolean,
+    subChats: readonly ChildChat[],
+  ) => {
+    const stuck = [...subChatAttention(subChats, now).stuck.values()];
+    return (
+      <>
+        {renderSessionRow(session, compact, {
+          badge: stuck.length ? <StuckMark stuck={stuck} hideOnHover={false} /> : undefined,
+        })}
+        <TeamSubChats
+          parent={session.id}
+          subChats={subChats}
+          onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
+        />
+      </>
+    );
+  };
+
+  // The coding team's Lead: a row like any chat's, with its mascot and a pin,
+  // that opens its chat in the coding team, its sub-chats folded under it.
+  const renderLeadCard = (lead: NonNullable<CodingTeamList["lead"]>) => {
+    const subChats = teamSubChats?.byParent.get(lead.session.id) ?? [];
+    const stuck = [...subChatAttention(subChats, now).stuck.values()];
+    return (
+      <>
+        <SessionCard
+          session={lead.session}
+          isActive={lead.active}
+          isSelected={false}
+          busy={lead.busy}
+          done={false}
+          linkedUpdate={false}
+          needsApproval={false}
+          dense={inset}
+          mark={lead.mark}
+          badge={stuck.length ? <StuckMark stuck={stuck} hideOnHover={false} /> : undefined}
+          statusLabel={lead.statusLabel}
+          now={now}
+          onSelect={() => lead.onOpen()}
+        />
+        {subChats.length ? (
+          <TeamSubChats
+            parent={lead.session.id}
+            subChats={subChats}
+            onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
+          />
+        ) : null}
+      </>
+    );
+  };
+
   // A session row, with the sessions it started hanging off a rail below it.
   const renderSessionCard = (session: SessionSummary, compact = false) => {
+    const subChats = teamSubChats?.byParent.get(session.id);
+    if (subChats?.length) return renderTeamCard(session, compact, subChats);
     const started = startedSessions.byParent.get(session.id);
     if (!started?.length) return renderSessionRow(session, compact);
     // Open while the thread or one of its sessions is the one in view, chosen
@@ -1958,11 +2066,13 @@ function SidebarComponent({
       startedCount = 0,
       startedOpen = false,
       startedInView = false,
+      badge,
     }: {
       nested?: boolean;
       startedCount?: number;
       startedOpen?: boolean;
       startedInView?: boolean;
+      badge?: ReactNode;
     } = {},
   ) =>
     renamingSessionId === session.id && onRenameSession ? (
@@ -1992,6 +2102,7 @@ function SidebarComponent({
         startedCount={startedCount}
         startedOpen={startedOpen}
         startedInView={startedInView}
+        badge={badge}
         now={now}
         onSelect={cardActions.select}
         onOpenWorkItem={
@@ -2714,6 +2825,18 @@ function SidebarComponent({
             </div>
           ) : (
             <div>
+              {/* A coding team's Lead, pinned at the top: its default chat (Ash, 20 Oct). */}
+              {teamLead &&
+              !filtersActive &&
+              (!searchNarrowed ||
+                filterSessionsByQuery([teamLead.session], searchQuery).length > 0) ? (
+                <ul
+                  data-coding-team-lead={teamLead.session.id}
+                  className={`flex flex-col ${inset ? "gap-px px-2 pt-1" : "gap-0.5 p-1.5 pb-0"}`}
+                >
+                  <li>{renderLeadCard(teamLead)}</li>
+                </ul>
+              ) : null}
               {/*
               A project's first load stays deliberately blank. The listing is
               served from a covering index and resolves within a frame or two,
@@ -4326,6 +4449,41 @@ export function groupStartedSessions<T extends { id: string }>(
   return { byParent, childIds };
 }
 
+const NO_MODIFIERS = { shiftKey: false, ctrlKey: false, metaKey: false };
+
+/**
+ * A coding-team chat's sub-chats (hub/model/codingTeamList.ts), folded under a count until Ash opens them or one is
+ * stuck, asking or failed, with the same rows and marks as the Monos rail (monos/ui/SubChatList.tsx). Its own clock, so
+ * "No output for 9 min" counts up without the whole list redrawing.
+ */
+function TeamSubChats({
+  parent,
+  subChats,
+  onOpen,
+}: {
+  parent: string;
+  subChats: readonly ChildChat[];
+  onOpen: (chat: ChildChat) => void;
+}) {
+  const now = useClock();
+  useStuckDismissalsVersion();
+  useSubChatFolds();
+  const attention = subChatAttention(subChats, now);
+  const counts = countWork(subChats.flatMap((chat) => (chat.row ? [chat.row] : [])), now);
+  return (
+    <SubChatList
+      foldKey={`chat:${parent}`}
+      owner={parent}
+      children={subChats}
+      attention={attention}
+      stuckSplit={workSplit(counts)}
+      now={now}
+      variant="sessions"
+      onOpen={onOpen}
+    />
+  );
+}
+
 /** A quiet heading over a group in the inset sidebar, actions at its end. */
 function SidebarSectionLabel({
   label,
@@ -4868,6 +5026,8 @@ export const SessionCard = memo(function SessionCard({
   startedInView = false,
   modelInFooter = false,
   statusLabel,
+  mark,
+  badge,
   project,
   now,
   onSelect,
@@ -4908,6 +5068,10 @@ export const SessionCard = memo(function SessionCard({
   modelInFooter?: boolean;
   /** Stands in for the time, for a session with no state of its own to show. */
   statusLabel?: string;
+  /** In the provider mark's place (a coding team's Lead shows its mascot). */
+  mark?: ReactNode;
+  /** Beside its status: a coding team's chat is marked when one of its sub-chats is stuck. */
+  badge?: ReactNode;
   /** Names its project before the branch, where sessions span several. */
   project?: string;
   now: number;
@@ -5374,6 +5538,8 @@ export const SessionCard = memo(function SessionCard({
                       strokeWidth={2.25}
                     />
                   </span>
+                ) : mark ? (
+                  <span className={`grid size-4 shrink-0 place-items-center${markHover}`}>{mark}</span>
                 ) : (
                   <HarnessIcon
                     harness={session.harness}
@@ -5400,6 +5566,7 @@ export const SessionCard = memo(function SessionCard({
                 />
                 <span className="flex shrink-0 items-center gap-1">
                   {linkedUpdateDot}
+                  {badge}
                   {workItemBadge}
                   {modeBadge}
                   {session.automationId ? (
@@ -5467,16 +5634,21 @@ export const SessionCard = memo(function SessionCard({
             {!dense && headerRow ? (
               <span className="relative flex items-center gap-2">
                 <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <HarnessIcon
-                    harness={session.harness}
-                    className="size-3.5 shrink-0"
-                  />
+                  {mark ? (
+                    <span className="grid size-3.5 shrink-0 place-items-center">{mark}</span>
+                  ) : (
+                    <HarnessIcon
+                      harness={session.harness}
+                      className="size-3.5 shrink-0"
+                    />
+                  )}
                   <span className="min-w-0 truncate text-[11px] text-content/50">
                     {model}
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5">
                   {linkedUpdateDot}
+                  {badge}
                   {status}
                 </span>
               </span>
@@ -5500,6 +5672,7 @@ export const SessionCard = memo(function SessionCard({
                 {headerRow ? null : (
                   <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
                     {linkedUpdateDot}
+                    {badge}
                     {status}
                   </span>
                 )}

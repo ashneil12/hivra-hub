@@ -58,7 +58,7 @@ export function resetSubChatFolds(): void {
 export function subChatAttention(children: readonly ChildChat[], now: number): { stuck: Map<string, StuckWorker>; key: string } {
   const stuck = new Map<string, StuckWorker>();
   for (const chat of children) {
-    const found = stuckOf(chat.row, now);
+    const found = chat.row ? stuckOf(chat.row, now) : undefined;
     if (found) stuck.set(chat.sessionId, found);
   }
   return { stuck, key: [...stuck.values()].map((s) => s.key).sort().join("|") };

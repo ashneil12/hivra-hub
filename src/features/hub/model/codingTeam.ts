@@ -10,6 +10,7 @@
 // Code starts (hubMcp.ts) and by its delegation rows after a restart, while the chat isn't open.
 import { useSyncExternalStore } from "react";
 import { pathKey } from "../../../shared/lib/paths";
+import { makesProjectLeads } from "./hubBundle";
 import { isGlobalProject } from "./hubProjects";
 import type { HubProject } from "./types";
 
@@ -43,6 +44,14 @@ function save(next: Record<string, string>): void {
   }
   version++;
   listeners.forEach((listener) => listener());
+}
+
+/**
+ * Whether projects have coding teams here: where they have Leads, the Hub bundle (and the dev page reading a stub or
+ * the live proxy, so it can be seen without building the app). Plain MonoCode never does.
+ */
+export function codingTeamsOn(): boolean {
+  return makesProjectLeads();
 }
 
 /** What decides whether a chat is in a coding team: its id, its folder and how it was started. */
