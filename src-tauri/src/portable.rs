@@ -1815,21 +1815,24 @@ pub struct ImportReport {
     pub notes: Vec<String>,
 }
 
-pub fn import(
+/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the workspace's
+/// rows: the export is unpacked and checked (up to MAX_UNPACKED) and the memory written before it, never under it.
+pub fn import<G: std::ops::Deref<Target = Connection>>(
     env: &Env,
-    conn: &Connection,
     request: &ImportRequest,
+    lock: impl FnOnce() -> Result<G, String>,
 ) -> Result<ImportReport, String> {
     let opened = open_export(&request.path)?;
     let mut report = ImportReport::default();
     if opened.root().is_none() {
         return Ok(report);
     }
-    if let Some(workspace) = &request.workspace {
-        import_workspace(env, conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
-    }
     if let Some(memory) = &request.memory {
         import_memory(env, &opened, memory, &mut report)?;
+    }
+    if let Some(workspace) = &request.workspace {
+        let conn = lock()?;
+        import_workspace(env, &conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
     }
     Ok(report)
 }
@@ -1838,12 +1841,47 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// What an import does once its rows are in: the pictures of the notes that went in, the Mono transcripts to index.
+#[derive(Default)]
+struct AfterRows {
+    note_assets: Vec<(String, String)>,
+    transcripts: Vec<String>,
+}
+
+/// The workspace's rows go in as one transaction: an error midway leaves nothing half in, so a retry starts clean
+/// rather than counting its own earlier rows as "already here".
 fn import_workspace(
     env: &Env,
     conn: &Connection,
     opened: &Opened,
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
+) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let mut after = AfterRows::default();
+    workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
+    tx.commit()?;
+    for (from, to) in &after.note_assets {
+        copy_note_assets(env, opened, from, to);
+    }
+    // Indexing has its own transaction. A chat it fails for still opens from its rows, and is indexed then.
+    for id in &after.transcripts {
+        if crate::mono_transcript::migrate_transcript(conn, id).is_err() {
+            report.notes.push(format!(
+                "The transcript of chat {id} will be indexed the first time it opens."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn workspace_rows(
+    env: &Env,
+    conn: &Connection,
+    opened: &Opened,
+    wanted: &WorkspaceImport,
+    report: &mut ImportReport,
+    after: &mut AfterRows,
 ) -> rusqlite::Result<()> {
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
@@ -1901,7 +1939,7 @@ fn import_workspace(
             } else {
                 report.notes_added += 1;
             }
-            copy_note_assets(env, opened, &id, &target);
+            after.note_assets.push((id.clone(), target));
         }
     }
 
@@ -1937,6 +1975,9 @@ fn import_workspace(
             )
         };
         insert_session(env, conn, &target, &title, &file)?;
+        if file["monoTranscript"].as_bool() == Some(true) {
+            after.transcripts.push(target.clone());
+        }
         if exists {
             report.sessions_copied += 1;
         } else {
@@ -2112,9 +2153,6 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    if file["monoTranscript"].as_bool() == Some(true) {
-        crate::mono_transcript::migrate_transcript(conn, id)?;
-    }
     Ok(())
 }
 
@@ -2145,63 +2183,155 @@ fn import_memory(
         let mut fresh = false;
         if wanted.history && has_bundle && !target.exists() {
             fs::create_dir_all(&env.memory_root).map_err(|e| e.to_string())?;
-            let cloned = Command::new("git")
-                .arg("clone")
-                .arg("--quiet")
-                .arg(&bundle)
-                .arg(&target)
-                .output()
-                .map_err(|e| format!("git didn't run ({e})"))?;
-            if cloned.status.success() {
-                // The bundle was a scratch file: don't leave a remote pointing at it.
-                let _ = Command::new("git")
-                    .arg("-C")
-                    .arg(&target)
-                    .args(["remote", "remove", "origin"])
-                    .output();
-                report.memory_history.push(name.clone());
-                fresh = true;
-            } else {
-                let _ = fs::remove_dir_all(&target);
-                report.notes.push(format!(
-                    "The history of {name} couldn't be restored; its files came in without it."
-                ));
+            match restore_history(&bundle, &target) {
+                Ok(()) => {
+                    report.memory_history.push(name.clone());
+                    fresh = true;
+                }
+                Err(why) => {
+                    let _ = fs::remove_dir_all(&target);
+                    report.notes.push(match why {
+                        HistoryRefusal::Link(path) => format!(
+                            "The history of {name} holds a link ({path}) that could point outside its folder, so it wasn't restored; its files came in without it."
+                        ),
+                        HistoryRefusal::Failed => format!(
+                            "The history of {name} couldn't be restored; its files came in without it."
+                        ),
+                    });
+                }
             }
         }
+        // Every write stays inside this folder, links resolved: one already here can't carry a file elsewhere.
+        let inside = resolved(&target);
         let prefix = format!("memory/{name}/");
         for path in listed.iter().filter(|p| p.starts_with(&prefix)) {
             let inner = &path[prefix.len()..];
             let Some(safe) = safe_relative(inner) else {
                 continue;
             };
-            let text = opened.read(path).unwrap_or_default();
             let dest = target.join(&safe);
+            if !within(&inside, &dest) {
+                report.notes.push(format!(
+                    "{path} wasn't written: its place in {name} leads outside the memory folder."
+                ));
+                continue;
+            }
+            // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
+            let Some(text) = opened.read(path) else {
+                report.notes.push(format!(
+                    "{path} isn't plain text (UTF-8), so it was skipped; nothing here changed for it."
+                ));
+                continue;
+            };
             match fs::read_to_string(&dest) {
                 Ok(local) if local == text => {}
-                Ok(_) if fresh => write_atomic(&dest, text.as_bytes())?,
+                Ok(_) if fresh => write_within(&inside, &dest, &text)?,
                 Ok(_) => {
                     if wanted.keep_both {
-                        let beside = beside_name(&dest);
-                        if let Some(parent) = beside.parent() {
-                            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                        }
-                        write_atomic(&beside, text.as_bytes())?;
+                        write_within(&inside, &beside_name(&dest), &text)?;
                         report.memory_files_beside += 1;
                     } else {
                         report.kept += 1;
                     }
                 }
                 Err(_) => {
-                    if let Some(parent) = dest.parent() {
-                        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    }
-                    write_atomic(&dest, text.as_bytes())?;
+                    write_within(&inside, &dest, &text)?;
                     report.memory_files_added += 1;
                 }
             }
         }
     }
     Ok(())
+}
+
+enum HistoryRefusal {
+    /// The newest tree holds a link (or anything else that isn't a plain file) at this path.
+    Link(String),
+    Failed,
+}
+
+/// A memory folder's history from an export's bundle, into `target` (not there yet): no hooks, no templates, and
+/// nothing but plain files. A tree with a link is refused before anything is checked out, so no write that follows
+/// can go through it.
+fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
+    let git = || {
+        let mut command = Command::new("git");
+        command.args([
+            "-c",
+            "core.symlinks=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ]);
+        command
+    };
+    let ok = |command: &mut Command| command.output().is_ok_and(|out| out.status.success());
+    if !ok(git()
+        .args(["clone", "--quiet", "--no-checkout", "--template="])
+        .arg(bundle)
+        .arg(target))
+    {
+        return Err(HistoryRefusal::Failed);
+    }
+    let listing = git()
+        .arg("-C")
+        .arg(target)
+        .args(["ls-tree", "-r", "-z", "--full-tree", "HEAD"])
+        .output()
+        .map_err(|_| HistoryRefusal::Failed)?;
+    if !listing.status.success() {
+        return Err(HistoryRefusal::Failed);
+    }
+    // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`).
+    for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let entry = String::from_utf8_lossy(entry);
+        let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
+        let mode = meta.split(' ').next().unwrap_or("");
+        if !matches!(mode, "100644" | "100755") {
+            return Err(HistoryRefusal::Link(path.to_string()));
+        }
+    }
+    if !ok(git()
+        .arg("-C")
+        .arg(target)
+        .args(["checkout", "--quiet", "--force", "HEAD"]))
+    {
+        return Err(HistoryRefusal::Failed);
+    }
+    // The bundle was a scratch file: don't leave a remote pointing at it.
+    let _ = git()
+        .arg("-C")
+        .arg(target)
+        .args(["remote", "remove", "origin"])
+        .output();
+    Ok(())
+}
+
+/// Whether `dest`'s folder, links resolved, is `inside` (itself resolved).
+fn within(inside: &Path, dest: &Path) -> bool {
+    dest.parent()
+        .is_some_and(|parent| resolved(parent).starts_with(inside))
+}
+
+/// Writes `dest` only when its folder is inside `inside`, checked before the folder is made and again after.
+fn write_within(inside: &Path, dest: &Path, text: &str) -> Result<(), String> {
+    let refused = || {
+        format!(
+            "{} leads outside the memory folder; nothing was written there.",
+            dest.display()
+        )
+    };
+    let parent = dest.parent().ok_or_else(refused)?;
+    if !within(inside, dest) {
+        return Err(refused());
+    }
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    if !parent
+        .canonicalize()
+        .is_ok_and(|parent| parent.starts_with(inside))
+    {
+        return Err(refused());
+    }
+    write_atomic(dest, text.as_bytes())
 }
 
 /// `decisions.md` → `decisions.imported.md`, then `.imported-2.md`, … never over anything.
@@ -2453,8 +2583,7 @@ pub fn portable_import(
     request: ImportRequest,
 ) -> Result<ImportReport, String> {
     let env = Env::for_app(&app)?;
-    let conn = store.lock_conn()?;
-    import(&env, &conn, &request)
+    import(&env, &request, || store.lock_conn())
 }
 
 // ---- tests ---------------------------------------------------------------------------------------------------------

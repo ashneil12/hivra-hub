@@ -65,6 +65,7 @@ import {
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
+  approvalCall,
   toClaudePermissionResult,
   toolKindFromName,
   toolResultsFromUserMessage,
@@ -1706,6 +1707,7 @@ async function handleControlRequest(
     kind: toolKindFromName(toolName),
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
+    call: approvalCall(toolName, input),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });

@@ -1019,7 +1019,10 @@ describe("claude subagents", () => {
       const approval = events.find(
         (event) => event.type === "approval.requested",
       )!;
-      expect(approval).toMatchObject({ callId: "child_read" });
+      expect(approval).toMatchObject({
+        callId: "child_read",
+        call: { tool: "Read", paths: ["/home/user/.gitconfig"] },
+      });
       respondClaudeApproval("s1", approval.requestId, decision);
       await waitFor(
         () =>

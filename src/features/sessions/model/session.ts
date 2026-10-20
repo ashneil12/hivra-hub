@@ -362,6 +362,16 @@ export type TurnMetrics = {
   cacheHitPercent?: number;
 };
 
+/**
+ * What a tool approval would run, from the provider's own permission request: the tool's name as the provider calls
+ * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes.
+ */
+export type ApprovalCall = {
+  tool: string;
+  command?: string;
+  paths?: string[];
+};
+
 export type Block = {
   id: string;
   role: BlockRole;
@@ -406,6 +416,8 @@ export type Block = {
   approval?: {
     requestId: number;
     decided?: "allow" | "deny" | "cancelled";
+    /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
+    call?: ApprovalCall;
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;

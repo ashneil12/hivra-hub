@@ -331,9 +331,10 @@ export function allowPage(id: string): void {
 }
 /**
  * Pages from a setup file. They come back with no permissions: a file can't grant a page anything, so its asks wait
- * for Ash to allow them again.
+ * for Ash to allow them again. Resolves once Ash OS has answered for each: how many it kept, and each one it didn't
+ * (its title and why).
  */
-export function importPages(list: Page[]): number {
+export async function importPages(list: Page[]): Promise<{ added: number; failed: string[] }> {
   const have = new Set(pages().map((p) => p.id));
   const add = list
     .filter((p) => p && p.id && p.spec && !have.has(p.id) && validatePageSpec(p.spec).ok)
@@ -345,14 +346,19 @@ export function importPages(list: Page[]): number {
       saveLocal(local);
       changed();
     }
-    return add.length;
+    return { added: add.length, failed: [] };
   }
+  let added = 0;
+  const failed: string[] = [];
+  // One at a time: each refusal's reason is read before the next write replaces it.
   for (const p of add) {
-    void write(b.store, p.id, p, "ash-hub-page-update", {
+    const ok = await write(b.store, p.id, p, "ash-hub-page-update", {
       pageId: p.id, spec: p.spec, projectId: p.projectId ?? "today", ...(p.monoId ? { monoId: p.monoId } : {}), by: p.by, request: p.request, kept: true, permissions: [],
     });
+    if (ok) added++;
+    else failed.push(`${p.title}: ${problem ?? "Ash OS didn't take it."}`);
   }
-  return add.length;
+  return { added, failed };
 }
 /** Ash's pin toggle (by "you"), or a Mono pinning the page it built (by its name). */
 export function setPinned(id: string, on: boolean, by = "you"): void {
