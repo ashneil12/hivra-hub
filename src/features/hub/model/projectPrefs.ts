@@ -150,7 +150,8 @@ const localHide = (id: string): HubHide => ({
 /**
  * Takes the project off the hub. Its files and Ash OS's record stay. With "Retire <Project> Lead too" its Lead is
  * retired: folder archived, logged in Changes → Bot changes with Undo. Never deleted. Undo here puts everything back.
- * If taking it off fails (Ash OS refused), nothing else happens and the error comes back.
+ * If taking it off fails (Ash OS refused), nothing else happens and the error comes back. If retiring the Lead fails,
+ * the project goes back on the hub before the error comes back, so nothing is left off it without an Undo.
  */
 export async function removeFromHub(project: HubProject, opts: { retireLead: boolean; hide?: HubHide } = { retireLead: false }): Promise<() => Promise<void>> {
   const how = opts.hide ?? localHide(project.id);
@@ -158,7 +159,13 @@ export async function removeFromHub(project: HubProject, opts: { retireLead: boo
   let changeId: string | undefined;
   if (opts.retireLead) {
     const found = projectLead(project);
-    const retired = found ? await retireMono(found.id) : undefined;
+    let retired: Awaited<ReturnType<typeof retireMono>>;
+    try {
+      retired = found ? await retireMono(found.id) : undefined;
+    } catch (error) {
+      await how.unhide().catch((undoError: unknown) => console.error("Could not put the project back on the hub", undoError));
+      throw error;
+    }
     if (retired) changeId = recordRetirement(retired, project.name);
   }
   const undo = async () => {

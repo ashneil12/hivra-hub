@@ -1198,6 +1198,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     <DelegationWaitingLine
                       count={delegationPane.count}
                       failed={delegationPane.failed}
+                      unloaded={delegationPane.unloaded}
                       onStopAll={delegationPane.onStopAll}
                     />
                   ) : null}

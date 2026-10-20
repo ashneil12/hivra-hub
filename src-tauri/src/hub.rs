@@ -578,10 +578,63 @@ pub fn ash_os_server_from(config: &Value) -> Option<Value> {
     if let Some(args) = entry.get("args").filter(|a| a.is_array()) {
         out["args"] = args.clone();
     }
-    if let Some(env) = entry.get("env").filter(|e| e.is_object()) {
-        out["env"] = env.clone();
+    if let Some(env) = entry.get("env").and_then(Value::as_object) {
+        // Each value goes in as a reference the child's environment fills (ash_os_child_env), never as itself.
+        let env: serde_json::Map<String, Value> = env
+            .iter()
+            .map(|(key, value)| {
+                let value = match ash_os_env_var(key, value) {
+                    Some(var) => Value::String(format!("${{{var}}}")),
+                    None => value.clone(),
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        out["env"] = Value::Object(env);
     }
     Some(out)
+}
+
+/// Where a hub Claude child keeps one of the ash-os entry's own env values: the entry the webview gets (and puts in
+/// that chat's `--mcp-config`, which `ps` shows) says `"${MONOCODE_ASH_OS_<KEY>}"`, and Claude Code fills it from its
+/// environment (as it does for the delegate tool's token). A value that is itself a `${...}` reference, or a key that
+/// can't be a variable's name, stays as it is.
+fn ash_os_env_var(key: &str, value: &Value) -> Option<String> {
+    let value = value.as_str()?;
+    let name_ok = !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    (name_ok && !value.contains("${")).then(|| format!("MONOCODE_ASH_OS_{key}"))
+}
+
+/// The variables a hub Claude child's environment gets for the references `ash_os_server_from` wrote.
+pub fn ash_os_child_env(config: &Value) -> Vec<(String, String)> {
+    let Some(env) = config
+        .get("mcpServers")
+        .and_then(|servers| servers.get("ash-os"))
+        .and_then(|entry| entry.get("env"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    env.iter()
+        .filter_map(|(key, value)| Some((ash_os_env_var(key, value)?, value.as_str()?.to_string())))
+        .collect()
+}
+
+/// Claude Code's own config (`~/.claude.json`), only where this copy may use Ash's ash-os (never a dev copy).
+fn live_claude_config() -> Option<Value> {
+    if !crate::instance::policy().live_ash_os {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    let raw = std::fs::read_to_string(PathBuf::from(home).join(".claude.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// For `harness_spawn`: the ash-os values a hub Claude child's environment holds (none in a dev copy).
+pub fn live_ash_os_child_env() -> Vec<(String, String)> {
+    live_claude_config()
+        .map(|config| ash_os_child_env(&config))
+        .unwrap_or_default()
 }
 
 /// Two spellings of one file: the live key reached through a symlink or `..` is still the live key.
@@ -592,16 +645,11 @@ fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
-/// `hub_ash_os_mcp()`: Ash's ash-os MCP entry, or null when Claude Code has none. Always null in a dev copy.
+/// `hub_ash_os_mcp()`: Ash's ash-os MCP entry (its env values as references), or null when Claude Code has none.
+/// Always null in a dev copy.
 #[tauri::command]
 fn hub_ash_os_mcp() -> Option<Value> {
-    if !crate::instance::policy().live_ash_os {
-        return None;
-    }
-    let home = std::env::var_os("HOME")?;
-    let raw = std::fs::read_to_string(PathBuf::from(home).join(".claude.json")).ok()?;
-    let config: Value = serde_json::from_str(&raw).ok()?;
-    ash_os_server_from(&config)
+    ash_os_server_from(&live_claude_config()?)
 }
 
 /// The plugin. Registered in `lib.rs` with one `.plugin(hub::init())`; its permissions come from `build.rs`.
@@ -1187,6 +1235,42 @@ id: 6\nevent: hub\ndata: {\"seq\": 6, \"kind\": \"hub.need.done\", \"ref\": \"q1
         assert!(!entry.to_string().contains("nope"));
         assert_eq!(ash_os_server_from(&json!({ "mcpServers": {} })), None);
         assert_eq!(ash_os_server_from(&json!({})), None);
+    }
+
+    #[test]
+    fn the_ash_os_entrys_own_env_reaches_the_child_by_reference_never_in_argv() {
+        let config = json!({
+            "mcpServers": {
+                "ash-os": {
+                    "command": "ash-os-mcp",
+                    "env": {
+                        "ASHOS_TOKEN": "s3cret-value",
+                        "ASHOS_HOME": "${HOME}/.ashos",
+                        "bad key": "kept as it is",
+                        "RETRIES": 3
+                    }
+                }
+            }
+        });
+        let entry = ash_os_server_from(&config).unwrap();
+        assert_eq!(
+            entry["env"],
+            json!({
+                "ASHOS_TOKEN": "${MONOCODE_ASH_OS_ASHOS_TOKEN}",
+                "ASHOS_HOME": "${HOME}/.ashos",
+                "bad key": "kept as it is",
+                "RETRIES": 3
+            })
+        );
+        assert!(!entry.to_string().contains("s3cret-value"));
+        assert_eq!(
+            ash_os_child_env(&config),
+            vec![(
+                "MONOCODE_ASH_OS_ASHOS_TOKEN".to_string(),
+                "s3cret-value".to_string()
+            )]
+        );
+        assert!(ash_os_child_env(&json!({})).is_empty());
     }
 
     #[test]

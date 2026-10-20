@@ -1343,6 +1343,15 @@ describe("tool enrichment", () => {
     expect(tool?.tool?.preview?.path).toBe("src/App.tsx");
   });
 
+  it("keeps exactly what an approval would run on its block, matched or new", () => {
+    let session = newSession("claude", "/repo");
+    session = applyHarnessEvent(session, { type: "tool.updated", callId: "call_1", title: "Bash", kind: "execute", status: "pending" });
+    session = applyHarnessEvent(session, { type: "approval.requested", requestId: 1, title: "npm test", kind: "execute", callId: "call_1", call: { tool: "Bash", command: "npm test" } });
+    session = applyHarnessEvent(session, { type: "approval.requested", requestId: 2, title: "Edit a.ts", kind: "edit", callId: "call_2", call: { tool: "Edit", paths: ["/repo/a.ts"] } });
+    expect(session.blocks.find((block) => block.tool?.callId === "call_1")?.approval).toEqual({ requestId: 1, call: { tool: "Bash", command: "npm test" } });
+    expect(session.blocks.find((block) => block.tool?.callId === "call_2")?.approval).toEqual({ requestId: 2, call: { tool: "Edit", paths: ["/repo/a.ts"] } });
+  });
+
   it("replaces a bare Bash label with the command once input arrives", () => {
     let session = newSession("claude", "/repo");
     session = applyHarnessEvent(session, {

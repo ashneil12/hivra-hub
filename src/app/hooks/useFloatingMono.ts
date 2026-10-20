@@ -54,7 +54,7 @@ export const floatingMonoOwnerStops: Required<
     if (!row || row.ownerSession !== sessionId || !isOpenDelegation(row))
       throw new Error("That task isn't running any more.");
     const result = await actions.stopRow(row);
-    noteStopFailures(row.ownerSession, result.stopFailed);
+    noteStopFailures(row.ownerSession, result);
     return result;
   },
 };

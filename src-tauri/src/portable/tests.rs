@@ -74,6 +74,15 @@ fn open_store(env: &Env) -> SessionStore {
     SessionStore::open(env.db_path.clone()).unwrap()
 }
 
+/// An import with the session store already locked by the test.
+fn import_held(
+    env: &Env,
+    conn: &Connection,
+    request: &ImportRequest,
+) -> Result<ImportReport, String> {
+    import(env, request, || Ok(conn))
+}
+
 fn block(id: &str, role: &str, text: &str) -> Value {
     json!({"id": id, "role": role, "text": text})
 }
@@ -222,6 +231,8 @@ fn seed(env: &Env) {
         fs::write(dir.join("MEMORY.md"), format!("# {name}\n- {extra}\n")).unwrap();
         fs::write(dir.join("decisions.md"), "- Keep it simple\n").unwrap();
         fs::write(dir.join("topics/deploy.md"), "Deploy notes\n").unwrap();
+        // A hidden file in the history is an ordinary file: it comes back with it.
+        fs::write(dir.join(".gitignore"), ".DS_Store\n").unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-q", "-m", "memory"]);
@@ -405,7 +416,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
             && m.files.iter().all(|f| f.status == Status::New)));
 
         let conn = target_store.lock_conn().unwrap();
-        let imported = import(
+        let imported = import_held(
             &target,
             &conn,
             &ImportRequest {
@@ -566,6 +577,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 1,
                 "{name}'s history came back"
             );
+            assert!(target.memory_root.join(name).join(".gitignore").is_file());
             let remotes = Command::new("git")
                 .arg("-C")
                 .arg(target.memory_root.join(name))
@@ -685,7 +697,7 @@ fn an_import_never_overwrites_and_shows_each_conflict_first() {
         }),
     };
     // Without asking for copies: everything already here is kept as it is.
-    let report = import(&target, &conn, &request(false)).unwrap();
+    let report = import_held(&target, &conn, &request(false)).unwrap();
     assert_eq!(
         (
             report.sessions_added,
@@ -716,7 +728,7 @@ fn an_import_never_overwrites_and_shows_each_conflict_first() {
     );
 
     // Asking for copies: the file's versions come in beside, under new ids and names.
-    let report = import(&target, &conn, &request(true)).unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
     assert_eq!(
         (
             report.sessions_copied,
@@ -813,7 +825,7 @@ fn the_ticks_decide_what_goes_in_and_what_comes_back() {
     export(&source, &export_request(&dest, Form::Folder)).unwrap();
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    let report = import(
+    let report = import_held(
         &target,
         &conn,
         &ImportRequest {
@@ -878,7 +890,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
     let store = open_store(&daily);
     {
         let conn = store.lock_conn().unwrap();
-        import(
+        import_held(
             &daily,
             &conn,
             &ImportRequest {
@@ -907,7 +919,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
     dev.protected = vec![source.memory_root.clone()];
     let store = open_store(&dev);
     let conn = store.lock_conn().unwrap();
-    import(
+    import_held(
         &dev,
         &conn,
         &ImportRequest {
@@ -925,7 +937,7 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
         )
         .unwrap();
     assert_eq!(kept, None);
-    let refused = import(
+    let refused = import_held(
         &dev,
         &conn,
         &ImportRequest {
@@ -974,6 +986,328 @@ fn history_with_a_secret_in_an_old_commit_stays_behind() {
         report.notes
     );
     assert_no_secrets(&dest);
+}
+
+/// A memory folder whose history holds `notes -> <somewhere else>`, and an export of it that carries files under
+/// `notes/`: restoring the history would check the link out and the files after it would be written through it.
+fn export_with_a_linked_memory_folder(source: &Env, outside: &Path, dest: &Path) {
+    let dir = source.memory_root.join("evil");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("MEMORY.md"), "# evil\n").unwrap();
+    std::os::unix::fs::symlink(outside, dir.join("notes")).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "a link out"]);
+    // A real notes/ folder by the same name on disk, so the export lists files under it.
+    fs::remove_file(dir.join("notes")).unwrap();
+    fs::create_dir_all(dir.join("notes")).unwrap();
+    fs::write(dir.join("notes/planted.md"), "planted\n").unwrap();
+    fs::write(dir.join("notes/existing.md"), "theirs\n").unwrap();
+    let mut request = export_request(dest, Form::Folder);
+    request.files.clear();
+    request.workspace = false;
+    request.memory = Some(MemoryChoice {
+        projects: vec!["evil".into()],
+        history: true,
+    });
+    export(source, &request).unwrap();
+    assert!(dest.join("memory/evil.git.bundle").is_file());
+}
+
+/// Everything in `dir`, as name → text.
+fn folder_texts(dir: &Path) -> BTreeMap<String, String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                fs::read_to_string(e.path()).unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn memory_never_lands_outside_its_folder_through_a_link() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    fs::write(outside.0.join("existing.md"), "mine\n").unwrap();
+    let before = folder_texts(&outside.0);
+    let dest = out.0.join("export");
+    export_with_a_linked_memory_folder(&source, &outside.0, &dest);
+    let request = |history: bool| ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: Some(MemoryImport {
+            projects: vec!["evil".into()],
+            keep_both: true,
+            history,
+        }),
+        workspace: None,
+    };
+
+    // With history: the bundle's link is refused, said plainly, and the files come in as plain files inside.
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
+    assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
+    assert!(report.memory_history.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of evil") && n.contains("link")),
+        "{:?}",
+        report.notes
+    );
+    let notes = target.memory_root.join("evil/notes");
+    assert!(!fs::symlink_metadata(&notes)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        fs::read_to_string(notes.join("planted.md")).unwrap(),
+        "planted\n"
+    );
+    assert!(!target.memory_root.join("evil/.git").exists());
+
+    // A link already in the memory folder here (left by anything): no write follows it, and each skip is said.
+    fs::remove_dir_all(&notes).unwrap();
+    std::os::unix::fs::symlink(&outside.0, &notes).unwrap();
+    let report = import_held(&target, &conn, &request(true)).unwrap();
+    assert_eq!(folder_texts(&outside.0), before, "nothing outside changed");
+    assert_eq!(
+        (report.memory_files_added, report.memory_files_beside),
+        (0, 0),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("notes/planted.md") && n.contains("outside")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// Puts `bytes` at `relative` in a folder export and lists it in the manifest, as an export would.
+fn put_in_export(dest: &Path, relative: &str, bytes: &[u8]) {
+    fs::write(dest.join(relative), bytes).unwrap();
+    let manifest_path = dest.join(MANIFEST);
+    let mut manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let files = manifest["files"].as_array_mut().unwrap();
+    files.retain(|f| f["path"] != relative);
+    files.push(json!({"path": relative, "bytes": bytes.len(), "sha256": sha256_hex(bytes)}));
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+}
+
+#[test]
+fn a_memory_file_that_isnt_text_is_skipped_never_written_empty() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    export(&source, &request).unwrap();
+    // decisions.md comes back with the history; the file's own copy of it, and a new one, aren't UTF-8.
+    let not_text = [0xff, 0xfe, b'x', 0xc3];
+    put_in_export(&dest, "memory/ash/decisions.md", &not_text);
+    put_in_export(&dest, "memory/ash/blob.md", &not_text);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["ash".into()],
+                keep_both: true,
+                history: true,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()]);
+    assert_eq!(
+        fs::read_to_string(target.memory_root.join("ash/decisions.md")).unwrap(),
+        "- Keep it simple\n",
+        "the history's text is kept, not replaced with nothing"
+    );
+    assert!(!target.memory_root.join("ash/blob.md").exists());
+    for name in ["decisions.md", "blob.md"] {
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains(&format!("memory/ash/{name}")) && n.contains("text")),
+            "{:?}",
+            report.notes
+        );
+    }
+}
+
+#[test]
+fn a_workspace_import_that_fails_midway_leaves_nothing_half_in() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    export(&source, &request).unwrap();
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport {
+            sessions: vec!["chat-1".into(), "chat-2".into(), "mono-chat".into()],
+            notes: vec!["note-1".into(), "art-1".into()],
+            automations: vec!["auto-1".into()],
+            reminders: true,
+            delegations: true,
+            ..Default::default()
+        }),
+    };
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    // The last step (delegations) fails, after notes, chats, automations and reminders went in.
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_delegations BEFORE INSERT ON delegations BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    )
+    .unwrap();
+    let failed = import_held(&target, &conn, &request).unwrap_err();
+    assert!(failed.contains("disk full"), "{failed}");
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    for table in [
+        "notes",
+        "sessions",
+        "automations",
+        "session_reminders",
+        "delegations",
+        "mono_transcripts",
+    ] {
+        assert_eq!(count(table), 0, "{table} is as it was");
+    }
+    assert!(
+        !target.data_dir.join("note-assets/note-1").exists(),
+        "no pictures for notes that didn't go in"
+    );
+
+    // The retry adds everything, and finds nothing of its own already here.
+    conn.execute_batch("DROP TRIGGER refuse_delegations;")
+        .unwrap();
+    let report = import_held(&target, &conn, &request).unwrap();
+    assert_eq!(
+        (
+            report.notes_added,
+            report.sessions_added,
+            report.automations_added,
+            report.reminders_added,
+            report.delegations_added,
+            report.kept
+        ),
+        (2, 3, 1, 2, 2, 0),
+        "{report:?}"
+    );
+    assert!(crate::mono_transcript::is_indexed(&conn, "mono-chat").unwrap());
+    assert!(target
+        .data_dir
+        .join("note-assets/note-1/1-shot.png")
+        .is_file());
+}
+
+/// Chat saves wait on the session store's lock: an import takes it only while the chats go in, never while it
+/// unpacks, checks every file's hash or writes memory.
+#[test]
+fn the_session_store_is_locked_only_while_the_chats_go_in() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let dest = out.0.join("export.tar.gz");
+    export(&source, &export_request(&dest, Form::Archive)).unwrap();
+    let store = open_store(&target);
+    let memory = MemoryImport {
+        projects: vec!["ash".into()],
+        keep_both: false,
+        history: true,
+    };
+    let never = || -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        panic!("the session store was locked")
+    };
+
+    // Memory only: the store is never locked.
+    let report = import(
+        &target,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(memory.clone()),
+            workspace: None,
+        },
+        never,
+    )
+    .unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()]);
+
+    // A damaged export is refused before the store is locked.
+    let broken = out.0.join("broken.tar.gz");
+    fs::write(&broken, [0x1f, 0x8b, 0, 0]).unwrap();
+    assert!(import(
+        &target,
+        &ImportRequest {
+            path: broken.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport::default()),
+        },
+        never,
+    )
+    .is_err());
+
+    // With chats: locked once, after the export was opened and the memory written.
+    fs::remove_dir_all(&target.memory_root).unwrap();
+    let mut locked = 0;
+    let report = import(
+        &target,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(memory),
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-1".into()],
+                ..Default::default()
+            }),
+        },
+        || {
+            locked += 1;
+            assert!(
+                target.memory_root.join("ash/.git").is_dir()
+                    && target.memory_root.join("ash/MEMORY.md").is_file(),
+                "memory is written before the store is locked"
+            );
+            store.lock_conn()
+        },
+    )
+    .unwrap();
+    assert_eq!((locked, report.sessions_added), (1, 1));
 }
 
 #[test]

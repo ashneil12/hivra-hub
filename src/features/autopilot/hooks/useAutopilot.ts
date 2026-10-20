@@ -3,9 +3,10 @@
 // acts:
 // - while a switch covers a chat that waits on Ash (Today's "Waiting on you", hub/model/waitingChats.ts), its pick is
 //   taken through that list's own `takePick(id, { by: "autopilot" })`, which refuses its red lines; a question with no
-//   pick is handed back to the agent in words. Tool approvals are allowed. Anything that touches Ash's red list (theirs
-//   or ours, model/redList.ts) waits for him. Each call goes in the Autopilot log. A delegated worker's question is
-//   left to its Lead (H3's tasks.answer);
+//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, a listed test or build
+//   command, or an edit inside the chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
+//   Anything that touches Ash's red list (theirs or ours, model/redList.ts) waits for him. Each call goes in the
+//   Autopilot log. A delegated worker's question is left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),
 //   brought back after a restart from the stored row, and marked done once a turn finishes.
 
@@ -16,7 +17,7 @@ import { hubData } from "../../hub/model/hubData";
 import { leadFor } from "../../hub/model/hubLeads";
 import { monoForSession, monoLook } from "../../monos/model/mono";
 import type { ApprovalDecision } from "../../../integrations/harness/core/types";
-import type { Session } from "../../sessions/model/session";
+import type { Block, Session } from "../../sessions/model/session";
 import {
   answerInWords,
   subscribeWaitingChats,
@@ -108,12 +109,14 @@ export function useAutopilot(options: {
   latest.current = options;
   const version = useAutopilotVersion();
   const main = useRef(isMainWindow());
-  const handled = useRef(new Set<string>());
+  /** Calls already decided (key → its chat), so a streamed change doesn't decide them twice. Pruned each pass. */
+  const handled = useRef(new Map<string, string>());
   /** A waiting chat whose answer couldn't be delivered: tried again after this time, not on every streamed word. */
   const retryAt = useRef(new Map<string, number>());
   const tracks = useRef(new Map<string, Track>());
   const busyIds = useRef(new Set<string>());
-  const triedArm = useRef(new Set<string>());
+  /** Limits already sent to be armed (key → chat and reset). Pruned each pass. */
+  const triedArm = useRef(new Map<string, { id: string; resetsAt: number }>());
   const loaded = useRef(false);
   const [booted, setBooted] = useState(0);
   const [waiting, setWaiting] = useState(0);
@@ -221,6 +224,12 @@ export function useAutopilot(options: {
     const now = Date.now();
     const status = autopilotSnapshot();
     const { sessions } = options;
+    pruneAutopilotMemory(
+      { handled: handled.current, retryAt: retryAt.current, triedArm: triedArm.current },
+      sessions,
+      handled.current.size ? waitingChats().map((chat) => chat.sessionId) : [],
+      now,
+    );
 
     // 1. Calls a switch covers. Questions come from Today's waiting list (both shapes: an AskUserQuestion and a
     // "Needs Ash:" line); approvals from the chats' latest blocks, as this runs on every streamed change.
@@ -236,7 +245,7 @@ export function useAutopilot(options: {
           if (again === undefined || again > now) continue;
           retryAt.current.delete(key);
         }
-        handled.current.add(key);
+        handled.current.set(key, chat.sessionId);
         void decideWaiting(chat, formatUntil(covering.untilMs, now), key);
       }
       for (const session of sessions) {
@@ -248,15 +257,16 @@ export function useAutopilot(options: {
         const base = { project: sessionProject(session), chatId: session.id, ...who(session) };
         for (const block of pending) {
           if (!block.approval || block.approval.decided) continue;
-          const key = `a:${session.id}:${block.approval.requestId}:${hash(block.tool?.title ?? block.text)}`;
+          const key = approvalKey(session.id, block);
           if (handled.current.has(key)) continue;
-          handled.current.add(key);
+          handled.current.set(key, session.id);
           const requestId = block.approval.requestId;
-          const verdict = approvalVerdict(block, redHoldFor(session.id, now));
+          const verdict = approvalVerdict(block, session.worktreeCwd || session.cwd, redHoldFor(session.id, now));
           if (verdict.kind === "held") {
-            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red: verdict.red, dedupe: key });
+            // It waits for Ash in the chat, as when autopilot is off; the log says why.
+            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red: verdict.red, detail: `Not allowed by itself: ${verdict.why}`, dedupe: `${key}:${block.id}` });
           } else {
-            void log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: key }).then(
+            void log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
               () => latest.current.approve(session.id, requestId, "allow"),
             );
           }
@@ -329,7 +339,7 @@ export function useAutopilot(options: {
           case "arm": {
             const tried = `${id}:${action.resetsAt}`;
             if (triedArm.current.has(tried)) return;
-            triedArm.current.add(tried);
+            triedArm.current.set(tried, { id, resetsAt: action.resetsAt });
             const result = await b.arm({
               sessionId: id,
               resetsAt: action.resetsAt,
@@ -423,6 +433,44 @@ export function useAutopilot(options: {
 
 const APPROVAL_LOOKBACK = 200;
 const RETRY_MS = 30_000;
+
+/** The key autopilot remembers an approval by. */
+function approvalKey(sessionId: string, block: Block): string {
+  return `a:${sessionId}:${block.approval?.requestId}:${hash(block.tool?.title ?? block.text)}`;
+}
+
+export type AutopilotMemory = {
+  handled: Map<string, string>;
+  retryAt: Map<string, number>;
+  triedArm: Map<string, { id: string; resetsAt: number }>;
+};
+
+/**
+ * Forget what can't come back, so the hook's memory doesn't grow for the app's life: an approval no longer waiting
+ * (decided, or its chat closed), a question whose chat is neither open nor on the waiting list, and an arm for a reset
+ * already past or a closed chat (planResume never arms either). A question still listed is kept, so the same question
+ * isn't answered twice.
+ */
+export function pruneAutopilotMemory(
+  memory: AutopilotMemory,
+  sessions: readonly Session[],
+  waitingSessionIds: readonly string[],
+  now: number,
+): void {
+  const open = new Set(sessions.map((s) => s.id));
+  const listed = new Set(waitingSessionIds);
+  let pending: Set<string> | undefined;
+  for (const [key, sessionId] of memory.handled) {
+    const gone = key.startsWith("a:")
+      ? !(pending ??= new Set(sessions.flatMap((s) => recentApprovals(s).map((block) => approvalKey(s.id, block))))).has(key)
+      : !open.has(sessionId) && !listed.has(sessionId);
+    if (gone) {
+      memory.handled.delete(key);
+      memory.retryAt.delete(key);
+    }
+  }
+  for (const [key, tried] of memory.triedArm) if (!open.has(tried.id) || tried.resetsAt <= now) memory.triedArm.delete(key);
+}
 
 /** Undecided approvals among a chat's latest blocks. */
 function recentApprovals(session: Session) {

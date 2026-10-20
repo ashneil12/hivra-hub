@@ -3,12 +3,14 @@
 // - `app autopilot.decide`, an agent asking before it asks Ash (decideCall);
 // - a chat's question for Ash is read and answered by Today's waiting list (hub/model/waitingChats.ts takePick); a
 //   question with no pick is handed back to the agent with handBackText;
-// - a tool approval a supervised chat is waiting on (approvalVerdict).
+// - a tool approval a supervised chat is waiting on (approvalVerdict): allowed only when it is a read, a listed test or
+//   build command, or an edit inside the chat's own folder (safeApproval.ts), and off the red list.
 // The app hook (useAutopilot.ts) applies the verdicts and writes each one to the Autopilot log.
 
 import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
+import { safeCall } from "./safeApproval";
 
 export type CallVerdict =
   | { outcome: "off" }
@@ -39,26 +41,40 @@ export function handBackText(untilLabel: string): string {
   return `Ash is away on autopilot until ${untilLabel} and can't answer. Decide this yourself: take your own recommendation, carry on, and say what you chose and why in your report. Anything on his red list (money, deleting data without a backup, production hosts, mass destructive changes, messages sent as him, credentials) still waits for him.`;
 }
 
-const APPROVAL_TEXT_MAX = 6_000;
+/** The most an approval's words may run to and still be judged: past it, the red list can't read all of it. */
+export const APPROVAL_TEXT_MAX = 6_000;
 
-/** The words a tool approval is judged on. */
-export function approvalText(block: Pick<Block, "text" | "tool">): string {
+type ApprovalBlock = Pick<Block, "text" | "tool" | "approval">;
+
+/** The words a tool approval is judged on: everything it shows, and exactly what it would run. Never cut. */
+export function approvalText(block: ApprovalBlock): string {
   const preview = block.tool?.preview ? JSON.stringify(block.tool.preview) : "";
-  return callText(block.text, block.tool?.title, block.tool?.kind, block.tool?.detail?.slice(0, APPROVAL_TEXT_MAX), preview.slice(0, APPROVAL_TEXT_MAX));
+  const call = block.approval?.call;
+  return callText(block.text, block.tool?.title, block.tool?.kind, block.tool?.detail, preview, call?.tool, call?.command, ...(call?.paths ?? []));
 }
 
 export function approvalWhat(block: Pick<Block, "text" | "tool">): string {
   return (block.tool?.title?.trim() || block.text.trim() || "A tool call").replace(/\s+/g, " ").slice(0, 300);
 }
 
-/** A tool approval while autopilot covers the chat: allowed, unless it touches the red list. */
-export function approvalVerdict(
-  block: Pick<Block, "text" | "tool">,
-  forcedRed?: RedCategory,
-): { kind: "allow"; what: string } | { kind: "held"; red: RedCategory; what: string } {
+export type ApprovalVerdict =
+  | { kind: "allow"; what: string }
+  | { kind: "held"; red: RedCategory | null; what: string; why: string };
+
+/**
+ * A tool approval while autopilot covers the chat, in a chat working in `folder` (its worktree when it has one):
+ * allowed only when it is a read, a listed test or build command, or an edit inside that folder, and nothing it says
+ * touches the red list. Everything else, and anything too long to read whole, waits for Ash as when autopilot is off.
+ */
+export function approvalVerdict(block: ApprovalBlock, folder: string | undefined, forcedRed?: RedCategory): ApprovalVerdict {
   const what = approvalWhat(block);
-  const red = forcedRed ?? redListCategory(approvalText(block));
-  return red ? { kind: "held", red, what } : { kind: "allow", what };
+  if (forcedRed) return { kind: "held", red: forcedRed, what, why: "its chat was told to ask Ash" };
+  const text = approvalText(block);
+  if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
+  const red = redListCategory(text);
+  if (red) return { kind: "held", red, what, why: "it touches the red list" };
+  const why = safeCall(block.approval?.call, folder);
+  return why ? { kind: "held", red: null, what, why } : { kind: "allow", what };
 }
 
 // ---- which project a chat belongs to -------------------------------------------------------------------------------

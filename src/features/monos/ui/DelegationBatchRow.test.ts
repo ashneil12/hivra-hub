@@ -12,6 +12,7 @@ import {
   setDelegationRows,
 } from "../model/delegationStore";
 import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
+import { useDelegationPane } from "../hooks/useDelegationPane";
 import { DelegationBatchRow } from "./DelegationBatchRow";
 import {
   DelegatedChatNotice,
@@ -216,5 +217,63 @@ describe("the notices", () => {
     expect(container.textContent).toContain("Couldn't stop Fix audio");
     act(() => root.render(createElement(DelegationWaitingLine, { count: 0 })));
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("a Lead's Stop all whose workers couldn't be loaded", () => {
+  function LeadLine({ chat }: { chat: string }) {
+    const pane = useDelegationPane(chat, true);
+    return pane?.kind === "lead"
+      ? createElement(DelegationWaitingLine, {
+          count: pane.count,
+          failed: pane.failed,
+          unloaded: pane.unloaded,
+          onStopAll: pane.onStopAll,
+        })
+      : null;
+  }
+
+  it("says the workers may still be running instead of looking like a clean Stop", async () => {
+    setDelegationRows([row("t-1", "w1", "running")]);
+    const stopTree = vi.fn(async () => ({
+      stopped: ["lead-chat"],
+      cancelled: [],
+      stopFailed: [],
+      unloaded: ["lead-chat"],
+    }));
+    const stopRow = vi.fn(async () => ({
+      stopped: ["w1"],
+      cancelled: [],
+      stopFailed: [],
+      unloaded: ["w1"],
+    }));
+    setDelegationActions({ openOwner: vi.fn(), openChild: vi.fn(), stopTree, stopRow });
+    act(() => root.render(createElement(LeadLine, { chat: "lead-chat" })));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>("[data-delegation-stop-all]")!
+        .click(),
+    );
+    expect(stopTree).toHaveBeenCalledWith("lead-chat");
+    expect(container.textContent).toContain(
+      "Couldn't load the workers under this chat; they may still be running",
+    );
+    // One row's Stop names the task whose workers it couldn't load.
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w1", "Job w1")],
+          views: new Map([["w1", { state: "working", title: "Job w1" }]]),
+          onOpen: vi.fn(),
+        }),
+      ),
+    );
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-delegation-stop]")!.click(),
+    );
+    act(() => root.render(createElement(LeadLine, { chat: "lead-chat" })));
+    expect(container.textContent).toContain(
+      "Couldn't load the workers under Job w1; they may still be running",
+    );
   });
 });

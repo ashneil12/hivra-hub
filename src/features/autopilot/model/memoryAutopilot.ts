@@ -93,7 +93,7 @@ export function memoryAutopilot(clock: () => number = Date.now, seed: LogEntry[]
       if (!input.scopes.length) throw new Error("Say what autopilot is for: everything or a project");
       for (const scope of input.scopes)
         switches.set(scope, { scope, untilMs: input.untilMs, setBy: input.by, setAt: now, chatId: input.chatId ?? null, said: input.said ?? null });
-      add({ kind: "switch", outcome: "on", what: `Autopilot on for ${input.scopes.includes("*") ? "everything" : input.scopes.join(", ")}`, who: input.who ?? input.by, chatId: input.chatId ?? null, detail: input.said ?? null });
+      add({ kind: "switch", outcome: "on", what: `Autopilot on for ${input.scopes.includes("*") ? "everything" : input.scopes.join(", ")}`, who: input.who ?? input.by, chatId: input.chatId ?? null, detail: input.turn ?? input.said ?? null });
       changed();
       return status();
     },

@@ -1,7 +1,7 @@
 import { examplesOn, examples } from "./examples";
-// Group chats per project, behind the hub data layer. Mock store for now;
-// Claude Code swaps in the backend (create chat, add/remove member, send,
-// stream replies). Every made-up row is labelled "Example:".
+// Group chats per project, kept in local storage. The room takes turns on each Mono's own session through the runner
+// the app lends (setGroupChatRunner), with the small-model router picking who answers (setRoomRouter). Only with the
+// example data on does a scripted reply stand in, and every made-up row is labelled "Example:".
 import { useSyncExternalStore } from "react";
 import { listMonos } from "../../monos/model/mono";
 import { DEFAULT_TEAM_IDS } from "./builtInMonos";
@@ -113,14 +113,37 @@ if (!examplesOn()) {
   } catch { /* keep a clean roster if storage is unavailable */ }
 }
 
+/** How many of a conversation's newest messages are stored (the whole roster shares one storage key). */
+export const STORED_MESSAGES = 500;
+/** Why the last save failed, until one works (GroupChatView shows it). */
+let saveProblem: string | undefined;
+
 const EVENT = "monocode:hub-chats-changed";
 let version = 0;
 function changed(): void {
   if (!examplesOn()) {
-    try { localStorage.setItem(CHAT_KEY, JSON.stringify(chats)); } catch { /* browser storage unavailable */ }
+    try {
+      const stored = chats.map((c) => ({
+        ...c,
+        conversations: c.conversations.map((x) =>
+          x.messages.length > STORED_MESSAGES ? { ...x, messages: x.messages.slice(-STORED_MESSAGES) } : x),
+      }));
+      localStorage.setItem(CHAT_KEY, JSON.stringify(stored));
+      saveProblem = undefined;
+    } catch (error) {
+      // Said once per run of failures, not on every message.
+      if (!saveProblem) console.error("Could not save the group chats", error);
+      const why = error instanceof Error && error.message ? ` (${error.message.replace(/\.$/, "")})` : "";
+      saveProblem = `Group chats couldn't be saved${why}. New messages may be gone after a restart.`;
+    }
   }
   version++;
   window.dispatchEvent(new CustomEvent(EVENT));
+}
+
+/** Why the group chats couldn't be saved, while they can't. */
+export function chatSaveProblem(): string | undefined {
+  return saveProblem;
 }
 function subscribe(cb: () => void): () => void {
   window.addEventListener(EVENT, cb);
@@ -311,7 +334,10 @@ function addReply(chatId: string, from: string, text: string, quiet: boolean, co
 }
 let replySeq = 0;
 
-/** Mock: the picked answerer types, replies; one other member may add a line. */
+/**
+ * Ash sent a message: the room answers it (requestReply). With the example data on, a scripted stand-in answers
+ * instead: the picked answerer types and replies, and one other member may add a line.
+ */
 export function simulateReplies(chatId: string, convId?: string): void {
   if (!examplesOn()) { void requestReply(chatId, convId); return; }
   const chat = getChat(chatId);
@@ -326,7 +352,7 @@ export function simulateReplies(chatId: string, convId?: string): void {
   }, 1800);
 }
 
-export type GroupChatRunner = (monoId: string, prompt: string, options?: { maxReplyChars: number }) => Promise<string>;
+export type GroupChatRunner = (monoId: string, prompt: string) => Promise<string>;
 let runner: GroupChatRunner | undefined;
 /** The app supplies its normal Mono session engine; the store never invents an answer. */
 export function setGroupChatRunner(next: GroupChatRunner): () => void {
@@ -669,9 +695,3 @@ export function importChats(imported: GroupChat[], { mergeConversations = false 
   return { chats: additions.length, conversations };
 }
 export function exportChats(): GroupChat[] { return structuredClone(chats); }
-
-export function monoTaskRunnerConnected(): boolean { return !!runner; }
-export function runMonoTask(monoId: string, prompt: string, options?: { maxReplyChars: number }): Promise<string> {
-  if (!runner) return Promise.reject(new Error("Open the desktop app to run a Mono."));
-  return runner(monoId, prompt, options);
-}

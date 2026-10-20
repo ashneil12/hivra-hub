@@ -113,9 +113,10 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
     - Under a temporary HOME the app sets `CFFIXED_USER_HOME` (Cocoa ignores HOME) and keeps off system-wide things;
       the runner opens the app directly with that HOME (Launch Services would use the real one) and the LaunchAgent
       label is `test.monocode-hub-ship.<id>`. That is how the drill runs without touching the daily app.
-    - `whenBusy: "restart"` (and Restart now) quit even with turns running. Autopilot (`src-tauri/src/autopilot.rs`)
-      never ships by itself: whoever calls `app.ship` chooses `whenBusy`, and autopilot's crash relauncher leaves a
-      ship in progress alone.
+    - `whenBusy: "restart"` (and Restart now) quit even with turns running. Only Ash's Restart now tap does that:
+      an agent's `app.ship` refuses "restart" (and ships only from a Lead's or the leadership team's own chat).
+      Autopilot (`src-tauri/src/autopilot.rs`) never ships by itself, and its crash relauncher leaves a ship in
+      progress alone.
     - `hub:rollback <id> --confirm` is itself a ship (kind `rollback`): it backs up the current database first, so it
       can be rolled back too.
 

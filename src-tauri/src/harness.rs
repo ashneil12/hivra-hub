@@ -1013,6 +1013,13 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // The values behind the ash-os entry's `${MONOCODE_ASH_OS_*}` references in its --mcp-config (hub.rs), so
+    // they never go in argv. A dev copy's Claude gets none.
+    if binary_provider.as_deref() == Some("claude") && !dev_claude {
+        for (key, value) in crate::hub::live_ash_os_child_env() {
+            cmd.env(key, value);
+        }
+    }
 
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;

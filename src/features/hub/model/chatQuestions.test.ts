@@ -83,6 +83,17 @@ describe("a live AskUserQuestion", () => {
     const flagged = prompt({ questions: [{ ...prompt().questions[0], header: "Red line" }] });
     expect(chatQuestion({ pendingQuestion: flagged, blocks: [] })!.redLine).toBe(true);
   });
+
+  it("reads the options' descriptions and the prompt's title for red lines too", () => {
+    const plain = prompt().questions[0];
+    const described = prompt({
+      questions: [{ ...plain, prompt: "Which cleanup?", header: "Cleanup", options: [{ id: "b", label: "Option B (Recommended)", description: "Drop the users table and start fresh" }, { id: "a", label: "Option A" }] }],
+    });
+    expect(chatQuestion({ pendingQuestion: described, blocks: [] })!.redLine).toBe(true);
+    const titled = prompt({ title: "Refund the double charge", questions: [{ ...plain, prompt: "Go ahead?", header: "Go", options: [{ id: "y", label: "Yes (Recommended)" }] }] });
+    expect(chatQuestion({ pendingQuestion: titled, blocks: [] })!.redLine).toBe(true);
+    expect(chatQuestion({ pendingQuestion: prompt(), blocks: [] })!.redLine).toBe(false);
+  });
 });
 
 describe("a 'Needs Ash:' line", () => {

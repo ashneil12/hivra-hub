@@ -63,6 +63,7 @@ async function seed(a: Awaited<ReturnType<typeof app>>) {
   localStorage.setItem("monocode:hub-role-names", "1");
   localStorage.setItem("monocode.openaiKey", "sk-proj-PLANTEDplantedPLANTEDplanted0123456789");
   localStorage.setItem("monocode.someIntegration", JSON.stringify({ url: "https://x", token: "abcdefgh12345678" }));
+  localStorage.setItem("monocode.keybindingOverrides", JSON.stringify({ "mod+k": "palette", token: "abcdefgh12345678" }));
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "hivra" }));
   localStorage.setItem("monocode:hub-project-prefs", JSON.stringify({ names: { hivra: "Hivra HQ" }, order: ["hivra", "vg-game"], hidden: [], icons: { hivra: { kind: "emoji", emoji: "🐝" }, "vg-game": { kind: "image", src: "asset://x", path: "/Users/ash/pic.png" } } }));
   a.templates.setTemplate("hivra", "product-saas");
@@ -103,7 +104,9 @@ it("no secret is in the setup files: logins, keys and secret-looking settings st
   expect(doc.connectors[0]).toEqual({ id: "c-github", name: "GitHub", projectId: "hivra", where: "mac", loginLivesIn: "This Mac's Keychain (monocode-hub:c-github)" });
   expect(doc.customModels[0]).not.toHaveProperty("apiKey");
   expect(doc.settings["monocode.openaiKey"]).toBeUndefined();
-  expect(JSON.parse(doc.settings["monocode.someIntegration"])).toEqual({ url: "https://x", token: "[secret removed]" });
+  // A preference with a secret-looking field keeps the rest; a key that isn't a preference doesn't travel at all.
+  expect(JSON.parse(doc.settings["monocode.keybindingOverrides"])).toEqual({ "mod+k": "palette", token: "[secret removed]" });
+  expect(doc.settings["monocode.someIntegration"]).toBeUndefined();
   expect(doc.settings["monocode.themeScheme"]).toBe("midnight");
   expect(doc.settings["monocode:hub-nav"]).toBeUndefined();
   expect(doc.projectPrefs.icons).toEqual({ hivra: { kind: "emoji", emoji: "🐝" } });
@@ -153,7 +156,8 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
   const after = b.mono.listMonos().map(({ sessionId: _, ...m }) => m);
   expect(after).toEqual(before.roster.map((m) => ({ ...m, projects: ["/Volumes/New/hivra"] })));
   expect(disk.files.get("chief-of-staff/SOUL.md")).toBe(SOUL);
-  expect(disk.files.get("chief-of-staff/habits.json")).toBe('[{"name":"Morning"}]');
+  // Its habits come back paused.
+  expect(JSON.parse(disk.files.get("chief-of-staff/habits.json")!)).toEqual([{ name: "Morning", enabled: false }]);
   expect(disk.files.get("chief-of-staff/MEMORY.md")).toBe("- Ash files on Fridays");
   expect(disk.files.get("chief-of-staff/memory/clients.md")).toBe("notes");
   const scrub = (v: unknown) => b.secrets.redactValue(v).value;
@@ -218,6 +222,65 @@ it("the preview shows each conflict, and the restore keeps what is already here"
   await b.plan.applyImport(pending, again, all, { agentFiles: { read: disk.read, write: disk.write } });
   expect(disk.files.get("chief-of-staff/SOUL.md")).toBe(SOUL);
   expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
+});
+
+it("settings come back only as real preferences: never this install's state, a path, or anything that looks like a secret", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  // A crafted export: its setup.json says whatever it likes.
+  const setup = JSON.parse(files["setup/setup.json"]) as { settings: Record<string, string> };
+  const crafted = {
+    "monocode:hub-bot-changes": "[]",
+    "monocode:hub-lead-adopted": "{}",
+    "monocode.lastModel": "x",
+    "monocode.chatBackgroundPath": "/Users/someone/pic.png",
+    "monocode.projectLocations": "{}",
+    "monocode.claudePromptCache": "{}",
+    "monocode.quickComposerShortcut": ANTHROPIC,
+    "monocode.githubToken": "abcdefgh12345678",
+  };
+  setup.settings = { ...setup.settings, ...crafted };
+  files["setup/setup.json"] = JSON.stringify(setup);
+
+  localStorage.clear();
+  const b = await app();
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  expect([...plan.settings.add].sort()).toEqual(["monocode.accentColor", "monocode.keybindingOverrides", "monocode.themeScheme", "monocode:hub-role-names"]);
+  // Even a plan that names them can't write them.
+  plan.settings.add.push(...Object.keys(crafted));
+  pending.doc.settings = { ...pending.doc.settings, ...crafted };
+  await b.plan.applyImport(pending, plan, { ...b.plan.defaultChoices(plan), settings: "all" });
+  for (const key of Object.keys(crafted)) expect(localStorage.getItem(key), key).toBeNull();
+  expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
+});
+
+it("imported habits come back paused, with no run waiting, for a new Mono and for one already here", async () => {
+  const a = await app();
+  await seed(a);
+  const habit = { id: "h1", name: "Morning", instructions: "Summarise the night", schedule: { scheduleKind: "daily", time: "09:00", minute: 0, dayOfWeek: 1 }, createdAt: 1, nextRunAt: 2 };
+  const habits = JSON.stringify([{ ...habit, enabled: true, runRequested: true }, { ...habit, id: "h2" }]);
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL, "habits.json": habits }, "hivra-lead": { "SOUL.md": "# s", "habits.json": habits } }, workspace: false });
+  const files = a.doc.setupDocToFiles(doc);
+
+  // Here already: Chief of Staff, with no habits of its own yet. Hivra lead is new.
+  localStorage.clear();
+  const b = await app();
+  b.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "x", projects: [] });
+  const disk = folders();
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { agentFiles: { read: disk.read, write: disk.write } });
+  await b.souls.seatWaitingSoul("hivra-lead", disk.write, undefined, disk.read);
+
+  const { parseHabits } = await import("../../monos/model/monoHabits");
+  for (const id of ["chief-of-staff", "hivra-lead"]) {
+    const written = parseHabits(disk.files.get(`${id}/habits.json`));
+    expect(written.map((h) => h.id), id).toEqual(["h1", "h2"]);
+    expect(written.every((h) => !h.enabled && !h.runRequested), id).toBe(true);
+    expect(written[0].instructions).toBe("Summarise the night");
+  }
 });
 
 it("the ticks decide: no memory leaves the Monos' memory out, no workspace leaves the conversations and Rust out", async () => {

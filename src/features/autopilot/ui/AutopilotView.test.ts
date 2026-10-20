@@ -89,6 +89,26 @@ describe("AutopilotView", () => {
     expect(container.querySelector("[data-autopilot-switch]")?.getAttribute("data-autopilot-switch")).toBe("off");
   });
 
+  it("says so when turning it off or changing auto-resume fails, and never shows it off while it is on", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 8 * 3_600_000, by: "ash" });
+    backend.off = async () => {
+      throw new Error("The database is busy");
+    };
+    backend.setAutoResume = async () => {
+      throw new Error("Couldn't save the setting");
+    };
+    await act(async () => root.render(createElement(AutopilotView)));
+    await settle();
+    await act(async () => button("Turn off").click());
+    await settle();
+    expect(container.querySelector("[data-autopilot-switch]")?.getAttribute("data-autopilot-switch")).toBe("on");
+    expect(container.querySelector("[data-autopilot-on='hivra']")?.textContent).toContain("Couldn't turn it off: The database is busy");
+    await act(async () => (container.querySelector('[data-autopilot-auto-resume] [role="switch"]') as HTMLButtonElement).click());
+    await settle();
+    expect(container.querySelector("[data-autopilot-auto-resume]")?.textContent).toContain("Couldn't change it: Couldn't save the setting");
+    expect(container.querySelector('[data-autopilot-auto-resume] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("shows each call with its pick, and the red-list calls waiting for Ash", async () => {
     await backend.set({ scopes: ["*"], untilMs: Date.now() + 40 * 3_600_000, by: "mono:chief-of-staff", said: "go autopilot until monday", who: "Chief of Staff" });
     await backend.log({ kind: "decision", outcome: "taken", what: "Split the fix into two PRs?", recommendation: "Yes, two PRs", who: "Hivra lead", project: "hivra", chatId: "c1" });

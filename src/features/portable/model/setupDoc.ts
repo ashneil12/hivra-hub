@@ -82,20 +82,91 @@ export type SetupDoc = {
 
 // ---- settings and themes ---------------------------------------------------------------------------------------------
 
-/** Keys that are not a preference to carry: their own part of the export, this install's state, dev switches, or where
- * things are on this Mac right now. */
-const SKIP_SETTINGS: readonly RegExp[] = [
-  /^monocode:(mono-roster|hub-chats|hub-connectors|pages|hub-projects|hub-souls-waiting|hub-project-prefs|hub-templates|custom-models)$/,
-  /^monocode:(monos|mono-profiles|project-agents|project-agent-profiles|project-agent-handed)$/,
-  /^monocode:(hub-onboarded|hub-bundle-seeded|mono-team-(seeded|added|removed-by-user)|tab-group:key-version)$/,
-  /^monocode:(hub-examples|pages-dev-stub|hub-change-dev-stub|hub-leads-dev|hub-keychain-test|hub-gaveup-style)$/,
-  /^monocode:(hub-nav|height|open-mono|hub-project-draft|mono-rotations|mono-card-sessions|mono-habits-active|remote-.*)$/,
-  /^monocode\.(providerBinaryPaths|providerAccounts|providerAccountSelections|inboxConnections|inboxSeen|linkedSessionSeen|installedUpdate|measure|remote-|automation-inbox-retries|ciRepairs|settingsSection|transcriptAnchor)/,
+/**
+ * The settings and themes that travel, by storage key: the preferences Ash sets in Settings (and a few he sets where
+ * he uses them), and nothing else. Not this install's state (seeded flags, what was seen, undo rows, caches), not
+ * where things are on this Mac (folders, pictures, binaries), not layout of the moment (open panels, widths), not dev
+ * switches, and never a key or login. An export carries only these; an import writes only these.
+ */
+export const PORTABLE_SETTINGS: readonly string[] = [
+  // Themes and appearance
+  "monocode.themeScheme",
+  "monocode.themeSchemesCustom",
+  "monocode.accentColor",
+  "monocode.themeHue",
+  "monocode.themeSaturation",
+  "monocode.themeDarkLightness",
+  "monocode.colorScheme",
+  "monocode.workspaceTheme",
+  "monocode.sidebarOpacity",
+  "monocode.sidebarBlur",
+  "monocode.bodyGlass",
+  "monocode.insetLayout",
+  "monocode.insetGlass",
+  "monocode.uiScale",
+  "monocode.transcriptLayout",
+  "monocode.chatBackgroundOpacity",
+  "monocode.chatBackgroundEmptyOpacity",
+  "monocode.chatBackgroundSessionOpacity",
+  "monocode.chatBackgroundScope",
+  "monocode.newThreadBackgroundEffect",
+  "monocode.changesView",
+  "monocode.diffPalette",
+  "monocode.diffViewer",
+  "monocode.showExcludedFiles",
+  "monocode.sidebarTabOrder",
+  "monocode.rightPanelTabOrder",
+  "monocode:hub-strip-backdrop",
+  "monocode:hub-role-names",
+  // How the app behaves
+  "monocode.showRemainingUsage",
+  "monocode.maskEmails",
+  "monocode.composerAutocorrect",
+  "monocode.railMonosPinned",
+  "monocode.pacedReveal",
+  "monocode.composerRunner",
+  "monocode.followUpBehavior",
+  "monocode.composerEffortVisible",
+  "monocode.modelControls",
+  "monocode.fileTabMode",
+  "monocode.fileViewMode",
+  "monocode.tabAnimationsEnabled",
+  "monocode.collapsedProjectRailMode",
+  "monocode.notesEnabled",
+  "monocode.monosEnabled",
+  "monocode.monoMenuBarIcon",
+  "monocode.quickComposerEnabled",
+  "monocode.quickComposerShortcut",
+  "monocode.liveAgentsEnabled",
+  "monocode.closeToTray",
+  "monocode.gridArcadeEnabled",
+  "monocode.formatOnSave",
+  "monocode.autosave",
+  "monocode.claudeHooks",
+  "monocode.idleAgentLimit",
+  "monocode.keybindingOverrides",
+  "monocode.contextCeiling",
+  "monocode.idleCompact",
+  "monocode.notifications",
+  "monocode.sounds",
+  "monocode.emojiSkinTone",
+  // Models
+  "monocode.favoriteModels",
+  "monocode.hiddenPickerProviders",
+  "monocode.defaultModels",
+  "monocode:model-picker-fold-older",
 ];
+const PORTABLE = new Set(PORTABLE_SETTINGS);
 const SETTING_MAX = 200_000;
 
 export function isPortableSetting(key: string): boolean {
-  return /^monocode[:.]/.test(key) && !SKIP_SETTINGS.some((r) => r.test(key));
+  return PORTABLE.has(key);
+}
+
+/** A setting whose name says it holds a secret, or whose value has one: never carried, never taken from a file. */
+export function settingLooksSecret(key: string, value: string): boolean {
+  const last = key.split(/[:.]/).pop() ?? key;
+  return isSecretKey(last) || /(?:key|token|secret|password)$/i.test(last) || findSecrets(value).length > 0;
 }
 
 /** The settings and themes this Mac has, minus anything that looks like a secret (those are listed, not carried). */
@@ -107,8 +178,7 @@ export function collectSettings(storage: Storage = localStorage): { settings: Re
     if (!key || !isPortableSetting(key)) continue;
     const value = storage.getItem(key);
     if (value == null || value.length > SETTING_MAX) continue;
-    const last = key.split(/[:.]/).pop() ?? key;
-    if (isSecretKey(last) || /(?:key|token|secret|password)$/i.test(last)) {
+    if (settingLooksSecret(key, "")) {
       leftOut.push(key);
       continue;
     }
@@ -485,7 +555,12 @@ export function setupDocFromFiles(files: Record<string, string>): SetupDoc {
     if (mono && `setup/monos/${mono.id}/` === dir) monos.push(mono);
   }
   const prefs = record(setup.projectPrefs);
-  const settings = Object.fromEntries(Object.entries(record(setup.settings)).filter((e): e is [string, string] => typeof e[1] === "string" && isPortableSetting(e[0])));
+  // Only real preferences, and none that looks like a secret: a crafted file can't set this install's state or a key.
+  const settings = Object.fromEntries(
+    Object.entries(record(setup.settings)).filter(
+      (e): e is [string, string] => typeof e[1] === "string" && e[1].length <= SETTING_MAX && isPortableSetting(e[0]) && !settingLooksSecret(e[0], e[1]),
+    ),
+  );
   const customModels = (Array.isArray(setup.customModels) ? setup.customModels : []).filter(
     (m): m is CustomModel => !!m && typeof m === "object" && typeof (m as CustomModel).id === "string" && typeof (m as CustomModel).name === "string" && typeof (m as CustomModel).modelId === "string",
   );

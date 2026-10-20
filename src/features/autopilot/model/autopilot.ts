@@ -84,6 +84,8 @@ export type SetInput = {
   by: string;
   chatId?: string;
   said?: string;
+  /** Ash's whole message that `said` quotes (a Mono switching it for him); the log keeps it with the switch. */
+  turn?: string;
   who?: string;
 };
 
