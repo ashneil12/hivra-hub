@@ -86,6 +86,10 @@ pub struct AgentFile {
     pub text: Option<String>,
     /// Hash of the text, or of "" for a missing file.
     pub hash: String,
+    /// When the file last changed (ms since the epoch), so the soul tamper check can match it to the chats that were
+    /// running then. Absent for a missing file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +252,11 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+fn modified_ms(path: &Path) -> Option<u64> {
+    let at = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
+}
+
 fn read_optional(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -339,9 +348,11 @@ fn read(
 ) -> Result<AgentFile, String> {
     let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
     let dir = agent_dir(root, mono, legacy_project)?;
-    let text = read_optional(&resolve_file(&dir, relative)?)?;
+    let path = resolve_file(&dir, relative)?;
+    let text = read_optional(&path)?;
     Ok(AgentFile {
         hash: content_hash(text.as_deref().unwrap_or("")),
+        modified_ms: text.as_ref().and_then(|_| modified_ms(&path)),
         text,
     })
 }
@@ -458,6 +469,7 @@ fn roster_load(root: &Path) -> Result<AgentFile, String> {
     let text = read_optional(&root.join(ROSTER_FILE))?;
     Ok(AgentFile {
         hash: content_hash(text.as_deref().unwrap_or("")),
+        modified_ms: None,
         text,
     })
 }
@@ -962,6 +974,22 @@ mod tests {
         let saved = read(&root, "m", None, HABITS_FILE).unwrap();
         assert_eq!(saved.text.as_ref(), Some(&winners[0].0));
         assert_eq!(saved.hash, content_hash(&winners[0].0));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_read_says_when_the_file_last_changed() {
+        let root = temp_root();
+        assert_eq!(read(&root, "m", None, "SOUL.md").unwrap().modified_ms, None);
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        save(&root, "m", None, "SOUL.md", "# Soul", None).unwrap();
+        let at = read(&root, "m", None, "SOUL.md").unwrap().modified_ms.unwrap();
+        assert!(at + 2_000 >= before && at <= before + 60_000, "{at} vs {before}");
+        let json = serde_json::to_value(read(&root, "m", None, "SOUL.md").unwrap()).unwrap();
+        assert!(json.get("modifiedMs").is_some());
         std::fs::remove_dir_all(root).unwrap();
     }
 
