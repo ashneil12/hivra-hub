@@ -37,7 +37,12 @@ import {
   loadPinnedProjects,
   sameProjectPath,
 } from "../../projects/model/recents";
-import { listMonos, monoLook, monoState } from "../../monos/model/mono";
+import { listMonos, monoLook, monoState, type MonoStatus } from "../../monos/model/mono";
+
+/** A Mono's status as the phone app draws it: a failed last turn needs Ash, like a question does. */
+function phoneStatus(status: MonoStatus): MonoStatus {
+  return status === "failed" ? "needs-you" : status;
+}
 import { displayPath, pathKey, projectName } from "../../../shared/lib/paths";
 import {
   getSession,
@@ -186,7 +191,8 @@ export async function mobileCatalog(
         color: mono.color,
         projectIds: mono.projects.map(mobileProjectId),
         unread: 0,
-        status: session ? monoState(session).status : "idle",
+        // The phone knows working, needs-you and idle: a Mono that can't answer needs Ash too.
+        status: session ? phoneStatus(monoState(session).status) : "idle",
         busy: !!session?.busy,
         live: live.some((current) => current.id === mono.sessionId),
         sessionId: mono.sessionId,

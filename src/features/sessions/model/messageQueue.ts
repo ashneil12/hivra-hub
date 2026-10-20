@@ -216,7 +216,8 @@ export function typedQuestionAnswer(
   by: SubmittedBy,
 ): TypedQuestionAnswer | undefined {
   const prompt = session.pendingQuestion;
-  if (!prompt || session.worktreeRemoved || !text.trim() || !isAshTyped(by)) return undefined;
+  // An optional question with its own deadline doesn't block the chat: his message steers in as usual.
+  if (!prompt || prompt.autoResolveAt != null || session.worktreeRemoved || !text.trim() || !isAshTyped(by)) return undefined;
   const reply = freeTextReply(prompt.questions, text);
   return reply
     ? { kind: "answer", requestId: prompt.requestId, reply }

@@ -350,6 +350,8 @@ describe("typedQuestionAnswer: Ash types while the agent waits on its own questi
 
   it("leaves everything the app sends alone, and a chat with no question", () => {
     expect(typedQuestionAnswer(asking({ pendingQuestion: undefined }), words, {})).toBeUndefined();
+    // An optional question with its own deadline never blocked the chat: his message steers in as before.
+    expect(typedQuestionAnswer(asking({ pendingQuestion: prompt({ autoResolveAt: 99 }) }), words, {})).toBeUndefined();
     expect(typedQuestionAnswer(asking({ worktreeRemoved: true }), words, {})).toBeUndefined();
     expect(typedQuestionAnswer(asking(), "   ", {})).toBeUndefined();
     for (const app of [
