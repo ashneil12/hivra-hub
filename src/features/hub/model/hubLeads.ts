@@ -153,6 +153,39 @@ function adoptedOnce(): Set<string> {
   }
 }
 
+/** How long to wait before each further try of an adopted Lead's soul reseed. */
+const RESEED_RETRY_MS = [5_000, 30_000, 120_000] as const;
+
+/**
+ * After `ensureProjectLeads` adopted a legacy seat: reseed its soul (`reseed`, reseedAdoptedLeadSoul), then record the
+ * adoption, so it happens once. A failed reseed is logged and tried again a few times; one that never works leaves the
+ * adoption unrecorded, so the next pass (or launch) adopts it again, which changes nothing twice, and reseeds again.
+ * Resolves whether it was recorded.
+ */
+export async function completeLeadAdoption(
+  monoId: string,
+  reseed: () => Promise<unknown>,
+  options: { wait?: (ms: number) => Promise<void> } = {},
+): Promise<boolean> {
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await reseed();
+    } catch (error) {
+      console.error(`Could not write the adopted Lead's soul (${monoId})`, error);
+      if (attempt >= RESEED_RETRY_MS.length) return false;
+      await wait(RESEED_RETRY_MS[attempt]);
+      continue;
+    }
+    try {
+      localStorage.setItem(ADOPTED_KEY, JSON.stringify([...new Set([...adoptedOnce(), monoId])]));
+    } catch {
+      /* storage unavailable: adopting again changes nothing */
+    }
+    return true;
+  }
+}
+
 type Register = (monoId: string, projectId: string) => Promise<unknown>;
 /** Which Leads each `register` already told Ash OS about, so a list that changes doesn't send them all again. */
 const registered = new WeakMap<Register, Set<string>>();
@@ -199,11 +232,7 @@ export function ensureProjectLeads(projects: readonly HubProject[], register?: R
         name: !mono.name || mono.name === legacy.name ? lead.name : mono.name,
         projects: folder ? [folder, ...mono.projects.filter((p) => projectKey(p) !== projectKey(folder))] : mono.projects,
       }));
-      try {
-        localStorage.setItem(ADOPTED_KEY, JSON.stringify([...adoptedOnce(), existing.id]));
-      } catch {
-        /* storage unavailable: adopting again changes nothing */
-      }
+      // Recorded once its soul is reseeded (completeLeadAdoption); until then adopting again changes nothing.
       void unregister?.(existing.id, legacy.projectId)?.catch(() => undefined);
       adopted.push(existing.id);
     } else if (project.folder && !monoWorksOn(existing, project.folder)) {

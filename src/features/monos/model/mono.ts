@@ -357,6 +357,15 @@ export function removeMono(id: string): void {
 }
 
 /**
+ * Takes back a Mono that `createMono` just made when making it failed part way (hubTeams.addNamedMono). Not Ash
+ * removing one: nothing is recorded as removed by him, so a default-team name stays free.
+ */
+export function discardNewMono(id: string): void {
+  removeMonoBackground(id);
+  saveRoster(listMonos().filter((mono) => mono.id !== id));
+}
+
+/**
  * Puts the given Monos in this order. Given only some, as a project's list
  * is, they swap among their own places and the rest stay where they are.
  */

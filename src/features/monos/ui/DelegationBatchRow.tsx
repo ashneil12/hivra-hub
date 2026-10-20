@@ -52,8 +52,10 @@ export function DelegationBatchRow({
     setStopping((current) => new Set(current).add(row.childSession));
     void actions
       .stopRow(row)
-      .then((result) => noteStopFailures(row.ownerSession, result.stopFailed))
-      .catch(() => noteStopFailures(row.ownerSession, [row.childSession]))
+      .then((result) => noteStopFailures(row.ownerSession, result))
+      .catch(() =>
+        noteStopFailures(row.ownerSession, { stopFailed: [row.childSession] }),
+      )
       .finally(() =>
         setStopping((current) => {
           const next = new Set(current);
