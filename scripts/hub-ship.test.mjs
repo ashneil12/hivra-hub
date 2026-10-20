@@ -18,7 +18,7 @@ import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
-import { isRunning, readJson, restoreData, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { isRunning, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -639,6 +639,68 @@ test("SH-2: a rollback whose restore fails partway puts its own backup back inst
   assert.equal(stampOf(w.app).sha, w.sha, "the committed build stays");
   await until("the committed build reopened", () => readJson(path.join(w.data, "running.json"))?.sha === w.sha);
   remember(answer.shipDir);
+});
+
+/** A stand-in for /bin/launchctl that only writes down what it was asked. */
+function fakeLaunchctl(root) {
+  const log = path.join(root, "launchctl.log");
+  const bin = path.join(root, "launchctl");
+  fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+  return { bin, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : []) };
+}
+
+/** A ship folder whose runner ran as a LaunchAgent, with its plist still in place. */
+function launchdShip(ships, agents, id, phase) {
+  const label = `test.monocode-hub-ship.${id}`;
+  const plist = path.join(agents, `${label}.plist`);
+  fs.mkdirSync(path.join(ships, id), { recursive: true });
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(plist, "<plist/>");
+  const domain = `gui/${process.getuid()}`;
+  fs.writeFileSync(
+    path.join(ships, id, "state.json"),
+    JSON.stringify({ id, phase, to: { sha: "c".repeat(40) }, launchd: { label, domain, plist } }),
+  );
+  return { label, plist, target: `${domain}/${label}` };
+}
+
+test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "home/Library/Application Support", HUB, "ship");
+  const agents = path.join(root, "home/Library/LaunchAgents");
+  const archive = path.join(root, "home/Archive/monocode/ships");
+  const ids = ["20261019-000001-aaaaaaa", "20261019-000002-aaaaaaa", "20261019-000003-aaaaaaa", "20261019-000004-aaaaaaa"];
+  const agentsOf = ids.map((id) => launchdShip(ships, agents, id, "cancelled"));
+  const launchctl = fakeLaunchctl(root);
+  const saved = process.env.MONOCODE_SHIP_LAUNCHCTL;
+  process.env.MONOCODE_SHIP_LAUNCHCTL = launchctl.bin;
+  try {
+    assert.deepEqual(retainShips(ships, archive, ids[3]), [ids[0]]);
+  } finally {
+    if (saved === undefined) delete process.env.MONOCODE_SHIP_LAUNCHCTL;
+    else process.env.MONOCODE_SHIP_LAUNCHCTL = saved;
+  }
+  assert.ok(fs.existsSync(path.join(archive, ids[0], "state.json")), "the oldest ship is archived");
+  assert.equal(fs.existsSync(agentsOf[0].plist), false, "and its LaunchAgent can't start a runner that is gone");
+  assert.deepEqual(launchctl.calls(), [`bootout ${agentsOf[0].target}`]);
+  for (const kept of agentsOf.slice(1)) assert.ok(fs.existsSync(kept.plist), "the ships kept keep theirs");
+});
+
+test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", async () => {
+  const w = world();
+  const ships = path.join(w.data, "ship");
+  const old = "20261019-000001-ccccccc";
+  const agent = launchdShip(ships, path.join(w.home, "Library/LaunchAgents"), old, "staged");
+  fs.writeFileSync(path.join(ships, "current.json"), JSON.stringify({ id: old }));
+  const launchctl = fakeLaunchctl(w.root);
+  const { code, answer } = ship(w, [], { MONOCODE_SHIP_LAUNCHCTL: launchctl.bin });
+  assert.equal(code, 0, JSON.stringify(answer));
+  await until("the new ship's commit", settled(answer.shipDir, "committed"));
+  remember(answer.shipDir);
+  assert.equal(stateOf(path.join(ships, old)).phase, "cancelled");
+  assert.equal(fs.existsSync(agent.plist), false, "its plist is gone");
+  assert.ok(launchctl.calls().includes(`bootout ${agent.target}`), JSON.stringify(launchctl.calls()));
 });
 
 test("hub:install (--legacy) keeps the old app instead of deleting it", () => {

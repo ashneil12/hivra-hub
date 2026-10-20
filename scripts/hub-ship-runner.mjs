@@ -187,6 +187,25 @@ export function moveDir(from, to) {
   }
 }
 
+/** launchctl, behind a seam (`MONOCODE_SHIP_LAUNCHCTL`) so tests never touch the real user's launchd. */
+export const launchctlPath = () => process.env.MONOCODE_SHIP_LAUNCHCTL || "/bin/launchctl";
+
+export function launchctl(args) {
+  return spawnSync(launchctlPath(), args, { encoding: "utf8" });
+}
+
+/**
+ * Unload a ship's runner LaunchAgent (if it ran as one) and delete its plist, before its folder moves or it is called
+ * off: a plist left behind starts a runner at every login, and one whose folder is gone crash-loops. Only the ship's
+ * own job: its label ends with its id and the plist is named after it.
+ */
+export function removeLaunchAgent(doc) {
+  const { label, domain, plist } = doc?.launchd ?? {};
+  if (!label || !domain || !doc?.id || !label.endsWith(`.${doc.id}`)) return;
+  launchctl(["bootout", `${domain}/${label}`]);
+  if (plist && path.basename(plist) === `${label}.plist`) fs.rmSync(plist, { force: true });
+}
+
 export function appendLog(dir, line) {
   try {
     fs.appendFileSync(path.join(dir, RUNNER_LOG), `${nowIso()} [runner ${process.pid}] ${line}\n`);
@@ -262,6 +281,7 @@ export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
     if (protectedIds.has(name)) continue;
     const doc = readJson(path.join(shipRoot, name, STATE));
     if (doc && !FINAL.has(doc.phase)) continue;
+    removeLaunchAgent(doc);
     moveDir(path.join(shipRoot, name), path.join(archive, name));
     moved.push(name);
   }
@@ -766,7 +786,7 @@ function unloadLaunchAgent(ship) {
   } catch {
     // already gone
   }
-  spawn("/bin/launchctl", ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
+  spawn(launchctlPath(), ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
 }
 
 // Run as a program (launchd, or a test), not when imported by hub-ship.mjs.

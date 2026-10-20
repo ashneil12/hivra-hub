@@ -37,12 +37,14 @@ import {
   STATE,
   dirSize,
   exists,
+  launchctl,
   loadShip,
   moveDir,
   nowIso,
   readJson,
   receiptFor,
   releaseLock,
+  removeLaunchAgent,
   retainShips,
   saveShip,
   setPhase,
@@ -297,10 +299,6 @@ ${strings}
 `;
 }
 
-function launchctl(args) {
-  return spawnSync("/bin/launchctl", args, { encoding: "utf8" });
-}
-
 /** Start the runner: a LaunchAgent (the real path), or a plain detached process (tests). */
 function startRunner(ship, dir, launcher) {
   const node = ship.node;
@@ -396,7 +394,7 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
   return { id, dir, ship };
 }
 
-/** A staged ship whose runner is gone is called off when a new one is staged. */
+/** A staged ship whose runner is gone is called off when a new one is staged (its LaunchAgent goes first). */
 function supersede(paths, id, by) {
   const dir = path.join(paths.ships, id);
   const lock = tryLock(path.join(dir, "runner.lock"));
@@ -404,6 +402,7 @@ function supersede(paths, id, by) {
   try {
     const doc = loadShip(dir);
     if (FINAL.has(doc.phase)) return;
+    removeLaunchAgent(doc);
     doc.reason = `Replaced by ship ${by} before it ran.`;
     setPhase(doc, "cancelled", doc.reason);
     saveShip(dir, doc);
