@@ -78,6 +78,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { claudeRetryFromMessage } from "./claudeFailure";
+import { isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
   GOAL_CLEAR,
@@ -410,10 +411,11 @@ export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
 /**
  * The /goal this turn sets, if any: a MonoCode brief's "Done when: …", or the goal this chat had in a conversation it
  * no longer has (a rotation, a dead conversation started again). None while Claude's hooks are off (the CLI refuses
- * /goal then) or for /compact.
+ * /goal then: "Done when" in the brief is all there is), which a dev copy always runs with (harness.rs keeps Ash's
+ * hooks out of it), or for /compact.
  */
 function goalToSet(live: Live, input: SendTurnInput): string | undefined {
-  if (live.manualCompaction || !loadClaudeHooks()) return undefined;
+  if (live.manualCompaction || !loadClaudeHooks() || isDevCopy()) return undefined;
   const fresh = goalFromBrief(input.text);
   if (fresh) return fresh;
   const carried = goalByThread.get(input.sessionId);
@@ -429,6 +431,18 @@ function goalToSet(live: Live, input: SendTurnInput): string | undefined {
  */
 function noteGoal(sessionId: string, live: Live, rec: Record<string, unknown>): boolean {
   if (isSubagentMessage(rec)) return false;
+  // The CLI refusing /goal ("/goal can't run while hooks are restricted …") is a status line, never the reply a
+  // worker's report would carry.
+  if (
+    stringField(rec, "type") === "assistant" &&
+    (rec.message as { model?: unknown } | undefined)?.model === "<synthetic>"
+  ) {
+    const said = assistantTextBlocks(rec).join("").trim();
+    if (/^(\/goal |Goal condition is limited)/.test(said)) {
+      live.onEvent({ type: "status", text: said });
+      return true;
+    }
+  }
   let next = nextGoal(live.goal, rec, Date.now());
   if (next === undefined) return false;
   const before = goalView(live.goal);

@@ -15,6 +15,7 @@ import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOwed, type Delegation } from "./delegations";
 import {
+  completionReceipt,
   monoSessionCompletionResult,
   type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
@@ -61,6 +62,31 @@ export function briefWaiting(row: Pick<Delegation, "requestId">, chat: Pick<Sess
   return chat.queuedMessages?.find((message) => message.id === row.requestId || message.appRequestId === row.requestId);
 }
 
+/**
+ * Queue a brief behind a Mono's work with no bubble yet: the transcript shows it pending at the end
+ * (monoPendingTranscriptBlocks), and once it goes in its turn sits after the work it waited for, not above it.
+ */
+export function queueBriefForIdle(
+  chat: Session,
+  brief: Pick<QueuedMessage, "text" | "attachments" | "intent"> & { requestId: string },
+): Session {
+  return {
+    ...chat,
+    queuedMessages: [
+      ...(chat.queuedMessages ?? []),
+      {
+        id: brief.requestId,
+        text: brief.text,
+        attachments: brief.attachments,
+        ...(brief.intent ? { intent: brief.intent } : {}),
+        appRequestId: brief.requestId,
+        waitForIdle: true,
+      },
+    ],
+    queueStatus: chat.queueStatus === "paused" ? "paused" : "active",
+  };
+}
+
 /** Take a queued brief back out of a chat: the queue row, and a Mono's pending bubble for it. */
 export function withoutQueuedBrief(chat: Session, message: QueuedMessage): Session {
   const next = dequeueQueuedMessage(chat, message.id);
@@ -98,32 +124,53 @@ export function followStep(
   // A Lead reports once every worker it started for this brief has reported to it (and it has had its say on that).
   if (row.follow === "lead" && look.children.some((child) => child.parentId === row.id && isOwed(child)))
     return { kind: "wait", why: "workers" };
-  return { kind: "settle", result: followedResult(row, chat, sentAt) };
+  return { kind: "settle", result: followedResult(row, chat, look.children) };
 }
 
-/** The report: the chat's reply to the brief (a Lead's: its latest reply, after its workers' reports), or its error. */
-export function followedResult(row: Delegation, chat: Session, sentAt = briefSentAt(row, chat)): MonoSessionCompletionResult {
-  const lead = row.follow === "lead";
-  const after = chat.blocks.slice(Math.max(0, sentAt) + 1);
-  const lastUser = lead ? lastIndex(chat.blocks, (b) => b.role === "user" && !b.draft) : sentAt;
-  const tail = chat.blocks.slice(Math.max(0, lastUser) + 1);
-  const failure = [...(lead ? tail : after)].reverse().find((b) => b.role === "system" && b.notice === "error");
-  const replied = (lead ? tail : after).some((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim());
+/**
+ * The turn whose reply is the report: the brief's own, or for a Lead the last turn in which one of its workers for
+ * this brief reported to it (the Lead's reply to that is its final word on the brief). Other briefs' turns in the same
+ * long-running chat never count. Returns that turn's user bubble index and the request id it carries.
+ */
+function reportTurn(row: Delegation, chat: Session, children: readonly Delegation[]): { at: number; requestId: string } {
+  let best = { at: briefSentAt(row, chat), requestId: row.requestId };
+  if (row.follow !== "lead") return best;
+  const reports = new Set(
+    children
+      .filter((child) => child.parentId === row.id)
+      .flatMap((child) => [child.deliveryMessage, completionReceipt(child.requestId, child.generation)])
+      .filter((id): id is string => !!id),
+  );
+  chat.blocks.forEach((block, at) => {
+    if (block.role === "user" && block.appRequestId && reports.has(block.appRequestId) && at > best.at)
+      best = { at, requestId: block.appRequestId };
+  });
+  return best;
+}
+
+/** The report: the chat's reply to the brief (a Lead's: its reply after its workers' reports), or the error it hit. */
+export function followedResult(
+  row: Delegation,
+  chat: Session,
+  children: readonly Delegation[] = [],
+): MonoSessionCompletionResult {
+  const turn = reportTurn(row, chat, children);
+  const after: typeof chat.blocks = [];
+  for (const block of chat.blocks.slice(Math.max(0, turn.at) + 1)) {
+    if (block.role === "user") break;
+    after.push(block);
+  }
+  const failure = [...after].reverse().find((b) => b.role === "system" && b.notice === "error");
+  const replied = after.some((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim());
   const failed = !!failure && !replied;
   return monoSessionCompletionResult({
-    requestId: row.requestId,
+    requestId: turn.requestId,
     sessionId: chat.id,
     project: chat.cwd,
     prompt: row.brief ?? "",
     outcome: failed ? { status: "failed", text: "", error: failure!.text } : { status: "completed", text: "" },
     session: chat,
-    latestTurn: lead,
   });
-}
-
-function lastIndex<T>(items: readonly T[], test: (item: T) => boolean): number {
-  for (let index = items.length - 1; index >= 0; index--) if (test(items[index])) return index;
-  return -1;
 }
 
 /**
@@ -149,7 +196,10 @@ export function answeredReport(
 ): { report: string; answer: string } | undefined {
   if (row.follow !== "lead" || row.delivery === "pending" || row.delivery === "queued") return undefined;
   if (owner.busy) return undefined;
-  const at = lastIndex(owner.blocks, (b) => b.role === "user" && b.appRequestId === receipt);
+  let at = -1;
+  owner.blocks.forEach((b, index) => {
+    if (b.role === "user" && b.appRequestId === receipt) at = index;
+  });
   if (at < 0) return undefined;
   let answer = "";
   for (const block of owner.blocks.slice(at + 1)) {

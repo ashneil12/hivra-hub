@@ -17,10 +17,12 @@ import {
 import {
   answeredReport,
   briefSentAt,
+  briefWaiting,
   currentLeadBrief,
   deliveryFor,
   FOLLOW_GRACE_MS,
   followStep,
+  queueBriefForIdle,
   sendMode,
   withoutQueuedBrief,
 } from "./followedBriefs";
@@ -236,14 +238,38 @@ describe("followStep", () => {
 
   it("a Lead's brief waits for every worker it started for it, then reports the Lead's latest reply", () => {
     const r = row({ follow: "lead" });
-    const worker = row({ id: "t-2", parentId: "t-1", ownerSession: "lead-chat", childSession: "worker", follow: null, state: "completed", delivery: "queued" });
-    const blocks = [user("brief", r.requestId), said("Handed to a worker."), user("[MonoCode report] ..."), said("Reviewed: shipped at abc123.")];
+    const worker = row({ id: "t-2", parentId: "t-1", ownerSession: "lead-chat", childSession: "worker", requestId: "w1", follow: null, state: "completed", delivery: "queued", deliveryMessage: "mono-completion-w1-g1" });
+    const blocks = [user("brief", r.requestId), said("Handed to a worker."), user("[MonoCode report] ...", "mono-completion-w1-g1"), said("Reviewed: shipped at abc123.")];
     expect(followStep(r, { chat: chat("lead-chat", blocks), children: [r, worker], now: 0 })).toEqual({ kind: "wait", why: "workers" });
     const step = followStep(r, { chat: chat("lead-chat", blocks), children: [r, { ...worker, delivery: "delivered" }], now: 0 });
     expect(step).toMatchObject({ kind: "settle", result: { status: "completed", result: "Reviewed: shipped at abc123." } });
     // Another brief's worker (a different parent) doesn't hold this one.
     const other = { ...worker, parentId: "t-9" };
     expect(followStep(r, { chat: chat("lead-chat", blocks), children: [r, other], now: 0 }).kind).toBe("settle");
+  });
+
+  it("two briefs in one Lead chat: each reports its own turn (or its workers' report turn), never the other's", () => {
+    const one = row({ id: "t-a", requestId: "app-cos-a", follow: "lead" });
+    const two = row({ id: "t-b", requestId: "app-cos-b", follow: "lead" });
+    const worker = row({ id: "t-w", parentId: "t-b", ownerSession: "lead-chat", childSession: "w", requestId: "w2", follow: null, state: "completed", delivery: "delivered", deliveryMessage: "mono-completion-w2-g1" });
+    const lead = chat("lead-chat", [
+      user("brief one", "app-cos-a"),
+      said("Did brief one myself: done."),
+      user("brief two", "app-cos-b"),
+      said("Handed brief two to a worker."),
+      user("[MonoCode report] w2", "mono-completion-w2-g1"),
+      said("Brief two: the worker shipped it."),
+    ]);
+    expect(followStep(one, { chat: lead, children: [one], now: 0 })).toMatchObject({ kind: "settle", result: { result: "Did brief one myself: done." } });
+    expect(followStep(two, { chat: lead, children: [two, worker], now: 0 })).toMatchObject({ kind: "settle", result: { result: "Brief two: the worker shipped it." } });
+  });
+
+  it("a brief queued behind a Mono's work has no bubble until it goes in (so its turn lands after the work)", () => {
+    const queued = queueBriefForIdle(chat("lead-chat", [user("Ash: fix the doc")], { busy: true }), { text: "Ship it", attachments: [], requestId: "app-cos-b1" });
+    expect(queued.blocks).toHaveLength(1);
+    expect(queued.queuedMessages).toEqual([{ id: "app-cos-b1", appRequestId: "app-cos-b1", waitForIdle: true, text: "Ship it", attachments: [] }]);
+    expect(queued.queueStatus).toBe("active");
+    expect(briefWaiting({ requestId: "app-cos-b1" }, queued)?.id).toBe("app-cos-b1");
   });
 
   it("a Lead works for the brief most recently sent into its chat; taking a queued brief out drops its pending bubble", () => {

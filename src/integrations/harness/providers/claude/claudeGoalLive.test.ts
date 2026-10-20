@@ -26,6 +26,11 @@ vi.mock("../../core/child", () => ({
     sent.push(line);
   }),
 }));
+const copy = { dev: false };
+vi.mock("../../../../app/model/appIdentity", async (original) => ({
+  ...(await original<typeof import("../../../../app/model/appIdentity")>()),
+  isDevCopy: () => copy.dev,
+}));
 vi.mock("../../../../features/settings/model/settings", async (original) => ({
   ...(await original<typeof import("../../../../features/settings/model/settings")>()),
   loadClaudeHooks: () => hooks.on,
@@ -119,6 +124,7 @@ beforeEach(async () => {
   sent.length = 0;
   spawned.length = 0;
   hooks.on = true;
+  copy.dev = false;
   __claudeTestReset();
 });
 
@@ -164,6 +170,20 @@ describe("/goal through the live adapter", () => {
     emit(result("ok"));
     await plain.done;
     expect(prompts()).toEqual([BRIEF, "Done when: you feel like it"]);
+  });
+
+  it("a dev copy runs Claude with every hook off, so it sends no /goal; a refusal from the CLI is a status line, never the reply", async () => {
+    copy.dev = true;
+    const turn = await start(BRIEF);
+    expect(prompts()).toEqual([BRIEF]);
+    emit(synthetic("/goal can't run while hooks are restricted (disableAllHooks or allowManagedHooksOnly is set in settings or by policy)."));
+    emit(said("WORKER-DONE: fixed."));
+    emit(result("WORKER-DONE: fixed."));
+    await turn.done;
+    const text = turn.events.flatMap((e) => (e.type === "message.delta" ? [e.text] : [])).join("");
+    expect(text).toBe("WORKER-DONE: fixed.");
+    expect(turn.events).toContainEqual(expect.objectContaining({ type: "status", text: expect.stringContaining("/goal can't run") }));
+    expect(goals(turn)).toEqual([]);
   });
 
   it(`clears the goal after ${GOAL_CHECK_CAP} checks and waits for that too`, async () => {

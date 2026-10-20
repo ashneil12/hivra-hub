@@ -40,6 +40,7 @@ import {
   briefWaiting,
   currentLeadBrief,
   deliveryFor,
+  queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
@@ -7509,7 +7510,14 @@ function Workspace({
       ) {
         const next = sessionsRef.current.map((session) =>
           session.id === sessionId
-            ? enqueueMonoMessage(
+            ? options?.waitForIdle && options.appRequestId
+              ? queueBriefForIdle(session, {
+                  text,
+                  attachments,
+                  intent,
+                  requestId: options.appRequestId,
+                })
+              : enqueueMonoMessage(
                 {
                   ...session,
                   inboxCard: rawCommand ? session.inboxCard : undefined,
