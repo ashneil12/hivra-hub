@@ -1286,6 +1286,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                 <DelegatedChatNotice
                   ownerName={delegationPane.ownerName}
                   state={delegationPane.state}
+                  stuck={delegationPane.stuck}
+                  now={delegationPane.now}
                   onOpenOwner={delegationPane.onOpenOwner}
                   onJumpIn={delegationPane.onJumpIn}
                 />

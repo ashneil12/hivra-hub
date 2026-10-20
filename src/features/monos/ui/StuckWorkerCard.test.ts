@@ -13,7 +13,7 @@ import type { Delegation } from "../model/delegations";
 import { resetDelegationStore, setDelegationActions, setDelegationRows } from "../model/delegationStore";
 import { createMono, updateMono } from "../model/mono";
 import { resetStuckDismissals } from "../model/workerStuck";
-import { DelegationWaitingLine } from "./DelegationNotices";
+import { DelegatedChatNotice, DelegationWaitingLine } from "./DelegationNotices";
 
 let root: Root;
 let container: HTMLElement;
@@ -203,5 +203,40 @@ describe("many stuck workers in one Lead's chat", () => {
     expect(more.textContent).toBe("1 more stuck");
     act(() => more.click());
     expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(4);
+  });
+});
+
+describe("a stuck worker's own chat", () => {
+  it("shows its card above 'Runs on its own', so opening it from the rail is one click from answering", async () => {
+    const lead = createMono(["/code/vg-game"]);
+    updateMono(lead.id, (mono) => ({ ...mono, name: "EXO lead", sessionId: "lead-chat" }));
+    setDelegationRows([
+      row("t-2", "w2", {
+        ownerMono: lead.id,
+        state: "question",
+        pendingQuestion: "Which save format? [JSON | Binary (Recommended)]",
+        log: [{ at: now - 30_000, by: "worker:w2", event: "asked" }],
+      }),
+    ]);
+    const host = { liveQuestion: () => question, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() };
+    setWaitingChatsHost(host);
+    function WorkerLine() {
+      const pane = useDelegationPane("w2", false);
+      return pane?.kind === "worker"
+        ? createElement(DelegatedChatNotice, {
+            ownerName: pane.ownerName,
+            state: pane.state,
+            stuck: pane.stuck,
+            now: pane.now,
+            onJumpIn: () => {},
+          })
+        : null;
+    }
+    act(() => root.render(createElement(WorkerLine)));
+    expect(container.textContent).toContain("Asked EXO lead a question");
+    const options = [...container.querySelectorAll<HTMLButtonElement>('[data-stuck-worker="w2"] [data-stuck-option]')];
+    expect(options.map((b) => b.textContent)).toEqual(["Binary", "JSON"]);
+    await act(async () => options[0].click());
+    expect(host.respond).toHaveBeenCalledWith("w2", 7, { kind: "answered", answers: { q1: ["bin"] } });
   });
 });

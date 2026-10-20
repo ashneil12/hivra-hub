@@ -19,6 +19,7 @@ import {
 import { findMono, listMonos, monoForSession, monoLook } from "../model/mono";
 import {
   leadRollup,
+  stuckOf,
   stuckOwnedBy,
   useStuckDismissalsVersion,
   type StuckWorker,
@@ -30,6 +31,9 @@ export type DelegationPane =
       kind: "worker";
       ownerName: string;
       state: "running" | "asking" | "finished";
+      /** How it is stuck, if it is (asking, stalled or failed): answerable right here, without jumping in. */
+      stuck?: StuckWorker;
+      now: number;
       onOpenOwner?: () => void;
       onJumpIn: () => void;
     }
@@ -99,9 +103,12 @@ export function useDelegationPane(
   if (!owner) return undefined;
   const ownerSession = row?.ownerSession ?? owner.sessionId;
   const actions = delegationActions();
+  const stuck = row ? stuckOf(row, now) : undefined;
   return {
     kind: "worker",
     ownerName: monoLook(owner).name,
+    ...(stuck ? { stuck } : {}),
+    now,
     state:
       row?.state === "question"
         ? "asking"

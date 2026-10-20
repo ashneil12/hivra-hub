@@ -11,12 +11,17 @@ import { StuckList } from "./StuckWorkerCard";
 export function DelegatedChatNotice({
   ownerName,
   state,
+  stuck,
+  now = Date.now(),
   onOpenOwner,
   onJumpIn,
 }: {
   ownerName: string;
   /** Where its work stands: still running, asking its Lead, or finished. */
   state: "running" | "asking" | "finished";
+  /** It is stuck (asking, stalled or failed): its card above the line, answerable here without jumping in. */
+  stuck?: StuckWorker;
+  now?: number;
   onOpenOwner?: () => void;
   onJumpIn: () => void;
 }) {
@@ -27,36 +32,43 @@ export function DelegatedChatNotice({
         ? `Worked for ${ownerName}`
         : "Runs on its own";
   return (
-    <div
-      data-delegated-chat
-      className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-2xl border border-content/10 px-4 py-3 font-sans text-[13px] text-content/60"
-    >
-      <span className="min-w-0 truncate">
-        {lead}
-        <span aria-hidden className="px-1.5 opacity-60">
-          ·
-        </span>
-        {onOpenOwner ? (
-          <button
-            type="button"
-            onClick={onOpenOwner}
-            className="rounded text-content underline-offset-2 hover:underline"
-          >
-            Open {ownerName}
-          </button>
-        ) : (
-          <span>{ownerName} talks to it</span>
-        )}
-      </span>
-      <button
-        type="button"
-        data-jump-in
-        onClick={onJumpIn}
-        className="ml-auto shrink-0 rounded-lg px-2 py-1 text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
+    <>
+      {stuck ? (
+        <div className="mx-auto w-full max-w-3xl">
+          <StuckList stuck={[stuck]} now={now} variant="chat" label="Stuck" />
+        </div>
+      ) : null}
+      <div
+        data-delegated-chat
+        className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-2xl border border-content/10 px-4 py-3 font-sans text-[13px] text-content/60"
       >
-        Jump in
-      </button>
-    </div>
+        <span className="min-w-0 truncate">
+          {lead}
+          <span aria-hidden className="px-1.5 opacity-60">
+            ·
+          </span>
+          {onOpenOwner ? (
+            <button
+              type="button"
+              onClick={onOpenOwner}
+              className="rounded text-content underline-offset-2 hover:underline"
+            >
+              Open {ownerName}
+            </button>
+          ) : (
+            <span>{ownerName} talks to it</span>
+          )}
+        </span>
+        <button
+          type="button"
+          data-jump-in
+          onClick={onJumpIn}
+          className="ml-auto shrink-0 rounded-lg px-2 py-1 text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
+        >
+          Jump in
+        </button>
+      </div>
+    </>
   );
 }
 
