@@ -1,3 +1,42 @@
+# Update: 20 October 2026, teams, not sub-chats (branch hub/10-monoteams)
+
+Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
+with the coding team. IF they do need to do work ... then something like coding team should be created for that mono".
+He tried the rail's sub-chats again as an option and went back: "It doesn't make any sense to have the rails" (the
+optional-team build is reverted in history, d60c650a). Sub-chats only ever live in a team (a workspace with a Sessions
+list); the Monos rail shows people, not work.
+- **Where a Mono's work goes** (`agent-app/model/agentAppTasks.ts` `monoWork`, `model/monoTeams.ts`): a small fix the Mono
+  does itself; a project's work goes to that project's coding team as a brief to its Lead (`delegate_task {lead}`), and
+  every Mono but a Lead and the checker may brief (`leadershipDelegation.briefsLeads`; still only Leads of projects both
+  are members of). A worker of its own in a project with a coding team is refused with that guidance. Its own work (no
+  project) starts a worker in its own team. Leads and coding-team chats work as before.
+- **A Mono's own team**: made the first time it hands out work of its own. Its folder is
+  `<app data>/mono-teams/<mono id>` (`src-tauri/src/mono.rs` `mono_team_dir`): every copy has its own (daily app, each
+  dev slot, the bench's HOME), beside `monos/` rather than in it (a ship backs up `monos/`; a team's output can be big),
+  browsable from the team's Explorer. It is no repository: its workers share it, a worktree asked for there is refused,
+  and the automatic checkout for a second worker never applies (the bench, 20 Oct: one was asked for, never made, and
+  the worker never ran). Its rows carry the folder as their project (no hub project). Kept by Mono id
+  (`monocode:mono-teams`); the Mono may read and steer sessions there (`monoOf.team`). Selected as `team:<mono id>` with
+  no project (`hubNav.monoTeamItem`); the Sessions list (`Sidebar` `CodingTeamList` kind `mono`) pins the Mono's chat
+  ("Owner") with its workers folded under it; "Team" beside Overview in its chat header toggles it; the folder is named
+  "<Mono>'s team" and kept off the recent projects.
+- **The rail** (`app/shell/MonoRailSection.tsx`): no sub-chat lists, a Lead's included. A Mono with nothing out shows
+  nothing extra (at rest the rail is pixel-identical to hub/next's). Under a Mono with work out, one line ("2 working ·
+  1 stuck", asking counted as stuck as on Today; red once one failed; the full split on hover) opens its team (a Lead's
+  coding team, or its own; else its chat), as does "Open team" on the row (on hover, only while it has work out); its
+  menu has "Open <team>" whenever it has a team.
+- **A Mono's chat** (`monos/model/briefedTeams.ts`, `DelegationNotices.tsx` `BriefedTeamLine`): one live line per brief
+  out ("Briefed EXO coding team: Fix the save bug · 2 working · 1 stuck", counting every worker beneath the brief), which
+  opens the coding team on its Lead; the Lead's workers never show there.
+- **Rules**: `<team_rules>` (`monoFiles.ts` `MONO_TEAM_RULES`) for every Mono with the delegate tool but a Lead;
+  `<lead_brief_rules>` speaks to every Mono; the room's shared rules and ROOM.md say work started from the room goes to
+  a team. `MONO_PROMPT_VERSION` 29.
+- **Proof**: `tests/browser/mono-teams.spec.ts` (photographed), `stuck-workers.spec.ts` (sub-chats in the coding team);
+  `hub:verify-live` checks 22 (`mono_briefs_coding_team`) and 23 (`mono_own_team`), read through the driver.
+- **Not done**: `app sessions.start` is unchanged (the rules tell a Mono to use delegate_task): a Mono with no team of
+  its own that still starts a session in a project with it gets a hidden chat that only its Overview's Sessions tab
+  lists (upstream MonoCode's panel, kept); the rail still counts it and opens the Mono's chat.
+
 # Update: 20 October 2026, the coding team (branch hub/8-codingteam)
 
 Ash, 20 Oct: "mainly the coding team is the main place i want to talk to", "I don't talk to workers. I only talk to
@@ -11,8 +50,9 @@ orchestrators", "agents should chat as well not just do".
   notifications route to it like a Mono (`monos/model/orchestrators.ts` `isOrchestratorChat`); what only a Mono has
   (soul, memory files, habits) still asks `isMonoSession`. Its pane shows the stuck cards and "2 working: API" line.
 - **The Sessions list** (`app/shell/Sidebar.tsx` `codingTeam`, `model/codingTeamList.ts`): the project's Lead pinned on top
-  (mascot, "Lead"), Ash's own chats below, every chat a chat started folded under it (`monos/ui/SubChatList.tsx`, shared
-  with the Monos rail: "N sub-chats", opens by itself when one is stuck, asking or failed; one click opens one).
+  (mascot, "Lead"), Ash's own chats below, every chat a chat started folded under it (`monos/ui/SubChatList.tsx`:
+  "N sub-chats", opens by itself when one is stuck, asking or failed; one click opens one). Since hub/10-monoteams the
+  Monos rail lists no sub-chats (above).
 - **Navigation**: opening a Lead from anywhere lands in its coding team, beside the list (`onOpenMono`); picking a project
   or "Coding team" opens on the Lead unless Ash was last in another chat there (`codingTeamView`); Being built's "Open in
   coding team" goes through `hubNav.openCodingTeam`; project items say on hover which is the coding team and which the
