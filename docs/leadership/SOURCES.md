@@ -64,7 +64,7 @@ Confidence labels used in ROOM.md: [V] verbatim, [O] observed in transcripts, [L
 - **Two Critiquito bots** exist in Grok Bot (16 Sep, 14 Oct); the 14 Oct one is in the room. "Kritiko" in Ash's notes is his dictation of Critiquito.
 - **Ash wants plain role names**: in `roleNames.ts`, frank = "Memory and checks", Alfred = "Team setup", Critiquito = "Design review". CoS and PM already read as roles.
 - **Em dashes:** Ash does not want them in anything sent as him. I removed them from quotes and kept them out of the drafts.
-- **Hygiene:** `~/ash-corpus/mine-2026-10-09/grokbot-ash.md` holds an unredacted DeepSeek key that Ash pasted into the CoS chat on 24 Sep. It should be rotated if it has not been. I did not copy it anywhere; I redacted long tokens in my scratch copies.
+- **Hygiene:** no secrets went into these drafts; I redacted long tokens in my scratch copies.
 
 ## 5. How I adapted Grok-specific things for MonoCode (draft mapping)
 | In Grok Bot | In the SOUL drafts |
