@@ -959,6 +959,33 @@ export function subscribeMonosEnabled(onStoreChange: () => void) {
     window.removeEventListener(MONOS_ENABLED_CHANGE_EVENT, onStoreChange);
 }
 
+const MONO_RAIL_COLLAPSED_KEY = "monocode.monoRailCollapsed";
+/** Where the rail kept it before it moved here (read once, so a fold Ash already made survives the move). */
+const MONO_RAIL_COLLAPSED_LEGACY_KEY = "monocode:mono-rail-collapsed";
+
+/** Fired on `window` when the Monos section is folded or opened. */
+export const MONO_RAIL_COLLAPSED_CHANGE_EVENT = "monocode:mono-rail-collapsed-change";
+
+/** Whether the Monos section in the sidebar is folded (Ash, 16 Oct: "I can't minimize the monos area"). Kept across restarts. */
+export function loadMonoRailCollapsed(): boolean {
+  return readFlag(MONO_RAIL_COLLAPSED_KEY) ?? readFlag(MONO_RAIL_COLLAPSED_LEGACY_KEY) ?? false;
+}
+
+export function saveMonoRailCollapsed(value: boolean) {
+  writeFlag(MONO_RAIL_COLLAPSED_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(MONO_RAIL_COLLAPSED_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeMonoRailCollapsed(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MONO_RAIL_COLLAPSED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(MONO_RAIL_COLLAPSED_CHANGE_EVENT, onStoreChange);
+}
+
 const MONO_MENU_BAR_KEY = "monocode.monoMenuBarIcon";
 
 /** Fired on `window` when the menu bar icon is shown or hidden. */
