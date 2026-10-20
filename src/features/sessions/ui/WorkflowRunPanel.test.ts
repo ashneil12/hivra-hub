@@ -73,6 +73,14 @@ it("opens a failed agent on its own, on the provider's reason", () => {
   expect(failed.querySelector("[data-workflow-agent-progress]")).toBeNull();
 });
 
+it("says how many earlier agents a long run no longer lists, and opens on one that failed among them", () => {
+  const block = run([{ index: 400, label: "Last", state: "done", phaseIndex: 1 }], "completed");
+  block.workflowRun!.dropped = { below: 400, done: 398, failed: 1 };
+  render(block);
+  expect(q("[data-workflow-status]")?.textContent).toBe("Finished · 399 of 400 agents done · 1 failed");
+  expect(q("[data-workflow-dropped]")?.textContent).toBe("399 earlier agents not listed (counted above)");
+});
+
 describe("its Stop", () => {
   const working = () => run([{ index: 1, label: "Read parser", state: "working", phaseIndex: 1 }]);
   const renderWith = (onStop: (taskId: string) => Promise<boolean> | void) =>

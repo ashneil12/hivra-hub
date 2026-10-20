@@ -7,6 +7,7 @@ import { AgentMarkdown } from "./AgentMarkdown";
 import type { Block } from "../model/session";
 import {
   WORKFLOW_AGENT_STATE_LABEL,
+  droppedAgentCount,
   workflowStatusLine,
   type WorkflowAgent,
   type WorkflowPhase,
@@ -51,7 +52,8 @@ export function WorkflowRunPanel({
     !!run &&
     (run.status === "failed" ||
       run.status === "stopped" ||
-      run.agents.some((agent) => agent.state === "failed"));
+      run.agents.some((agent) => agent.state === "failed") ||
+      !!run.dropped?.failed);
   const open = override ?? (running || attention);
   const name =
     run?.name ?? run?.description ?? block.tool?.title ?? block.text ?? "Workflow";
@@ -165,6 +167,7 @@ function WorkflowPhases({
   onOpenFile?: (path: string) => void;
 }) {
   const groups = phaseGroups(run);
+  const dropped = droppedAgentCount(run);
   if (groups.length === 0) {
     return (
       <div className="py-1 pl-6 font-sans text-[12px] text-content/45">
@@ -196,6 +199,11 @@ function WorkflowPhases({
           ))}
         </div>
       ))}
+      {dropped > 0 ? (
+        <div className="font-sans text-[12px] text-content/40" data-workflow-dropped>
+          {dropped} earlier agent{dropped === 1 ? "" : "s"} not listed (counted above)
+        </div>
+      ) : null}
       {!live && run.summary ? (
         <div className="font-sans text-[12px] text-content/45">{run.summary}</div>
       ) : null}
