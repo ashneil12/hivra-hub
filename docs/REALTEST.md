@@ -167,6 +167,22 @@ messages, console errors, memory calls. Then `scripts/hub-realtest-grade.mjs` se
 metrics with its benchmark items to Sonnet (medium, no tools, no MCP), which answers PASS / PARTIAL / FAIL /
 NOT-TRIGGERED per item with the evidence quoted. `report.md` puts the grades, timings and problems together.
 
+## Lessons from the first runs (20 Oct)
+
+- **Never edit files in this worktree while a run is going.** vite and Tailwind watch it: saving
+  `docs/REALTEST.md` at 17:26:36 reloaded the dev copy's window one second after Ash's message, which cut the Lead's
+  turn ("Turn interrupted when MonoCode quit.") and it was never resumed. Edit in another worktree, or wait.
+- **The account is shared.** The first full run hit the 5-hour limit at 15:43 UTC (it started at 90% because of Ash's
+  and other agents' work); everything after ran against "You've hit your session limit". The guard above now stops the
+  run instead, and that stretch is kept as real out-of-budget evidence (`scenarios-after-limit/`).
+- **One unanswered AskUserQuestion blocks a Lead.** Every later message queues behind it, so scenarios after s06 tap
+  "Take the pick" first (`takePendingPick`) or they test nothing.
+- **`fault.scope: "new"` can hit the Lead**, not only a new worker: the app restarts a chat's CLI after an API error,
+  so the next process may be the Lead's own. A worker-only scope is still to do.
+- **Where Ash really talks.** The baseline sent Ash's task messages to the Tally lead's own chat (the Monos rail). Ash
+  (20 Oct): the project's **Coding team** (its Sessions list) is the main place for tasks; the leadership team is the
+  group chat. The next run drives the Coding team (a `codingTeam` target for `send`, added against the merged build).
+
 ## Files
 
 | File | What |

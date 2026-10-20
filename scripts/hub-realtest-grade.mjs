@@ -56,7 +56,7 @@ export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir
   if (transcript.length > 90_000) transcript = `${transcript.slice(0, 60_000)}\n\n[... cut ...]\n\n${transcript.slice(-28_000)}`;
   const prompt = [
     "## Benchmark items for this scenario",
-    benchText(evidence.bench ?? []),
+    benchText([...new Set([...(evidence.bench ?? []), ...(BENCHMARK.always ?? [])])]),
     "",
     transcript,
   ].join("\n");

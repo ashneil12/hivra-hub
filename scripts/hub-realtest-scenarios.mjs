@@ -330,8 +330,10 @@ export function transcript(scenario, result, t0) {
       if (line.isError) timeline.push({ t: line.t, line: `[${line.who}] turn ended with an ERROR: ${line.text}` });
       continue;
     }
+    const asked = (line.tools ?? []).filter((tool) => String(tool).startsWith("AskUserQuestion:"));
+    if (asked.length) timeline.push({ t: line.t, line: `[${line.who} chat] asks with buttons: ${asked.join(" ; ").replace("AskUserQuestion: ", "")}` });
     if (!line.text) continue;
-    timeline.push({ t: line.t, line: `[${line.who} chat] ${line.text.slice(0, 1200)}${line.tools?.length ? ` (tools: ${line.tools.join(", ")})` : ""}` });
+    timeline.push({ t: line.t, line: `[${line.who} chat] ${line.text.slice(0, 1200)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
   }
   for (const f of result.faults) timeline.push({ t: f.t, line: f.off ? "(test harness: outage off)" : `(test harness: model outage on, ${f.on.fixture ?? "529"})` });
   for (const v of result.views) timeline.push({ t: v.t, line: `(looked at ${v.name}${v.screenshot?.ok ? `, screenshot ${v.screenshot.file}` : ""})` });

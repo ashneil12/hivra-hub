@@ -35,6 +35,10 @@
     "P14": "'where are we / wat do u need fro me': one plain paragraph plus only what needs him, each with a one-tap recommended answer.",
     "P15": "A worker dies on a 402 / usage limit: shown failed with the reason; every 'done' carries a commit, test, link or screenshot.",
     "P17": "A full day of work: no duplicate screenshots, decisions batched, nothing to read twice.",
-    "NOT": "Ash does NOT want: @-tagging, endless bot loops, background agents starting work on their own, talking to workers, needless questions, walls of text, em dashes."
-  }
+    "NOT": "Ash does NOT want: @-tagging, endless bot loops, background agents starting work on their own, talking to workers, needless questions, walls of text, em dashes.",
+    "CQ": "Conversation quality (Ash, 20 Oct: 'agents should chat as well not just do'): the agents talk WITH Ash, not just act: they acknowledge what he said, explain what they are doing and why in plain words, discuss open points with ONE recommendation, push back when something is off, and summarise; short, no walls of text, no silent work."
+  },
+  "always": [
+    "CQ"
+  ]
 }
