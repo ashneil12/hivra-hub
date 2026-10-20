@@ -19,9 +19,26 @@ export const BLOCK_KINDS: readonly BlockKind[] = ["status", "list", "chart", "ba
 /**
  * A page may ask for any of these. `keys.read:<Name>` names one key (e.g. keys.read:Anthropic). Two walls can never be
  * asked for: changing Monos (add, seat, rename, delete) and leaving the sandbox (direct IPC / Tauri).
+ *
+ * The agent ones connect a page to the agents (docs/pages-build-contract.md, "Connected pages"): four live reads a page
+ * can watch, and five taps that go through the same paths as Ash's own (they run only when he taps inside the page, and
+ * what they send says which page it came from).
  */
-export const CAPABILITIES = ["tasks.read", "tasks.write", "project.read", "project.write", "mono.run", "automation.run", "settings.read", "settings.write"] as const;
+export const LIVE_READS = ["agents.read", "jobs.read", "needs.read", "rooms.read"] as const;
+export const PAGE_ACTIONS = ["agents.answer", "agents.pick", "agents.message", "agents.stop", "chats.open"] as const;
+export const CAPABILITIES = [
+  "tasks.read", "tasks.write", "project.read", "project.write", "mono.run", "automation.run", "settings.read", "settings.write",
+  ...LIVE_READS, ...PAGE_ACTIONS,
+] as const;
+export type LiveRead = (typeof LIVE_READS)[number];
+export type PageAction = (typeof PAGE_ACTIONS)[number];
 export type Capability = (typeof CAPABILITIES)[number] | `keys.read:${string}`;
+export function isLiveRead(cap: string): cap is LiveRead {
+  return (LIVE_READS as readonly string[]).includes(cap);
+}
+export function isPageAction(cap: string): cap is PageAction {
+  return (PAGE_ACTIONS as readonly string[]).includes(cap);
+}
 const WALLS = /^(monos?\.(add|seat|rename|delete|create|remove)|ipc|tauri)(\.|:|$)/i;
 export function isWall(cap: string): boolean {
   return WALLS.test(cap);
@@ -41,6 +58,15 @@ const PLAIN: Record<(typeof CAPABILITIES)[number], string> = {
   "automation.run": "Run an automation",
   "settings.read": "Read your settings",
   "settings.write": "Change your settings",
+  "agents.read": "See your agents, what each is doing and the work they handed out",
+  "jobs.read": "See what's being built",
+  "needs.read": "See what's waiting on you",
+  "rooms.read": "Read your rooms' messages",
+  "agents.answer": "Answer an agent's question when you tap",
+  "agents.pick": "Take an agent's suggested answer when you tap",
+  "agents.message": "Send a Mono a message when you tap",
+  "agents.stop": "Stop an agent's work when you tap",
+  "chats.open": "Open a chat when you tap",
 };
 /** Plain words for the preview. */
 export function describeCapability(cap: Capability): string {

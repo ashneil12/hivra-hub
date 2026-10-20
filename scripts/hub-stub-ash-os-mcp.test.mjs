@@ -68,7 +68,7 @@ test("offers each role what ash-os offers it, and the check loop runs end to end
     assert.equal(init.result.serverInfo.name, "ash-os-stub");
     const names = async (c) => (await c.request("tools/list", {})).result.tools.map((t) => t.name);
     assert.deepEqual(await names(checker), ["ash_checker_queue", "ash_checker_note", "ash_dump_status"]);
-    assert.deepEqual(await names(lead), ["ash_record", "ash_dump_status"]);
+    assert.deepEqual(await names(lead), ["ash_record", "ash_page_rebuild", "ash_dump_status"]);
     assert.deepEqual(await names(worker), ["ash_dump_status"]);
     assert.match((await lead.call("ash_checker_queue", {})).error, /not offered/);
 
