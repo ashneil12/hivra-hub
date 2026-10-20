@@ -441,7 +441,7 @@ pub async fn connectors_set_composio(on: bool) -> Result<View, String> {
 #[cfg(test)]
 mod tests {
     use super::super::bridge::tests::Buffer;
-    use super::super::launch::{prepare, Args, Plan};
+    use super::super::launch::{prepare, tests::signed, Plan};
     use super::super::secrets::Memory;
     use super::super::settings::{EVERYWHERE, OUTSIDE};
     use super::*;
@@ -500,17 +500,17 @@ mod tests {
         assert!(raw.contains(SENTINEL) && !raw.contains(&format!(" {SENTINEL}")));
 
         // The session's launch: a Mono in that project gets a plan with the token only in the header, filled in memory.
-        let args = Args {
-            id: "github".into(),
-            mono: "m".into(),
-            projects: vec!["/p/hivra".into()],
-        };
+        let args = signed(memory.as_ref(), "github", "m", &["/p/hivra"]);
         let (_, _, plan) = prepare(&args, &svc.dir, memory.as_ref()).unwrap();
         assert!(matches!(plan, Plan::Remote { .. }));
 
         svc.sign_out("github").unwrap();
         assert!(
-            memory.0.lock().unwrap().is_empty(),
+            !memory
+                .0
+                .lock()
+                .unwrap()
+                .contains_key("monocode-hub:connector:github"),
             "signed out: gone from the store"
         );
         let after = svc.view().settings.connectors["github"].clone();
@@ -651,21 +651,31 @@ mod tests {
         )
         .unwrap();
 
-        // 1. The session's MCP config, as the webview builds it (mirrored here): launcher + ids only.
+        // 1. The session's MCP config, as the webview builds it (mirrored here): launcher + ids only, then signed by the
+        //    app at spawn (signing.rs). Still no secret in it.
         let config = serde_json::json!({"mcpServers": {"github": {
             "command": svc.launcher, "args": [SUBCOMMAND, "github", "--mono", "m", "--project", "/p/hivra"]}}});
-        assert!(!config.to_string().contains(SENTINEL));
+        let argv = super::super::signing::sign_mcp_configs(
+            vec!["--mcp-config".into(), config.to_string()],
+            &svc.launcher,
+            &mut || Ok(super::super::signing::key(memory.as_ref(), true)?.unwrap()),
+        )
+        .unwrap();
+        assert!(!argv.join(" ").contains(SENTINEL));
+        let signed_config: serde_json::Value = serde_json::from_str(&argv[1]).unwrap();
+        let launch_args: Vec<String> = signed_config["mcpServers"]["github"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|word| word.as_str().unwrap().to_string())
+            .collect();
         // 2. The settings file and the view.
         assert!(!every_file(&svc.dir).contains(SENTINEL));
         assert!(!serde_json::to_string(&svc.view())
             .unwrap()
             .contains(SENTINEL));
-        // 3. The launch, with its log captured.
-        let args = Args {
-            id: "github".into(),
-            mono: "m".into(),
-            projects: vec!["/p/hivra".into()],
-        };
+        // 3. The launch, exactly as Claude Code starts it, with its log captured.
+        let args = super::super::launch::parse_args(&launch_args[1..]).unwrap();
         let (_, login, plan) = prepare(&args, &svc.dir, memory.as_ref()).unwrap();
         let Plan::Remote { headers, .. } = plan else {
             panic!()

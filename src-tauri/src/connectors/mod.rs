@@ -4,6 +4,7 @@
 //! - `settings`: which are on, for which projects and Monos, and the Composio switch (`<data>/connectors.json`).
 //! - `secrets`: logins, in the Keychain only.
 //! - `launch`: `monocode connector-run`, what a session's MCP config points at; checks and serves at launch.
+//! - `signing`: the app signs each session's connector arguments; the launcher refuses anything it didn't sign.
 //! - `remote` + `bridge`: hosted MCP servers spoken to over stdio with the login held in memory.
 //! - `oauth`: browser sign-in (MCP authorization with dynamic registration, or Google with Ash's own client).
 //! - `builtin`: small servers for plain HTTP APIs (Telegram).
@@ -22,5 +23,6 @@ mod oauth;
 mod remote;
 pub mod secrets;
 pub mod settings;
+pub mod signing;
 
 pub use launch::run_main;

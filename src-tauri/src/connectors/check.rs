@@ -4,14 +4,14 @@
 
 use super::builtin::Telegram;
 use super::catalog::Entry;
-use super::launch::{find_on_path, plan, Plan};
+use super::launch::{find_on_path, plan, stdio_command, Plan};
 use super::oauth;
 use super::remote::{handshake, PostError, Remote};
 use super::secrets::{redact, Login, SecretStore};
 use serde::Serialize;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -220,9 +220,8 @@ pub fn stdio_handshake(
 ) -> Result<usize, String> {
     let program =
         find_on_path(command).ok_or_else(|| format!("{command} isn't installed on this Mac."))?;
-    let mut child = Command::new(program)
-        .args(args)
-        .envs(env.iter().cloned())
+    // Started exactly as a session's launcher starts it (launch.rs `stdio_command`).
+    let mut child = stdio_command(&program, args, env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // A server's own log could echo its configuration: never read it.

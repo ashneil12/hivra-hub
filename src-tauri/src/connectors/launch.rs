@@ -1,11 +1,14 @@
 //! `monocode connector-run <id> --mono <mono id> [--project <project key>]…`: how a Claude Code session starts a
 //! connector.
 //!
-//! The app gives a Mono's session `--mcp-config` entries that point here, with no login in them. At launch this:
-//! 1. reads `connectors.json` again and refuses unless this Mono, in these projects, may use the connector;
+//! The app gives a Mono's session `--mcp-config` entries that point here, with no login in them and signed by the app
+//! (signing.rs). At launch this:
+//! 1. refuses arguments the app didn't sign, then reads `connectors.json` again and refuses unless this Mono, in these
+//!    projects, may use the connector;
 //! 2. reads the login from the Keychain (renewing an expiring OAuth token);
 //! 3. serves the connector: a hosted server through the stdio bridge (login in this process's memory only), a local
-//!    server as a child with the login in that child's environment only, or a built-in server.
+//!    server (found on a fixed PATH, with a cleared environment) with the login in its environment only, or a built-in
+//!    server.
 //!
 //! Nothing it prints carries a secret: every line goes through `redact`.
 
@@ -16,6 +19,7 @@ use super::oauth;
 use super::remote::Remote;
 use super::secrets::{redact, Keychain, Login, SecretStore};
 use super::settings;
+use super::signing;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,6 +34,8 @@ pub struct Args {
     pub id: String,
     pub mono: String,
     pub projects: Vec<String>,
+    /// The app's signature over the rest (signing.rs).
+    pub sig: Option<String>,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Args, String> {
@@ -38,11 +44,12 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     if !catalog::valid_id(&id) {
         return Err(format!("{id:?} isn't a connector id"));
     }
-    let (mut mono, mut projects) = (None, Vec::new());
+    let (mut mono, mut projects, mut sig) = (None, Vec::new(), None);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--mono" => mono = Some(iter.next().ok_or("--mono needs an id")?.clone()),
             "--project" => projects.push(iter.next().ok_or("--project needs a key")?.clone()),
+            signing::FLAG => sig = Some(iter.next().ok_or("--sig needs a value")?.clone()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -50,7 +57,12 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     if !settings::valid_mono_id(&mono) || !projects.iter().all(|p| settings::valid_scope(p)) {
         return Err("bad --mono or --project".into());
     }
-    Ok(Args { id, mono, projects })
+    Ok(Args {
+        id,
+        mono,
+        projects,
+        sig,
+    })
 }
 
 /// What will be started, with the login filled in. `Debug` shows no values.
@@ -130,6 +142,14 @@ pub fn prepare(
 ) -> Result<(&'static Entry, Login, Plan), String> {
     let entry =
         catalog::entry(&args.id).ok_or_else(|| format!("No connector called {}.", args.id))?;
+    // Only a session the app started, for this Mono and these projects (signing.rs).
+    signing::check(
+        store,
+        &args.id,
+        &args.mono,
+        &args.projects,
+        args.sig.as_deref(),
+    )?;
     let settings = settings::load(dir);
     settings::allowed(&settings, entry, &args.mono, &args.projects)
         .map_err(|denied| denied.message(&entry.name))?;
@@ -177,7 +197,7 @@ pub fn run_main(args: &[String]) -> i32 {
     let parsed = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(why) => {
-            eprintln!("usage: monocode {SUBCOMMAND} <connector id> --mono <mono id> [--project <key>]… ({why})");
+            eprintln!("usage: monocode {SUBCOMMAND} <connector id> --mono <mono id> [--project <key>]… --sig <app signature> ({why})");
             return 2;
         }
     };
@@ -220,17 +240,38 @@ pub fn run_main(args: &[String]) -> i32 {
     }
 }
 
-/// `command` on PATH, or `None`.
+/// Where a local server's program is looked for, and the PATH it runs with: never the caller's.
+pub const SAFE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+/// All a local server gets from the caller's environment, besides [`SAFE_PATH`] and its own login.
+const PASSED_ENV: [&str; 4] = ["HOME", "USER", "LANG", "TMPDIR"];
+
+/// `command` on [`SAFE_PATH`] (a full path is taken as it is), or `None`.
 pub fn find_on_path(command: &str) -> Option<PathBuf> {
     if command.contains('/') {
         let path = PathBuf::from(command);
         return path.is_file().then_some(path);
     }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(command))
-            .find(|candidate| candidate.is_file())
-    })
+    std::env::split_paths(SAFE_PATH)
+        .map(|dir| dir.join(command))
+        .find(|candidate| candidate.is_file())
+}
+
+/// How a local server is started: `program` with its arguments, an environment cleared down to [`PASSED_ENV`] and
+/// [`SAFE_PATH`] (so a caller's NODE_OPTIONS, PATH or npm settings never reach it), and its login.
+pub fn stdio_command(
+    program: &Path,
+    args: &[String],
+    env: &[(String, String)],
+) -> std::process::Command {
+    let mut child = std::process::Command::new(program);
+    child.args(args).env_clear();
+    for key in PASSED_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            child.env(key, value);
+        }
+    }
+    child.env("PATH", SAFE_PATH).envs(env.iter().cloned());
+    child
 }
 
 /// Replace this process with the local server, its login in the server's environment only.
@@ -248,8 +289,7 @@ fn exec_stdio(
         ));
         return EXIT_REFUSED;
     };
-    let mut child = std::process::Command::new(program);
-    child.args(args).envs(env);
+    let mut child = stdio_command(&program, args, &env);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -270,7 +310,7 @@ fn exec_stdio(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::catalog::Method;
     use super::super::secrets::Memory;
     use super::super::settings::{ConnectorState, MonoChoice, Settings, EVERYWHERE};
@@ -279,6 +319,18 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// What a session the app started passes: the arguments, signed with the store's key (made if needed).
+    pub(crate) fn signed(store: &dyn SecretStore, id: &str, mono: &str, projects: &[&str]) -> Args {
+        let projects: Vec<String> = projects.iter().map(|p| p.to_string()).collect();
+        let key = signing::key(store, true).unwrap().unwrap();
+        Args {
+            sig: Some(signing::sign(&key, id, mono, &projects)),
+            id: id.into(),
+            mono: mono.into(),
+            projects,
+        }
     }
 
     fn temp_dir() -> PathBuf {
@@ -303,7 +355,8 @@ mod tests {
             Args {
                 id: "github".into(),
                 mono: "mono-1".into(),
-                projects: vec!["/p/a".into(), "/p/b".into()]
+                projects: vec!["/p/a".into(), "/p/b".into()],
+                sig: None,
             }
         );
         assert!(
@@ -344,11 +397,7 @@ mod tests {
     fn prepare_refuses_until_allowed_and_signed_in() {
         let dir = temp_dir();
         let store = Memory::default();
-        let a = Args {
-            id: "github".into(),
-            mono: "m1".into(),
-            projects: vec!["/p/hivra".into()],
-        };
+        let a = signed(&store, "github", "m1", &["/p/hivra"]);
         assert!(prepare(&a, &dir, &store)
             .unwrap_err()
             .contains("isn't signed in"));
@@ -423,17 +472,196 @@ mod tests {
             },
         );
         settings::save(&dir, &s).unwrap();
-        let a = Args {
-            id: "context7".into(),
-            mono: "m".into(),
-            projects: vec![],
-        };
-        let (_, login, plan) = prepare(&a, &dir, &Memory::default()).unwrap();
+        let store = Memory::default();
+        let a = signed(&store, "context7", "m", &[]);
+        let (_, login, plan) = prepare(&a, &dir, &store).unwrap();
         assert!(login.secrets().is_empty());
         assert!(
             matches!(plan, Plan::Remote { ref url, .. } if url == "https://mcp.context7.com/mcp")
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Any shell on this Mac can run the app's binary. Naming another Mono, or projects it doesn't have, gets nothing.
+    #[test]
+    fn a_launch_the_app_did_not_sign_is_refused() {
+        let dir = temp_dir();
+        let store = Memory::default();
+        let mut s = Settings::default();
+        s.connectors.insert(
+            "github".into(),
+            ConnectorState {
+                signed_in: true,
+                method: Some(Method::Token),
+                allow: vec![EVERYWHERE.into()],
+                ..Default::default()
+            },
+        );
+        settings::save(&dir, &s).unwrap();
+        let login = Login {
+            fields: BTreeMap::from([("token".into(), "ghp_SENTINEL".into())]),
+            oauth: None,
+        };
+        store.put("github", &login).unwrap();
+        // The app's own session for Mono m starts it.
+        let mine = signed(&store, "github", "m", &["/p/hivra"]);
+        assert!(prepare(&mine, &dir, &store).is_ok());
+        // What a shell would type: another Mono, no signature.
+        let bare = parse_args(&args(&[
+            "github",
+            "--mono",
+            "other",
+            "--project",
+            "/p/hivra",
+        ]))
+        .unwrap();
+        let err = prepare(&bare, &dir, &store).unwrap_err();
+        assert!(err.contains("didn't start this connector"), "{err}");
+        // The app's real signature, moved to another Mono or other projects.
+        let sig = mine.sig.clone().unwrap();
+        for (mono, projects) in [
+            ("other", vec!["/p/hivra"]),
+            ("m", vec!["/p/nibbii"]),
+            ("m", vec![]),
+            ("m", vec!["/p/hivra", "/p/x"]),
+        ] {
+            let mut argv = vec!["github", "--mono", mono];
+            for project in &projects {
+                argv.extend(["--project", project]);
+            }
+            argv.extend(["--sig", &sig]);
+            let moved = parse_args(&args(&argv)).unwrap();
+            let err = prepare(&moved, &dir, &store).unwrap_err();
+            assert!(err.contains("didn't start"), "{mono} {projects:?}: {err}");
+        }
+        for junk in ["", "zz", &sig[..sig.len() - 2], &format!("{sig}00")] {
+            let forged = Args {
+                sig: Some(junk.to_string()),
+                ..signed(&store, "github", "m", &["/p/hivra"])
+            };
+            assert!(prepare(&forged, &dir, &store).is_err(), "{junk:?}");
+        }
+        // A Mac with no signing key refuses everything, and the launcher never makes one.
+        let bare_store = Memory::default();
+        bare_store.put("github", &login).unwrap();
+        assert!(prepare(&mine, &dir, &bare_store)
+            .unwrap_err()
+            .contains("didn't start"));
+        assert_eq!(signing::key(&bare_store, false).unwrap(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The app signs its own connector entries in a session's --mcp-config, and nothing else.
+    #[test]
+    fn the_app_signs_exactly_its_own_connector_entries() {
+        let store = Memory::default();
+        let launcher = "/Applications/MonoCode Hub.app/Contents/MacOS/monocode";
+        let config = serde_json::json!({"mcpServers": {
+            "github": {"command": launcher, "args": [SUBCOMMAND, "github", "--mono", "m", "--project", "/p/hivra", "--sig", "forged"]},
+            "monocode": {"command": launcher, "args": ["mcp"]},
+            "other-program": {"command": "/tmp/not-the-app", "args": [SUBCOMMAND, "github", "--mono", "m"]},
+        }});
+        let argv = vec![
+            "-p".to_string(),
+            "--mcp-config".to_string(),
+            config.to_string(),
+            format!("--mcp-config={config}"),
+        ];
+        let mut reads = 0;
+        let mut key = || {
+            reads += 1;
+            Ok(signing::key(&store, true)?.unwrap())
+        };
+        let out = signing::sign_mcp_configs(argv, launcher, &mut key).unwrap();
+        assert_eq!(out[0], "-p");
+        for raw in [
+            out[2].as_str(),
+            out[3].strip_prefix("--mcp-config=").unwrap(),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let words: Vec<String> = value["mcpServers"]["github"]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap().to_string())
+                .collect();
+            assert!(!words.contains(&"forged".to_string()), "{words:?}");
+            let parsed = parse_args(&words[1..]).unwrap();
+            assert_eq!(
+                (parsed.mono.as_str(), parsed.projects.clone()),
+                ("m", vec!["/p/hivra".to_string()])
+            );
+            assert!(signing::check(
+                &store,
+                &parsed.id,
+                &parsed.mono,
+                &parsed.projects,
+                parsed.sig.as_deref()
+            )
+            .is_ok());
+            assert_eq!(
+                value["mcpServers"]["monocode"],
+                config["mcpServers"]["monocode"]
+            );
+            // An entry for another program never gets a signature it could replay.
+            assert_eq!(
+                value["mcpServers"]["other-program"],
+                config["mcpServers"]["other-program"]
+            );
+        }
+        // A session with no connector entry never touches the key.
+        let mut untouched = 0;
+        let plain = vec![
+            "--mcp-config".to_string(),
+            r#"{"mcpServers":{}}"#.to_string(),
+        ];
+        let same = signing::sign_mcp_configs(plain.clone(), launcher, &mut || {
+            untouched += 1;
+            Err("no key".into())
+        })
+        .unwrap();
+        assert_eq!((same, untouched), (plain, 0));
+    }
+
+    /// A local server starts with nothing from the caller's environment but a few plain variables, and is found on a
+    /// fixed PATH: a caller's NODE_OPTIONS or PATH can't reach it.
+    #[test]
+    fn a_local_server_gets_a_clean_environment_and_a_fixed_path() {
+        let allowed = [
+            "HOME",
+            "USER",
+            "LANG",
+            "TMPDIR",
+            "PATH",
+            "SLACK_MCP_XOXP_TOKEN",
+        ];
+        assert!(
+            std::env::vars().any(|(key, _)| !allowed.contains(&key.as_str())),
+            "the test process has more in its environment than a server may get"
+        );
+        let output = stdio_command(
+            Path::new("/usr/bin/env"),
+            &[],
+            &[(
+                "SLACK_MCP_XOXP_TOKEN".to_string(),
+                "xoxp-SENTINEL".to_string(),
+            )],
+        )
+        .output()
+        .unwrap();
+        let seen: BTreeMap<String, String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        for key in seen.keys() {
+            assert!(allowed.contains(&key.as_str()), "{key} reached the server");
+        }
+        assert_eq!(seen["PATH"], SAFE_PATH);
+        assert_eq!(seen["SLACK_MCP_XOXP_TOKEN"], "xoxp-SENTINEL");
+        assert!(seen.get("HOME").is_some_and(|home| !home.is_empty()));
+        assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+        assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
     }
 
     #[test]

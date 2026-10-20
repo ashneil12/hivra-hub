@@ -965,6 +965,12 @@ pub fn harness_spawn(
     } else {
         args
     };
+    // A Mono's connectors start only with the app's signature on their arguments (src/connectors/signing.rs).
+    let args = if binary_provider.as_deref() == Some("claude") {
+        crate::connectors::signing::sign_session_args(args)
+    } else {
+        args
+    };
     let mut cmd = Command::new(&command);
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
