@@ -186,8 +186,6 @@ describe("compaction ceiling", () => {
   it("launches long chats with a per-model auto-compact window", async () => {
     const { turn } = await firstTurn({ model: "claude:claude-opus-4-6" });
     expect(settingsArg(spawned[0]).autoCompactWindow).toBe(350_000);
-    // Allowing bypass at launch is what lets Full access apply live later.
-    expect(spawned[0]).toContain("--allow-dangerously-skip-permissions");
     emitResult(50_000);
     await turn;
   });
@@ -263,21 +261,52 @@ describe("live setting changes", () => {
     await next;
   });
 
-  it("falls back to a restart when the CLI refuses a live change", async () => {
+  it("starts Claude Code able to skip permissions only for Full access", async () => {
+    const { turn } = await firstTurn({ runtimeMode: "supervised" });
+    expect(spawned[0]).not.toContain("--allow-dangerously-skip-permissions");
+    emitResult(50_000);
+    await turn;
+    await stopClaudeSession("lead");
+    __claudeTestReset();
+    sent.length = 0;
+    const full = await firstTurn({ runtimeMode: "full-access" });
+    expect(spawned[1]).toEqual(
+      expect.arrayContaining(["--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"]),
+    );
+    emitResult(50_000);
+    await full.turn;
+  });
+
+  it("restarts, resuming the conversation, for Full access on a process started without it, and says so", async () => {
     const first = await firstTurn();
     emitResult(50_000);
     await first.turn;
 
     const events: HarnessEvent[] = [];
     const next = send(events, { runtimeMode: "full-access" });
-    // Recorded from a process started without the bypass allowance.
-    const refused = recordedAnswer("default", { subtype: "set_permission_mode", mode: "bypassPermissions" });
-    expect(refused).toMatchObject({ subtype: "error", error_code: "bypass_not_launched" });
-    await answerControl("set_permission_mode", refused);
     await waitFor(() => spawned.length === 2, "replacement process");
-    expect(spawned[1]).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions", "--resume", "sess_1"]));
+    // Never asked live: CLI 2.1.302 refuses it on such a process (bypass_not_launched, recorded).
+    expect(recordedAnswer("default", { subtype: "set_permission_mode", mode: "bypassPermissions" })).toMatchObject({
+      subtype: "error",
+      error_code: "bypass_not_launched",
+    });
+    expect(parse().some((m) => (m.request as { subtype?: string } | undefined)?.subtype === "set_permission_mode")).toBe(
+      false,
+    );
+    expect(spawned[1]).toEqual(
+      expect.arrayContaining([
+        "--permission-mode",
+        "bypassPermissions",
+        "--allow-dangerously-skip-permissions",
+        "--resume",
+        "sess_1",
+      ]),
+    );
     expect(events).toContainEqual(
-      expect.objectContaining({ type: "notice", text: expect.stringContaining("could not change its permission mode live") }),
+      expect.objectContaining({
+        type: "notice",
+        text: expect.stringContaining("Restarting Claude Code for the permission mode change"),
+      }),
     );
     emit({ type: "system", subtype: "init", session_id: "sess_1" });
     await waitFor(() => userTexts().length === 2, "second prompt");
@@ -285,9 +314,73 @@ describe("live setting changes", () => {
     await next;
   });
 
-  it("applies a permission change made mid-turn to the running turn (autopilot switching on)", async () => {
+  it("falls back to a restart when the CLI refuses a live change", async () => {
+    const first = await firstTurn();
+    emitResult(50_000);
+    await first.turn;
+
+    const events: HarnessEvent[] = [];
+    const next = send(events, { model: "claude:claude-sonnet-4-6" });
+    // The CLI's own refusal of a control request (recorded for another request; the answer reads the same).
+    const refused = recordedAnswer("default", { subtype: "set_permission_mode", mode: "bypassPermissions" });
+    await answerControl("set_model", refused);
+    await waitFor(() => spawned.length === 2, "replacement process");
+    expect(spawned[1]).toEqual(expect.arrayContaining(["--model", "claude-sonnet-4-6", "--resume", "sess_1"]));
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "notice", text: expect.stringContaining("could not change its model") }),
+    );
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    await waitFor(() => userTexts().length === 2, "second prompt");
+    emitResult(50_000);
+    await next;
+  });
+
+  it("Full access chosen mid-turn on a process started without it applies from the next message, by a restart", async () => {
     const { events, turn } = await firstTurn({ runtimeMode: "supervised" });
-    const outcome = applyClaudeSettings({
+    await expect(
+      applyClaudeSettings({
+        sessionId: "lead",
+        model: "claude:claude-opus-4-6",
+        modelSettings: {},
+        runtimeMode: "full-access",
+      }),
+    ).resolves.toBe("next-turn");
+    expect(parse().some((m) => (m.request as { subtype?: string } | undefined)?.subtype === "set_permission_mode")).toBe(
+      false,
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "notice",
+        text: expect.stringContaining("permission mode change applies from your next message"),
+      }),
+    );
+    // The rest of this turn still asks.
+    emit({
+      type: "control_request",
+      request_id: "perm_1",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" }, tool_use_id: "toolu_1" },
+    });
+    await waitFor(() => events.some((event) => event.type === "approval.requested"), "approval request");
+    expect(spawned).toHaveLength(1);
+    await stopClaudeSession("lead");
+    await turn;
+  });
+
+  it("applies a permission change made mid-turn to a Full access process, back and forth (autopilot)", async () => {
+    const { events, turn } = await firstTurn({ runtimeMode: "full-access" });
+    expect(spawned[0]).toContain("--allow-dangerously-skip-permissions");
+    const down = applyClaudeSettings({
+      sessionId: "lead",
+      model: "claude:claude-opus-4-6",
+      modelSettings: {},
+      runtimeMode: "auto-accept-edits",
+    });
+    const edits = { subtype: "set_permission_mode", mode: "acceptEdits" };
+    expect(
+      await answerControl("set_permission_mode", recordedAnswer("--allow-dangerously-skip-permissions", edits)),
+    ).toEqual(edits);
+    await expect(down).resolves.toBe("applied");
+    const up = applyClaudeSettings({
       sessionId: "lead",
       model: "claude:claude-opus-4-6",
       modelSettings: {},
@@ -295,7 +388,7 @@ describe("live setting changes", () => {
     });
     const mode = { subtype: "set_permission_mode", mode: "bypassPermissions" };
     expect(await answerControl("set_permission_mode", recordedAnswer("--allow-dangerously-skip-permissions", mode))).toEqual(mode);
-    await expect(outcome).resolves.toBe("applied");
+    await expect(up).resolves.toBe("applied");
 
     // The rest of this turn runs in Full access: a tool request is allowed
     // without asking.
@@ -311,6 +404,7 @@ describe("live setting changes", () => {
     const answer = parse().find((m) => m.type === "control_response" && JSON.stringify(m).includes("perm_1"));
     expect(JSON.stringify(answer)).toContain('"behavior":"allow"');
     expect(events.some((event) => event.type === "approval.requested")).toBe(false);
+    expect(spawned).toHaveLength(1);
     emitResult(50_000);
     await turn;
   });

@@ -93,6 +93,7 @@ import {
   type GoalTrack,
 } from "./claudeGoal";
 import {
+  appliedLaunch,
   claudeLaunchDelta,
   joinLabels,
   type ClaudeLaunch,
@@ -837,7 +838,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         if (delta.requests.length > 0) {
           noteAppliedLive(existing, delta.requests, input);
         }
-        existing.launch = launchNext;
+        existing.launch = appliedLaunch(existing.launch, launchNext);
         existing.planning = planning;
         existing.runtimeMode = input.runtimeMode;
         return existing;
@@ -973,9 +974,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.sessionId,
     path,
     [
-      // Allowing bypass at launch lets a later switch to Full access apply
-      // live; only this app can ask for it, over the control channel.
-      ...buildClaudeSpawnArgs({ ...launch, allowBypass: true }),
+      // Only a chat in Full access starts able to skip permissions; Full
+      // access chosen later on any other process restarts it (claudeLaunchDelta).
+      ...buildClaudeSpawnArgs({ ...launch, allowBypass: launchNext.allowBypass }),
       ...(await claudeExtraArgs(input.sessionId)),
     ],
     input.cwd,
@@ -2522,6 +2523,8 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
       : {}),
     effort: options.effort,
     permissionMode: options.permissionMode ?? "default",
+    // Full access, even while in plan mode: leaving plan for it then applies live.
+    allowBypass: input.runtimeMode === "full-access",
     thinking: options.settings?.alwaysThinkingEnabled === true,
     fast: options.settings?.fastMode === true,
     ultracode: options.settings?.ultracode === true,
@@ -2641,7 +2644,7 @@ export async function applyClaudeSettings(
     later(joinLabels(delta.requests.map((request) => request.label)));
     return "next-turn";
   }
-  live.launch = next;
+  live.launch = appliedLaunch(live.launch, next);
   live.runtimeMode = input.runtimeMode;
   if (!live.muteUpdates) noteAppliedLive(live, delta.requests, input);
   return "applied";

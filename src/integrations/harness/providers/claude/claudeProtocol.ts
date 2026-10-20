@@ -257,7 +257,10 @@ export function buildClaudeSpawnArgs(input: {
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
-  /** Accept a later live switch to bypassPermissions over the control channel. */
+  /**
+   * Accept a later live switch to bypassPermissions over the control channel.
+   * Only for a chat in Full access at launch (claude.ts).
+   */
   allowBypass?: boolean;
 }): string[] {
   const args = [

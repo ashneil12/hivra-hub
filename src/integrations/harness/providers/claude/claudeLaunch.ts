@@ -9,7 +9,9 @@ import type { ClaudePermissionMode } from "./claudeProtocol";
  * `[1m]` ids work), `set_permission_mode` (answers `{mode}`, then a
  * `system/status` with `permissionMode`; `bypassPermissions` is refused with
  * `bypass_not_launched` unless the process was started with
- * `--allow-dangerously-skip-permissions`), and `apply_flag_settings` for
+ * `--allow-dangerously-skip-permissions`, which only a process started for
+ * Full access gets: Full access chosen later on any other one restarts it),
+ * and `apply_flag_settings` for
  * `effortLevel`, `fastMode`, `ultracode` and `autoCompactWindow`. Clearing
  * `effortLevel` live drops the flag but the session keeps the effort it had,
  * so going back to the default effort needs a new process, as do thinking,
@@ -22,6 +24,11 @@ export type ClaudeLaunch = {
   route?: string;
   effort?: string;
   permissionMode: ClaudePermissionMode;
+  /**
+   * Started with `--allow-dangerously-skip-permissions`: only a chat in Full
+   * access at launch is, and only such a process can switch to it live.
+   */
+  allowBypass: boolean;
   thinking: boolean;
   fast: boolean;
   ultracode: boolean;
@@ -91,12 +98,23 @@ export function claudeLaunchDelta(
   }
 
   if (live.permissionMode !== next.permissionMode) {
-    requests.push({
-      label: "permission mode",
-      request: { subtype: "set_permission_mode", mode: next.permissionMode },
-    });
+    // CLI 2.1.302 refuses bypassPermissions live on a process started
+    // without the allowance (bypass_not_launched, recorded).
+    if (next.permissionMode === "bypassPermissions" && !live.allowBypass) {
+      restart.push("permission mode");
+    } else {
+      requests.push({
+        label: "permission mode",
+        request: { subtype: "set_permission_mode", mode: next.permissionMode },
+      });
+    }
   }
   return { restart, requests };
+}
+
+/** The launch a running process has after `next` was applied to it live: still started the way it was. */
+export function appliedLaunch(live: ClaudeLaunch, next: ClaudeLaunch): ClaudeLaunch {
+  return { ...next, allowBypass: live.allowBypass };
 }
 
 /** "model and permission mode", "effort, fast mode and thinking". */
