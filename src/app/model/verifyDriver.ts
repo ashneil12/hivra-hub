@@ -25,6 +25,7 @@ import { answerInWords, findWaitingChat, takePick } from "../../features/hub/mod
 import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
+import { monoWorkFolder, setMonoTeam } from "../../features/hub/model/monoTeams";
 import { openSubChats } from "../../features/monos/model/subChats";
 import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import type { Session } from "../../features/sessions/model/session";
@@ -164,7 +165,7 @@ export function domRows() {
     tag: element.tagName.toLowerCase(),
     attrs: Object.fromEntries(
       [...element.attributes]
-        .filter((attr) => attr.name.startsWith("data-") || attr.name === "aria-expanded" || attr.name === "aria-label" || attr.name === "role")
+        .filter((attr) => attr.name.startsWith("data-") || ["aria-expanded", "aria-pressed", "aria-label", "role"].includes(attr.name))
         .map((attr) => [attr.name, clip(attr.value, 200)]),
     ),
     text: clip(element.innerText?.trim() ?? "", 300),
@@ -330,6 +331,12 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok: true, at: Date.now(), session: sessionId };
     }
     case "open": {
+      // Folded sub-chats opened first, as Ash's click on the count does, so they can be read: `unfold` a team's chats
+      // (its Sessions list), `unfoldMonos` Monos' in the Monos rail.
+      for (const chat of Array.isArray(action.unfold) ? action.unfold : [])
+        if (typeof chat === "string" && chat) openSubChats(`chat:${chat}`);
+      for (const monoId of Array.isArray(action.unfoldMonos) ? action.unfoldMonos : [])
+        if (typeof monoId === "string" && monoId) openSubChats(monoId);
       if (typeof action.mono === "string") return { ok: true, session: await host.openMono(action.mono) };
       if (typeof action.session === "string") {
         host.openSession(action.session, typeof action.owner === "string" ? action.owner : undefined);
@@ -342,9 +349,6 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
         return { ok: true, dom: domRows() };
       }
       // A team, as its Open team does (hub/model/monoTeams.ts): a project's coding team on its Lead, or a Mono's own.
-      // `unfold` opens these chats' folded sub-chats first, as Ash's click on the count does, so they can be read.
-      for (const chat of Array.isArray(action.unfold) ? action.unfold : [])
-        if (typeof chat === "string" && chat) openSubChats(`chat:${chat}`);
       if (typeof action.codingTeam === "string") {
         openCodingTeam(action.codingTeam, { lead: true });
         await wait(Number(action.settleMs ?? 1500));
@@ -356,6 +360,24 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
         return { ok: true, dom: domRows() };
       }
       throw new Error("open: nothing named");
+    }
+    case "expand": {
+      // "Show N more" under every open fold of sub-chats, as Ash's click does, so a long list can be read whole.
+      for (const button of document.querySelectorAll<HTMLButtonElement>("[data-mono-children-more], [data-sub-chats-more]"))
+        button.click();
+      await wait(Number(action.settleMs ?? 400));
+      return { ok: true, dom: domRows() };
+    }
+    case "team": {
+      // A Mono's own team switched on or off, as its menu in the Monos rail does (hub/model/monoTeams.ts): on, the team
+      // opens at once on the Mono's chat.
+      const monoId = String(action.mono ?? "");
+      if (!listMonos().some((mono) => mono.id === monoId)) throw new Error(`team: no Mono ${monoId}`);
+      const on = action.on !== false;
+      await setMonoTeam(monoId, on);
+      if (on) openMonoTeam(monoId, { owner: true });
+      await wait(Number(action.settleMs ?? 1500));
+      return { ok: true, on, folder: monoWorkFolder(monoId) ?? null, dom: domRows() };
     }
     case "answer": {
       // Today's Waiting on you row: "Take the pick" (one tap) or "answer in your words" + Send.
