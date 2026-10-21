@@ -11,7 +11,9 @@ export type ProjectDraft = {
   name: string;
   started: boolean;
   lines: { from: "cos" | "ash"; text: string }[];
-  answers: string[];
+  /** What it is, in a sentence: from Chief of Staff's proposal (projectInterview.ts). */
+  oneLine?: string;
+  /** Set once Chief of Staff proposes it: the preview card shows. */
   tpl: TemplateId | null;
   addon: boolean;
   /** Choices on the preview card (absent in drafts saved before they existed). */
