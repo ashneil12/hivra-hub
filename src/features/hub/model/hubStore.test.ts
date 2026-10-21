@@ -179,7 +179,7 @@ describe("live changes land in place", () => {
     expect(store.getSnapshot().since?.overall.plainText).toMatch(/on their way/);
     stub.finishPendingSince();
     await waitFor(() => store.getSnapshot().since?.pending === false, "finished since");
-    expect(store.getSnapshot().since?.overall.plainText).toContain("the hub has five decisions");
+    expect(store.getSnapshot().since?.overall.plainText).toContain("The hub has five decisions");
   });
 
   it("Since for one project and for all of them come from the same read", async () => {

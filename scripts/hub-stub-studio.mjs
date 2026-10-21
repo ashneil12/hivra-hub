@@ -126,7 +126,7 @@ export function createStudio(ctx) {
         title: "Waiting on you",
         state: open.length > 4 ? "warn" : "ok",
         line: open.length ? `Example: ${open.length} ${open.length === 1 ? "thing" : "things"} waiting on you` : "Example: nothing waiting on you",
-        detail: `Example: built from ${where}'s asks.`,
+        detail: `Example: built from ${where}${where.endsWith("s") ? "'" : "'s"} asks.`,
       },
     ];
     if (open.length) blocks.push({ kind: "list", title: "What's open", rows: open.slice(0, 6).map((n) => ({ text: n.title, state: n.later ? "ok" : "warn", label: n.later ? "Later" : "Open" })) });

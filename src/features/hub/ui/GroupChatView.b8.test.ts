@@ -96,7 +96,8 @@ it("a new conversation can be named before its first message, and that message d
   act(() => q("[data-hub-new-conversation]")!.click());
   dblclick(q("[data-hub-conversation-draft]")!);
   await typeName(q("[data-hub-conversation-rename]") as HTMLInputElement, "Pages round 2");
-  expect(q("[data-hub-conversation-draft]")!.textContent).toBe("Pages round 2");
+  expect(q("[data-hub-conversation-draft-title]")!.textContent).toBe("Pages round 2");
+  expect(q("[data-hub-conversation-draft-word]")!.textContent).toBe("Draft");
   expect(q("[data-hub-conversation-title]")!.textContent).toBe("Pages round 2");
   expect(convs()).toHaveLength(1);
   await send("ok so for the pages lane i want blocks from github themed like the hub");

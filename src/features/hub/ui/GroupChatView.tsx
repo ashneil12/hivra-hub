@@ -255,7 +255,8 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                   onDoubleClick={() => setRenamingConv("draft")}
                   className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-dashed border-content/25 bg-selection pl-2 pr-1 text-[13px] text-content"
                 >
-                  <span className="min-w-0 flex-1 truncate">{draftTitle ?? "New conversation"}</span>
+                  <span data-hub-conversation-draft-title className={`min-w-0 flex-1 truncate ${draftTitle ? "" : "italic text-content/75"}`}>{draftTitle ?? "New conversation"}</span>
+                  <span data-hub-conversation-draft-word className="shrink-0 text-[11px] text-content/60">Draft</span>
                   <button
                     type="button"
                     title="Name it"
@@ -510,7 +511,7 @@ function NewConversationScreen({
         <div>
           <p className="text-[17px] font-medium text-content">New conversation with {phrase}</p>
           <p className="mt-1 text-[13px] leading-5 text-content/70">Say anything to start. Nothing is saved until you send.</p>
-          <p className="mt-0.5 text-[12px] leading-5 text-content/60">Tap the pencil to name it. + adds a photo or a file.</p>
+          <p className="mt-0.5 text-[12px] leading-5 text-content/60">Click the pencil to name it. + adds a photo or a file.</p>
         </div>
         <div className="flex flex-wrap justify-center gap-2">
           {starters.map((s) => (

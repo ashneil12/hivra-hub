@@ -73,7 +73,7 @@ export function seedState(now = Date.now()) {
     ].map((n) => ({ later: false, state: "open", ...n })),
     activity: { lastActive: now - 20 * 60_000, since: now - 6 * h, sessionStart: now - 25 * 60_000 },
     since: {
-      overall: "Example: the game's new level is in and working. Hivra has a headline to pick. the hub has five decisions waiting for you.",
+      overall: "Example: the game's new level is in and working. Hivra has a headline to pick. The hub has five decisions waiting for you.",
       projects: {
         "vg-game": "Example: the new level is in and working. Two things need your hands.",
         hivra: "Example: the waitlist headline is waiting for your pick.",
