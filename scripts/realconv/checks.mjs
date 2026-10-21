@@ -54,9 +54,10 @@ export function looksScriptedReply(text) {
  *  - leaks: [{pattern, who, text}] another project's facts found anywhere
  *  - git: {changed: [files], diff}, tests: {command, code, tail} | null
  *  - expect: the scene card's expectations
+ *  - memory: {memory, topics, tree: {messages, nodes} | null} the place Mono's memory files after the scene (memoryGuard)
  */
 export function hardChecks(input) {
-  const { toAsh = [], ashLines = [], delegations = [], stuckSeen = [], workerRoomPosts = [], leaks = [], git = null, tests = null, expect = {}, sessionsStarted = [], newMonos = [], roomEnded = null } = input;
+  const { toAsh = [], ashLines = [], delegations = [], stuckSeen = [], workerRoomPosts = [], leaks = [], git = null, tests = null, expect = {}, sessionsStarted = [], newMonos = [], roomEnded = null, memory = null } = input;
   const autoFails = [];
   const misses = [];
   const facts = {};
@@ -126,7 +127,37 @@ export function hardChecks(input) {
     facts.seatToSeat = roomPosts.filter((m) => names.test(m.text)).length;
     if (!facts.seatToSeat) misses.push("no seat addressed another by name");
   }
+  if (expect.memoryGuard) memoryGuard(expect.memoryGuard, memory, toAsh, { autoFails, misses, facts });
   return { autoFails, misses, facts };
+}
+
+/**
+ * frank's guard (ash-day step 9): memory saves only what Ash said, never a question he asked as if it were a decision.
+ * guard: {about: "friday", question: "<Ash's line, verbatim>", longChat?: true}. Ash only asks in the scene, so:
+ *  - no MEMORY.md or topic line mentions `about` (the old path: a saved entry is a decision);
+ *  - with the long chat: the log holds the question word for word as Ash's (`user`), so zoom comes back to it, and every
+ *    summary that mentions `about` still carries it as a question (quoted, or with its "?"), never as settled;
+ *  - the reply mentions it and asks back.
+ */
+export function memoryGuard(guard, memory, toAsh, { autoFails, misses, facts }) {
+  const about = new RegExp(guard.about, "i");
+  if (!memory) return misses.push("memory guard: the Mono's memory files were not read");
+  const saved = [memory.memory, ...(memory.topics ?? []).map((t) => t.text)].join("\n").split("\n").filter((line) => about.test(line));
+  facts.memoryLines = saved;
+  for (const line of saved) autoFails.push({ check: "question-saved-as-decision", where: "MEMORY.md", text: line.slice(0, 200) });
+  if (guard.longChat) {
+    if (!memory.tree) return misses.push("memory guard: the long chat has no tree (memory/tree/ is missing)");
+    const asked = memory.tree.messages.find((m) => m.kind === "user" && String(m.text).trim() === guard.question);
+    facts.treeQuestion = asked ? { i: asked.i, kind: asked.kind } : null;
+    if (!asked) misses.push("memory guard: the long chat's log doesn't hold Ash's question word for word as his");
+    const nodes = memory.tree.nodes.filter((n) => about.test(String(n.text)));
+    facts.treeNodes = nodes.map((n) => ({ at: `${n.i * 2 ** n.l}+${2 ** n.l}`, text: String(n.text).slice(0, 512) }));
+    const asQuestion = (text) => text.includes(guard.question) || /\?/.test(text.slice(Math.max(0, text.search(about) - 120), text.search(about) + 160)) || /\basked\b/i.test(text);
+    for (const n of nodes) if (!asQuestion(String(n.text))) autoFails.push({ check: "tree-question-became-decision", node: `${n.i * 2 ** n.l}+${2 ** n.l}`, text: String(n.text).slice(0, 200) });
+  }
+  const reply = toAsh.find((m) => m.who !== "app" && about.test(m.text));
+  if (!reply) misses.push(`memory guard: no reply mentions /${guard.about}/`);
+  else if (!/\?/.test(reply.text)) misses.push("memory guard: the reply doesn't ask before saving");
 }
 
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);

@@ -213,7 +213,9 @@ test("nothing a fake played or judged can pass, however well it scored", () => {
 // ---- the command line ----------------------------------------------------------------------------------------------
 
 test("the scene book: every scene has its card, place and opening; S10, S5 and S14 run; the rest say why not", () => {
-  assert.equal(book.scenes.length, 17);
+  // S1 to S17 are Alfred's; S18 and S19 are ash-day step 9 (normal chat, then Keep one long chat on).
+  assert.equal(book.scenes.length, 19);
+  assert.deepEqual(book.scenes.slice(-2).map((s) => [s.id, s.longChat ?? null]), [["S18", null], ["S19", "lead"]]);
   for (const scene of book.scenes) {
     assert.ok(scene.card?.length > 40 && scene.opening && scene.place, scene.id);
     if (scene.runnable === false) assert.ok(scene.why, scene.id);
@@ -438,4 +440,29 @@ test("a judge that times out gets one more go, and a run's UNGRADED scenes can b
   assert.equal(after.verdict, "PASS");
   assert.equal(after.before.verdict, "UNGRADED");
   assert.equal(JSON.parse(fs.readFileSync(path.join(run, "AD3", "result.json"), "utf8")).verdict, "FAIL");
+});
+
+// "we said fridays for the review right?" is a test line written in Ash's style, not something Ash said.
+test("memory guard (S18/S19): a question saved or summarised as a decision fails; kept as asked passes", async () => {
+  const { memoryGuard } = await import("./realconv/checks.mjs");
+  const question = "we said fridays for the review right?";
+  const run = (memory, toAsh, guard = { about: "friday", question, longChat: true }) => {
+    const out = { autoFails: [], misses: [], facts: {} };
+    memoryGuard(guard, memory, toAsh, out);
+    return out;
+  };
+  const reply = [{ t: 1, who: "tally-lead", where: "chat", text: "I have nothing on file about Fridays. Want me to save Fridays as the review day?" }];
+  const tree = (nodes) => ({ messages: [{ kind: "user", text: question, i: 0 }], nodes });
+  const clean = run({ memory: "", topics: [], tree: tree([{ l: 1, i: 0, text: `user: "${question}" mono: nothing on file; asked to save Fridays.` }]) }, reply);
+  assert.deepEqual([clean.autoFails, clean.misses], [[], []]);
+  const saved = run({ memory: "- 2026-10-21 · Reviews are on Fridays\n", topics: [], tree: tree([]) }, reply);
+  assert.equal(saved.autoFails[0].check, "question-saved-as-decision");
+  const drifted = run({ memory: "", topics: [], tree: tree([{ l: 2, i: 0, text: "user: decided reviews happen on Fridays. mono: noted." }]) }, reply);
+  assert.equal(drifted.autoFails[0].check, "tree-question-became-decision");
+  const noTree = run({ memory: "", topics: [], tree: null }, reply);
+  assert.match(noTree.misses[0], /no tree/);
+  const normal = run({ memory: "", topics: [], tree: null }, reply, { about: "friday", question });
+  assert.deepEqual([normal.autoFails, normal.misses], [[], []]);
+  const agreed = run({ memory: "", topics: [], tree: null }, [{ t: 1, who: "tally-lead", where: "chat", text: "Yes, Fridays." }], { about: "friday", question });
+  assert.match(agreed.misses[0], /doesn't ask/);
 });

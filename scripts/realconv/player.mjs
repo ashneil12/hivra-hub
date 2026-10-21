@@ -131,6 +131,13 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     if (to.codingTeam) return { codingTeam: to.codingTeam === "project" ? ctx.spec.project.id : to.codingTeam };
     return null;
   };
+  // "Keep one long chat" on for the scene's Mono first (scene.longChat: "lead" or a Mono id); off is the default.
+  if (scene.longChat) {
+    const mono = scene.longChat === "lead" ? ctx.leadId : scene.longChat;
+    const set = await act("monoSetting", { mono, longChat: true }).catch((error) => ({ ok: false, error: error.message }));
+    log(`  ${scene.id}: Keep one long chat on for ${mono}${set.ok === false ? ` (FAILED: ${set.error})` : ""}`);
+    notes.push(`Keep one long chat: on for ${mono}${set.ok === false ? " (failed)" : ""}`);
+  }
   let place = await resolve(scene.openingTo ?? scene.place);
   if (!place) return finish({ invalid: `no place to send the opening (${JSON.stringify(scene.openingTo ?? scene.place)})` });
   const placeSession = async () => (place.session ? place.session : place.mono ? ctx.monoSession(place.mono) : null);
@@ -318,6 +325,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       sessionsStarted: events.filter((e) => e.kind === "session-new" && e.t >= t0).map((e) => ({ session: e.session, title: e.title, mono: e.mono })),
       newMonos: (snap?.monos ?? []).map((m) => m.id).filter((id) => !monosBefore.has(id)),
       roomEnded: scene.expect?.roomEnds ? ended - lastRoom >= (scene.quietSec ?? 60) * 1000 : null,
+      memory: scene.expect?.memoryGuard && place.mono && ctx.monoFiles ? ctx.monoFiles(place.mono) : null,
     });
     const triggered = scene.triggeredBy === "stuck" ? stuckSeen.length > 0 : true;
     const copies = copyMarks.map(({ copy, mark: copyMark }) => ({ name: copy.name, folder: copy.folder, ...copyLog(copy.folder, copyMark), changes: gitChanges(copy.folder, copyMark) }));
