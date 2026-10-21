@@ -28,14 +28,14 @@ function titleFor(request: string, topic: Topic): string {
 function blocksFor(request: string): BlocksSpec {
   const topic = TOPICS.find((t) => t.words.test(request)) ?? GENERAL;
   const blocks: Record<BlockKind, PageBlock> = {
-    barlist: { kind: "barlist", title: "Where it came from", rows: [{ label: "X posts", value: 96 }, { label: "Waitlist page", value: 61 }, { label: "Friends", value: 34 }, { label: "Search", value: 21 }] },
-    status: { kind: "status", title: "Status", state: topic.rows.some((r) => r[1] === "bad") ? "bad" : topic.rows.some((r) => r[1] === "warn") ? "warn" : "ok", line: topic.status[0], detail: topic.status[1] },
-    list: { kind: "list", title: topic.list, rows: topic.rows.map(([text, state, label]) => ({ text, state, label })) },
+    barlist: { kind: "barlist", title: "Where it came from", rows: [{ label: "Example: X posts", value: 96 }, { label: "Waitlist page", value: 61 }, { label: "Friends", value: 34 }, { label: "Search", value: 21 }] },
+    status: { kind: "status", title: "Status", state: topic.rows.some((r) => r[1] === "bad") ? "bad" : topic.rows.some((r) => r[1] === "warn") ? "warn" : "ok", line: `Example: ${topic.status[0]}`, detail: topic.status[1] },
+    list: { kind: "list", title: topic.list, rows: topic.rows.map(([text, state, label]) => ({ text: `Example: ${text}`, state, label })) },
     chart: { kind: "chart", title: topic.chart, bars: [["Mon", 2], ["Tue", 4], ["Wed", 3], ["Thu", 5], ["Fri", 1]].map(([label, value]) => ({ label: label as string, value: value as number })) },
-    note: { kind: "note", title: "Note", text: topic.note },
-    calendar: { kind: "calendar", title: "Calendar", month: "October 2026", firstWeekday: 3, days: 31, marked: [{ day: 15, text: "Today" }, { day: 16, text: "Playtest" }, { day: 19, text: "Ship" }] },
+    note: { kind: "note", title: "Note", text: `Example: ${topic.note}` },
+    calendar: { kind: "calendar", title: "Calendar", month: "October 2026", firstWeekday: 3, days: 31, marked: [{ day: 15, text: "Example: today" }, { day: 16, text: "Example: playtest" }, { day: 19, text: "Example: ship" }] },
   };
-  return { kind: "blocks", title: titleFor(request, topic), blocks: topic.order.map((k) => blocks[k]) };
+  return { kind: "blocks", title: `Example: ${titleFor(request, topic)}`, blocks: topic.order.map((k) => blocks[k]) };
 }
 
 

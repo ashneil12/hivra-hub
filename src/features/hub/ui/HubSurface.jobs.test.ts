@@ -201,8 +201,8 @@ describe("Later, Older, Looks right and the options sheet", () => {
 
   it("a stuck job is an amber row with its reason and when it was sent, and no button", async () => {
     mount(surface());
-    await until(() => text().includes("Moving the nightly backup"), "stuck row");
-    const stuck = [...container.querySelectorAll("div")].find((d) => d.textContent?.startsWith("Moving the nightly backup") && d.className.includes("hover:bg-content/5"))!;
+    await until(() => text().includes("Example: moving the nightly backup"), "stuck row");
+    const stuck = [...container.querySelectorAll("div")].find((d) => d.textContent?.startsWith("Example: moving the nightly backup") && d.className.includes("hover:bg-content/5"))!;
     expect(stuck.querySelector('[data-hub-circle="amber"]')?.textContent).toBe("Stuck");
     expect(stuck.textContent).toContain("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);

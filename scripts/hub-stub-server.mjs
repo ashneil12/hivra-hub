@@ -101,28 +101,28 @@ export function jobsScenario(now = Date.now()) {
     finishedAt: null, sourceRef: `ask:a_${id}`, seen: false, ...extra.wire,
   });
   const jobs = [
-    job("j_air", "vg-game", "Adding the air dodge", "working", { ago: 42, active: 0 }),
-    job("j_save", "vg-game", "Fixing the save bug", "checking", { ago: 12, active: 2 }),
+    job("j_air", "vg-game", "Example: adding the air dodge", "working", { ago: 42, active: 0 }),
+    job("j_save", "vg-game", "Example: fixing the save bug", "checking", { ago: 12, active: 2 }),
     // What Ash OS sends while a worker's question waits on its answer (ashos/job_sources.py `_summary`).
-    job("j_format", "vg-game", "Choosing the save format", "waiting", { ago: 18, active: 4, wire: { reason: "Waiting on an answer to a question" } }),
-    job("j_photo", "vg-game", "The photo mode", "parked", { ago: 300, active: 160, wire: { reason: "Paused by you", finishedAt: iso2(now - 160 * min) } }),
-    job("j_mail", "hivra", "Writing the welcome emails", "working", { ago: 25, active: 3 }),
-    job("j_backup", "hivra", "Moving the nightly backup", "sent_to_lead", {
+    job("j_format", "vg-game", "Example: choosing the save format", "waiting", { ago: 18, active: 4, wire: { reason: "Waiting on an answer to a question" } }),
+    job("j_photo", "vg-game", "Example: the photo mode", "parked", { ago: 300, active: 160, wire: { reason: "Paused by you", finishedAt: iso2(now - 160 * min) } }),
+    job("j_mail", "hivra", "Example: writing the welcome emails", "working", { ago: 25, active: 3 }),
+    job("j_backup", "hivra", "Example: moving the nightly backup", "sent_to_lead", {
       ago: 130, active: 6,
       wire: { reason: "The disk was full twice.", circle: "amber", word: "Stuck", sentAt: iso2(now - 20 * min), sentText: "Sent to coding team lead at 2:20pm", gotIt: { at: iso2(now - 19 * min), text: "Got it" } },
     }),
-    job("j_sender", "hivra", "Sending the waitlist emails", "lead_gave_up", {
+    job("j_sender", "hivra", "Example: sending the waitlist emails", "lead_gave_up", {
       ago: 200, active: 55,
       wire: { reason: "The email sender refused the login.", circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"], why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt." },
     }),
-    job("j_footer", "hivra", "Fixing the footer link", "done", { ago: 90, active: 30, wire: { finishedAt: iso2(now - 30 * min) } }),
-    job("j_sound", "nibbii", "Tidying the sound files", "stuck", { noLead: true, ago: 80, active: 14, wire: { reason: "No sound card in the test box.", circle: "amber", word: "Stuck" } }),
+    job("j_footer", "hivra", "Example: fixing the footer link", "done", { ago: 90, active: 30, wire: { finishedAt: iso2(now - 30 * min) } }),
+    job("j_sound", "nibbii", "Example: tidying the sound files", "stuck", { noLead: true, ago: 80, active: 14, wire: { reason: "No sound card in the test box.", circle: "amber", word: "Stuck" } }),
   ];
   const needs = [
     { id: "s:a_cannon", projectId: "nibbii", title: "Example: rework the app's notch pet", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "accept", actionTarget: "ask:a_cannon", rank: 3, since: now - 6 * 3600_000, state: "open", later: false },
     // What Ash OS sent for a Looks-right row before "accept" existed: action Open, marked seen instead.
     { id: "s:a_legacy", projectId: "nibbii", title: "Example: tidy the settings page", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "open", actionTarget: "ask:a_legacy", rank: 3, since: now - 7 * 3600_000, state: "open", later: false },
-    { id: "j:j_sender", projectId: "hivra", title: "Sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
+    { id: "j:j_sender", projectId: "hivra", title: "Example: sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
     ...[
       ["o1", "hivra", "Example: which Hivra folder is the real one?"], ["o2", "hivra", "Example: should the old waitlist be archived?"],
       ["o3", "vg-game", "Example: is the second boss still wanted?"],

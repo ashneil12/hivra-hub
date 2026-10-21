@@ -92,3 +92,12 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
   await page.mouse.move(5, 450);
   await shot(page, "c6-calendar-block");
 });
+
+test("PM-20: made-up data says Example: on Today (the stub's jobs and asks)", async ({ page }) => {
+  await open(page);
+  const built = page.locator("[data-hub-today-being-built]").first();
+  await expect(built).toContainText("Example: adding the air dodge", { timeout: 30_000 });
+  await expect(built).not.toContainText(/(^|[^:] )Adding the air dodge/);
+  await page.mouse.move(5, 450);
+  await shot(page, "pm20-today-example-labels");
+});

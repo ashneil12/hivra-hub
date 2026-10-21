@@ -72,7 +72,7 @@ describe("Today draws Ash OS's board", () => {
     await until(() => store.getSnapshot().today, "layout read");
     await until(() => sections().includes("being-built"), "being built on Today");
     expect(sections()).toEqual(["since", "needs", "being-built"]);
-    expect(container.querySelector("[data-hub-today-being-built]")?.textContent).toContain("Adding the air dodge");
+    expect(container.querySelector("[data-hub-today-being-built]")?.textContent).toContain("Example: adding the air dodge");
   });
 
   it("an applied Edit Today change puts a kept page on Today, Undo on Today takes it off, Redo puts it back", async () => {
