@@ -303,8 +303,9 @@ export type LeftoverTurnDeps = {
 };
 
 const leftoverDeps: LeftoverTurnDeps = {
-  list: listHarnessRuns,
-  kill: killChild,
+  // Called through, so a host without the command (or a test's stand-in) is just no leftover.
+  list: async (since) => listHarnessRuns(since),
+  kill: async (sessionId) => killChild(sessionId),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 

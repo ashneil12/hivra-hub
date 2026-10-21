@@ -1,8 +1,7 @@
-/* Tailwind scans src/ and the entry pages only. Scanning the whole checkout made @tailwindcss/vite fully reload the
+/* Tailwind scans src/ only (the entry pages carry no utility classes). Scanning the whole checkout made @tailwindcss/vite fully reload the
    dev window whenever a run wrote any file there (Mac round 2: every send cut its own turn ~2 s in).
    scripts/vite-reload-scope.test.mjs holds this. */
 @import "tailwindcss" source("..");
-@source "../../*.html";
 @source "../../node_modules/streamdown/dist/*.js";
 @source "../../node_modules/@streamdown/code/dist/*.js";
 @source "../../node_modules/@streamdown/mermaid/dist/*.js";
