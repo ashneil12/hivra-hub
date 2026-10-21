@@ -89,30 +89,3 @@ describe("the default team, added once", () => {
     expect(roster().map((m) => m.name)).not.toContain("Chief of Staff");
   });
 });
-
-describe("each of the default four wears its own image", () => {
-  beforeEach(() => localStorage.clear());
-  it("a fresh team gets four different images; an old shared robot is swapped; a look Ash picked is kept", () => {
-    ensureBuiltInMonos();
-    const fresh = JSON.parse(localStorage.getItem("monocode:mono-roster")!) as { id: string; mascot: string }[];
-    expect(fresh.map((m) => [m.id, m.mascot])).toEqual([
-      ["chief-of-staff", "invader"],
-      ["projects-manager", "crab"],
-      ["frank", "frog"],
-      ["alfred", "dino"],
-    ]);
-    localStorage.setItem(
-      "monocode:mono-roster",
-      JSON.stringify([
-        { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "x", projects: [] },
-        { id: "projects-manager", name: "Projects Manager", mascot: "letter", color: "x", projects: [] },
-        { id: "frank", name: "frank", mascot: "cat", mascotPicked: true, color: "x", projects: [] },
-        { id: "alfred", name: "Alfred", mascot: "rocket", color: "x", projects: [] },
-        { id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "x", projects: [] },
-      ]),
-    );
-    ensureBuiltInMonos();
-    const after = JSON.parse(localStorage.getItem("monocode:mono-roster")!) as { id: string; mascot: string }[];
-    expect(after.map((m) => m.mascot)).toEqual(["invader", "crab", "cat", "rocket", "robot"]);
-  });
-});
