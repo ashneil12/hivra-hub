@@ -44,7 +44,7 @@ Answer with ONE JSON object and nothing else:
 }
 
 /** What the tester reads: the scene, then what Ash can see, newest last. */
-export function testerPrompt(scene, seen, { elapsedSec, ashTurns, maxAshTurns, busy, stuck }) {
+export function testerPrompt(scene, seen, { elapsedSec, ashTurns, maxAshTurns, busy, stuck, buttons }) {
   const lines = [
     `## The scene (${scene.id}: ${scene.title})`,
     scene.card,
@@ -56,6 +56,14 @@ export function testerPrompt(scene, seen, { elapsedSec, ashTurns, maxAshTurns, b
     stuck ? `The hub shows something stuck: ${stuck}.` : "",
     "",
     ...seen.map((line) => `- ${line.who}: ${line.text}`),
+    ...(buttons
+      ? [
+          "",
+          `## Buttons Ash can see on the open screen`,
+          buttons.length ? buttons.map((b) => `- "${b.label}"${b.disabled ? " (greyed out)" : ""}`).join("\n") : "(none)",
+          `He may click one instead of typing: {"action":"click","label":"<exact label>","why":"..."}. He never clicks anything that deletes; he cancels instead.`,
+        ]
+      : []),
   ];
   return lines.filter((line) => line !== "").join("\n");
 }
@@ -70,6 +78,13 @@ export async function nextAshMove(client, scene, seen, state, { system = testerS
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const answer = await client.complete({ system, prompt });
     const move = parseJsonObject(answer.text);
+    if (move?.action === "click" && state.buttons) {
+      const label = String(move.label ?? "").trim();
+      if (state.buttons.some((b) => b.label === label && !b.disabled)) return { action: "click", label, why: move.why ?? "", refused };
+      refused.push(`no button "${label}" to click`);
+      prompt += `\n\nThere is no clickable button "${label}". Pick one from the list, or type, wait, or end.`;
+      continue;
+    }
     if (!move || !["send", "wait", "done"].includes(move.action)) {
       refused.push(`not a move: ${String(answer.text).slice(0, 120)}`);
       prompt += "\n\nAnswer with the one JSON object only.";

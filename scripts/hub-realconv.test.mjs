@@ -372,3 +372,13 @@ test("the app's 'Waiting on you' notice in a chat counts as its answer to Ash, f
   assert.deepEqual(appNoticeLines(blocks, seen, 100), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
   assert.deepEqual(appNoticeLines(blocks, seen, 200), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
 });
+
+test("in a clicks scene the tester may click a listed button, and an unlisted one is refused", async () => {
+  const { nextAshMove } = await import("./realconv/ash.mjs");
+  const answers = ['{"action":"click","label":"Delete"}', '{"action":"click","label":"Discard","why":"no"}'];
+  const client = { complete: async () => ({ text: answers.shift() }) };
+  const move = await nextAshMove(client, { id: "AD15", title: "t", card: "c" }, [], { elapsedSec: 1, ashTurns: 1, maxAshTurns: 4, buttons: [{ label: "Apply", disabled: false }, { label: "Discard", disabled: false }] }, { system: "s" });
+  assert.equal(move.action, "click");
+  assert.equal(move.label, "Discard");
+  assert.match(move.refused[0], /no button "Delete"/);
+});

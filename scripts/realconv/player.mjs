@@ -96,6 +96,15 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const stopAt = Math.min(ctx.deadline + 5 * 60_000, t0 + (scene.minutes ?? 12) * 60_000);
   const turnsCap = scene.maxTurns ?? 60;
   const mark = gitMark(ctx.project);
+  // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
+  const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
+  // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
+  const screens = [];
+  const shoot = async (name) => {
+    if (!ctx.screenshot) return;
+    const shot = await ctx.screenshot(`${scene.id}-${name}`).catch((error) => ({ ok: false, why: error.message }));
+    screens.push({ name, t: Date.now(), ...shot });
+  };
   const monosBefore = new Set(((await act("snapshot").catch(() => null))?.monos ?? []).map((m) => m.id));
 
   // -- setup: the bench's own scripted steps (a decision made earlier, a job to talk about), recorded as setup ---------
@@ -128,6 +137,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   };
 
   const ashLines = [];
+  const clicks = [];
   const send = async (text, { verbatim }) => {
     // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
     const mode = place.codingTeam && scene.runtimeMode ? { runtimeMode: scene.runtimeMode } : {};
@@ -223,6 +233,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   while (Date.now() < stopAt) {
     const watch = scene.ashSilentAfterOpening ? Math.min(stopAt, t0 + (scene.watchSec ?? 900) * 1000) : Math.min(stopAt, Date.now() + 300_000);
     await settle(last, midAt && !midSent ? Math.min(watch, midAt) : watch);
+    await shoot(`reply-${ashLines.length}`);
     const state = await sample();
     if (midAt && !midSent && Date.now() >= midAt) {
       // Alfred's own mid-work line (S3): sent as written, while the work runs.
@@ -236,7 +247,9 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       break;
     }
     const seen = await seenNow();
-    const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
+    // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete.
+    const buttons = scene.clicks ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
+    const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck, buttons }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
     testerLog({ move });
     if (move.action === "invalid") {
       invalid = `the tester couldn't write Ash's next line: ${move.refused.join(" | ")}`;
@@ -247,6 +260,14 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       await sleep(20_000);
       continue;
     }
+    if (move.action === "click") {
+      const clicked = await act("click", { label: move.label }).catch((error) => ({ ok: false, error: error.message }));
+      clicks.push({ t: Date.now(), label: move.label, ok: clicked.ok !== false, error: clicked.error ?? null });
+      log(`  Ash clicks "${move.label}"${clicked.ok === false ? ` (FAILED: ${clicked.error})` : ""}`);
+      await shoot(`click-${clicks.length}`);
+      if (clicks.length >= 8) break;
+      continue;
+    }
     last = await send(move.text, { verbatim: false });
   }
   return finish({ invalid });
@@ -254,6 +275,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   // -- evidence, checks, judge, verdict ------------------------------------------------------------------------------------
   async function finish({ invalid: why }) {
     await ctx.pump();
+    await shoot("end");
     const ended = Date.now();
     const snap = await act("snapshot").catch(() => null);
     const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000 || ms(row.updated_at) >= t0);
@@ -286,11 +308,12 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       roomEnded: scene.expect?.roomEnds ? ended - lastRoom >= (scene.quietSec ?? 60) * 1000 : null,
     });
     const triggered = scene.triggeredBy === "stuck" ? stuckSeen.length > 0 : true;
-    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes });
+    const copies = copyMarks.map(({ copy, mark: copyMark }) => ({ name: copy.name, folder: copy.folder, ...copyLog(copy.folder, copyMark), changes: gitChanges(copy.folder, copyMark) }));
+    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies, clicks });
     fs.writeFileSync(path.join(dir, "transcript.md"), transcriptText);
     const judged = why || !triggered ? null : await judgeScene(judge, scene, transcriptText, hard, rubric);
     const provenance = { agents: agentsReal === true, tester: tester.real === true, judge: judge.real === true };
-    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, ...verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered }), hard, judged, notes };
+    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered }), hard, judged, notes };
     fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));
     fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
     log(`  ${scene.id}: ${result.verdict}${result.wouldBe ? ` (would be ${result.wouldBe})` : ""}${result.reasons?.length ? `: ${result.reasons.slice(0, 2).join("; ")}` : ""}`);
@@ -299,8 +322,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 }
 
 /** What a person and the judge read: every line in time order, then the host's facts. */
-export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes }) {
+/** A copy's new commits since the mark, one line each (what landed on which branch). */
+export function copyLog(folder, mark) {
+  if (!mark) return { commits: [] };
+  const out = spawnSync("git", ["log", "--all", "--format=%h %D | %s", "--not", ...mark.refs], { cwd: folder, encoding: "utf8" });
+  return { commits: out.status === 0 ? out.stdout.split("\n").filter(Boolean).slice(0, 40) : [] };
+}
+
+export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies = [], clicks = [] }) {
   const timeline = [
+    ...clicks.map((c) => ({ t: c.t, line: `**Ash clicks** "${c.label}"${c.ok ? "" : ` (it didn't take: ${c.error})`}` })),
     ...ashLines.map((l) => ({ t: l.t, line: `**Ash**${l.verbatim ? " (his own words)" : ""}${l.accepted ? "" : ` (NOT accepted: ${l.error})`}: ${l.text}` })),
     ...toAsh.map((m) => ({ t: m.t, line: `[${m.where}] **${m.who}**: ${m.text}` })),
     ...texts.filter((l) => l.who === "worker" && l.text).map((l) => ({ t: l.t, line: `[worker chat, Ash doesn't read this] ${l.text.slice(0, 600)}` })),
@@ -321,6 +352,14 @@ export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, t
     "## The project after the scene",
     "",
     `Files changed: ${changes.changed.length ? changes.changed.join(", ") : "none"}`,
+    ...copies.flatMap((c) => [
+      "",
+      `## ${c.name} (throwaway copy) after the scene`,
+      "",
+      `Files changed: ${c.changes.changed.length ? c.changes.changed.slice(0, 60).join(", ") : "none"}`,
+      c.commits.length ? `New commits:\n${c.commits.map((line) => `- ${line}`).join("\n")}` : "New commits: none",
+      c.changes.diff ? `\n\`\`\`diff\n${c.changes.diff.slice(0, 6000)}\n\`\`\`` : "",
+    ]),
     tests ? `Tests (\`${tests.command}\`): exit ${tests.code} in the main checkout${tests.worktrees?.length ? `; ${tests.worktrees.map((w) => `exit ${w.code} in ${w.cwd}`).join("; ")}` : ""}\n\n\`\`\`\n${tests.tail}\n\`\`\`` : "",
     notes.length ? `\n## Harness notes\n\n${notes.map((n) => `- ${n}`).join("\n")}` : "",
     "",

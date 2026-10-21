@@ -42,6 +42,21 @@ export const DEV_CLAUDE_CONFIG = path.join(REAL_HOME, ".monocode-hub-dev/claude-
 const LOGIN_KEYCHAIN = path.join(REAL_HOME, "Library/Keychains/login.keychain-db");
 const DEFAULT_SCENARIOS = path.join(ROOT, "tests/realtest/scenarios/baseline.json");
 const TEMPLATE = path.join(ROOT, "tests/realtest/tally");
+
+/**
+ * A throwaway copy of one of Ash's repos for a scene: a fresh clone of its current branch (never hard links into his
+ * repo), with every remote removed and pushes pointed nowhere, so the agents can commit and "ship" without reaching
+ * his repo or any real remote. Returns the copy's folder.
+ */
+export function copyProject(source, dest, env = {}) {
+  const run = (args, cwd) => execFileSync("git", args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
+  if (!fs.existsSync(path.join(source, ".git"))) throw new Error(`not a git repo: ${source}`);
+  if (fs.existsSync(dest)) throw new Error(`copy already exists: ${dest}`);
+  run(["clone", "-q", "--no-hardlinks", "--single-branch", source, dest]);
+  for (const remote of run(["remote"], dest).split("\n").filter(Boolean)) run(["remote", "remove", remote], dest);
+  run(["config", "remote.pushDefault", "nowhere"], dest);
+  return fs.realpathSync(dest);
+}
 /** Ash's launcher for Claude Code on Grok 4.7 through his Grok subscription (src/.../claudeGrokBridge.ts). */
 export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
 export const GROK_BRIDGE_MODEL = "grok-4.7";
@@ -439,6 +454,9 @@ export async function runBench(options, hooks = {}) {
     git("add", "-A");
     git("commit", "-q", "-m", "Tally: starting point (one failing stats test on purpose)");
     log(`project ${spec.project.name} at ${project}`);
+    // Throwaway copies of Ash's real repos (a scene book's `copies`): cloned with no remote, so nothing can reach his.
+    const copies = (spec.copies ?? []).map((copy) => ({ ...copy, folder: copyProject(copy.source, path.join(projects, copy.id), { HOME: home }) }));
+    for (const copy of copies) log(`copy of ${copy.name} at ${copy.folder} (from ${copy.source}, no remote)`);
 
     // -- memory: the invented facts the run checks for ----------------------------------------------------------------------
     for (const [layer, facts] of Object.entries(spec.memory ?? {})) {
@@ -523,6 +541,12 @@ export async function runBench(options, hooks = {}) {
     stub.state.needs.length = 0;
     stub.state.since.overall = `${spec.project.name} is the test project for this run.`;
     stub.addProject({ id: spec.project.id, name: spec.project.name, shortName: spec.project.shortName ?? spec.project.name, iconShape: "chart", folder: project });
+    for (const copy of copies) {
+      // The stub's invented project of the same id now points at the throwaway copy.
+      const known = stub.state.projects.findIndex((p) => p.id === copy.id);
+      if (known >= 0) stub.state.projects.splice(known, 1);
+      stub.addProject({ id: copy.id, name: copy.name, shortName: copy.shortName ?? copy.name, iconShape: copy.iconShape ?? "folder", folder: copy.folder });
+    }
 
     // Being built: jobs from the app's mirrored delegations, as Ash OS makes them.
     const jobState = new Map();
@@ -726,7 +750,7 @@ export async function runBench(options, hooks = {}) {
     };
 
     const memoryCalls = () => readNdjson(path.join(state, "memory-calls.ndjson"));
-    const ctx = { runStarted: started, memoryCalls, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, spec, deadline, budget, pump };
+    const ctx = { runStarted: started, memoryCalls, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
