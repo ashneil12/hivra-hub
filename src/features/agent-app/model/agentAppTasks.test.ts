@@ -20,8 +20,10 @@ import {
 } from "./agentAppTasks";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
 import {
+  memoryWorkerQueue,
   pumpWorkers,
   queuedWorkers,
+  setWorkerQueueBackend,
   resetWorkerPool,
   setWorkerLimits,
   workerLimits,
@@ -1010,6 +1012,44 @@ describe("parallel workers per project, with throttling (H8)", () => {
     });
     expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
     await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
+  });
+
+  it("never starts a task twice: asked again for a request already started, it reads the task back (H8c)", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started } = pooled(rows);
+    const first = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build it.", title: "Build it" }, host)) as Record<string, unknown>;
+    const again = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build it.", title: "Build it" }, host)) as Record<string, unknown>;
+    expect(started).toHaveLength(1);
+    expect(again).toMatchObject({ taskId: first.taskId, childSessionId: "app-mono-exo-r1", status: "running", alreadyStarted: true });
+    // A task its owner cancelled can be asked for again.
+    rows[0].state = "cancelled";
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build it." }, host);
+    expect(started).toHaveLength(2);
+  });
+
+  it("a waiting worker whose window died after it started, before it left the queue, isn't started again on relaunch", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, pump } = pooled(rows);
+    const store = memoryWorkerQueue();
+    await setWorkerQueueBackend(store);
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "One." }, host);
+    await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Two." }, host);
+    expect(store.jobs.map((q) => q.id)).toEqual(["app-mono-exo-r2"]);
+    // r1 finishes; r2 is claimed and started, then the app dies before the queue hears it started.
+    rows[0].state = "completed";
+    await store.claim("app-mono-exo-r2", "dead-window");
+    // (Its worker is running: the app recorded its task.)
+    rows.push(row({ id: "t-r2", ownerSession: source.id, childSession: "app-mono-exo-r2", requestId: "app-mono-exo-r2" }));
+    const before = started.length;
+    // Relaunch: the claim is freed, the pump asks r2's delegate_task again, which finds its task and starts nothing.
+    store.releaseAll();
+    await setWorkerQueueBackend(store);
+    rows.find((r) => r.id === "t-r2")!.state = "completed";
+    await pump();
+    expect(started.length).toBe(before);
+    expect(store.jobs).toEqual([]);
+    expect(queuedWorkers()).toEqual([]);
   });
 
   it("lets a coding-team chat's workers wait too, in its own project", async () => {
