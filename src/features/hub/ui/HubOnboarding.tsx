@@ -77,7 +77,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
               <input data-hub-onboarding-name value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name (optional)" maxLength={40}
                 className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
             </label>
-            <p className="text-[13px] leading-5 text-content/60">Two quick choices. You can change all of it later in Settings.</p>
+            <p className="text-[13px] leading-5 text-content/60">A few quick choices. You can change all of it later in Settings.</p>
           </div>
         ) : null}
 
