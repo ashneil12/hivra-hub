@@ -3,6 +3,7 @@ import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
 import { setHubSelection } from "../model/hubNav";
+import { preloadAshTeam } from "../model/hubTeam";
 import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
@@ -13,6 +14,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState(0);
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
+  const [team, setTeam] = useState<"plain" | "ash">("plain");
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -38,6 +40,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [theme, setTheme] = useState<ThemePresetId>("monocode");
   const done = (next: "today" | "new-project" | "restore" = "today") => {
     finishOnboarding();
+    if (team === "ash") void preloadAshTeam();
     setHubSelection({ project: "today", item: next === "today" ? "inbox" : next });
     onClose();
   };
@@ -74,6 +77,10 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
               onChange={(e) => void onFile(e.target.files?.[0])} />
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
+            <Group label="Your team">
+              <Toggle on={team === "plain"} onClick={() => setTeam("plain")} title="A plain team" sub="Four roles, nothing pre-loaded" />
+              <Toggle on={team === "ash"} onClick={() => setTeam("ash")} title="Pre-load Ash's team" sub="His souls and starting facts" />
+            </Group>
             <p className="text-[13px] leading-5 text-content/60">
               Three dashboards come built in: Game studio, Product / SaaS and Org / ops.
             </p>

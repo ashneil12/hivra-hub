@@ -13,6 +13,8 @@ import {
 } from "../model/portable";
 import type { PendingImport } from "../model/importPlan";
 import { ImportPreview, Tick } from "./ImportPreview";
+import { preloadAshTeam } from "../../hub/model/hubTeam";
+import { teamPack } from "../../hub/model/teamPack";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -55,6 +57,7 @@ export function PortablePage() {
   const [report, setReport] = useState<ExportReport | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingImport | null>(null);
+  const [preloaded, setPreloaded] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -171,7 +174,14 @@ export function PortablePage() {
         <div className="flex items-center gap-2 px-3">
           <button type="button" data-portable-import-file onClick={() => void doImport("file")} className={BTN} disabled={!!busy}>Import a file…</button>
           <button type="button" data-portable-import-folder onClick={() => void doImport("folder")} className={BTN} disabled={!!busy}>Import a folder…</button>
+          {teamPack() === "plain" && !preloaded ? (
+            <button type="button" data-portable-preload-team className={BTN} disabled={!!busy}
+              onClick={() => void preloadAshTeam().then((ids) => setPreloaded(`Ash's team is pre-loaded${ids.length ? ` (${ids.length} souls)` : ""}. Souls you wrote yourself were kept.`))}>
+              Pre-load Ash's team
+            </button>
+          ) : null}
         </div>
+        {preloaded ? <p className="px-3 pt-1 text-[13px] text-content/75" data-portable-preloaded>{preloaded}</p> : null}
       </section>
       {problem ? <p className="px-3 text-[13px] text-content" data-portable-problem>{problem}</p> : null}
     </div>

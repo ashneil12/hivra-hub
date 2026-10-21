@@ -28,7 +28,7 @@ import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
 import { leadFor, leadSoul } from "./hubLeads";
 import { KNOWN_LEAD_SHAPES, KNOWN_SOUL_HASHES } from "./knownSouls.generated";
-import { TEAM_SOULS } from "./teamSouls";
+import { teamSouls } from "./teamPack";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
 
@@ -63,7 +63,8 @@ export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplat
   return monos.flatMap((mono): SoulTemplate[] => {
     const name = mono.name?.trim() || mono.id;
     const spec = teamSpecOf(mono);
-    if (spec && TEAM_SOULS[spec.id]) return [{ monoId: mono.id, name, template: defaultSoul(TEAM_SOULS[spec.id]) }];
+    const souls = teamSouls();
+    if (spec && souls[spec.id]) return [{ monoId: mono.id, name, template: defaultSoul(souls[spec.id]) }];
     const lead = leadFor(mono.id);
     if (lead) {
       const folder = mono.projects[0] ?? null;
