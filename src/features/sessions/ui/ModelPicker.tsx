@@ -45,7 +45,7 @@ import {
   getHarnessAvailabilitySnapshot,
 } from "../../../integrations/harness/core/availability";
 import { AddModelForm, addModelEscRef, OtherModelsSection, useCustomModels } from "./CustomModels";
-import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
+import { customModelSettings, pillText, providerName, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
@@ -402,7 +402,7 @@ export function ModelPicker({
   const current = source.resolve(harness, model);
   currentRef.current = current;
   // On the Grok bridge every Claude model it names runs as Grok 4.7, so the menus list only that (BridgeModelList).
-  const bridged = onGrokBridge(current.harness);
+  const bridged = onGrokBridge(current.harness, current.id);
   const settings = useMemo(() => {
     void catalogVersion;
     // In beside-picker mode every option row renders as a toolbar pill, so the
@@ -513,7 +513,7 @@ export function ModelPicker({
   const openRecentMenu = () => {
     const selected = currentRef.current;
     if (!selected) return;
-    if (onGrokBridge(selected.harness)) {
+    if (onGrokBridge(selected.harness, selected.id)) {
       // Recent Claude models would all run the same model on the bridge: open the one-entry list instead.
       setOpen(true);
       return;
@@ -811,7 +811,7 @@ export function ModelPicker({
         title={
           triggerLabel
             ? // On the Grok bridge the Claude model it names isn't what runs, so the tooltip doesn't name it either.
-              onGrokBridge(current.harness)
+              onGrokBridge(current.harness, current.id)
               ? triggerLabel
               : `${triggerLabel} · ${triggerTitle}`
             : cycle
@@ -895,7 +895,7 @@ export function ModelPicker({
       ) : null}
 
       {open && hideSettings && bridged ? (
-        <BridgeModelList anchor={button} side={side} onDismiss={(reason) => dismiss(reason === "escape")} onPick={() => dismiss(true)} />
+        <BridgeModelList anchor={button} side={side} onDismiss={(reason) => dismiss(reason === "escape")} onPick={() => dismiss(true)} otherModels={otherModels} />
       ) : open && hideSettings ? (
         <ModelFlyout
           anchor={button}
@@ -1114,6 +1114,7 @@ export function ModelPicker({
               layer={LAYER.submenu}
               onMouseEnter={() => setSubmenu(submenu)}
               onPick={() => dismiss(true)}
+              otherModels={otherModels}
             />
           ) : showSubmenu && submenu.kind === "models" ? (
             <ModelFlyout
@@ -1601,8 +1602,9 @@ function SelectPill({
 }
 
 /**
- * The model list on the Grok bridge: only what the bridge runs, Grok 4.7, already chosen, with no mark beside it.
- * Picking it changes nothing; off the bridge the full list (ModelFlyout) shows as before.
+ * The model list on the Grok bridge: what the bridge runs, Grok 4.7, then the Other models (E7, Ash 21 Oct): DeepSeek
+ * and the rest. Picking Grok 4.7 changes nothing; picking an Other model moves the chat off the bridge (CoS's routing,
+ * claudeGrokBridge routedOffBridge). Off the bridge the full list (ModelFlyout) shows as before.
  */
 function BridgeModelList({
   anchor,
@@ -1612,6 +1614,7 @@ function BridgeModelList({
   onDismiss,
   onMouseEnter,
   onPick,
+  otherModels,
 }: {
   anchor: PopoverAnchor;
   side?: PopoverSide;
@@ -1620,7 +1623,11 @@ function BridgeModelList({
   onDismiss?: (reason: PopoverDismissReason) => void;
   onMouseEnter?: () => void;
   onPick: () => void;
+  otherModels?: { currentModel: string; onPick: (model: CustomModel) => void };
 }) {
+  const others = useCustomModels();
+  const onOther = !!otherModels && others.some((m) => otherModels.currentModel === `custom:${m.id}`);
+  const row = "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] text-content";
   return (
     <Popover
       anchor={anchor}
@@ -1641,14 +1648,38 @@ function BridgeModelList({
       <button
         type="button"
         role="menuitemradio"
-        aria-checked
+        aria-checked={!onOther}
         onMouseDown={(event) => event.preventDefault()}
         onClick={onPick}
-        className="flex h-8 w-full items-center gap-2 rounded-lg bg-selection px-2 text-left text-[13px] text-content"
+        className={`${row} ${onOther ? "hover:bg-content/5" : "bg-selection"}`}
       >
         <span className="min-w-0 flex-1 truncate">{GROK_BRIDGE_LABEL}</span>
-        <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} />
+        {onOther ? null : <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} />}
       </button>
+      {otherModels && others.length ? (
+        <div role="group" aria-label="Other models" data-bridge-other-models className="mt-1 pt-1">
+          <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">Other models</div>
+          {others.map((m) => {
+            const on = otherModels.currentModel === `custom:${m.id}`;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={on}
+                data-bridge-other-model={m.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => otherModels.onPick(m)}
+                className={`${row} ${on ? "bg-selection" : "hover:bg-content/5"}`}
+              >
+                <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                <span className="shrink-0 text-[10px] text-content/40">{providerName(m.provider)}</span>
+                {on ? <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </Popover>
   );
 }
