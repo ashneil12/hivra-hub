@@ -8,9 +8,10 @@ it("in a narrow sidebar the role name truncates first and the grey own name neve
   expect(src).toMatch(/className="shrink-0 text-xs font-normal text-content\/80 [^"]*" data-mono-own-name/);
 });
 
-it("G4: with names first, the grey role label truncates and the name keeps its room", () => {
-  expect(src).toMatch(/className="max-w-full shrink-0 truncate text-sm font-medium" data-mono-primary-name/);
-  expect(src).toMatch(/className="min-w-0 truncate text-xs font-normal text-content\/80 @max-\[200px\]\/monorail:hidden" data-mono-role/);
+it("G4: with names first, the name has the whole first row and the grey role is a second line at every width", () => {
+  expect(src).toMatch(/className="truncate text-sm font-medium leading-\[18px\]" data-mono-primary-name/);
+  expect(src).toMatch(/className="-mt-px truncate text-\[11px\] font-normal leading-\[13px\] text-content\/80" data-mono-role/);
+  expect(src).not.toMatch(/monorail:hidden" data-mono-role/);
 });
 
 // Glass (hsl 240 0% 9%), content at 92% lightness; an unselected row is drawn at 65% opacity.
