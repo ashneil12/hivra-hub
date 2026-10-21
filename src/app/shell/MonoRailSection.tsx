@@ -360,13 +360,15 @@ export function MonoRailSection({
               : state.status === "failed"
                 ? [`${MONO_STATUS_LABEL.failed}: ${state.activity ?? "its last turn failed"}`, stuckSplit].filter(Boolean).join(" · ")
                 : [state.activity ?? MONO_STATUS_LABEL[state.status], stuckSplit].filter(Boolean).join(" · ");
+          // A name with a role under it gets 6px more, so the role never sits on the next name; a name alone stays 32px.
+          const twoLines = !!shown(look).secondary && shown(look).secondary !== look.name;
           return (
             <Fragment key={mono.id}>
             <div
               ref={(el) => sortable.setItemRef(mono.id, el)}
               data-selected={selected || undefined}
               data-mono-status={state.status}
-              className={`reorder-item project-reorder-item group relative flex h-8 cursor-default touch-none items-stretch rounded-md px-2 ${
+              className={`reorder-item project-reorder-item group relative flex ${twoLines ? "h-[38px]" : "h-8"} cursor-default touch-none items-stretch rounded-md px-2 ${
                 selected ? "bg-selection-strong text-content" : "opacity-65"
               }`}
               onPointerDown={(event) => {
@@ -452,7 +454,7 @@ export function MonoRailSection({
                       </span>
                     )}
                     {shown(look).secondary ? (
-                      <span className="-mt-px truncate text-[11px] font-normal leading-[13px] text-content/80" data-mono-role>
+                      <span className="truncate text-[11px] font-normal leading-[14px] text-content/80" data-mono-role>
                         {shown(look).secondary}
                       </span>
                     ) : null}

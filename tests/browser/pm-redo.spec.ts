@@ -50,12 +50,13 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(0);
 });
 
-test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead has none", async ({ page }) => {
+test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead's says which coding team it runs", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
   const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
   await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
-  await expect(rail.locator('button[aria-label^="EXO lead"] [data-mono-role]')).toHaveCount(0);
+  // A project's Lead's role comes from its project.
+  for (const p of ["EXO", "Hivra", "Nibbii"]) await expect(rail.locator(`button[aria-label^="${p} lead"] [data-mono-role]`)).toHaveText(`Runs the ${p} coding team`);
   await cos.click();
   await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner");
   await page.locator("[data-mono-title] [data-mono-role-edit]").click();
@@ -72,7 +73,7 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
     expect(r!.y).toBeGreaterThanOrEqual(n!.y + n!.height - 2);
   }
   const heights = await rail.locator("button[aria-label][title]").evaluateAll((els) => [...new Set(els.map((e) => Math.round(e.closest(".reorder-item")?.getBoundingClientRect().height ?? 0)).filter(Boolean))]);
-  expect(heights).toEqual([32]); // every row the same height, with or without a role
+  expect(heights).toEqual([38]); // a name with a role under it is 38px (a name alone stays 32px), every row alike
   await page.mouse.move(700, 450);
   await shot(page, "g4-role-labels");
   // The narrow rail: the role is still there, the name still has its whole first row.
@@ -100,6 +101,9 @@ test("G4 tiles: every Mono's tile is its little image by default; letters are a 
   // Images by default on every rail tile: no tile is letters until Ash picks them.
   expect(await rail.locator("button[aria-label][title] svg.pixel-mascot").count()).toBeGreaterThan(3);
   expect(await rail.locator("button[aria-label][title] svg text").count()).toBe(0);
+  // The default four each wear a different image.
+  const faces = await Promise.all(["Chief of Staff", "Projects Manager", "frank", "Alfred"].map((n) => rail.locator(`button[aria-label^="${n}"] svg.pixel-mascot`).first().innerHTML()));
+  expect(new Set(faces).size).toBe(4);
   await alfred.click();
   await page.getByRole("button", { name: "Alfred settings" }).click();
   await page.getByRole("button", { name: "Change mascot and color" }).click();
