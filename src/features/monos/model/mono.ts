@@ -444,18 +444,9 @@ export function saveMonoName(monoId: string, name: string): void {
   updateMono(monoId, (mono) => ({ ...mono, name }));
 }
 
-/**
- * Picking "Letter" goes back to the automatic letters; any other mascot, or letters Ash chose ("letter:Al"), is kept
- * as picked on purpose.
- */
+/** Picking a mascot or "Letter" (automatic letters), or typing letters ("letter:Af"), is kept as Ash's choice. */
 export function saveMonoMascot(monoId: string, mascot: string): void {
-  updateMono(monoId, (mono) => {
-    if (mascot === LETTER_AVATAR) {
-      const { mascotPicked: _, ...rest } = mono;
-      return rest;
-    }
-    return { ...mono, mascot, mascotPicked: true };
-  });
+  updateMono(monoId, (mono) => ({ ...mono, mascot, mascotPicked: true }));
 }
 
 /** The letter avatar's mascot value: "letter:F" draws F, light on a grey glass square. "letter" alone is the picker's choice. */
@@ -463,8 +454,12 @@ export const LETTER_AVATAR = "letter";
 export function isLetterAvatar(mascot: string | undefined): boolean {
   return mascot === LETTER_AVATAR || !!mascot?.startsWith(`${LETTER_AVATAR}:`);
 }
-/** What a Mono wears: its letter unless the user picked a mascot on purpose. */
+/**
+ * What a Mono wears: its mascot image by default (Ash likes the little images on the tiles). Letters only when the
+ * Mono has no image, or Ash picked Letter: the letters he typed as he typed them, otherwise the automatic two capitals.
+ */
 export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
+  if (mono.mascot && !isLetterAvatar(mono.mascot)) return mono.mascot;
   if (mono.mascotPicked && mono.mascot !== LETTER_AVATAR) return mono.mascot;
   return `${LETTER_AVATAR}:${monoTileLetters(mono.name?.trim() || "Mono")}`;
 }
