@@ -100,6 +100,7 @@ export function benchSpec(book, scenes, options) {
     version: 1,
     about: book.about,
     project: book.project,
+    copies: book.copies ?? [],
     memory: book.memory,
     leak: book.leak,
     // The wrapper holds Claude chats to this alias (sonnet unless Ash asked for another); routed chats are left alone.

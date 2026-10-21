@@ -51,10 +51,10 @@ import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { LAYER } from "../../../shared/lib/layers";
 import { HarnessIcon } from "./HarnessIcon";
+import { claudePillName, claudeRunsOnGrok } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover } from "../../../shared/ui/Popover";
 import { MOD } from "../../../platform/tauri/platform";
 import { keybindingPressed } from "../../settings/model/settings";
-import { claudeRunsOnGrok } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import "./ModelPicker.css";
 
 const GROK_BRIDGE_LABEL = "Grok 4.7";
@@ -406,12 +406,11 @@ export function ModelPicker({
   const triggerEffortLabel = triggerEffortSetting
     ? settingValueLabel(triggerEffortSetting, values)
     : undefined;
-  // On the Grok subscription bridge every Claude Code chat runs on Grok 4.7, whatever Claude model is picked.
+  // On the Grok bridge every Claude Code chat runs on Grok 4.7: the pill, title and label all say so.
   const onGrokBridge = current.harness === "claude" && claudeRunsOnGrok();
-  const triggerModelName = onGrokBridge
-    ? GROK_BRIDGE_LABEL
-    : current.harness === "claude"
-      ? current.name.replace(/^Claude /, "")
+  const triggerModelName =
+    current.harness === "claude"
+      ? claudePillName(current.name)
       : current.name;
   useCustomModels();
   const pill = pillText(model, triggerModelName);

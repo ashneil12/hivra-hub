@@ -228,6 +228,8 @@ type Live = {
   backgroundRows: Map<string, string>;
   /** A task finished after Claude yielded; its follow-up turn is on the way. */
   awaitingResume: ReturnType<typeof setTimeout> | null;
+  /** Claude yielded with only backgrounded shells left: the turn is let go after SHELL_HOLD_MS. */
+  shellHold: ReturnType<typeof setTimeout> | null;
   /** Last background list sent to the UI, to skip repeats. */
   backgroundKey: string;
   /** Last background work (with ids) sent to the UI, to skip repeats. */
@@ -307,6 +309,13 @@ class DeadConversationError extends Error {
  * is let go anyway. The follow-up turn normally starts within a second or two.
  */
 const RESUME_GRACE_MS = 15_000;
+/**
+ * How long Claude may sit yielded with only shells it backgrounded still going before the turn is let go. A dev server
+ * or a watcher never finishes, so waiting for it held a worker "running" for good and its report never reached its Lead
+ * (Ash day AD3 on Grok: the worker answered "no footer fault, no commit" and left `python -m http.server` up). The
+ * shells keep running and keep their rows; a later wake still shows in the chat. Subagents and monitors still hold.
+ */
+const SHELL_HOLD_MS = 60_000;
 
 const liveByThread = new Map<string, Live>();
 const resumeByThread = new Map<string, Resume>();
@@ -935,6 +944,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     agentTasks: new Map(),
     workflows: new Map(),
     backgroundTasks: new Map(),
+    shellHold: null,
     backgroundRows: new Map(),
     awaitingResume: null,
     backgroundKey: "",
@@ -1078,6 +1088,7 @@ async function runTurn(
   live.backgroundTasks.clear();
   live.backgroundRows.clear();
   clearAwaitingResume(live);
+  clearShellHold(live);
   live.backgroundKey = "";
   syncCutWork(live);
   live.taskNotes = [];
@@ -2331,6 +2342,7 @@ function finishBackgroundTask(live: Live, taskId: string): void {
 function noteClaudeTurnStarted(live: Live): void {
   if (!live.activeTurn || !live.turnResultSeen) return;
   live.turnResultSeen = false;
+  clearShellHold(live);
   // A new message, not more of the last one: its snapshot must not be
   // compared against what the earlier turn streamed.
   live.emittedAssistant = "";
@@ -2474,7 +2486,11 @@ function syncCutWork(live: Live): void {
 
 function maybeFinishTurn(live: Live): void {
   if (!live.turnResultSeen) return;
-  if (live.agentTasks.size > 0 || live.backgroundTasks.size > 0) return;
+  if (live.agentTasks.size > 0) return;
+  if (live.backgroundTasks.size > 0) {
+    holdForShells(live);
+    return;
+  }
   if (live.awaitingResume) return;
   if (!live.activeTurn && !live.turnDone) return;
   finishActiveTurn(live, [
@@ -2483,8 +2499,36 @@ function maybeFinishTurn(live: Live): void {
   ]);
 }
 
+/** Only shells left running, and Claude has yielded: give them SHELL_HOLD_MS to wake Claude, then let the turn go. */
+function onlyShellsLeft(live: Live): boolean {
+  if (!live.activeTurn || !live.turnResultSeen || live.cancelled) return false;
+  if (live.agentTasks.size > 0 || live.workflows.size > 0 || live.awaitingResume) return false;
+  if (live.backgroundTasks.size === 0) return false;
+  return [...live.backgroundTasks.values()].every((task) => task.kind === "shell");
+}
+
+function holdForShells(live: Live): void {
+  if (live.shellHold || !onlyShellsLeft(live)) return;
+  live.shellHold = setTimeout(() => {
+    live.shellHold = null;
+    if (!onlyShellsLeft(live)) return;
+    finishActiveTurn(live, [
+      { type: "message.completed" },
+      { type: "reasoning.completed" },
+    ]);
+    syncBackgroundWait(live);
+  }, SHELL_HOLD_MS);
+}
+
+function clearShellHold(live: Live): void {
+  if (!live.shellHold) return;
+  clearTimeout(live.shellHold);
+  live.shellHold = null;
+}
+
 function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
   clearAwaitingResume(live);
+  clearShellHold(live);
   live.turnEndPending = false;
   live.activeTurn = false;
   syncCutWork(live);

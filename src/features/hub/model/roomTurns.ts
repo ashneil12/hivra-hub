@@ -187,6 +187,33 @@ function laneScore(seat: Seat, text: string): number {
   return words ? [...text.matchAll(words)].length : 0;
 }
 
+const HELLO_OPEN = /^(yo+|hey+|heya|hi+|hiya|hello|morning|mornin|gm|good morning|afternoon|good afternoon|evening|good evening|sup|wassup|whats up|wag1)\b/;
+const HELLO_REST = new Set(["yo", "hey", "hi", "morning", "mornin", "gm", "all", "team", "guys", "everyone", "everybody", "lads", "gang", "folks", "people", "ya", "yall", "there", "again", "afternoon", "evening", "good", "peeps", "fam", "chat", "room"]);
+
+/**
+ * Ash just saying hello to the room ("yo morning", "hey all"): every seat says hello back once, in its own voice
+ * (ash-day step 1), instead of the host alone. Anything with an ask in it is not a hello.
+ */
+export function isGreeting(text: string): boolean {
+  const t = text.toLowerCase().replace(/[^a-z' ]+/g, " ").replace(/'/g, "").replace(/\s+/g, " ").trim();
+  if (!t || t.length > 40) return false;
+  const open = HELLO_OPEN.exec(t);
+  if (!open) return false;
+  return t.slice(open[0].length).split(" ").filter(Boolean).every((word) => HELLO_REST.has(word));
+}
+
+const TO_EACH = /\b(each (one )?of (u|you|ya|yall|y'all)|every ?(one|body|seat|mono) of (u|you)|all of (u|you|ya)|(u|you) all (say|tell)|each seat|each mono|every seat|every mono|one by one|in ur own words|in your own words)\b/i;
+
+/**
+ * A round every seat answers for itself: Ash's hello ("yo morning"), or a question put to each of them ("what does each
+ * of u actually do"). The host answers first, for itself only; then each other seat once. Null: the usual room.
+ */
+export type Round = "hello" | "each";
+export function roundOf(text: string): Round | null {
+  if (isGreeting(text)) return "hello";
+  return TO_EACH.test(text) ? "each" : null;
+}
+
 /** A message from Ash that needs one answer and nobody else's: short, or nothing but a thanks or a go. */
 export function isShortMessage(text: string): boolean {
   return text.trim().length <= SHORT_MESSAGE;
@@ -419,6 +446,8 @@ export type TurnInput = {
   batch?: number;
   /** Chime: who answered. Reply: who addressed this Mono. */
   other?: string;
+  /** Answer or chime in a round every seat answers for itself (Ash's hello, or a question to each of them). */
+  round?: Round;
   /** Digest: how many seats spoke. */
   seatsSpoke?: number;
   /** Back: the work that came back, and this Mono's own answer to its report. */
@@ -434,11 +463,19 @@ function task(input: TurnInput): string {
   switch (kind) {
     case "answer": {
       const several = input.batch && input.batch > 1 ? ` (${input.batch} messages; answer them together)` : "";
+      if (input.round === "each")
+        return `Ash just asked each of you in this room${several}. Answer for yourself only, first, in one or two short lines from your own soul and lane. Don't speak for the others or name them: each answers for itself after you.`;
+      if (input.round === "hello")
+        return `Ash just said hello to the room. Say hello back, as yourself, in one short line. If something needs him today, add it in a few words. No task list. The others say hello themselves after you.`;
       return hosting
         ? `Ash just wrote${several}. You host this room, so you answer first, now. Start with one line that shows you heard him (for a long message, how many asks and anything parked). Write that first line before you call any tool (a brief to a Lead, a memory read): the room shows your words as you write them, so Ash sees you start at once. Then who takes what, by name ("PM, ..."), one short line each, which wakes that seat; leave out seats with nothing to do. Don't list his asks back or explain each one: the owner gets the detail in its brief. If what he asks clashes with something already decided, say so with the decision. If something is truly his call, ask it once, last, with your pick. A short or simple message gets a short answer and wakes nobody.`
         : `Ash just wrote to you${several}. Answer him first, from your lane. Name a seat ("CoS, ...") only if it should act.`;
     }
     case "chime":
+      if (input.round === "each")
+        return `Ash asked each of you in this room, and ${input.other ?? "the host"} answered for itself. Answer for yourself now, in one or two short lines from your own soul and lane. Don't repeat or speak for the others, and don't name seats. Don't reply ${NO_REPLY}.`;
+      if (input.round === "hello")
+        return `Ash just said hello to the room and ${input.other ?? "the host"} answered. Say hello back once, as yourself: one short line in your own voice. If something in your lane needs him today, add it in a few words with what shows it; otherwise nothing more. No task list, no status recap, no question unless one is truly needed. Don't reply ${NO_REPLY}.`;
       return `${input.other ?? "The host"} answered Ash. You may add ONE short message to his message, only if it is NEW and from your lane: a gap against Ash's own words (quote them), a correction, a check, a gate, or a pushback with reasons when what he asks clashes with an earlier decision. Never repeat, summarise or agree. Nothing new: reply with exactly ${NO_REPLY}.`;
     case "reply":
       return `${input.other ?? "Another seat"} addressed you in the message marked >> below. Act on it from your lane: answer it, do it, or pass or flag it. If it asks you to review work, check it yourself first (open the file, run the test, read the commit) and end with "pass from me" and what you checked, or numbered flags tied to Ash's words; a comment alone isn't a review. If you got several flags, answer all of them in one message. If you disagree with another seat, settle it with Ash's own words, or say "That's Ash's call" and stop. If nothing is needed from you, or it is already settled, reply with exactly ${NO_REPLY}.`;

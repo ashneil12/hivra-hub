@@ -349,3 +349,84 @@ test("S5 runs its coding-team chat in Full access; no other scene changes the mo
   const modes = book.scenes.filter((s) => s.runtimeMode).map((s) => [s.id, s.runtimeMode]);
   assert.deepEqual(modes, [["S5", "full-access"]]);
 });
+
+test("a quiet room isn't settled while a handoff started in the scene still runs", async () => {
+  const { handoffsOpen } = await import("./realconv/player.mjs");
+  const t0 = Date.parse("2026-10-21T11:19:24Z");
+  const row = (state, created = "2026-10-21T11:20:00Z") => ({ state, created_at: created });
+  assert.equal(handoffsOpen([row("running")], t0), true);
+  assert.equal(handoffsOpen([row("question")], t0), true);
+  assert.equal(handoffsOpen([row("completed"), row("failed"), row("cancelled")], t0), false);
+  // One left open by an earlier scene isn't this scene's.
+  assert.equal(handoffsOpen([row("running", "2026-10-21T10:00:00Z")], t0), false);
+});
+
+test("the app's 'Waiting on you' notice in a chat counts as its answer to Ash, first seen once", async () => {
+  const { appNoticeLines } = await import("./realconv/player.mjs");
+  const seen = new Map();
+  const blocks = [
+    { id: "a", role: "assistant", text: "working" },
+    { id: "n1", role: "system", notice: "waiting-on-you", text: "Waiting on you: it asked to run `npm install zod`." },
+    { id: "n2", role: "system", notice: "account-moved", text: "moved" },
+  ];
+  assert.deepEqual(appNoticeLines(blocks, seen, 100), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
+  assert.deepEqual(appNoticeLines(blocks, seen, 200), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
+});
+
+test("in a clicks scene the tester may click a listed button, and an unlisted one is refused", async () => {
+  const { nextAshMove } = await import("./realconv/ash.mjs");
+  const answers = ['{"action":"click","label":"Delete"}', '{"action":"click","label":"Discard","why":"no"}'];
+  const client = { complete: async () => ({ text: answers.shift() }) };
+  const move = await nextAshMove(client, { id: "AD15", title: "t", card: "c" }, [], { elapsedSec: 1, ashTurns: 1, maxAshTurns: 4, buttons: [{ label: "Apply", disabled: false }, { label: "Discard", disabled: false }] }, { system: "s" });
+  assert.equal(move.action, "click");
+  assert.equal(move.label, "Discard");
+  assert.match(move.refused[0], /no button "Delete"/);
+});
+
+test("a seat's room turn is counted once, in the room, not again as its chat text", async () => {
+  const { dropRoomEchoes } = await import("./realconv/player.mjs");
+  const lines = [
+    { t: 8000, who: "chief-of-staff", where: "chat", text: "Morning. Nothing new on Tally." },
+    { t: 8100, who: "chief-of-staff", where: "room", text: "Morning. Nothing new on Tally." },
+    { t: 9000, who: "chief-of-staff", where: "chat", text: "Different words in its own chat." },
+  ];
+  assert.deepEqual(dropRoomEchoes(lines).map((l) => l.where + ":" + l.text.slice(0, 9)), ["room:Morning. ", "chat:Different"]);
+});
+
+test("a judge that narrates instead of answering gets one more go for the JSON", async () => {
+  const { judgeScene } = await import("./realconv/judge.mjs");
+  const answers = ["I'll check each seat's soul first.", '{"grade":"PASS","replies":[]}'];
+  const prompts = [];
+  const client = { provider: "fake", model: "m", real: false, complete: async ({ prompt }) => (prompts.push(prompt), { text: answers.shift() }) };
+  const judged = await judgeScene(client, { id: "AD2", title: "t", card: "c" }, "## Timeline", {}, "rubric");
+  assert.equal(judged.grade, "PASS");
+  assert.match(prompts[1], /no tools/);
+});
+
+test("a judge that times out gets one more go, and a run's UNGRADED scenes can be judged again from what it saved", async () => {
+  const { judgeScene } = await import("./realconv/judge.mjs");
+  let calls = 0;
+  const flaky = { provider: "fake", model: "m", real: true, complete: async ({ timeoutMs }) => {
+    calls += 1;
+    assert.equal(timeoutMs, 600_000);
+    if (calls === 1) throw new Error("claude exited 143");
+    return { text: '{"grade":"PASS","replies":[]}' };
+  } };
+  assert.equal((await judgeScene(flaky, { id: "AD5", title: "t", card: "c" }, "## Timeline", {}, "r")).grade, "PASS");
+
+  const { rejudgeRun } = await import("./realconv/rejudge.mjs");
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), "rejudge-"));
+  for (const [id, verdict] of [["AD5", "UNGRADED"], ["AD3", "FAIL"]]) {
+    fs.mkdirSync(path.join(run, id));
+    fs.writeFileSync(path.join(run, id, "transcript.md"), `# ${id}\n- +1s **Ash**: hi`);
+    fs.writeFileSync(path.join(run, id, "result.json"), JSON.stringify({ id, verdict, reasons: [], hard: { autoFails: [], misses: [] }, provenance: { agents: true, tester: true, judge: true } }));
+  }
+  const judge = { provider: "fake", model: "m", real: true, complete: async () => ({ text: '{"grade":"PASS","replies":[{"answers":2,"adds":2,"disagrees":null,"honest":2,"voice":2}],"sceneChecks":[],"autoFails":[]}' }) };
+  const book = { scenes: [{ id: "AD5", title: "t", card: "c" }, { id: "AD3", title: "t", card: "c" }], judgeRubric: "r" };
+  const changed = await rejudgeRun(run, { book, judge });
+  assert.deepEqual(changed.map((c) => c.id), ["AD5"]);
+  const after = JSON.parse(fs.readFileSync(path.join(run, "AD5", "result.json"), "utf8"));
+  assert.equal(after.verdict, "PASS");
+  assert.equal(after.before.verdict, "UNGRADED");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(run, "AD3", "result.json"), "utf8")).verdict, "FAIL");
+});

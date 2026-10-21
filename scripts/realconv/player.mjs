@@ -16,6 +16,26 @@ import { judgeScene, verdict } from "./judge.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
+
+/** The app's own notices for Ash in a chat's blocks ("waiting-on-you"), each with the time it was first seen. */
+export function appNoticeLines(blocks, seen, now) {
+  const out = [];
+  for (const block of blocks ?? []) {
+    if (block?.role !== "system" || block.notice !== "waiting-on-you" || !block.text) continue;
+    if (!seen.has(block.id)) seen.set(block.id, now);
+    out.push({ t: seen.get(block.id), text: block.text });
+  }
+  return out;
+}
+
+const SETTLED_STATES = new Set(["completed", "failed", "cancelled"]);
+/**
+ * A handoff started in this scene that hasn't settled: the room isn't done while one runs (S10 on Grok: the room went
+ * quiet for 40 s while the Lead's workers ran, the scene ended at +3 min, and the review at +8 min was never judged).
+ */
+export function handoffsOpen(rows, since) {
+  return rows.some((row) => ms(row.created_at) >= since - 1000 && !SETTLED_STATES.has(String(row.state)));
+}
 const rel = (t, t0) => `+${Math.round((t - t0) / 1000)}s`;
 const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blocked|failed|paused|out of credit|limit/i;
 
@@ -76,6 +96,22 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const stopAt = Math.min(ctx.deadline + 5 * 60_000, t0 + (scene.minutes ?? 12) * 60_000);
   const turnsCap = scene.maxTurns ?? 60;
   const mark = gitMark(ctx.project);
+  // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
+  const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
+  // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
+  const screens = [];
+  // The place Ash is talking in, on screen (the room, the Mono's chat, the coding-team chat), as he'd have it open.
+  const showPlace = async () => {
+    const where = place.room ? { hub: { project: ctx.spec.project.id, item: "leadership-team" }, settleMs: 1200 } : place.mono ? { mono: place.mono } : place.session ? { session: place.session } : null;
+    if (where) await act("open", where, 30_000).catch(() => null);
+  };
+  const shoot = async (name) => {
+    if (!ctx.screenshot) return;
+    // A click's own result (a preview, a dialog) stays as it is; every other shot shows the place first.
+    if (!name.startsWith("click")) await showPlace();
+    const shot = await ctx.screenshot(`${scene.id}-${name}`).catch((error) => ({ ok: false, why: error.message }));
+    screens.push({ name, t: Date.now(), ...shot });
+  };
   const monosBefore = new Set(((await act("snapshot").catch(() => null))?.monos ?? []).map((m) => m.id));
 
   // -- setup: the bench's own scripted steps (a decision made earlier, a job to talk about), recorded as setup ---------
@@ -99,7 +135,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   if (!place) return finish({ invalid: `no place to send the opening (${JSON.stringify(scene.openingTo ?? scene.place)})` });
   const placeSession = async () => (place.session ? place.session : place.mono ? ctx.monoSession(place.mono) : null);
 
+  // Lines the app itself writes into the chat for Ash (a "Waiting on you" notice), first seen at.
+  const noticeSeen = new Map();
+  const appNotices = async (session) => {
+    if (!session || !ctx.sessionBlocks) return [];
+    const blocks = await ctx.sessionBlocks(session).catch(() => []);
+    return appNoticeLines(blocks, noticeSeen, Date.now());
+  };
+
   const ashLines = [];
+  const clicks = [];
   const send = async (text, { verbatim }) => {
     // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
     const mode = place.codingTeam && scene.runtimeMode ? { runtimeMode: scene.runtimeMode } : {};
@@ -128,6 +173,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
         if (line.text) lines.push({ t: line.t, who: "agent", text: line.text.slice(0, 2500) });
         if (asked.length) lines.push({ t: line.t, who: "agent (buttons)", text: asked.join(" ; ").replace(/AskUserQuestion: /g, "") });
       }
+      for (const notice of await appNotices(session)) lines.push({ t: notice.t, who: "app", text: notice.text });
     }
     return lines.sort((a, b) => a.t - b.t);
   };
@@ -140,7 +186,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const rows = await ctx.delegationRows().catch(() => []);
     const stuckRows = rows.filter((r) => ms(r.updated_at) >= t0 && (r.state === "question" || r.state === "failed" || r.pending_question));
     const stuck = [
-      ...(snap.sessions ?? []).filter((s) => s.question || s.usageLimit || ["needs-you", "failed", "paused"].includes(s.monoState?.status)),
+      ...(snap.sessions ?? []).filter((s) => s.question || s.usageLimit || s.approvals > 0 || ["needs-you", "failed", "paused"].includes(s.monoState?.status)),
       ...stuckRows.map((r) => ({ id: r.child_session ?? r.id, title: `${r.title ?? "a handoff"} (${r.state})` })),
     ];
     const marks = (snap.dom?.elements ?? []).filter((e) => e.visible && (STUCK.test(e.text ?? "") || Object.values(e.attrs ?? {}).some((v) => STUCK.test(String(v)))));
@@ -170,10 +216,15 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
         const msgs = roomMessages(events, place.room, since).filter((m) => m.from !== "ash");
         const typing = events.filter((e) => e.kind === "room-typing" && e.room === place.room).at(-1);
         const last = Math.max(since, ...msgs.map((m) => m.t), typing?.t ?? 0);
-        if (msgs.length && !typing?.who && Date.now() - last >= (scene.quietSec ?? 40) * 1000) return true;
+        if (msgs.length && !typing?.who && Date.now() - last >= (scene.quietSec ?? 40) * 1000) {
+          // Quiet, but its handoffs still run: their reports and the review are part of the scene.
+          if (!handoffsOpen(await ctx.delegationRows().catch(() => []), t0)) return true;
+        }
       } else {
         const session = await placeSession();
         if (session && (await ctx.claudeTexts(since)).some((line) => line.session === session && line.result)) return true;
+        // The app answered for a chat held on Ash's OK: that is the reply he gets until he decides.
+        if ((await appNotices(session)).some((notice) => notice.t > since)) return true;
       }
       await sleep(2_000);
     }
@@ -189,6 +240,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   while (Date.now() < stopAt) {
     const watch = scene.ashSilentAfterOpening ? Math.min(stopAt, t0 + (scene.watchSec ?? 900) * 1000) : Math.min(stopAt, Date.now() + 300_000);
     await settle(last, midAt && !midSent ? Math.min(watch, midAt) : watch);
+    await shoot(`reply-${ashLines.length}`);
     const state = await sample();
     if (midAt && !midSent && Date.now() >= midAt) {
       // Alfred's own mid-work line (S3): sent as written, while the work runs.
@@ -202,7 +254,10 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       break;
     }
     const seen = await seenNow();
-    const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
+    // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete.
+    const buttons = scene.clicks ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
+    // (The place was put on screen by the reply's screenshot just before.)
+    const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck, buttons }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
     testerLog({ move });
     if (move.action === "invalid") {
       invalid = `the tester couldn't write Ash's next line: ${move.refused.join(" | ")}`;
@@ -213,6 +268,14 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       await sleep(20_000);
       continue;
     }
+    if (move.action === "click") {
+      const clicked = await act("click", { label: move.label }).catch((error) => ({ ok: false, error: error.message }));
+      clicks.push({ t: Date.now(), label: move.label, ok: clicked.ok !== false, error: clicked.error ?? null });
+      log(`  Ash clicks "${move.label}"${clicked.ok === false ? ` (FAILED: ${clicked.error})` : ""}`);
+      await shoot(`click-${clicks.length}`);
+      if (clicks.length >= 8) break;
+      continue;
+    }
     last = await send(move.text, { verbatim: false });
   }
   return finish({ invalid });
@@ -220,6 +283,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   // -- evidence, checks, judge, verdict ------------------------------------------------------------------------------------
   async function finish({ invalid: why }) {
     await ctx.pump();
+    await shoot("end");
     const ended = Date.now();
     const snap = await act("snapshot").catch(() => null);
     const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000 || ms(row.updated_at) >= t0);
@@ -227,11 +291,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const monoOf = Object.fromEntries((snap?.monos ?? []).filter((m) => m.sessionId).map((m) => [m.sessionId, m.id]));
     const texts = (await ctx.claudeTexts(t0)).map((line) => ({ ...line, who: monoOf[line.session] ?? (workers.has(line.session) ? "worker" : line.session ? `chat ${line.session.slice(0, 8)}` : "app helper call") }));
     const room = roomMessages(events, ctx.roomId, t0);
-    const toAsh = [
+    const toAsh = [];
+    const toAshAll = [
       ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
       // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
       ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
+      ...(place.room ? [] : (await appNotices(await placeSession())).map((n) => ({ t: n.t, who: "app", where: "chat", text: n.text }))),
     ].sort((a, b) => a.t - b.t);
+    const shown = dropRoomEchoes(toAshAll);
+    toAsh.length = 0;
+    toAsh.push(...shown);
     const leaks = (ctx.spec.leak ?? []).flatMap((pattern) => [...toAsh, ...texts.filter((l) => l.text)].filter((m) => new RegExp(pattern, "i").test(m.text)).map((m) => ({ pattern, who: m.who, text: m.text.slice(0, 200) })));
     const changes = gitChanges(ctx.project, mark);
     const tests = scene.expect?.projectTests ? projectTests(ctx.project, scene.expect.projectTests, changes.checkouts) : null;
@@ -251,11 +320,12 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       roomEnded: scene.expect?.roomEnds ? ended - lastRoom >= (scene.quietSec ?? 60) * 1000 : null,
     });
     const triggered = scene.triggeredBy === "stuck" ? stuckSeen.length > 0 : true;
-    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes });
+    const copies = copyMarks.map(({ copy, mark: copyMark }) => ({ name: copy.name, folder: copy.folder, ...copyLog(copy.folder, copyMark), changes: gitChanges(copy.folder, copyMark) }));
+    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies, clicks });
     fs.writeFileSync(path.join(dir, "transcript.md"), transcriptText);
     const judged = why || !triggered ? null : await judgeScene(judge, scene, transcriptText, hard, rubric);
     const provenance = { agents: agentsReal === true, tester: tester.real === true, judge: judge.real === true };
-    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, ...verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered }), hard, judged, notes };
+    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered }), hard, judged, notes };
     fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));
     fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
     log(`  ${scene.id}: ${result.verdict}${result.wouldBe ? ` (would be ${result.wouldBe})` : ""}${result.reasons?.length ? `: ${result.reasons.slice(0, 2).join("; ")}` : ""}`);
@@ -264,8 +334,27 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 }
 
 /** What a person and the judge read: every line in time order, then the host's facts. */
-export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes }) {
+/**
+ * A seat's room turn runs in its own chat, so the same words show up as its chat text and as its room post. Ash sees
+ * them once, in the room: the chat copy is dropped.
+ */
+export function dropRoomEchoes(lines) {
+  const key = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const roomPosts = lines.filter((l) => l.where === "room");
+  const echoed = (l) => key(l.text) && roomPosts.some((r) => r.who === l.who && Math.abs(r.t - l.t) < 120_000 && String(r.text).replace(/\s+/g, " ").includes(key(l.text).slice(0, 80)));
+  return lines.filter((l) => l.where !== "chat" || !echoed(l));
+}
+
+/** A copy's new commits since the mark, one line each (what landed on which branch). */
+export function copyLog(folder, mark) {
+  if (!mark) return { commits: [] };
+  const out = spawnSync("git", ["log", "--all", "--format=%h %D | %s", "--not", ...mark.refs], { cwd: folder, encoding: "utf8" });
+  return { commits: out.status === 0 ? out.stdout.split("\n").filter(Boolean).slice(0, 40) : [] };
+}
+
+export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies = [], clicks = [] }) {
   const timeline = [
+    ...clicks.map((c) => ({ t: c.t, line: `**Ash clicks** "${c.label}"${c.ok ? "" : ` (it didn't take: ${c.error})`}` })),
     ...ashLines.map((l) => ({ t: l.t, line: `**Ash**${l.verbatim ? " (his own words)" : ""}${l.accepted ? "" : ` (NOT accepted: ${l.error})`}: ${l.text}` })),
     ...toAsh.map((m) => ({ t: m.t, line: `[${m.where}] **${m.who}**: ${m.text}` })),
     ...texts.filter((l) => l.who === "worker" && l.text).map((l) => ({ t: l.t, line: `[worker chat, Ash doesn't read this] ${l.text.slice(0, 600)}` })),
@@ -286,6 +375,14 @@ export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, t
     "## The project after the scene",
     "",
     `Files changed: ${changes.changed.length ? changes.changed.join(", ") : "none"}`,
+    ...copies.flatMap((c) => [
+      "",
+      `## ${c.name} (throwaway copy) after the scene`,
+      "",
+      `Files changed: ${c.changes.changed.length ? c.changes.changed.slice(0, 60).join(", ") : "none"}`,
+      c.commits.length ? `New commits:\n${c.commits.map((line) => `- ${line}`).join("\n")}` : "New commits: none",
+      c.changes.diff ? `\n\`\`\`diff\n${c.changes.diff.slice(0, 6000)}\n\`\`\`` : "",
+    ]),
     tests ? `Tests (\`${tests.command}\`): exit ${tests.code} in the main checkout${tests.worktrees?.length ? `; ${tests.worktrees.map((w) => `exit ${w.code} in ${w.cwd}`).join("; ")}` : ""}\n\n\`\`\`\n${tests.tail}\n\`\`\`` : "",
     notes.length ? `\n## Harness notes\n\n${notes.map((n) => `- ${n}`).join("\n")}` : "",
     "",
