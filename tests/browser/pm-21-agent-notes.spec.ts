@@ -24,7 +24,7 @@ test("round 21: count-only folds, stuck never folds, no repeated task", async ({
   // The stuck note sits between the two folds on its own line, never inside one.
   const stuck = page.locator('[data-agent-note="stuck"]');
   await expect(stuck).toHaveCount(1);
-  await expect(stuck).toHaveText('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');
+  await expect(stuck).toHaveText('StuckWorker "Example: fix the save bug" got stuck: Example: the test save file is missing'); // round 22: Today's Stuck mark leads
   expect(await stuck.evaluate((el) => !!el.closest("[data-agent-note-group]"))).toBe(false);
   await page.screenshot({ path: `${SHOTS}/pm-21-notes-folded.png` });
 

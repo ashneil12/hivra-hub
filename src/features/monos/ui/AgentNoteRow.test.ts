@@ -104,7 +104,7 @@ describe("the row", () => {
 
   it("with no chat to open, it is plain text: no link at all", () => {
     render(createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, target: null }) }));
-    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('Worker "Example: fix the save bug" got stuck');
+    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('StuckWorker "Example: fix the save bug" got stuck');
     expect(container.querySelector("button")).toBeNull();
   });
 });
@@ -124,5 +124,30 @@ describe("the fold", () => {
     expect(actions.openChild).toHaveBeenCalledWith("lead-chat", "w-2");
     act(() => fold.click());
     expect(container.querySelectorAll("[data-agent-note]")).toHaveLength(0);
+  });
+});
+
+describe("the Stuck ring (round 22)", () => {
+  it("a stuck note carries Today's red Stuck ring; routine notes don't, and the words stay muted", () => {
+    render(createElement("div", null,
+      createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, line: "Example: the test save file is missing" }) }),
+      createElement(AgentNoteRow, { note: note() }),
+      createElement(AgentNoteRow, { note: note({ kind: "messaged", from: worker, to: lead, line: "Example: which format?" }) }),
+      createElement(AgentNoteRow, { note: note({ kind: "reported", from: worker, to: lead }) }),
+    ));
+    const rows = [...container.querySelectorAll<HTMLElement>("[data-agent-note]")];
+    const [stuck, ...routine] = rows;
+    // Today's own mark (StatusMark → CircleWord): the red circle and the grey word.
+    const ring = stuck.querySelector("[data-agent-note-ring] [data-hub-circle=red]")!;
+    expect(ring).not.toBeNull();
+    expect(ring.querySelector("circle")!.getAttribute("stroke")).toBe("rgb(239 68 68)");
+    expect(ring.textContent).toBe("Stuck");
+    expect(stuck.className).toContain("text-content/50");
+    expect(stuck.className).not.toMatch(/red|rounded|bg-|border|shadow/);
+    expect(stuck.getAttribute("aria-label")).toBe('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');
+    for (const row of routine) {
+      expect(row.querySelector("[data-hub-circle]"), row.getAttribute("data-agent-note")!).toBeNull();
+      expect(row.querySelector("svg")).toBeNull();
+    }
   });
 });

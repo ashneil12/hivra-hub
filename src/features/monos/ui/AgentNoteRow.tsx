@@ -3,6 +3,7 @@
 // Several landing together fold into one line that expands (AgentNoteGroup); a stuck note never folds. Words: model/agentNoteView.ts.
 import { useState } from "react";
 import { ChevronRight } from "../../../shared/ui/icons";
+import { StatusMark } from "../../hub/ui/StatusMark";
 import type { AgentNote } from "../model/agentNotes";
 import { delegationActions } from "../model/delegationStore";
 import { foldedLine, noteParts, noteText } from "../model/agentNoteView";
@@ -36,6 +37,8 @@ function NoteWords({ note }: { note: AgentNote }) {
 export function AgentNoteRow({ note, embedded = false }: { note: AgentNote; embedded?: boolean }) {
   return (
     <div className={`${embedded ? "" : "px-4"} ${LINE}`} data-agent-note={note.kind} aria-label={noteText(note)} role="note">
+      {/* Critiquito, round 22: a stuck note carries Today's own red Stuck ring (StatusMark); the words stay muted. */}
+      {note.kind === "stuck" ? <span className="self-center" data-agent-note-ring><StatusMark state="stuck" /></span> : null}
       <NoteWords note={note} />
     </div>
   );
