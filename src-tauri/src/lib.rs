@@ -360,7 +360,6 @@ pub fn run() {
             }
             session_store::init(app.handle())?;
             ship::init(app.handle(), claim.data_dir.clone(), boot);
-            delegations::init(app.handle());
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
