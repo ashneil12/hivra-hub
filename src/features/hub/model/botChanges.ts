@@ -59,10 +59,11 @@ let themeHook: ((look: ThemeLook) => void) | undefined;
 export function setThemeHook(next: (look: ThemeLook) => void): void {
   themeHook = next;
 }
-/** A Mono applied a theme: a Bot changes row under that Mono. */
-export function recordThemeChange(by: string, name: string, before: ThemeLook, after: ThemeLook): void {
+/** A Mono applied a theme: a Bot changes row under that Mono, naming the theme it replaced. */
+export function recordThemeChange(by: string, name: string, before: ThemeLook, after: ThemeLook, beforeName: string): void {
   const id = `theme:${after.schemeId}:${Date.now().toString(36)}`;
-  list = [{ id, bot: by, day: "Today", line: `${by} changed the theme to “${name}”`, now: "Your theme before", after: `The “${name}” theme`, theme: { before, after }, at: Date.now() }, ...list];
+  list = [{ id, bot: by, day: "Today", line: `${by} changed the theme from ${beforeName} to “${name}”`, now: beforeName, after: `“${name}”`,
+    undoneText: `Undone: back to ${beforeName}.`, theme: { before, after }, at: Date.now() }, ...list];
   saveReal();
   changed();
 }

@@ -88,13 +88,13 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   // Its Bot changes row, with Undo.
   await page.getByRole("button", { name: /^Changes/ }).first().click();
   await page.getByRole("button", { name: "Bot changes" }).click();
-  const row = page.getByText("Critiquito changed the theme to “Tide”");
+  const row = page.getByText("Critiquito changed the theme from Glass to “Tide”");
   await expect(row).toBeVisible();
   await shot(page, "f3-bot-changes-undo");
   // Undo puts Glass back, and the sliders follow.
-  const themeRow = page.locator("[data-hub-bot-change]", { has: page.getByText("Critiquito changed the theme to “Tide”") });
+  const themeRow = page.locator("[data-hub-bot-change]", { has: page.getByText("Critiquito changed the theme from Glass to “Tide”") });
   await themeRow.locator("[data-hub-bot-change-undo]").click();
-  await expect(themeRow.locator("[data-hub-bot-change-undone]")).toBeVisible();
+  await expect(themeRow.locator("[data-hub-bot-change-undone]")).toContainText("Undone: back to Glass.");
   await page.getByRole("button", { name: "Appearance" }).first().click();
   await expect(page.locator('[data-scheme="glass"]')).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("slider", { name: "Hue" })).toHaveValue("240");

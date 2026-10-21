@@ -186,7 +186,7 @@ export function applyTheme(): ThemeScheme | undefined {
   putLook(after);
   beforePreview = undefined;
   pending = undefined;
-  if (by) recordThemeChange(by, saved.name, before, after);
+  if (by) recordThemeChange(by, saved.name, before, after, allSchemes().find((x) => x.id === before.schemeId)?.name ?? "your last theme");
   emit();
   return saved;
 }
