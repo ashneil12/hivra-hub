@@ -2,7 +2,7 @@
 //
 // - One seat answers each message from Ash, at once, with no model in front of it: the seat he @-mentions or opens
 //   with, else the room's host. He never has to tag anyone.
-// - When he names nobody, every other seat then gets one turn to reply in its own voice; a seat with nothing to add
+// - When he names nobody, every other seat then gets one turn to reply in its own voice; a seat his message plainly isn't for
 //   replies NO_REPLY, which shows nothing. @name, or opening with a seat's name, means just that seat.
 // - Mono-to-Mono follow-ups go only by naming a seat (@name or "PM, ...").
 // - One loop brake: after MONO_POSTS_CEILING Mono posts without Ash, the room pauses for him ("keep going" resumes).
@@ -320,7 +320,7 @@ function task(input: TurnInput): string {
         : `Ash just wrote to you${several}. Answer him first, from your lane. Name a seat ("CoS, ...") only if it should act.`;
     }
     case "chime":
-      return `Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: reply to Ash as yourself, in your own voice, briefly. Don't repeat what's been said. If you have nothing to add, reply with exactly ${NO_REPLY}.`;
+      return `Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: Ash wrote to everyone, so he expects to hear from you too. Reply to Ash as yourself, in your own voice, briefly, without repeating what's been said. Reply with exactly ${NO_REPLY} only if his message plainly isn't for you.`;
     case "reply":
       return `${input.other ?? "Another seat"} addressed you in the message marked >> below. Answer it or do it, from your lane. If nothing is needed from you, or it is already settled, reply with exactly ${NO_REPLY}.`;
     case "back":

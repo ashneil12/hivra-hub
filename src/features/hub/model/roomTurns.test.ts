@@ -156,8 +156,9 @@ describe("the prompts", () => {
     expect(answer).toContain("<room_conversation>\nAsh: what did we decide");
     const chime = turnPrompt({ ...base, me: FRANK, kind: "chime", other: "Chief of Staff" });
     expect(chime).toContain("Chief of Staff hosts the room and answers Ash first.");
-    expect(chime).toContain("Ash wrote to the whole room and Chief of Staff has answered. This is your one turn: reply to Ash as yourself, in your own voice");
-    expect(chime).toContain("If you have nothing to add, reply with exactly NO_REPLY.");
+    expect(chime).toContain("Ash wrote to the whole room and Chief of Staff has answered. This is your one turn: Ash wrote to everyone");
+    expect(chime).toContain("Ash wrote to everyone, so he expects to hear from you too.");
+    expect(chime).toContain("Reply with exactly NO_REPLY only if his message plainly isn't for you.");
     expect(chime).toContain("reply with exactly NO_REPLY");
     // Ash's message to the room is for every seat: the rules don't tell a seat that isn't hosting to stay silent
     // (Mac, 21 Oct: "hey" in Leadership got CoS alone, the other three answered NO_REPLY by that rule).
