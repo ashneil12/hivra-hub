@@ -33,9 +33,17 @@ const SETTLED_STATES = new Set(["completed", "failed", "cancelled"]);
  * A handoff started in this scene that hasn't settled: the room isn't done while one runs (S10 on Grok: the room went
  * quiet for 40 s while the Lead's workers ran, the scene ended at +3 min, and the review at +8 min was never judged).
  */
-export function handoffsOpen(rows, since) {
-  return rows.some((row) => ms(row.created_at) >= since - 1000 && !SETTLED_STATES.has(String(row.state)));
+export function handoffsOpen(rows, since, now = Date.now(), graceMs = REPORT_BACK_GRACE_MS) {
+  return rows.some((row) => {
+    if (ms(row.created_at) < since - 1000) return false;
+    if (!SETTLED_STATES.has(String(row.state))) return true;
+    // Just settled: the owner still gets a turn to bring the report to Ash (AD3, run f451: the EXO result came back at
+    // +1330 s, the scene closed at +1340 s, and CoS's room post with it at +1362 s was never judged).
+    const settled = ms(row.settled_at ?? row.updated_at);
+    return !!settled && now - settled < graceMs;
+  });
 }
+const REPORT_BACK_GRACE_MS = 120_000;
 const rel = (t, t0) => `+${Math.round((t - t0) / 1000)}s`;
 const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blocked|failed|paused|out of credit|limit/i;
 

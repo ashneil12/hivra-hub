@@ -374,6 +374,10 @@ test("a quiet room isn't settled while a handoff started in the scene still runs
   assert.equal(handoffsOpen([row("completed"), row("failed"), row("cancelled")], t0), false);
   // One left open by an earlier scene isn't this scene's.
   assert.equal(handoffsOpen([row("running", "2026-10-21T10:00:00Z")], t0), false);
+  // A handoff that settled moments ago still holds the scene open for the report-back; two minutes later it doesn't.
+  const done = { state: "completed", created_at: "2026-10-21T11:20:00Z", settled_at: "2026-10-21T11:40:00Z" };
+  assert.equal(handoffsOpen([done], t0, Date.parse("2026-10-21T11:40:30Z")), true);
+  assert.equal(handoffsOpen([done], t0, Date.parse("2026-10-21T11:42:30Z")), false);
 });
 
 test("the app's 'Waiting on you' notice in a chat counts as its answer to Ash, first seen once", async () => {
