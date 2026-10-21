@@ -238,3 +238,29 @@ test("a room turn or a Mono's private message is a hidden turn, whose NO_REPLY t
   assert.equal(hiddenTurnOf("[MonoCode message from Tally lead] <message>Start-ack</message>"), "message");
   assert.equal(hiddenTurnOf("<monocode_context>… [MonoCode report] …</monocode_context>\nthe stats test is red"), null);
 });
+
+test("a scene's copy of a real repo is a clone with no remote, and the source is untouched", async () => {
+  const { copyProject } = await import("./hub-realtest.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const root = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "copy-test-"));
+  const src = pathm.join(root, "src");
+  const g = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  fsm.mkdirSync(src);
+  g(src, "init", "-q", "-b", "main");
+  fsm.writeFileSync(pathm.join(src, "a.txt"), "one\n");
+  g(src, "add", "-A");
+  g(src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "one");
+  g(src, "remote", "add", "origin", "https://example.invalid/repo.git");
+  const head = g(src, "rev-parse", "HEAD");
+  const dest = copyProject(src, pathm.join(root, "copy"));
+  assert.equal(g(dest, "rev-parse", "HEAD"), head);
+  assert.equal(g(dest, "remote"), "");
+  assert.throws(() => g(dest, "push", "-q"));
+  assert.equal(g(src, "remote"), "origin");
+  assert.equal(g(src, "status", "--short"), "");
+  assert.throws(() => copyProject(src, dest), /already exists/);
+  fsm.rmSync(root, { recursive: true, force: true });
+});

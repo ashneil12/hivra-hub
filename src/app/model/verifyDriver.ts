@@ -189,6 +189,53 @@ export function domRows() {
   return { elements, mainText: clip((main as HTMLElement).innerText ?? "", 12_000), bodyText: clip(document.body.innerText ?? "", 20_000) };
 }
 
+/** What the bench never clicks for Ash: anything that deletes or resets. Ash does that himself (ash-day step 16). */
+export const NEVER_CLICK = /\b(delete|remove|forget|erase|uninstall|reset|wipe|sign out|log out)\b/i;
+const BUTTONS = 'button, [role="button"], [role="menuitem"]';
+
+function shown(element: HTMLElement): boolean {
+  if (element.closest('[hidden], [aria-hidden="true"], [inert]')) return false;
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+  }
+  return true;
+}
+
+function buttonLabel(element: HTMLElement): string {
+  return clip((element.getAttribute("aria-label") || element.innerText || element.textContent || "").replace(/\s+/g, " ").trim(), 80);
+}
+
+/** The buttons Ash can see in the open screen (the main pane and any dialog), newest last, the way he reads them. */
+export function visibleButtons(): { label: string; disabled: boolean }[] {
+  const roots = [document.querySelector("main") ?? document.body, ...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')];
+  const seen = new Set<Element>();
+  const out: { label: string; disabled: boolean }[] = [];
+  for (const root of roots)
+    for (const element of root.querySelectorAll<HTMLElement>(BUTTONS)) {
+      if (seen.has(element) || !shown(element)) continue;
+      seen.add(element);
+      const label = buttonLabel(element);
+      if (label) out.push({ label, disabled: element.matches(":disabled, [aria-disabled='true']") });
+    }
+  return out.slice(-120);
+}
+
+/** Ash's click on a button by its label (the newest one when several match). Never a delete or reset. */
+export function clickButton(label: string): { ok: boolean; error?: string; clicked?: string } {
+  const want = label.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!want) return { ok: false, error: "click: no label" };
+  if (NEVER_CLICK.test(want)) return { ok: false, error: "the bench never clicks a delete or reset; Ash does that himself" };
+  const roots = [document.querySelector("main") ?? document.body, ...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')];
+  const matches = roots
+    .flatMap((root) => [...root.querySelectorAll<HTMLElement>(BUTTONS)])
+    .filter((element) => shown(element) && !element.matches(":disabled, [aria-disabled='true']") && buttonLabel(element).toLowerCase() === want);
+  const target = matches[matches.length - 1];
+  if (!target) return { ok: false, error: `no button "${label}" on screen` };
+  target.click();
+  return { ok: true, clicked: buttonLabel(target) };
+}
+
 export function snapshot(host: DriverHost) {
   return {
     at: Date.now(),
@@ -422,6 +469,13 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok: true, at: Date.now() };
     case "snapshot":
       return { ok: true, ...snapshot(host) };
+    case "buttons":
+      return { ok: true, at: Date.now(), buttons: visibleButtons() };
+    case "click": {
+      const result = clickButton(String(action.label ?? ""));
+      await wait(Number(action.settleMs ?? 800));
+      return { ...result, at: Date.now() };
+    }
     case "drain":
       log.tick(host);
       return { ok: true, events: log.drain() };
