@@ -4,20 +4,22 @@ import { addMono, findMono, monoAvatar, monoLook, saveMonoMascot, saveMonoTileLe
 
 beforeEach(() => localStorage.clear());
 
-it("a Mono shows its letter unless a mascot was picked on purpose", () => {
-  expect(monoAvatar({ mascot: "robot", name: "Hivra lead" })).toBe("letter:HI");
-  expect(monoAvatar({ mascot: "ghost" })).toBe("letter:MO");
+it("a Mono shows its mascot image by default; letters only with no image, or when Letter was picked", () => {
+  expect(monoAvatar({ mascot: "robot", name: "Hivra lead" })).toBe("robot");
   expect(monoAvatar({ mascot: "cat", mascotPicked: true, name: "x" })).toBe("cat");
+  expect(monoAvatar({ mascot: "letter", name: "Alfred" })).toBe("letter:AL");
+  expect(monoAvatar({ mascot: "letter:Q", name: "Alfred" })).toBe("letter:AL");
+  expect(monoAvatar({ mascot: "letter:Af", mascotPicked: true, name: "Alfred" })).toBe("letter:Af");
 });
 
-it("picking a mascot keeps it; picking Letter goes back", () => {
+it("picking a mascot keeps it; picking Letter shows the automatic letters and stays picked", () => {
   addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "rocket", color: "gray", projects: [] });
-  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:HI");
+  expect(monoLook(findMono("hivra-lead")!).mascot).toBe("rocket");
   saveMonoMascot("hivra-lead", "cat");
   expect(findMono("hivra-lead")?.mascotPicked).toBe(true);
   expect(monoLook(findMono("hivra-lead")!).mascot).toBe("cat");
   saveMonoMascot("hivra-lead", "letter");
-  expect(findMono("hivra-lead")?.mascotPicked).toBeUndefined();
+  expect(findMono("hivra-lead")?.mascotPicked).toBe(true);
   expect(monoLook(findMono("hivra-lead")!).mascot).toBe("letter:HI");
 });
 
@@ -31,7 +33,7 @@ it("Hivra lead and Harness lead no longer share a tile", async () => {
 
 it("a tile shows the letters Ash chose, as typed; clearing them goes back to the automatic two capitals", () => {
   addMono({ id: "alfred", name: "Alfred", mascot: "rocket", color: "gray", projects: [] });
-  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:AL");
+  expect(monoLook(findMono("alfred")!).mascot).toBe("rocket");
   saveMonoTileLetters("alfred", "Af");
   expect(monoLook(findMono("alfred")!).mascot).toBe("letter:Af");
   saveMonoTileLetters("alfred", "Q");

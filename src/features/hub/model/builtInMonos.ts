@@ -11,7 +11,12 @@ const ROSTER_KEY = "monocode:mono-roster";
  */
 export type TeamSpec = { id: string; name: string; engine: "claude"; addon?: true };
 
-const LOOK = { mascot: "robot", color: "hsl(210 8% 58%)" };
+const COLOR = "hsl(210 8% 58%)";
+/**
+ * Each of the default four wears its own little image (Ash liked them on the tiles), none of them the robot the
+ * Leads often get. Projects Manager keeps the crab the dev roster has always given it.
+ */
+const MASCOTS: Record<string, string> = { "chief-of-staff": "invader", "projects-manager": "crab", frank: "frog", alfred: "dino" };
 const BUILT_IN: readonly TeamSpec[] = [
   { id: "chief-of-staff", name: "Chief of Staff", engine: "claude" },
   { id: "projects-manager", name: "Projects Manager", engine: "claude" },
@@ -23,7 +28,7 @@ export const TEAM_ADDONS: readonly TeamSpec[] = [{ id: "critiquito", name: "Crit
 
 /** The roster entry a team Mono starts as: its soul rides in `instructions` until SOUL.md is first written. */
 export function teamRosterEntry(spec: TeamSpec, projects: string[] = []) {
-  return { id: spec.id, name: spec.name, ...LOOK, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
+  return { id: spec.id, name: spec.name, mascot: MASCOTS[spec.id] ?? "robot", color: COLOR, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
 }
 
 /** Set by the first version of this step, which only seeded an empty roster. */
@@ -106,8 +111,18 @@ export function ensureBuiltInMonos(): number {
     localStorage.setItem(OLD_TEAM_KEY, "1");
     const present = new Set(list.map(teamIdOf).filter(Boolean));
     const missing = BUILT_IN.filter((m) => !present.has(m.id) && !removed.has(m.id));
-    if (!missing.length) return 0;
-    localStorage.setItem(ROSTER_KEY, JSON.stringify([...missing.map((m) => teamRosterEntry(m)), ...list]));
+    // The default four used to share the robot (or no image): give each its own, unless Ash picked its look himself.
+    let restyled = false;
+    const kept = list.map((m) => {
+      const own = teamIdOf(m);
+      const e = m as Entry & { mascot?: unknown; mascotPicked?: unknown };
+      if (!own || e.mascotPicked === true || !MASCOTS[own]) return m;
+      if (e.mascot !== "robot" && e.mascot !== "letter" && e.mascot !== undefined) return m;
+      restyled = true;
+      return { ...m, mascot: MASCOTS[own] };
+    });
+    if (!missing.length && !restyled) return 0;
+    localStorage.setItem(ROSTER_KEY, JSON.stringify([...missing.map((m) => teamRosterEntry(m)), ...kept]));
     window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
     return missing.length;
   } catch {

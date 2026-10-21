@@ -360,13 +360,15 @@ export function MonoRailSection({
               : state.status === "failed"
                 ? [`${MONO_STATUS_LABEL.failed}: ${state.activity ?? "its last turn failed"}`, stuckSplit].filter(Boolean).join(" · ")
                 : [state.activity ?? MONO_STATUS_LABEL[state.status], stuckSplit].filter(Boolean).join(" · ");
+          // A name with a role under it gets 6px more, so the role never sits on the next name; a name alone stays 32px.
+          const twoLines = !!shown(look).secondary && shown(look).secondary !== look.name;
           return (
             <Fragment key={mono.id}>
             <div
               ref={(el) => sortable.setItemRef(mono.id, el)}
               data-selected={selected || undefined}
               data-mono-status={state.status}
-              className={`reorder-item project-reorder-item group relative flex h-8 cursor-default touch-none items-stretch rounded-md px-2 ${
+              className={`reorder-item project-reorder-item group relative flex ${twoLines ? "h-[38px]" : "h-8"} cursor-default touch-none items-stretch rounded-md px-2 ${
                 selected ? "bg-selection-strong text-content" : "opacity-65"
               }`}
               onPointerDown={(event) => {
@@ -419,39 +421,43 @@ export function MonoRailSection({
                   status={state.status}
                   tone={state.tone}
                 />
-                {state.status === "working" ? (
-                  <Shimmer
-                    as="span"
-                    duration={1.4}
-                    className="min-w-0 flex-1 truncate text-sm font-medium leading-tight"
-                  >
-                    {shown(look).primary}
-                  </Shimmer>
+                {shown(look).secondary === look.name ? (
+                  state.status === "working" ? (
+                    <Shimmer
+                      as="span"
+                      duration={1.4}
+                      className="min-w-0 flex-1 truncate text-sm font-medium leading-tight"
+                    >
+                      {shown(look).primary}
+                    </Shimmer>
+                  ) : (
+                    <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
+                      <span className="min-w-0 truncate text-sm font-medium @max-[200px]/monorail:hidden" data-mono-primary-name>
+                        {shown(look).primary}
+                      </span>
+                      <span className="shrink-0 text-xs font-normal text-content/80 @max-[200px]/monorail:truncate @max-[200px]/monorail:text-sm @max-[200px]/monorail:font-medium @max-[200px]/monorail:text-content" data-mono-own-name>
+                        {shown(look).secondary}
+                      </span>
+                    </span>
+                  )
                 ) : (
-                  <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
-                    {/* The name always wins: under about 200px the role is hidden (it stays in the tooltip) and the
-                        name has the whole row. Grey text is at 80%, so even on a dimmed row it is 4.5:1 on glass. */}
-                    {shown(look).secondary === look.name ? (
-                      <>
-                        <span className="min-w-0 truncate text-sm font-medium @max-[200px]/monorail:hidden" data-mono-primary-name>
-                          {shown(look).primary}
-                        </span>
-                        <span className="shrink-0 text-xs font-normal text-content/80 @max-[200px]/monorail:truncate @max-[200px]/monorail:text-sm @max-[200px]/monorail:font-medium @max-[200px]/monorail:text-content" data-mono-own-name>
-                          {shown(look).secondary}
-                        </span>
-                      </>
+                  // The name has the whole first row; the role is a small second line under it, at any rail width
+                  // (Ash, 15 Oct: "frank", "Alfred" don't say what they do). Grey at 80% is 4.5:1 on glass even dimmed.
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    {state.status === "working" ? (
+                      <Shimmer as="span" duration={1.4} className="truncate text-sm font-medium leading-[18px]">
+                        {shown(look).primary}
+                      </Shimmer>
                     ) : (
-                      <>
-                        <span className="max-w-full shrink-0 truncate text-sm font-medium" data-mono-primary-name>
-                          {shown(look).primary}
-                        </span>
-                        {shown(look).secondary ? (
-                          <span className="min-w-0 truncate text-xs font-normal text-content/80 @max-[200px]/monorail:hidden" data-mono-role>
-                            {shown(look).secondary}
-                          </span>
-                        ) : null}
-                      </>
+                      <span className="truncate text-sm font-medium leading-[18px]" data-mono-primary-name>
+                        {shown(look).primary}
+                      </span>
                     )}
+                    {shown(look).secondary ? (
+                      <span className="truncate text-[11px] font-normal leading-[14px] text-content/80" data-mono-role>
+                        {shown(look).secondary}
+                      </span>
+                    ) : null}
                   </span>
                 )}
                 <StuckMark stuck={[...attention.stuck.values()]} />

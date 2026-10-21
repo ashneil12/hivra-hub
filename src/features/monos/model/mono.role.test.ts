@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// G4: each Mono carries a role label Ash can edit (rail, header, tooltip); a project's Lead has none.
+// G4: each Mono carries a role label Ash can edit (rail, header, tooltip); a project's Lead's comes from its project.
 import { beforeEach, expect, it } from "vitest";
 import { listMonos, monoLook, monoRole, saveMonoRole } from "./mono";
 
@@ -34,8 +34,10 @@ it("a new Mono has no role until given one", () => {
   expect(monoLook(get("scout")).role).toBe("Finds leads");
 });
 
-it("a project's Lead never takes a role label", () => {
+it("a project's Lead's role comes from its project, and isn't edited", () => {
   saveMonoRole("vg-game-lead", "Runs EXO");
   expect(get("vg-game-lead").role).toBeUndefined();
-  expect(monoLook(get("vg-game-lead")).role).toBeUndefined();
+  expect(monoLook(get("vg-game-lead")).role).toBe("Runs the EXO coding team");
+  expect(monoRole({ id: "nibbii-lead", name: "Nibbii lead" })).toBe("Runs the Nibbii coding team");
+  expect(monoRole({ id: "new-lead", name: "Ship it", projects: ["/Users/ash/Projects/orbit"] })).toBe("Runs the orbit coding team");
 });

@@ -50,12 +50,13 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(0);
 });
 
-test("G4: each Mono's role shows after its name on the rail, in the header and tooltip; a Lead has none; narrow rail cuts the role", async ({ page }) => {
+test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead's says which coding team it runs", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
   const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
   await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
-  await expect(rail.locator('button[aria-label^="EXO lead"] [data-mono-role]')).toHaveCount(0);
+  // A project's Lead's role comes from its project.
+  for (const p of ["EXO", "Hivra", "Nibbii"]) await expect(rail.locator(`button[aria-label^="${p} lead"] [data-mono-role]`)).toHaveText(`Runs the ${p} coding team`);
   await cos.click();
   await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner");
   await page.locator("[data-mono-title] [data-mono-role-edit]").click();
@@ -63,31 +64,46 @@ test("G4: each Mono's role shows after its name on the rail, in the header and t
   await page.locator("[data-mono-role-input]").press("Enter");
   await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner across every project");
   await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner across every project/);
+  // At the default width every role shows on its own line under the name; the name keeps the first row.
+  for (const [name, role] of [["Chief of Staff", "Business partner across every project"], ["frank", "Memory and checks"], ["Alfred", "Team setup"]]) {
+    const row = rail.locator(`button[aria-label^="${name}"]`).first();
+    await expect(row.locator("[data-mono-role]")).toBeVisible();
+    await expect(row.locator("[data-mono-role]")).toHaveText(role);
+    const [n, r] = [await row.locator("[data-mono-primary-name]").boundingBox(), await row.locator("[data-mono-role]").boundingBox()];
+    expect(r!.y).toBeGreaterThanOrEqual(n!.y + n!.height - 2);
+  }
+  const heights = await rail.locator("button[aria-label][title]").evaluateAll((els) => [...new Set(els.map((e) => Math.round(e.closest(".reorder-item")?.getBoundingClientRect().height ?? 0)).filter(Boolean))]);
+  expect(heights).toEqual([38]); // a name with a role under it is 38px (a name alone stays 32px), every row alike
   await page.mouse.move(700, 450);
   await shot(page, "g4-role-labels");
-  // The narrow rail: the role is cut, the name is not.
+  // The narrow rail: the role is still there, the name still has its whole first row.
   await page.evaluate(() => {
     const list = document.querySelector("[data-mono-rail]") as HTMLElement;
     let el: HTMLElement | null = list;
     while (el && el.getBoundingClientRect().left > 80) el = el.parentElement;
-    (list.closest("aside") ?? list).style.width = "190px";
-    list.style.width = "190px";
+    (list.closest("aside") ?? list).style.width = "160px";
+    list.style.width = "160px";
   });
-  // Under about 200px the role is hidden and every name has the whole row; the role stays in the tooltip.
-  await expect(cos.locator("[data-mono-role]")).toBeHidden();
+  await expect(cos.locator("[data-mono-role]")).toBeVisible();
+  await expect(rail.locator('button[aria-label^="Alfred"] [data-mono-role]')).toBeVisible();
   await expect(cos).toHaveAttribute("title", /\nBusiness partner across every project/);
-  const pm = rail.locator('button[aria-label^="Projects Manager"] [data-mono-primary-name]').first();
+  const pm = rail.locator('button[aria-label^="frank"] [data-mono-primary-name]').first();
   const box = await pm.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
   expect(box.scroll).toBeLessThanOrEqual(box.client); // the name is not cut
   const railBox = await rail.boundingBox();
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
 });
 
-test("G4 tiles: the automatic letters are two capitals (AL); Ash can choose a Mono's own, shown as typed; mascots are still offered", async ({ page }) => {
+test("G4 tiles: every Mono's tile is its little image by default; letters are a choice in the picker, shown as typed", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
   const alfred = rail.locator('button[aria-label^="Alfred"]').first();
-  await expect(alfred.locator("svg text").first()).toHaveText("AL");
+  // Images by default on every rail tile: no tile is letters until Ash picks them.
+  expect(await rail.locator("button[aria-label][title] svg.pixel-mascot").count()).toBeGreaterThan(3);
+  expect(await rail.locator("button[aria-label][title] svg text").count()).toBe(0);
+  // The default four each wear a different image.
+  const faces = await Promise.all(["Chief of Staff", "Projects Manager", "frank", "Alfred"].map((n) => rail.locator(`button[aria-label^="${n}"] svg.pixel-mascot`).first().innerHTML()));
+  expect(new Set(faces).size).toBe(4);
   await alfred.click();
   await page.getByRole("button", { name: "Alfred settings" }).click();
   await page.getByRole("button", { name: "Change mascot and color" }).click();
