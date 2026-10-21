@@ -145,7 +145,7 @@ export function createStudio(ctx) {
         marked: [{ day: now.getDate(), text: "Example: today" }, { day: later(1), text: "Example: playtest" }, { day: later(4), text: "Example: ship" }].filter((m, i, all) => all.findIndex((x) => x.day === m.day) === i),
       });
     }
-    blocks.push({ kind: "note", title: "About this page", text: `Example: the stub made this from “${prompt}”. No real Mono ran.` });
+    blocks.push({ kind: "note", title: "About this page", text: "Sample page. No Mono has built this yet." });
     return { kind: "blocks", title, blocks, ...(/pin/i.test(prompt) ? { pin: true } : {}) };
   }
 
