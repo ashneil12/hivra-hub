@@ -22,7 +22,7 @@ import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
 import { setHubMcpServers, setMonoHomeRoot, type HubChatLookups } from "./hubMcp";
-import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type TamperFiles } from "./soulTamper";
+import { changedSoulNote, checkSoul, keptAshLine, putBackLine, callWritesSoul, noteToolCalls, recordRestoredSouls, resetToolCallsForTest, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type RunToolCall, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -352,15 +352,15 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
   });
 
   it("another Mono's worker whose command named this soul is put back (S19 case C), and only that one", async () => {
-    const texts: Record<string, string[]> = {
-      "app-exo-chat-r1": [`python3 -c "open('/Users/ash/agent-memory/monos/hivra-lead/SOUL.md','a').write('x')"`],
-      "exo-chat": ["npm test", "/Users/ash/Projects/vg-game/src/main.ts"],
+    const texts: Record<string, RunToolCall[]> = {
+      "app-exo-chat-r1": [{ kind: "execute", text: `python3 -c "open('/Users/ash/agent-memory/monos/hivra-lead/SOUL.md','a').write('x')"` }],
+      "exo-chat": [{ kind: "execute", text: "npm test" }, { kind: "edit", text: "/Users/ash/Projects/vg-game/src/main.ts" }],
     };
     expect(runNamedSoul({ sessionId: "app-exo-chat-r1" }, "hivra-lead", (id) => texts[id] ?? [])).toBe(true);
     expect(runNamedSoul({ sessionId: "exo-chat" }, "hivra-lead", (id) => texts[id] ?? [])).toBe(false);
     // Built from parts, as a one-liner does with os.path.join.
-    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [`os.path.join(home, "hivra-lead", "SOUL.md")`])).toBe(true);
-    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [`cat nibbii-lead/SOUL.md`])).toBe(false);
+    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [{ kind: "execute", text: `p = os.path.join(home, "hivra-lead", "SOUL.md"); open(p, "a").write("x")` }])).toBe(true);
+    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [{ kind: "execute", text: `echo hi >> nibbii-lead/SOUL.md` }])).toBe(false);
     const { f, files } = memFiles();
     setBotFiles(f);
     await f.write("hivra-lead", "SOUL.md", SAVED);
@@ -370,6 +370,64 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
       files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
       expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
       expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+    } finally {
+      setRunToolTextSource(null);
+    }
+  });
+
+  it("only a call that writes the soul counts; one that only reads it doesn't", () => {
+    const soul = "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md";
+    const writes: RunToolCall[] = [
+      { kind: "edit", text: soul },
+      { kind: "execute", text: `echo "- new rule" >> ${soul}` },
+      { kind: "execute", text: `printf x > '${soul}'` },
+      { kind: "execute", text: `sed -i '' 's/a/b/' ${soul}` },
+      { kind: "execute", text: `perl -pi -e 's/a/b/' ${soul}` },
+      { kind: "execute", text: `echo x | tee -a ${soul}` },
+      { kind: "execute", text: `cp /tmp/new.md ${soul}` },
+      { kind: "execute", text: `mv ${soul} /tmp/old.md` },
+      { kind: "execute", text: `python3 -c "open('${soul}', 'w').write('x')"` },
+      { kind: "execute", text: `python3 -c "import pathlib; pathlib.Path('${soul}').write_text('x')"` },
+      { kind: "execute", text: `node -e "require('fs').appendFileSync('${soul}', 'x')"` },
+    ];
+    const reads: RunToolCall[] = [
+      { kind: "read", text: soul },
+      { kind: "search", text: `rg Standing ${soul}` },
+      { kind: "execute", text: `cat ${soul}` },
+      { kind: "execute", text: `head -20 ${soul} > /tmp/soul-head.txt` },
+      { kind: "execute", text: `rg -n "Standing" ${soul} 2>&1` },
+      { kind: "execute", text: `cp ${soul} /tmp/backup.md` },
+      { kind: "execute", text: `python3 -c "print(open('${soul}').read())"` },
+      { kind: "execute", text: `wc -l ${soul} && diff ${soul} /tmp/x.md` },
+    ];
+    for (const call of writes) expect(callWritesSoul(call), call.text).toBe(true);
+    for (const call of reads) expect(callWritesSoul(call), call.text).toBe(false);
+  });
+
+  it("a shell call's command counts after it finishes (its detail is then its output), from when it was pending", async () => {
+    resetToolCallsForTest();
+    const soul = "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md";
+    const pending = { tool: { callId: "t1", kind: "execute", title: "python3 -c …", detail: `Bash: python3 -c "open('${soul}','a').write('x')"` } };
+    noteToolCalls([{ id: "app-exo-chat-r4", busy: true, blocks: [pending] }]);
+    const done = { tool: { callId: "t1", kind: "execute", title: "python3 -c …", detail: "" } };
+    noteToolCalls([{ id: "app-exo-chat-r4", busy: true, blocks: [done] }]);
+    expect(runNamedSoul({ sessionId: "app-exo-chat-r4" }, "hivra-lead")).toBe(true);
+    // An idle chat's blocks aren't scanned, and another session's calls are its own.
+    noteToolCalls([{ id: "idle", busy: false, blocks: [pending] }]);
+    expect(runNamedSoul({ sessionId: "idle" }, "hivra-lead")).toBe(false);
+    resetToolCallsForTest();
+  });
+
+  it("Ash's edit while another Mono's chat only reads that soul is kept", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setRunToolTextSource((id) => (id === "app-exo-chat-r2" ? [{ kind: "execute", text: "cat /Users/ash/agent-memory/monos/hivra-lead/SOUL.md" }] : []));
+    try {
+      noteSessionRuns([{ id: "app-exo-chat-r2", busy: true, cwd: "/Users/ash/Projects/vg-game" }], 1_000);
+      files.set("hivra-lead/SOUL.md", { text: ASH, at: 2_000 });
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("kept-ash");
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(ASH);
     } finally {
       setRunToolTextSource(null);
     }
