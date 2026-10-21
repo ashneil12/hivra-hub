@@ -468,13 +468,14 @@ export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">)
 
 /**
  * Two letters, so Monos don't share a tile: the initials of two capitalised words ("Chief of Staff" → CS,
- * "Projects Manager" → PM), otherwise the first two letters ("Hivra lead" → Hi, "Harness lead" → Ha, "frank" → Fr).
+ * "Projects Manager" → PM), otherwise the first two letters ("Hivra lead" → HI, "Harness lead" → HA, "frank" → FR).
  */
 export function monoTileLetters(name: string): string {
   const caps = name.split(/\s+/).filter((w) => /^[A-Z]/.test(w));
   if (caps.length >= 2) return `${caps[0][0]}${caps[1][0]}`;
   const word = name.replace(/[^\p{L}\p{N}]/gu, "") || "M";
-  return `${word.charAt(0).toUpperCase()}${word.charAt(1).toLowerCase()}`;
+  // Both capitals: a small "Al" reads as "AI" (Critiquito, 21 Oct), so every tile is two capitals (AL, FR, EX).
+  return `${word.charAt(0)}${word.charAt(1)}`.toUpperCase();
 }
 
 export function addMonoProject(monoId: string, path: string): void {
