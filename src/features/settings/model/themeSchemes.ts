@@ -15,6 +15,8 @@ export type ThemeScheme = {
   accent: string | null;
   /** Made by Ash or a Mono, not shipped. */
   custom?: boolean;
+  /** Which colour scheme it is for (a theme file says); absent means dark. */
+  scheme?: "dark" | "light";
 };
 
 export const BUILT_IN_SCHEMES: readonly ThemeScheme[] = [
@@ -63,6 +65,15 @@ export function saveCustomScheme(scheme: Omit<ThemeScheme, "id" | "custom"> & { 
     /* best effort */
   }
   return next;
+}
+
+/** Take a theme Ash or a Mono added off the list. Built-in schemes stay. */
+export function removeCustomScheme(id: string): void {
+  try {
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(loadCustomSchemes().filter((s) => s.id !== id)));
+  } catch {
+    /* best effort */
+  }
 }
 
 /** The scheme-only token: its accent. Everything else goes through the existing Appearance setters. */

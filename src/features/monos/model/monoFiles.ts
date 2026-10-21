@@ -27,6 +27,8 @@ export type MonoFiles = {
   memoryPath: string;
   /** Topic notes under memory/, by name; listed in the memory block. */
   topics: string[];
+  /** Theme files under themes/, by name without `.json` (older backends leave it out). */
+  themes?: string[];
 };
 
 type LoadedFiles = Omit<MonoFiles, "soul"> & { soul: string | null };
@@ -40,7 +42,8 @@ export type AgentFilePath =
   | "habits.json"
   | "chats.json"
   | "soul-template.md"
-  | `memory/${string}.md`;
+  | `memory/${string}.md`
+  | `themes/${string}.json`;
 
 const FILE_PATH: Record<MonoFile, AgentFilePath> = {
   soul: "SOUL.md",

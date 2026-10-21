@@ -52,7 +52,25 @@ export type BotChange = {
   ask?: { monoId: string; label: string; text: string };
   /** When it was made (epoch ms), for Today's "Since …" paragraph. Rows from before this was kept have none. */
   at?: number;
+  /** A Mono put on a theme (F3): Undo puts `before` back, Redo puts `after` on again. */
+  theme?: { before: ThemeLook; after: ThemeLook };
 };
+
+/** How the app looks: the active scheme and the tokens it set. */
+export type ThemeLook = { schemeId: string; hue: number; saturation: number; lightness: number; opacity: number; accent: string | null };
+/** Settings registers how a look is put back, so Undo here doesn't import Settings. */
+let themeHook: ((look: ThemeLook) => void) | undefined;
+export function setThemeHook(next: (look: ThemeLook) => void): void {
+  themeHook = next;
+}
+/** A Mono applied a theme: a Bot changes row under that Mono, naming the theme it replaced. */
+export function recordThemeChange(by: string, name: string, before: ThemeLook, after: ThemeLook, beforeName: string): void {
+  const id = `theme:${after.schemeId}:${Date.now().toString(36)}`;
+  list = [{ id, bot: by, day: "Today", line: `${by} changed the theme from ${beforeName} to “${name}”`, now: beforeName, after: `“${name}”`,
+    undoneText: `Undone: back to ${beforeName}.`, theme: { before, after }, at: Date.now() }, ...list];
+  saveReal();
+  changed();
+}
 
 type HubChangeHooks = { undo(id: string): Promise<void>; redo(id: string): Promise<void> };
 let hubChangeHooks: HubChangeHooks | undefined;
@@ -161,14 +179,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId)));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.theme || (c.note && c.monoId)));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId))));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.theme || (c.note && c.monoId))));
   } catch {
     /* best effort */
   }
@@ -290,6 +308,9 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
       }
+    } else if (c.theme) {
+      if (themeHook) themeHook(c.theme.before);
+      else next = { ...c, problem: "Settings hasn't opened yet, so nothing changed. Try again in a moment." };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Pages isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
@@ -378,6 +399,9 @@ export async function redoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
+    } else if (c.theme) {
+      if (themeHook) themeHook(c.theme.after);
+      else next = { ...c, problem: "Settings hasn't opened yet, so nothing changed. Try again in a moment." };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Pages isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };

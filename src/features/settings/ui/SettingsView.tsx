@@ -1,4 +1,5 @@
-import { allSchemes, applySchemeAccent, loadActiveSchemeId, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
@@ -2013,6 +2014,15 @@ function useAppearanceSettings(
   );
   const [bodyGlass, setBodyGlass] = useState(loadBodyGlass);
   const [insetGlass, setInsetGlass] = useState(loadInsetGlass);
+  // PM-21: a theme applied, or put back by Undo, shows on the sliders; one being previewed shows there until it stops.
+  const themeVersion = useThemeImportVersion();
+  useEffect(() => {
+    setThemeHue(loadThemeHue());
+    setThemeSaturation(loadThemeSaturation());
+    setThemeDarkLightness(loadThemeDarkLightness());
+    setOpacity(loadSidebarOpacity());
+  }, [themeVersion]);
+  const preview = previewLook();
   const insetLayout = useSyncExternalStore(
     subscribeInsetLayout,
     loadInsetLayout,
@@ -2065,6 +2075,7 @@ function useAppearanceSettings(
   }, []);
 
   const onOpacity = useCallback((percent: number) => {
+    stopPreview();
     const next = applySidebarOpacity(percent / 100);
     saveSidebarOpacity(next);
     setOpacity(next);
@@ -2076,7 +2087,9 @@ function useAppearanceSettings(
     setBlur(next);
   }, []);
 
+  // A real change (a scheme, a preset) ends a theme preview first, so it lands on the saved look.
   const onTint = useCallback((hue: number, saturation: number) => {
+    stopPreview();
     const next = applyThemeTint(hue, saturation);
     saveThemeHue(next.hue);
     saveThemeSaturation(next.saturation);
@@ -2085,6 +2098,7 @@ function useAppearanceSettings(
   }, []);
 
   const onDarkLightness = useCallback((value: number) => {
+    stopPreview();
     const next = applyThemeDarkLightness(value);
     saveThemeDarkLightness(next);
     setThemeDarkLightness(next);
@@ -2246,11 +2260,13 @@ function useAppearanceSettings(
     themePreference,
     accentColor,
     workspaceTheme,
-    opacity,
+    opacity: preview?.opacity ?? opacity,
     blur,
-    themeHue,
-    themeSaturation,
-    themeDarkLightness,
+    themeHue: preview?.hue ?? themeHue,
+    themeSaturation: preview?.saturation ?? themeSaturation,
+    themeDarkLightness: preview?.lightness ?? themeDarkLightness,
+    /** A theme is being previewed: the sliders show it and wait until it is applied or stopped. */
+    previewingTheme: !!preview,
     bodyGlass,
     insetGlass,
     insetLayout,
@@ -2333,8 +2349,16 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
  * a scheme can carry real colour. "Save as scheme" keeps the current sliders under a name, as Ash or a Mono would.
  */
 function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
+  const themeVersion = useThemeImportVersion();
   const [schemes, setSchemes] = useState(allSchemes);
-  const [active, setActive] = useState(loadActiveSchemeId);
+  const [saved, setActive] = useState(loadActiveSchemeId);
+  // While another theme is previewed, none of these shows as the one in use.
+  const active = previewingTheme() ? undefined : saved;
+  // A theme applied or undone elsewhere (ThemesRow, Bot changes) shows here too.
+  useEffect(() => {
+    setSchemes(allSchemes());
+    setActive(loadActiveSchemeId());
+  }, [themeVersion]);
   const [naming, setNaming] = useState<string | null>(null);
   const apply = (scheme: ThemeScheme) => {
     appearance.onTint(scheme.hue, scheme.saturation);
@@ -2345,7 +2369,7 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
     setActive(scheme.id);
   };
   return (
-    <Row id="theme-schemes" label="Scheme" description="Each scheme restyles the whole app. Glass is the default.">
+    <Row id="theme-schemes" label="Scheme" description="Changes the look of the whole app. Glass is the default.">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         {schemes.map((scheme) => (
           <button
@@ -2358,6 +2382,23 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
           >
             <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: scheme.accent ?? `hsl(${scheme.hue} ${scheme.saturation}% ${Math.max(scheme.lightness, 30)}%)` }} />
             {scheme.name}
+            {scheme.custom && scheme.id !== saved ? (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={`Remove ${scheme.name}`}
+                title={`Remove ${scheme.name}`}
+                data-scheme-remove={scheme.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeCustomScheme(scheme.id);
+                  setSchemes(allSchemes());
+                }}
+                className="-mr-1 rounded px-0.5 text-content/50 hover:text-content"
+              >
+                ×
+              </span>
+            ) : null}
           </button>
         ))}
         {naming === null ? (
@@ -2382,6 +2423,123 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
   );
 }
 
+/**
+ * F3: add a theme as JSON. Ash pastes it or picks a file (a Mono hands one in the same way); it is checked before
+ * anything changes, then Preview, Apply or Discard. Up to 7 per colour scheme.
+ */
+function ThemesRow() {
+  useThemeImportVersion();
+  const [text, setText] = useState<string | null>(null);
+  const pending = pendingTheme();
+  const theme = pending?.check.ok ? pending.check.theme : undefined;
+  // Only said when it matters: a full set (the check says so too, if Ash tries another).
+  const full = (["dark", "light"] as const).filter((scheme) => allSchemes().filter((s) => s.custom && (s.scheme ?? "dark") === scheme).length >= MAX_THEMES_PER_SCHEME);
+  const BTN = "rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ring-surface-ring text-content/85 hover:bg-selection-hover";
+  return (
+    <Row id="theme-files" label="Add a theme" description={`Paste a theme or pick a file. We check it before anything changes.${full.length ? ` You have as many ${full.join(" and ")} themes as we keep, so remove one to add another.` : ""}`}>
+      <div className="flex w-[300px] flex-col items-end gap-2" data-theme-import>
+        {pending ? (
+          <div className="w-full rounded-md bg-surface p-2.5 ring-1 ring-surface-ring" data-theme-pending={pending.check.ok ? "ok" : "problems"}>
+            {theme ? (
+              <>
+                <p className="flex items-center gap-1.5 text-[12px] text-content">
+                  <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: theme.accent ?? `hsl(${theme.hue} ${theme.saturation}% ${Math.max(theme.lightness, 30)}%)` }} />
+                  {theme.name}
+                  <span className="text-content/55">· {theme.scheme} theme{pending.by ? ` from ${pending.by}` : ""}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "You're seeing it now. Nothing changes for good until you apply it." : "Looks good. Preview it or apply it."}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-[12px] text-content">{pending.by ? `${pending.by}'s theme won't work` : "This theme won't work"}</p>
+                <ul className="mt-1 list-disc pl-4 text-[11px] leading-4 text-content/70" data-theme-problems>
+                  {!pending.check.ok && pending.check.problems.map((p) => <li key={p}>{p}</li>)}
+                </ul>
+              </>
+            )}
+            <div className="mt-2 flex justify-end gap-1.5">
+              {theme ? (
+                pending.previewing ? (
+                  <button type="button" data-theme-stop-preview onClick={stopPreview} className={BTN}>Stop preview</button>
+                ) : (
+                  <button type="button" data-theme-preview onClick={previewTheme} className={BTN}>Preview</button>
+                )
+              ) : null}
+              <button type="button" data-theme-discard onClick={discardTheme} className={BTN}>Discard</button>
+              {theme ? (
+                <button type="button" data-theme-apply onClick={() => applyTheme()} className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
+              ) : null}
+            </div>
+          </div>
+        ) : text === null ? (
+          <div className="flex gap-1.5">
+            <button type="button" data-theme-paste onClick={() => setText("")} className={BTN}>Paste a theme…</button>
+            <label className={`${BTN} cursor-default`}>
+              Pick a file…
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0];
+                  if (file) void file.text().then((t) => offerTheme(t));
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+        ) : (
+          <form
+            className="flex w-full flex-col items-end gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              offerTheme(text);
+              setText(null);
+            }}
+          >
+            <textarea
+              autoFocus
+              aria-label="Theme to paste"
+              data-theme-json
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={5}
+              placeholder={'{ "name": "Night", "scheme": "dark", "hue": 220, "saturation": 8, "lightness": 8, "opacity": 0.9, "accent": null }'}
+              className="w-full resize-none rounded-md bg-surface px-2 py-1.5 font-mono text-[11px] text-content outline-none ring-1 ring-surface-ring placeholder:text-content/45"
+            />
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setText(null)} className={BTN}>Cancel</button>
+              <button type="submit" data-theme-check className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content">Check</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * While a theme is previewed, a slim bar stays at the top of Appearance as Ash scrolls down to the sliders, so Stop
+ * preview and Apply are always in reach.
+ */
+function ThemePreviewBar() {
+  useThemeImportVersion();
+  const pending = pendingTheme();
+  if (!pending?.previewing || !pending.check.ok) return null;
+  return (
+    <div
+      data-theme-preview-bar
+      className="hub-fade-in sticky top-0 z-20 -mx-2 mb-4 flex items-center gap-3 rounded-lg bg-surface/95 px-3 py-2 ring-1 ring-surface-ring backdrop-blur"
+    >
+      <p className="min-w-0 flex-1 truncate text-[13px] text-content">Previewing {pending.check.theme.name}</p>
+      <button type="button" data-theme-bar-stop onClick={stopPreview}
+        className="rounded-md px-2.5 py-1 text-[12px] text-content/85 ring-1 ring-inset ring-surface-ring hover:bg-selection-hover">Stop preview</button>
+      <button type="button" data-theme-bar-apply onClick={() => applyTheme()}
+        className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
+    </div>
+  );
+}
+
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
@@ -2392,6 +2550,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
 
   return (
     <>
+      <ThemePreviewBar />
       <Group
         title="Theme"
         description={
@@ -2419,6 +2578,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
         {/* Hub schemes set the classic layout's tint and translucency, which
             the inset workspace's own themes replace. */}
         {inset ? null : <SchemesRow appearance={appearance} />}
+        {inset ? null : <ThemesRow />}
         {inset ? (
           <Row
             id="workspace-theme"
@@ -2515,6 +2675,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 onChange={(value) =>
                   appearance.onTint(value, appearance.themeSaturation)
                 }
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -2531,6 +2692,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 onChange={(value) =>
                   appearance.onTint(appearance.themeHue, value)
                 }
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -2550,6 +2712,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 max={THEME_DARK_LIGHTNESS_MAX}
                 onChange={appearance.onDarkLightness}
                 disabled={glassDisabled}
+                held={appearance.previewingTheme}
               />
             </Row>
           </Group>
@@ -2575,6 +2738,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 max={Math.round(SIDEBAR_OPACITY_MAX * 100)}
                 onChange={appearance.onOpacity}
                 disabled={glassDisabled}
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -4796,6 +4960,7 @@ function Slider({
   step = 1,
   onChange,
   disabled = false,
+  held = false,
 }: {
   label: string;
   value: number;
@@ -4805,6 +4970,8 @@ function Slider({
   step?: number;
   onChange: (value: number) => void;
   disabled?: boolean;
+  /** Showing a previewed theme's value: readable, not draggable until the preview is applied or stopped. */
+  held?: boolean;
 }) {
   return (
     <div
@@ -4820,7 +4987,7 @@ function Slider({
         aria-valuemax={max}
         aria-valuenow={value}
         aria-label={label}
-        disabled={disabled}
+        disabled={disabled || held}
         className="sidebar-opacity-slider min-w-0 flex-1 disabled:cursor-not-allowed"
         onChange={(event) => onChange(Number(event.target.value))}
       />

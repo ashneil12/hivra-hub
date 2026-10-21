@@ -347,6 +347,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "theme scheme graphite dusk colour color palette save named",
   },
   {
+    id: "theme-files",
+    section: "appearance",
+    label: "Add a theme",
+    keywords: "theme json import file paste preview apply discard",
+  },
+  {
     id: "workspace-theme",
     section: "appearance",
     label: "Workspace theme",
@@ -628,6 +634,7 @@ const NO_HIDDEN_SETTINGS: ReadonlySet<string> = new Set();
  * own glass switch. */
 export const INSET_LAYOUT_HIDDEN_SETTINGS: ReadonlySet<string> = new Set([
   "theme-schemes",
+  "theme-files",
   "color-presets",
   "hue",
   "saturation",

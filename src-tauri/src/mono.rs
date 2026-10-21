@@ -53,6 +53,8 @@ const SOUL_FILE: &str = "SOUL.md";
 const MEMORY_FILE: &str = "MEMORY.md";
 const MEMORY_DIR: &str = "memory";
 const HABITS_FILE: &str = "habits.json";
+/// Colour themes a Mono made, one `<name>.json` each (themeFiles.ts checks them before any is shown).
+const THEMES_DIR: &str = "themes";
 /// Larger than anything that would load: the soul and memory both have far
 /// smaller prompt budgets, this only stops a runaway write.
 const FILE_MAX: usize = 256 * 1024;
@@ -105,10 +107,12 @@ pub struct AgentFiles {
     pub memory_path: String,
     /// Topic notes under memory/, by name without `.md`; not the archive.
     pub topics: Vec<String>,
+    /// Theme files under themes/, by name without `.json`.
+    pub themes: Vec<String>,
 }
 
-/// The files the app reads and writes for an agent, relative to its folder:
-/// SOUL.md, MEMORY.md, habits.json, chats.json, soul-template.md, or one `memory/<name>.md`.
+/// The files the app reads and writes for an agent, relative to its folder: SOUL.md, MEMORY.md, habits.json,
+/// chats.json, soul-template.md, one `memory/<name>.md`, or one `themes/<name>.json`.
 /// Nothing nested, nothing hidden, so a path from the agent's CLI can never leave the folder.
 fn resolve_file(dir: &Path, relative: &str) -> Result<PathBuf, String> {
     if [
@@ -122,38 +126,55 @@ fn resolve_file(dir: &Path, relative: &str) -> Result<PathBuf, String> {
     {
         return Ok(dir.join(relative));
     }
-    let name = relative
-        .strip_prefix("memory/")
-        .and_then(|rest| rest.strip_suffix(".md"))
-        .ok_or_else(|| format!("Not an agent file: {relative}"))?;
-    let valid = !name.is_empty()
+    let (folder, name, ext) = if let Some(rest) = relative.strip_prefix("memory/") {
+        (MEMORY_DIR, rest.strip_suffix(".md"), "md")
+    } else if let Some(rest) = relative.strip_prefix("themes/") {
+        (THEMES_DIR, rest.strip_suffix(".json"), "json")
+    } else {
+        return Err(format!("Not an agent file: {relative}"));
+    };
+    let name = name.ok_or_else(|| format!("Not an agent file: {relative}"))?;
+    if !valid_name(name) {
+        return Err(format!("Not an agent file: {relative}"));
+    }
+    Ok(dir.join(folder).join(format!("{name}.{ext}")))
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= 80
         && !name.starts_with('.')
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
-    if !valid {
-        return Err(format!("Not an agent file: {relative}"));
-    }
-    Ok(dir.join(MEMORY_DIR).join(format!("{name}.md")))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'))
 }
 
-fn topics(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir.join(MEMORY_DIR))
+/// File names in `folder` ending in `.ext`, without it, sorted; hidden files and `skip` left out.
+fn list_names(dir: &Path, folder: &str, ext: &str, skip: &str) -> Vec<String> {
+    let suffix = format!(".{ext}");
+    let mut names: Vec<String> = std::fs::read_dir(dir.join(folder))
         .map(|entries| {
             entries
                 .flatten()
                 .filter(|entry| entry.path().is_file())
                 .filter_map(|entry| {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    let topic = name.strip_suffix(".md")?.to_string();
-                    (topic != "archive" && !topic.starts_with('.')).then_some(topic)
+                    let stem = name.strip_suffix(suffix.as_str())?.to_string();
+                    (stem != skip && valid_name(&stem)).then_some(stem)
                 })
                 .collect()
         })
         .unwrap_or_default();
     names.sort();
     names
+}
+
+fn topics(dir: &Path) -> Vec<String> {
+    list_names(dir, MEMORY_DIR, "md", "archive")
+}
+
+fn themes(dir: &Path) -> Vec<String> {
+    list_names(dir, THEMES_DIR, "json", "")
 }
 
 /// This copy's `<app data>/monos`, after moving an older `agents/` folder to it.
@@ -336,6 +357,7 @@ fn load(root: &Path, mono: &str, legacy_project: Option<&str>) -> Result<AgentFi
         memory,
         memory_path: memory_path.to_string_lossy().into_owned(),
         topics: topics(&dir),
+        themes: themes(&dir),
         dir: dir.to_string_lossy().into_owned(),
     })
 }
@@ -374,6 +396,10 @@ fn save(
     let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
     let dir = agent_dir(root, mono, legacy_project)?;
     let path = resolve_file(&dir, relative)?;
+    if relative.starts_with("themes/") {
+        let folder = dir.join(THEMES_DIR);
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
     if let Some(expected) = expected_hash {
         let current = read_optional(&path)?.unwrap_or_default();
         if content_hash(&current) != expected {
@@ -1018,6 +1044,40 @@ mod tests {
             "notes.md",
         ] {
             assert!(save(&root, "m", None, path, "x", None).is_err(), "{path}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_writes_and_lists_theme_files_inside_the_folder_only() {
+        let root = temp_root();
+        assert!(load(&root, "m", None).unwrap().themes.is_empty());
+        save(
+            &root,
+            "m",
+            None,
+            "themes/dusk-blue.json",
+            r#"{"name":"Dusk"}"#,
+            None,
+        )
+        .unwrap();
+        save(&root, "m", None, "themes/moss.json", "{}", None).unwrap();
+        let loaded = load(&root, "m", None).unwrap();
+        assert_eq!(
+            loaded.themes,
+            vec!["dusk-blue".to_string(), "moss".to_string()]
+        );
+        let theme = read(&root, "m", None, "themes/moss.json").unwrap();
+        assert_eq!(theme.text.as_deref(), Some("{}"));
+        assert!(save(&root, "m", None, "themes/bad.json", "{not json", None).is_err());
+        for path in [
+            "themes/../SOUL.md",
+            "themes/a/b.json",
+            "themes/.hidden.json",
+            "themes/moss.md",
+            "themes/.json",
+        ] {
+            assert!(save(&root, "m", None, path, "{}", None).is_err(), "{path}");
         }
         std::fs::remove_dir_all(root).unwrap();
     }
