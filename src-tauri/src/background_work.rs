@@ -5,21 +5,40 @@ use tokio::sync::Semaphore;
 
 /// Applied in the child before exec, so compiler/tool descendants inherit it.
 /// Best effort: an OS refusing a scheduling hint must not prevent a tool launch.
+/// Background helpers (git for the UI's lists): lower CPU priority and throttled disk.
 pub(crate) fn configure_child(command: &mut Command) {
+    configure(command, true);
+}
+
+/// An agent CLI (Claude Code, Codex, ...) and its tools: lower CPU priority only. Its disk reads are never
+/// throttled: Ash waits on the agent, and on a busy Mac (builds, swapping) a throttled agent's first page-ins took
+/// minutes (live 21 Oct: a DeepSeek Lead and its worker sat in disk wait with no output for 7+ min; `claude --help`
+/// took 330 s throttled against 0.4 s unthrottled).
+pub(crate) fn configure_agent_child(command: &mut Command) {
+    configure(command, false);
+}
+
+fn configure(command: &mut Command, throttle_disk: bool) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         // Only system calls here: the post-fork child must not allocate or lock.
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 let priority = libc::getpriority(libc::PRIO_PROCESS, 0).max(10);
                 libc::setpriority(libc::PRIO_PROCESS, 0, priority);
                 #[cfg(target_os = "macos")]
-                setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_THROTTLE);
+                if throttle_disk {
+                    setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_THROTTLE);
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = throttle_disk;
                 Ok(())
             });
         }
     }
+    #[cfg(not(unix))]
+    let _ = throttle_disk;
     let _ = command;
 }
 
@@ -139,16 +158,41 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_child_gets_lower_cpu_priority_but_unthrottled_disk() {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "background_work::tests::child_policy_probe",
+                "--nocapture",
+            ])
+            .env("MONOCODE_PRIORITY_PROBE", "1")
+            .env("MONOCODE_PRIORITY_AGENT", "1");
+        configure_agent_child(&mut child);
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn child_policy_probe() {
         if std::env::var("MONOCODE_PRIORITY_PROBE").as_deref() != Ok("1") {
             return;
         }
         assert!(unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) } >= 10);
         #[cfg(target_os = "macos")]
-        assert_eq!(
-            unsafe { getiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS) },
-            IOPOL_THROTTLE
-        );
+        {
+            let io = unsafe { getiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS) };
+            if std::env::var("MONOCODE_PRIORITY_AGENT").as_deref() == Ok("1") {
+                assert_ne!(io, IOPOL_THROTTLE, "an agent's disk is never throttled");
+            } else {
+                assert_eq!(io, IOPOL_THROTTLE);
+            }
+        }
         let output = Command::new("/bin/sh")
             .args(["-c", "ps -o ni= -p $$"])
             .output()

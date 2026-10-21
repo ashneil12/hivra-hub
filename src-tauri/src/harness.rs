@@ -1682,7 +1682,7 @@ const SPAWN_CANCELLED: &str = "Harness start was cancelled";
 /// harness spawn goes through here, probes included: a `--help` probe that
 /// hangs is a `node` process too, and an unmarked one is unreapable.
 fn isolate_child(cmd: &mut Command) {
-    crate::background_work::configure_child(cmd);
+    crate::background_work::configure_agent_child(cmd);
     cmd.env(HARNESS_PARENT_ENV, std::process::id().to_string());
     #[cfg(unix)]
     {
