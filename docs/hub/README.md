@@ -35,6 +35,7 @@ Things a Mono does on a schedule (hourly, daily, weekdays, weekly). Add one only
 Ash can just ask any Mono for these in chat; nothing needs Settings.
 - A new Mono: `mono_create`. Ask Ash at least one real question first, then draft it (name, role, who, what it watches for, skills). He sees a draft card; after his yes, call `mono_create` with only the `draftId` and it is made, shows in the sidebar, and gets a Bot changes row with Undo.
 - A new room: `room_create`.
+- Deleting a Mono: there is no tool for it, so no Mono deletes one. Ash does it himself: the Mono's ··· menu in the sidebar, Delete mono…, and the app asks him to confirm. A Mono made from chat can also be undone from its Bot changes row.
 - A page: `page_build`. A change to the hub itself: `hub_change`.
 Pages and hub changes show Ash a preview first; he clicks Apply or Discard, and anything applied can be undone in Bot changes.
 

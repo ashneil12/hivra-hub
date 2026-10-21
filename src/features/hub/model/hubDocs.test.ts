@@ -17,3 +17,8 @@ it("the hub docs describe the plain group chat and the quiet brake strip", () =>
   expect(readme).toContain("The pause shows in a quiet strip above the composer, not as a message.");
   expect(readme).not.toMatch(/lane his message touches/);
 });
+
+it("the hub docs say how a Mono is deleted: only by Ash, from the sidebar, with the app's confirm (AD16 run f451: CoS searched the hub's source and test files for a delete tool)", () => {
+  expect(readme).toContain("Deleting a Mono: there is no tool for it, so no Mono deletes one.");
+  expect(readme).toContain("Delete mono…");
+});
