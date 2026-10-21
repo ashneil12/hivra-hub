@@ -77,11 +77,18 @@ type Props = {
   variant?: Variant;
   /** Action label for recovery surfaces that open the same model chooser. */
   triggerLabel?: string;
+  /** A chevron after the name that opens the whole menu (always there with `cycle`). */
+  chevron?: boolean;
   /**
    * Classes for the trigger's text, so a narrow surface can hide it and keep
    * just the icon; the button's label still names the choice.
    */
   labelClassName?: string;
+  /**
+   * A Mono's model line (port map idea 2, after UniiChat Pick.ts move): a click on the name moves to the next model of
+   * its provider and wraps, and says so (`name` is the new one); a small chevron beside it opens the whole menu.
+   */
+  cycle?: (name: string) => void;
   onChange: (harness: HarnessId, model: string) => void;
   onSettingsChange: (settings: Record<string, string>) => void;
   onClose?: () => void;
@@ -267,6 +274,13 @@ function groupsByProvider(tab: ModelPickerTab, models: AgentModel[]): boolean {
   return tab !== "favorites" && models.some((item) => item.provider);
 }
 
+/** The model after `currentId` in `models`, wrapping to the first (UniiChat Pick.ts: `(at + d + n) % n`). */
+export function nextModel<T extends { id: string }>(models: readonly T[], currentId: string): T | undefined {
+  if (!models.length) return undefined;
+  const at = models.findIndex((item) => item.id === currentId);
+  return models[(at + 1 + models.length) % models.length];
+}
+
 /** Use the upstream provider when present, otherwise the model's harness. */
 function modelProvider(item: AgentModel): { id: string; name: string } {
   return item.provider ?? { id: item.harness, name: HARNESS_TITLE[item.harness] };
@@ -327,7 +341,9 @@ export function ModelPicker({
   side = "top",
   variant = "pill",
   triggerLabel,
+  chevron,
   labelClassName = "",
+  cycle,
   onChange,
   onSettingsChange,
   onClose,
@@ -626,6 +642,17 @@ export function ModelPicker({
   };
   const otherModels = { currentModel: model, onPick: pickCustomModel };
 
+  // UniiChat Pick.ts move (Apache-2.0): the next of the offered models, wrapping round, on each click.
+  const cycleModel = () => {
+    const offered = inProviderOrder(current.harness, source.modelsFor(current.harness)).filter(
+      (item) => item.harness === current.harness,
+    );
+    const next = nextModel(offered, current.id);
+    if (!next || next.id === current.id || !source.available(next.harness)) return;
+    onChange(next.harness, next.id);
+    cycle?.(next.harness === "claude" ? next.name.replace(/^Claude /, "") : next.name);
+  };
+
   const pickModel = (item: AgentModel) => {
     if (!source.available(item.harness)) return;
     onChange(item.harness, item.id);
@@ -771,7 +798,9 @@ export function ModelPicker({
         title={
           triggerLabel
             ? `${triggerLabel} · ${triggerTitle}`
-            : `${triggerTitle} · Recent models: right-click or ${MOD}.`
+            : cycle
+              ? `${triggerTitle} · Click for the next model`
+              : `${triggerTitle} · Recent models: right-click or ${MOD}.`
         }
         aria-label={
           triggerLabel ??
@@ -790,7 +819,7 @@ export function ModelPicker({
           event.stopPropagation();
           openRecentMenu();
         }}
-        onClick={() => togglePicker()}
+        onClick={() => (cycle ? cycleModel() : togglePicker())}
         className={
           variant === "text"
             ? textControlClass(open, "shrink-0 gap-1.5")
@@ -831,6 +860,21 @@ export function ModelPicker({
           />
         )}
       </button>
+      {cycle || chevron ? (
+        // Not in UniiChat: a chevron so the name reads as clickable (Critiquito, 21 Oct); it opens the whole menu.
+        <button
+          type="button"
+          data-model-menu
+          aria-label="Choose a model"
+          title="Choose a model"
+          aria-expanded={open}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => togglePicker()}
+          className={`grid h-6.5 w-4 shrink-0 place-items-center rounded-md ${open ? "bg-content/8 text-content" : "text-content/55 hover:bg-content/8 hover:text-content"}`}
+        >
+          <ChevronDown className={`size-3 ${open ? "rotate-180" : ""}`} strokeWidth={1.75} />
+        </button>
+      ) : null}
 
       {open && hideSettings ? (
         <ModelFlyout

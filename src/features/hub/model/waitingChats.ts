@@ -97,7 +97,7 @@ function save(next: Record<string, WaitingEntry>): void {
 }
 
 const sameQuestion = (a: WaitingEntry, b: ChatQuestion) =>
-  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.more === b.more;
+  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.more === b.more && a.flag === b.flag;
 
 /** The time of Ash's last real message in the chat, if the blocks say. */
 function lastAshMessageAt(blocks: ChatInput["blocks"]): number | undefined {
@@ -273,6 +273,35 @@ export async function answerInWords(sessionId: string, text: string): Promise<Ta
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
   return answer(chat, reply && { reply, words: text.trim() }, wordsMessage(chat, text));
+}
+
+/** A red-line ask's two explicit choices (port map idea 3; no default, no "this session", no "always"). */
+export type ApprovalChoice = "approve-once" | "deny";
+
+/** What Ash's choice says in the chat. */
+export function approvalMessage(choice: ApprovalChoice, q: Pick<ChatQuestion, "question" | "pick">): string {
+  return choice === "approve-once"
+    ? `Approved, this once: ${q.pick ?? q.question}`
+    : `Denied: don't do this. (${q.question})`;
+}
+
+/**
+ * Answer a red-line ask with one explicit choice. Refused when the ask changed since Ash saw it (matched to Alan's
+ * Workspace hermes-view.js guard and renderer.js "Give back" refusal: a stale card never answers).
+ */
+export async function answerApproval(
+  sessionId: string,
+  choice: ApprovalChoice,
+  seen: Pick<WaitingChat, "question" | "askedAt" | "pick">,
+): Promise<TakeResult> {
+  const chat = findWaitingChat(sessionId);
+  if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (chat.question !== seen.question || chat.askedAt !== seen.askedAt || chat.pick !== seen.pick)
+    return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+  const text = approvalMessage(choice, chat);
+  const prompt = host?.liveQuestion(sessionId);
+  const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
+  return answer(chat, reply && { reply, words: text }, text);
 }
 
 /** "Open": jump into the chat. */

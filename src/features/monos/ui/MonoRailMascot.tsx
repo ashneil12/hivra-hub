@@ -19,8 +19,13 @@ export function MonoRailMascot({
   tone?: "red" | "amber";
   className?: string;
 }) {
+  // Can't tell (monoLiveness.ts): the creature faded and still, no new dot colour; hover says "Not sure" (rail title).
+  const unsure = status === "unknown";
   return (
-    <span className={`relative grid place-items-center ${className}`}>
+    <span
+      data-mono-unsure={unsure || undefined}
+      className={`relative grid place-items-center ${unsure ? "opacity-40" : ""} ${className}`}
+    >
       {letter ? (
         <span
           data-mono-letter
@@ -34,7 +39,7 @@ export function MonoRailMascot({
           name={name}
           color={color}
           status={status}
-          still={status === "idle"}
+          still={status === "idle" || unsure}
           className="size-full"
         />
       )}

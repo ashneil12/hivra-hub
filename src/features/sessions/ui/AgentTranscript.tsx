@@ -76,6 +76,13 @@ import type { MonoSpawnedSession } from "../model/session";
 import { DelegationBatchRow } from "../../monos/ui/DelegationBatchRow";
 import { CheckTurnCard } from "../../hub/ui/CheckTurnCard";
 import { RoomNoteCard } from "../../hub/ui/RoomNoteCard";
+import { TeamReportCard } from "../../monos/ui/TeamReportCard";
+import type { TeamReport } from "../../monos/model/teamReport";
+import {
+  sinceLabel,
+  sinceYouWereHere,
+  type SinceYouWereHere,
+} from "../../monos/model/sinceYouWereHere";
 import type { MessageDelivery } from "../../monos/model/monoMessaging";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
@@ -253,6 +260,8 @@ type Props = {
   openSessionId?: string;
   /** Marks when each message was sent, for one conversation kept over days. */
   daySeparators?: boolean;
+  /** A Mono chat: the coding team's report a hidden report turn is, shown as one framed card (teamReport.ts). */
+  teamReportOf?: (block: Block) => TeamReport | undefined;
   /** Leaves token and speed details out of each turn's footer. */
   hideTurnMetrics?: boolean;
   harness?: HarnessId;
@@ -326,6 +335,7 @@ function AgentTranscriptComponent({
   launchedSessions,
   openSessionId,
   daySeparators = false,
+  teamReportOf,
   hideTurnMetrics = false,
   harness,
   model,
@@ -824,6 +834,14 @@ function AgentTranscriptComponent({
     [messageDeliveries],
   );
   const turns = turnCache.group(blocks, managed, inlineWork);
+  // After Ash has been away 3 h or more: one quiet line saying what came meanwhile (sinceYouWereHere.ts, our own idea).
+  const awayLines = useMemo(
+    () =>
+      inlineWork && daySeparators
+        ? sinceYouWereHere(turns, (block) => !!teamReportOf?.(block))
+        : undefined,
+    [turns, inlineWork, daySeparators, teamReportOf],
+  );
   // A scheduled update can land while the chat's own turn is still running.
   const activeTurnIndex = turns.reduce(
     (latest, turn, index) =>
@@ -1230,6 +1248,22 @@ function AgentTranscriptComponent({
           // A Mono's own follow-up replies join the turn they follow; each
           // run keeps its prompt, but the turn reads as one message.
           const runs = inlineWork ? monoTurnRuns(turn) : [turn];
+          // A coding team's report shows as its card where its run starts: before the Mono's first words on it, or at
+          // the end while the Mono hasn't written any yet (port map idea 1).
+          const reportsBefore = new Map<string, TeamReport[]>();
+          const reportsAtEnd: TeamReport[] = [];
+          if (inlineWork && teamReportOf)
+            for (const run of runs) {
+              const report = teamReportOf(run[0]);
+              if (!report) continue;
+              const anchor = run.find(isProseBlock);
+              if (!anchor) reportsAtEnd.push(report);
+              else reportsBefore.set(anchor.id, [...(reportsBefore.get(anchor.id) ?? []), report]);
+            }
+          const reportCards = (list: readonly TeamReport[], key: string) =>
+            list.map((report, index) => (
+              <TeamReportCard key={`${key}-report-${index}`} report={report} />
+            ));
           const userBlock = inlineWork
             ? monoTurnUserBlock(runs[0], messageDeliveries)
             : turnUserBlock(turn, managed);
@@ -1625,6 +1659,9 @@ function AgentTranscriptComponent({
               }`}
             >
               {stampAt != null ? <DaySeparator at={stampAt} /> : null}
+              {awayLines?.get(firstVisibleTurn + turnIndex) ? (
+                <SinceDivider counts={awayLines.get(firstVisibleTurn + turnIndex)!} />
+              ) : null}
               {items
                 .flatMap((item, itemIndex) => {
                   // The header carries the process; only approvals, and a
@@ -1694,6 +1731,11 @@ function AgentTranscriptComponent({
                       )),
                     ];
                   }
+                  const anchorId =
+                    item.type === "block" ? item.block.id : undefined;
+                  const before = anchorId
+                    ? reportCards(reportsBefore.get(anchorId) ?? [], anchorId)
+                    : [];
                   const row = (
                     <div
                       key={turnItemKey(item)}
@@ -1724,10 +1766,11 @@ function AgentTranscriptComponent({
                           ),
                         ]
                       : [];
-                  if (itemIndex !== foldLineAt) return [row, ...cards];
-                  return [foldLineRow, row, ...cards];
+                  if (itemIndex !== foldLineAt) return [...before, row, ...cards];
+                  return [...before, foldLineRow, row, ...cards];
                 })
-                .concat(foldLineAt >= items.length ? [foldLineRow] : [])}
+                .concat(foldLineAt >= items.length ? [foldLineRow] : [])
+                .concat(reportCards(reportsAtEnd, `${turnId}-end`))}
               {settled &&
                 proposals
                   .filter((block) => block.orchestration?.status !== "planning")
@@ -1911,6 +1954,23 @@ export function dayStamp(at: number, now = Date.now()): [string, string] {
               : { year: "numeric" }),
           }).format(at);
   return [day, formatClockTime(at)];
+}
+
+/** "Since you were here: 2 replies, 1 report": styled like the date line, once per gap (sinceYouWereHere.ts). */
+function SinceDivider({ counts }: { counts: SinceYouWereHere }) {
+  const label = sinceLabel(counts);
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      data-since-you-were-here
+      className="flex items-center justify-center px-4 pb-3 pt-1 font-sans text-[12px]"
+    >
+      <span className="rounded-full bg-content/[0.07] px-3 py-1 leading-4 text-content/60">
+        {label}
+      </span>
+    </div>
+  );
 }
 
 function DaySeparator({ at }: { at: number }) {

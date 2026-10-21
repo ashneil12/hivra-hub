@@ -76,7 +76,21 @@ type Props = {
   controls?: ReactNode;
   /** Sits beside attach and emoji, on the left under the input. */
   tools?: ReactNode;
+  /** The model line above the box (port map idea 2: UniiChat's pick line): a hairline, then the model as small text. */
+  modelLine?: ReactNode;
+  /** This chat's turn is running: an empty box's send becomes Stop. */
+  busy?: boolean;
+  /** Stop this chat's own turn (never the work it handed out). */
+  onStop?: () => void;
 };
+
+/**
+ * Send becomes Stop exactly while a turn runs and nothing waits to go: the box is empty and no attachment waits
+ * (UniiChat web/src/main.ts bars(): `stop = on && v.busy && BOX.value.trim() === "" && P.imgs.length === 0`).
+ */
+export function showsStop(state: { enabled: boolean; busy: boolean; text: string; attachments: number; canStop: boolean }): boolean {
+  return state.enabled && state.canStop && state.busy && state.text.trim() === "" && state.attachments === 0;
+}
 
 /**
  * A messaging app's input for the Mono: attach, type, send, whether or not
@@ -97,6 +111,9 @@ export function MonoComposer({
   onFocus,
   controls,
   tools,
+  modelLine,
+  busy = false,
+  onStop,
   showContext = false,
   context,
   contextEmpty = false,
@@ -122,7 +139,8 @@ export function MonoComposer({
     !submitting &&
     pendingReads === 0 &&
     (text.trim().length > 0 || attachments.length > 0);
-  const inline = !controls;
+  const stop = showsStop({ enabled, busy, text, attachments: attachments.length, canStop: !!onStop });
+  const inline = !controls && !modelLine;
   // Attachments sit above the field like a second line of text, so an inline
   // field moves above the buttons for them too.
   const stacked = inline && (multiline || attachments.length > 0);
@@ -275,6 +293,19 @@ export function MonoComposer({
     onError: setDropError,
   });
   const send = () => {
+    // An empty box while the turn runs: Enter or the button stops it (UniiChat View.ts view_act "Send").
+    if (
+      showsStop({
+        enabled,
+        busy,
+        text: textRef.current,
+        attachments: attachmentsRef.current.length,
+        canStop: !!onStop,
+      })
+    ) {
+      onStop?.();
+      return;
+    }
     if (!enabled || submittingRef.current || pendingReadsRef.current > 0)
       return;
     const message = textRef.current.trim();
@@ -416,17 +447,30 @@ export function MonoComposer({
       className={`${FIELD_CLASSES} ${className}`}
     />
   );
-  const sendButton = (className: string) => (
-    <button
-      type="submit"
-      aria-label="Send"
-      title={pendingReads ? "Reading attachments…" : "Send"}
-      disabled={!ready}
-      className={`primary-action grid size-6.5 place-items-center rounded-md transition-[background-color,color,transform] duration-150 active:scale-90 disabled:cursor-default ${className}`}
-    >
-      <ArrowUp className="size-3.5" strokeWidth={2} />
-    </button>
-  );
+  const sendButton = (className: string) =>
+    stop ? (
+      // The same button in the same spot and size: a grey fill and a filled square, never red (UniiChat style.css
+      // `.send.stop { background: var(--block); color: var(--ink) }`).
+      <button
+        type="submit"
+        aria-label="Stop"
+        title="Stop"
+        data-mono-stop
+        className={`grid size-6.5 place-items-center rounded-md bg-content/12 text-content transition-[background-color,color,transform] duration-150 hover:bg-content/16 active:scale-90 ${className}`}
+      >
+        <span aria-hidden className="size-2.5 rounded-[2px] bg-current" />
+      </button>
+    ) : (
+      <button
+        type="submit"
+        aria-label="Send"
+        title={pendingReads ? "Reading attachments…" : "Send"}
+        disabled={!ready}
+        className={`primary-action grid size-6.5 place-items-center rounded-md transition-[background-color,color,transform] duration-150 active:scale-90 disabled:cursor-default ${className}`}
+      >
+        <ArrowUp className="size-3.5" strokeWidth={2} />
+      </button>
+    );
 
   return (
     <form
@@ -436,6 +480,12 @@ export function MonoComposer({
         send();
       }}
     >
+      {modelLine ? (
+        <div data-mono-pick className="flex min-w-0 items-center gap-1 pb-1 pl-1 pr-1.5">
+          <span aria-hidden className="h-px min-w-6 flex-1 bg-content/8" />
+          {modelLine}
+        </div>
+      ) : null}
       <div
         ref={box}
         className={`agent-chat-composer relative rounded-lg border bg-content/3 backdrop-blur-sm ${fileDrag ? "border-accent/60" : "border-content/10 has-focus:border-content/20"}`}

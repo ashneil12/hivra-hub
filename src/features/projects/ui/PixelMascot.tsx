@@ -9,7 +9,7 @@ import {
 
 /** What a mascot's agent is doing: idle bobs, working hops, waiting gets an idea. */
 /** "paused" (a usage limit that resumes by itself) rests like idle. */
-export type PixelMascotStatus = "idle" | "working" | "needs-you" | "failed" | "paused";
+export type PixelMascotStatus = "idle" | "working" | "needs-you" | "failed" | "paused" | "unknown";
 
 type Props = {
   /** Project mascot name; see `projectMascots`. */
@@ -105,7 +105,8 @@ function PixelArt({
   const working = status === "working";
   const waiting = status === "needs-you";
   // A Mono whose last turn failed stands still (its status dot says why), with no bulb.
-  const stopped = status === "failed";
+  // One the app can't tell about stands still too: only a live turn moves (monoLiveness.ts).
+  const stopped = status === "failed" || status === "unknown";
   const rest = pixelLayers(name, color);
   const talk = working ? pixelLayers(name, color, true) : null;
   const blink = { animationDelay: blinkDelay(name + color) } as CSSProperties;

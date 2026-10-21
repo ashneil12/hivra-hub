@@ -51,6 +51,18 @@ function briefTeamOf(leadChat: string): BriefTeam | undefined {
   return mono && lead && project ? { projectId: project.id, team: codingTeamName(project), leadName: monoLook(mono).name } : undefined;
 }
 
+/**
+ * The coding team a chat reports for (teamReport.ts): its name when the chat is a project Lead's ("EXO coding team"),
+ * "" for a Lead whose project isn't known, undefined for any other chat.
+ */
+export function reportTeamOf(sessionId: string): string | undefined {
+  const mono = monoForSession(sessionId);
+  const lead = mono ? leadFor(mono.id) : undefined;
+  if (!lead) return undefined;
+  const project = hubProjectNamed(lead.projectId);
+  return project ? codingTeamName(project) : "";
+}
+
 export type DelegationPane =
   | {
       kind: "worker";

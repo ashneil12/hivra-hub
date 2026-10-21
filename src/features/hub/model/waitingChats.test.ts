@@ -221,3 +221,23 @@ describe("hooks for Autopilot and H4", () => {
     expect(calls.open).toEqual(["s2@vg-game"]);
   });
 });
+
+describe("a red-line ask is answered with an explicit choice (port map idea 3)", () => {
+  it("Approve once and Deny each send their own words; a changed ask is refused", async () => {
+    const { answerApproval, approvalMessage } = await import("./waitingChats");
+    const { calls } = host();
+    noteChats([markerChat("r1", "Needs Ash (red line): Email the waitlist about the delay?\nMy pick: Send it Friday.")], 1000);
+    const seen = findWaitingChat("r1")!;
+    expect(seen.redLine).toBe(true);
+    expect(approvalMessage("approve-once", seen)).toBe("Approved, this once: Send it Friday.");
+    expect(approvalMessage("deny", seen)).toBe("Denied: don't do this. (Email the waitlist about the delay?)");
+    // The ask moved on before the click: refused, nothing sent.
+    noteChats([markerChat("r1", "Needs Ash (red line): Email the whole list today instead?\nMy pick: Send it now.")], 2000);
+    const stale = await answerApproval("r1", "approve-once", seen);
+    expect(stale).toEqual({ ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." });
+    expect(calls.send).toEqual([]);
+    const fresh = findWaitingChat("r1")!;
+    expect(await answerApproval("r1", "deny", fresh)).toMatchObject({ ok: true });
+    expect(calls.send).toEqual([["r1", "Denied: don't do this. (Email the whole list today instead?)"]]);
+  });
+});

@@ -329,8 +329,8 @@ export function forgetAgentContext(sessionId: string): void {
   }
 }
 
-/** Bumped when the fixed rules below change, so live chats get them again (25: a Lead's project memory primer; 26: Ash first, per-worker reports, big-dump handling; 27: both merged; 28: Leads and coding-team chats talk as well as do, every ask listed back and split by area, Ash's decisions saved at once; 29: Monos keep no sub-chats: small fixes themselves, a project's work to its coding team, their own work to their own team). */
-export const MONO_PROMPT_VERSION = 29;
+/** Bumped when the fixed rules below change, so live chats get them again (25: a Lead's project memory primer; 26: Ash first, per-worker reports, big-dump handling; 27: both merged; 28: Leads and coding-team chats talk as well as do, every ask listed back and split by area, Ash's decisions saved at once; 29: Monos keep no sub-chats: small fixes themselves, a project's work to its coding team, their own work to their own team; 30: a "Needs Ash" line says why: sign in, enter a code, pay or review). */
+export const MONO_PROMPT_VERSION = 30;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked

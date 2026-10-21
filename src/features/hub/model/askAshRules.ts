@@ -14,6 +14,7 @@ Ash works at high agency and wants you to as well. Decide everything you can fro
 Needs Ash: <the question, one line>
 My pick: <your recommended answer>
 Write "Needs Ash (red line):" when it touches a red line (money, deleting data without a backup, production, messages sent as Ash, public launches, anything irreversible).
+When what he must do is sign in, enter a code, pay or review something, say so the same way: "Needs Ash (sign in):", "Needs Ash (enter a code):", "Needs Ash (pay):" or "Needs Ash (review):". Today shows that reason on the row.
 - Your pick may be taken for Ash in one tap, or automatically while he is on Autopilot (never on a red line), so make it the answer you would stand behind.
 - Workers you delegate to ask you, not Ash: answer them from the brief and his words. Only a real choice that only Ash can make goes up, once, from your own chat with your pick.
 </ask_ash_rules>`;
