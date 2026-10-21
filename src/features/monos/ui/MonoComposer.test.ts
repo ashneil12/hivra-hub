@@ -250,8 +250,8 @@ it("+ offers photos and videos or any file, and picks the kind asked for (Ash, 1
   // Nothing is picked until Ash says what: the menu names both kinds and that pasting or dropping works too.
   expect(pick).not.toHaveBeenCalled();
   const menu = container.querySelector("[data-attach-menu]")!;
-  expect(menu.textContent).toContain("Photos and videos");
-  expect(menu.textContent).toContain("Files");
+  expect(menu.textContent).toContain("Photo or image");
+  expect(menu.textContent).toContain("File");
   expect(menu.textContent).toContain("paste or drop");
   await act(async () => container.querySelector<HTMLButtonElement>('[data-attach-pick="media"]')!.click());
   expect(pick).toHaveBeenLastCalledWith("media");

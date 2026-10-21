@@ -137,6 +137,19 @@ it("double-click renames a conversation; the name holds through later messages a
   void show;
 });
 
+it("the pencil names a new conversation and renames an open one", async () => {
+  const { q, first, convs } = await render();
+  act(() => q("[data-hub-conversation-pencil]")!.click());
+  await typeName(q("[data-hub-conversation-rename]") as HTMLInputElement, "Pencil named");
+  expect(q("[data-hub-conversation-title]")!.textContent).toBe("Pencil named");
+  expect(convs().find((c) => c.id === first)).toMatchObject({ title: "Pencil named", named: true });
+  act(() => q("[data-hub-new-conversation]")!.click());
+  act(() => q("[data-hub-conversation-draft-pencil]")!.click());
+  await typeName(q("[data-hub-conversation-rename]") as HTMLInputElement, "Draft by pencil");
+  expect(q("[data-hub-conversation-title]")!.textContent).toBe("Draft by pencil");
+  expect(convs()).toHaveLength(1);
+});
+
 it("a photo and a file go with the message: kept by path (a pasted photo saved to a file), shown, and handed to the Mono", async () => {
   const { q, convs, chat, room } = await render({ withConversation: false });
   const seen: { attachments?: unknown; prompt: string }[] = [];

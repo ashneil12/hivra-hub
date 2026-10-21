@@ -371,11 +371,11 @@ export function MonoComposer({
         >
           <button type="button" role="menuitem" data-attach-pick="media" onClick={() => pick("media")} className={ATTACH_ITEM}>
             <ImagePlus className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-            Photos and videos
+            Photo or image
           </button>
           <button type="button" role="menuitem" data-attach-pick="file" onClick={() => pick("file")} className={ATTACH_ITEM}>
             <FileIcon className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-            Files
+            File
           </button>
           <p className="px-2 pb-1 pt-1 text-[11px] leading-4 text-content/55">
             You can also paste or drop anything here.

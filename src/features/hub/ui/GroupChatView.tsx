@@ -251,11 +251,21 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
               ) : (
                 <div
                   data-hub-conversation-draft
-                  title="Double-click to name it"
+                  title="Name it"
                   onDoubleClick={() => setRenamingConv("draft")}
-                  className="flex h-7 shrink-0 items-center rounded-md border border-dashed border-content/25 bg-selection px-2 text-[13px] text-content"
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-dashed border-content/25 bg-selection pl-2 pr-1 text-[13px] text-content"
                 >
-                  <span className="min-w-0 truncate">{draftTitle ?? "New conversation"}</span>
+                  <span className="min-w-0 flex-1 truncate">{draftTitle ?? "New conversation"}</span>
+                  <button
+                    type="button"
+                    title="Name it"
+                    aria-label="Name this conversation"
+                    data-hub-conversation-draft-pencil
+                    onClick={() => setRenamingConv("draft")}
+                    className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
+                  >
+                    <Pencil className="size-3" strokeWidth={1.75} />
+                  </button>
                 </div>
               )
             ) : null}
@@ -307,6 +317,19 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             >
               {drafting ? (draftTitle ?? "New conversation") : conv!.title}
             </span>
+          ) : null}
+          {drafting || conv ? (
+            <button
+              type="button"
+              title="Rename"
+              aria-label="Rename conversation"
+              data-hub-conversation-pencil
+              data-tauri-drag-region="false"
+              onClick={() => setRenamingConv(drafting ? "draft" : conv!.id)}
+              className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
+            >
+              <Pencil className="size-3" strokeWidth={1.75} />
+            </button>
           ) : (
             <span className="min-w-0 truncate text-[13px] text-content">{chat.name}</span>
           )}
@@ -485,8 +508,9 @@ function NewConversationScreen({
           })}
         </div>
         <div>
-          <p className="text-[17px] font-medium text-content">Talk to {phrase}</p>
-          <p className="mt-1 text-[13px] leading-5 text-content/70">Nothing is saved until you send your first message. It names the conversation unless you name it first: double-click the name to change it. Attach photos or files with +.</p>
+          <p className="text-[17px] font-medium text-content">New conversation with {phrase}</p>
+          <p className="mt-1 text-[13px] leading-5 text-content/70">Say anything to start. Nothing is saved until you send.</p>
+          <p className="mt-0.5 text-[12px] leading-5 text-content/55">Tap the pencil to name it. + adds a photo or a file.</p>
         </div>
         <div className="flex flex-wrap justify-center gap-2">
           {starters.map((s) => (

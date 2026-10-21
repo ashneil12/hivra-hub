@@ -101,8 +101,8 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
 
   // 5. + offers photos and videos or files: one of each.
   await page.locator("[data-hub-chat] button[aria-label='Attach files']").click();
-  await expect(page.locator("[data-attach-menu]")).toContainText("Photos and videos");
-  await expect(page.locator("[data-attach-menu]")).toContainText("Files");
+  await expect(page.locator("[data-attach-menu]")).toContainText("Photo or image");
+  await expect(page.locator("[data-attach-menu]")).toContainText("File");
   await shot(page, "3-plus-menu");
   await page.keyboard.press("Escape");
   await attach(page, "media", PHOTO);
