@@ -113,7 +113,7 @@ export function jobsScenario(now = Date.now()) {
     }),
     job("j_sender", "hivra", "Example: sending the waitlist emails", "lead_gave_up", {
       ago: 200, active: 55,
-      wire: { reason: "The email sender refused the login.", circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"], why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. It failed before the lead took over." },
+      wire: { reason: "The email sender refused the login.", circle: "red", word: "Needs you", tried: ["once on its own", "splitting the job", "a different worker"], why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. It failed before the lead took over." },
     }),
     job("j_footer", "hivra", "Example: fixing the footer link", "done", { ago: 90, active: 30, wire: { finishedAt: iso2(now - 30 * min) } }),
     job("j_sound", "nibbii", "Example: tidying the sound files", "stuck", { noLead: true, ago: 80, active: 14, wire: { reason: "No sound card in the test box.", circle: "amber", word: "Stuck" } }),

@@ -54,11 +54,11 @@
       "circle": "red",
       "word": "Needs you",
       "tried": [
-       "the runner's own attempt",
+       "once on its own",
        "splitting the job",
        "a different worker"
       ],
-      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried before it reached the lead: the runner's own attempt."
+      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried once on its own before passing to the lead."
      },
      {
       "id": "j_a254ebc73f",
@@ -182,11 +182,11 @@
       "circle": "red",
       "word": "Needs you",
       "tried": [
-       "the runner's own attempt",
+       "once on its own",
        "splitting the job",
        "a different worker"
       ],
-      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried before it reached the lead: the runner's own attempt."
+      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried once on its own before passing to the lead."
      },
      {
       "id": "j_a254ebc73f",
@@ -242,7 +242,7 @@
       "id": "j:j_2d2add543d",
       "projectId": "hivra",
       "title": "Fixing the save bug",
-      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried before it reached the lead: the runner's own attempt.",
+      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried once on its own before passing to the lead.",
       "actionType": "see_options",
       "actionLabel": "See options",
       "actionTarget": "job:j_2d2add543d",
@@ -270,7 +270,7 @@
   "jobId": "j_2d2add543d",
   "projectId": "hivra",
   "title": "Fixing the save bug",
-  "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried before it reached the lead: the runner's own attempt.",
+  "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried once on its own before passing to the lead.",
   "options": [
    {
     "id": "try_tonight",
@@ -329,7 +329,7 @@
       "id": "j:j_2d2add543d",
       "projectId": "hivra",
       "title": "Fixing the save bug",
-      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried before it reached the lead: the runner's own attempt.",
+      "why": "Coding team lead tried splitting the job and a different worker since 4:51am, still failing. Tried once on its own before passing to the lead.",
       "actionType": "see_options",
       "actionLabel": "See options",
       "actionTarget": "job:j_2d2add543d",

@@ -148,7 +148,7 @@ describe("the store reads what the real jobs code sends", () => {
     const sent = hivra.find((j) => j.state === "sent_to_lead")!;
     expect(sent).toMatchObject({ circle: "amber", word: "Stuck", reason: "The disk was full twice.", sentText: "Sent to coding team lead at 4:51am", gotIt: { text: "Got it" } });
     const gaveUp = hivra.find((j) => j.state === "lead_gave_up")!;
-    expect(gaveUp).toMatchObject({ circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"] });
+    expect(gaveUp).toMatchObject({ circle: "red", word: "Needs you", tried: ["once on its own", "splitting the job", "a different worker"] });
     expect(snap.jobs[1].jobs[0]).toMatchObject({ state: "stuck", lead: null, leadName: null });
     const sheet = await store.jobOptions(gaveUp.id);
     expect(sheet.options.map((o) => o.id)).toEqual(["try_tonight", "try_different", "pause", "drop"]);
