@@ -45,10 +45,10 @@ const click = async (host: HTMLElement, selector: string) =>
 
 it("exports with exactly what is ticked: setup always, memory folders and the workspace when asked", async () => {
   const host = await render();
-  // Setup can't be unticked; memory and workspace start off.
+  // Setup can't be unticked; memory starts ticked (round 21), the workspace starts off.
   expect(host.querySelector("[data-portable-choice=setup] [role=checkbox]")!.getAttribute("aria-checked")).toBe("true");
-  expect(host.querySelector("[data-portable-memory-folders]")).toBeNull();
-  await click(host, "[data-portable-choice=memory] [role=checkbox]");
+  expect(host.querySelector("[data-portable-choice=memory] [role=checkbox]")!.getAttribute("aria-checked")).toBe("true");
+  expect(host.querySelector("[data-portable-choice=workspace] [role=checkbox]")!.getAttribute("aria-checked")).toBe("false");
   expect(host.querySelector("[data-portable-memory-folders]")!.textContent).toContain("ash (every project reads it)");
   await click(host, "[data-portable-choice=memory-hivra] [role=checkbox]");
   await click(host, "[data-portable-choice=workspace] [role=checkbox]");
@@ -67,13 +67,16 @@ it("exports with exactly what is ticked: setup always, memory folders and the wo
   expect(report).toContain("history of ash was left out");
 });
 
-it("setup only by default, and nothing happens when the save dialog is cancelled", async () => {
+it("setup and all memory by default, and nothing happens when the save dialog is cancelled", async () => {
   const host = await render();
   bridge.pickExportDestination.mockResolvedValueOnce(null);
   await click(host, "[data-portable-export]");
   expect(bridge.exportEverything).not.toHaveBeenCalled();
   await click(host, "[data-portable-export]");
-  expect(bridge.exportEverything).toHaveBeenCalledWith(expect.objectContaining({ memory: null, workspace: false }));
+  expect(bridge.exportEverything).toHaveBeenCalledWith(expect.objectContaining({
+    memory: { projects: ["ash", "hivra"], history: false, monoMemory: true },
+    workspace: false,
+  }));
 });
 
 it("when this copy's memory can't be read, the page says so instead of showing none", async () => {

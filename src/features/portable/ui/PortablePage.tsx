@@ -43,10 +43,11 @@ function summary(report: ExportReport): string {
   return parts.filter(([n]) => typeof n === "number" && n > 0).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ");
 }
 
-/** Settings → Export and import: the whole setup, and if ticked the memory and the workspace, out and back in. */
+/** Settings → Export and import: the whole setup with its memory (ticked to start), and the workspace if ticked, out and back in. */
 export function PortablePage() {
   const [info, setInfo] = useState<PortableInfo | null>(null);
-  const [memory, setMemory] = useState(false);
+  // Ticked to start (21 Oct): "bring my whole setup across" carries every Mono's memory and the project memory folders.
+  const [memory, setMemory] = useState(true);
   const [memoryFolders, setMemoryFolders] = useState<Set<string>>(new Set());
   const [history, setHistory] = useState(false);
   const [monoMemory, setMonoMemory] = useState(true);
