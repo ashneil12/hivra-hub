@@ -30,7 +30,7 @@ import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFa
 import { customModelEfforts, importCustomModels, listCustomModels } from "../../features/sessions/model/customModels";
 import type { RuntimeMode, Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
-import { preloadAshTeam } from "../../features/hub/model/hubTeam";
+import { benchAshTeam } from "./benchAshTeam";
 import { teamPack } from "../../features/hub/model/teamPack";
 
 /**
@@ -394,10 +394,10 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok: !!saved, added, skipped, model: saved ? { id: saved.id, name: saved.name, provider: saved.provider, modelId: saved.modelId, efforts: customModelEfforts(saved.reasoningEfforts) } : null };
     }
     case "teamPack": {
-      // A bench run that plays Ash's own Monos picks "Pre-load Ash's team" first, the same pre-load onboarding offers
-      // (G5: a fresh dev copy starts with the plain team). Only "ash"; the plain team is what a fresh copy already has.
+      // A bench run that plays Ash's own Monos puts his team on the fresh dev copy first (benchAshTeam: the app has no
+      // pre-load since PM round 19; his team arrives by import). Only "ash"; the plain team is what a fresh copy has.
       if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
-      const wrote = await preloadAshTeam();
+      const wrote = await benchAshTeam();
       return { ok: teamPack() === "ash", pack: teamPack(), wrote };
     }
     case "defaults":

@@ -3,7 +3,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const preload = vi.fn(async () => ["chief-of-staff"]);
-vi.mock("../../features/hub/model/hubTeam", () => ({ preloadAshTeam: () => preload() }));
+vi.mock("./benchAshTeam", () => ({ benchAshTeam: () => preload() }));
 vi.mock("../../features/hub/model/teamPack", () => ({ teamPack: () => (preload.mock.calls.length ? "ash" : "plain") }));
 
 import { DriverLog, perform, type DriverHost } from "./verifyDriver";
