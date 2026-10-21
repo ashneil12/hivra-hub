@@ -347,8 +347,8 @@ function byMono(jobs: Worker[]): [string, Worker[]][] {
   return [...m.entries()];
 }
 
-/** Calm state text. Stuck = amber circle (still fixing itself). Needs you is a
- * dot and plain text, like every other state. Lead gave up = red Stuck with the reason (Ash's default). Done (not seen) = small dot. */
+/** Calm state text. Stuck (still fixing itself, or the Lead gave up) = the one red Stuck circle. Needs you is a
+ * dot and plain text, like every other state. Done (not seen) = small dot. */
 function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean }) {
   const st = jobState(w);
   const reason = w.stuckReason ? w.stuckReason.replace(/^Example: /, "") : "";
@@ -364,7 +364,7 @@ function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean })
     return (
       <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
         <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden className="shrink-0">
-          <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={st === "gave_up" ? "rgb(239 68 68)" : "rgb(245 158 11)"} />
+          <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke="rgb(239 68 68)" />
         </svg>
         <span>Stuck</span>
       </span>

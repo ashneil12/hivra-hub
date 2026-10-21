@@ -18,8 +18,11 @@ import { PixelMascot } from "../../projects/ui/PixelMascot";
 import {
   defaultMonoName,
   findMono,
+  LETTER_AVATAR,
+  monoTileLetters,
   saveMonoMascot,
   saveMonoName,
+  saveMonoTileLetters,
   subscribeMonos,
   updateMono,
   type MonoLook,
@@ -376,6 +379,7 @@ function LookButton({ monoId, agent }: { monoId: string; agent: MonoLook }) {
             color={agent.color}
             onPick={(mascot) => saveMonoMascot(monoId, mascot)}
           />
+          <TileLettersField monoId={monoId} name={agent.name} />
           <div className="h-px bg-content/10" />
           <ColorPicker
             inline
@@ -433,5 +437,31 @@ function NameField({ monoId, fallback }: { monoId: string; fallback: string }) {
       }}
       className="mt-3 h-8 w-full max-w-64 rounded-md bg-transparent px-2 text-center text-[15px] font-medium text-content outline-none placeholder:text-content/60 hover:bg-content/5 focus:bg-content/5"
     />
+  );
+}
+
+/** The letters on the Mono's tile: Ash's own (one or two, as typed), or empty for the automatic ones. */
+function TileLettersField({ monoId, name }: { monoId: string; name: string }) {
+  const mono = findMono(monoId);
+  const chosen = mono?.mascotPicked && mono.mascot.startsWith(`${LETTER_AVATAR}:`) ? mono.mascot.slice(LETTER_AVATAR.length + 1) : "";
+  return (
+    <label className="flex items-center justify-between gap-2 px-1 text-[12px] text-content/70">
+      Tile letters
+      <input
+        key={chosen}
+        data-mono-tile-letters
+        aria-label="Tile letters"
+        maxLength={2}
+        defaultValue={chosen}
+        placeholder={monoTileLetters(name)}
+        onBlur={(e) => {
+          if (e.currentTarget.value.trim() !== chosen) saveMonoTileLetters(monoId, e.currentTarget.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        className="h-6 w-14 rounded-md bg-content/8 px-2 text-center text-[12px] text-content outline-none ring-1 ring-inset ring-content/15 placeholder:text-content/60"
+      />
+    </label>
   );
 }

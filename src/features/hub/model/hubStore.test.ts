@@ -179,7 +179,7 @@ describe("live changes land in place", () => {
     expect(store.getSnapshot().since?.overall.plainText).toMatch(/on their way/);
     stub.finishPendingSince();
     await waitFor(() => store.getSnapshot().since?.pending === false, "finished since");
-    expect(store.getSnapshot().since?.overall.plainText).toContain("the hub has five decisions");
+    expect(store.getSnapshot().since?.overall.plainText).toContain("The hub has five decisions");
   });
 
   it("Since for one project and for all of them come from the same read", async () => {
@@ -451,9 +451,9 @@ describe("older questions, Looks right and jobs", () => {
     store.start();
     await waitFor(() => store.getSnapshot().jobs.length, "jobs");
     const stuck = data.listStuck("hivra");
-    expect(stuck.map((s) => s.title)).toEqual(["Moving the nightly backup"]);
+    expect(stuck.map((s) => s.title)).toEqual(["Example: moving the nightly backup"]);
     expect(stuck[0]).toMatchObject({ state: "stuck", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to coding team lead at .* · Got it$/) });
-    expect(data.listStuck("nibbii").map((s) => s.title)).toEqual(["Tidying the sound files"]);
+    expect(data.listStuck("nibbii").map((s) => s.title)).toEqual(["Example: tidying the sound files"]);
     expect(data.listStuck("nibbii")[0].note).toBeUndefined();
   });
 

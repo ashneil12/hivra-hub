@@ -126,12 +126,26 @@ export function createStudio(ctx) {
         title: "Waiting on you",
         state: open.length > 4 ? "warn" : "ok",
         line: open.length ? `Example: ${open.length} ${open.length === 1 ? "thing" : "things"} waiting on you` : "Example: nothing waiting on you",
-        detail: `Example: built from ${where}'s asks.`,
+        detail: `Example: built from ${where}${where.endsWith("s") ? "'" : "'s"} asks.`,
       },
     ];
     if (open.length) blocks.push({ kind: "list", title: "What's open", rows: open.slice(0, 6).map((n) => ({ text: n.title, state: n.later ? "ok" : "warn", label: n.later ? "Later" : "Open" })) });
     if (pids.length > 1) blocks.push({ kind: "barlist", title: "By project", rows: pids.map((pid) => ({ label: projectName(pid), value: open.filter((n) => n.projectId === pid).length })) });
-    blocks.push({ kind: "note", title: "About this page", text: `Example: the stub made this from “${prompt}”. No real Mono ran.` });
+    if (/calendar|week|schedule/i.test(prompt)) {
+      const now = new Date();
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const later = (n) => Math.min(days, now.getDate() + n);
+      blocks.push({
+        kind: "calendar",
+        title: "Calendar",
+        month: first.toLocaleString("en-GB", { month: "long", year: "numeric" }),
+        firstWeekday: (first.getDay() + 6) % 7,
+        days,
+        marked: [{ day: now.getDate(), text: "Example: today" }, { day: later(1), text: "Example: playtest" }, { day: later(4), text: "Example: ship" }].filter((m, i, all) => all.findIndex((x) => x.day === m.day) === i),
+      });
+    }
+    blocks.push({ kind: "note", title: "About this page", text: "Sample page. No Mono has built this yet." });
     return { kind: "blocks", title, blocks, ...(/pin/i.test(prompt) ? { pin: true } : {}) };
   }
 

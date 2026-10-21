@@ -1477,7 +1477,7 @@ function MonoRoleLabel({ id, role }: { id: string; role?: string }) {
       data-tauri-drag-region="false"
       title="Edit role"
       onClick={() => setEditing(true)}
-      className={`min-w-0 shrink truncate rounded px-1 text-[12px] hover:bg-content/8 hover:text-content ${role ? "text-content/55" : "text-content/35"}`}
+      className={`min-w-0 shrink truncate rounded px-1 text-[12px] hover:bg-content/8 hover:text-content ${role ? "text-content/60" : "text-content/60 italic"}`}
     >
       {role ?? "Add a role"}
     </button>
