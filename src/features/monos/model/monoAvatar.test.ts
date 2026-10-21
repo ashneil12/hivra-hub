@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, expect, it } from "vitest";
-import { addMono, findMono, monoAvatar, monoLook, saveMonoMascot } from "./mono";
+import { addMono, findMono, monoAvatar, monoLook, saveMonoMascot, saveMonoTileLetters } from "./mono";
 
 beforeEach(() => localStorage.clear());
 
@@ -27,4 +27,15 @@ it("Hivra lead and Harness lead no longer share a tile", async () => {
   const tiles = names.map(monoTileLetters);
   expect(tiles).toEqual(["CS", "PM", "FR", "AL", "EX", "HI", "NI", "HA"]);
   expect(new Set(tiles).size).toBe(names.length);
+});
+
+it("a tile shows the letters Ash chose, as typed; clearing them goes back to the automatic two capitals", () => {
+  addMono({ id: "alfred", name: "Alfred", mascot: "rocket", color: "gray", projects: [] });
+  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:AL");
+  saveMonoTileLetters("alfred", "Af");
+  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:Af");
+  saveMonoTileLetters("alfred", "Q");
+  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:Q");
+  saveMonoTileLetters("alfred", "");
+  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:AL");
 });

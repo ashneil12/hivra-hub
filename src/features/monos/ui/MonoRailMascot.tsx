@@ -27,7 +27,7 @@ export function MonoRailMascot({
           aria-hidden
           className="grid size-full place-items-center rounded-[4px] bg-content/12 text-[8px] font-semibold tracking-tight leading-none text-content/80 ring-1 ring-inset ring-content/10"
         >
-          {(letter.length > 2 ? monoTileLetters(letter) : letter).toUpperCase()}
+          {letter.length > 2 ? monoTileLetters(letter) : letter}
         </span>
       ) : (
         <PixelMascot

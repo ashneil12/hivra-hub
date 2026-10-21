@@ -444,10 +444,13 @@ export function saveMonoName(monoId: string, name: string): void {
   updateMono(monoId, (mono) => ({ ...mono, name }));
 }
 
-/** Picking "Letter" goes back to the letter avatar; any other mascot is kept as picked on purpose. */
+/**
+ * Picking "Letter" goes back to the automatic letters; any other mascot, or letters Ash chose ("letter:Al"), is kept
+ * as picked on purpose.
+ */
 export function saveMonoMascot(monoId: string, mascot: string): void {
   updateMono(monoId, (mono) => {
-    if (isLetterAvatar(mascot)) {
+    if (mascot === LETTER_AVATAR) {
       const { mascotPicked: _, ...rest } = mono;
       return rest;
     }
@@ -462,7 +465,7 @@ export function isLetterAvatar(mascot: string | undefined): boolean {
 }
 /** What a Mono wears: its letter unless the user picked a mascot on purpose. */
 export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
-  if (mono.mascotPicked && !isLetterAvatar(mono.mascot)) return mono.mascot;
+  if (mono.mascotPicked && mono.mascot !== LETTER_AVATAR) return mono.mascot;
   return `${LETTER_AVATAR}:${monoTileLetters(mono.name?.trim() || "Mono")}`;
 }
 
@@ -470,11 +473,18 @@ export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">)
  * Two letters, so Monos don't share a tile: the initials of two capitalised words ("Chief of Staff" → CS,
  * "Projects Manager" → PM), otherwise the first two letters ("Hivra lead" → HI, "Harness lead" → HA, "frank" → FR).
  */
+/** The letters Ash chose for a Mono's tile (one or two, shown as typed); empty goes back to the automatic ones. */
+export function saveMonoTileLetters(monoId: string, letters: string): void {
+  const chosen = [...letters.replace(/\s+/g, "")].slice(0, 2).join("");
+  saveMonoMascot(monoId, chosen ? `${LETTER_AVATAR}:${chosen}` : LETTER_AVATAR);
+}
+
 export function monoTileLetters(name: string): string {
   const caps = name.split(/\s+/).filter((w) => /^[A-Z]/.test(w));
   if (caps.length >= 2) return `${caps[0][0]}${caps[1][0]}`;
   const word = name.replace(/[^\p{L}\p{N}]/gu, "") || "M";
-  // Both capitals: a small "Al" reads as "AI" (Critiquito, 21 Oct), so every tile is two capitals (AL, FR, EX).
+  // The automatic default is two capitals: a small "Al" reads as "AI" (Critiquito, 21 Oct). Letters Ash chooses are
+  // shown as he typed them (saveMonoTileLetters).
   return `${word.charAt(0)}${word.charAt(1)}`.toUpperCase();
 }
 
