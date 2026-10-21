@@ -42,6 +42,8 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
   await expect(page.locator("[data-hub-conversation-pencil]")).toBeVisible();
   await page.locator("[data-hub-chat] button[aria-label='Attach files']").click();
   await expect(page.locator("[data-attach-menu]")).toContainText("Photo or image");
+  await expect(page.locator("[data-hub-new-conversation-screen]")).toContainText("Click the pencil to name it.");
+  await expect(page.locator("[data-hub-conversation-draft-word]")).toHaveText("Draft");
   await page.screenshot({ path: `${SHOTS}/b8-new-conversation.png` });
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -68,17 +70,34 @@ test("G4: each Mono's role shows after its name on the rail, in the header and t
     const list = document.querySelector("[data-mono-rail]") as HTMLElement;
     let el: HTMLElement | null = list;
     while (el && el.getBoundingClientRect().left > 80) el = el.parentElement;
-    (list.closest("aside") ?? list).style.width = "170px";
-    list.style.width = "170px";
+    (list.closest("aside") ?? list).style.width = "190px";
+    list.style.width = "190px";
   });
   // Under about 200px the role is hidden and every name has the whole row; the role stays in the tooltip.
   await expect(cos.locator("[data-mono-role]")).toBeHidden();
   await expect(cos).toHaveAttribute("title", /\nBusiness partner across every project/);
   const pm = rail.locator('button[aria-label^="Projects Manager"] [data-mono-primary-name]').first();
   const box = await pm.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
-  expect(box.scroll).toBeLessThanOrEqual(box.client);
+  expect(box.scroll).toBeLessThanOrEqual(box.client); // the name is not cut
   const railBox = await rail.boundingBox();
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
+});
+
+test("G4 tiles: the automatic letters are two capitals (AL); Ash can choose a Mono's own, shown as typed; mascots are still offered", async ({ page }) => {
+  await open(page);
+  const rail = page.locator("[data-mono-rail]").first();
+  const alfred = rail.locator('button[aria-label^="Alfred"]').first();
+  await expect(alfred.locator("svg text").first()).toHaveText("AL");
+  await alfred.click();
+  await page.getByRole("button", { name: "Alfred settings" }).click();
+  await page.getByRole("button", { name: "Change mascot and color" }).click();
+  const look = page.getByRole("dialog", { name: "Mascot and color" });
+  await expect(look).toBeVisible();
+  expect(await look.locator("button svg").count()).toBeGreaterThan(5);
+  await look.locator("[data-mono-tile-letters]").fill("Af");
+  await look.locator("[data-mono-tile-letters]").press("Enter");
+  await expect(alfred.locator("svg text").first()).toHaveText("Af");
+  await shot(page, "g4-tile-letters");
 });
 
 test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
@@ -91,16 +110,28 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
   const calendar = page.locator("[data-block-calendar]").first();
   await expect(calendar).toBeVisible({ timeout: 30_000 });
   await expect(calendar.locator("th")).toHaveText(["M", "T", "W", "T", "F", "S", "S"]);
+  await expect(page.getByText("Sample page. No Mono has built this yet.")).toBeVisible();
+  await expect(page.getByText(/No real Mono ran/)).toHaveCount(0);
   await calendar.scrollIntoViewIfNeeded();
   await page.mouse.move(5, 450);
   await shot(page, "c6-calendar-block");
 });
 
-test("PM-20: made-up data says Example: on Today (the stub's jobs and asks)", async ({ page }) => {
+test("PM-20: made-up data says Example: on Today (the stub's jobs and asks); Stuck is one red", async ({ page }) => {
   await open(page);
   const built = page.locator("[data-hub-today-being-built]").first();
   await expect(built).toContainText("Example: adding the air dodge", { timeout: 30_000 });
   await expect(built).not.toContainText(/(^|[^:] )Adding the air dodge/);
+  // Stuck is one red everywhere on Today: no amber ring next to a Stuck word.
+  await expect(page.getByText("Stuck").first()).toBeVisible();
+  const stuckStrokes = await page.evaluate(() =>
+    [...document.querySelectorAll("svg circle")]
+      .filter((c) => /^\s*Stuck\s*$/.test(c.closest("svg")?.parentElement?.textContent ?? ""))
+      .map((c) => c.getAttribute("stroke")),
+  );
+  expect(stuckStrokes.length).toBeGreaterThan(0);
+  expect(new Set(stuckStrokes)).toEqual(new Set(["rgb(239 68 68)"]));
+  await expect(page.getByText(/Tried before it reached the lead/)).toHaveCount(0);
   await page.mouse.move(5, 450);
   await shot(page, "pm20-today-example-labels");
 });
