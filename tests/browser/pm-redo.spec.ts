@@ -50,13 +50,17 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(0);
 });
 
-test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead's says which coding team it runs", async ({ page }) => {
+test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead's reads Runs the coding team", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
   const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
   await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
-  // A project's Lead's role comes from its project.
-  for (const p of ["EXO", "Hivra", "Nibbii"]) await expect(rail.locator(`button[aria-label^="${p} lead"] [data-mono-role]`)).toHaveText(`Runs the ${p} coding team`);
+  // Every Lead reads "Runs the coding team" (its name already says which project), uncut, the Hub's too.
+  for (const p of ["EXO", "Hivra", "Nibbii", "MonoCode Hub"]) {
+    const role = rail.locator(`button[aria-label^="${p} lead"] [data-mono-role]`);
+    await expect(role).toHaveText("Runs the coding team");
+    expect(await role.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  }
   await cos.click();
   await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner");
   await page.locator("[data-mono-title] [data-mono-role-edit]").click();
