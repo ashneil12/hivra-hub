@@ -207,8 +207,20 @@ function buttonLabel(element: HTMLElement): string {
 }
 
 /** The buttons Ash can see in the open screen (the main pane and any dialog), newest last, the way he reads them. */
+/**
+ * Where Ash's buttons are: the app, its dialogs, and the change bar's own root (main.tsx, data-change-bar: Now | Preview,
+ * Apply, Discard, a page's See it and a drafted Mono's card), which sits outside <main> (run 24bf: AD14/AD15's bench saw
+ * "no Now, no Preview, no Apply" while the change was offered).
+ */
+function buttonRoots(): Element[] {
+  return [
+    document.querySelector("main") ?? document.body,
+    ...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [data-change-bar]'),
+  ];
+}
+
 export function visibleButtons(): { label: string; disabled: boolean }[] {
-  const roots = [document.querySelector("main") ?? document.body, ...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')];
+  const roots = buttonRoots();
   const seen = new Set<Element>();
   const out: { label: string; disabled: boolean }[] = [];
   for (const root of roots)
@@ -226,7 +238,7 @@ export function clickButton(label: string): { ok: boolean; error?: string; click
   const want = label.replace(/\s+/g, " ").trim().toLowerCase();
   if (!want) return { ok: false, error: "click: no label" };
   if (NEVER_CLICK.test(want)) return { ok: false, error: "the bench never clicks a delete or reset; Ash does that himself" };
-  const roots = [document.querySelector("main") ?? document.body, ...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')];
+  const roots = buttonRoots();
   const matches = roots
     .flatMap((root) => [...root.querySelectorAll<HTMLElement>(BUTTONS)])
     .filter((element) => shown(element) && !element.matches(":disabled, [aria-disabled='true']") && buttonLabel(element).toLowerCase() === want);

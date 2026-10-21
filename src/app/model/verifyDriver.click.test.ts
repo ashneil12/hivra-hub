@@ -27,3 +27,12 @@ it("clicks the newest matching button, and refuses deletes and disabled buttons"
   expect(clickButton("Cancel").ok).toBe(true);
   expect(clicks).toEqual(["b", "no"]);
 });
+
+it("sees and clicks the change bar's buttons, which sit in their own root outside <main> (run 24bf AD14/AD15)", () => {
+  document.body.innerHTML = `<main><button>Send</button></main><div data-change-bar><button>Now</button><button>Preview</button><button id="apply">Apply</button><button>Discard</button></div>`;
+  expect(visibleButtons().map((b) => b.label)).toEqual(["Send", "Now", "Preview", "Apply", "Discard"]);
+  let applied = false;
+  document.getElementById("apply")!.addEventListener("click", () => (applied = true));
+  expect(clickButton("Apply").ok).toBe(true);
+  expect(applied).toBe(true);
+});

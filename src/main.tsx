@@ -151,6 +151,7 @@ void Promise.all([
     // What a Mono made and waits on Ash for (Now | Preview, Apply, Discard), in a root of its own: a previewed change
     // that breaks the app's own screens can't take these buttons with it (selfBuild/ui/ChangeBar.tsx).
     const bar = document.createElement("div");
+    bar.dataset.changeBar = "";
     document.body.appendChild(bar);
     ReactDOM.createRoot(bar).render(<ChangeBar />);
   },
