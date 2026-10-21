@@ -160,7 +160,7 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 > - Bespoke pages run in a sandbox with no network. Style them ONLY with the CSS variables --color-content, --color-surface, --color-surface-raised, --color-surface-ring, --color-stroke, --color-theme-accent and --font-sans. Draw small text with var(--color-content) at 60% or more. Red, amber and green (--color-status-ok/warn/bad) mean status only.
 > - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "keys.read:Anthropic"). You may embed hub blocks with `hub.block(kind, data)`.
 > - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
-> - Plain words for a non-developer. Title at most 80 characters. Label any made-up data "Example:".
+> - Plain words for a non-developer. Title at most 80 characters. Use the project's real data only; a block with nothing real yet goes in empty (no rows or bars) and shows "Nothing here yet". The app turns down example or made-up data.
 
 Ash OS also tells the Mono how to connect a page (section 4b: `hub.watch`, the data's shape, taps only inside a click
 handler, list every read and tap in `permissions`), and, for a Rebuild, the page as it is now (`ashos/pages.py`,

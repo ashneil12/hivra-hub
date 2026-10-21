@@ -45,7 +45,7 @@ it("Pages offers it ready-made; Add shows its preview and asks; Keep and allow k
   const asks = host.querySelector("[data-page-permissions]")!.textContent!;
   for (const words of ["See your agents", "Answer an agent's question when you tap", "Stop an agent's work when you tap", "Open a chat when you tap"]) expect(asks).toContain(words);
   const keep = host.querySelector("[data-pages-keep]") as HTMLButtonElement;
-  expect(keep.textContent).toBe("Keep and allow");
+  expect(keep.textContent).toBe("Apply and allow");
   await act(async () => keep.click());
   const kept = allPages().find((p) => p.request === AGENTS_READY)!;
   expect(kept).toMatchObject({ title: "Agents", by: "Ready-made", projectId: "today", permissions: AGENTS_PAGE.permissions });

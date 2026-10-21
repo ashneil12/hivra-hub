@@ -81,15 +81,18 @@ export function useWaitingDrafts(): MonoDraft[] {
 export function dismissDraft(id: string): void {
   save(load().map((d) => (d.id === id ? { ...d, dismissed: true } : d)));
 }
-/** What the card shows of a draft's soul. */
-export function draftCard(d: MonoDraft): {
-  who: string;
-  watchFor: string;
-  skills: string[];
-} {
+/** The soul's words as Ash reads them on the card: he's "you" there ("draft each one for your OK"); the soul keeps "Ash". */
+export function toAsh(text: string): string {
+  return text
+    .replace(/(^|[.!?]\s+)Ash's\b/g, "$1Your")
+    .replace(/\bAsh's\b/g, "your")
+    .replace(/\b(for|to|with|by|tell|ask|show|asks|tells|shows) Ash\b/g, "$1 you");
+}
+/** What the card shows of a draft's soul, in Ash's own second person. */
+export function draftCard(d: MonoDraft): { who: string; watchFor: string; skills: string[] } {
   return {
-    who: sections(d.soul).get("who i am") ?? "",
-    watchFor: sections(d.soul).get("what i watch for") ?? "",
+    who: toAsh(sections(d.soul).get("who i am") ?? ""),
+    watchFor: toAsh(sections(d.soul).get("what i watch for") ?? ""),
     skills: skillsOf(d.soul),
   };
 }

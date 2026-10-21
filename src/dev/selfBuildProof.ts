@@ -36,7 +36,10 @@ const LOOK: Record<string, string> = {
   a1b2c3d:
     "[data-hub-chat] div:has(> div > [data-hub-new-conversation]) { order: -1; padding-top: 8px; }",
   e4f5a6b:
-    ":root { --scheme-accent: hsl(268 85% 72%); } [data-hub-new-conversation] { color: var(--color-theme-accent); }",
+    // Something you notice at a glance: the selected row, the send button and the new chat button go purple.
+    ":root { --scheme-accent: hsl(268 85% 72%); } [data-hub-new-conversation] { color: hsl(268 85% 72%); } " +
+    "[data-hub-item].bg-selection, [data-mono-rail] [data-selected] { background-color: hsl(268 85% 72% / 0.28) !important; box-shadow: inset 2px 0 0 hsl(268 85% 72%); } " +
+    'button[aria-label="Send"] { background-color: hsl(268 85% 62%) !important; color: white !important; opacity: 1 !important; }',
 };
 const showing = new Set<string>();
 const paint = () => {

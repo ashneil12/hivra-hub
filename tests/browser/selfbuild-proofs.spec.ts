@@ -121,6 +121,11 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
     "X posts for Hivra",
   );
   await expect(card.getByText(draft.plan.watchFor)).toBeVisible();
+  // It speaks to Ash as "you" (the saved soul keeps "Ash's OK").
+  await expect(card.getByText("draft each one for your OK")).toBeVisible();
+  await expect(card.getByText("Ash's OK")).toHaveCount(0);
+  // A draft isn't running yet: no status dot on its tile.
+  await expect(card.locator("[data-mono-dot]")).toHaveCount(0);
   await expect(
     card.locator("svg, canvas, img, [data-mono-letter]").first(),
   ).toBeVisible();
@@ -130,7 +135,7 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
   await shot(page, "13-draft-mono-before-yes");
 });
 
-test("14: a Page built in chat shows as a preview with Keep and Throw away", async ({
+test("14: a Page built in chat shows as a preview with Apply and Discard, real data or Nothing here yet", async ({
   page,
 }) => {
   await open(page);
@@ -169,6 +174,8 @@ test("14: a Page built in chat shows as a preview with Keep and Throw away", asy
           { label: "Wed", value: 1 },
         ],
       },
+      // Nothing real to show yet: the block goes in empty and says so.
+      { kind: "chart", title: "Sign-ups per day", bars: [] },
     ],
   };
   const made = await dev<{ previewId: string }>(
@@ -181,9 +188,10 @@ test("14: a Page built in chat shows as a preview with Keep and Throw away", asy
   await expect(page.getByText("Hivra this week").first()).toBeVisible({
     timeout: 15_000,
   });
-  await expect(
-    page.getByRole("button", { name: "Keep" }).first(),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Apply" }).first()).toBeVisible();
+  await expect(page.locator("[data-pages-discard]")).toHaveText("Discard");
+  await expect(page.locator("[data-pages-preview-note]")).toContainText("Undo later in Bot changes.");
+  await expect(page.locator("[data-block-empty]")).toHaveText("Nothing here yet");
   // Ash is on the page: the bar doesn't offer See it again.
   await expect(page.locator("[data-change-see]")).toHaveCount(0);
   expect(made.previewId).toBeTruthy();
@@ -217,6 +225,14 @@ test("15: a hub change shows Now | Preview with Apply and Discard; after Apply, 
         .trim(),
     ),
   ).toBe("hsl(268 85% 72%)");
+  // The purple is easy to see: the selected row and the send button carry it.
+  const purple = /rgba?\((1[4-9]\d), ([6-9]\d|1[0-3]\d), (2[2-5]\d)/;
+  await expect
+    .poll(() => page.locator('[data-hub-item="leadership-team"]').evaluate((el) => getComputedStyle(el).backgroundColor))
+    .toMatch(purple);
+  await expect
+    .poll(() => page.locator('button[aria-label="Send"]').first().evaluate((el) => getComputedStyle(el).backgroundColor))
+    .toMatch(purple);
   await expect(offer.locator("[data-change-apply]")).toBeVisible();
   await expect(offer.locator("[data-change-discard]")).toBeVisible();
   await shot(page, "15-now-preview-apply-discard");

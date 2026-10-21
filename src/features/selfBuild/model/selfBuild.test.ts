@@ -358,3 +358,12 @@ it("Not this one on the draft card hides it and makes nothing", async () => {
   );
   expect(a.mono.listMonos().some((m) => m.name === "Nope")).toBe(false);
 });
+
+it("the draft card speaks to Ash as you; the saved soul keeps his name", async () => {
+  const a = await app();
+  const draft = a.make.draftMono({ name: "Postie", role: "Drafts posts for Ash's OK", who: "I'm Postie. I draft each post for Ash's OK and show Ash the list.", watchFor: "Anything that needs Ash's eyes first." }, ME, 3000);
+  const d = a.make.waitingDrafts().find((x) => x.id === draft.draftId)!;
+  expect(a.make.draftCard(d)).toMatchObject({ who: "I'm Postie. I draft each post for your OK and show you the list.", watchFor: "Anything that needs your eyes first." });
+  expect(a.make.toAsh(d.role!)).toBe("Drafts posts for your OK");
+  expect(d.soul).toContain("Ash's OK");
+});

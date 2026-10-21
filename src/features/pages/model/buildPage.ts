@@ -98,7 +98,18 @@ async function build(payload: Record<string, unknown>, stub: () => unknown, deps
 }
 
 /** A built page as it came back (from Ash OS, or from a Mono's own chat through page_build): checked, then ready. */
-export function checkBuiltSpec(raw: unknown): BuildPageResult {
+/** Why a real page with made-up data is turned down: real data, or an honest empty block. */
+export const REAL_DATA_ONLY =
+  "Use the project's real data (its board, commits, tickets or memory), or leave the block empty: an empty block shows 'Nothing here yet'. No example or made-up numbers.";
+
+/** A spec the Mono filled with example data (the old "Example:" label, or sample/placeholder text). */
+export function hasMadeUpData(spec: unknown): boolean {
+  if (!spec || typeof spec !== "object" || (spec as { kind?: unknown }).kind !== "blocks") return false;
+  return /\bExample:|\b(lorem ipsum|placeholder data|sample data|dummy data)\b/i.test(JSON.stringify((spec as { blocks?: unknown }).blocks ?? []));
+}
+
+/** `real`: a Mono's page_build from chat, where made-up data is turned down (Ash OS's build path relays what it gets). */
+export function checkBuiltSpec(raw: unknown, options: { real?: boolean } = {}): BuildPageResult {
   const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown; replaces?: unknown }) : {};
   const extra = {
     ...(r.pin === true ? { pin: true } : {}),
@@ -107,6 +118,7 @@ export function checkBuiltSpec(raw: unknown): BuildPageResult {
   };
   const spec = validatePageSpec(raw);
   if (!spec.ok) return { status: "turned-down", reason: spec.error };
+  if (options.real && hasMadeUpData(spec.value)) return { status: "turned-down", reason: REAL_DATA_ONLY };
   if (spec.value.kind === "blocks") return { status: "ready", spec: spec.value, warnings: [], ...extra };
   const check = checkBespokePage(spec.value);
   if (check.blocked) return { status: "turned-down", reason: check.blocked.plain };

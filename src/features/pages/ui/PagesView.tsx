@@ -28,7 +28,7 @@ import { CalendarBlock, monthOf } from "./CalendarBlock";
 
 /*
  * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
- * preview, Keep or Throw away. The bundled blocks are helpers the Mono builds with, not something Ash picks.
+ * preview, Apply or Discard. The bundled blocks are helpers the Mono builds with, not something Ash picks.
  * Every colour here is a theme token (content, surface, stroke, theme-accent, status-*), so a scheme restyles it.
  */
 const card = "rounded-xl bg-surface ring-1 ring-surface-ring";
@@ -70,6 +70,11 @@ function BlockFrame({ title, children, wide, example }: { title: string; childre
   );
 }
 
+/** An honest empty block: no real data for it yet. */
+function NothingYet() {
+  return <div className="py-2 text-[13px] text-content/60" data-block-empty>Nothing here yet</div>;
+}
+
 export function Block({ block }: { block: PageBlock }) {
   const example = isExampleBlock(block);
   switch (block.kind) {
@@ -88,6 +93,7 @@ export function Block({ block }: { block: PageBlock }) {
     case "list":
       return (
         <BlockFrame title={block.title} example={example}>
+          {!block.rows.length ? <NothingYet /> : null}
           {block.rows.map((r) => (
             <div key={r.text} className="flex items-center gap-2 border-t border-stroke py-2 text-[13px] first:border-0">
               <span className="min-w-0 flex-1 truncate text-content/90">{r.text}</span>
@@ -98,6 +104,7 @@ export function Block({ block }: { block: PageBlock }) {
       );
     case "chart": {
       const max = Math.max(...block.bars.map((b) => b.value), 1);
+      if (!block.bars.length) return <BlockFrame title={block.title}><NothingYet /></BlockFrame>;
       return (
         <BlockFrame title={block.title} example={example}>
           <div className="flex h-28 items-end gap-3" role="img" aria-label={`${block.title}: ${block.bars.map((b) => `${b.label} ${b.value}`).join(", ")}`}>
@@ -115,6 +122,7 @@ export function Block({ block }: { block: PageBlock }) {
       // Restyled from Tremor's BarList (tremorlabs/tremor, Apache-2.0): bars sized by value, label on the bar,
       // value at the end. Theme tokens only: the accent tints the bars, content draws the text.
       const max = Math.max(...block.rows.map((r) => r.value), 1);
+      if (!block.rows.length) return <BlockFrame title={block.title}><NothingYet /></BlockFrame>;
       return (
         <BlockFrame title={block.title} example={example}>
           <div className="flex flex-col gap-1.5" data-block-barlist>
@@ -496,7 +504,8 @@ export function PagesContent() {
   }
 
   if (preview) {
-    const keepLabel = asks.length ? "Keep and allow" : "Keep";
+    // The same words as a hub change (ChangeBar): Discard and Apply, and Undo in Bot changes after.
+    const keepLabel = asks.length ? "Apply and allow" : "Apply";
     return (
       <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
         <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made page · built on the same bridge a Mono's page uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
@@ -521,9 +530,9 @@ export function PagesContent() {
           <div className="relative"><PageBody page={preview} /></div>
         </div>
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
-          <span className="text-[12px] text-content/70">This is a preview. Nothing is saved until you keep it.</span>
+          <span className="text-[12px] text-content/70" data-pages-preview-note>This is a preview. Nothing is saved until you apply it. Undo later in Bot changes.</span>
           <span className="ml-auto" />
-          <button type="button" className={quietBtn} onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setBuild(undefined); }}>Throw away</button>
+          <button type="button" className={quietBtn} data-pages-discard onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setBuild(undefined); }}>Discard</button>
           <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => {
             const pin = !!ready?.pin;
             void keepPage(preview).then((ok) => { if (ok && pin) setPinned(preview.id, true, preview.by); });
@@ -686,7 +695,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
           <span className="text-[12px] text-content/70">This is the new version. Your page stays as it is until you use it.</span>
           <span className="ml-auto" />
-          <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Throw away</button>
+          <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Discard</button>
           <button type="button" data-pages-use-version disabled={busy || !fresh} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
             {added.length ? "Use it and allow" : "Use this version"}
           </button>

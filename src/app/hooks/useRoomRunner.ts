@@ -278,7 +278,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
     sweeping.current = true;
     try {
       const store = latest.current.origins ?? tauriRooms;
-      origins.current ??= await store.openOrigins().catch(() => []);
+      origins.current ??= (await store.openOrigins().catch(() => [])) ?? [];
       for (const origin of [...origins.current]) {
         const owner = latest.current.sessionsRef.current.find((s) => s.id === origin.ownerSession);
         const back = owner ? reportAnswer(owner, origin.childSession) : undefined;

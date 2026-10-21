@@ -14,6 +14,7 @@ import {
 import {
   dismissDraft,
   draftCard,
+  toAsh,
   useWaitingDrafts,
   type MonoDraft,
 } from "../model/monoMake";
@@ -186,6 +187,8 @@ function DraftCard({ draft }: { draft: MonoDraft }) {
         <MonoRailMascot
           name={monoAvatar({ mascot: look.mascot, name: draft.name })}
           color={look.color}
+          // A draft isn't running yet: no status dot.
+          dot={false}
           className="size-9 shrink-0"
         />
         <div className="min-w-0 flex-1">
@@ -200,7 +203,7 @@ function DraftCard({ draft }: { draft: MonoDraft }) {
               className="truncate text-[12px] text-content/70"
               data-mono-draft-role
             >
-              {draft.role}
+              {toAsh(draft.role)}
             </div>
           ) : null}
         </div>

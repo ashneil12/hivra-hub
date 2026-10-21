@@ -9,8 +9,11 @@ export function MonoRailMascot({
   className = "size-4 shrink-0",
   letter,
   tone,
+  dot = true,
 }: {
   name: string;
+  /** False: no status circle (a draft Mono that isn't running yet). */
+  dot?: boolean;
   /** The sidebar's neutral avatar: this initial, light on a grey glass square, instead of the mascot. */
   letter?: string;
   color: string;
@@ -38,13 +41,15 @@ export function MonoRailMascot({
           className="size-full"
         />
       )}
-      <MonoStatusDot
-        status={status}
-        color={color}
-        tone={tone}
-        // Just off the tile's top-right corner, so it never cuts into the creature (Critiquito, 21 Oct).
-        className="-top-1.5 -right-1.5 size-1.5"
-      />
+      {dot ? (
+        <MonoStatusDot
+          status={status}
+          color={color}
+          tone={tone}
+          // Just off the tile's top-right corner, so it never cuts into the creature (Critiquito, 21 Oct).
+          className="-top-1.5 -right-1.5 size-1.5"
+        />
+      ) : null}
     </span>
   );
 }

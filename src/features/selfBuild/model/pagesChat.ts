@@ -5,7 +5,7 @@ import { findPage, keepPage, pageFromSpec, type Page } from "../../pages/model/p
 
 /**
  * A Mono builds a Page from its own chat (ash-day step 14): it reads the real data itself, fills the hub's ready-made
- * blocks (`page_build {project, spec}`), and Ash sees the preview on Pages with Keep and Throw away, the same screen
+ * blocks (`page_build {project, spec}`), and Ash sees the preview on Pages with Apply and Discard, the same screen
  * a page built from the Pages prompt shows. After "looks good" the Mono keeps it (`page_build {previewId, keep}`), or
  * Ash taps Keep. Keeping leaves the Bot changes row with Undo (pages.ts).
  */
@@ -69,7 +69,7 @@ function projectOf(ref: unknown): { id: string; name: string } {
 /** Check the Mono's spec and show it to Ash. Turned down in plain words when it doesn't fit. */
 export function previewFromChat(input: Record<string, unknown>, by: { monoId: string; name: string }, now = Date.now()) {
   const project = projectOf(input.project);
-  const result = checkBuiltSpec(input.spec);
+  const result = checkBuiltSpec(input.spec, { real: true });
   if (result.status !== "ready") throw new Error(`The page was turned down: ${"reason" in result ? result.reason : "it doesn't fit"}`);
   const request = typeof input.request === "string" && input.request.trim() ? input.request.trim().slice(0, 2000) : result.spec.title;
   const page = pageFromSpec(result.spec, request, by.name, project.id, result.warnings, now, undefined, by.monoId);
@@ -81,7 +81,7 @@ export function previewFromChat(input: Record<string, unknown>, by: { monoId: st
     title: result.spec.title,
     project: project.name,
     ...(result.warnings.length ? { warnings: result.warnings.map((w) => w.plain) } : {}),
-    note: "Ash sees it at the bottom of the window (See it opens the preview on Pages, with Keep and Throw away). Tell him in one line; after he says it looks good, call page_build with previewId and keep true.",
+    note: "Ash sees it at the bottom of the window (See it opens the preview on Pages, with Apply and Discard). Tell him in one line; after he says it looks good, call page_build with previewId and keep true.",
   };
 }
 
