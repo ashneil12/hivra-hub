@@ -336,6 +336,7 @@ export function MonoOverview({
                   query={query}
                   filters={filters}
                   onOpenSession={onOpenSession}
+                  workOnly
                 />
               </div>
             ) : (

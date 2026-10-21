@@ -3,6 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MonoOverview, type MonoOverviewTab } from "./MonoOverview";
+import { newSession } from "../../sessions/model/session";
+import { resetWorkSessions } from "../model/monoWorkSessions";
+
+/** A launch that is working right now (A8: the Sessions tab lists running work). */
+const running = (id: string) => ({ ...newSession("codex", "/p"), id, title: id, busy: true });
 
 vi.mock("../model/monoHabits", async (original) => ({
   ...(await original<object>()),
@@ -34,6 +39,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  resetWorkSessions();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -202,8 +208,11 @@ it("dots the folded Changes icon while there are changes", async () => {
   expect(tabs()[3].querySelector("[data-changes-dot]")).toBeNull();
 });
 
-it("lists every session it started, newest first", async () => {
+it("lists every running session it started, newest first; finished history stays out (A8)", async () => {
   await render("sessions");
+  expect(container.querySelectorAll("[data-mono-session]")).toHaveLength(0);
+  expect(container.textContent).toContain("Nothing running right now.");
+  await render("sessions", vi.fn(), { sessions: [running("a"), running("b")] });
   const rows = [...container.querySelectorAll("[data-mono-session]")];
   expect(rows.map((row) => row.getAttribute("data-mono-session"))).toEqual([
     "b",
@@ -224,6 +233,7 @@ it("opens a session over the list, at the same width, with back, workspace and h
   const onOpenSessionInWorkspace = vi.fn();
   const onClose = vi.fn();
   await render("sessions", vi.fn(), {
+    sessions: [running("a"), running("b")],
     shownSession: {
       sessionId: "a",
       title: "First",
