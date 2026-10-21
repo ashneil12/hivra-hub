@@ -215,3 +215,30 @@ export function reactToLimit(
 export function firstTurnAccount(provider: ProviderAccountProvider, picked: string, { now, usageFor }: { now: number; usageFor: UsageFor }): { id: string; line?: string } {
   return startAccount(provider, picked, { order: orderedAccounts(provider), enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });
 }
+
+/**
+ * Whether a new worker on this provider can start now (board H8): yes while any account it may use has room (all of
+ * them in Ash's order with the waterfall on, the first one with it off); otherwise when the first one rejoins, if
+ * known. Accounts with no reading count as in, as above: the provider decides.
+ */
+export function providerRoom(
+  provider: ProviderAccountProvider,
+  { order, enabled, now, usageFor, marks }: { order: ProviderAccount[]; enabled: boolean; now: number; usageFor: UsageFor; marks: LimitMarks },
+): { room: true } | { room: false; provider: string; until?: number } {
+  const usable = enabled ? order : order.slice(0, 1);
+  if (!usable.length) return { room: true };
+  const seen = usable.map((a) => accountAvailability(a, { now, usageFor, marks }));
+  if (seen.some((a) => a.available)) return { room: true };
+  const until = seen.flatMap((a) => (a.until != null && a.until > now ? [a.until] : []));
+  return { room: false, provider: PROVIDER_NAMES[provider], ...(until.length ? { until: Math.min(...until) } : {}) };
+}
+
+/** providerRoom with Ash's order, his switch and the saved marks; a harness without accounts always has room. */
+export function workerRoom(
+  harness: string,
+  { now, usageFor }: { now: number; usageFor: UsageFor },
+): { room: true } | { room: false; provider: string; until?: number } {
+  if (!Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, harness)) return { room: true };
+  const provider = harness as ProviderAccountProvider;
+  return providerRoom(provider, { order: orderedAccounts(provider), enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });
+}
