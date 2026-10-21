@@ -361,6 +361,7 @@ pub fn run() {
             session_store::init(app.handle())?;
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             delegations::init(app.handle());
+            worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
             control::init(app.handle())?;
@@ -471,6 +472,12 @@ pub fn run() {
             worker_queue::worker_queue_add,
             worker_queue::worker_queue_take,
             worker_queue::worker_queue_import_local,
+            worker_queue::worker_queue_claim,
+            worker_queue::worker_queue_finish,
+            worker_queue::worker_settings,
+            worker_queue::worker_limits_set,
+            worker_queue::worker_heavy_mark,
+            worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,
             autopilot::autopilot_set,
             autopilot::autopilot_off,
