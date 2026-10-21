@@ -362,3 +362,23 @@ it("work only: running shows, finished stays Done until clicked, then hides, and
   await render([run, idleOld], [launch, old], { workOnly: true });
   expect(cards()).toEqual([launch.sessionId]);
 });
+
+// Live 21 Oct: a worker Stopped before its first turn showed a green Done in its Lead's Sessions tab.
+it("work only: a worker that was stopped or failed reads Stopped or Failed, never Done", async () => {
+  const { setDelegationRows, resetDelegationStore } = await import("../model/delegationStore");
+  const failedLaunch: MonoSpawnedSession = { ...launch, sessionId: "app-failed", title: "Broken job" };
+  const run = { ...newSession("codex", "/repo"), id: launch.sessionId, title: "D5 test", busy: true };
+  const failing = { ...newSession("codex", "/repo"), id: failedLaunch.sessionId, title: "Broken job", busy: true };
+  await render([run, failing], [launch, failedLaunch], { workOnly: true });
+  const row = (childSession: string, state: string) =>
+    ({ id: `t-${childSession}`, childSession, ownerSession: "lead", state, createdAt: 1, updatedAt: 2 }) as never;
+  act(() => setDelegationRows([row(launch.sessionId, "cancelled"), row(failedLaunch.sessionId, "failed")]));
+  await render([{ ...run, busy: false }, { ...failing, busy: false }], [launch, failedLaunch], { workOnly: true });
+  const stopped = container.querySelector('[data-mono-session="app-review"]')?.textContent ?? "";
+  const failed = container.querySelector('[data-mono-session="app-failed"]')?.textContent ?? "";
+  expect(stopped).toContain("Stopped");
+  expect(stopped).not.toContain("Done");
+  expect(failed).toContain("Failed");
+  expect(failed).not.toContain("Done");
+  act(() => resetDelegationStore());
+});

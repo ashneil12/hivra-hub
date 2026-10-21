@@ -38,13 +38,18 @@ function save(next: Record<string, Mark>): void {
   listeners.forEach((listener) => listener());
 }
 
-/** How a session shows in the list: running, done (until clicked), or hidden. */
-export type WorkSessionView = "running" | "done" | "hidden";
+/** How a session shows in the list: running, finished (done, stopped or failed; until clicked), or hidden. */
+export type WorkSessionView = "running" | "done" | "stopped" | "failed" | "hidden";
 
-/** The view for a session that is `active` now (working, or waiting on Ash), from what was noted before. */
-export function workSessionView(id: string, active: boolean): WorkSessionView {
+/**
+ * The view for a session that is `active` now (working, or waiting on Ash), from what was noted before. `ended` is how
+ * its work ended when that is known (a delegated worker's row): one stopped before it ever answered, or one that
+ * failed, is not "Done" (live 21 Oct: a worker Stopped before its first turn showed a green Done).
+ */
+export function workSessionView(id: string, active: boolean, ended?: "stopped" | "failed"): WorkSessionView {
   if (active) return "running";
-  return load()[id] ? "done" : "hidden";
+  if (!load()[id]) return "hidden";
+  return ended ?? "done";
 }
 
 /** Note what the list sees: an active session is running; one that was running and isn't any more is done. */

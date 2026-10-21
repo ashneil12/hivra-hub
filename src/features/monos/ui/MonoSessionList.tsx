@@ -35,6 +35,7 @@ import { SessionCard } from "../../../app/shell/Sidebar";
 import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
 import { noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
+import { useDelegationRows } from "../model/delegationStore";
 
 /** A launched session open over the overview, live and fully usable. */
 export type ShownMonoSession = {
@@ -254,7 +255,14 @@ export function MonoSessionList({
     noteWorkSessions((JSON.parse(activeKey) as [string, boolean][]).map(([id, on]) => ({ id, active: on })));
   }, [workOnly, activeKey]);
   const narrowing = !!query.trim() || hasActiveSessionFilters(filters);
-  const workView = (id: string) => (workOnly && !narrowing ? workSessionView(id, active(id)) : undefined);
+  // A worker's own row says how its work ended: Stopped or Failed is never shown as Done.
+  const delegationRows = useDelegationRows();
+  const endedOf = (id: string): "stopped" | "failed" | undefined => {
+    let latest: (typeof delegationRows)[number] | undefined;
+    for (const row of delegationRows) if (row.childSession === id && (!latest || row.createdAt > latest.createdAt)) latest = row;
+    return latest?.state === "cancelled" ? "stopped" : latest?.state === "failed" ? "failed" : undefined;
+  };
+  const workView = (id: string) => (workOnly && !narrowing ? workSessionView(id, active(id), endedOf(id)) : undefined);
   const matching = launches.filter((launch) => matched.has(launch.sessionId) && workView(launch.sessionId) !== "hidden");
   // A page of cards mounts at a time, as in the sidebar; the sentinel below
   // asks for the next one as it nears the panel's bottom. Searching or
@@ -329,6 +337,13 @@ export function MonoSessionList({
                   isSelected={false}
                   busy={!!live?.busy}
                   done={workView(launch.sessionId) === "done"}
+                  statusLabel={
+                    workView(launch.sessionId) === "stopped"
+                      ? "Stopped"
+                      : workView(launch.sessionId) === "failed"
+                        ? "Failed"
+                        : undefined
+                  }
                   linkedUpdate={false}
                   needsApproval={
                     !!live &&
