@@ -63,7 +63,7 @@ function save(list: MonoDraft[]): void {
   version++;
   subs.forEach((f) => f());
 }
-/** The drafts waiting on Ash's yes, newest last: the draft card at the bottom of the window shows them. */
+/** The drafts waiting on Ash's yes, newest last: the draft card at the top of the window shows them (ChangeBar). */
 export function waitingDrafts(): MonoDraft[] {
   return load().filter((d) => !d.madeId && !d.dismissed);
 }
@@ -270,7 +270,7 @@ export function draftMono(
       watchFor: sections(soul).get("what i watch for") ?? "",
       skills: listed,
     },
-    note: "Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the bottom of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId.",
+    note: "Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the top of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId.",
   };
 }
 
