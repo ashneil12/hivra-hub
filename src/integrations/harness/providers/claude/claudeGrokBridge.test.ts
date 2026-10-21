@@ -136,3 +136,10 @@ describe("the model pill on Grok", () => {
     expect(claudePillName("Claude Sonnet 5", false)).toBe("Sonnet 5");
   });
 });
+
+it("session rows, cards and tabs say Grok 4.7 for a Claude Code chat on Grok, and leave other engines alone", async () => {
+  const { shownModelName } = await import("./claudeGrokBridge");
+  expect(shownModelName("claude", "Claude Sonnet 5", true)).toBe("Grok 4.7");
+  expect(shownModelName("claude", "Claude Sonnet 5", false)).toBe("Claude Sonnet 5");
+  expect(shownModelName("codex", "GPT-5.5", true)).toBe("GPT-5.5");
+});

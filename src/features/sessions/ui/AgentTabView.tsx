@@ -5,6 +5,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { shownModelName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { AgentTranscript } from "./AgentTranscript";
 import { useSessionSnapshot } from "../model/sessionStateStore";
 import { TranscriptFind } from "./TranscriptFind";
@@ -122,7 +123,7 @@ export function AgentTabView({
       </div>
     );
   }
-  const model = findModel(session.model)?.name ?? session.model;
+  const model = shownModelName(session.harness, findModel(session.model)?.name ?? session.model);
   return (
     <div data-agent-tab className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
