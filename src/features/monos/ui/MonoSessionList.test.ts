@@ -13,6 +13,7 @@ import {
   type Session,
 } from "../../sessions/model/session";
 import { MonoSessionList } from "./MonoSessionList";
+import { resetWorkSessions } from "../model/monoWorkSessions";
 
 vi.mock("../../sessions/data/sessionStore", () => ({
   getSession: vi.fn(),
@@ -37,6 +38,7 @@ const launch: MonoSpawnedSession = {
 };
 
 beforeEach(() => {
+  resetWorkSessions();
   vi.resetAllMocks();
   vi.mocked(listSessionsByProject).mockResolvedValue([]);
   vi.mocked(getSession).mockResolvedValue(null);
@@ -331,4 +333,32 @@ it("mounts a page of cards at a time and the next as the list nears its end", as
   expect(container.querySelectorAll("[data-mono-session]")).toHaveLength(32);
   await act(async () => intersect?.([{ isIntersecting: true }]));
   expect(container.querySelectorAll("[data-mono-session]")).toHaveLength(40);
+});
+
+// A8 (Ash, 21 Oct 20:40): the Mono's Sessions tab shows only running work; a finished one stays, marked Done, until
+// clicked, then hides; working again brings it back. Old finished history stays out unless searched or filtered for.
+it("work only: running shows, finished stays Done until clicked, then hides, and comes back when it works again", async () => {
+  const old: MonoSpawnedSession = { ...launch, sessionId: "app-old", title: "Old review" };
+  const run = { ...newSession("codex", "/repo"), id: launch.sessionId, title: "PR #799 review", busy: true };
+  const idleOld = { ...newSession("codex", "/repo"), id: old.sessionId, title: "Old review", busy: false };
+  const cards = () => [...container.querySelectorAll("[data-mono-session]")].map((el) => el.getAttribute("data-mono-session"));
+  await render([run, idleOld], [launch, old], { workOnly: true });
+  expect(cards()).toEqual([launch.sessionId]);
+  expect(container.textContent).toContain("Working");
+  // It finishes: still listed, marked Done.
+  await render([{ ...run, busy: false }, idleOld], [launch, old], { workOnly: true });
+  expect(cards()).toEqual([launch.sessionId]);
+  expect(container.querySelector('[data-mono-session="app-review"]')?.textContent).toContain("Done");
+  // Ash clicks it: it opens, and leaves the list.
+  await act(async () => container.querySelector<HTMLElement>('[data-mono-session="app-review"] [data-session-card]')!.click());
+  expect(onOpenSession).toHaveBeenCalledWith(launch.sessionId);
+  await render([{ ...run, busy: false }, idleOld], [launch, old], { workOnly: true });
+  expect(cards()).toEqual([]);
+  expect(container.textContent).toContain("Nothing running right now.");
+  // Search still finds every session.
+  await render([{ ...run, busy: false }, idleOld], [launch, old], { workOnly: true, query: "review" });
+  expect(cards().sort()).toEqual(["app-old", "app-review"]);
+  // It works again: back in the list.
+  await render([run, idleOld], [launch, old], { workOnly: true });
+  expect(cards()).toEqual([launch.sessionId]);
 });
