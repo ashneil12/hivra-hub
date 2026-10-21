@@ -68,6 +68,8 @@ const bridge = vi.hoisted(() => ({ on: true }));
 vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   claudeRunsOnGrok: () => bridge.on,
+  // The picker asks onGrokBridge (one source with the model line); the original calls its own claudeRunsOnGrok.
+  onGrokBridge: (harness: string | undefined) => harness === "claude" && bridge.on,
 }));
 
 import { ModelPicker } from "./ModelPicker";

@@ -18,6 +18,7 @@ vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () =>
   claudeRunsOnGrok: () => bridge.on,
   onGrokBridge: (harness: string | undefined) => harness === "claude" && bridge.on,
   GROK_BRIDGE_LABEL: "Grok 4.7",
+  claudePillName: (name: string, onGrok: boolean) => (onGrok ? "Grok 4.7" : name.replace(/^Claude /, "")),
 }));
 
 import { MODEL_NOTE_MS, MonoModelLine } from "./MonoModelLine";
