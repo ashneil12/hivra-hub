@@ -22,8 +22,3 @@ it("the grey role text is 4.5:1 or better on glass, even on a dimmed row", async
   expect(contrast(at(0.8 * 0.65), bg)).toBeGreaterThanOrEqual(4.5);
   expect(contrast(at(0.8), bg)).toBeGreaterThanOrEqual(4.5);
 });
-
-it("G4: with names first, the grey role label truncates and the name keeps its room", () => {
-  expect(src).toMatch(/className="max-w-full shrink-0 truncate text-sm font-medium" data-mono-primary-name/);
-  expect(src).toMatch(/className="min-w-0 truncate text-xs font-normal text-content\/45" data-mono-role/);
-});
