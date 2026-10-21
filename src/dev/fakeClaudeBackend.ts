@@ -2,7 +2,7 @@
 // test drives the real app (composer, Today, the Monos rail, Being built) through a question, an API failure and a
 // reply, with no login and no tokens. It speaks the stream-json the adapter speaks to the CLI; the 402 and 529 are the
 // CLI's own recorded output (providers/claude/fixtures/claude-cli-2.1.302). The test says what the next prompt gets:
-// `window.__fakeClaude.next.push("ask" | "402" | "529" | "hold" | "reply")` (an empty list replies), and reads what the
+// `window.__fakeClaude.next.push("ask" | "402" | "529" | "hold" | "reply" | "say:<text>")` (an empty list replies), and reads what the
 // app answered the questions with in `window.__fakeClaude.answers`. Never shipped: only hub-dev.html loads it.
 import type { ChildBackend } from "../integrations/harness/core/child";
 import fixture402 from "../integrations/harness/providers/claude/fixtures/claude-cli-2.1.302/402-billing.ndjson?raw";
@@ -83,6 +83,7 @@ export function fakeClaudeBackend(): ChildBackend {
       }
       return;
     }
+    if (what.startsWith("say:")) return say(sessionId, what.slice(4));
     if (what === "hold") {
       assistant(sessionId, [{ type: "text", text: "On it." }]);
       await new Promise<void>((resolve) => held.push(resolve));

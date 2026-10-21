@@ -199,6 +199,9 @@ mockIPC(
   { shouldMockEvents: true },
 );
 
+// Dev only: mono_create, page_build and hub_change for browser proofs (selfBuildProof.ts).
+void import("./selfBuildProof");
+
 // Dev only: the project icon upload reads a file in the browser instead of copying it into app data.
 void import("../features/hub/model/projectPrefs").then(({ setProjectFileActions }) =>
   setProjectFileActions({

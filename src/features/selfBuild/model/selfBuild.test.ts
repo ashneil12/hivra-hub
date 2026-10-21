@@ -13,6 +13,7 @@ beforeEach(() => {
 async function app() {
   const mono = await import("../../monos/model/mono");
   const archive = await import("../../monos/model/monoArchive");
+  const souls = new Map<string, string>();
   archive.setMonoArchive({ archive: async (id, stamp) => `${id}-${stamp}`, restore: async () => undefined });
   return {
     mono,
@@ -20,11 +21,12 @@ async function app() {
     flow: await import("./changeFlow"),
     make: await import("./monoMake"),
     said: await import("./ashSaid"),
+    souls,
     deps: {
       createMono: (projects: string[]) => mono.createMono(projects),
       name: mono.saveMonoName,
       engine: (id: string, engine: string) => void mono.updateMono(id, (m) => ({ ...m, engine })),
-      writeSoul: async () => undefined,
+      writeSoul: async (id: string, soul: string) => void souls.set(id, soul),
       setConnectors: async () => undefined,
       addToRoom: () => undefined,
       discard: (id: string) => mono.discardNewMono(id),
@@ -36,7 +38,7 @@ const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: ["/User
 
 it("a drafted Mono is made only after Ash answers, once, with its role and an Undo row", async () => {
   const a = await app();
-  const draft = a.make.draftMono({ name: "Scout", role: "Finds sign-up leads", soul: "# Scout\n\n## Role\nFinds sign-up leads\n" }, ME, 1000);
+  const draft = a.make.draftMono({ name: "Scout", role: "Finds sign-up leads", who: "I'm Scout. I watch for people who signed up and never came back." }, ME, 1000);
   expect(draft.plan).toMatchObject({ name: "Scout", role: "Finds sign-up leads" });
   expect(a.mono.listMonos().some((m) => m.name === "Scout")).toBe(false);
 
@@ -128,4 +130,25 @@ it("Discard takes the preview back out and changes nothing; a refused apply keep
   expect(a.flow.offeredChanges()).toEqual([]);
   expect(a.changes.flowChanges("test")).toEqual([]);
   expect(applied).toBe(1);
+});
+
+it("a drafted soul is the short shape: Role, Who I am, Skills, and no How-I-talk or tone section", async () => {
+  const a = await app();
+  const host = { ashSpokeSince: () => true, room: () => ({ id: "r", name: "r" }), deps: a.deps as never };
+  const draft = a.make.draftMono({ name: "Postie", role: "X posts", who: "I'm Postie. I watch for threads worth posting.", skills: ["threads"] }, ME, 1000);
+  const made = await a.make.makeDrafted(draft.draftId, ME, host);
+  const soul = a.souls.get(made.monoId)!;
+  expect([...soul.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1])).toEqual(["Role", "Who I am", "Skills"]);
+  expect(soul).not.toMatch(/how i talk|tone|format|voice/i);
+  expect(soul).toContain("## Role\nX posts");
+  expect(soul).toContain("- threads");
+
+  // A soul handed in with How I talk or tone rules is turned down in plain words, and nothing is drafted.
+  for (const extra of ["## How I talk\nShort and warm.", "## Tone rules\nNo emoji."])
+    expect(() =>
+      a.make.draftMono({ name: "Chatty", soul: `# Soul\n\n## Role\nChats\n\n## Who I am\nI'm Chatty.\n\n${extra}\n` }, ME, 2000),
+    ).toThrow(/short shape/);
+  // A soul in the short shape is kept to it, with the given skills added.
+  const kept = a.make.draftMono({ name: "Tidy", soul: "# Soul\n\n## Role\nTidies\n\n## Who I am\nI'm Tidy.\n\n## Skills\n- sweep\n", skills: ["dust"] }, ME, 3000);
+  expect(kept.plan).toMatchObject({ role: "Tidies", soul: "I'm Tidy.", skills: ["sweep", "dust"] });
 });

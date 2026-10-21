@@ -355,13 +355,14 @@ fn tools() -> Value {
         {
             "name": "mono_create",
             "title": "Make a new Mono",
-            "description": "Make one new Mono with Ash, Dr Eggbot style: ask him a few short questions first. Then call with name, role (one line), soul (its SOUL.md) and skills: that only drafts it. Show Ash the one Mono in a short message (name, role line, a few lines of soul) and end your turn. After his yes, call with only draftId: it is made then (only if Ash has spoken since the draft), shows in the sidebar, and gets a Bot changes row with Undo.",
+            "description": "Make one new Mono with Ash, Dr Eggbot style: ask him a few short questions first. Then call with name, role (one line), who (who it is and what it watches for) and skills: that only drafts it. Its SOUL.md is the hub's short shape (src/features/selfBuild/templates/SOUL.md): ## Role, ## Who I am, ## Skills, and nothing on how it talks, tone or format; a soul you pass must keep to those three sections. Show Ash the one Mono in a short message (name, role line, a few lines of soul) and end your turn. After his yes, call with only draftId: it is made then (only if Ash has spoken since the draft), shows in the sidebar, and gets a Bot changes row with Undo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "maxLength": 40 },
                     "role": { "type": "string", "maxLength": 60, "description": "Its role line in the sidebar, like \"X posts\"." },
-                    "soul": { "type": "string", "maxLength": 24000, "description": "Its whole SOUL.md, from Ash's answers." },
+                    "who": { "type": "string", "maxLength": 1200, "description": "Who it is and what it watches for, in its own voice (\"I'm Postie. I watch for ...\")." },
+                    "soul": { "type": "string", "maxLength": 24000, "description": "Optional: its SOUL.md in the short shape (## Role, ## Who I am, ## Skills only). Usually leave it out and give role and who." },
                     "skills": { "type": "array", "items": { "type": "string" }, "maxItems": 12, "description": "What it is good at, one short line each." },
                     "projects": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                     "connectors": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
@@ -375,7 +376,7 @@ fn tools() -> Value {
         {
             "name": "page_build",
             "title": "Build a Page",
-            "description": "Build a Page for Ash from the hub's ready-made blocks, filled with real data you read first (git log, tasks, files). Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} with block kinds status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar; state is ok, warn or bad. Ash sees a preview with Keep and Throw away. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
+            "description": "Build a Page for Ash from the hub's ready-made blocks, filled with real data you read first (git log, tasks, files). Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} where every block has kind and title: status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar {month,firstWeekday,days,marked:[{day,text}]}; state is ok, warn or bad. Ash sees a preview with Keep and Throw away. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -441,6 +442,7 @@ const SELF_BUILD: [(&str, &str, &[&str]); 4] = [
         &[
             "name",
             "role",
+            "who",
             "soul",
             "skills",
             "projects",
@@ -1268,7 +1270,7 @@ mod tests {
             ),
             (
                 "mono_create",
-                json!({ "name": "Postie", "role": "X posts", "soul": "# Soul", "skills": ["threads"] }),
+                json!({ "name": "Postie", "role": "X posts", "who": "I'm Postie. I watch for threads.", "skills": ["threads"] }),
                 "monos.create",
             ),
             (

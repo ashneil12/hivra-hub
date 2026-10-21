@@ -411,7 +411,8 @@ Actions:
                   own chat, shown as from you; it answers you the same way.
   rooms.create   {"name":"Marketing","members":["CoS","PM"]}  Mono only. A group
                   chat Ash asked for, with you in it (MCP room_create).
-  monos.create   {"name","role","soul","skills"} drafts one new Mono; then
+  monos.create   {"name","role","who","skills"} drafts one new Mono (soul:
+                  templates/SOUL.md, Role/Who I am/Skills only); then
                   {"draftId"} makes it once Ash has said yes (MCP mono_create).
   pages.build    {"project","spec"} previews a Page from blocks; then
                   {"previewId","keep":true} keeps it (MCP page_build).

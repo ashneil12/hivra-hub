@@ -11,7 +11,7 @@ import type { AgentAppHost } from "./agentApp";
 import { resolveRoom } from "./agentAppRooms";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["monos.create", ["name", "role", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
+  ["monos.create", ["name", "role", "who", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
 ];
