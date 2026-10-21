@@ -43,6 +43,16 @@ const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blo
  * snapshots of the whole tree, so counting them made a scene that touched nothing list every file as changed. */
 export const ALL_BUT_CHECKPOINTS = ["--exclude=refs/monocode/*", "--all"];
 
+/**
+ * A chat's own approval card in the open screen's text (AgentTranscript: "Waiting for approval", Allow / Deny), which
+ * carries no data-hub-* mark, so the marked elements alone called a held chat invisible (AD14, run f451). Only the card's
+ * own words count: Ash's "this looks stuck" in the same text is not the app showing anything.
+ */
+const HELD_CARD = /^(?:.*\bWaiting for approval\b.*|Allow|Deny|Allow once|Always allow)$/;
+export function heldCardLines(mainText) {
+  return String(mainText ?? "").split("\n").map((l) => l.trim()).filter((l) => HELD_CARD.test(l)).slice(0, 5);
+}
+
 /** Whether the tester is shown the screen's buttons: a scene about clicking, or a chat held on Ash (a card to answer). */
 export function shouldOfferButtons(scene, state) {
   return !!scene.clicks || !!state?.stuck;
@@ -198,7 +208,10 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       ...(snap.sessions ?? []).filter((s) => s.question || s.usageLimit || s.approvals > 0 || ["needs-you", "failed", "paused"].includes(s.monoState?.status)),
       ...stuckRows.map((r) => ({ id: r.child_session ?? r.id, title: `${r.title ?? "a handoff"} (${r.state})` })),
     ];
-    const marks = (snap.dom?.elements ?? []).filter((e) => e.visible && (STUCK.test(e.text ?? "") || Object.values(e.attrs ?? {}).some((v) => STUCK.test(String(v)))));
+    const marks = [
+      ...(snap.dom?.elements ?? []).filter((e) => e.visible && (STUCK.test(e.text ?? "") || Object.values(e.attrs ?? {}).some((v) => STUCK.test(String(v))))),
+      ...heldCardLines(snap.dom?.mainText).map((text) => ({ text })),
+    ];
     for (const s of stuck) {
       // Ash would look at Today once something is stuck: open it once per stuck chat and keep what it shows.
       let today = [];

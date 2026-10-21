@@ -436,6 +436,13 @@ test("the tester gets the screen's buttons when a chat is held on Ash, not only 
   assert.equal(shouldOfferButtons({ clicks: true }, { busy: "", stuck: "" }), true);
 });
 
+test("a chat's approval card in the screen text counts as shown to Ash; his own 'this looks stuck' doesn't", async () => {
+  const { heldCardLines } = await import("./realconv/player.mjs");
+  assert.deepEqual(heldCardLines("progeress? this looks stuck\nI'll pull the git history.\nWaiting for approval\nAllow\nDeny"), ["Waiting for approval", "Allow", "Deny"]);
+  assert.deepEqual(heldCardLines("progeress? this looks stuck\nwe should allow more time"), []);
+  assert.deepEqual(heldCardLines(undefined), []);
+});
+
 test("a judge that narrates instead of answering gets one more go for the JSON", async () => {
   const { judgeScene } = await import("./realconv/judge.mjs");
   const answers = ["I'll check each seat's soul first.", '{"grade":"PASS","replies":[]}'];
