@@ -986,8 +986,14 @@ mod tests {
             .unwrap()
             .as_millis() as u64;
         save(&root, "m", None, "SOUL.md", "# Soul", None).unwrap();
-        let at = read(&root, "m", None, "SOUL.md").unwrap().modified_ms.unwrap();
-        assert!(at + 2_000 >= before && at <= before + 60_000, "{at} vs {before}");
+        let at = read(&root, "m", None, "SOUL.md")
+            .unwrap()
+            .modified_ms
+            .unwrap();
+        assert!(
+            at + 2_000 >= before && at <= before + 60_000,
+            "{at} vs {before}"
+        );
         let json = serde_json::to_value(read(&root, "m", None, "SOUL.md").unwrap()).unwrap();
         assert!(json.get("modifiedMs").is_some());
         std::fs::remove_dir_all(root).unwrap();
