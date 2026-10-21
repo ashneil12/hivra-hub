@@ -428,7 +428,7 @@ function FloatingConversation({
   onOpenArtifact: (id: string) => void;
 }) {
   const transcript = useMonoTranscript(session, true);
-  const delegationPane = useDelegationPane(session.id, true);
+  const delegationPane = useDelegationPane(session.id, true, !!session.pendingQuestion);
   const stopWorkflow = useCallback(
     // The panel waits on this: false (the error line says why) puts its Stop back instead of "Stopping…" for good.
     (taskId: string) => action({ kind: "stopWorkflow", taskId }),

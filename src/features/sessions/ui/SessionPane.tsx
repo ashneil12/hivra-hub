@@ -443,7 +443,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useCodingTeamVersion();
   // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
   const teamChat = !agent && isCodingTeamChat(session.id);
-  const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id));
+  const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id), !!session.pendingQuestion);
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)

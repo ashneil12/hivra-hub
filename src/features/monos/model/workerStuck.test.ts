@@ -185,3 +185,12 @@ describe("plainReason", () => {
     expect(plainReason("Waiting on a permission")).toBe("Waiting on a permission");
   });
 });
+
+// Live 22 Oct (D5): the worker's question showed twice in the Lead's chat, once as the Lead's own question and once as
+// the worker's asking card. While the Lead asks, only its question shows; stalled and failed workers still do.
+it("a Lead asking Ash itself hides its workers' asking cards, never a stalled or failed one", async () => {
+  const { stuckShownInLeadChat } = await import("./workerStuck");
+  const stuck = [{ kind: "asking" as const, id: "q" }, { kind: "stalled" as const, id: "s" }, { kind: "failed" as const, id: "f" }];
+  expect(stuckShownInLeadChat(stuck, true).map((s) => s.id)).toEqual(["s", "f"]);
+  expect(stuckShownInLeadChat(stuck, false).map((s) => s.id)).toEqual(["q", "s", "f"]);
+});

@@ -425,3 +425,12 @@ export function stuckForJob(sourceRef: string | undefined, rows: readonly Delega
   };
   return stuckWorkers(rows.filter(under), now).sort((a, b) => URGENCY[a.kind] - URGENCY[b.kind] || a.since - b.since)[0];
 }
+
+/**
+ * The stuck cards a Lead's chat shows. While the Lead itself is asking Ash a question in that chat, a worker's own
+ * question card is left out: the Lead is asking it already (D5: the Lead asks in its own chat), and showing both put
+ * the same question in front of Ash twice (live 22 Oct). Stalled and failed workers always show.
+ */
+export function stuckShownInLeadChat<S extends Pick<StuckWorker, "kind">>(stuck: readonly S[], leadAsking: boolean): S[] {
+  return leadAsking ? stuck.filter((s) => s.kind !== "asking") : [...stuck];
+}

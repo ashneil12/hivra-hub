@@ -23,6 +23,7 @@ import {
   leadRollup,
   stuckOf,
   stuckOwnedBy,
+  stuckShownInLeadChat,
   useStuckDismissalsVersion,
   type StuckWorker,
 } from "../model/workerStuck";
@@ -101,6 +102,8 @@ export type DelegationPane =
 export function useDelegationPane(
   sessionId: string,
   orchestrator: boolean,
+  /** This chat is asking Ash a question itself right now (a Lead relaying a worker's question). */
+  leadAsking = false,
 ): DelegationPane | undefined {
   const rows = useDelegationRows();
   useStuckDismissalsVersion();
@@ -108,7 +111,7 @@ export function useDelegationPane(
   const now = useClock();
   if (orchestrator) {
     const count = waitingOn(sessionId, rows);
-    const stuck = stuckOwnedBy(sessionId, rows, now);
+    const stuck = stuckShownInLeadChat(stuckOwnedBy(sessionId, rows, now), leadAsking);
     const rollup = leadRollup(sessionId, rows, now);
     const failed = stopFailures(sessionId).map(
       (id) => delegationOf(id, rows)?.title?.trim() || "a worker",
