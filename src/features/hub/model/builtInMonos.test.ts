@@ -89,3 +89,20 @@ describe("the default team, added once", () => {
     expect(roster().map((m) => m.name)).not.toContain("Chief of Staff");
   });
 });
+
+describe("the default four's look", () => {
+  beforeEach(() => localStorage.clear());
+  it("is Ash's from before 15 Oct: robots, Chief of Staff amber and the rest grey; a look already set is never swapped", () => {
+    ensureBuiltInMonos();
+    expect(roster().map((m) => [(m as { mascot?: string }).mascot, (m as { color?: string }).color])).toEqual([
+      ["robot", "hsl(45 90% 55%)"],
+      ["robot", "hsl(210 8% 58%)"],
+      ["robot", "hsl(210 8% 58%)"],
+      ["robot", "hsl(210 8% 58%)"],
+    ]);
+    const picked = [{ id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] }];
+    localStorage.setItem("monocode:mono-roster", JSON.stringify(picked));
+    ensureBuiltInMonos();
+    expect(roster().find((m) => m.id === "chief-of-staff")).toMatchObject({ mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)" });
+  });
+});

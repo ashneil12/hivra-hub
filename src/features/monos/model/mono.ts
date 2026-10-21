@@ -462,6 +462,8 @@ export function isLetterAvatar(mascot: string | undefined): boolean {
  * Mono has no image, or Ash picked Letter: the letters he typed as he typed them, otherwise the automatic two capitals.
  */
 export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
+  // Ash doesn't like ghost stuff (15 Oct): a ghost nobody picked (the Hivra lead's old look) is a dino, in its own colour.
+  if (mono.mascot === "ghost" && !mono.mascotPicked) return "dino";
   if (mono.mascot && !isLetterAvatar(mono.mascot)) return mono.mascot;
   if (mono.mascotPicked && mono.mascot !== LETTER_AVATAR) return mono.mascot;
   return `${LETTER_AVATAR}:${monoTileLetters(mono.name?.trim() || "Mono")}`;
