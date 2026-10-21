@@ -35,14 +35,24 @@ export function judgePrompt(scene, transcriptText, hard) {
   ].join("\n");
 }
 
+export const JUDGE_TIMEOUT_MS = 600_000;
+
 export async function judgeScene(client, scene, transcriptText, hard, rubric) {
   try {
     const prompt = judgePrompt(scene, transcriptText, hard);
-    let answer = await client.complete({ system: judgeSystem(rubric), prompt });
+    // A long scene can take the judge past five minutes on Grok (Ash day AD5: "claude exited 143"): ten, and one more go.
+    const ask = async (text) => {
+      try {
+        return await client.complete({ system: judgeSystem(rubric), prompt: text, timeoutMs: JUDGE_TIMEOUT_MS });
+      } catch {
+        return client.complete({ system: judgeSystem(rubric), prompt: text, timeoutMs: JUDGE_TIMEOUT_MS });
+      }
+    };
+    let answer = await ask(prompt);
     let parsed = parseJsonObject(answer.text);
     if (!parsed) {
       // A model that starts narrating ("I'll check each seat's soul...") gets one more go: it has no tools, only the transcript.
-      answer = await client.complete({ system: judgeSystem(rubric), prompt: `${prompt}\n\nYou have no tools and nothing else to read: everything is above. Answer now with the one JSON object only, no other words.` });
+      answer = await ask(`${prompt}\n\nYou have no tools and nothing else to read: everything is above. Answer now with the one JSON object only, no other words.`);
       parsed = parseJsonObject(answer.text);
     }
     if (!parsed) return { grade: "UNGRADED", error: `the judge's answer wasn't JSON: ${String(answer.text).slice(0, 200)}`, judge: meta(client) };
