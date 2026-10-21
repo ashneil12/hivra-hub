@@ -237,7 +237,7 @@ export function conversationInput(roomId: string, conversation: ChatConversation
   };
 }
 
-const PICKS = new Set(["mention", "only", "named", "lead", "router", "lanes", "chime", "addressed", "digest", "report", "back", "post"]);
+const PICKS = new Set(["mention", "only", "named", "lead", "router", "lanes", "room", "chime", "addressed", "digest", "report", "back", "post"]);
 
 function reactionsOf(value: Record<string, unknown>): Record<string, string[]> | undefined {
   const out: Record<string, string[]> = {};

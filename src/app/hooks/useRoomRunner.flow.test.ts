@@ -70,6 +70,11 @@ async function setup() {
         sessionsRef.current = typeof value === "function" ? value(sessionsRef.current) : value;
       },
       submit: (sessionId, text, options) => {
+        // The other seats' one turn on Ash's message (when he named nobody) has nothing to add here.
+        if (text.includes("This is your one turn") && options.onSettled) {
+          queueMicrotask(() => options.onSettled!({ status: "completed", text: "NO_REPLY" }));
+          return true;
+        }
         submitted.push({ sessionId, text, options });
         if (options.onSettled) settle.set(sessionId, (reply) => options.onSettled!({ status: "completed", text: reply }));
         return true;

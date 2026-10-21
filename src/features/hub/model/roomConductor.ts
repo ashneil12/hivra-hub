@@ -2,7 +2,9 @@
 //
 // - Ash writes: whatever the room was doing in that conversation stops at once, and one seat answers him now (the
 //   light router, roomTurns.ts answerPick: whoever he names, else the host). His messages since the last answer are
-//   answered together. Then each seat whose lane his message touches may add one reply (laneChimes, no model).
+//   answered together. When he named nobody, every other seat then gets one turn (everyoneElse) to reply in its own
+//   voice or NO_REPLY, which shows nothing. They run side by side (up to MAX_PARALLEL_TURNS), each seeing the host's
+//   answer; @name or opening with a seat's name means just that seat.
 // - A Mono's post (its turn's reply, or room_post) wakes the seats it names (@name or "PM, ..."), so Monos can hand off
 //   to each other. The one loop brake: after MONO_POSTS_CEILING posts without Ash, the room pauses for him.
 // - Up to MAX_PARALLEL_TURNS turns run at once in a room, one per Mono. Each turn runs in the Mono's own session through
@@ -32,7 +34,7 @@ import {
   failureNotice,
   hostOf,
   isSilent,
-  laneChimes,
+  everyoneElse,
   MAX_PARALLEL_TURNS,
   MONO_POSTS_CEILING,
   roomTranscript,
@@ -578,6 +580,11 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim());
     if (wake.trigger && (ack || wake.kind === "answer")) react(chatId, wake.trigger, me.id, ack ? emoji : "👍", true);
     answered();
+    if (wake.kind === "answer") {
+      const chat = getChat(chatId);
+      if (chat) roomTurn(chatId, wake, seatsOf(chat), me.name);
+      pump(chatId);
+    }
     return;
   }
   const posted = appendMessage(chatId, wake.convId, {
@@ -662,16 +669,24 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
     pump(chatId);
     return;
   }
-  if (wake?.kind === "answer") {
-    const ash = (wake.batch ?? []).map((id) => conv.messages.find((m) => m.id === id)?.text ?? "").join("\n");
-    // Each seat whose lane Ash's message touches may add one reply (no model decides it).
-    for (const c of laneChimes(ash, seats, message.from)) {
-      if (named.includes(c.id) || t.chimed.has(c.id)) continue;
-      t.chimed.add(c.id);
-      enqueue(chatId, { id: newWakeId(c.id), monoId: c.id, convId, kind: "chime", by: "lanes", why: c.why, other: speaker, trigger: message.id, gen: t.gen });
-    }
-  }
+  if (wake?.kind === "answer") roomTurn(chatId, wake, seats, speaker, named);
   pump(chatId);
+}
+
+/**
+ * Ash wrote to the room without naming anyone (the host answered): every other seat gets its one turn, once, on Ash's
+ * message. The host answering NO_REPLY or a 👍 still opens it. Seats the host named already have their reply wake.
+ */
+function roomTurn(chatId: string, wake: Wake, seats: readonly Seat[], other: string, named: readonly string[] = []): void {
+  if (wake.by !== "lead" || !wake.batch?.length) return;
+  const t = threadOf(roomOf(chatId), wake.convId);
+  if (t.gen !== wake.gen || t.paused) return;
+  const ash = wake.batch[wake.batch.length - 1];
+  for (const seat of everyoneElse(seats, wake.monoId)) {
+    if (named.includes(seat.id) || t.chimed.has(seat.id)) continue;
+    t.chimed.add(seat.id);
+    enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId: wake.convId, kind: "chime", by: "room", why: "Ash wrote to the whole room", other, trigger: ash, gen: t.gen });
+  }
 }
 
 function pauseText(t: Thread, reason: PauseReason): string {

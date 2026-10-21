@@ -222,7 +222,7 @@
     {
       "id": "S8",
       "title": "\"wat now\" / \"where are we\": status in his words",
-      "card": "- **Ash**: \"wat now\" then \"fair. mind letting me know wat youve been up to bro n wats left?\" [M26]\n- **Pass**: one answer (the host or the named Lead) in the Landed / Not fixed / Waiting on you shape. The counts match the board. Unproven items are labelled as unproven. \"Waiting on you\" has at most a few items, each with a recommendation. No seat repeats it.\n- **Fail**: everyone answers. It's a log dump. It claims done without evidence. The counts are wrong.",
+      "card": "- **Ash**: \"wat now\" then \"fair. mind letting me know wat youve been up to bro n wats left?\" [M26]\n- **Pass**: one answer (the host or the named Lead) in the Landed / Not fixed / Waiting on you shape. The counts match the board. Unproven items are labelled as unproven. \"Waiting on you\" has at most a few items, each with a recommendation. The other seats each get one turn and reply NO_REPLY (nothing shows) unless they have something new; no seat repeats it.\n- **Fail**: the other seats each post their own status, or repeat the host. It's a log dump. It claims done without evidence. The counts are wrong.",
       "place": {
         "room": "room"
       },
@@ -334,7 +334,7 @@
     {
       "id": "S13",
       "title": "Leadership debate with no tags (frank scene 1)",
-      "card": "Ash: \"should we keep pages to 3 builds at once or let it rip. be honest\". Pass: each seat gives a real opinion, Alfred names a risk, CoS sums up once, then the room stops. Fail: everyone agrees, loops, or nobody closes it.",
+      "card": "Ash: \"should we keep pages to 3 builds at once or let it rip. be honest\". Pass: every seat gets one turn and gives a real opinion in its own voice, Alfred names a risk, CoS sums up once, then the room stops. Fail: everyone agrees, loops, or nobody closes it.",
       "place": {
         "room": "room"
       },
@@ -345,7 +345,7 @@
       "maxAshTurns": 2,
       "minutes": 10,
       "expect": {
-        "roomSeatsMin": 2,
+        "roomSeatsMin": 3,
         "roomEnds": true
       }
     },

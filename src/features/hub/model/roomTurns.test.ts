@@ -7,9 +7,8 @@ import {
   cleanPost,
   failureNotice,
   hostOf,
-  isShortMessage,
   isSilent,
-  laneChimes,
+  everyoneElse,
   mentionPick,
   MONO_POSTS_CEILING,
   namedPick,
@@ -70,12 +69,9 @@ describe("who answers first", () => {
 });
 
 describe("who else may speak", () => {
-  it("by lane, from Ash's words, in the room's order, never the answerer; a short message needs nobody", () => {
-    const text = "remember we agreed the board moves to Fridays, and the screen colours are wrong";
-    expect(laneChimes(text, WITH_CRIT, "chief-of-staff").map((c) => c.id)).toEqual(["projects-manager", "frank", "critiquito"]);
-    expect(laneChimes(text, WITH_CRIT, "frank").map((c) => c.id)).toEqual(["projects-manager", "critiquito"]);
-    expect(laneChimes("remember the board", WITH_CRIT, "chief-of-staff")).toEqual([]);
-    expect(isShortMessage("skip review just ship the fix pls")).toBe(true);
+  it("when Ash names nobody: every seat but the answerer, in the room's order, whatever he wrote", () => {
+    expect(everyoneElse(WITH_CRIT, "chief-of-staff").map((c) => c.id)).toEqual(["projects-manager", "frank", "critiquito", "alfred"]);
+    expect(everyoneElse(WITH_CRIT, "frank").map((c) => c.id)).toEqual(["chief-of-staff", "projects-manager", "critiquito", "alfred"]);
   });
 
   it("the seats a post names: a name or a list of names opening a sentence, closed by a comma or colon, or an @mention", () => {
@@ -160,7 +156,8 @@ describe("the prompts", () => {
     expect(answer).toContain("<room_conversation>\nAsh: what did we decide");
     const chime = turnPrompt({ ...base, me: FRANK, kind: "chime", other: "Chief of Staff" });
     expect(chime).toContain("Chief of Staff hosts the room and answers Ash first.");
-    expect(chime).toContain("Chief of Staff answered Ash. You may add ONE short message");
+    expect(chime).toContain("Ash wrote to the whole room and Chief of Staff has answered. This is your one turn: reply to Ash as yourself, in your own voice");
+    expect(chime).toContain("If you have nothing to add, reply with exactly NO_REPLY.");
     expect(chime).toContain("reply with exactly NO_REPLY");
     const reply = turnPrompt({ ...base, me: PM, kind: "reply", other: "frank" });
     expect(reply).toContain("frank addressed you in the message marked >> below");

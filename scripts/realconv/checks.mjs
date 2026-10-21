@@ -107,6 +107,11 @@ export function hardChecks(input) {
   facts.goals = top.filter((r) => r.goal).map((r) => ({ id: r.id, goal: String(r.goal).slice(0, 120), state: r.state, kept: r.state === "completed" && !!String(r.result ?? "").trim() }));
   if (!toAsh.length) misses.push("no agent said anything where Ash reads");
   if (expect.roomSeatsMin && facts.seats.length < expect.roomSeatsMin) misses.push(`expected at least ${expect.roomSeatsMin} seats to speak in the room, saw ${facts.seats.length}`);
+  if (expect.eachSeatOnce) {
+    // Ash wrote to the whole room: every seat gets one turn, and a seat with nothing to add says nothing (NO_REPLY).
+    const twice = Object.entries(count(toAsh.filter((m) => m.where === "room").map((m) => m.who))).filter(([, n]) => n > 1).map(([who]) => who);
+    if (twice.length) misses.push(`a seat replied more than once to one message from Ash: ${twice.join(", ")}`);
+  }
   if (expect.delegation && !top.length) misses.push("expected a handoff (a delegation row), none was made");
   if (expect.delegationOrBrief && !top.length && !toAsh.some((m) => /\b(brief|briefed|handed|delegat|started)\b/i.test(m.text))) misses.push("no brief or handoff to start the work");
   if (expect.filesChanged && !facts.filesChanged.length) misses.push("expected the project to change, the git diff is empty");

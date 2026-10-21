@@ -70,7 +70,8 @@ it("a notice says which Mono couldn't answer, with Try again; reactions show und
   });
   const notice = q("[data-hub-msg-notice]")!;
   expect(notice.textContent).toContain("Chief of Staff couldn't answer: You've hit your usage limit. Resets at 4pm.");
-  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? "Next: the Pages round. frank, check it." : "Got it."));
+  // The host names frank, so he answers it; the other seats' one turns have nothing to add.
+  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? "Next: the Pages round. frank, check it." : mono === "frank" ? "Got it." : "NO_REPLY"));
   await act(async () => {
     q("[data-hub-notice-retry]")!.click();
     await chat.roomIdle(room.id);
@@ -92,6 +93,8 @@ it("the host's answer fills in where it will stay: a live message while it write
   let end!: (text: string) => void;
   chat.setGroupChatRunner({
     run: (request) => {
+      // The other seats' one turns have nothing to add.
+      if (request.monoId !== "chief-of-staff") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
       write = (text) => request.onText?.(text);
       return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
     },
@@ -124,6 +127,7 @@ it("a long post shows its first lines with Show more; a short one shows whole", 
   chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? long : "NO_REPLY"));
   await act(async () => {
     await chat.requestReply(room.id, conv);
+    await chat.roomIdle(room.id);
   });
   const folded = q("[data-hub-msg-folded]")!;
   expect(folded.textContent).toContain("Heard you: seven things");

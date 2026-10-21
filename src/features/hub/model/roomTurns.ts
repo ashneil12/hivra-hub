@@ -2,8 +2,9 @@
 //
 // - One seat answers each message from Ash, at once, with no model in front of it: the seat he @-mentions or opens
 //   with, else the room's host. He never has to tag anyone.
-// - After the answer, the other seats whose lane his message touches may each add ONE reply, picked by their lane
-//   words, not a model (a short message needs nobody else). @name, or naming a seat ("PM, ..."), pulls that seat in.
+// - When he names nobody, every other seat then gets one turn to reply in its own voice; a seat with nothing to add
+//   replies NO_REPLY, which shows nothing. @name, or opening with a seat's name, means just that seat.
+// - Mono-to-Mono follow-ups go only by naming a seat (@name or "PM, ...").
 // - One loop brake: after MONO_POSTS_CEILING Mono posts without Ash, the room pauses for him ("keep going" resumes).
 // roomConductor.ts runs it; everything here is pure, so the rules are tested without a model.
 import { isHarnessAuthError } from "../../../integrations/harness/core/authSupport";
@@ -14,8 +15,6 @@ import { ROOM_RULES } from "./teamSouls";
 export const MONO_POSTS_CEILING = 20;
 /** Room turns running at once in one room (each Mono runs one at a time). */
 export const MAX_PARALLEL_TURNS = 3;
-/** Ash's message this short (a question, a go, a thanks) gets the host's answer and nobody else's, unless named. */
-export const SHORT_MESSAGE = 60;
 /** What a Mono replies when it has nothing new; never posted. */
 export const NO_REPLY = "NO_REPLY";
 
@@ -31,7 +30,6 @@ export type Seat = {
 };
 export type PickSource = "mention" | "only" | "named" | "lead";
 export type Pick = { id: string; why: string; by: PickSource };
-export type Chime = { id: string; why: string };
 /**
  * answer: the first answer to Ash. chime: one extra reply to Ash's message. reply: a seat another addressed. back: work
  * delegated from the room came back.
@@ -44,8 +42,6 @@ type Lane = {
   /** Short names that count only when Ash opens with them or @-mentions them ("cos" is also "because"). */
   short?: string[];
   card: string;
-  /** Words that put a message squarely in this lane. */
-  words?: RegExp;
   /** Speaking order after the answer (the room's observed order: PM, frank, design review, Alfred). */
   order: number;
 };
@@ -56,32 +52,27 @@ export const LANES: Readonly<Record<string, Lane>> = {
     names: ["chief of staff", "chief"],
     short: ["cos"],
     card: "Chief of Staff: Ash's partner and the room's host. Owns his asks, priority and timing, who takes what and RED calls. Answers Ash first. Not: specialist work.",
-    words: /\b(priorit\w*|focus|what needs me|needs me|catch me up|where are we|today|this week|tomorrow|decide|decision on|should we|go ahead|green ?light|park|pause|delegate|who should)\b/gi,
     order: 0,
   },
   "projects-manager": {
     names: ["projects manager", "project manager"],
     short: ["pm"],
     card: "Projects Manager: the board and tickets, owners and states, capacity, what's left, written-down plans; posts rounds of built work for review. Not: specialist work, setting strategy.",
-    words: /\b(board|tickets?|backlog|what'?s left|left to do|status of|states?|schedule|deadline|capacity|roadmap|sprint|milestone|round \d+|eta|timeline|card|cards|plan(?:ning)?)\b/gi,
     order: 1,
   },
   frank: {
     names: ["frank", "memory and checks"],
     card: "frank (memory and checks): keeps decisions true in memory; checks plans, screens and summaries against Ash's own words and posts only what was missed. Not: strategy, code, Monos.",
-    words: /\b(remember|memory|memories|forget|note (?:this|that)|write (?:this|that) down|you said|i said|did i say|i told|we agreed|agreed|lock(?:ed)?|rule|rules|from now on|missing|dropped|lost|got lost|my words)\b/gi,
     order: 2,
   },
   critiquito: {
     names: ["critiquito", "kritiko", "critico", "design review"],
     card: "Critiquito (design review): ranked critique of how a screen looks and reads (hierarchy, type, colour, copy, accessibility). Never edits files.",
-    words: /\b(design|screens?|ui|ux|looks?|layout|fonts?|typography|colou?rs?|contrast|spacing|icons?|buttons?|mockups?|figma|screenshots?|pixel|readab\w*|theme|glass)\b/gi,
     order: 3,
   },
   alfred: {
     names: ["alfred", "team setup"],
     card: "Alfred (team setup): which Monos exist and who owns what, the gate on new or changed Monos, permissions, build order. Speaks rarely, one point. Not: building.",
-    words: /\b(monos?|seats?|roles?|who owns|owner|ownership|structure|new (?:bot|agent|mono)|rename|retire|permissions?|allowed to|gate|org chart|team setup|hire|duplicate)\b/gi,
     order: 4,
   },
 };
@@ -155,7 +146,7 @@ export function namedPick(text: string, seats: readonly Seat[]): Seat | undefine
 /**
  * Who answers Ash first: the seat he @-mentions (the latest message counts first), the only member, the seat he opens
  * with; otherwise the room's host. No model in front of it, so the first answer starts at once, and Ash never has to
- * tag anyone: the seats whose lane his message touches add theirs after it (laneChimes).
+ * tag anyone: when he names nobody, every other seat replies after it (everyoneElse).
  */
 export function answerPick(messages: readonly string[], seats: readonly Seat[], leadId?: string): Pick | undefined {
   for (const text of [...messages].reverse()) {
@@ -169,23 +160,12 @@ export function answerPick(messages: readonly string[], seats: readonly Seat[], 
   return host ? { id: host.id, why: `${host.name} hosts the room and answers Ash first`, by: "lead" } : undefined;
 }
 
-function laneScore(seat: Seat, text: string): number {
-  const words = laneOf(seat)?.words;
-  return words ? [...text.matchAll(words)].length : 0;
-}
-
-/** A message from Ash that needs one answer and nobody else's: short, or nothing but a thanks or a go. */
-export function isShortMessage(text: string): boolean {
-  return text.trim().length <= SHORT_MESSAGE;
-}
-
-/** Who else may have something new, by lane, from Ash's own words (most messages need nobody). */
-export function laneChimes(ashText: string, seats: readonly Seat[], answerer: string): Chime[] {
-  if (isShortMessage(ashText)) return [];
-  return seats
-    .filter((s) => s.id !== answerer && laneScore(s, ashText) > 0)
-    .sort((a, b) => orderOf(a) - orderOf(b))
-    .map((s) => ({ id: s.id, why: `Ash's message touches ${s.name}'s lane` }));
+/**
+ * Ash wrote to the room without naming anyone: after the host's answer, every other seat gets one turn, in speaking
+ * order, to reply in its own voice or NO_REPLY (Ash, 21 Oct: "hey" in Leadership gets each leader's own reply).
+ */
+export function everyoneElse(seats: readonly Seat[], answerer: string): Seat[] {
+  return seats.filter((s) => s.id !== answerer).sort((a, b) => orderOf(a) - orderOf(b));
 }
 
 /**
@@ -340,7 +320,7 @@ function task(input: TurnInput): string {
         : `Ash just wrote to you${several}. Answer him first, from your lane. Name a seat ("CoS, ...") only if it should act.`;
     }
     case "chime":
-      return `${input.other ?? "The host"} answered Ash. You may add ONE short message, only if it is new and from your lane. Nothing new: reply with exactly ${NO_REPLY}.`;
+      return `Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: reply to Ash as yourself, in your own voice, briefly. Don't repeat what's been said. If you have nothing to add, reply with exactly ${NO_REPLY}.`;
     case "reply":
       return `${input.other ?? "Another seat"} addressed you in the message marked >> below. Answer it or do it, from your lane. If nothing is needed from you, or it is already settled, reply with exactly ${NO_REPLY}.`;
     case "back":

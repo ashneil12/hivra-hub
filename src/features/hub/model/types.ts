@@ -267,6 +267,7 @@ export type ChatPickSource =
   | "lead"
   | "router"
   | "lanes"
+  | "room"
   | "chime"
   | "addressed"
   | "digest"

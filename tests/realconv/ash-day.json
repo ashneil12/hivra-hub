@@ -56,14 +56,15 @@
         "room": "room"
       },
       "opening": "yo morning",
-      "card": "- **Ash**: \"yo morning\"\n- **Pass**: CoS, PM, frank and Alfred each reply once, short, sounding different. No task lists. Nobody needs tagging.\n- **Fail**: a canned reply, a task list, 'noted', or a seat replying twice.",
+      "card": "- **Ash**: \"yo morning\" (to the whole room, nobody named)\n- **Pass**: every seat gets one turn. CoS answers first, then PM, frank and Alfred each reply once in their own voice, short, sounding different. A seat with nothing to add replies NO_REPLY and nothing shows. No task lists. Nobody needs tagging.\n- **Fail**: a canned reply, a task list, 'noted', or a seat replying twice.",
       "maxAshTurns": 1,
       "minutes": 6,
       "ashSilentAfterOpening": true,
       "watchSec": 240,
       "quietSec": 60,
       "expect": {
-        "roomSeatsMin": 3,
+        "roomSeatsMin": 4,
+        "eachSeatOnce": true,
         "noNewMonos": true
       }
     },
@@ -74,11 +75,11 @@
         "room": "room"
       },
       "opening": "who's on my team rn n what does each of u actually do",
-      "card": "- **Ash**: \"who's on my team rn n what does each of u actually do\"\n- **Pass**: each seat says its job in one or two lines, matching its soul. No overlap.",
+      "card": "- **Ash**: \"who's on my team rn n what does each of u actually do\"\n- **Pass**: every seat gets one turn and says its job in one or two lines, in its own voice, matching its soul. No overlap.",
       "maxAshTurns": 2,
       "minutes": 8,
       "expect": {
-        "roomSeatsMin": 3,
+        "roomSeatsMin": 4,
         "noNewMonos": true
       }
     },
@@ -187,7 +188,7 @@
         "room": "room"
       },
       "opening": "progeress? i only see cos working atm",
-      "card": "- **Ash**: \"progeress? i only see cos working atm\"\n- **Pass**: a short honest roundup across the seats: what's done with proof, what's running, what's stuck and who's on it.",
+      "card": "- **Ash**: \"progeress? i only see cos working atm\"\n- **Pass**: a short honest roundup across the seats: what's done with proof, what's running, what's stuck and who's on it. The host answers first; each other seat gets one turn and adds only what is its own, or replies NO_REPLY (nothing shows). Brake and status notices show as a quiet strip, not as chat messages.",
       "maxAshTurns": 2,
       "minutes": 8,
       "expect": {

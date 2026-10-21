@@ -153,6 +153,15 @@ test("hard checks: a handoff that never chats back, a stuck worker nobody can se
   assert.ok(out.misses.some((m) => /npm test/.test(m)), out.misses);
 });
 
+test("hard checks: when Ash writes to the whole room, each seat replies at most once", () => {
+  const t0 = 1_000_000;
+  const room = (who, text, dt) => ({ t: t0 + dt, who, where: "room", text });
+  const once = hardChecks({ toAsh: [room("chief-of-staff", "Morning. Board's green.", 1000), room("frank", "Morning. Nothing flagged overnight.", 2000)], delegations: [], stuckSeen: [], expect: { eachSeatOnce: true } });
+  assert.deepEqual(once.misses, []);
+  const twice = hardChecks({ toAsh: [room("chief-of-staff", "Morning.", 1000), room("frank", "Morning.", 2000), room("frank", "Also, the checker is red.", 3000)], delegations: [], stuckSeen: [], expect: { eachSeatOnce: true } });
+  assert.deepEqual(twice.misses, ["a seat replied more than once to one message from Ash: frank"]);
+});
+
 test("hard checks: a clean scene has no automatic fail and no miss", () => {
   const t0 = 1_000_000;
   const out = hardChecks({
