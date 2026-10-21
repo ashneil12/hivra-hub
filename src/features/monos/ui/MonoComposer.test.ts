@@ -37,6 +37,20 @@ const file = {
   size: 12,
   path: "/tmp/note.txt",
 };
+/** + opens its menu; Files is the picker for any file. */
+async function attachFile() {
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+      .click(),
+  );
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[data-attach-pick="file"]')!
+      .click(),
+  );
+}
+
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
@@ -121,11 +135,7 @@ it("retains text and attachments if the message is rejected", async () => {
   const onSubmit = vi.fn(() => false);
   render({ onSubmit });
   type("Keep these");
-  await act(async () =>
-    container
-      .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
-      .click(),
-  );
+  await attachFile();
   act(submit);
   expect(onSubmit).toHaveBeenCalledWith("Keep these", [file]);
   expect(field().value).toBe("Keep these");
@@ -142,11 +152,7 @@ it("waits for attachment reads so they cannot leak into the next message", async
   const onSubmit = vi.fn(() => true);
   render({ onSubmit });
   type("With this file");
-  await act(async () =>
-    container
-      .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
-      .click(),
-  );
+  await attachFile();
   expect(
     container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!.disabled,
   ).toBe(true);
@@ -216,9 +222,11 @@ it("inserts a picked emoji where the cursor was, beside attach", async () => {
   const button = container.querySelector<HTMLButtonElement>(
     'button[aria-label="Add emoji"]',
   )!;
-  expect(button.previousElementSibling?.getAttribute("aria-label")).toBe(
-    "Attach files",
-  );
+  expect(
+    button.previousElementSibling
+      ?.querySelector("button")
+      ?.getAttribute("aria-label"),
+  ).toBe("Attach files");
   // The picker loads on first open.
   await act(async () => button.click());
   await vi.waitFor(() =>
@@ -232,4 +240,30 @@ it("inserts a picked emoji where the cursor was, beside attach", async () => {
   // The floating chat keeps its inline input, without the extra row.
   render();
   expect(container.querySelector('button[aria-label="Add emoji"]')).toBeNull();
+});
+
+it("+ offers photos and videos or any file, and picks the kind asked for (Ash, 15 Oct: a variety of media)", async () => {
+  render({ onSubmit: vi.fn(() => true), controls: createElement("span", null, "Model") });
+  const plus = container.querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!;
+  expect(plus.getAttribute("aria-haspopup")).toBe("menu");
+  await act(async () => plus.click());
+  // Nothing is picked until Ash says what: the menu names both kinds and that pasting or dropping works too.
+  expect(pick).not.toHaveBeenCalled();
+  const menu = container.querySelector("[data-attach-menu]")!;
+  expect(menu.textContent).toContain("Photos and videos");
+  expect(menu.textContent).toContain("Files");
+  expect(menu.textContent).toContain("paste or drop");
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-attach-pick="media"]')!.click());
+  expect(pick).toHaveBeenLastCalledWith("media");
+  expect(container.querySelector("[data-attach-menu]")).toBeNull();
+  await act(async () => plus.click());
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-attach-pick="file"]')!.click());
+  expect(pick).toHaveBeenLastCalledWith("file");
+  // Escape closes the menu without picking.
+  await act(async () => plus.click());
+  act(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  expect(container.querySelector("[data-attach-menu]")).toBeNull();
+  expect(pick).toHaveBeenCalledTimes(2);
 });

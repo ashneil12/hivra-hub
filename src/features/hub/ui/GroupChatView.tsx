@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { Check, MessageMultiple, Pencil, Plus, X } from "../../../shared/ui/icons";
+import { ArrowLeft, Check, MessageMultiple, Pencil, Plus, X } from "../../../shared/ui/icons";
 import {
   listMonos,
   monoLook,
@@ -33,7 +33,9 @@ import {
 } from "../model/hubChats";
 import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
-import type { ChatMessage, GroupChat } from "../model/types";
+import { roomAttachments } from "../model/roomAttachments";
+import type { ChatMessage, GroupChat, RoomAttachment } from "../model/types";
+import type { Attachment } from "../../sessions/model/session";
 import { StatusMark } from "./StatusMark";
 import { RoomMessage, RoomStatusLine, RoomText } from "./RoomMessage";
 
@@ -66,7 +68,33 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const [renaming, setRenaming] = useState(false);
   /** New conversation opens a screen; nothing is made until the first message is sent. */
   const [drafting, setDrafting] = useState(false);
+  /** The name Ash gave the new conversation before its first message (double-click "New conversation"). */
+  const [draftTitle, setDraftTitle] = useState<string | undefined>();
+  /** Which conversation's name is being edited: its id, or "draft" for the one not started yet. */
   const [renamingConv, setRenamingConv] = useState<string | null>(null);
+  /** Back out of the New conversation screen: nothing was made, and the conversation he was in shows again. */
+  const leaveDraft = () => {
+    setDrafting(false);
+    setDraftTitle(undefined);
+    if (renamingConv === "draft") setRenamingConv(null);
+  };
+  const begin = (text: string, attachments?: RoomAttachment[]) => {
+    const id = startConversation(chat.id, text, { title: draftTitle, attachments });
+    setDrafting(false);
+    setDraftTitle(undefined);
+    setConvId(id);
+    simulateReplies(chat.id, id);
+  };
+  useEffect(() => {
+    if (!drafting) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target instanceof Element && e.target.closest("[data-hub-conversation-rename]")) return;
+      leaveDraft();
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [drafting, renamingConv]); // eslint-disable-line react-hooks/exhaustive-deps
   const addRef = useRef<HTMLButtonElement>(null);
   const openPicker = () => setPicker(addRef.current?.getBoundingClientRect() ?? null);
   const conv = drafting ? undefined : chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0];
@@ -200,35 +228,45 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                 title="New conversation"
                 aria-label="New conversation"
                 data-hub-new-conversation
-                onClick={() => setDrafting(true)}
+                onClick={() => {
+                  setDrafting(true);
+                  setRenamingConv(null);
+                }}
                 className="grid size-5 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
               >
                 <Plus className="size-3.5" strokeWidth={1.75} />
               </button>
             </div>
             {drafting ? (
-              <div data-hub-conversation-draft className="flex h-7 shrink-0 items-center rounded-md border border-dashed border-content/25 bg-selection px-2 text-[13px] text-content">
-                New conversation
-              </div>
+              renamingConv === "draft" ? (
+                <ConversationNameInput
+                  value={draftTitle ?? ""}
+                  placeholder="New conversation"
+                  onDone={(name) => {
+                    if (name !== undefined) setDraftTitle(name.trim() || undefined);
+                    setRenamingConv(null);
+                  }}
+                />
+              ) : (
+                <div
+                  data-hub-conversation-draft
+                  title="Double-click to name it"
+                  onDoubleClick={() => setRenamingConv("draft")}
+                  className="flex h-7 shrink-0 items-center rounded-md border border-dashed border-content/25 bg-selection px-2 text-[13px] text-content"
+                >
+                  <span className="min-w-0 truncate">{draftTitle ?? "New conversation"}</span>
+                </div>
+              )
             ) : null}
             {chat.conversations.map((c) =>
               renamingConv === c.id ? (
-                <input
+                <ConversationNameInput
                   key={c.id}
-                  autoFocus
-                  aria-label="Conversation name"
-                  data-hub-conversation-rename
-                  defaultValue={c.title}
-                  onFocus={(e) => e.currentTarget.select()}
-                  onBlur={(e) => {
-                    renameConversation(chat.id, c.id, e.currentTarget.value);
+                  value={c.title}
+                  onDone={(name) => {
+                    if (name !== undefined) renameConversation(chat.id, c.id, name);
                     setRenamingConv(null);
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                    if (e.key === "Escape") setRenamingConv(null);
-                  }}
-                  className="h-7 shrink-0 rounded-md bg-selection px-2 text-[13px] text-content outline-none ring-1 ring-content/30"
                 />
               ) : (
                 <button
@@ -236,8 +274,8 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                   type="button"
                   title="Double-click to rename"
                   data-hub-conversation={c.id}
-                  onClick={() => { setDrafting(false); setConvId(c.id); }}
-                  onDoubleClick={() => setRenamingConv(c.id)}
+                  onClick={() => { leaveDraft(); setConvId(c.id); }}
+                  onDoubleClick={() => { leaveDraft(); setConvId(c.id); setRenamingConv(c.id); }}
                   className={`flex h-7 shrink-0 items-center rounded-md px-2 text-left text-[13px] ${
                     c.id === conv?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"
                   }`}
@@ -256,7 +294,18 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-stroke px-3" data-tauri-drag-region="deep">
           <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-          <span className="min-w-0 truncate text-[13px] text-content">{drafting ? "New conversation" : conv ? conv.title : chat.name}</span>
+          {drafting || conv ? (
+            <span
+              className="min-w-0 truncate text-[13px] text-content"
+              data-hub-conversation-title
+              title="Double-click to rename"
+              onDoubleClick={() => setRenamingConv(drafting ? "draft" : conv!.id)}
+            >
+              {drafting ? (draftTitle ?? "New conversation") : conv!.title}
+            </span>
+          ) : (
+            <span className="min-w-0 truncate text-[13px] text-content">{chat.name}</span>
+          )}
           {IS_MAC ? null : <div className="w-[120px]" />}
         </div>
         {members.length === 0 && !conv ? (
@@ -265,12 +314,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           <NewConversationScreen
             members={members}
             phrase={chatPhrase(chat)}
-            onPick={(text) => {
-              const id = startConversation(chat.id, text);
-              setDrafting(false);
-              setConvId(id);
-              simulateReplies(chat.id, id);
-            }}
+            back={chat.conversations.length ? (conv0Title(chat, convId) ?? "the last conversation") : undefined}
+            onBack={leaveDraft}
+            onPick={(text) => begin(text)}
           />
         ) : (
           <div
@@ -339,17 +385,17 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
             name={chatPhrase(chat)}
-            onSubmit={(text) => {
+            onSubmit={async (text: string, files: Attachment[]) => {
               // Sending while the team is answering is fine: the room takes it up as soon as the current turn ends.
-              if (!text.trim()) return false;
+              if (!text.trim() && !files.length) return false;
+              // Every file is kept by its path first (a pasted picture is saved to one); one that can't be kept stops
+              // the send with the reason, and the message and files stay in the composer.
+              const kept = files.length ? await roomAttachments(files) : undefined;
               if (drafting) {
-                const id = startConversation(chat.id, text.trim());
-                setDrafting(false);
-                setConvId(id);
-                simulateReplies(chat.id, id);
+                begin(text.trim(), kept);
                 return;
               }
-              sendMessage(chat.id, text.trim(), conv?.id);
+              sendMessage(chat.id, text.trim(), conv?.id, kept);
               simulateReplies(chat.id, conv?.id);
             }}
           />
@@ -359,11 +405,70 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   );
 }
 
+/** The name of the conversation Back returns to. */
+function conv0Title(chat: GroupChat, convId: string | undefined): string | undefined {
+  return (chat.conversations.find((c) => c.id === convId) ?? chat.conversations[0])?.title;
+}
+
+/** A conversation's name being edited: Enter or leaving keeps it, Escape keeps the old one. */
+function ConversationNameInput({ value, placeholder, onDone }: { value: string; placeholder?: string; onDone: (name: string | undefined) => void }) {
+  const done = useRef(false);
+  const finish = (name: string | undefined) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(name);
+  };
+  return (
+    <input
+      autoFocus
+      aria-label="Conversation name"
+      data-hub-conversation-rename
+      defaultValue={value}
+      placeholder={placeholder}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={(e) => finish(e.currentTarget.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") finish(e.currentTarget.value);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          finish(undefined);
+        }
+      }}
+      className="h-7 shrink-0 rounded-md bg-selection px-2 text-[13px] text-content outline-none ring-1 ring-content/30"
+    />
+  );
+}
+
 /** The calm screen New conversation opens: who you're talking to, a few starters, and the composer below. */
-function NewConversationScreen({ members, phrase, onPick }: { members: Mono[]; phrase: string; onPick: (text: string) => void }) {
+function NewConversationScreen({
+  members,
+  phrase,
+  back,
+  onBack,
+  onPick,
+}: {
+  members: Mono[];
+  phrase: string;
+  /** The conversation Back returns to (none: there is nothing to go back to). */
+  back?: string;
+  onBack: () => void;
+  onPick: (text: string) => void;
+}) {
   const starters = ["What changed since yesterday?", "What needs me today?", "Plan this week with me"];
   return (
-    <div className="grid min-h-0 flex-1 place-items-center px-8" data-hub-new-conversation-screen>
+    <div className="relative grid min-h-0 flex-1 place-items-center px-8" data-hub-new-conversation-screen>
+      {back ? (
+        <button
+          type="button"
+          data-hub-new-conversation-back
+          title={`Back to ${back} (Esc)`}
+          onClick={onBack}
+          className="absolute left-4 top-3 flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
+        >
+          <ArrowLeft className="size-3.5" strokeWidth={1.75} />
+          Back
+        </button>
+      ) : null}
       <div className="flex max-w-[460px] flex-col items-center gap-4 text-center">
         <div className="flex -space-x-1">
           {members.slice(0, 5).map((m) => {
@@ -377,7 +482,7 @@ function NewConversationScreen({ members, phrase, onPick }: { members: Mono[]; p
         </div>
         <div>
           <p className="text-[17px] font-medium text-content">Talk to {phrase}</p>
-          <p className="mt-1 text-[13px] leading-5 text-content/70">Nothing is saved until you send your first message. It names the conversation; double-click the name to change it.</p>
+          <p className="mt-1 text-[13px] leading-5 text-content/70">Nothing is saved until you send your first message. It names the conversation unless you name it first: double-click the name to change it. Attach photos or files with +.</p>
         </div>
         <div className="flex flex-wrap justify-center gap-2">
           {starters.map((s) => (

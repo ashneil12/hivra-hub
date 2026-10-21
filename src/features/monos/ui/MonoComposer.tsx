@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { isImeComposition } from "../../../shared/lib/keyboard";
-import { ArrowUp, Plus, SmilePlus } from "../../../shared/ui/icons";
+import { ArrowUp, File as FileIcon, ImagePlus, Plus, SmilePlus } from "../../../shared/ui/icons";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
 import type { Attachment } from "../../sessions/model/session";
 import {
@@ -19,6 +19,7 @@ import {
   mergeAttachments,
   pickAttachments,
   revokeAttachment,
+  type AttachPick,
 } from "../../sessions/model/attachments";
 import {
   getComposerDraft,
@@ -312,23 +313,76 @@ export function MonoComposer({
     } else clear(result);
   };
 
+  // + opens a small menu (Ash, 15 Oct: "The plus sign, what is it that you
+  // can attach anything? ... there's a different variety of media that you
+  // might want to use"): photos and videos, or any file; pasting or dropping
+  // works for anything too.
+  const [attachMenu, setAttachMenu] = useState(false);
+  const attachWrap = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!attachMenu) return;
+    const down = (event: MouseEvent) => {
+      if (!attachWrap.current?.contains(event.target as Node))
+        setAttachMenu(false);
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setAttachMenu(false);
+    };
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      document.removeEventListener("keydown", key, true);
+    };
+  }, [attachMenu]);
+  const pick = (kind: AttachPick) => {
+    setAttachMenu(false);
+    readAttachments(() => pickAttachments(kind));
+  };
+  const ATTACH_ITEM =
+    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-content hover:bg-content/8";
   // `tool` sizes the plus to match the emoji face beside it: its cross fills
   // 14 of the glyph's 24 units against the face's 21, so it is drawn larger,
   // with a thinner stroke so both lines render about 1px wide.
-  const attachButton = (className: string, tool = false) => (
-    <button
-      type="button"
-      title="Attach files"
-      aria-label="Attach files"
-      disabled={!enabled || submitting}
-      onClick={() => readAttachments(pickAttachments)}
-      className={className}
-    >
-      <Plus
-        className={tool ? "size-4.25" : "size-3.5"}
-        strokeWidth={tool ? 1.5 : 1.75}
-      />
-    </button>
+  const attachButton = (className: string, tool = false, placement = "") => (
+    <span ref={attachWrap} className={`relative ${placement}`}>
+      <button
+        type="button"
+        title="Attach photos or files"
+        aria-label="Attach files"
+        aria-haspopup="menu"
+        aria-expanded={attachMenu}
+        disabled={!enabled || submitting}
+        onClick={() => setAttachMenu((open) => !open)}
+        className={className}
+      >
+        <Plus
+          className={tool ? "size-4.25" : "size-3.5"}
+          strokeWidth={tool ? 1.5 : 1.75}
+        />
+      </button>
+      {attachMenu ? (
+        <div
+          role="menu"
+          data-attach-menu
+          className="absolute bottom-full left-0 z-30 mb-1.5 w-[220px] rounded-lg border border-stroke bg-background-base p-1 shadow-2xl"
+        >
+          <button type="button" role="menuitem" data-attach-pick="media" onClick={() => pick("media")} className={ATTACH_ITEM}>
+            <ImagePlus className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+            Photos and videos
+          </button>
+          <button type="button" role="menuitem" data-attach-pick="file" onClick={() => pick("file")} className={ATTACH_ITEM}>
+            <FileIcon className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+            Files
+          </button>
+          <p className="px-2 pb-1 pt-1 text-[11px] leading-4 text-content/55">
+            You can also paste or drop anything here.
+          </p>
+        </div>
+      ) : null}
+    </span>
   );
   const input = (className: string) => (
     <textarea
@@ -434,7 +488,9 @@ export function MonoComposer({
               />
             </div>
             {attachButton(
-              `col-start-1 grid size-6.5 place-items-center rounded-md bg-content/8 text-content/55 hover:bg-content/12 hover:text-content ${stacked ? "row-start-2" : "row-start-1"}`,
+              "grid size-6.5 place-items-center rounded-md bg-content/8 text-content/55 hover:bg-content/12 hover:text-content",
+              false,
+              `col-start-1 grid ${stacked ? "row-start-2" : "row-start-1"}`,
             )}
             {input(
               `row-start-1 ${stacked ? "col-span-3 col-start-1 px-1.5" : "col-start-2"}`,

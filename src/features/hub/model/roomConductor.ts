@@ -57,7 +57,7 @@ import {
   type Seat,
   type TurnKind,
 } from "./roomTurns";
-import type { ChatMessage, ChatPickSource, GroupChat } from "./types";
+import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 
 // ---- The app's side: the runner and the router ------------------------------------------------------------------
 
@@ -73,6 +73,11 @@ export type RoomTurnRequest = {
   wakeId: string;
   /** The managed turn's prompt: its reply is the post. */
   prompt: string;
+  /**
+   * What Ash attached to the messages this turn takes up (photos, files): sent with the prompt the way his own chat
+   * sends them, so the Mono sees the picture and can open the file, not only read its name.
+   */
+  attachments?: RoomAttachment[];
   /** The same turn for a busy Mono: it answers with room_post. */
   wakePrompt: string;
   note: RoomTurnNote;
@@ -565,6 +570,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     back: wake.back,
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
   };
+  const attachments = turnAttachments(conv.messages, wake);
   let outcome: RoomTurnOutcome;
   try {
     outcome = await runner.run({
@@ -573,6 +579,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       convId: wake.convId,
       projectId: chat.projectId,
       wakeId: wake.id,
+      ...(attachments.length ? { attachments } : {}),
       prompt: turnPrompt(base),
       wakePrompt: turnPrompt({ ...base, viaTool: true }),
       note: { kind: "room", room: chat.name, roomId: chatId, line: noteLine(wake) },
@@ -611,6 +618,18 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       notice(chatId, wake, me, `${me.name} finished its own work without answering here.`);
   }
   pump(chatId);
+}
+
+/**
+ * The files a turn hands its Mono: what Ash attached to the messages it answers, or to the message of his it adds to
+ * (a chime). Later turns see them in the transcript by name and path.
+ */
+function turnAttachments(messages: readonly ChatMessage[], wake: Wake): RoomAttachment[] {
+  const ids = new Set([...(wake.batch ?? []), ...(wake.trigger ? [wake.trigger] : [])]);
+  const out: RoomAttachment[] = [];
+  for (const m of messages)
+    if (m.from === "ash" && ids.has(m.id)) for (const file of m.attachments ?? []) if (!out.some((x) => x.path === file.path)) out.push(file);
+  return out;
 }
 
 /**

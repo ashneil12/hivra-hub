@@ -5501,6 +5501,20 @@ export const SessionCard = memo(function SessionCard({
             if (performance.now() < skipClickUntil.current) return;
             onSelect(session.id, event);
           }}
+          // Double-click renames, as a room's conversations do (Ash, 15 Oct: "You can't rename a new conversation at
+          // all"); F2 and the menu's Rename still work. It sits on the whole card, since WebKit aims a double-click at
+          // the card, and skips the card's own buttons. A Mono's chat is named for the Mono, so it keeps its name.
+          onDoubleClick={
+            onRename && !isMonoSession(session.id)
+              ? (event) => {
+                  const target = event.target;
+                  if (target instanceof Element && target.closest("button, a, input")) return;
+                  event.preventDefault();
+                  closePreview();
+                  onRename(session.id);
+                }
+              : undefined
+          }
           onContextMenu={(event) => {
             closePreview();
             onContextMenu?.(session.id, event);

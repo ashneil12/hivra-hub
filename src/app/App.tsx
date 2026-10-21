@@ -9988,7 +9988,7 @@ function Workspace({
     sessions,
     sessionsRef,
     setSessions,
-    submit: (id, text, options) => submitSessionRef.current(id, text, [], options),
+    submit: (id, text, { attachments, ...options }) => submitSessionRef.current(id, text, attachments ?? [], options),
     openMono: (monoId) =>
       ensureMonoSession(monoId, {
         home: homeDir,

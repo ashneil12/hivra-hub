@@ -183,4 +183,38 @@ describe("the live adapter against the fake Claude CLI", () => {
       prompt: "<brief>chat so far</brief>\n\nwhere were we?",
     });
   }, 30_000);
+
+  // B8 (Ash, 15 Oct): attachments must reach the agent, not only show in the app. The request the CLI gets on stdin,
+  // as the fake logs it byte for byte: the photo as an image block with its bytes, the file by its path.
+  it("hands the CLI a photo as an image block and a file by its path, in the user message it receives", async () => {
+    const events: HarnessEvent[] = [];
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    await sendClaudeTurn({
+      sessionId: "chat",
+      cwd: tmpdir(),
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "full-access",
+      text: "look at the hud and my notes",
+      attachments: [
+        { id: "p", name: "hud.png", mimeType: "image/png", kind: "image", size: 68, path: "/tmp/monocode-attachments/hud.png", data: PNG },
+        { id: "f", name: "combo-notes.md", mimeType: "text/markdown", kind: "file", size: 120, path: "/Users/ash/Desktop/combo-notes.md" },
+      ],
+      onEvent: (event) => events.push(event),
+    });
+    expect(reply(events)).toBe("OK");
+    const sent = readFileSync(join(state, "events.ndjson"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { dir: string; line?: string })
+      .filter((e) => e.dir === "in")
+      .map((e) => JSON.parse(e.line!) as { type: string; message?: { content: unknown } })
+      .filter((frame) => frame.type === "user");
+    expect(sent).toHaveLength(1);
+    const content = sent[0].message!.content as Array<Record<string, unknown>>;
+    expect(content).toContainEqual(expect.objectContaining({ type: "image", source: expect.objectContaining({ type: "base64", media_type: "image/png", data: PNG }) }));
+    const text = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    expect(text).toContain("look at the hud and my notes");
+    expect(text).toContain('"/Users/ash/Desktop/combo-notes.md"');
+  }, 20_000);
 });

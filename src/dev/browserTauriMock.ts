@@ -168,6 +168,30 @@ mockIPC(
       const key = (path: unknown) => String(path ?? "").replace(/\/+$/, "");
       return seeded.filter((entry) => key(entry.cwd) === key(a.cwd));
     }
+    // Dev only: the file picker and the files a browser test attaches (`window.__devPick = [{ path, size, data? }]`, and
+    // `__devDisk`, files that stay readable after the pick): the
+    // dialog returns their paths, inspect_paths and read_file_base64 answer as fs.rs would, and a pasted picture
+    // written with write_attachment gets a temp path back.
+    if (cmd === "plugin:dialog|open") {
+      const picks = (window as unknown as { __devPick?: { path: string }[] }).__devPick ?? [];
+      return picks.length ? picks.map((p) => p.path) : null;
+    }
+    if (cmd === "inspect_paths") {
+      const picks = (window as unknown as { __devPick?: { path: string; size?: number }[] }).__devPick ?? [];
+      return ((args as { paths?: string[] }).paths ?? []).map((path) => ({
+        path,
+        name: path.split("/").pop() ?? path,
+        size: picks.find((p) => p.path === path)?.size ?? 1,
+        isDir: false,
+      }));
+    }
+    if (cmd === "read_file_base64") {
+      const w = window as unknown as { __devPick?: { path: string; data?: string }[]; __devDisk?: { path: string; data?: string }[] };
+      const found = [...(w.__devDisk ?? []), ...(w.__devPick ?? [])].find((p) => p.path === (args as { path?: string }).path);
+      if (!found?.data) throw new Error("No such file");
+      return found.data;
+    }
+    if (cmd === "write_attachment") return `/tmp/monocode-attachments/dev-${(args as { name?: string }).name ?? "attachment"}`;
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;
