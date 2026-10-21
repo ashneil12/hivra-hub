@@ -402,3 +402,31 @@ test("a judge that narrates instead of answering gets one more go for the JSON",
   assert.equal(judged.grade, "PASS");
   assert.match(prompts[1], /no tools/);
 });
+
+test("a judge that times out gets one more go, and a run's UNGRADED scenes can be judged again from what it saved", async () => {
+  const { judgeScene } = await import("./realconv/judge.mjs");
+  let calls = 0;
+  const flaky = { provider: "fake", model: "m", real: true, complete: async ({ timeoutMs }) => {
+    calls += 1;
+    assert.equal(timeoutMs, 600_000);
+    if (calls === 1) throw new Error("claude exited 143");
+    return { text: '{"grade":"PASS","replies":[]}' };
+  } };
+  assert.equal((await judgeScene(flaky, { id: "AD5", title: "t", card: "c" }, "## Timeline", {}, "r")).grade, "PASS");
+
+  const { rejudgeRun } = await import("./realconv/rejudge.mjs");
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), "rejudge-"));
+  for (const [id, verdict] of [["AD5", "UNGRADED"], ["AD3", "FAIL"]]) {
+    fs.mkdirSync(path.join(run, id));
+    fs.writeFileSync(path.join(run, id, "transcript.md"), `# ${id}\n- +1s **Ash**: hi`);
+    fs.writeFileSync(path.join(run, id, "result.json"), JSON.stringify({ id, verdict, reasons: [], hard: { autoFails: [], misses: [] }, provenance: { agents: true, tester: true, judge: true } }));
+  }
+  const judge = { provider: "fake", model: "m", real: true, complete: async () => ({ text: '{"grade":"PASS","replies":[{"answers":2,"adds":2,"disagrees":null,"honest":2,"voice":2}],"sceneChecks":[],"autoFails":[]}' }) };
+  const book = { scenes: [{ id: "AD5", title: "t", card: "c" }, { id: "AD3", title: "t", card: "c" }], judgeRubric: "r" };
+  const changed = await rejudgeRun(run, { book, judge });
+  assert.deepEqual(changed.map((c) => c.id), ["AD5"]);
+  const after = JSON.parse(fs.readFileSync(path.join(run, "AD5", "result.json"), "utf8"));
+  assert.equal(after.verdict, "PASS");
+  assert.equal(after.before.verdict, "UNGRADED");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(run, "AD3", "result.json"), "utf8")).verdict, "FAIL");
+});
