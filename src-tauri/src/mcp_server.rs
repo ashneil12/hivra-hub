@@ -1274,9 +1274,16 @@ mod tests {
     #[test]
     fn page_build_reads_whats_shipped_from_the_hub_not_github() {
         let list = tools();
-        let page = list.as_array().unwrap().iter().find(|t| t["name"] == "page_build").unwrap();
+        let page = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "page_build")
+            .unwrap();
         let desc = page["description"].as_str().unwrap();
-        assert!(desc.contains("from the hub and the project's own checkout (its local git log, task_status, files)"));
+        assert!(desc.contains(
+            "from the hub and the project's own checkout (its local git log, task_status, files)"
+        ));
         assert!(desc.contains("never from gh or anything else that reaches GitHub"));
     }
 
