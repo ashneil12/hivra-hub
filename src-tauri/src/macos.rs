@@ -987,6 +987,12 @@ fn write_dev_bundle_icons(app: &Path, app_name: &str, bundle: &DevBundle) -> Res
     .map_err(|e| e.to_string())?;
     std::fs::write(resources.join("AppIcon.icns"), DEV_ICNS).map_err(|e| e.to_string())?;
     std::fs::write(resources.join("Assets.car"), DEV_ASSETS_CAR).map_err(|e| e.to_string())?;
+    // The hub docs every chat's note points at (resourceDir()/hub-docs/README.md, hubData.ts). A release bundle gets
+    // them from tauri.conf.json resources; this wrapper has to carry them itself, or a dev copy's chats are sent to a
+    // file that isn't there and go searching Ash's disk for it (AD14, run f451).
+    let docs = resources.join("hub-docs");
+    std::fs::create_dir_all(&docs).map_err(|e| e.to_string())?;
+    std::fs::write(docs.join("README.md"), DEV_HUB_DOCS).map_err(|e| e.to_string())?;
     let _ = std::process::Command::new("/usr/bin/touch")
         .arg(app)
         .status();
@@ -1009,6 +1015,8 @@ const DEV_BUNDLE_NAME_ENV: &str = "MONOCODE_DEV_APP_NAME";
 const DEV_ICNS: &[u8] = include_bytes!("../icons/icon.icns");
 #[cfg(debug_assertions)]
 const DEV_ASSETS_CAR: &[u8] = include_bytes!("../macos/Assets.car");
+#[cfg(debug_assertions)]
+const DEV_HUB_DOCS: &str = include_str!("../../docs/hub/README.md");
 #[cfg(debug_assertions)]
 fn dev_bundle_dir_name(app_name: &str) -> String {
     format!("{app_name}.app")
@@ -1246,6 +1254,27 @@ mod tests {
         assert!(plist.contains("<string>com.ash.monocode-hub.dev.hub-1b-identity</string>"));
         assert!(!plist.contains("<string>com.ash.monocode-hub</string>"));
         assert!(!plist.contains("com.monocode.desktop"));
+    }
+
+    /// A dev copy's wrapper carries the hub docs where the note sends every chat (AD14, run f451: the file wasn't there).
+    #[test]
+    fn dev_bundle_carries_the_hub_docs() {
+        let app = std::env::temp_dir().join(format!(
+            "monocode-devbundle-{}.app",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let bundle = DevBundle {
+            name: "MonoCode Hub Dev",
+            identifier: "com.ash.monocode-hub.dev.docs-test",
+            version: "0.16.0",
+            bundle_version: "0.16.0",
+            signing_identity: None,
+        };
+        write_dev_bundle_icons(&app, "MonoCode Hub Dev", &bundle).unwrap();
+        let docs = std::fs::read_to_string(app.join("Contents/Resources/hub-docs/README.md")).unwrap();
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/hub/README.md")).unwrap();
+        assert_eq!(docs, source);
+        let _ = std::fs::remove_dir_all(&app);
     }
 
     #[test]
