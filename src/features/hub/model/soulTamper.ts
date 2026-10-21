@@ -67,13 +67,36 @@ export function keptAshLine(name: string): string {
   return `${name}'s soul was edited outside the app. Kept your version.`;
 }
 
+/** What a chat's tool calls said (commands, file paths), by session id: App.tsx sets it from its sessions. */
+let toolTextSource: ((sessionId: string) => readonly string[]) | null = null;
+export function setRunToolTextSource(source: ((sessionId: string) => readonly string[]) | null): void {
+  toolTextSource = source;
+}
+
 /**
- * Whether a run could have been the one that changed this Mono's soul: a chat or worker of that same Mono, or one
- * working inside that Mono's own home folder. Another Mono's chat running at the time doesn't count, so an edit made
- * then is Ash's and is kept.
+ * A run whose tool calls named this Mono's soul: its id and SOUL.md in one command or path (Alfred's S19 case C, a
+ * Hivra worker's python one-liner writing the Nibbii lead's SOUL.md). That run is an agent, whoever's it is.
  */
-export function runIsMonos(run: Pick<RunWindow, "sessionId" | "cwd">, monoId: string): boolean {
+export function runNamedSoul(
+  run: Pick<RunWindow, "sessionId">,
+  monoId: string,
+  texts: (sessionId: string) => readonly string[] = (id) => toolTextSource?.(id) ?? [],
+): boolean {
+  return texts(run.sessionId).some((text) => text.includes(monoId) && /SOUL\.md/i.test(text));
+}
+
+/**
+ * Whether a run could have been the one that changed this Mono's soul: a chat or worker of that same Mono, one
+ * working inside that Mono's own home folder, or any run whose tool calls named that soul. Another Mono's chat that
+ * was only running at the time doesn't count, so an edit made then is Ash's and is kept.
+ */
+export function runIsMonos(
+  run: Pick<RunWindow, "sessionId" | "cwd">,
+  monoId: string,
+  texts?: (sessionId: string) => readonly string[],
+): boolean {
   if (chatMonoOwner(run.sessionId) === monoId) return true;
+  if (runNamedSoul(run, monoId, texts)) return true;
   const cwd = run.cwd?.replace(/\/+$/, "");
   if (!cwd) return false;
   return monoHomeDirs().some((home) => {
