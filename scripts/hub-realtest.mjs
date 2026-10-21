@@ -537,7 +537,9 @@ export async function runBench(options, hooks = {}) {
 
     // -- vite and the stub ----------------------------------------------------------------------------------------------------
     const viteLog = fs.openSync(path.join(evidence, "vite.log"), "w");
-    const vite = spawn(path.join(ROOT, "node_modules/.bin/vite"), [], {
+    // --mode stable: no hot reload and no file watching, so a checkout moving under a run never reloads its window
+    // mid-scene (21 Oct: a fast-forward during S10 reloaded the page, cut frank's turn and lost a drain).
+    const vite = spawn(path.join(ROOT, "node_modules/.bin/vite"), ["--mode", "stable"], {
       cwd: ROOT,
       stdio: ["ignore", viteLog, viteLog],
       env: { ...process.env, MONOCODE_VITE_PORT: String(slot.port), VITE_MONOCODE_HUB: "1" },
