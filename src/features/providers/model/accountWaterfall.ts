@@ -96,6 +96,27 @@ export function limitMarks(): LimitMarks {
 }
 
 /**
+ * When an account that ran out at `now` has room again, in E5's order: the refusal's own reset time, else the spent
+ * window's reset in the latest usage reading, else five hours on (UNKNOWN_RESET_MS).
+ */
+export function limitResetAt({ now, resetsAt, reading }: { now: number; resetsAt?: number; reading?: ProviderRateLimits }): number {
+  const fromReading = reading ? exhaustedWindowResetAt(reading) : null;
+  return resetsAt != null && resetsAt > now ? resetsAt : fromReading != null && fromReading > now ? fromReading : now + UNKNOWN_RESET_MS;
+}
+
+/** A usage reading taken after the account ran out (`at`) that shows room again: it rejoined early. */
+export function freshRoomAfter(reading: ProviderRateLimits | undefined, at: number, now: number): boolean {
+  if (!reading || reading.status !== "ok" || reading.updatedAt <= at) return false;
+  const headroom = accountHeadroom(reading, now);
+  return headroom != null && headroom > 0;
+}
+
+/** "Claude", "Codex", "Devin"; any other harness by its own name. */
+export function providerName(harness: string): string {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, harness) ? PROVIDER_NAMES[harness as ProviderAccountProvider] : harness;
+}
+
+/**
  * Remember that an account ran out: until its window resets (the refusal's own reset time, else the reading's spent
  * window, else five hours). Expired marks are dropped on the way.
  */
@@ -103,8 +124,7 @@ export function markAccountLimited(
   account: Pick<ProviderAccount, "provider" | "id">,
   { now, resetsAt, reading }: { now: number; resetsAt?: number; reading?: ProviderRateLimits },
 ): LimitMark {
-  const fromReading = reading ? exhaustedWindowResetAt(reading) : null;
-  const until = resetsAt != null && resetsAt > now ? resetsAt : fromReading != null && fromReading > now ? fromReading : now + UNKNOWN_RESET_MS;
+  const until = limitResetAt({ now, resetsAt, reading });
   const marks = Object.fromEntries(Object.entries(limitMarks()).filter(([, m]) => m.until > now));
   const mark = { at: now, until };
   write(LIMITED_KEY, { ...marks, [markKey(account.provider, account.id)]: mark });
@@ -126,8 +146,7 @@ export function accountAvailability(account: ProviderAccount, { now, usageFor, m
   const headroom = reading && reading.status === "ok" ? accountHeadroom(reading, now) : null;
   if (reading?.status === "unavailable") return { available: false, why: "not-signed-in" };
   if (mark && mark.until > now) {
-    const freshRoom = reading && reading.status === "ok" && reading.updatedAt > mark.at && headroom != null && headroom > 0;
-    if (!freshRoom) return { available: false, why: "limited", until: mark.until };
+    if (!freshRoomAfter(reading, mark.at, now)) return { available: false, why: "limited", until: mark.until };
   }
   if (headroom != null && headroom <= 0) return { available: false, why: "exhausted", until: (reading && exhaustedWindowResetAt(reading)) ?? undefined };
   return { available: true };

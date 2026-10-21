@@ -15,8 +15,12 @@
 // Workers never step on each other: several in one repo each get a checkout of their own (agentAppTasks.ts), across
 // every chat working on the project, not only the one delegating.
 import { useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { WorkerPoolHost } from "../../agent-app/model/agentAppTasks";
 import type { Delegation } from "./delegations";
+import type { ProviderRateLimits } from "../../providers/model/rateLimits";
+import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
 
 export type WorkerLimits = { workers: number; heavy: number };
@@ -133,27 +137,155 @@ export type QueuedWorker = {
   input: Record<string, unknown>;
 };
 
+/**
+ * Where the queue lives: the app database (src-tauri/src/worker_queue.rs), so it survives a restart, every window
+ * shares it, and it is the one source of truth. This window keeps a copy for the synchronous reads (the gate, the
+ * cards) and reloads it whenever any window changes the queue.
+ */
+export type WorkerQueueBackend = {
+  list(): Promise<QueuedWorker[]>;
+  /** True when it was added (one already waiting keeps its place). */
+  add(job: QueuedWorker): Promise<boolean>;
+  /** True only for the caller that removed it: of two windows starting the same job, one does. */
+  take(id: string): Promise<boolean>;
+  /** A queue an older build kept in local storage, imported once; how many were added. */
+  importLocal(jobs: QueuedWorker[]): Promise<number>;
+  /** Any window changed the queue. */
+  subscribe?(onChange: () => void): () => void;
+};
+
+/** The app's store. */
+export const tauriWorkerQueue: WorkerQueueBackend = {
+  list: () => invoke<QueuedWorker[]>("worker_queue_list"),
+  add: (job) => invoke<boolean>("worker_queue_add", { job }),
+  take: (id) => invoke<boolean>("worker_queue_take", { id }),
+  importLocal: (jobs) => invoke<number>("worker_queue_import_local", { jobs }),
+  subscribe: (onChange) => {
+    let off: (() => void) | undefined;
+    let gone = false;
+    void listen(WORKER_QUEUE_CHANGED, onChange)
+      .then((unlisten) => (gone ? unlisten() : (off = unlisten)))
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+      off?.();
+    };
+  },
+};
+export const WORKER_QUEUE_CHANGED = "worker-queue-changed";
+
+/** A store in memory (tests, and a build without the app's database). */
+export function memoryWorkerQueue(initial: QueuedWorker[] = []): WorkerQueueBackend & { jobs: QueuedWorker[]; imported: boolean } {
+  const store = {
+    jobs: [...initial],
+    imported: false,
+    listeners: new Set<() => void>(),
+    list: async () => store.jobs.map((job) => ({ ...job })),
+    add: async (job: QueuedWorker) => {
+      if (store.jobs.some((q) => q.id === job.id)) return false;
+      store.jobs.push({ ...job });
+      for (const l of store.listeners) l();
+      return true;
+    },
+    take: async (id: string) => {
+      const before = store.jobs.length;
+      store.jobs = store.jobs.filter((q) => q.id !== id);
+      if (store.jobs.length === before) return false;
+      for (const l of store.listeners) l();
+      return true;
+    },
+    importLocal: async (jobs: QueuedWorker[]) => {
+      if (store.imported) return 0;
+      store.imported = true;
+      let added = 0;
+      for (const job of [...jobs].sort((a, b) => (a.queuedAt ?? 0) - (b.queuedAt ?? 0)))
+        if (job && typeof job.id === "string" && job.id && (await store.add(job))) added++;
+      return added;
+    },
+    subscribe: (onChange: () => void) => {
+      store.listeners.add(onChange);
+      return () => store.listeners.delete(onChange);
+    },
+  };
+  return store;
+}
+
+let backend: WorkerQueueBackend = memoryWorkerQueue();
+let unsubscribe: (() => void) | undefined;
+let copy: QueuedWorker[] = [];
+let loading: Promise<void> | undefined;
+
+/** Use this store from now on, and load it (App.tsx: the app's database). */
+export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
+  unsubscribe?.();
+  backend = next;
+  copy = [];
+  loading = undefined;
+  unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
+  return loadWorkerQueue();
+}
+
+/**
+ * Loads the queue: first, once, whatever an older build left in this window's local storage (taken out of local
+ * storage once the store has it), then the store's own list.
+ */
+export function loadWorkerQueue(): Promise<void> {
+  loading ??= (async () => {
+    const left = read<QueuedWorker[]>(QUEUE_KEY, []);
+    if (Array.isArray(left) && left.length) {
+      try {
+        await backend.importLocal(left.filter((q) => q && typeof q.id === "string"));
+        localStorage.removeItem(QUEUE_KEY);
+      } catch (error) {
+        console.warn("Could not move the waiting workers into the app's store yet", error);
+      }
+    } else if (Array.isArray(left)) {
+      try {
+        localStorage.removeItem(QUEUE_KEY);
+      } catch {
+        /* none */
+      }
+    }
+    await refreshWorkerQueue();
+  })();
+  return loading;
+}
+
+/** Read the store again (another window changed it). */
+export async function refreshWorkerQueue(): Promise<void> {
+  try {
+    copy = await backend.list();
+  } catch (error) {
+    console.warn("Could not read the waiting workers", error);
+    return;
+  }
+  changed();
+}
+
 export function queuedWorkers(): QueuedWorker[] {
-  const all = read<QueuedWorker[]>(QUEUE_KEY, []);
-  return Array.isArray(all) ? all.filter((q) => q && typeof q.id === "string") : [];
+  return copy;
 }
 export function queuedWorker(id: string): QueuedWorker | undefined {
-  return queuedWorkers().find((q) => q.id === id);
+  return copy.find((q) => q.id === id);
 }
 /** Waits in order; asking again with the same request keeps its place. */
-export function enqueueWorker(job: QueuedWorker): void {
-  const all = queuedWorkers();
-  if (all.some((q) => q.id === job.id)) return;
-  write(QUEUE_KEY, [...all, job]);
-  changed();
+export function enqueueWorker(job: QueuedWorker): Promise<void> {
+  if (!copy.some((q) => q.id === job.id)) {
+    copy = [...copy, job];
+    changed();
+  }
+  return backend
+    .add(job)
+    .then(() => refreshWorkerQueue())
+    .catch((error: unknown) => console.warn("Could not keep a waiting worker", error));
 }
-export function dequeueWorker(id: string): QueuedWorker | undefined {
-  const all = queuedWorkers();
-  const job = all.find((q) => q.id === id);
-  if (!job) return undefined;
-  write(QUEUE_KEY, all.filter((q) => q.id !== id));
-  changed();
-  return job;
+/** Out of the queue (it started, or was taken back). Resolves true when this call removed it from the store. */
+export function dequeueWorker(id: string): Promise<boolean> {
+  if (copy.some((q) => q.id === id)) {
+    copy = copy.filter((q) => q.id !== id);
+    changed();
+  }
+  return backend.take(id).catch(() => false);
 }
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
@@ -244,7 +376,52 @@ export function holdForLimit(result: { status: string; errorClass?: string; retr
   return result.status === "failed" && result.errorClass === "usage_limit" && result.retryable !== false;
 }
 
-/** For tests. */
+/**
+ * A held worker whose refusal named no reset time: when it tries again by itself, in E5's order (accountWaterfall.ts
+ * limitResetAt): the spent window's reset in the latest usage reading, else five hours after the refusal. A fresh
+ * reading that shows room again brings it forward (`retryNow`).
+ */
+export function heldRetryAt(input: { refusedAt: number; resetsAt?: number; reading?: ProviderRateLimits }): number {
+  return limitResetAt({ now: input.refusedAt, resetsAt: input.resetsAt, reading: input.reading });
+}
+export function retryNow(reading: ProviderRateLimits | undefined, refusedAt: number, now: number): boolean {
+  return freshRoomAfter(reading, refusedAt, now);
+}
+
+export type HeldSeen = { resetsAt: number | undefined; refusedAt: number };
+
+/**
+ * What the app does with a held worker's limit notice (App.tsx), once per refusal: arm its resume at the refusal's
+ * reset, else at E5's (heldRetryAt). `arm` is the reset to set (with resume on); `seen` is what to remember. A resume
+ * Ash turned off after that stays off.
+ */
+export function planHeld(input: {
+  limit: { resetsAt?: number; resumeAtReset?: boolean };
+  seen?: HeldSeen;
+  now: number;
+  reading?: ProviderRateLimits;
+}): { seen: HeldSeen; arm?: number } {
+  const { limit, seen, now } = input;
+  if (limit.resumeAtReset && limit.resetsAt != null)
+    return { seen: seen ?? { resetsAt: limit.resetsAt, refusedAt: now } };
+  if (seen && seen.resetsAt === limit.resetsAt) return { seen };
+  const refusedAt = seen?.refusedAt ?? now;
+  const arm = limit.resetsAt ?? heldRetryAt({ refusedAt, reading: input.reading });
+  return { seen: { resetsAt: arm, refusedAt }, arm };
+}
+
+/** Its card's line: "Out of Claude usage. Tries again by itself at 3:40 PM, sooner if Claude shows room." */
+export function heldLine(provider: string, at: number, now: number): string {
+  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
+  const when = new Date(at).toLocaleString(undefined, {
+    ...(sameDay ? {} : { weekday: "short" }),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `Out of ${provider} usage. Tries again by itself at ${when}, sooner if ${provider} shows room.`;
+}
+
+/** For tests: a fresh, empty store in memory. */
 export function resetWorkerPool(): void {
   for (const key of [LIMITS_KEY, HEAVY_KEY, QUEUE_KEY])
     try {
@@ -252,6 +429,11 @@ export function resetWorkerPool(): void {
     } catch {
       /* none */
     }
+  unsubscribe?.();
+  unsubscribe = undefined;
+  backend = memoryWorkerQueue();
+  copy = [];
+  loading = undefined;
   changed();
 }
 
@@ -280,7 +462,7 @@ export function workerPoolHost(deps: {
     },
     started: ({ id, heavy }) => {
       if (heavy) markHeavy(id);
-      dequeueWorker(id);
+      void dequeueWorker(id);
     },
     queued: (owner) => {
       const c = ctx();
@@ -291,7 +473,7 @@ export function workerPoolHost(deps: {
     unqueue: (owner, id) => {
       const job = queuedWorker(id);
       if (!job || job.ownerSession !== owner) return false;
-      dequeueWorker(id);
+      void dequeueWorker(id);
       return true;
     },
     limits: workerLimits,
@@ -314,7 +496,7 @@ export async function pumpWorkers(deps: {
   start(job: QueuedWorker): Promise<unknown>;
   failed?(job: QueuedWorker, error: unknown): void;
 }): Promise<QueuedWorker[]> {
-  for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) dequeueWorker(job.id);
+  for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
   if (!queue.length) return [];
   const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue }).filter((job) => !startingNow.has(job.id));
@@ -322,14 +504,14 @@ export async function pumpWorkers(deps: {
   for (const job of ready) {
     startingNow.add(job.id);
     try {
+      // Claimed first: of two windows starting it, only the one that took it out of the store does.
+      if (!(await dequeueWorker(job.id))) continue;
       await deps.start(job);
       started.push(job);
     } catch (error) {
       deps.failed?.(job, error);
     } finally {
       startingNow.delete(job.id);
-      // Started (delegate dequeued it) or refused: either way it no longer waits.
-      dequeueWorker(job.id);
     }
   }
   return started;
