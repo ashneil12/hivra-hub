@@ -39,6 +39,10 @@ export function handoffsOpen(rows, since) {
 const rel = (t, t0) => `+${Math.round((t - t0) / 1000)}s`;
 const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blocked|failed|paused|out of credit|limit/i;
 
+/** Every branch and tag, but not the hub's own turn checkpoints (refs/monocode/checkpoints/...): those are parentless
+ * snapshots of the whole tree, so counting them made a scene that touched nothing list every file as changed. */
+export const ALL_BUT_CHECKPOINTS = ["--exclude=refs/monocode/*", "--all"];
+
 /** The project's refs and worktrees now: where to measure changes from. */
 export function gitMark(project) {
   try {
@@ -59,9 +63,9 @@ export function gitChanges(project, mark) {
   const checkouts = run(["worktree", "list", "--porcelain"]).split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
   const changed = new Set();
   let diff = "";
-  const committed = run(["log", "--all", "--format=", "--name-only", "-p", "--not", ...mark.refs]);
+  const committed = run(["log", ...ALL_BUT_CHECKPOINTS, "--format=", "--name-only", "-p", "--not", ...mark.refs]);
   diff += committed;
-  for (const line of run(["log", "--all", "--format=", "--name-only", "--not", ...mark.refs]).split("\n")) if (line.trim()) changed.add(line.trim());
+  for (const line of run(["log", ...ALL_BUT_CHECKPOINTS, "--format=", "--name-only", "--not", ...mark.refs]).split("\n")) if (line.trim()) changed.add(line.trim());
   for (const dir of checkouts.length ? checkouts : [project]) {
     for (const line of run(["status", "--porcelain"], dir).split("\n")) if (line.trim()) changed.add(`${path.relative(project, dir) || "."}: ${line.slice(3).trim()}`);
     diff += run(["diff", "HEAD"], dir);
@@ -348,7 +352,7 @@ export function dropRoomEchoes(lines) {
 /** A copy's new commits since the mark, one line each (what landed on which branch). */
 export function copyLog(folder, mark) {
   if (!mark) return { commits: [] };
-  const out = spawnSync("git", ["log", "--all", "--format=%h %D | %s", "--not", ...mark.refs], { cwd: folder, encoding: "utf8" });
+  const out = spawnSync("git", ["log", ...ALL_BUT_CHECKPOINTS, "--format=%h %D | %s", "--not", ...mark.refs], { cwd: folder, encoding: "utf8" });
   return { commits: out.status === 0 ? out.stdout.split("\n").filter(Boolean).slice(0, 40) : [] };
 }
 

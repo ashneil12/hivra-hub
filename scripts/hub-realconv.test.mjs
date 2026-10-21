@@ -402,6 +402,27 @@ test("a seat's room turn is counted once, in the room, not again as its chat tex
   assert.deepEqual(dropRoomEchoes(lines).map((l) => l.where + ":" + l.text.slice(0, 9)), ["room:Morning. ", "chat:Different"]);
 });
 
+test("the hub's turn checkpoints don't count as changes to a copy (AD9F listed every Hivra file for a scene that touched none)", async () => {
+  const { gitMark, gitChanges, copyLog } = await import("./realconv/player.mjs");
+  const dir = tmp();
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  git("init", "-q");
+  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  git("add", "a.txt");
+  git("commit", "-qm", "init");
+  const mark = gitMark(dir);
+  // what the hub does each turn: a parentless commit of the whole tree under refs/monocode/checkpoints/
+  const snap = git("commit-tree", git("write-tree"), "-m", "MonoCode workspace checkpoint");
+  git("update-ref", "refs/monocode/checkpoints/s1/t1/before", snap);
+  assert.deepEqual(gitChanges(dir, mark).changed, []);
+  assert.deepEqual(copyLog(dir, mark).commits, []);
+  fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+  git("add", "b.txt");
+  git("commit", "-qm", "real work");
+  assert.deepEqual(gitChanges(dir, mark).changed, ["b.txt"]);
+  assert.equal(copyLog(dir, mark).commits.length, 1);
+});
+
 test("a judge that narrates instead of answering gets one more go for the JSON", async () => {
   const { judgeScene } = await import("./realconv/judge.mjs");
   const answers = ["I'll check each seat's soul first.", '{"grade":"PASS","replies":[]}'];
