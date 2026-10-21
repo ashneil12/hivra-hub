@@ -54,6 +54,7 @@ vi.stubGlobal("localStorage", {
 const PROJECT = "/tmp/vg-game";
 
 beforeEach(() => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   setHarnessModels("claude", [
     { id: "claude:opus-5-5", harness: "claude", name: "Opus 5.5", settings: [] },
     { id: "claude:sonnet-5", harness: "claude", name: "Sonnet 5", settings: [] },

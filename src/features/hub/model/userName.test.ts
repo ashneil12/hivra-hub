@@ -10,6 +10,16 @@ import { previewTeamPack, setTeamPack } from "./teamPack";
 import { forUser, forYou, setUserName, userLabel, userName } from "./userName";
 
 const BEFORE: Record<string, string> = BEFORE_JSON;
+/** He, him, his: in every surface these meant Ash. Unrelated uses would be listed here as [surface, phrase]; none exist. */
+const PRONOUN = /\b(he|him|his|himself)\b/gi;
+const ALLOWED: readonly [string, string][] = [];
+const pronounLeaks = (surfaces: Record<string, string>) =>
+  Object.entries(surfaces).flatMap(([k, t]) =>
+    [...t.matchAll(PRONOUN)]
+      .map((m) => t.slice(Math.max(0, m.index! - 30), m.index! + 20))
+      .filter((around) => !ALLOWED.some(([key, phrase]) => key === k && around.includes(phrase)))
+      .map((around) => `${k}: ${around}`),
+  );
 const storage = () => Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)]));
 
 beforeEach(() => {
@@ -26,6 +36,12 @@ describe("Ash's install", () => {
     expect(Object.keys(now).sort()).toEqual(Object.keys(BEFORE).sort());
     for (const [k, text] of Object.entries(BEFORE)) expect(now[k], k).toBe(text);
     expect(storage()).toEqual(before);
+  });
+
+  it("keeps his pronouns too: he, him and his are only swapped off his install", () => {
+    localStorage.setItem("monocode:mono-team-seeded", "1");
+    expect(pronounLeaks(promptSurfaces()).length).toBeGreaterThan(10);
+    expect(forUser("Answer him first; he writes his own.")).toBe("Answer him first; he writes his own.");
   });
 
   it("reads Ash when the pack is set to his, too", () => {
@@ -45,6 +61,10 @@ describe("a fresh install", () => {
     expect(now.transcript).toMatch(/^>> Sam: hey team/);
     expect(now["lead:hub-lead"]).toContain("Hub OS project `hub`");
     expect(now["lead:hub-lead"]).not.toContain("15 Oct"); // Ash's dated quotes are his words, not Sam's
+    expect(pronounLeaks(now)).toEqual([]);
+    expect(now["lead:hub-lead"]).toContain("answer them at once whenever Sam writes");
+    expect(now.hubNote).toContain("Deletes need Sam to click yes themselves.");
+    expect(now["turn:answer"]).toContain("Sam's messages are their words");
   });
 
   it("with no name: agents read \"the user\", capitalised at a sentence's start", () => {
@@ -54,6 +74,8 @@ describe("a fresh install", () => {
     expect(now.checker).toContain("After the user sends a dump");
     expect(now.transcript).toMatch(/^>> User: hey team/);
     expect(userLabel()).toBe("User");
+    expect(pronounLeaks(now)).toEqual([]);
+    expect(now["turn:chime"]).toContain("so the user expects to hear from you too");
   });
 
   it("leaves what goes into a template alone: a message that names Ash stays as written", () => {
@@ -65,6 +87,7 @@ describe("a fresh install", () => {
   it("says you and your on the app's own screens", () => {
     expect(forYou("Stopped by Ash.")).toBe("Stopped by you.");
     expect(forYou("Ash's red list. Ash OS is down")).toBe("Your red list. Hub OS is down");
+    expect(forYou("ask Ash only when it can't go on without him.")).toBe("ask you only when it can't go on without you.");
     setTeamPack("ash");
     expect(forYou("Stopped by Ash.")).toBe("Stopped by Ash.");
   });

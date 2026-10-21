@@ -684,6 +684,25 @@ describe("settings pages", () => {
     expect([...groups]).toEqual(["app", "agents", "workspace"]);
   });
 
+  it("asks what the team should call you, reading and writing the onboarding name", async () => {
+    localStorage.setItem("monocode:hub-user-name", "Sam");
+    await render("general");
+    const input = container.querySelector<HTMLInputElement>("[data-user-name]")!;
+    expect(input.getAttribute("aria-label")).toBe("What should your team call you?");
+    expect(input.value).toBe("Sam");
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, " Robin ");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(localStorage.getItem("monocode:hub-user-name")).toBe("Robin");
+    await act(async () => {
+      set.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(localStorage.getItem("monocode:hub-user-name")).toBeNull();
+  });
+
   it("indexes each setting once", () => {
     const ids = SETTINGS_INDEX.map((entry) => entry.id);
     expect(ids).toEqual([...new Set(ids)]);

@@ -42,3 +42,23 @@ test("fresh install onboarding: your name, a plain team in the sidebar, a saved 
   await page.screenshot({ path: `${SHOTS}/pm-18-onboarding-preload-picked.png` });
   expect(await page.evaluate(() => localStorage.getItem("monocode:hub-team-pack"))).toBe("plain"); // nothing until Continue
 });
+
+test("Settings → General: the same name, to change later", async ({ page }) => {
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await page.goto("/hub-dev.html?onboarding");
+  await expect(page.locator("[data-hub-onboarding]")).toBeVisible({ timeout: 60_000 });
+  const notNow = page.getByRole("button", { name: "Not now" });
+  if (await notNow.isVisible().catch(() => false)) await notNow.click();
+  await page.locator("[data-hub-onboarding-name]").fill("Sam");
+  await page.locator("[data-hub-onboarding-skip]").click();
+  await expect(page.locator("[data-hub-onboarding]")).toHaveCount(0);
+  await page.getByRole("button", { name: /^Settings/ }).first().click();
+  await page.getByRole("button", { name: "General" }).first().click();
+  const field = page.locator("[data-user-name]");
+  await expect(field).toHaveValue("Sam");
+  await expect(page.getByText("What should your team call you?").first()).toBeVisible();
+  await field.fill("Sam Lee");
+  expect(await page.evaluate(() => localStorage.getItem("monocode:hub-user-name"))).toBe("Sam Lee");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${SHOTS}/pm-18-settings-name.png` });
+});

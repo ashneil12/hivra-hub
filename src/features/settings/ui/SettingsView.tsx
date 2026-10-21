@@ -1,4 +1,5 @@
 import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { UserNameField } from "../../hub/ui/UserNameField";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
@@ -976,6 +977,15 @@ function GeneralPage({
 
   return (
     <>
+      <Group title="You" description="How your team of Monos addresses you.">
+        <Row
+          id="user-name"
+          label="What should your team call you?"
+          description="Leave it empty and they say “the user”."
+        >
+          <UserNameField />
+        </Row>
+      </Group>
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
