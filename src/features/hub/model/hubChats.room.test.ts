@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
-// The room taking turns the Grok-era way, end to end through hubChats and roomConductor with a stand-in runner (each
-// Mono's own session) and router (the small model): the host answers Ash first; the others add at most one reply to his
-// message; the Monos then talk among themselves for as long as they name each other; progress guards and a ceiling
-// pause them for Ash; Ash's message turns the room at once; Stop and keep going; busy Monos answer from their own chat;
-// nothing fails quietly.
+// The room as a group chat, end to end through hubChats and roomConductor with a stand-in runner (each Mono's own
+// session): the host answers Ash first; the seats whose lane his message touches add at most one reply; the Monos hand
+// off to each other by name; one loop brake (a ceiling of posts) pauses them for Ash; Ash's message turns the room at
+// once; Stop and keep going; busy Monos answer from their own chat; nothing fails quietly.
 import { beforeEach, expect, it, vi } from "vitest";
 import type { RoomTurnOutcome, RoomTurnRequest } from "./roomConductor";
 
@@ -97,14 +96,11 @@ it("the host answers Ash first, straight away, even for a message in another sea
 
 it("a short message gets the host's answer and nobody else's; a bare acknowledgement becomes a 👍, never a bubble", async () => {
   const { chat, id, said } = await room();
-  const router = vi.fn(async () => '{"chime":[{"id":"frank"},{"id":"projects-manager"}]}');
-  chat.setRoomRouter(router);
-  const script = scripted({ "chief-of-staff": "Waiting on Critiquito's pass, then the round goes to you." });
+  const script = scripted({ "chief-of-staff": "Waiting on Critiquito's pass, then the round goes to you.", frank: "x", "projects-manager": "y" });
   chat.setGroupChatRunner(script.runner);
   const conv = chat.startConversation(id, "wat now");
   await chat.requestReply(id, conv);
   expect(script.who()).toEqual(["chief-of-staff"]);
-  expect(router).not.toHaveBeenCalled();
   // "thanks" to the host: it has nothing to add, and the room shows it read him.
   chat.setGroupChatRunner(scripted({ "chief-of-staff": "Got it." }).runner);
   chat.sendMessage(id, "thanks", conv);
@@ -126,141 +122,86 @@ it("@-mentioning a seat, or opening with its name, makes it answer first", async
   expect(said(conv).at(-1)).toMatchObject({ from: "frank", pick: { by: "named" } });
 });
 
-it("the gate picks who may add one reply to Ash's message; those run side by side, each once", async () => {
+it("the lanes pick who may add one reply to Ash's message, with no model; those run side by side, each once, and no digest follows", async () => {
   const { chat, id, said } = await room([...TEAM, "critiquito"]);
-  chat.setRoomRouter(async () => '{"chime":[{"id":"frank","why":"two asks missing"},{"id":"critiquito","why":"the + menu look"},{"id":"chief-of-staff"}]}');
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const script = scripted({
-    "chief-of-staff": "Main beats: rename chats, a calm New conversation screen, a wider + menu. Tickets 8 to 15.",
+    "chief-of-staff": "Main beats: a calm New conversation screen and a wider + menu.",
     frank: async () => {
       await gate;
-      return "Two asks are missing: connecting data inside the app, and a wider + menu (\"different variety of media\").";
+      return "Two asks are missing: connecting data inside the app, and a wider + menu.";
     },
     critiquito: async () => {
       await gate;
-      return "The + menu should copy Monocode: icon, white name, one grey line. Keep the icons grey.";
+      return "The + menu should copy Monocode: icon, white name, one grey line.";
     },
   });
   chat.setGroupChatRunner(script.runner);
-  const conv = chat.startConversation(id, "I like the vision. New conversation should open a screen, the + should take more kinds of media, and I want to connect my own data from inside the app.");
+  const conv = chat.startConversation(id, "remember we agreed the + menu design should look like monocode, and nothing is missing from the new conversation screen");
   const done = chat.requestReply(id, conv);
   await vi.waitFor(() => expect(chat.roomWorking(id).map((w) => w.monoId).sort()).toEqual(["critiquito", "frank"]));
-  expect(chat.roomWorking(id).every((w) => w.state === "writing")).toBe(true);
   release();
   await done;
   expect(script.maxInFlight()).toBe(2);
-  expect(posts(said(conv)).slice(0, 3)).toEqual(["chief-of-staff", "frank", "critiquito"]);
-  expect(said(conv)[2]).toMatchObject({ quiet: true, pick: { by: "chime", why: "two asks missing" } });
+  expect(posts(said(conv))).toEqual(["chief-of-staff", "frank", "critiquito"]);
+  expect(said(conv)[2]).toMatchObject({ quiet: true, pick: { by: "lanes" } });
+  expect(said(conv)[2].pick!.why).toMatch(/lane/);
   expect(script.calls.find((c) => c.monoId === "frank")!.prompt).toContain("Chief of Staff answered Ash. You may add ONE short message");
-  // Three seats spoke: the host closes the stretch with a digest.
-  expect(script.calls.at(-1)).toMatchObject({ monoId: "chief-of-staff" });
-  expect(script.calls.at(-1)!.prompt).toContain("3 seats have spoken since Ash's last message");
+  // Three seats spoke and nobody closes the stretch with a digest.
+  expect(script.calls.filter((c) => c.monoId === "chief-of-staff")).toHaveLength(1);
 });
 
-it("the Monos keep a review loop going among themselves until nobody is named, well past the old 8-turn cap", async () => {
-  const { chat, id, said } = await room([...TEAM, "critiquito"]);
+it("the Monos hand off to each other by name until nobody is named", async () => {
+  const { chat, id, said } = await room();
   const script = scripted({
-    "chief-of-staff": (_r, n) => (n === 1 ? "PM, build the round. frank and Critiquito review it." : n === 2 ? "Locked. Round 3 goes to Ash." : "NO_REPLY"),
-    "projects-manager": (_r, n) =>
-      [
-        "Round 3 is ready: 9 screens, commit 06142365, 5506 tests pass. Still faked: the page builder. frank, Critiquito, please pass or flag.",
-        "Fair on both. 06 gets plain role names, 07 gets Example labels. Retake is commit a2b82f27. frank and Critiquito, please re-check.",
-        "Will do: 10 gets the Level 2 preview with Apply or Discard (commit b51c78dc). frank, please check.",
-      ][n - 1] ?? "NO_REPLY",
-    frank: (_r, n) =>
-      [
-        "PM, 06 doesn't do what Ash asked: he said \"better names in terms of what the actual role is\".",
-        "06 passes. PM, 10 breaks a locked limit: a sidebar change is a Level 2 hub change.",
-        "10 passes from me.",
-      ][n - 1] ?? "NO_REPLY",
-    critiquito: (_r, n) => (n === 1 ? "PM, 07 uses made-up data with no Example label." : n === 2 ? "07 passes from me. Nothing else until the next round." : "NO_REPLY"),
+    "chief-of-staff": "PM, build the round.",
+    "projects-manager": (_r, n) => ["Round 3 is ready: commit 06142365, 5506 tests pass. frank, please check.", "Fixed 06: plain role names (commit a2b82f27)."][n - 1] ?? "NO_REPLY",
+    frank: (_r, n) => (n === 1 ? "PM, 06 doesn't do what Ash asked: \"better names in terms of what the actual role is\"." : "NO_REPLY"),
   });
   chat.setGroupChatRunner(script.runner);
   const conv = chat.startConversation(id, "ok make the next round");
   await chat.requestReply(id, conv);
-  const speakers = posts(said(conv));
-  expect(speakers.length).toBeGreaterThan(8);
-  expect(speakers).toEqual([
-    "chief-of-staff",
-    "projects-manager",
-    "frank",
-    "critiquito",
-    "projects-manager",
-    "frank",
-    "critiquito",
-    "projects-manager",
-    "frank",
-    "chief-of-staff",
-  ]);
-  // Both flags reached PM before it answered (one message for both, after the whole round), and the host locked it.
-  const pmCalls = script.calls.filter((c) => c.monoId === "projects-manager");
-  expect(pmCalls).toHaveLength(3);
-  expect(pmCalls[1].prompt).toContain("06 doesn't do what Ash asked");
-  expect(pmCalls[1].prompt).toContain("07 uses made-up data");
-  expect(said(conv).at(-1)).toMatchObject({ from: "chief-of-staff", text: "Locked. Round 3 goes to Ash.", pick: { by: "digest" } });
+  expect(posts(said(conv))).toEqual(["chief-of-staff", "projects-manager", "frank", "projects-manager"]);
+  expect(said(conv).slice(2).every((m) => m.pick?.by === "addressed")).toBe(true);
   expect(chat.roomPaused(id, conv)).toBe(false);
   expect(chat.roomActive(id)).toBe(false);
 });
 
-it("two seats going back and forth without new ground pause the room for Ash; keep going carries on", async () => {
-  const { chat, id, said } = await room();
-  const fresh = ["amber", "violet", "glass", "dusk", "graphite", "contrast", "tokens", "status", "accent", "scheme", "hover", "border", "shadow", "label", "badge", "chip", "tile", "strip", "rail", "card", "sheet", "panel", "toast", "modal", "drawer", "slider", "toggle"];
-  let n = 0;
-  const words = () => `${fresh[n++ % fresh.length]} ${fresh[n++ % fresh.length]} ${fresh[n++ % fresh.length]}`;
-  const script = scripted({
-    "chief-of-staff": "frank, check the colour rule against Ash's words.",
-    frank: () => `PM, colour stays for status only: ${words()}.`,
-    "projects-manager": () => `frank, I read it differently, themes are open: ${words()}.`,
-  });
+// A Mono's words in the room are never taken for Ash's (Ash, 21 Oct: pass the speaker's identity).
+it("a turn knows who wrote the message it answers: Ash, or a Mono whose words are never his", async () => {
+  const { chat, id } = await room();
+  const script = scripted({ "chief-of-staff": "PM, the board moves to Fridays.", "projects-manager": "Moved." });
   chat.setGroupChatRunner(script.runner);
-  const conv = chat.startConversation(id, "colour?");
-  await chat.requestReply(id, conv);
-  expect(chat.roomPaused(id, conv)).toBe(true);
-  expect(chat.roomPauseReason(id, conv)).toBe("stalled");
-  const note = said(conv).at(-1)!;
-  expect(note).toMatchObject({ from: "app", kind: "system" });
-  expect(note.text).toMatch(/back and forth/);
-  const before = script.calls.length;
-  // While paused, nobody posts.
-  expect(() => chat.postFromMono(id, "frank", "One more thing.")).toThrow(/paused/);
-  // Keep going: the seat that was named last runs, with fresh guards.
-  chat.setGroupChatRunner(scripted({ frank: "That's Ash's call. Putting it to him with the screens." }).runner);
-  chat.keepGoing(id, conv);
-  await chat.roomIdle(id, conv);
-  expect(said(conv).at(-2)).toMatchObject({ from: "app", text: "Ash asked the team to keep going." });
-  expect(said(conv).at(-1)).toMatchObject({ from: "frank", text: "That's Ash's call. Putting it to him with the screens." });
-  expect(script.calls.length).toBe(before);
-  expect(chat.roomPaused(id, conv)).toBe(false);
-});
-
-it("posts that say nothing new pause the room; so does the ceiling of 40 posts without Ash", async () => {
-  const { chat, id, said } = await room(["chief-of-staff", "projects-manager", "frank"]);
-  chat.setGroupChatRunner(
-    scripted({
-      "chief-of-staff": "PM, frank: the board moves to Fridays.",
-      "projects-manager": "frank, the board moves to Fridays, noted.",
-      frank: "PM, the board moves to Fridays, noted.",
-    }).runner,
-  );
   const conv = chat.startConversation(id, "board to fridays");
   await chat.requestReply(id, conv);
-  expect(chat.roomPauseReason(id, conv)).toBe("stalled");
-  // The pause note lands when the guard trips; a turn already running may still land after it.
-  expect(said(conv).find((m) => m.kind === "system")!.text).toMatch(/said nothing new/);
+  const host = script.calls.find((c) => c.monoId === "chief-of-staff")!;
+  const pm = script.calls.find((c) => c.monoId === "projects-manager")!;
+  expect(host.speaker).toEqual({ id: "ash", name: "Ash" });
+  expect(host.prompt).not.toContain("never save, record or quote it as Ash's words");
+  expect(pm.speaker).toEqual({ id: "chief-of-staff", name: "Chief of Staff" });
+  expect(pm.prompt).toContain("The message you answer is from Chief of Staff, a Mono: never save, record or quote it as Ash's words.");
+  expect(pm.wakePrompt).toContain("never save, record or quote it as Ash's words");
+});
 
+it("the one loop brake: the ceiling of posts without Ash pauses the room; keep going carries on", async () => {
+  const { chat } = await room();
   const { MONO_POSTS_CEILING } = await import("./roomTurns");
   const many = Array.from({ length: 6 }, (_, i) => `m${i}`);
   const big = chat.createChat("hub", "Big room", many);
-  let k = 0;
-  // Every post names the next seat and says something new: only the ceiling stops it.
-  chat.setGroupChatRunner(async (mono) => `m${(Number(mono.slice(1)) + 1) % many.length}, step ${++k}: ${"abcdefghijklmnopqrstuvwxyz".slice(k % 20, (k % 20) + 6)} ${k * 7919}`);
+  // Every post names the next seat: only the ceiling stops it, however much each post repeats the last.
+  chat.setGroupChatRunner(async (mono) => `m${(Number(mono.slice(1)) + 1) % many.length}, same again.`);
   const loop = chat.startConversation(big.id, "@m0 go");
   await chat.requestReply(big.id, loop);
   const bigPosts = posts(chat.getChat(big.id)!.conversations[0].messages);
   expect(bigPosts).toHaveLength(MONO_POSTS_CEILING);
   expect(chat.roomPauseReason(big.id, loop)).toBe("ceiling");
   expect(chat.getChat(big.id)!.conversations[0].messages.at(-1)!.text).toBe(`The team has posted ${MONO_POSTS_CEILING} messages since you last wrote, so it paused here for you.`);
+  expect(() => chat.postFromMono(big.id, "m1", "One more thing.")).toThrow(/paused/);
+  chat.setGroupChatRunner(async () => "NO_REPLY");
+  chat.keepGoing(big.id, loop);
+  await chat.roomIdle(big.id, loop);
+  expect(chat.roomPaused(big.id, loop)).toBe(false);
 });
 
 it("Ash's message turns the room at once: running turns are stopped, waiting ones dropped, and the host answers both messages", async () => {
@@ -451,42 +392,18 @@ it("each project's Leadership team seats the default team once; a Mono Ash takes
   expect(chat.seatDefaultTeam("nibbii").memberIds).toEqual(TEAM);
 });
 
-it("the gate that doesn't answer in time, fails or answers nonsense never drops a seat: the lane rules pick, and say so", async () => {
-  const { chat, id, said } = await room();
-  const dump = "remember we agreed the board moves to Fridays; put the new cards on the board and keep my words for the delete rule";
-  for (const router of [
-    () => new Promise<string>(() => undefined), // never answers
-    async () => {
-      throw new Error("No engine for the room's router");
-    },
-    async () => "sure, frank should speak",
-  ]) {
-    chat.setRoomRouter(router, { timeoutMs: 30 });
-    const script = scripted({ "chief-of-staff": "Heard: Fridays, new cards, the delete rule. PM has the board." , "projects-manager": "Cards 4 to 6 are up.", frank: "Saved: the board moves to Fridays." });
-    chat.setGroupChatRunner(script.runner);
-    const conv = chat.startConversation(id, dump);
-    await chat.requestReply(id, conv);
-    // PM (the board) and frank (memory) by their lanes, each once, labelled as the lanes' pick.
-    expect(script.who().slice(0, 3)).toEqual(["chief-of-staff", "projects-manager", "frank"]);
-    const pm = said(conv).find((m) => m.from === "projects-manager")!;
-    expect(pm.pick).toMatchObject({ by: "lanes" });
-    expect(pm.pick!.why).toMatch(/lane/);
-  }
-});
-
-it("work that came back, with the gate down, still gets its check: frank looks at it, never nobody", async () => {
+it("work that came back is posted; a seat looks at it only when the post names it", async () => {
   const { chat, conductor, id, said } = await room();
-  chat.setRoomRouter(() => new Promise<string>(() => undefined), { timeoutMs: 30 });
   const script = scripted({
-    "chief-of-staff": "Delete is back: DELETE /tallies/:id works end to end (commit 3f2a1b0, 12/12 tests). Full report in my chat.",
-    frank: "Checked against Ash's words: he asked for it to go for good, and it does. Pass from me.",
+    "chief-of-staff": "Delete is back: DELETE /tallies/:id works end to end (commit 3f2a1b0, 12/12 tests). frank, please check it against Ash's words.",
+    frank: "Checked against Ash's words: he asked for it to go for good, and it does.",
   });
   chat.setGroupChatRunner(script.runner);
   const conv = chat.startConversation(id, "add delete");
   conductor.postBack({ chatId: id, convId: conv, monoId: "chief-of-staff", title: "Delete", answer: "Delete is in." });
   await chat.roomIdle(id, conv);
   expect(script.who()).toEqual(["chief-of-staff", "frank"]);
-  expect(said(conv).find((m) => m.from === "frank")!.pick).toMatchObject({ by: "lanes" });
+  expect(said(conv).find((m) => m.from === "frank")!.pick).toMatchObject({ by: "addressed" });
 });
 
 it("the host's answer shows in the room as it is written, then becomes the message in the same place", async () => {

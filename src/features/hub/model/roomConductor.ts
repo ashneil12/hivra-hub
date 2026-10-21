@@ -1,19 +1,13 @@
-// The room taking turns (docs/leadership/ROOM.md; the rules are roomTurns.ts). Event driven, like the Grok-era
-// Leadership Board Ash liked:
+// The room taking turns (docs/leadership/ROOM.md; the rules are roomTurns.ts). Leadership is just a group chat:
 //
-// - Ash writes: whatever the room was doing in that conversation stops at once (running room turns are stopped through
-//   the app's Stop, waiting ones dropped), and the host answers first, now. His messages since the last answer are
-//   answered together. Then each other seat may add one reply to his message (the chime gate picks who may have
-//   something new); a short message gets the host's answer alone.
-// - A Mono's post (its turn's reply, or room_post) wakes the seats it names. That is how the review loop runs without
-//   Ash: builder posts, reviewers pass or flag, the builder answers, the retake, "pass from me", "Locked". It ends when
-//   nobody names anybody, and the guards pause it for Ash when posts stop making progress, two seats ping-pong, or the
-//   ceiling is hit (40 posts or 30 minutes without him); "keep going" carries on.
-// - When three or more seats spoke, the host closes the stretch with a digest.
+// - Ash writes: whatever the room was doing in that conversation stops at once, and one seat answers him now (the
+//   light router, roomTurns.ts answerPick: whoever he names, else the host). His messages since the last answer are
+//   answered together. Then each seat whose lane his message touches may add one reply (laneChimes, no model).
+// - A Mono's post (its turn's reply, or room_post) wakes the seats it names (@name or "PM, ..."), so Monos can hand off
+//   to each other. The one loop brake: after MONO_POSTS_CEILING posts without Ash, the room pauses for him.
 // - Up to MAX_PARALLEL_TURNS turns run at once in a room, one per Mono. Each turn runs in the Mono's own session through
 //   the app's runner: a managed turn when the Mono is free (its reply is the post), or, when it is busy in its own
-//   chat, a room wake that goes into its work (steered or queued behind it) and that it answers with room_post. A busy
-//   Mono is never refused and nothing is dropped quietly: every failure leaves a notice in the thread.
+//   chat, a room wake that goes into its work and that it answers with room_post. Every failure leaves a notice.
 // - Work a Mono delegated from the room comes back as "X is back" (postBack, roomReports.ts); a Lead's report on a
 //   leadership brief lands with its owner's answer (postReport).
 import { listMonos } from "../../monos/model/mono";
@@ -33,33 +27,23 @@ import { leadFor } from "./hubLeads";
 import {
   addressedIn,
   answerPick,
-  chimePrompt,
   cleanPost,
-  DIGEST_SEATS,
   draftShowable,
   failureNotice,
   hostOf,
-  isProgress,
-  isShortMessage,
   isSilent,
   laneChimes,
   MAX_PARALLEL_TURNS,
   MONO_POSTS_CEILING,
-  parseChimes,
-  pingPong,
-  QUIET_CEILING_MS,
-  reviewChimes,
   roomTranscript,
-  STALE_POSTS_LIMIT,
   turnPrompt,
-  type Chime,
   type Pick,
   type Seat,
   type TurnKind,
 } from "./roomTurns";
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 
-// ---- The app's side: the runner and the router ------------------------------------------------------------------
+// ---- The app's side: the runner -------------------------------------------------------------------------------
 
 /** The quiet line a room turn leaves in the Mono's own chat. */
 export type RoomTurnNote = { kind: "room"; room: string; roomId: string; line: string };
@@ -80,6 +64,8 @@ export type RoomTurnRequest = {
   attachments?: RoomAttachment[];
   /** The same turn for a busy Mono: it answers with room_post. */
   wakePrompt: string;
+  /** Who wrote the message this turn answers: Ash, or a Mono (whose words are never saved as Ash's). */
+  speaker: { id: string; name: string };
   note: RoomTurnNote;
   /** A managed turn's words so far, as they are written (the runner calls it as they grow): the room shows them live. */
   onText?(text: string): void;
@@ -110,42 +96,6 @@ export function setGroupChatRunner(next: GroupChatRunner | GroupChatRunFn): () =
 /** A runner may still say a Mono can't take the turn; it becomes a notice like any failure. */
 export class MonoBusyError extends Error {}
 
-/**
- * The cheap router: one isolated prompt to the smallest model, text back. Without one, or when it doesn't answer in
- * time, fails or answers something that isn't its JSON, the lane rules decide: a seat is never dropped silently.
- */
-export type RoomRouter = (prompt: string) => Promise<string>;
-/** How long the gate may take (a helper call answers in about 2 s since 20 Oct). */
-export const ROUTER_TIMEOUT_MS = 15_000;
-let router: RoomRouter | undefined;
-let routerTimeoutMs = ROUTER_TIMEOUT_MS;
-export function setRoomRouter(next: RoomRouter, options: { timeoutMs?: number } = {}): () => void {
-  router = next;
-  routerTimeoutMs = options.timeoutMs ?? ROUTER_TIMEOUT_MS;
-  return () => {
-    if (router === next) router = undefined;
-  };
-}
-/** The gate's answer, or why there is none (no router, it timed out, it failed). */
-async function askRouter(prompt: string): Promise<{ out: string } | { missed: string }> {
-  const ask = router;
-  if (!ask) return { missed: "no gate" };
-  let timer: number | undefined;
-  try {
-    const out = await Promise.race([
-      ask(prompt),
-      new Promise<undefined>((resolve) => {
-        timer = window.setTimeout(() => resolve(undefined), routerTimeoutMs);
-      }),
-    ]);
-    return out === undefined ? { missed: `the gate took over ${Math.round(routerTimeoutMs / 1000)} s` } : { out };
-  } catch (error) {
-    return { missed: `the gate failed (${error instanceof Error ? error.message : String(error)})` };
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
 // ---- State --------------------------------------------------------------------------------------------------------
 
 type Wake = {
@@ -159,16 +109,10 @@ type Wake = {
   other?: string;
   /** The message that woke it (what its post replies to). */
   trigger?: string;
-  /**
-   * The round it answers: the message the poster that woke it was answering. It waits until every turn of that round is
-   * done, so a builder flagged by two reviewers answers both flags in one message.
-   */
-  after?: string;
   /** The conversation's generation it belongs to (-1: never stale, work coming back). */
   gen: number;
   /** An answer: Ash's messages it takes up. */
   batch?: string[];
-  seatsSpoke?: number;
   back?: { title: string; answer: string };
 };
 type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean };
@@ -187,20 +131,13 @@ export type RoomDraft = {
   startedAt: number;
 };
 type Draft = RoomDraft & { wakeId: string; gen: number };
-type PauseReason = "ceiling" | "stalled" | "stopped";
+type PauseReason = "ceiling" | "stopped";
 type Thread = {
   gen: number;
-  /** Mono posts since Ash's last message (or "keep going"). */
+  /** Mono posts since Ash's last message (or "keep going"): the loop brake. */
   posts: number;
-  since: number;
-  /** Posts in a row that said nothing new. */
-  stale: number;
-  authors: string[];
-  /** Seats that spoke since Ash's last message or the host's last digest. */
-  spoke: Set<string>;
   /** Seats that already added their one reply to Ash's message. */
   chimed: Set<string>;
-  routing: number;
   paused?: { reason: PauseReason; wakes: Wake[] };
 };
 type RoomRun = {
@@ -229,7 +166,7 @@ function roomOf(chatId: string): RoomRun {
 function threadOf(r: RoomRun, convId: string): Thread {
   let t = r.threads.get(convId);
   if (!t) {
-    t = { gen: 0, posts: 0, since: Date.now(), stale: 0, authors: [], spoke: new Set(), chimed: new Set(), routing: 0 };
+    t = { gen: 0, posts: 0, chimed: new Set() };
     r.threads.set(convId, t);
   }
   return t;
@@ -268,7 +205,6 @@ function busyIn(r: RoomRun, convId?: string): boolean {
   const here = (id: string) => convId === undefined || id === convId;
   if (r.queue.some((w) => here(w.convId))) return true;
   for (const run of r.running.values()) if (here(run.wake.convId)) return true;
-  for (const [id, t] of r.threads) if (here(id) && t.routing > 0) return true;
   return false;
 }
 function stale(r: RoomRun, wake: Wake): boolean {
@@ -290,13 +226,6 @@ export function roomWorking(chatId: string, convId?: string): RoomWorker[] {
 /** The first Mono writing in the room (the older single indicator). */
 export function typingIn(chatId: string): string | undefined {
   return roomWorking(chatId)[0]?.monoId;
-}
-/** The chime gate is deciding who else may speak. */
-export function roomRouting(chatId: string, convId?: string): boolean {
-  const r = rooms.get(chatId);
-  if (!r) return false;
-  for (const [id, t] of r.threads) if ((!convId || id === convId) && t.routing > 0) return true;
-  return false;
 }
 /** Anything running or waiting to run in the room (or one conversation): Stop applies. */
 export function roomActive(chatId: string, convId?: string): boolean {
@@ -415,7 +344,7 @@ function onAsh(chatId: string, convId: string): boolean {
   if (newest && (r.queue.some(answering) || [...r.running.values()].some((run) => answering(run.wake)))) return false;
   t.gen++;
   pruneDrafts(r);
-  Object.assign(t, { posts: 0, since: Date.now(), stale: 0, authors: [], spoke: new Set(), chimed: new Set(), paused: undefined });
+  Object.assign(t, { posts: 0, chimed: new Set(), paused: undefined });
   setRoomRuntime(chatId, { replyError: undefined });
   // He turned the room: what waited in this conversation is dropped, what runs is stopped (work coming back stays).
   r.queue = r.queue.filter((w) => w.convId !== convId || w.kind === "back");
@@ -479,7 +408,7 @@ export function simulateReplies(chatId: string, convId?: string): void {
 
 // ---- Turns ------------------------------------------------------------------------------------------------------
 
-const RANK: Record<TurnKind, number> = { answer: 5, back: 4, digest: 3, reply: 2, chime: 1 };
+const RANK: Record<TurnKind, number> = { answer: 4, back: 3, reply: 2, chime: 1 };
 
 /** One waiting turn per seat and conversation: a newer wake updates it (the stronger kind wins). */
 function enqueue(chatId: string, wake: Wake): void {
@@ -497,7 +426,7 @@ function pump(chatId: string): void {
   const r = roomOf(chatId);
   while (r.running.size < MAX_PARALLEL_TURNS) {
     const at = r.queue.findIndex(
-      (w) => free(r, w) && (w.kind === "back" || !threadOf(r, w.convId).paused) && !roundOpen(r, w),
+      (w) => free(r, w) && (w.kind === "back" || !threadOf(r, w.convId).paused),
     );
     if (at < 0) break;
     const [wake] = r.queue.splice(at, 1);
@@ -515,15 +444,6 @@ function free(r: RoomRun, wake: Wake): boolean {
   return !run || (wake.kind === "answer" && run.mode !== "turn");
 }
 
-/** Turns of the round `wake` answers are still out (in this conversation; a busy Mono's own work doesn't hold it). */
-function roundOpen(r: RoomRun, wake: Wake): boolean {
-  if (!wake.after) return false;
-  const sibling = (w: Wake) => w !== wake && w.convId === wake.convId && w.trigger === wake.after;
-  if (r.queue.some(sibling)) return true;
-  for (const run of r.running.values()) if (run.mode === "turn" && sibling(run.wake)) return true;
-  return false;
-}
-
 function noteLine(wake: Wake): string {
   switch (wake.kind) {
     case "answer":
@@ -532,8 +452,6 @@ function noteLine(wake: Wake): string {
       return `Added to ${wake.other ?? "the host"}'s answer`;
     case "reply":
       return `Answered ${wake.other ?? "a seat"}`;
-    case "digest":
-      return "Closed the stretch with a digest";
     case "back":
       return `Reported "${wake.back?.title ?? "work"}" back`;
   }
@@ -566,7 +484,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     kind: wake.kind,
     batch: wake.batch?.length,
     other: wake.other,
-    seatsSpoke: wake.seatsSpoke,
+    speaker: speakerOf(conv.messages, wake).name,
     back: wake.back,
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
   };
@@ -582,6 +500,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       ...(attachments.length ? { attachments } : {}),
       prompt: turnPrompt(base),
       wakePrompt: turnPrompt({ ...base, viaTool: true }),
+      speaker: speakerOf(conv.messages, wake),
       note: { kind: "room", room: chat.name, roomId: chatId, line: noteLine(wake) },
       onText: (text) => showDraft(chatId, wake, me, text),
     });
@@ -618,6 +537,13 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       notice(chatId, wake, me, `${me.name} finished its own work without answering here.`);
   }
   pump(chatId);
+}
+
+/** Who wrote the message a turn answers: Ash for an answer or a chime, the Mono that posted it for a reply. */
+function speakerOf(messages: readonly ChatMessage[], wake: Wake): { id: string; name: string } {
+  const from = wake.trigger ? messages.find((m) => m.id === wake.trigger)?.from : undefined;
+  if (wake.kind === "answer" || !from || from === "ash") return { id: "ash", name: "Ash" };
+  return { id: from, name: nameOf(from) };
 }
 
 /**
@@ -703,7 +629,7 @@ export function retryNotice(chatId: string, noticeId: string): Promise<void> {
 
 // ---- After a post ------------------------------------------------------------------------------------------------
 
-/** A Mono posted: count it against the guards, then wake the seats it names (and, after an answer, the chime gate). */
+/** A Mono posted: count it against the loop brake, then wake the seats it names (and, after an answer, the lanes). */
 function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: Wake): void {
   const r = roomOf(chatId);
   const t = threadOf(r, convId);
@@ -711,11 +637,7 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
   const conv = chat?.conversations.find((c) => c.id === convId);
   if (!chat || !conv || !isMonoPost(message)) return;
   const seats = seatsOf(chat);
-  const before = conv.messages.filter((m) => m.id !== message.id && isMonoPost(m)).slice(-12).map((m) => m.text);
   t.posts++;
-  t.authors.push(message.from);
-  t.spoke.add(message.from);
-  t.stale = isProgress(message.text, before) ? 0 : t.stale + 1;
   if (t.paused) {
     pump(chatId);
     return;
@@ -732,87 +654,29 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
       why: `${speaker} addressed ${nameOf(id)}`,
       other: speaker,
       trigger: message.id,
-      ...(wake?.trigger ? { after: wake.trigger } : {}),
       gen: t.gen,
     });
-  // The guards: the wakes this post made wait with the room, and "keep going" runs them.
-  if (t.posts >= MONO_POSTS_CEILING || Date.now() - t.since >= QUIET_CEILING_MS) pause(chatId, convId, "ceiling");
-  else if (t.stale >= STALE_POSTS_LIMIT || pingPong(t.authors)) pause(chatId, convId, "stalled");
-  if (t.paused) {
+  // The loop brake: the wakes this post made wait with the room, and "keep going" runs them.
+  if (t.posts >= MONO_POSTS_CEILING) {
+    pause(chatId, convId, "ceiling");
     pump(chatId);
     return;
   }
   if (wake?.kind === "answer") {
     const ash = (wake.batch ?? []).map((id) => conv.messages.find((m) => m.id === id)?.text ?? "").join("\n");
-    if (!isShortMessage(ash)) void chimeIn(chatId, convId, message, named, "answer", ash);
-  } else if (!named.length && (wake?.kind === "back" || message.pick?.by === "report")) {
-    void chimeIn(chatId, convId, message, named, "post", message.text);
-  }
-  pump(chatId);
-}
-
-/** The chime gate: who else may add something to Ash's message (once each), or must look at work that came back. */
-async function chimeIn(chatId: string, convId: string, post: ChatMessage, named: readonly string[], about: "answer" | "post", words: string): Promise<void> {
-  const r = roomOf(chatId);
-  const t = threadOf(r, convId);
-  const gen = t.gen;
-  const chat = getChat(chatId);
-  if (!chat) return;
-  const seats = seatsOf(chat);
-  const poster = seats.find((s) => s.id === post.from);
-  if (!poster || seats.length < 2) return;
-  t.routing++;
-  notify();
-  let chimes: Chime[] | undefined;
-  let by: ChatPickSource = "chime";
-  try {
-    const conv = getChat(chatId)?.conversations.find((c) => c.id === convId);
-    const asked = await askRouter(chimePrompt(seats, poster, roomTranscript(conv?.messages ?? [], nameOf), about));
-    chimes = "out" in asked ? parseChimes(asked.out, seats, poster.id) : undefined;
-    if (!chimes) {
-      // No gate, or none in time: the lanes pick, so nobody whose lane it is gets dropped.
-      const missed = "missed" in asked ? asked.missed : "the gate's answer wasn't a list";
-      if (router) console.warn(`[room] ${missed}; the lane rules pick who else speaks`);
-      by = "lanes";
-      chimes = (about === "answer" ? laneChimes(words, seats, poster.id) : reviewChimes(words, seats, poster.id)).map((c) => ({
-        ...c,
-        why: router ? `${c.why} (${missed})` : c.why,
-      }));
+    // Each seat whose lane Ash's message touches may add one reply (no model decides it).
+    for (const c of laneChimes(ash, seats, message.from)) {
+      if (named.includes(c.id) || t.chimed.has(c.id)) continue;
+      t.chimed.add(c.id);
+      enqueue(chatId, { id: newWakeId(c.id), monoId: c.id, convId, kind: "chime", by: "lanes", why: c.why, other: speaker, trigger: message.id, gen: t.gen });
     }
-  } finally {
-    t.routing--;
-  }
-  if (t.gen !== gen || t.paused) {
-    pump(chatId);
-    return;
-  }
-  for (const c of chimes) {
-    if (named.includes(c.id) || (about === "answer" && t.chimed.has(c.id))) continue;
-    if (about === "answer") t.chimed.add(c.id);
-    enqueue(chatId, {
-      id: newWakeId(c.id),
-      monoId: c.id,
-      convId,
-      kind: about === "answer" ? "chime" : "reply",
-      by,
-      why: c.why,
-      other: poster.name,
-      trigger: post.id,
-      gen,
-    });
   }
   pump(chatId);
 }
 
 function pauseText(t: Thread, reason: PauseReason): string {
   if (reason === "stopped") return "You stopped the room. The team waits for you.";
-  if (reason === "stalled")
-    return pingPong(t.authors)
-      ? `${[...new Set(t.authors.slice(-2))].map(nameOf).join(" and ")} kept going back and forth without new ground, so the room paused here for you.`
-      : "The last few posts said nothing new, so the room paused here for you.";
-  return t.posts >= MONO_POSTS_CEILING
-    ? `The team has posted ${t.posts} messages since you last wrote, so it paused here for you.`
-    : `The team has been talking for ${Math.round(QUIET_CEILING_MS / 60_000)} minutes since you last wrote, so it paused here for you.`;
+  return `The team has posted ${t.posts} messages since you last wrote, so it paused here for you.`;
 }
 
 function pause(chatId: string, convId: string, reason: PauseReason): void {
@@ -853,7 +717,7 @@ export function keepGoing(chatId: string, convId: string): void {
   const t = threadOf(r, convId);
   if (!t.paused) return;
   const held = t.paused.wakes;
-  Object.assign(t, { paused: undefined, posts: 0, since: Date.now(), stale: 0, authors: [] });
+  Object.assign(t, { paused: undefined, posts: 0 });
   const line = appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: "Ash asked the team to keep going." });
   const chat = getChat(chatId);
   if (held.length) for (const w of held) enqueue(chatId, { ...w, gen: t.gen });
@@ -865,22 +729,9 @@ export function keepGoing(chatId: string, convId: string): void {
   pump(chatId);
 }
 
-/** Nothing left in a conversation: the host's digest when three or more seats spoke, then anyone waiting is told. */
+/** Nothing left in the room: anyone waiting for it to go quiet is told. */
 function settleIfIdle(chatId: string): void {
   const r = roomOf(chatId);
-  const chat = getChat(chatId);
-  for (const [convId, t] of r.threads) {
-    if (busyIn(r, convId) || t.paused || !chat || t.spoke.size < DIGEST_SEATS || !runner) continue;
-    const host = hostOf(seatsOf(chat), chat.leadId);
-    const conv = chat.conversations.find((c) => c.id === convId);
-    const last = conv?.messages[conv.messages.length - 1];
-    const spoke = t.spoke.size;
-    t.spoke = new Set();
-    if (!host || !last || last.from === "ash") continue;
-    enqueue(chatId, { id: newWakeId(host.id), monoId: host.id, convId, kind: "digest", by: "digest", why: `${spoke} seats spoke since Ash's message`, trigger: last.id, gen: t.gen, seatsSpoke: spoke });
-    pump(chatId);
-    return;
-  }
   const waiting = r.idle;
   r.idle = [];
   for (const w of waiting) {
@@ -963,7 +814,7 @@ export function postFromMono(
 /**
  * A Lead's report on a brief from a leadership Mono lands in the room (double delegation, roomReports.ts): the Lead's
  * report, then the briefing Mono's answer to it, which was its own turn on the report in its chat (the H2 report-back
- * path), so the room's "one answers" holds. Then the seats the answer names, or the gate's picks, look at it. Posting
+ * path), so the room's "one answers" holds. Then the seats the answer names look at it. Posting
  * the same report again changes nothing (its id is the report's receipt).
  */
 export async function postReport(
@@ -992,7 +843,7 @@ export async function postReport(
     pick,
   });
   if (answer) {
-    // The Lead's report is the room's news, not a seat's turn: only the answer counts toward the guards and the digest.
+    // The Lead's report is the room's news, not a seat's turn: only the answer counts toward the brake.
     afterPost(chatId, answer.convId, answer.message);
   }
   return true;
@@ -1022,6 +873,4 @@ export function postBack(input: { chatId: string; convId: string; monoId: string
 export function resetConductorForTests(): void {
   rooms.clear();
   runner = undefined;
-  router = undefined;
-  routerTimeoutMs = ROUTER_TIMEOUT_MS;
 }

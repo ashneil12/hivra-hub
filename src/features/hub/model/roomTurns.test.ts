@@ -1,14 +1,12 @@
 // The room's turn rules, without a model: who answers, who may add something, who was addressed, what is never posted,
-// what counts as progress, and what each turn is told.
+// the one loop brake, and what each turn is told.
 import { describe, expect, it } from "vitest";
 import {
   addressedIn,
   answerPick,
-  chimePrompt,
   cleanPost,
   failureNotice,
   hostOf,
-  isProgress,
   isShortMessage,
   isSilent,
   laneChimes,
@@ -16,12 +14,8 @@ import {
   MONO_POSTS_CEILING,
   namedPick,
   openingPick,
-  parseChimes,
-  pingPong,
   plainFailure,
-  QUIET_CEILING_MS,
   roomTranscript,
-  sameSaying,
   turnPrompt,
   withRoomMemory,
   type Seat,
@@ -134,25 +128,13 @@ describe("what is never posted, and what a post looks like", () => {
   });
 });
 
-describe("progress", () => {
-  it("a post that repeats a recent one is no progress; new ground is", () => {
-    expect(sameSaying("frank, the board moves to Fridays, noted.", "PM, the board moves to Fridays, noted.")).toBe(true);
-    expect(isProgress("06 passes from me.", ["Round 3 is ready: 9 screens.", "PM, 06 doesn't do what Ash asked."])).toBe(true);
-    expect(isProgress("The board moves to Fridays, noted.", ["the board moves to fridays noted"])).toBe(false);
-  });
-  it("two seats alternating for the whole tail is a ping-pong; a third voice breaks it", () => {
-    const ab = Array.from({ length: 8 }, (_, i) => (i % 2 ? "frank" : "projects-manager"));
-    expect(pingPong(ab)).toBe(true);
-    expect(pingPong(ab.slice(1))).toBe(false);
-    expect(pingPong([...ab.slice(0, 7), "chief-of-staff"])).toBe(false);
-  });
-  it("the ceiling is 40 Mono posts or 30 minutes without Ash", () => {
-    expect(MONO_POSTS_CEILING).toBe(40);
-    expect(QUIET_CEILING_MS).toBe(30 * 60_000);
+describe("the loop brake", () => {
+  it("is one ceiling of Mono posts without Ash", () => {
+    expect(MONO_POSTS_CEILING).toBe(20);
   });
 });
 
-describe("the gate and the prompts", () => {
+describe("the prompts", () => {
   const transcript = roomTranscript(
     [
       { id: "1", from: "ash", text: "what did we decide about colour?" },
@@ -168,23 +150,11 @@ describe("the gate and the prompts", () => {
     expect(transcript).toBe("Ash: what did we decide about colour?\n\n>> frank: Colour means status only.\n\n(app): Alfred couldn't answer: offline.");
   });
 
-  it("reads the chime gate's list: members only, never the answerer, once each, in room order; an empty list is an answer", () => {
-    expect(parseChimes('{"chime":[{"id":"alfred","why":"gate"},{"id":"frank","why":"missed ask"},{"id":"frank"},{"id":"chief-of-staff"},{"id":"nobody"}]}', TEAM, "chief-of-staff")).toEqual([
-      { id: "frank", why: "missed ask" },
-      { id: "alfred", why: "gate" },
-    ]);
-    expect(parseChimes('{"chime":[]}', TEAM, "chief-of-staff")).toEqual([]);
-    expect(parseChimes("nobody", TEAM, "chief-of-staff")).toBeUndefined();
-    expect(chimePrompt(TEAM, COS, transcript)).not.toContain("- chief-of-staff:");
-    expect(chimePrompt(TEAM, COS, transcript)).toContain("pushback when he asks for something that clashes with an earlier decision");
-    expect(chimePrompt(TEAM, PM, transcript, "post")).toContain("must look at it now");
-  });
-
   it("each turn carries the room rules, the seats' lanes and the conversation as data, and says how its words reach the room", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript };
     const answer = turnPrompt({ ...base, me: COS, kind: "answer", batch: 3 });
     expect(answer).toContain(ROOM_RULES);
-    expect(answer).toContain("Ash just wrote (3 messages; answer them together). You host this room, so you answer first, now.");
+    expect(answer).toContain("Ash just wrote (3 messages; answer them together). You host this room, so you answer first, now, like a person texting back");
     expect(answer).toContain("- Projects Manager: the board and tickets");
     expect(answer).toContain("Your reply is posted to the room for you");
     expect(answer).toContain("<room_conversation>\nAsh: what did we decide");
@@ -194,8 +164,7 @@ describe("the gate and the prompts", () => {
     expect(chime).toContain("reply with exactly NO_REPLY");
     const reply = turnPrompt({ ...base, me: PM, kind: "reply", other: "frank" });
     expect(reply).toContain("frank addressed you in the message marked >> below");
-    expect(reply).toContain('"That\'s Ash\'s call"');
-    expect(turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 4 })).toContain("4 seats have spoken since Ash's last message");
+    expect(reply).toContain("Answer it or do it, from your lane");
     const back = turnPrompt({ ...base, me: COS, kind: "back", back: { title: "Launch shortlist", answer: "Base, then Clanker." } });
     expect(back).toContain('start with "Launch shortlist is back"');
     expect(back).toContain("<your_answer>\nBase, then Clanker.\n</your_answer>");
@@ -204,22 +173,24 @@ describe("the gate and the prompts", () => {
     expect(busy).not.toContain("Your reply is posted to the room for you");
   });
 
-  it("posts are short and point to the detail; reviews verify and close; Ash is asked only what is his call", () => {
-    for (const rule of ["400 characters", "a file path, a commit, a test count", "only the host", "check it yourself", "a review ends in", "Locked:", "truly his call"])
+  it("posts are short and point to the detail; Ash is asked only what is his call; no review rounds", () => {
+    for (const rule of ["2 to 5 short lines", "a path, a commit, a test count", "never restate", "truly his call", "group chat", "name a seat", "is back", "no em dashes"])
       expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
+    for (const gone of ["pass from me", "a review ends in", "Locked:", "digest"]) expect(ROOM_RULES.toLowerCase(), gone).not.toContain(gone.toLowerCase());
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const host = turnPrompt({ ...base, me: COS, kind: "answer" });
-    expect(host).toContain("one short line each");
-    // Ash sees the host's words as they are written: its first line comes before any tool call (a brief to a Lead).
-    expect(host).toContain("Write that first line before you call any tool");
-    expect(host).toContain("Don't list his asks back");
+    expect(host).toContain("say so by name");
     expect(host).toContain("2 to 5 short lines");
-    const reviewer = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
-    expect(reviewer).toContain("check it yourself first");
-    expect(reviewer).toContain('"pass from me"');
-    const digest = turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 });
-    expect(digest).toContain("Locked:");
-    expect(digest).toContain("only when every reviewer has passed");
+    const reply = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
+    expect(reply).not.toContain("pass from me");
+  });
+
+  it("a turn that answers a Mono says so, so its words are never saved as Ash's", () => {
+    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
+    expect(turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager", speaker: "Projects Manager" })).toContain(
+      "The message you answer is from Projects Manager, a Mono: never save, record or quote it as Ash's words.",
+    );
+    expect(turnPrompt({ ...base, me: COS, kind: "answer", speaker: "Ash" })).not.toContain("a Mono: never save");
   });
 
   it("a turn ends on how long its post may be; the project's memory goes ahead of the conversation, not after it", () => {
@@ -236,17 +207,6 @@ describe("the gate and the prompts", () => {
     expect(withRoomMemory("hello", "<m/>")).toBe("hello\n\n<m/>");
   });
 
-  it("an unanswered question to Ash is never asked again and never holds up the rest; flags name the builder", () => {
-    for (const rule of ["never ask it again", "doesn't hold up", "name the builder"])
-      expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
-    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
-    expect(turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 })).toContain("don't ask it again");
-  });
-
-  it("the room rules carry what the Grok room did and what it must not copy", () => {
-    for (const rule of ["answers Ash first", "by name", "pass from me", "Stand down out loud", "skip review", "That's Ash's call", "Locked", "is back", "no em dashes", "don't just agree"])
-      expect(ROOM_RULES.toLowerCase()).toContain(rule.toLowerCase());
-  });
 });
 
 describe("what the room says when a turn can't run", () => {

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // A Lead's report on a leadership brief lands in the project's Leadership room: the Lead's report, then the briefing
-// Mono's answer (its own turn on the report, the one answer), then the room's usual chime-ins: each other member at most
+// Mono's answer (its own turn on the report, the one answer), then only the seats that answer names (no review round): each other member at most
 // once, NO_REPLY never posted. Posting the same report again changes nothing.
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -36,15 +36,13 @@ const report = (lead: { id: string }) => ({
   answer: "Good. Ash: the room is live; nothing needs you.",
 });
 
-it("posts the Lead's report and the briefing Mono's answer, then lets the others chime in once", async () => {
+it("posts the Lead's report and the briefing Mono's answer; only the seats the answer names look at it", async () => {
   const { chat, reports, lead, room } = await setup();
   const calls: string[] = [];
   chat.setGroupChatRunner(async (mono) => {
     calls.push(mono);
-    return mono === "frank" ? "Noted in memory: the room shows Lead reports." : "NO_REPLY";
+    return mono === "frank" ? "Checked: it matches Ash's words." : "NO_REPLY";
   });
-  // The cheap router gates who may add something (it names the answerer too, who must not speak twice).
-  chat.setRoomRouter(async () => '{"chime":[{"id":"chief-of-staff","why":"x"},{"id":"frank","why":"memory"},{"id":"alfred","why":"gate"}]}');
   expect(await reports.postLeadReport(report(lead), { id: lead.id, name: "MonoCode Hub lead" })).toBe(true);
   await chat.roomIdle(room);
   const messages = chat.getChat(room)!.conversations[0].messages;
@@ -53,9 +51,9 @@ it("posts the Lead's report and the briefing Mono's answer, then lets the others
     ["chief-of-staff", report(lead).answer, "report"],
   ]);
   expect(messages[0].pick?.why).toBe("MonoCode Hub lead reporting on Chief of Staff's brief for MonoCode Hub: Ship the room");
-  // Only the other members are asked, each once; the briefing Mono doesn't answer twice; NO_REPLY stays out.
-  expect(calls).toEqual(["frank", "alfred"]);
-  expect(messages.slice(2).map((m) => [m.from, m.quiet, m.pick?.by])).toEqual([["frank", true, "chime"]]);
+  // No review round: the answer names nobody, so nobody else is asked.
+  expect(calls).toEqual([]);
+  expect(messages).toHaveLength(2);
   // Again: nothing new.
   expect(await reports.postLeadReport(report(lead), { id: lead.id, name: "MonoCode Hub lead" })).toBe(false);
   expect(chat.getChat(room)!.conversations[0].messages).toHaveLength(messages.length);

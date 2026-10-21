@@ -14,7 +14,6 @@ import {
   roomActive,
   roomDrafts,
   roomPauseReason,
-  roomRouting,
   roomWorking,
   stopRoom,
 } from "../model/hubChats";
@@ -199,11 +198,7 @@ export function RoomMessage({
 }
 
 function pauseText(reason: string | undefined): string {
-  return reason === "stopped"
-    ? "You stopped the team. It waits for you."
-    : reason === "stalled"
-      ? "The team paused here: it stopped making progress."
-      : "The team paused here and is waiting for you.";
+  return reason === "stopped" ? "You stopped the team. It waits for you." : "The team paused here and is waiting for you.";
 }
 
 /** The line above the composer: who is working (their own words for it), Stop, or the pause and Keep going. */
@@ -218,7 +213,6 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
   const parts = [
     writing.length ? `${namesList(writing)} ${writing.length > 1 ? "are" : "is"} writing…` : "",
     away.length ? `${namesList(away)} will answer from ${away.length > 1 ? "their own chats" : "its own chat"}…` : "",
-    !writing.length && !away.length && roomRouting(chatId, convId) ? "Checking who else has something to add…" : "",
   ].filter(Boolean);
   return (
     <div className="mx-auto flex h-6 w-full max-w-[760px] shrink-0 items-center gap-3 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
