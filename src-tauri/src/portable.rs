@@ -270,6 +270,17 @@ impl Env {
         })
     }
 
+    /// The Monos home in use (`monos_root`, what mono.rs `resolved_root` settled on: `~/agent-memory/monos` on the daily
+    /// app, the slot's own on a dev copy). Only while it isn't there yet, `<app data>/monos`, where Monos lived before.
+    /// After the move the old folder is a stale copy, so it is never read while the home exists.
+    pub fn mono_home(&self) -> PathBuf {
+        if self.monos_root.is_dir() {
+            self.monos_root.clone()
+        } else {
+            self.data_dir.join("monos")
+        }
+    }
+
     fn read_db(&self) -> Result<Option<Connection>, String> {
         if !self.db_path.is_file() {
             return Ok(None);
@@ -2395,15 +2406,14 @@ pub struct MonoRef {
     pub legacy_project: Option<String>,
 }
 
-/// Each Mono's SOUL.md and habits.json, and with `memory` its MEMORY.md and memory/ notes. Read only: a folder that
-/// isn't there yet stays not there.
-#[cfg(test)]
+/// Each Mono's SOUL.md and habits.json, and with `memory` its MEMORY.md and memory/ notes, from the Monos home in use
+/// (`Env::mono_home`). Read only: a folder that isn't there yet stays not there.
 pub fn mono_files(
     env: &Env,
     monos: &[MonoRef],
     memory: bool,
 ) -> BTreeMap<String, BTreeMap<String, String>> {
-    mono_files_in(&env.data_dir.join("monos"), monos, memory)
+    mono_files_in(&env.mono_home(), monos, memory)
 }
 
 /// The same, from the folder this copy's Monos live in (mono.rs `resolved_root`).
@@ -2567,11 +2577,9 @@ pub async fn portable_mono_files(
     memory: bool,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
     let env = Env::for_app(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        mono_files_in(&crate::mono::resolved_root(&env.data_dir), &monos, memory)
-    })
-    .await
-    .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || mono_files(&env, &monos, memory))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

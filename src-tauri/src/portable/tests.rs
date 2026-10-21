@@ -1505,6 +1505,48 @@ fn mono_files_are_read_without_making_folders() {
 }
 
 #[test]
+fn an_export_reads_souls_from_the_monos_home_in_use_not_the_stale_old_folder() {
+    let dir = TestDir::new("monohome");
+    let env = env_for(&dir.0);
+    let refs = vec![MonoRef {
+        id: "hivra-lead".into(),
+        legacy_project: None,
+    }];
+    // Before the move: only the old folder in the app's data. It is read.
+    let old = env.data_dir.join("monos/hivra-lead");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("SOUL.md"), "# old copy").unwrap();
+    assert!(!env.monos_root.exists());
+    assert_eq!(env.mono_home(), env.data_dir.join("monos"));
+    assert_eq!(
+        mono_files(&env, &refs, false)["hivra-lead"]["SOUL.md"],
+        "# old copy"
+    );
+
+    // After the move: the home holds the live soul; the old copy, left behind, is never read again.
+    let home = env.monos_root.join("hivra-lead");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("SOUL.md"), "# live soul").unwrap();
+    assert_eq!(env.mono_home(), env.monos_root);
+    assert_eq!(
+        mono_files(&env, &refs, false)["hivra-lead"]["SOUL.md"],
+        "# live soul"
+    );
+
+    // A dev copy's own home (another root entirely) is read the same way.
+    let dev = Env {
+        monos_root: dir.0.join("data/dev-slot/monos"),
+        ..env_for(&dir.0)
+    };
+    fs::create_dir_all(dev.monos_root.join("hivra-lead")).unwrap();
+    fs::write(dev.monos_root.join("hivra-lead/SOUL.md"), "# slot soul").unwrap();
+    assert_eq!(
+        mono_files(&dev, &refs, false)["hivra-lead"]["SOUL.md"],
+        "# slot soul"
+    );
+}
+
+#[test]
 fn each_chat_says_which_engine_it_runs_on() {
     let dir = TestDir::new("engines");
     let env = env_for(&dir.0);
