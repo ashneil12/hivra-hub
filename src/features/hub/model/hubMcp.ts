@@ -24,6 +24,7 @@
 //   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import type { AshOsServer } from "./hubLeads";
+import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
@@ -265,9 +266,22 @@ export function setHubMcpServers(
   registered = servers && lookups ? { servers, lookups } : undefined;
 }
 
-/** The registered servers' arguments for a chat (the seam's provider). */
+/** The fence round the Monos' home as Claude Code arguments: every Claude process the app starts carries it. */
+export function monoHomeFenceArgs(): string[] {
+  return ["--disallowedTools", monoHomeDeniedTools().join(",")];
+}
+
+/** The app's own helper Claude processes (titles, commit text, the room's gate, the catalog probe) carry the fence too. */
+export function registerClaudeGuards(): void {
+  setClaudeGuardArgs(monoHomeFenceArgs);
+}
+
+/**
+ * The registered servers' arguments for a chat (the seam's provider). Before they are read (or if reading them timed
+ * out) a chat still gets the fence: only the servers wait, never the guard.
+ */
 export function registeredHubMcpArgs(sessionId: string): string[] {
-  return registered ? hubMcpArgs(sessionId, registered.servers, registered.lookups) : [];
+  return registered ? hubMcpArgs(sessionId, registered.servers, registered.lookups) : monoHomeFenceArgs();
 }
 
 /**

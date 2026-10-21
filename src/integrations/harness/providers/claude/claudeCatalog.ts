@@ -1,4 +1,5 @@
 import { homeDir } from "../../../../platform/tauri/fs";
+import { claudeGuardArgs } from "./claudeExtraArgs";
 import {
   setHarnessModels,
   type AgentModel,
@@ -298,7 +299,8 @@ async function discoverViaListModels(
     await spawnChild(
       probeId,
       path,
-      buildClaudeSpawnArgs({ isolated: true, sessionId }),
+      // It only lists models: no tools, and the guard every Claude process the app starts carries.
+      [...buildClaudeSpawnArgs({ isolated: true, sessionId }), "--tools", "", ...claudeGuardArgs()],
       cwd,
       undefined,
       "claude",

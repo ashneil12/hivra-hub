@@ -9,7 +9,7 @@ import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
-import { registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { registerClaudeGuards, registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
 import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
@@ -50,6 +50,8 @@ function startHubMcp(): void {
     // So does a chat in a project's coding team, and its workers: they are orchestrators like the Lead (codingTeam.ts).
     codingTeamProject: codingTeamChatProject,
   };
+  // The app's own helper Claude processes (titles, commit text, the room's gate) carry the Monos-home fence too.
+  registerClaudeGuards();
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);
   const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());
