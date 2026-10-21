@@ -47,7 +47,7 @@ const SOUL = "# Chief of Staff\n\n## Role\nRuns the day\n\n## Skills\n- ash-os\n
 
 /** This Mac: projects, Monos (one on Codex), teams with conversations, connectors, Pages, models, settings. */
 async function seed(a: Awaited<ReturnType<typeof app>>) {
-  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: "claude", engineModel: "opus" });
+  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", role: "Runs Ash's day", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: "claude", engineModel: "opus" });
   a.mono.addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "crab", mascotPicked: true, color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"], engine: "codex" });
   const team = a.chats.ensureLeadership("hivra");
   a.chats.addMember(team.id, "chief-of-staff");
@@ -374,4 +374,28 @@ it("a newer setup is refused in plain words, and so is a damaged one", async () 
   expect(() => b.doc.setupDocFromFiles({ "setup/setup.json": JSON.stringify({ format: "monocode-hub-setup", version: 3 }) })).toThrow("newer MonoCode Hub");
   expect(() => b.doc.setupDocFromFiles({ "setup/setup.json": "{oops" })).toThrow("damaged");
   expect(() => b.doc.setupDocFromFiles({})).toThrow("no setup");
+});
+
+it("a Mono's own role label travels: set, cleared, or left to the built-in one", async () => {
+  const a = await app();
+  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", role: "Runs Ash's day", mascot: "robot", color: "x", projects: [] });
+  a.mono.addMono({ id: "frank", name: "Frank", role: "", mascot: "robot", color: "x", projects: [] });
+  a.mono.addMono({ id: "alfred", name: "Alfred", mascot: "robot", color: "x", projects: [] });
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  const mono = (id: string) => JSON.parse(files[`setup/monos/${id}/mono.json`]);
+  expect(mono("chief-of-staff").roleLabel).toBe("Runs Ash's day");
+  expect(mono("frank").roleLabel).toBe("");
+  expect("roleLabel" in mono("alfred")).toBe(false);
+
+  localStorage.clear();
+  const b = await app();
+  const pending = { name: "export", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { registerProject: vi.fn(async () => true) });
+  const disk = folders();
+  for (const w of b.souls.waitingSouls()) await b.souls.seatWaitingSoul(w.monoId, disk.write, undefined, disk.read);
+  const role = (id: string) => b.mono.monoRole(b.mono.findMono(id)!);
+  expect(role("chief-of-staff")).toBe("Runs Ash's day");
+  expect(role("frank")).toBeUndefined();
+  expect(role("alfred")).toBe("Team setup");
 });

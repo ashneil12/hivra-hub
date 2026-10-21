@@ -390,6 +390,7 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     monoId: mono.id,
     name: mono.name,
     role: mono.role,
+    ...(mono.roleLabel !== undefined ? { roleLabel: mono.roleLabel } : {}),
     rules: mono.files["SOUL.md"] ?? "",
     memory: withMemory ? (mono.files["MEMORY.md"] ?? "") : "",
     workflows: pausedHabits(mono.files["habits.json"]),

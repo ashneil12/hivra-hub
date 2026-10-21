@@ -32,6 +32,8 @@ export type PortableMono = {
   name: string;
   /** One plain line on what it does. */
   role: string;
+  /** Ash's own sidebar role label (Mono.role); "" means he cleared it. Absent: the built-in one, if any. */
+  roleLabel?: string;
   mascot: string;
   mascotPicked?: boolean;
   color: string;
@@ -266,6 +268,7 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
     id: s.monoId,
     name: s.name,
     role: s.role,
+    ...(s.roleLabel !== undefined ? { roleLabel: s.roleLabel } : {}),
     mascot: s.mascot ?? "robot",
     ...(s.mascotPicked ? { mascotPicked: true } : {}),
     color: s.color ?? "hsl(210 8% 58%)",
@@ -297,6 +300,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       id: m.id,
       name,
       role: roleOf(name, rules),
+      ...(m.role !== undefined ? { roleLabel: m.role } : {}),
       mascot: m.mascot,
       ...(m.mascotPicked ? { mascotPicked: true } : {}),
       color: m.color,
@@ -501,6 +505,7 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     id: m.id,
     name,
     role: text(m.role),
+    ...(typeof m.roleLabel === "string" ? { roleLabel: m.roleLabel.trim().slice(0, 40) } : {}),
     mascot: text(m.mascot, "robot") || "robot",
     ...(m.mascotPicked === true ? { mascotPicked: true } : {}),
     color: text(m.color, "hsl(210 8% 58%)") || "hsl(210 8% 58%)",

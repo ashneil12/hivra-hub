@@ -16,7 +16,8 @@ setup/                   always. Written by the webview (src/features/portable/m
                          names/icons/order, custom models (metadata, no key), settings and themes, the Mono ids
   projects/<id>.json     per project (and "today"): its teams (group chats: name, members), Monos, Lead, connectors, Pages
   connectors.json        [{id, name, projectId, where: mac|composio|none, loginLivesIn}]  never a login
-  monos/<id>/            mono.json (look, projects + project ids, team, engine {harness, model}), SOUL.md, habits.json,
+  monos/<id>/            mono.json (look, projects + project ids, team, engine {harness, model}, optional roleLabel:
+                         Ash's own sidebar role line, "" when he cleared it, absent for the built-in one), SOUL.md, habits.json,
                          sheet.md (for people), skills.json (each skill and where it lived), and only with memory
                          ticked MEMORY.md + memory/<note>.md
 memory/                  only if ticked. Ash OS project memory: <project>/**.md for each folder with a MEMORY.md (the

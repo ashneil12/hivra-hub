@@ -5,6 +5,7 @@
 //! manifest.json                 format, version, what was ticked, counts, every file with its size and SHA-256
 //! setup/                        written by the webview (it owns these stores): setup.json, projects/<id>.json,
 //!                               monos/<id>/{mono.json,SOUL.md,habits.json,sheet.md,skills.json[,MEMORY.md,memory/]},
+//!                               (mono.json may carry roleLabel: Ash's own sidebar role line; "" = cleared),
 //!                               connectors.json (names and where each login lives, never the login)
 //! memory/<project>/…            Ash OS project memory, only if ticked; <project>.git.bundle with its history if ticked
 //! workspace/                    only if ticked: sessions/<id>.json (transcript, engine, provider transcript pointer),
@@ -1683,7 +1684,7 @@ fn workspace_preview(
     }
     preview
         .sessions
-        .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        .sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     for note in opened
         .json("workspace/notes.json")
         .and_then(|v| v.as_array().cloned())

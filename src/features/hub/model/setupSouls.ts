@@ -10,6 +10,8 @@ export type SetupSoul = {
   name: string;
   /** One plain line on what it does. */
   role: string;
+  /** Ash's own sidebar role label, from a v2 export; "" means cleared. */
+  roleLabel?: string;
   /** SOUL.md: its standing rules. */
   rules: string;
   /** MEMORY.md. */
@@ -159,6 +161,7 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
     addMono({
       id: soul.monoId,
       name: soul.name,
+      ...(soul.roleLabel !== undefined ? { role: soul.roleLabel } : {}),
       mascot: soul.mascot ?? "robot",
       ...(soul.mascotPicked ? { mascotPicked: true } : {}),
       color: soul.color ?? "hsl(210 8% 58%)",
@@ -186,6 +189,7 @@ export async function mergeIntoSeated(
     ...m,
     projects: [...m.projects, ...(soul.projects ?? [])],
     ...(engine.engine && (!m.engine || replace) ? engine : {}),
+    ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
   }));
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}) });
 }
