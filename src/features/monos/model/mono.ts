@@ -83,15 +83,10 @@ export function isProjectLeadId(id: string): boolean {
 
 /**
  * The role label a Mono shows: Ash's own, else the built-in one; none when cleared. A project's Lead always reads
- * "Runs the <project> coding team", from its project's name, so a new Lead gets one too.
+ * "Runs the coding team": its name already says which project.
  */
-export function monoRole(mono: Pick<Mono, "id" | "role"> & { name?: string; projects?: readonly string[] }): string | undefined {
-  if (isProjectLeadId(mono.id)) {
-    const project =
-      mono.name?.trim().match(/^(.+?)\s+lead$/i)?.[1] ??
-      (mono.projects?.[0] ? resolveTabGroupLabel(projectKey(mono.projects[0]), loadTabGroupLabels(), projectName(mono.projects[0])) : "");
-    return project ? `Runs the ${project} coding team` : undefined;
-  }
+export function monoRole(mono: Pick<Mono, "id" | "role">): string | undefined {
+  if (isProjectLeadId(mono.id)) return "Runs the coding team";
   if (mono.role !== undefined) return mono.role.trim() || undefined;
   return DEFAULT_ROLES[mono.id];
 }
