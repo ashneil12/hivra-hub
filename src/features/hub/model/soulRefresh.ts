@@ -20,6 +20,7 @@
 //   adds any new template ones.
 // - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
+import { invoke } from "@tauri-apps/api/core";
 import { listMonos, type Mono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
@@ -347,6 +348,24 @@ export async function saveOldSoul(files: SoulFiles, monoId: string, soul: string
   return existing.text === soul || saveChecked(files, monoId, note, soul, existing.hash);
 }
 
+/** Plain row line: a Lead whose project's folder isn't on this Mac keeps the folder its old soul named. */
+export function keptOldFolderLine(name: string): string {
+  return `${name} kept its old folder because its project's folder wasn't found on this Mac.`;
+}
+
+/**
+ * Whether a folder is on this Mac. When it can't be told (no app to ask), it counts as there, so the roster's folder
+ * is used as before.
+ */
+export async function folderOnDisk(path: string): Promise<boolean> {
+  try {
+    const [info] = await invoke<{ isDir: boolean }[]>("inspect_paths", { paths: [path] });
+    return !!info?.isDir;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * One pass over every Mono with a template: records the template for souls that match it and refreshes the rest, each
  * as a Bot changes row with Undo; a soul with no recorded template that isn't a known seed is left alone, with a note
@@ -356,6 +375,7 @@ export async function refreshSouls(
   files: SoulFiles = { read: readAgentFile, write: writeAgentFile },
   templates: SoulTemplate[] = soulTemplates(),
   now: Date = new Date(),
+  folderExists: (path: string) => Promise<boolean> = folderOnDisk,
 ): Promise<{ refreshed: string[]; recorded: string[]; skipped: string[] }> {
   const refreshed: string[] = [];
   const recorded: string[] = [];
@@ -376,10 +396,19 @@ export async function refreshSouls(
         template = entry.render(own);
         notes.push(`The app had no project folder for ${name}, so the folder its soul already named is kept.`);
       }
+      // The roster names a folder other than the soul's, and it isn't on this Mac (Mac round 2: the stand-in hub's
+      // /Users/example/... folders were adopted): keep the folder the old soul named.
+      const rosterFolder = values?.folder?.trim();
+      const named = rosterFolder && entry.render ? folderInSoul(soul.text) : null;
+      const keptOld = !!named && named !== rosterFolder && !(await folderExists(rosterFolder!));
+      if (keptOld && entry.render) {
+        template = entry.render(named);
+        notes.push(keptOldFolderLine(name));
+      }
       if (baseline == null && norm(soul.text) !== norm(template)) {
         // No recorded template: only a soul the app itself seeded, untouched, is swapped (then it is its own baseline).
         const match = await matchSeededSoul(soul.text, values);
-        if (match && values?.folder?.trim() && match.folder !== values.folder.trim())
+        if (match && !keptOld && values?.folder?.trim() && match.folder !== values.folder.trim())
           notes.push(`${name}'s old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.`);
         if (!match) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
