@@ -17,6 +17,17 @@ import { judgeScene, verdict } from "./judge.mjs";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
 
+/** The app's own notices for Ash in a chat's blocks ("waiting-on-you"), each with the time it was first seen. */
+export function appNoticeLines(blocks, seen, now) {
+  const out = [];
+  for (const block of blocks ?? []) {
+    if (block?.role !== "system" || block.notice !== "waiting-on-you" || !block.text) continue;
+    if (!seen.has(block.id)) seen.set(block.id, now);
+    out.push({ t: seen.get(block.id), text: block.text });
+  }
+  return out;
+}
+
 const SETTLED_STATES = new Set(["completed", "failed", "cancelled"]);
 /**
  * A handoff started in this scene that hasn't settled: the room isn't done while one runs (S10 on Grok: the room went
@@ -108,6 +119,14 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   if (!place) return finish({ invalid: `no place to send the opening (${JSON.stringify(scene.openingTo ?? scene.place)})` });
   const placeSession = async () => (place.session ? place.session : place.mono ? ctx.monoSession(place.mono) : null);
 
+  // Lines the app itself writes into the chat for Ash (a "Waiting on you" notice), first seen at.
+  const noticeSeen = new Map();
+  const appNotices = async (session) => {
+    if (!session || !ctx.sessionBlocks) return [];
+    const blocks = await ctx.sessionBlocks(session).catch(() => []);
+    return appNoticeLines(blocks, noticeSeen, Date.now());
+  };
+
   const ashLines = [];
   const send = async (text, { verbatim }) => {
     // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
@@ -137,6 +156,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
         if (line.text) lines.push({ t: line.t, who: "agent", text: line.text.slice(0, 2500) });
         if (asked.length) lines.push({ t: line.t, who: "agent (buttons)", text: asked.join(" ; ").replace(/AskUserQuestion: /g, "") });
       }
+      for (const notice of await appNotices(session)) lines.push({ t: notice.t, who: "app", text: notice.text });
     }
     return lines.sort((a, b) => a.t - b.t);
   };
@@ -149,7 +169,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const rows = await ctx.delegationRows().catch(() => []);
     const stuckRows = rows.filter((r) => ms(r.updated_at) >= t0 && (r.state === "question" || r.state === "failed" || r.pending_question));
     const stuck = [
-      ...(snap.sessions ?? []).filter((s) => s.question || s.usageLimit || ["needs-you", "failed", "paused"].includes(s.monoState?.status)),
+      ...(snap.sessions ?? []).filter((s) => s.question || s.usageLimit || s.approvals > 0 || ["needs-you", "failed", "paused"].includes(s.monoState?.status)),
       ...stuckRows.map((r) => ({ id: r.child_session ?? r.id, title: `${r.title ?? "a handoff"} (${r.state})` })),
     ];
     const marks = (snap.dom?.elements ?? []).filter((e) => e.visible && (STUCK.test(e.text ?? "") || Object.values(e.attrs ?? {}).some((v) => STUCK.test(String(v)))));
@@ -186,6 +206,8 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       } else {
         const session = await placeSession();
         if (session && (await ctx.claudeTexts(since)).some((line) => line.session === session && line.result)) return true;
+        // The app answered for a chat held on Ash's OK: that is the reply he gets until he decides.
+        if ((await appNotices(session)).some((notice) => notice.t > since)) return true;
       }
       await sleep(2_000);
     }
@@ -243,6 +265,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
       // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
       ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
+      ...(place.room ? [] : (await appNotices(await placeSession())).map((n) => ({ t: n.t, who: "app", where: "chat", text: n.text }))),
     ].sort((a, b) => a.t - b.t);
     const leaks = (ctx.spec.leak ?? []).flatMap((pattern) => [...toAsh, ...texts.filter((l) => l.text)].filter((m) => new RegExp(pattern, "i").test(m.text)).map((m) => ({ pattern, who: m.who, text: m.text.slice(0, 200) })));
     const changes = gitChanges(ctx.project, mark);

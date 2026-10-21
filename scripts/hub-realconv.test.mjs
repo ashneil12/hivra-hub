@@ -360,3 +360,15 @@ test("a quiet room isn't settled while a handoff started in the scene still runs
   // One left open by an earlier scene isn't this scene's.
   assert.equal(handoffsOpen([row("running", "2026-10-21T10:00:00Z")], t0), false);
 });
+
+test("the app's 'Waiting on you' notice in a chat counts as its answer to Ash, first seen once", async () => {
+  const { appNoticeLines } = await import("./realconv/player.mjs");
+  const seen = new Map();
+  const blocks = [
+    { id: "a", role: "assistant", text: "working" },
+    { id: "n1", role: "system", notice: "waiting-on-you", text: "Waiting on you: it asked to run `npm install zod`." },
+    { id: "n2", role: "system", notice: "account-moved", text: "moved" },
+  ];
+  assert.deepEqual(appNoticeLines(blocks, seen, 100), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
+  assert.deepEqual(appNoticeLines(blocks, seen, 200), [{ t: 100, text: "Waiting on you: it asked to run `npm install zod`." }]);
+});

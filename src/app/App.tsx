@@ -1,6 +1,7 @@
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
@@ -8000,6 +8001,20 @@ function Workspace({
       }
 
       if (current.busy && !pendingSwitch) {
+        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
+        const heldLine =
+          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
+            ? waitingOnYouLine(current.blocks)
+            : null;
+        if (heldLine) {
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === sessionId
+                ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
+                : s,
+            ),
+          );
+        }
         if (
           operatorCommand.matched &&
           options?.queuedMessageId &&
