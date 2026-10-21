@@ -628,32 +628,59 @@ export async function runBench(options, hooks = {}) {
           return null;
         }
       }, timeoutMs, 200);
-      if (!answer) throw new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`);
+      if (!answer) throw Object.assign(new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`), { actionId });
       return answer;
     };
     const events = [];
     const eventsFile = path.join(evidence, "events.ndjson");
-    let pumping = false;
-    const pump = async () => {
-      if (pumping) return;
-      pumping = true;
-      try {
-        const answer = await act("drain", {}, 30_000);
-        for (const event of answer.events ?? []) {
-          events.push(event);
-          fs.appendFileSync(eventsFile, `${JSON.stringify(event)}\n`);
+    const take = (list) => {
+      for (const event of list ?? []) {
+        events.push(event);
+        fs.appendFileSync(eventsFile, `${JSON.stringify(event)}\n`);
+      }
+    };
+    // A drain the window answered after we stopped waiting still holds events (21 Oct S10: the CoS report-back
+    // and PM's reply in the room were in a late answer, so the scene was judged without them).
+    const lateDrains = new Set();
+    const takeLate = () => {
+      for (const actionId of [...lateDrains]) {
+        try {
+          take(JSON.parse(fs.readFileSync(path.join(driver, "done", `${actionId}.json`), "utf8")).events);
+          lateDrains.delete(actionId);
+          log(`drain: ${actionId} answered late; its events are in`);
+        } catch {
+          // not answered yet
         }
+      }
+    };
+    let pumping = null;
+    const drainOnce = async () => {
+      try {
+        take((await act("drain", {}, 30_000)).events);
       } catch (error) {
+        if (error.actionId) lateDrains.add(error.actionId);
         log(`drain: ${error.message}`);
       } finally {
-        pumping = false;
+        takeLate();
       }
+    };
+    // A timer tick skips a drain already running; a scene's own call waits for it and then drains once more, so what it
+    // reads next is everything the window had by then.
+    const pump = async ({ tick = false } = {}) => {
+      if (pumping) {
+        if (tick) return;
+        await pumping;
+      }
+      pumping = drainOnce().finally(() => {
+        pumping = null;
+      });
+      await pumping;
     };
     const pong = await act("ping", {}, 120_000).catch(() => null);
     if (!pong?.ok) throw new Error("the window never answered the driver (is verify_live_take registered? app.log)");
     log("the window's driver answers");
     pumpTimer = setInterval(() => {
-      void pump();
+      void pump({ tick: true });
       const now = usageOf(readNdjson(path.join(state, "usage.ndjson")));
       // Every account's newest reading and limit file: an account that runs out sits out, new Claude processes go to
       // the next one, and the run stops only when every account is out (E5, hub-realtest-accounts.mjs).
