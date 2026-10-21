@@ -2515,6 +2515,28 @@ function ThemesRow() {
   );
 }
 
+/**
+ * While a theme is previewed, a slim bar stays at the top of Appearance as Ash scrolls down to the sliders, so Stop
+ * preview and Apply are always in reach.
+ */
+function ThemePreviewBar() {
+  useThemeImportVersion();
+  const pending = pendingTheme();
+  if (!pending?.previewing || !pending.check.ok) return null;
+  return (
+    <div
+      data-theme-preview-bar
+      className="hub-fade-in sticky top-0 z-20 -mx-2 mb-4 flex items-center gap-3 rounded-lg bg-surface/95 px-3 py-2 ring-1 ring-surface-ring backdrop-blur"
+    >
+      <p className="min-w-0 flex-1 truncate text-[13px] text-content">Previewing {pending.check.theme.name}</p>
+      <button type="button" data-theme-bar-stop onClick={stopPreview}
+        className="rounded-md px-2.5 py-1 text-[12px] text-content/85 ring-1 ring-inset ring-surface-ring hover:bg-selection-hover">Stop preview</button>
+      <button type="button" data-theme-bar-apply onClick={() => applyTheme()}
+        className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
+    </div>
+  );
+}
+
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
@@ -2525,6 +2547,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
 
   return (
     <>
+      <ThemePreviewBar />
       <Group
         title="Theme"
         description={

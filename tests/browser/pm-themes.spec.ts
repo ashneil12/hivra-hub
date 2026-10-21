@@ -61,11 +61,15 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   await expect(hue).toBeDisabled();
   await expect(page.getByRole("slider", { name: "Saturation" })).toHaveValue("35");
   await expect(page.getByRole("slider", { name: "Dark-mode lightness" })).toHaveValue("10");
-  // One photo with the preview card and every slider it moved.
-  await page.setViewportSize({ width: 1440, height: 1500 });
-  await shot(page, "f3-pm21-preview-moves-sliders");
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.locator("[data-theme-stop-preview]").click();
+  // Scrolled down to the sliders, the slim bar stays at the top with Stop preview and Apply.
+  await page.getByRole("slider", { name: "Sidebar opacity" }).scrollIntoViewIfNeeded();
+  const bar = page.locator("[data-theme-preview-bar]");
+  await expect(bar).toHaveText(/Previewing Tide/);
+  await expect(bar).toBeInViewport();
+  await expect(page.locator("[data-theme-import]")).not.toBeInViewport();
+  await shot(page, "f3-pm21-preview-bar-and-sliders");
+  await bar.locator("[data-theme-bar-stop]").click();
+  await expect(bar).toHaveCount(0);
   await expect(hue).toHaveValue("240");
   await expect(hue).toBeEnabled();
   // ...and on Discard.
@@ -76,7 +80,7 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   await expect(page.getByRole("slider", { name: "Saturation" })).toHaveValue("0");
   await page.evaluate((json) => (window as unknown as { __devOfferTheme(t: string, by?: string): void }).__devOfferTheme(json, "Critiquito"), TIDE);
   await page.locator("[data-theme-preview]").click();
-  await page.locator("[data-theme-apply]").click();
+  await page.locator("[data-theme-bar-apply]").click();
   await expect(page.locator('[data-scheme="custom-tide"]')).toHaveAttribute("aria-pressed", "true");
   // Applied: the sliders keep the theme and can be moved again.
   await expect(hue).toHaveValue("200");
