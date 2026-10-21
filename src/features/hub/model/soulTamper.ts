@@ -8,6 +8,7 @@
 //   row whose Undo goes back to what the app last saved. Ash's edits always win.
 // A Mono the app has no saved soul for yet (first launch with this, or storage cleared) just has its file recorded.
 import { listMonos, monoLook } from "../../monos/model/mono";
+import { prettyCwd } from "../../../shared/lib/paths";
 import { readAgentFile, setSoulOpenCheck, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { refreshProcessRuns, runsAt, type RunWindow } from "../../monos/model/sessionRuns";
@@ -29,14 +30,16 @@ export function changedSoulNote(at: number): AgentFilePath {
 }
 
 /** What was running when the soul changed, by the run records' own kind (chat, worker or habit run). */
-export type RunningKinds = { chats?: number; otherChats?: number; workers?: number; habits?: number };
+export type RunningKinds = { chats?: number; otherChats?: number; workers?: number; habits?: number; others?: string[] };
 
 /** "frank's chat", "a worker", "Hivra lead's chat and 2 workers": what was running, in plain words. */
 function runningPhrase(name: string, k: RunningKinds): { phrase: string; many: boolean } {
   const parts: string[] = [];
   const n = (x?: number) => x ?? 0;
   if (n(k.chats)) parts.push(n(k.chats) === 1 ? `${name}'s chat` : `${n(k.chats)} of ${name}'s chats`);
-  if (n(k.otherChats)) parts.push(n(k.otherChats) === 1 ? `a chat working in ${name}'s folder` : `${n(k.otherChats)} chats working in ${name}'s folder`);
+  // Another chat is named for what it was ("Alfred's chat in ~"), never guessed from this Mono's folder (S19 case C).
+  if (k.others?.length) parts.push(...k.others);
+  else if (n(k.otherChats)) parts.push(n(k.otherChats) === 1 ? "another chat" : `${n(k.otherChats)} other chats`);
   if (n(k.workers)) parts.push(n(k.workers) === 1 ? "a worker" : `${n(k.workers)} workers`);
   if (n(k.habits)) parts.push(n(k.habits) === 1 ? `one of ${name}'s habits` : `${n(k.habits)} of ${name}'s habits`);
   if (!parts.length) parts.push("a worker");
@@ -50,15 +53,31 @@ export function putBackLine(name: string, running: RunningKinds = { workers: 1 }
   return `Something outside the app changed ${name}'s soul while ${phrase} ${many ? "were" : "was"} running, so it was put back.`;
 }
 
-/** The runs, counted by kind: this Mono's own chat, another chat working in its home folder, a worker, a habit run. */
-export function runningKinds(runs: readonly Pick<RunWindow, "sessionId">[], monoId: string): RunningKinds {
-  const out: Required<RunningKinds> = { chats: 0, otherChats: 0, workers: 0, habits: 0 };
+/** "Alfred's chat in ~", "a chat in ~/code/exo": another chat, by whose it is and where it was working. */
+export function otherChatName(run: Pick<RunWindow, "sessionId" | "cwd">, nameOf: (monoId: string) => string | undefined = monoName): string {
+  const owner = chatMonoOwner(run.sessionId);
+  const who = owner ? `${nameOf(owner) ?? owner}'s chat` : "a chat";
+  return run.cwd ? `${who} in ${prettyCwd(run.cwd)}` : who;
+}
+
+function monoName(monoId: string): string | undefined {
+  const mono = listMonos().find((m) => m.id === monoId);
+  return mono ? monoLook(mono).name : undefined;
+}
+
+/** The runs, counted by kind: this Mono's own chat, another chat (named), a worker, a habit run. */
+export function runningKinds(runs: readonly (Pick<RunWindow, "sessionId"> & Partial<Pick<RunWindow, "cwd">>)[], monoId: string): RunningKinds {
+  const out: Required<RunningKinds> = { chats: 0, otherChats: 0, workers: 0, habits: 0, others: [] };
   for (const run of runs) {
     const kind = chatRunKind(run.sessionId);
     if (kind === "worker") out.workers++;
     else if (kind === "habit") out.habits++;
     else if (chatMonoOwner(run.sessionId) === monoId) out.chats++;
-    else out.otherChats++;
+    else {
+      out.otherChats++;
+      const named = otherChatName(run);
+      if (!out.others.includes(named)) out.others.push(named);
+    }
   }
   return out;
 }

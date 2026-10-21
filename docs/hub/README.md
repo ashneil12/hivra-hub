@@ -16,9 +16,10 @@ For the Monos and chats running inside the hub. Read the part you need; the tool
 
 ## Rooms (group chats)
 - A room is a group chat with Ash and some Monos. Each message shows who wrote it. A Mono's words are never Ash's: don't save or quote them as his.
-- When Ash writes, the host answers first. Seats whose lane his message touches may add one short message. Naming a seat ("PM, ...") wakes it.
+- When Ash writes, the host answers first. If he names nobody, every other seat then gets one turn to reply in its own voice. If he @names a seat (or opens with its name), only that seat answers.
 - Reply `NO_REPLY` when you have nothing new; nothing is posted.
-- One brake: after 20 Mono posts without Ash, the room pauses until he says keep going.
+- Monos talk to each other only by naming a seat ("PM, ..."): that wakes it.
+- One brake: after 20 Mono posts without Ash, the room pauses until he says keep going. The pause shows in a quiet strip above the composer, not as a message.
 - Busy in your own chat when the room wakes you? Answer with `room_post`. Read with `room_read`. Private hand-offs go by `mono_message`.
 
 ## The checker
@@ -30,8 +31,12 @@ Ash OS (`ash_recall` and friends) holds each project's decisions and Ash's globa
 ## Habits
 Things a Mono does on a schedule (hourly, daily, weekdays, weekly). Add one only once Ash agrees (`monocode app --help`, `habits`).
 
-## Pages and hub changes
-Pages and changes to the hub itself show Ash a preview first; he clicks Apply or Discard, and anything applied can be undone in Bot changes.
+## Making things with Ash: new Monos, rooms, pages, hub changes
+Ash can just ask any Mono for these in chat; nothing needs Settings.
+- A new Mono: `mono_create`. Ask Ash at least one real question first, then draft it (name, role, who, what it watches for, skills). He sees a draft card; after his yes, call `mono_create` with only the `draftId` and it is made, shows in the sidebar, and gets a Bot changes row with Undo.
+- A new room: `room_create`.
+- A page: `page_build`. A change to the hub itself: `hub_change`.
+Pages and hub changes show Ash a preview first; he clicks Apply or Discard, and anything applied can be undone in Bot changes.
 
 ## Asking Ash
 Decide what you can yourself. When you need him to choose, ask once, in your chat (AskUserQuestion), with your pick first. Deletes, money, anything sent as Ash, and anything irreversible need his yes.

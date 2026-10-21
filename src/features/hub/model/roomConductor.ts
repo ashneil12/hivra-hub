@@ -141,6 +141,9 @@ type Thread = {
   /** Seats that already added their one reply to Ash's message. */
   chimed: Set<string>;
   paused?: { reason: PauseReason; wakes: Wake[] };
+  /** A status line for Ash (a host that finished its own work without answering here): shown in the strip above the
+   * composer, never posted in the room (AD6, AD12). Its Try again runs the turn once more. */
+  note?: { text: string; mono: string; wake: Wake };
 };
 type RoomRun = {
   queue: Wake[];
@@ -237,6 +240,26 @@ export function roomActive(chatId: string, convId?: string): boolean {
 /** The conversation paused for Ash (the ceiling, no progress, or his Stop). */
 export function roomPaused(chatId: string, convId?: string): boolean {
   return !!roomPauseReason(chatId, convId);
+}
+/**
+ * The room's quiet status strip for one conversation: the brake or Stop pause, or a status note. The app never posts
+ * these as room messages, so they don't read as a seat talking and no Mono sees them as part of the conversation.
+ */
+export type RoomStrip = { kind: "paused"; reason: PauseReason; text: string } | { kind: "note"; text: string; mono: string };
+export function roomStrip(chatId: string, convId: string): RoomStrip | undefined {
+  const t = rooms.get(chatId)?.threads.get(convId);
+  if (!t) return undefined;
+  if (t.paused) return { kind: "paused", reason: t.paused.reason, text: pauseText(t, t.paused.reason) };
+  if (t.note) return { kind: "note", text: t.note.text, mono: t.note.mono };
+  return undefined;
+}
+/** Try again on the strip's note: the host's turn runs once more. */
+export function retryRoomNote(chatId: string, convId: string): Promise<void> {
+  const t = rooms.get(chatId)?.threads.get(convId);
+  if (!t?.note) return Promise.resolve();
+  t.note = undefined;
+  notify();
+  return requestReply(chatId, convId);
 }
 export function roomPauseReason(chatId: string, convId?: string): PauseReason | undefined {
   const r = rooms.get(chatId);
@@ -346,7 +369,7 @@ function onAsh(chatId: string, convId: string): boolean {
   if (newest && (r.queue.some(answering) || [...r.running.values()].some((run) => answering(run.wake)))) return false;
   t.gen++;
   pruneDrafts(r);
-  Object.assign(t, { posts: 0, chimed: new Set(), paused: undefined });
+  Object.assign(t, { posts: 0, chimed: new Set(), paused: undefined, note: undefined });
   setRoomRuntime(chatId, { replyError: undefined });
   // He turned the room: what waited in this conversation is dropped, what runs is stopped (work coming back stays).
   r.queue = r.queue.filter((w) => w.convId !== convId || w.kind === "back");
@@ -536,7 +559,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     if (end.status === "failed") failed(chatId, wake, me, end.error ?? "Its turn did not finish.");
     // Ash must never be left without an answer: the host that finished its own work without one says so.
     else if (wake.kind === "answer" && !running.answered && end.status === "done")
-      notice(chatId, wake, me, `${me.name} finished its own work without answering here.`);
+      noteFor(chatId, wake, me, `${me.name} finished its own work without answering here.`);
   }
   pump(chatId);
 }
@@ -618,6 +641,12 @@ function notice(chatId: string, wake: Wake, me: Seat, text: string): void {
   if (posted) r.retries.set(posted.message.id, { ...wake, id: newWakeId(me.id) });
 }
 
+/** A status note in the strip above the composer, not a message in the room (AD6, AD12). */
+function noteFor(chatId: string, wake: Wake, me: Seat, text: string): void {
+  threadOf(roomOf(chatId), wake.convId).note = { text, mono: me.id, wake };
+  notify();
+}
+
 /** Try again on a notice: the same turn runs once more (an answer answers whatever is still unanswered). */
 export function retryNotice(chatId: string, noticeId: string): Promise<void> {
   const r = roomOf(chatId);
@@ -645,6 +674,8 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
   if (!chat || !conv || !isMonoPost(message)) return;
   const seats = seatsOf(chat);
   t.posts++;
+  // The seat the strip said hadn't answered just did.
+  if (t.note?.mono === message.from) t.note = undefined;
   if (t.paused) {
     pump(chatId);
     return;
@@ -700,7 +731,7 @@ function pause(chatId: string, convId: string, reason: PauseReason): void {
   const held = r.queue.filter((w) => w.convId === convId && w.kind !== "back");
   r.queue = r.queue.filter((w) => !(w.convId === convId && w.kind !== "back"));
   t.paused = { reason, wakes: reason === "stopped" ? [] : held };
-  appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: pauseText(t, reason) });
+  // Shown in the strip above the composer (roomStrip), not posted as a line in the room (AD6, AD12).
   notify();
 }
 

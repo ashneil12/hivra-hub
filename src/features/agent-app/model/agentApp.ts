@@ -1283,7 +1283,7 @@ export async function handleAgentApp(
       proposed: proposal.spec.name,
       id: proposal.id,
       status: "pending",
-      note: "Waiting for the user's okay on Settings > Teams (it also shows on Today). Nothing is created until they approve it; tell them it's there.",
+      note: "Filed as a proposal on Settings > Teams (it also shows on Today); nothing is created until they approve it there. To make a new Mono with Ash in chat instead, use mono_create: draft it, he says yes, and it is made.",
     };
   }
   switch (action) {

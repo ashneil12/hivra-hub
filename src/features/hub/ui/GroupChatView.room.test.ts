@@ -55,9 +55,10 @@ it("shows who is writing with a Stop, and after Stop the team waits with Keep go
     q("[data-hub-room-stop]")!.click();
     await new Promise((r) => setTimeout(r, 30));
   });
-  expect(q("[data-hub-msg-system]")!.textContent).toBe("You stopped the room. The team waits for you.");
+  // The pause is the quiet strip above the composer, not a line posted in the room (AD6, AD12).
+  expect(q("[data-hub-msg-system]")).toBeNull();
+  expect(q("[data-hub-room-strip]")!.textContent).toBe("You stopped the room. The team waits for you.");
   expect(q("[data-hub-room-keep-going]")).toBeTruthy();
-  expect(q("[data-hub-typing]")!.textContent).toContain("You stopped the team");
 }, 20_000);
 
 it("a notice says which Mono couldn't answer, with Try again; reactions show under the message, and Ash can add his", async () => {

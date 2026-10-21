@@ -332,7 +332,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
               <Pencil className="size-3" strokeWidth={1.75} />
             </button>
           ) : (
-            <span className="min-w-0 truncate text-[13px] text-content">{chat.name}</span>
+            // A room with no conversation yet shows its own name here: out of the drag region too, so a double-click
+            // on it doesn't zoom the window either (Mac run, 21 Oct).
+            <span className="min-w-0 truncate text-[13px] text-content" data-hub-room-header-name data-tauri-drag-region="false">
+              {chat.name}
+            </span>
           )}
           {IS_MAC ? null : <div className="w-[120px]" />}
         </div>

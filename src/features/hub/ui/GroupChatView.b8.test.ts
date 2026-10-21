@@ -240,3 +240,13 @@ it("Mac round 4: the header's renameable title and its rename inputs are out of 
   act(() => rename.click());
   expect(tauriDragRegion(q("[data-hub-rename-input]")!)).toBe(false);
 });
+
+it("a room with no conversation: the header's room name is out of the drag region, so a double-click there doesn't zoom", async () => {
+  const { q } = await render({ withConversation: false });
+  expect(q("[data-hub-conversation-title]")).toBeNull();
+  const name = q("[data-hub-room-header-name]")!;
+  expect(name.textContent).toBe("Leadership Board");
+  expect(tauriDragRegion(name)).toBe(false);
+  // The rest of the header still drags like a title bar.
+  expect(tauriDragRegion(name.closest('[data-tauri-drag-region="deep"]')!)).toBe(true);
+});

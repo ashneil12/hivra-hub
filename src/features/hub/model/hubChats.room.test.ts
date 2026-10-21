@@ -219,12 +219,36 @@ it("the one loop brake: the ceiling of posts without Ash pauses the room; keep g
   const bigPosts = posts(chat.getChat(big.id)!.conversations[0].messages);
   expect(bigPosts).toHaveLength(MONO_POSTS_CEILING);
   expect(chat.roomPauseReason(big.id, loop)).toBe("ceiling");
-  expect(chat.getChat(big.id)!.conversations[0].messages.at(-1)!.text).toBe(`The team has posted ${MONO_POSTS_CEILING} messages since you last wrote, so it paused here for you.`);
+  // The brake shows in the quiet strip above the composer; the app posts nothing in the room (AD6, AD12).
+  expect(chat.roomStrip(big.id, loop)).toEqual({ kind: "paused", reason: "ceiling", text: `The team has posted ${MONO_POSTS_CEILING} messages since you last wrote, so it paused here for you.` });
+  expect(chat.getChat(big.id)!.conversations[0].messages.filter((m) => m.from === "app")).toEqual([]);
   expect(() => chat.postFromMono(big.id, "m1", "One more thing.")).toThrow(/paused/);
   chat.setGroupChatRunner(async () => "NO_REPLY");
   chat.keepGoing(big.id, loop);
   await chat.roomIdle(big.id, loop);
   expect(chat.roomPaused(big.id, loop)).toBe(false);
+});
+
+it("a host that finished its own work without answering here says so in the quiet strip, not as a room message, and Try again answers", async () => {
+  const { chat, id, said } = await room();
+  let turns = 0;
+  chat.setGroupChatRunner({
+    run: async (request) => {
+      if (request.monoId !== "chief-of-staff") return { kind: "reply", text: "NO_REPLY" };
+      turns++;
+      // First turn: the wake went into its busy work, which ended without a room_post.
+      return turns === 1 ? { kind: "wake", delivery: "steered", done: Promise.resolve({ status: "done" }) } : { kind: "reply", text: "Back on it: the footer fix is on EXO main." };
+    },
+  });
+  const conv = chat.startConversation(id, "progeress? i only see cos working atm");
+  await chat.requestReply(id, conv);
+  await chat.roomIdle(id, conv);
+  expect(chat.roomStrip(id, conv)).toEqual({ kind: "note", mono: "chief-of-staff", text: "Chief of Staff finished its own work without answering here." });
+  expect(said(conv).some((m) => m.from === "app" || /without answering here/.test(m.text))).toBe(false);
+  await chat.retryRoomNote(id, conv);
+  await chat.roomIdle(id, conv);
+  expect(chat.roomStrip(id, conv)).toBeUndefined();
+  expect(said(conv).at(-1)).toMatchObject({ from: "chief-of-staff", text: "Back on it: the footer fix is on EXO main." });
 });
 
 it("Ash's message turns the room at once: running turns are stopped, waiting ones dropped, and the host answers both messages", async () => {
@@ -268,7 +292,8 @@ it("Stop ends every room turn in the conversation and keeps the room quiet until
   chat.stopRoom(id, conv);
   expect(script.stops.sort()).toEqual(["frank", "projects-manager"]);
   expect(chat.roomPauseReason(id, conv)).toBe("stopped");
-  expect(said(conv).at(-1)).toMatchObject({ from: "app", text: "You stopped the room. The team waits for you." });
+  expect(chat.roomStrip(id, conv)).toMatchObject({ kind: "paused", text: "You stopped the room. The team waits for you." });
+  expect(said(conv).some((m) => m.from === "app")).toBe(false);
   expect(() => chat.postFromMono(id, "alfred", "One gate: Ash okays new Monos.")).toThrow(/Ash stopped this conversation/);
   // Ash writes again: the room is his again.
   chat.setGroupChatRunner(scripted({ "chief-of-staff": "Back on it." }).runner);

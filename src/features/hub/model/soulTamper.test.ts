@@ -22,7 +22,7 @@ import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
 import { setHubMcpServers, setMonoHomeRoot, type HubChatLookups } from "./hubMcp";
-import { changedSoulNote, checkSoul, keptAshLine, putBackLine, callWritesSoul, noteToolCalls, recordRestoredSouls, resetToolCallsForTest, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type RunToolCall, type TamperFiles } from "./soulTamper";
+import { changedSoulNote, checkSoul, keptAshLine, otherChatName, putBackLine, callWritesSoul, noteToolCalls, recordRestoredSouls, resetToolCallsForTest, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type RunToolCall, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -56,6 +56,7 @@ const CHATS: Record<string, string> = {
   "unrecorded-chat": "unrecorded-lead",
   "exo-chat": "vg-game-lead",
   "cos-chat": "chief-of-staff",
+  "alfred-chat": "alfred",
 };
 const lookups: HubChatLookups = {
   monoOf: (id) => (CHATS[id] ? { id: CHATS[id] } : undefined),
@@ -486,18 +487,41 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
 
 describe("the put-back row names what was running, by each run's own kind", () => {
   it("counts this Mono's chat, a worker, a habit run and another chat in its folder apart", () => {
-    expect(runningKinds([{ sessionId: "hivra-chat" }], "hivra-lead")).toEqual({ chats: 1, otherChats: 0, workers: 0, habits: 0 });
-    expect(runningKinds([{ sessionId: "app-hivra-chat-r1" }, { sessionId: "app-app-hivra-chat-r1-r2" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 0, workers: 2, habits: 0 });
-    expect(runningKinds([{ sessionId: "habit-run-hivra" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 0, workers: 0, habits: 1 });
-    expect(runningKinds([{ sessionId: "exo-chat" }, { sessionId: "plain-chat" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 2, workers: 0, habits: 0 });
+    expect(runningKinds([{ sessionId: "hivra-chat" }], "hivra-lead")).toEqual({ chats: 1, otherChats: 0, workers: 0, habits: 0, others: [] });
+    expect(runningKinds([{ sessionId: "app-hivra-chat-r1" }, { sessionId: "app-app-hivra-chat-r1-r2" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 0, workers: 2, habits: 0, others: [] });
+    expect(runningKinds([{ sessionId: "habit-run-hivra" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 0, workers: 0, habits: 1, others: [] });
+    expect(runningKinds([{ sessionId: "exo-chat" }, { sessionId: "plain-chat" }], "hivra-lead")).toEqual({ chats: 0, otherChats: 2, workers: 0, habits: 0, others: ["vg-game-lead's chat", "a chat"] });
   });
 
   it("reads as a sentence for each mix", () => {
     expect(putBackLine("Hivra lead", { chats: 1 })).toBe("Something outside the app changed Hivra lead's soul while Hivra lead's chat was running, so it was put back.");
     expect(putBackLine("Hivra lead", { habits: 1 })).toBe("Something outside the app changed Hivra lead's soul while one of Hivra lead's habits was running, so it was put back.");
-    expect(putBackLine("Hivra lead", { otherChats: 1 })).toBe("Something outside the app changed Hivra lead's soul while a chat working in Hivra lead's folder was running, so it was put back.");
+    expect(putBackLine("Hivra lead", { otherChats: 1 })).toBe("Something outside the app changed Hivra lead's soul while another chat was running, so it was put back.");
+    expect(putBackLine("Nibbii lead", { otherChats: 1, others: ["Alfred's chat in ~"] })).toBe("Something outside the app changed Nibbii lead's soul while Alfred's chat in ~ was running, so it was put back.");
     expect(putBackLine("Hivra lead", { chats: 1, workers: 2 })).toBe("Something outside the app changed Hivra lead's soul while Hivra lead's chat and 2 workers were running, so it was put back.");
     expect(putBackLine("Hivra lead", { workers: 1 })).toBe("Something outside the app changed Hivra lead's soul while a worker was running, so it was put back.");
+  });
+
+  it("another Mono's chat that wrote the soul is named for whose it is and where it worked, not as one in this Mono's folder (S19 case C)", async () => {
+    expect(otherChatName({ sessionId: "alfred-chat", cwd: "/Users/ash" }, (id) => (id === "alfred" ? "Alfred" : undefined))).toBe("Alfred's chat in ~");
+    expect(otherChatName({ sessionId: "plain-chat", cwd: "/Users/ash/code/exo" })).toBe("a chat in ~/code/exo");
+    const texts: Record<string, RunToolCall[]> = { "alfred-chat": [{ kind: "edit", text: "/Users/ash/agent-memory/monos/nibbii-lead/SOUL.md" }] };
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("nibbii-lead", "SOUL.md", SAVED);
+    setRunToolTextSource((id) => texts[id] ?? []);
+    try {
+      noteSessionRuns([{ id: "alfred-chat", busy: true, cwd: "/Users/ash" }], 1_000);
+      files.set("nibbii-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+      expect(await checkSoul("nibbii-lead", "Nibbii lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
+      const row = botChangeRows()
+        .flatMap((r) => (r.kind === "one" ? [r.change] : r.items))
+        .find((c) => c.monoId === "nibbii-lead")!;
+      expect(row.line).toMatch(/while (Alfred|alfred)'s chat in ~ was running/);
+      expect(row.line).not.toContain("folder");
+    } finally {
+      setRunToolTextSource(null);
+    }
   });
 
   it("a change during the Mono's own chat turn says chat, not worker", async () => {

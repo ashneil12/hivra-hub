@@ -11,9 +11,10 @@ import {
   react,
   REACTIONS,
   retryNotice,
+  retryRoomNote,
   roomActive,
   roomDrafts,
-  roomPauseReason,
+  roomStrip,
   roomWorking,
   stopRoom,
 } from "../model/hubChats";
@@ -197,18 +198,18 @@ export function RoomMessage({
   );
 }
 
-function pauseText(reason: string | undefined): string {
-  return reason === "stopped" ? "You stopped the team. It waits for you." : "The team paused here and is waiting for you.";
-}
-
-/** The line above the composer: who is working (their own words for it), Stop, or the pause and Keep going. */
+/**
+ * The line above the composer: who is working (their own words for it), Stop, or the room's quiet status strip: the
+ * pause with Keep going, or a status note with Try again. These are never posted as messages in the room (AD6, AD12).
+ */
 export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; convId?: string; nameOf: (id: string) => string }) {
   const working = roomWorking(chatId, convId);
   // A seat whose words already show in the room needs no "is writing": the line is for seats that haven't started.
   const showing = new Set(roomDrafts(chatId, convId).map((d) => d.monoId));
   const writing = working.filter((w) => w.state === "writing" && !showing.has(w.monoId)).map((w) => nameOf(w.monoId));
   const away = working.filter((w) => w.state !== "writing").map((w) => nameOf(w.monoId));
-  const paused = convId ? roomPauseReason(chatId, convId) : undefined;
+  const strip = convId ? roomStrip(chatId, convId) : undefined;
+  const paused = strip?.kind === "paused" ? strip.reason : undefined;
   const active = roomActive(chatId, convId);
   const parts = [
     writing.length ? `${namesList(writing)} ${writing.length > 1 ? "are" : "is"} writing…` : "",
@@ -216,7 +217,13 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
   ].filter(Boolean);
   return (
     <div className="mx-auto flex h-6 w-full max-w-[760px] shrink-0 items-center gap-3 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
-      {parts.length ? <span className="min-w-0 truncate">{parts.join(" ")}</span> : paused ? <span className="min-w-0 truncate" data-hub-room-paused={paused}>{pauseText(paused)}</span> : null}
+      {parts.length ? (
+        <span className="min-w-0 truncate">{parts.join(" ")}</span>
+      ) : strip ? (
+        <span className="min-w-0 truncate" data-hub-room-strip={strip.kind} data-hub-room-paused={paused}>
+          {strip.text}
+        </span>
+      ) : null}
       {active && convId ? (
         <button type="button" onClick={() => stopRoom(chatId, convId)} className="shrink-0 underline" data-hub-room-stop>
           Stop
@@ -224,6 +231,10 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
       ) : paused && convId ? (
         <button type="button" onClick={() => keepGoing(chatId, convId)} className="shrink-0 underline" data-hub-room-keep-going>
           Keep going
+        </button>
+      ) : strip?.kind === "note" && convId ? (
+        <button type="button" onClick={() => void retryRoomNote(chatId, convId)} className="shrink-0 underline" data-hub-room-strip-retry>
+          Try again
         </button>
       ) : null}
     </div>

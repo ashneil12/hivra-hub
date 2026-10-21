@@ -20,11 +20,11 @@ retake, "pass from me", "Locked") and that is what Ash liked. Ash, 20 Oct: conve
 they happen in the grok bot transcripts ... where i can talk and the agents can talk amongst each other too".
 - The host (Chief of Staff, or the room's lead) answers every message from Ash first, fast. Ash never has to tag anyone;
   an @mention, or a message he opens with a seat's name, goes to that seat instead.
-- Each other seat may add **one** reply to Ash's message, only with something new from its lane. A short message gets the
-  host's answer alone.
+- When Ash names nobody, every other seat gets **one** turn on his message, in its own voice (21 Oct: "hey" in
+  Leadership gets a reply from each leader). A seat with nothing to add replies NO_REPLY and nothing shows. An @mention or
+  an opening name means just that seat.
 - After that the Monos talk among themselves for as long as the work needs: naming a seat wakes it. No cap on rounds; the
   guard is progress (see section 8).
-- The host closes a stretch where three or more seats spoke with a short digest.
 - Ash's new message turns the room at once. Stop and Keep going are his.
 - Agents can chat while working: a busy Mono answers from its own chat. Workers never speak in the room.
 - Delegated work lives in a team, never under the Mono in the Monos list (Ash, 20 Oct): a project's work in that project's
@@ -92,18 +92,12 @@ messages first (median 9 s, p90 27 s); the room re-planned within about 40 s of 
 **Who speaks.**
 - Ash writes: the host's turn starts at once, with no model in front of it (the old small-model router picked the answerer
   and cost seconds). Everything of his still unanswered in that conversation is answered together.
-- After the host's answer, the chime gate (the small model, or the lanes without one) picks the seats that may have
-  something new; each gets one turn, side by side (up to 3 turns run at once in a room, one per Mono). A message of 60
-  characters or less skips the gate.
+- After the host's answer (or its NO_REPLY or 👍), when Ash named nobody, every other seat gets one turn, side by side
+  (up to 3 turns run at once in a room, one per Mono), each seeing the host's answer. No model or lane picks them.
 - Any Mono post wakes the seats it names: "frank, ...", "frank, Critiquito, please pass or flag", "frank and Critiquito,
   ...", "@alfred". A seat woken by several posts runs once, with all of them in view. A builder flagged by reviewers
   waits until every reviewer of that round has spoken, so it answers all the flags in one message.
-- Work that came back ("X is back") and a Lead's report also go past the gate, so the seat whose check it is looks at it.
-- The gate never drops a seat quietly: when it doesn't answer within 15 s, fails, or answers something that isn't its
-  list, the lanes pick instead (the pick says "lanes" and why), and work that came back always gets frank's check
-  against Ash's words. Its helper call (Haiku, no thinking, its own process) answers in about 2 s.
-- When nothing is left to run and three or more seats spoke since Ash's message (or the last digest), the host gets one
-  digest turn. It may say nothing if a round is still open.
+- Mono-to-Mono follow-ups go only by naming a seat; nothing else wakes one.
 
 **Shape.** Posts are 2 to 5 short lines (rules above); the room shows a longer one folded to its first lines with Show
 more, so a wall never fills the screen. Measured on 010dfbcf (B1, B6, B3): median room post about 890 characters,
@@ -113,11 +107,9 @@ longest 2,013.
 An acknowledgement becomes a 👍 on the message it answers (a host with nothing to add to Ash still shows it read him).
 A post's own name label and em dashes are taken out.
 
-**Guards** (progress, not a turn count). The conversation pauses for Ash, with a line saying why and a Keep going:
-- three posts in a row that repeat a recent post (most of their words in common);
-- two seats going back and forth for 8 posts with nobody else;
-- the ceiling: 40 Mono posts, or 30 minutes, since Ash last wrote.
-Keep going runs the turns that were waiting, with fresh guards (or wakes the host when none were).
+**The brake.** After 20 Mono posts since Ash last wrote, the conversation pauses for him. The pause, and a host that
+finished its own work without answering, show in the quiet strip above the composer (with Keep going or Try again),
+never as a message in the room. Keep going runs the turns that were waiting (or wakes the host when none were).
 
 **Ash turns the room.** His new message stops the conversation's running room turns (the app's Stop on a managed turn;
 the Mono's own queue is left running) and drops the waiting ones; a stopped turn's late words never land. Stop does the
