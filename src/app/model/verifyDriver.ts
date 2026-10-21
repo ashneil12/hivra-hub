@@ -111,6 +111,8 @@ function sessionRow(session: Session) {
     queueStatus: session.queueStatus ?? null,
     question: !!(session as { pendingQuestion?: unknown }).pendingQuestion,
     usageLimit: !!session.usageLimit,
+    // Held on a permission card Ash hasn't decided (S14's stuck case).
+    approvals: pendingApprovals(session).length,
     hidden: !!session.sidebarHidden,
     orchestrationLeadId: session.orchestrationLeadId ?? null,
     mono: mono?.id ?? null,
