@@ -162,6 +162,12 @@ test("hard checks: when Ash writes to the whole room, each seat replies at most 
   assert.deepEqual(twice.misses, ["a seat replied more than once to one message from Ash: frank"]);
 });
 
+test("hard checks: a Mono made in the scene is in the facts the judge reads (AD13 run f451: Postie was made and the judge called it work not present)", () => {
+  const out = hardChecks({ toAsh: [{ t: 1, who: "chief-of-staff", where: "room", text: "Postie's in the sidebar." }], delegations: [], stuckSeen: [], newMonos: ["Postie (fb04)"] });
+  assert.deepEqual(out.facts.newMonos, ["Postie (fb04)"]);
+  assert.deepEqual(hardChecks({ toAsh: [], delegations: [], stuckSeen: [] }).facts.newMonos, []);
+});
+
 test("hard checks: a clean scene has no automatic fail and no miss", () => {
   const t0 = 1_000_000;
   const out = hardChecks({

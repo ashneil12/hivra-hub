@@ -320,7 +320,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       tests: tests && { ...tests, code: tests.passesSomewhere ? 0 : tests.code },
       expect: scene.expect ?? {},
       sessionsStarted: events.filter((e) => e.kind === "session-new" && e.t >= t0).map((e) => ({ session: e.session, title: e.title, mono: e.mono })),
-      newMonos: (snap?.monos ?? []).map((m) => m.id).filter((id) => !monosBefore.has(id)),
+      newMonos: (snap?.monos ?? []).filter((m) => !monosBefore.has(m.id)).map((m) => (m.name ? `${m.name} (${m.id})` : m.id)),
       roomEnded: scene.expect?.roomEnds ? ended - lastRoom >= (scene.quietSec ?? 60) * 1000 : null,
     });
     const triggered = scene.triggeredBy === "stuck" ? stuckSeen.length > 0 : true;

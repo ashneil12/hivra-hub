@@ -103,6 +103,8 @@ export function hardChecks(input) {
   facts.seats = [...new Set(toAsh.filter((m) => m.where === "room").map((m) => m.who))];
   facts.sessionsStarted = sessionsStarted.length;
   facts.filesChanged = git?.changed ?? [];
+  // Monos made in the scene (they live in the app's home, not the project, so the git diff never shows them).
+  facts.newMonos = newMonos;
   facts.tests = tests;
   facts.goals = top.filter((r) => r.goal).map((r) => ({ id: r.id, goal: String(r.goal).slice(0, 120), state: r.state, kept: r.state === "completed" && !!String(r.result ?? "").trim() }));
   if (!toAsh.length) misses.push("no agent said anything where Ash reads");
