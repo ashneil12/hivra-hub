@@ -359,11 +359,13 @@ export async function spawnChild(
   devinAskEdits?: boolean,
   /** Claude Code on an "Other models" entry: the hub routes it through its local router with the model key. */
   customRoute?: { provider: string; baseUrl: string; modelId: string; customModelId: string },
+  /** The provider's default CLI, not the configured one (a Claude chat routed off the Grok bridge launcher). */
+  defaultBinary?: boolean,
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);
-  const binaryPath = binaryProvider
+  const binaryPath = binaryProvider && !defaultBinary
     ? runtimeProviderBinaryPath(binaryProvider)
     : undefined;
   const pid = await invoke<number>("harness_spawn", {

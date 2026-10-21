@@ -7,7 +7,6 @@ vi.mock("./codingTeam", () => ({ codingTeamsOn: () => true }));
 vi.mock("./hubData", () => ({
   hubData: () => ({ listProjects: () => [{ id: "hivra", name: "Hivra", folder: "/Users/ash/harness/hivra" }, { id: "ash", name: "Ash", folder: "/Users/ash" }] }),
 }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () => ({ claudeRunsOnGrok: () => false, GROK_BRIDGE_LABEL: "Grok 4.7" }));
 
 import { newDefaultSession, newSessionForProject } from "../../sessions/model/session";
 import { setFolderDefaultChoice } from "../../sessions/model/models";
@@ -34,7 +33,6 @@ describe("the coding team's default model", () => {
       expect(customModelRoute(chat)).toMatchObject({ provider: "deepseek", modelId: "deepseek-chat", reasoningEffort: "high" });
     }
     expect(codingTeamModelLine("Hivra")).toBe("New Hivra coding-team chats start on DeepSeek, High.");
-    expect(codingTeamModelLine("Hivra", true)).toContain("run on Grok 4.7 instead");
   });
 
   it("without a DeepSeek key, keeps the usual default and says why", () => {

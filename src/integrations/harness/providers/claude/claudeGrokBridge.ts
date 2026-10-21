@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { appIdentity } from "../../../../app/model/appIdentity";
 import { runtimeProviderBinaryPath } from "../../../../features/providers/model/providerBinaryPaths";
+import { customModelRoute } from "../../../../features/sessions/model/customModels";
 
 /**
  * Claude Code on Grok 4.7 through Ash's Grok (SuperGrok / X Premium+) subscription.
@@ -32,17 +33,37 @@ export function claudeRunsOnGrok(
 /** What a Claude Code chat on the bridge really runs, as the hub names it (GROK_BRIDGE_MODEL). */
 export const GROK_BRIDGE_LABEL = "Grok 4.7";
 
-/** True when a chat on this harness runs on the bridge (so its Claude model name and mark aren't what runs). */
-export function onGrokBridge(harness: string | undefined): boolean {
-  return harness === "claude" && claudeRunsOnGrok();
+/**
+ * A chat that leaves the bridge (Ash, 21 Oct 21:03: "both things"): one set explicitly to a non-Grok model under Other
+ * models (DeepSeek, OpenRouter's non-Grok models, Ollama, a custom one). It starts on the plain Claude Code with the
+ * hub's router and that model's own key, so the provider choice is honoured (E7's DeepSeek default included). Every
+ * other Claude Code chat (Claude models, which are only labels on the bridge, and a Grok model of any provider) stays on
+ * the bridge's forced grok-4.7. Never reads or holds a key: the route is metadata, the key stays in the Keychain.
+ */
+export function routedOffBridge(target: { model?: string; modelSettings?: Record<string, string> }): boolean {
+  const route = customModelRoute({ model: target.model ?? "", modelSettings: target.modelSettings ?? {} });
+  return !!route && route.provider !== "xai" && !/grok/i.test(route.modelId);
+}
+
+/** Whether this chat (by its model) runs on the bridge's Grok 4.7: Claude Code is on the bridge and it isn't routed off. */
+export function chatOnGrokBridge(target: { model?: string; modelSettings?: Record<string, string> } = {}): boolean {
+  return claudeRunsOnGrok() && !routedOffBridge(target);
+}
+
+/**
+ * True when a chat on this harness runs on the bridge (so its Claude model name and mark aren't what runs). Given the
+ * chat's model, a non-Grok Other model is not on the bridge (routedOffBridge).
+ */
+export function onGrokBridge(harness: string | undefined, model?: string): boolean {
+  return harness === "claude" && chatOnGrokBridge({ model });
 }
 
 /**
  * The model a chat really runs, by name: Grok 4.7 for a Claude Code chat on the bridge, whatever Claude model it names;
  * otherwise the name given. The one source the model line and the transcript's turn header both read.
  */
-export function modelInUseLabel(harness: string | undefined, name: string | undefined): string | undefined {
-  return name && onGrokBridge(harness) ? GROK_BRIDGE_LABEL : name;
+export function modelInUseLabel(harness: string | undefined, name: string | undefined, model?: string): string | undefined {
+  return name && onGrokBridge(harness, model) ? GROK_BRIDGE_LABEL : name;
 }
 
 /** Grok 4.7 takes low, medium, high or xhigh. Claude-only levels step down to the nearest one Grok has. */

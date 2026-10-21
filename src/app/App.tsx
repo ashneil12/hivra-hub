@@ -8245,7 +8245,7 @@ function Workspace({
             author: {
               harness: current.harness,
               model: current.model,
-              name: modelInUseLabel(current.harness, resolveModel(current.harness, current.model).name) ?? "",
+              name: modelInUseLabel(current.harness, resolveModel(current.harness, current.model).name, current.model) ?? "",
             },
             settings: { choices: [], maxWorkers: 2 },
             status: "planning",
