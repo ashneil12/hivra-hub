@@ -13,6 +13,7 @@ import {
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES } from "./projectShapeIcons";
+import { codingTeamModelLine } from "../model/codingTeamModel";
 import { DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits } from "../../monos/model/workerPool";
 
 /**
@@ -250,6 +251,8 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
       <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
         {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
       </p>
+      {/* E7: which model the coding team starts on (DeepSeek on High when set up), and why when it isn't. */}
+      <p className="text-[12px] leading-4 text-content/60" data-project-model-line>{codingTeamModelLine(project.name)}</p>
       {limits.workers !== DEFAULT_LIMITS.workers || limits.heavy !== DEFAULT_LIMITS.heavy ? (
         <button type="button" onClick={() => change({ ...DEFAULT_LIMITS })} className="self-start text-[12px] text-content/55 hover:text-content">
           Back to {DEFAULT_LIMITS.workers} and {DEFAULT_LIMITS.heavy}

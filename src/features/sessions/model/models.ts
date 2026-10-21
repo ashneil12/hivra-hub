@@ -861,8 +861,29 @@ export function firstEnabledHarness(
   return HARNESSES.find(enabled) ?? preferred;
 }
 
+/**
+ * A folder's own default when the project hasn't picked one: the hub registers the coding team's (E7, DeepSeek on
+ * High; hub/model/codingTeamModel.ts). Plain MonoCode registers none. `modelSettings` are applied as given.
+ */
+export type FolderDefaultChoice = LastModelChoice & { modelSettings?: Record<string, string> };
+let folderDefault: ((cwd: string) => FolderDefaultChoice | undefined) | undefined;
+export function setFolderDefaultChoice(pick: ((cwd: string) => FolderDefaultChoice | undefined) | undefined): void {
+  folderDefault = pick;
+}
+/** The registered folder default for `cwd`, when the project has no default of its own and that provider is enabled. */
+export function folderDefaultChoice(cwd: string | undefined): FolderDefaultChoice | undefined {
+  if (!cwd || !folderDefault) return undefined;
+  const project = loadProjectProviderSettings(cwd);
+  if (project.defaultHarness != null) return undefined;
+  const choice = folderDefault(cwd);
+  if (!choice || project.models?.[choice.harness]) return undefined;
+  return firstEnabledHarness(cwd, choice.harness) === choice.harness ? choice : undefined;
+}
+
 /** Provider + model new conversations should start with. */
-export function defaultSessionChoice(cwd?: string): LastModelChoice {
+export function defaultSessionChoice(cwd?: string): FolderDefaultChoice {
+  const folder = folderDefaultChoice(cwd);
+  if (folder) return folder;
   const project = loadProjectProviderSettings(cwd);
   const last = loadLastModelChoice();
   const harness = firstEnabledHarness(

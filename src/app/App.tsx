@@ -1,4 +1,5 @@
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
+import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
 import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
@@ -1290,6 +1291,8 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 
 // Register capabilities before composer hooks choose their discovery strategy.
 registerBuiltinHarnesses();
+// E7: new coding-team chats start on DeepSeek, High, when it is set up (hub/model/codingTeamModel.ts).
+installCodingTeamDefault();
 
 type AppProps = {
   windowTransfer?: WindowTransferPayload | null;
