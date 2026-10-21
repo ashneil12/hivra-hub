@@ -25,13 +25,16 @@ export type LeadSpec = {
   projectName: string;
   /** The seat this Lead replaces: an existing Mono with this id becomes this Lead, keeping its chat and files. */
   legacy?: { id: string; name: string; projectId: string };
+  /** The creature and colour this Lead first wears (Ash's look before 15 Oct); a Lead without one takes the next free look. */
+  look?: { mascot: string; color: string };
 };
 
 /** The four Leads. Ids are `<project id>-lead` (Ash OS's own convention for a Lead's Mono id). */
 export const LEADS: readonly LeadSpec[] = [
-  { projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO" },
-  { projectId: "hivra", id: "hivra-lead", name: "Hivra lead", projectName: "Hivra" },
-  { projectId: "nibbii", id: "nibbii-lead", name: "Nibbii lead", projectName: "Nibbii" },
+  { projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO", look: { mascot: "invader", color: "hsl(211 92% 62%)" } },
+  // Hivra wore an orange ghost before 15 Oct; Ash doesn't like ghost stuff, so it is an orange dino instead.
+  { projectId: "hivra", id: "hivra-lead", name: "Hivra lead", projectName: "Hivra", look: { mascot: "dino", color: "hsl(12 80% 58%)" } },
+  { projectId: "nibbii", id: "nibbii-lead", name: "Nibbii lead", projectName: "Nibbii", look: { mascot: "robot", color: "hsl(45 90% 55%)" } },
   // The harness work moved from `ash` (now Ash's global memory) to the project `hub` (19 Oct). The old "Harness lead"
   // (`ash-lead`) is adopted in place, so its conversation, memory, habits and delegations stay with it.
   {
@@ -39,6 +42,7 @@ export const LEADS: readonly LeadSpec[] = [
     id: "hub-lead",
     name: "MonoCode Hub lead",
     projectName: "MonoCode Hub",
+    look: { mascot: "cat", color: "hsl(142 55% 50%)" },
     legacy: { id: "ash-lead", name: "Harness lead", projectId: "ash" },
   },
 ];
@@ -213,7 +217,7 @@ export function ensureProjectLeads(projects: readonly HubProject[], register?: R
     // Ash removed the seat this Lead replaces: it stays gone.
     if (!existing && lead.legacy && isMonoRemovedByUser(lead.legacy.id)) continue;
     if (!existing) {
-      const look = nextMonoLook(listMonos());
+      const look = lead.look ?? nextMonoLook(listMonos());
       if (
         addMono({
           id: lead.id,

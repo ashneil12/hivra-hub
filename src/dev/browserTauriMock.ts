@@ -45,14 +45,15 @@ if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getIt
     "monocode:mono-roster",
     JSON.stringify([
       // The default team first (Critiquito is an add-on, off until Ash adds it), then each project's Lead.
-      { id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
-      { id: "projects-manager", name: "Projects Manager", mascot: "crab", color: "hsl(211 92% 62%)", projects: [] },
+      // Ash's own looks: the 15 Oct backup, with the live store's pick (a green crab on Chief of Staff, picked on purpose).
+      { id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] },
+      { id: "projects-manager", name: "Projects Manager", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
       { id: "frank", name: "frank", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
       { id: "alfred", name: "Alfred", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
-      { id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
-      { id: "hivra-lead", name: "Hivra lead", mascot: "rocket", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/hivra"] },
-      { id: "nibbii-lead", name: "Nibbii lead", mascot: "cat", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/nibbii"] },
-      { id: "ash-lead", name: "Harness lead", mascot: "robot", color: "hsl(210 8% 58%)", projects: ["/Users/ash/harness/org"] },
+      { id: "vg-game-lead", name: "EXO lead", mascot: "invader", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
+      { id: "hivra-lead", name: "Hivra lead", mascot: "ghost", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/hivra"] },
+      { id: "nibbii-lead", name: "Nibbii lead", mascot: "robot", color: "hsl(45 90% 55%)", projects: ["/Users/ash/harness/nibbii"] },
+      { id: "ash-lead", name: "Harness lead", mascot: "cat", color: "hsl(142 55% 50%)", projects: ["/Users/ash/harness/org"] },
     ]),
   );
 }

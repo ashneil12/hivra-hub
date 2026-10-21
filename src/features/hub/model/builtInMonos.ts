@@ -11,7 +11,9 @@ const ROSTER_KEY = "monocode:mono-roster";
  */
 export type TeamSpec = { id: string; name: string; engine: "claude"; addon?: true };
 
+/** Ash's look before 15 Oct: all four are robots, Chief of Staff amber and the rest grey. */
 const LOOK = { mascot: "robot", color: "hsl(210 8% 58%)" };
+const COLOR: Record<string, string> = { "chief-of-staff": "hsl(45 90% 55%)" };
 const BUILT_IN: readonly TeamSpec[] = [
   { id: "chief-of-staff", name: "Chief of Staff", engine: "claude" },
   { id: "projects-manager", name: "Projects Manager", engine: "claude" },
@@ -23,7 +25,7 @@ export const TEAM_ADDONS: readonly TeamSpec[] = [{ id: "critiquito", name: "Crit
 
 /** The roster entry a team Mono starts as: its soul rides in `instructions` until SOUL.md is first written. */
 export function teamRosterEntry(spec: TeamSpec, projects: string[] = []) {
-  return { id: spec.id, name: spec.name, ...LOOK, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
+  return { id: spec.id, name: spec.name, ...LOOK, color: COLOR[spec.id] ?? LOOK.color, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
 }
 
 /** Set by the first version of this step, which only seeded an empty roster. */

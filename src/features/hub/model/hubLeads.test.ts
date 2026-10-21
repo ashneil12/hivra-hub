@@ -60,7 +60,13 @@ describe("the project Leads", () => {
       ["nibbii-lead", "Nibbii lead", ["/Users/ash/Projects/nibbii"]],
       ["hub-lead", "MonoCode Hub lead", ["/Users/ash/Projects/monocode-hub"]],
     ]);
-    expect(new Set(roster.map((m) => m.mascot)).size).toBe(4);
+    // Ash's looks from before 15 Oct, except Hivra's ghost, which is an orange dino.
+    expect(roster.map((m) => [m.mascot, m.color])).toEqual([
+      ["invader", "hsl(211 92% 62%)"],
+      ["dino", "hsl(12 80% 58%)"],
+      ["robot", "hsl(45 90% 55%)"],
+      ["cat", "hsl(142 55% 50%)"],
+    ]);
     expect(register.mock.calls).toEqual([["vg-game-lead", "vg-game"], ["hivra-lead", "hivra"], ["nibbii-lead", "nibbii"], ["hub-lead", "hub"]]);
     // idempotent: nothing is made twice
     expect(ensureProjectLeads(PROJECTS).created).toEqual([]);
