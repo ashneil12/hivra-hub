@@ -29,7 +29,8 @@ import {
   schemeTextContrast,
   type ThemeScheme,
 } from "./themeSchemes";
-import { recordThemeChange, setThemeHook, type ThemeLook } from "../../hub/model/botChanges";
+import { recordThemeChange, type ThemeLook } from "../../hub/model/botChanges";
+import { registerChangeKind } from "../../selfBuild/model/changeFlow";
 import { loadMonoFiles, readAgentFile } from "../../monos/model/monoFiles";
 
 export const MAX_THEMES_PER_SCHEME = 7;
@@ -213,7 +214,18 @@ export async function offerMonoTheme(monoId: string, name: string, by: string): 
   return offerTheme(text, by);
 }
 
-setThemeHook((look) => putLook(look));
+// A Mono's applied theme is a "theme" change (selfBuild/model/changeFlow.ts): its Bot changes row's Undo and Redo
+// come here. Settings → Appearance is where a theme is previewed and applied, so there is no apply from elsewhere.
+registerChangeKind("theme", {
+  apply: async () => {
+    throw new Error("A theme is previewed and applied in Settings → Appearance.");
+  },
+  undo: async (data) => {
+    putLook((data as { before: ThemeLook }).before);
+    return null;
+  },
+  redo: async (data) => putLook((data as { after: ThemeLook }).after),
+});
 
 // The dev page and proofs hand a theme in the way a Mono's tool would.
 if (typeof window !== "undefined") (window as unknown as { __devOfferTheme?: typeof offerTheme }).__devOfferTheme = offerTheme;

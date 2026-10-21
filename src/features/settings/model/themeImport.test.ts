@@ -67,11 +67,13 @@ it("Apply from a Mono saves it, makes it active, and its Bot changes row's Undo 
   t.applyTheme();
   expect(s.loadActiveSchemeId()).toBe("custom-night");
   expect(s.loadCustomSchemes().map((x) => x.name)).toEqual(["Night"]);
-  const row = bc.botChangeRows().find((r) => r.kind === "one" && r.change.theme);
+  const row = bc.botChangeRows().find((r) => r.kind === "one" && r.change.flow?.kind === "theme");
   expect(row && row.kind === "one" && row.change.line).toBe("Critiquito changed the theme from Glass to “Night”");
   await bc.undoBotChange([row!.kind === "one" ? row!.change.id : ""]);
   expect(s.loadActiveSchemeId()).toBe("glass");
   expect(tokens().getPropertyValue("--scheme-accent")).toBe("");
+  await bc.redoBotChange([row!.kind === "one" ? row!.change.id : ""]);
+  expect(s.loadActiveSchemeId()).toBe("custom-night");
 });
 
 it("a theme can tint the glass but never make it solid; Glass stays the default", async () => {
