@@ -369,7 +369,7 @@ fn tools() -> Value {
         {
             "name": "page_build",
             "title": "Build a Page",
-            "description": "Build a Page for Ash from the hub's ready-made blocks, filled only with the project's real data you read first (git log, tasks, files): no example or made-up numbers. A block with nothing real yet goes in empty (rows or bars []) and shows Nothing here yet. Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} where every block has kind and title: status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar {month,firstWeekday,days,marked:[{day,text}]}; state is ok, warn or bad. Ash sees a preview with Apply and Discard. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
+            "description": "Build a Page for Ash from the hub's ready-made blocks, filled only with the project's real data you read first, from the hub and the project's own checkout (its local git log, task_status, files), never from gh or anything else that reaches GitHub: no example or made-up numbers. A block with nothing real yet goes in empty (rows or bars []) and shows Nothing here yet. Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} where every block has kind and title: status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar {month,firstWeekday,days,marked:[{day,text}]}; state is ok, warn or bad. Ash sees a preview with Apply and Discard. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1267,6 +1267,17 @@ mod tests {
         };
         assert!(desc("hub_change").contains("task_cancel its task, then call with ask again"));
         assert!(desc("mono_create").contains("is his choice: keep it, in his words, in who"));
+    }
+
+    /// AD14 (runs f451, 08f7): asked for a "what's shipped this week" page, the Hivra coding chat reached for
+    /// `gh pr list`, which waits on Ash's Allow card. The page tool sends it to the hub and the local checkout instead.
+    #[test]
+    fn page_build_reads_whats_shipped_from_the_hub_not_github() {
+        let list = tools();
+        let page = list.as_array().unwrap().iter().find(|t| t["name"] == "page_build").unwrap();
+        let desc = page["description"].as_str().unwrap();
+        assert!(desc.contains("from the hub and the project's own checkout (its local git log, task_status, files)"));
+        assert!(desc.contains("never from gh or anything else that reaches GitHub"));
     }
 
     #[test]

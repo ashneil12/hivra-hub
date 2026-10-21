@@ -22,3 +22,12 @@ it("the hub docs say how a Mono is deleted: only by Ash, from the sidebar, with 
   expect(readme).toContain("Deleting a Mono: there is no tool for it, so no Mono deletes one.");
   expect(readme).toContain("Delete mono…");
 });
+
+it("the hub docs say what's shipped and what's stuck come from the hub and the local checkout, never gh (AD14 runs f451 and 08f7: the Hivra coding chat asked to run gh pr list and sat on the Allow card)", () => {
+  expect(readme).toContain("## What's shipped, what's stuck");
+  expect(readme).toContain("never from GitHub: no `gh`, `git fetch` or anything else that goes online");
+  expect(readme).toMatch(/`task_status`/);
+  expect(readme).toContain("`jobs.read` (done jobs carry `finishedAt`)");
+  // The docs must never tell a chat to reach for gh.
+  expect(readme).not.toMatch(/`gh (pr|api|issue|run)/);
+});

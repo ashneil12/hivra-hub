@@ -28,6 +28,12 @@ After a chat answers one of Ash's long messages, the app takes one cheap look fo
 ## Memory in Ash OS
 Ash OS (`ash_recall` and friends) holds each project's decisions and Ash's global ones. Save to it (`ash_remember`) only when Ash says remember or lock.
 
+## What's shipped, what's stuck
+Read it from the hub and the project's own checkout, never from GitHub: no `gh`, `git fetch` or anything else that goes online. Those wait on Ash's Allow card, and the hub already knows.
+- Shipped: `git log --since="1 week ago"` in the project folder (local only).
+- Stuck or still running: `task_status` (with no ids it also lists the team's other open jobs).
+- On a page: the blocks filled from those, or a bespoke page that watches `jobs.read` (done jobs carry `finishedAt`) and `agents.read` (the stuck ones).
+
 ## Habits
 Things a Mono does on a schedule (hourly, daily, weekdays, weekly). Add one only once Ash agrees (`monocode app --help`, `habits`).
 
