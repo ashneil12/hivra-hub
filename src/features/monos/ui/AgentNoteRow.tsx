@@ -37,8 +37,9 @@ function NoteWords({ note }: { note: AgentNote }) {
 export function AgentNoteRow({ note, embedded = false }: { note: AgentNote; embedded?: boolean }) {
   return (
     <div className={`${embedded ? "" : "px-4"} ${LINE}`} data-agent-note={note.kind} aria-label={noteText(note)} role="note">
-      {/* Critiquito, round 22: a stuck note carries Today's own red Stuck ring (StatusMark); the words stay muted. */}
-      {note.kind === "stuck" ? <span className="self-center" data-agent-note-ring><StatusMark state="stuck" /></span> : null}
+      {/* Critiquito, rounds 22-23: a stuck note carries Today's own red Stuck ring (StatusMark), ring only (the words
+          already say "got stuck"; the ring's accessible name is "Stuck"), on the text's baseline; the words stay muted. */}
+      {note.kind === "stuck" ? <span className="shrink-0" data-agent-note-ring><StatusMark state="stuck" ringOnly /></span> : null}
       <NoteWords note={note} />
     </div>
   );

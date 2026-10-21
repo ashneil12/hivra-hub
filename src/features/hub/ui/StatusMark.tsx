@@ -4,22 +4,38 @@ import type { Need, StuckState } from "../model/types";
 const AMBER = "rgb(245 158 11)";
 const RED = "rgb(239 68 68)";
 
+/** The circle on its own: 14px, a 2px ring. Inline, so it sits on the text's baseline like a letter would. */
+function Ring({ circle }: { circle: "amber" | "red" }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden className="inline-block align-baseline">
+      <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={circle === "red" ? RED : AMBER} />
+    </svg>
+  );
+}
+
 /** A 14px circle and a plain grey word: the only status mark the hub uses. Red = stuck or needs you, amber = sent to lead. */
-export function CircleWord({ circle, word }: { circle: "amber" | "red"; word: string }) {
+export function CircleWord({ circle, word, ringOnly = false }: { circle: "amber" | "red"; word: string; ringOnly?: boolean }) {
+  // Ring only (Critiquito, round 23: the agent note already says "got stuck"): the word becomes the ring's accessible
+  // name, so a screen reader still hears it and the line doesn't say it twice.
+  if (ringOnly) {
+    return (
+      <span role="img" aria-label={word} title={word} className="inline-block shrink-0 leading-none" data-hub-circle={circle} data-hub-ring-only>
+        <Ring circle={circle} />
+      </span>
+    );
+  }
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-content/60" data-hub-circle={circle}>
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
-        <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke={circle === "red" ? RED : AMBER} />
-      </svg>
+      <Ring circle={circle} />
       {word}
     </span>
   );
 }
 
 /** The only status the hub shows: a 14px circle and a plain word. */
-export function StatusMark({ state }: { state: StuckState }) {
+export function StatusMark({ state, ringOnly = false }: { state: StuckState; ringOnly?: boolean }) {
   // Stuck is one red wherever it shows (Critiquito, 21 Oct): stuck or given up by the Lead. Only "Sent to lead" is amber.
-  return state === "sent_to_lead" ? <CircleWord circle="amber" word="Sent to lead" /> : <CircleWord circle="red" word="Stuck" />;
+  return state === "sent_to_lead" ? <CircleWord circle="amber" word="Sent to lead" ringOnly={ringOnly} /> : <CircleWord circle="red" word="Stuck" ringOnly={ringOnly} />;
 }
 
 /**
