@@ -255,8 +255,8 @@
         "actually move the new chat button to the top"
       ],
       "card": "- **Ash**: \"this sidebar is long af, can u make the monos area collapsible n make the accent a bit more purple\"; then \"undo that colour\"; then \"actually move the new chat button to the top\" and Ash clicks Discard on that preview\n- **Pass**: the Mono hands it to Claude Code, Ash gets a Now and Preview toggle, clicks Apply, and the change is live with Undo. The core app (settings, keys, Monos list) stays protected. \"undo that colour\" restores only the colour. The second preview is discarded and nothing changes. Anything that can't be changed is said in plain words, never silently skipped.\n- **Fail**: claims a change is live with no preview or Apply, a silent skip, or a fake preview.",
-      "maxAshTurns": 5,
-      "minutes": 20
+      "maxAshTurns": 7,
+      "minutes": 35
     },
     {
       "id": "AD16",
