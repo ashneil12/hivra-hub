@@ -30,8 +30,11 @@ import {
   type ThemeScheme,
 } from "./themeSchemes";
 import { recordThemeChange, setThemeHook, type ThemeLook } from "../../hub/model/botChanges";
+import { loadMonoFiles, readAgentFile } from "../../monos/model/monoFiles";
 
 export const MAX_THEMES_PER_SCHEME = 7;
+/** Themes tint over Monocode glass (the default) and never go solid, so some of the glass always shows. */
+export const MAX_THEME_OPACITY = 0.95;
 
 export type ThemeCheck = { ok: true; theme: Omit<ThemeScheme, "id" | "custom"> & { id: string } } | { ok: false; problems: string[] };
 
@@ -57,7 +60,8 @@ export function checkThemeJson(text: string, existing: readonly ThemeScheme[] = 
   if (!num(t.saturation, 0, 100)) problems.push("Saturation must be a number from 0 to 100.");
   if (scheme === "dark" && !num(t.lightness, 0, 20)) problems.push("A dark theme's lightness must be from 0 to 20.");
   if (scheme === "light" && t.lightness !== undefined && !num(t.lightness, 0, 100)) problems.push("Lightness must be from 0 to 100.");
-  if (!num(t.opacity, 0.15, 1)) problems.push("Opacity must be from 0.15 to 1.");
+  if (!num(t.opacity, 0.15, MAX_THEME_OPACITY))
+    problems.push(`Opacity must be from 0.15 to ${MAX_THEME_OPACITY}. A theme tints the glass; it can't make it solid.`);
   const accent = t.accent ?? null;
   if (accent !== null && (typeof accent !== "string" || !/^(#[0-9a-f]{6}|hsl\(\s*[\d.]+(deg)?[\s,]+[\d.]+%[\s,]+[\d.]+%\s*\))$/i.test(accent)))
     problems.push("Accent must be #rrggbb, hsl(…) or null.");
@@ -181,6 +185,28 @@ export function applyTheme(): ThemeScheme | undefined {
   if (by) recordThemeChange(by, saved.name, before, after);
   emit();
   return saved;
+}
+
+/** The theme files a Mono keeps (`themes/<name>.json` in its folder), by name. */
+export async function monoThemeNames(monoId: string): Promise<string[]> {
+  return (await loadMonoFiles(monoId)).themes ?? [];
+}
+/** Hand in one of a Mono's theme files, checked the same way as a pasted one. */
+export async function offerMonoTheme(monoId: string, name: string, by: string): Promise<ThemeCheck> {
+  let text: string | null;
+  try {
+    text = (await readAgentFile(monoId, `themes/${name}.json`)).text;
+  } catch {
+    text = null;
+  }
+  if (text === null) {
+    const check: ThemeCheck = { ok: false, problems: [`${by} has no theme called “${name}”.`] };
+    if (pending?.previewing) stopPreview();
+    pending = { check, by, previewing: false };
+    emit();
+    return check;
+  }
+  return offerTheme(text, by);
 }
 
 setThemeHook((look) => putLook(look));

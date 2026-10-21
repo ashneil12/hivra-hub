@@ -3,6 +3,13 @@
 // changes row whose Undo puts the look back.
 import { beforeEach, expect, it, vi } from "vitest";
 
+const monoFiles = vi.hoisted(() => ({ themes: {} as Record<string, string> }));
+vi.mock("../../monos/model/monoFiles", () => ({
+  loadMonoFiles: async () => ({ themes: Object.keys(monoFiles.themes) }),
+  readAgentFile: async (_mono: string, path: string) => ({ text: monoFiles.themes[path.replace(/^themes\/|\.json$/g, "")] ?? null, hash: "" }),
+  writeAgentFile: async () => "",
+}));
+
 beforeEach(() => {
   localStorage.clear();
   vi.resetModules();
@@ -62,4 +69,20 @@ it("Apply from a Mono saves it, makes it active, and its Bot changes row's Undo 
   await bc.undoBotChange([row!.kind === "one" ? row!.change.id : ""]);
   expect(s.loadActiveSchemeId()).toBe("glass");
   expect(tokens().getPropertyValue("--scheme-accent")).toBe("");
+});
+
+it("a theme can tint the glass but never make it solid; Glass stays the default", async () => {
+  const { t, s } = await load();
+  expect(s.loadActiveSchemeId()).toBe("glass");
+  const solid = t.checkThemeJson(JSON.stringify({ name: "Brick", hue: 220, saturation: 8, lightness: 8, opacity: 1, accent: null }));
+  expect(solid).toEqual({ ok: false, problems: ["Opacity must be from 0.15 to 0.95. A theme tints the glass; it can't make it solid."] });
+});
+
+it("reads a Mono's themes/<name>.json and checks it like a pasted one", async () => {
+  const { t } = await load();
+  monoFiles.themes = { night: NIGHT };
+  expect(await t.monoThemeNames("critiquito")).toEqual(["night"]);
+  expect((await t.offerMonoTheme("critiquito", "night", "Critiquito")).ok).toBe(true);
+  expect(t.pendingTheme()?.by).toBe("Critiquito");
+  expect(await t.offerMonoTheme("critiquito", "gone", "Critiquito")).toEqual({ ok: false, problems: ["Critiquito has no theme called “gone”."] });
 });
