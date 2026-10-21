@@ -179,3 +179,27 @@ test("--grok-sub refuses in plain words when the bridge launcher isn't there, an
   assert.equal(grokBridge(launcher), launcher);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("a coding-team send goes to the test project's hub id, not to the project's folder", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-ct-"));
+  const sent = [];
+  const ctx = {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind, args) => {
+      if (kind === "send") {
+        sent.push(JSON.parse(JSON.stringify(args.to)));
+        return { ok: true, at: Date.now(), session: "chat-1" };
+      }
+      return { sessions: [], rooms: [] };
+    },
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [], claudeTexts: () => [],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  };
+  await runScenario({ id: "ct", title: "ct", minutes: 1, steps: [{ send: { codingTeam: "project" }, as: "fix", text: "the stats test is red" }] }, ctx).catch(() => undefined);
+  assert.deepEqual(sent[0], { codingTeam: "tally" });
+  fs.rmSync(evidence, { recursive: true, force: true });
+});

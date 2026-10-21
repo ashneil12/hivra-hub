@@ -64,7 +64,9 @@ export async function runScenario(scenario, ctx) {
     if (to.room) return { room: resolveRoom(to.room) };
     if (to.mono) return { mono: resolveMono(to.mono) };
     // A new chat in a project's coding team ("project": the test project), as Ash's New session there makes one.
-    if (to.codingTeam) return { codingTeam: to.codingTeam === "project" ? ctx.project.id : to.codingTeam };
+    // ctx.project is the test project's folder (a path); its hub id is the spec's. Reading `.id` off the path sent
+    // `{}` to the driver ("send: no chat for {}", the coding-team run of 20 Oct).
+    if (to.codingTeam) return { codingTeam: to.codingTeam === "project" ? (ctx.spec?.project?.id ?? ctx.project?.id) : to.codingTeam };
     if (to.chat) {
       const session = chatSession(to.chat);
       return session ? { session } : null;
