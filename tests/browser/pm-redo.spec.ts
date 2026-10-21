@@ -71,8 +71,11 @@ test("G4: each Mono's role shows after its name on the rail, in the header and t
     (list.closest("aside") ?? list).style.width = "170px";
     list.style.width = "170px";
   });
-  const name = cos.locator("[data-mono-primary-name]");
-  const box = await name.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  // Under about 200px the role is hidden and every name has the whole row; the role stays in the tooltip.
+  await expect(cos.locator("[data-mono-role]")).toBeHidden();
+  await expect(cos).toHaveAttribute("title", /\nBusiness partner across every project/);
+  const pm = rail.locator('button[aria-label^="Projects Manager"] [data-mono-primary-name]').first();
+  const box = await pm.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
   expect(box.scroll).toBeLessThanOrEqual(box.client);
   const railBox = await rail.boundingBox();
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });

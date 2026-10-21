@@ -325,7 +325,7 @@ export function MonoRailSection({
       <div
         hidden={collapsed}
         data-mono-rail-list
-        className={`${collapsed ? "hidden" : "flex"} max-h-[40vh] flex-col gap-px overflow-y-auto${
+        className={`@container/monorail ${collapsed ? "hidden" : "flex"} max-h-[40vh] flex-col gap-px overflow-y-auto${
           project ? "" : " px-2"
         }`}
       >
@@ -429,13 +429,14 @@ export function MonoRailSection({
                   </Shimmer>
                 ) : (
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
-                    {/* On a narrow rail the role is cut first, wherever it sits; the Mono's own name keeps its room. */}
+                    {/* The name always wins: under about 200px the role is hidden (it stays in the tooltip) and the
+                        name has the whole row. Grey text is at 80%, so even on a dimmed row it is 4.5:1 on glass. */}
                     {shown(look).secondary === look.name ? (
                       <>
-                        <span className="min-w-0 truncate text-sm font-medium" data-mono-primary-name>
+                        <span className="min-w-0 truncate text-sm font-medium @max-[200px]/monorail:hidden" data-mono-primary-name>
                           {shown(look).primary}
                         </span>
-                        <span className="shrink-0 text-xs font-normal text-content/45" data-mono-own-name>
+                        <span className="shrink-0 text-xs font-normal text-content/80 @max-[200px]/monorail:truncate @max-[200px]/monorail:text-sm @max-[200px]/monorail:font-medium @max-[200px]/monorail:text-content" data-mono-own-name>
                           {shown(look).secondary}
                         </span>
                       </>
@@ -445,7 +446,7 @@ export function MonoRailSection({
                           {shown(look).primary}
                         </span>
                         {shown(look).secondary ? (
-                          <span className="min-w-0 truncate text-xs font-normal text-content/45" data-mono-role>
+                          <span className="min-w-0 truncate text-xs font-normal text-content/80 @max-[200px]/monorail:hidden" data-mono-role>
                             {shown(look).secondary}
                           </span>
                         ) : null}
