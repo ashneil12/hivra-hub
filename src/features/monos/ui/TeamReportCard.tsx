@@ -1,7 +1,7 @@
 // A coding team's report in the briefing Mono's chat, as one framed card (port map idea 1). After UniiChat
 // (Apache-2.0, VictorTaelin/UniiChat @ 0500bf6, web/style.css `.msg.work` and `.msg.work::before`, web/src/Html.ts TALL):
 // the sender's name sits on the frame's top edge, the body is plain text, and a tall report shows its head (20em) with
-// "Show all", then "Fold". Differs on purpose (Critiquito, 21 Oct): a faint hairline frame, no shadow, glow or coloured
+// "Show all", then "Fold"; the folded head fades softly above "Show all". Differs on purpose (Critiquito, 21 Oct): a faint hairline frame, no shadow, glow or coloured
 // header, for the Monocode glass look; a native fieldset legend cuts the frame, so no painted patch sits on the glass.
 import { useState } from "react";
 import { reportIsTall, type TeamReport } from "../model/teamReport";
@@ -25,7 +25,8 @@ export function TeamReportCard({ report }: { report: TeamReport }) {
         data-team-report-body
         data-folded={tall && !open ? "" : undefined}
         className={`whitespace-pre-wrap break-words text-[13px] leading-5 text-content/85 ${
-          tall && !open ? "max-h-[20em] overflow-hidden" : ""
+          // Folded, its last lines fade softly into "Show all": a mask, not a painted gradient, so the glass shows through.
+          tall && !open ? "max-h-[20em] overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-3em),transparent)]" : ""
         }`}
       >
         {report.text}

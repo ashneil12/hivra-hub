@@ -84,19 +84,4 @@ test("the five ideas on the real components", async ({ page }) => {
   await expect(needs.getByText(/Always allow/)).toHaveCount(0);
   expect(await page.evaluate(() => !!document.activeElement?.closest("[data-hub-approval]"))).toBe(false);
   await shot(page, "pm-ui-3-needs-you-reasons", "[data-proof-needs]");
-
-  // 4. The rail: working moves, idle is still, and 8 s after a running chat left the window it can't tell: faded,
-  // still, the same grey dot, "Not sure" on hover.
-  const gone = page.locator('[data-proof-mono="m-gone"]');
-  await expect(gone).toHaveAttribute("data-mono-status", "unknown", { timeout: 12_000 });
-  await expect(gone).toHaveAttribute("title", /Not sure/);
-  await expect(gone.locator("[data-mono-unsure]")).toHaveClass(/opacity-40/);
-  await expect(page.locator('[data-proof-mono="m-working"]')).toHaveAttribute("data-mono-status", "working");
-  await expect(page.locator('[data-proof-mono="m-working"] .pixel-hop')).toHaveCount(1);
-  await expect(page.locator('[data-proof-mono="m-idle"]')).toHaveAttribute("data-mono-status", "idle");
-  await expect(page.locator('[data-proof-mono="m-idle"] .pixel-bob, [data-proof-mono="m-idle"] .pixel-hop')).toHaveCount(0);
-  await expect(gone.locator(".pixel-bob, .pixel-hop")).toHaveCount(0);
-  // The hover line, shown for the photo (on the Mac it is the row's tooltip).
-  await gone.locator("[data-proof-hover]").evaluate((el) => el.classList.remove("hidden"));
-  await shot(page, "pm-ui-4-not-sure", "[data-proof-rail]");
 });

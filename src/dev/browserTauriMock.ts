@@ -5,6 +5,7 @@ import { emit } from "@tauri-apps/api/event";
 import { createStubBridge } from "./hubStubBridge";
 import { configureChildBackend } from "../integrations/harness/core/child";
 import { fakeClaudeBackend } from "./fakeClaudeBackend";
+import { SessionStateStore } from "../features/sessions/model/sessionStateStore";
 
 // ?fakeClaude: a stand-in for the Claude CLI behind the real Claude adapter (fakeClaudeBackend.ts), for browser tests.
 // The chats' project folders then count as there, so a message goes in.
@@ -194,6 +195,8 @@ mockIPC(
       return found.data;
     }
     if (cmd === "write_attachment") return `/tmp/monocode-attachments/dev-${(args as { name?: string }).name ?? "attachment"}`;
+    // The CLI paths set in Settings, as the Rust side hands them back when they exist (a proof sets the Grok bridge).
+    if (cmd === "harness_runtime_binary_paths") return (args as { paths?: Record<string, string> } | undefined)?.paths ?? {};
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;
@@ -220,7 +223,20 @@ void import("../features/hub/model/projectPrefs").then(({ setProjectFileActions 
   }),
 );
 
+// Dev only: every chat store this page's app made, so a browser proof can take a chat out of the window as moving it to
+// another window would (its record leaves this window's store; its turn and harness are left alone). The app itself has
+// no such path in a browser (window moves need native windows).
+const devSessionStores = new Set<SessionStateStore>();
+const devUpdate = SessionStateStore.prototype.update;
+SessionStateStore.prototype.update = function (this: SessionStateStore, ...args: Parameters<SessionStateStore["update"]>) {
+  devSessionStores.add(this);
+  return devUpdate.apply(this, args);
+};
+
 Object.assign(window, {
+  __devChatLeavesWindow: (sessionId: string) => {
+    for (const store of devSessionStores) store.update((list) => list.filter((session) => session.id !== sessionId));
+  },
   __devDelegationsChanged: () => void emit("monocode:delegations-changed", { ids: [] }),
   __devHubSelect: (selection: { project: string; item: string }) =>
     import("../features/hub/model/hubNav").then(({ setHubSelection }) => setHubSelection(selection)),

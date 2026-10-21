@@ -254,7 +254,8 @@ export function ComposerRunner({
         const shell = box.closest("[data-composer]");
         const review = shell?.querySelector("[data-session-review]");
         const queue = shell?.querySelector("[data-message-queue-card]");
-        const ledge = review ?? queue;
+        // With the model line above the box (a coding team's chat), the runner runs its rule, clear of the model text.
+        const ledge = review ?? queue ?? shell?.querySelector("[data-model-line-rule]");
         cachedTrack = runnerTrack(
           box.getBoundingClientRect(),
           ledge?.getBoundingClientRect() ?? null,

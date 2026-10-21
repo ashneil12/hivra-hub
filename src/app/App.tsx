@@ -15429,8 +15429,10 @@ function Workspace({
       const session = mono.sessionId
         ? sessions.find((entry) => entry.id === mono.sessionId)
         : undefined;
-      monoLiveness.note(mono.id, { present: !!session, busy: !!session?.busy }, now);
-      if (monoLiveness.state(mono.id, !!mono.sessionId, now) === "unknown") {
+      // Keyed by the chat: a Mono that starts a new conversation is read from its new chat, not its old one's last state.
+      const liveKey = mono.sessionId ?? mono.id;
+      monoLiveness.note(liveKey, { present: !!session, busy: !!session?.busy }, now);
+      if (monoLiveness.state(liveKey, !!mono.sessionId, now) === "unknown") {
         states.set(mono.id, { status: "unknown" });
       } else if (session) {
         // An idle Mono that is waiting on a pull request says so instead of nothing.

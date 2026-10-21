@@ -3,7 +3,8 @@
 // disclosure line on fixed 3-hour clock windows (View.ts part_due, NOTICE = 3h), which is not a gap and shows no counts;
 // nothing here is ported from it. Ours: a turn that starts 3 h or more after the one before, and that Ash didn't start,
 // gets one divider, counting what came from there up to his next own message (or the next gap): the Mono's replies, and
-// coding-team reports (teamReport.ts). Built from the chat's own blocks, no new AI call.
+// coding-team reports (teamReport.ts). Built from the chat's own blocks, no new AI call. An extra on top of the five
+// screens: it does not close C9 (the one long chat), which stays out of scope.
 import type { Block } from "../../sessions/model/session";
 import {
   isProseBlock,
@@ -11,7 +12,8 @@ import {
   monoTurnRuns,
 } from "../../sessions/model/transcriptActivity";
 
-/** How long Ash has to be away (between one turn and the next) before the divider shows. */
+/** How long Ash has to be away (between one turn and the next) before the divider shows. OUR OWN NUMBER: Ash never
+ * named a length, and neither app has a gap rule (UniiChat's 3 h is a fixed clock window for its AI notice). */
 export const AWAY_GAP_MS = 3 * 60 * 60 * 1000;
 
 export type SinceYouWereHere = { replies: number; reports: number };

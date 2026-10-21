@@ -16,7 +16,7 @@ export const MODEL_NOTE_MS = 7000;
 
 type PickerProps = ComponentProps<typeof ModelPicker>;
 
-export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron">) {
+export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron" | "noIcon">) {
   const [note, setNote] = useState<string | null>(null);
   const onGrok = props.harness === "claude" && claudeRunsOnGrok();
   useEffect(() => {
@@ -35,6 +35,7 @@ export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hi
         {...props}
         hideSettings
         chevron
+        noIcon
         variant="text"
         triggerLabel={onGrok ? GROK_BRIDGE_LABEL : props.triggerLabel}
         cycle={onGrok ? undefined : (name) => setNote(`Now ${name}.`)}

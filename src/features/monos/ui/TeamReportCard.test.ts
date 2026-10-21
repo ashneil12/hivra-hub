@@ -33,12 +33,15 @@ it("a tall report shows its head (20em) with Show all, then Fold", () => {
   const body = el.querySelector("[data-team-report-body]")!;
   expect(body.hasAttribute("data-folded")).toBe(true);
   expect(body.className).toContain("max-h-[20em]");
+  // A soft fade above Show all, made with a mask so nothing is painted on the glass.
+  expect(body.className).toContain("[mask-image:linear-gradient(to_bottom,black_calc(100%-3em),transparent)]");
   const more = el.querySelector<HTMLButtonElement>("[data-team-report-more]")!;
   expect(more.textContent).toBe("Show all");
   act(() => more.click());
   expect(body.hasAttribute("data-folded")).toBe(false);
   expect(more.textContent).toBe("Fold");
   expect(more.getAttribute("aria-expanded")).toBe("true");
+  expect(body.className).not.toContain("mask-image");
 });
 
 it("exactly at the threshold it does not fold", () => {

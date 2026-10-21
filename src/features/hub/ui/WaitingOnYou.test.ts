@@ -45,6 +45,13 @@ it("every row says why in the same plain grey word, no colour chip", () => {
   // The suggestion stays on its own line under the question.
   const b = el.querySelector('[data-hub-waiting-chat="b"]')!;
   expect(b.querySelector("[data-hub-waiting-pick]")!.textContent).toBe("Suggests: Archive it.");
+  // No suggestion, no line; no project, no "No project ·" in front of the chat's name.
+  const a = el.querySelector('[data-hub-waiting-chat="a"]')!;
+  expect(a.querySelector("[data-hub-waiting-pick]")).toBeNull();
+  expect(a.textContent).not.toMatch(/No suggestion|No project/);
+  const where = a.querySelector("[data-hub-waiting-where]")!.textContent!;
+  expect(where.length).toBeGreaterThan(0);
+  expect(where.startsWith("·")).toBe(false);
 });
 
 it("a red line offers exactly Approve once and Deny, neither the default, no Always allow and no one-tap pick", async () => {

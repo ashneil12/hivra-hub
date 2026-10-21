@@ -90,13 +90,14 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
     if (!res.ok) return setProblem(res.reason);
     next?.focus();
   };
-  const where = [showProject ? (chat.projectName ?? "No project") : null, chat.chatName].filter(Boolean).join(" · ");
+  // A row with no project shows just its chat's name: no "No project ·" in front.
+  const where = [showProject ? chat.projectName : null, chat.chatName].filter(Boolean).join(" · ");
   return (
     <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
-        <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span>
+        {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
         {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3). */}
-        <span className="shrink-0" aria-hidden>·</span>
+        {where ? <span className="shrink-0" aria-hidden>·</span> : null}
         <span className="shrink-0" data-hub-waiting-reason>{needsReason(chat)}</span>
         {chat.redLine ? <span className="sr-only" data-hub-red-line>Red line</span> : null}
       </div>
@@ -104,9 +105,12 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
         {chat.question}
         {chat.more ? <span className="text-content/60"> (+{chat.more} more)</span> : null}
       </div>
-      <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
-        {chat.pick ? `Suggests: ${chat.pick}` : "No suggestion. Answer in your words or open the chat."}
-      </div>
+      {/* No suggestion, no line: the reply box and Open chat already say what to do. */}
+      {chat.pick ? (
+        <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
+          Suggests: {chat.pick}
+        </div>
+      ) : null}
       <div className="mt-1 flex items-center gap-2">
         {chat.redLine ? (
           // A red line is an approval: two explicit choices in the same quiet style, neither one the default, and no

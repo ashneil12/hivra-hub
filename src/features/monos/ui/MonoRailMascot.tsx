@@ -24,13 +24,14 @@ export function MonoRailMascot({
   return (
     <span
       data-mono-unsure={unsure || undefined}
-      className={`relative grid place-items-center ${unsure ? "opacity-40" : ""} ${className}`}
+      className={`relative grid place-items-center ${className}`}
     >
       {letter ? (
         <span
           data-mono-letter
+          data-unsure={unsure || undefined}
           aria-hidden
-          className="grid size-full place-items-center rounded-[4px] bg-content/12 text-[8px] font-semibold tracking-tight leading-none text-content/80 ring-1 ring-inset ring-content/10"
+          className="grid size-full place-items-center rounded-[4px] bg-content/12 data-[unsure]:opacity-40 text-[8px] font-semibold tracking-tight leading-none text-content/80 ring-1 ring-inset ring-content/10"
         >
           {letter.length > 2 ? monoTileLetters(letter) : letter}
         </span>
@@ -40,7 +41,8 @@ export function MonoRailMascot({
           color={color}
           status={status}
           still={status === "idle" || unsure}
-          className="size-full"
+          // Only the creature fades; the dot keeps its place and its plain grey.
+          className={`size-full ${unsure ? "opacity-40" : ""}`}
         />
       )}
       <MonoStatusDot

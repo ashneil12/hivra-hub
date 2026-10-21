@@ -22,7 +22,9 @@ it("can't tell: the creature is faded and still, with the same grey dot (no new 
   const root = createRoot(el);
   act(() => root.render(createElement(MonoRailMascot, { name: "robot", color: "hsl(30 80% 50%)", status: "unknown" })));
   const tile = el.querySelector("[data-mono-unsure]")!;
-  expect(tile.className).toContain("opacity-40");
+  expect(tile.className).not.toContain("opacity-40");
+  // Only the creature fades: the dot keeps full strength, its place and its grey.
+  expect(tile.querySelector("svg.pixel-mascot")!.getAttribute("class")).toContain("opacity-40");
   expect(el.querySelector(".pixel-bob, .pixel-hop, .pixel-eyes-open")).toBeNull();
   expect(el.querySelector("[data-mono-dot]")!.className).toContain("bg-content/30");
   act(() => root.render(createElement(MonoRailMascot, { name: "robot", color: "hsl(30 80% 50%)", status: "idle" })));

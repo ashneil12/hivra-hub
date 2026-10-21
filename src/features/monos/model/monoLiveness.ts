@@ -1,4 +1,4 @@
-// Three honest states for a Mono on the rail: working, idle, or can't tell (port map idea 4). Behaviour matched to
+// Three honest states for a Mono on the rail (keyed by its chat id): working, idle, or can't tell (port map idea 4). Behaviour matched to
 // Alan's Workspace (capthvnsen/alans-way @ 3dac36c, desktop/src/activity.cjs, GPL-3.0: our own code, nothing copied):
 // a live signal counts for 6 s (ACTIVITY_TTL_MS), the feed that carries signals is trusted for 8 s after it was last
 // heard (BRIDGE_TTL_MS), and a state the app can't know is never shown as idle. Ours: the signal is seeing the Mono's

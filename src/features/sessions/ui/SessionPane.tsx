@@ -73,7 +73,7 @@ import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegation
 import { readTeamReport } from "../../monos/model/teamReport";
 import { MonoModelLine } from "../../monos/ui/MonoModelLine";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
-import { useCodingTeamVersion } from "../../hub/model/codingTeam";
+import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import {
   DelegatedChatNotice,
   DelegationWaitingLine,
@@ -441,6 +441,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   // A worker's chat runs on its own; a chat Ash talks to (a Mono, or a coding-team chat) with work out reads what is
   // out ("2 working: API · 1 stuck: Tests"), with a card for each stuck worker (H4).
   useCodingTeamVersion();
+  // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
+  const teamChat = !agent && isCodingTeamChat(session.id);
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id));
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
@@ -784,7 +786,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
         return onSubmit(session.id, text, attachments, options);
       }}
       onBtwCommand={btw.openWith}
-      onStop={() => onStop(session.id)}
+      // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
+      onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
+      turnStop={teamChat}
+      modelLine={
+        teamChat ? (
+          <MonoModelLine
+            harness={session.harness}
+            model={session.model}
+            values={session.modelSettings}
+            allowedHarnesses={allowedModelHarnesses}
+            project={session.cwd}
+            hotkeys={focused && !btw.open}
+            onChange={(harness, model) => onModelChange(session.id, harness, model)}
+            onSettingsChange={(settings) => onModelSettingsChange(session.id, settings)}
+          />
+        ) : undefined
+      }
       onCompactContext={() => onCompactContext(session.id)}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
@@ -1259,7 +1277,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     // drops it first, then shows the model controls as icons.
                     tools={
                       monoComposerUsage ? (
-                        <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
+                        // Grey like the rest of the line: no provider colour under a Mono's box (Critiquito, 21 Oct).
+                        <div data-mono-usage className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 grayscale @max-md:hidden">
                           <UsageChips
                             providers={monoUsageProviders(session.harness)}
                             session={{

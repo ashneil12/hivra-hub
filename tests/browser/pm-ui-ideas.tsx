@@ -10,15 +10,12 @@ import { mockHubData } from "../../src/features/hub/model/mockData";
 import { setHubDataSource } from "../../src/features/hub/model/hubData";
 import { noteChats, setWaitingChatsHost } from "../../src/features/hub/model/waitingChats";
 import { WaitingOnYou } from "../../src/features/hub/ui/WaitingOnYou";
-import { MonoRailMascot } from "../../src/features/monos/ui/MonoRailMascot";
-import { MONO_STATUS_LABEL, type MonoStatus } from "../../src/features/monos/model/mono";
-import { MonoLiveness } from "../../src/features/monos/model/monoLiveness";
 import { installFakeTauri } from "./fakeTauri";
 import "../../src/styles/index.css";
 
 // The five ideas on the real components, with example data (every made-up line says "Example:"): the Chief of Staff's
 // chat with the EXO coding team's reports in it after Ash was away 4 h (ideas 1, 5), its composer during a turn (2),
-// Needs you with a reason per row and a red-line approval (3), and rail tiles read by the real liveness tracker (4).
+// Needs you with a reason per row and a red-line approval (3). Idea 4 is proved on the real rail (pm-ui-ideas-hub.spec.ts).
 installFakeTauri("main", (command) => (command === "session_checkpoint_status" ? { files: [] } : null));
 saveTranscriptLayout("chat");
 const exo = { ...mockHubData.listProjects()[0], id: "vg-game", name: "EXO", shortName: "EXO" };
@@ -72,53 +69,6 @@ noteChats([
   asking("w3", "Example: Waitlist email", "Needs Ash (red line): Example: Email the 240 people on the waitlist about the delay?\nMy pick: Send it Friday with the new date."),
 ]);
 
-// Idea 4: the real tracker, fed as the app feeds it. "Example: Night watch" was seen running, then its chat left this
-// window; 8 s on the rail can't tell.
-const live = new MonoLiveness();
-const railMonos = [
-  { id: "m-working", name: "Example: Builder", mascot: "robot", color: "hsl(45 90% 55%)" },
-  { id: "m-idle", name: "Example: Scout", mascot: "dino", color: "hsl(12 80% 58%)" },
-  { id: "m-gone", name: "Example: Night watch", mascot: "invader", color: "hsl(211 92% 62%)" },
-];
-const start = Date.now();
-live.note("m-working", { present: true, busy: true }, start);
-live.note("m-idle", { present: true, busy: false }, start);
-live.note("m-gone", { present: true, busy: true }, start);
-
-function Rail() {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => tick((n) => n + 1), 250);
-    return () => clearInterval(timer);
-  }, []);
-  const at = Date.now();
-  live.note("m-working", { present: true, busy: true }, at);
-  live.note("m-idle", { present: true, busy: false }, at);
-  live.note("m-gone", { present: false, busy: false }, at);
-  return (
-    <div data-proof-rail className="w-[248px] rounded-xl bg-content/[0.04] p-2 ring-1 ring-content/8">
-      <div className="px-2 pb-1 text-[11px] font-medium text-content/60">Monos</div>
-      {railMonos.map((mono) => {
-        const state = live.state(mono.id, true, at);
-        const status: MonoStatus = state;
-        return (
-          <div
-            key={mono.id}
-            data-proof-mono={mono.id}
-            data-mono-status={status}
-            title={[mono.name, MONO_STATUS_LABEL[status]].join("\n")}
-            className="flex h-8 items-center gap-2 rounded-md px-2 opacity-65"
-          >
-            <MonoRailMascot name={mono.mascot} color={mono.color} status={status} />
-            <span className="truncate text-sm font-medium">{mono.name}</span>
-            <span data-proof-hover className="ml-auto hidden text-[11px] text-content/60">{MONO_STATUS_LABEL[status]}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function Fixture() {
   const [pool] = useState(() => new TranscriptPool());
   const [busy, setBusy] = useState(false);
@@ -150,7 +100,6 @@ function Fixture() {
         <div data-proof-needs className="rounded-xl p-3 ring-1 ring-content/8">
           <WaitingOnYou projectId={undefined} />
         </div>
-        <Rail />
       </div>
     </div>
   );

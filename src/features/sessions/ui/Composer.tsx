@@ -13,6 +13,7 @@ import {
   StickyNote,
   X,
 } from "../../../shared/ui/icons";
+import { ModelLineRow, TurnStopButton, showsStop } from "../../monos/ui/TurnStop";
 import {
   useCallback,
   useEffect,
@@ -246,6 +247,11 @@ type Props = {
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
   allowBusySubmit?: boolean;
+  /** The Mono chat's send rule (TurnStop.tsx, port map idea 2): Stop only while a turn runs, the box is empty and
+   * nothing is attached; grey, and Enter on the empty box stops too. A coding team's own chat uses it. */
+  turnStop?: boolean;
+  /** The model as text above the box (MonoModelLine), in place of the picker in the toolbar. */
+  modelLine?: ReactNode;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
@@ -373,6 +379,8 @@ export function Composer({
   question,
   busy = false,
   allowBusySubmit = true,
+  turnStop = false,
+  modelLine,
   editLastTurnSupported = false,
   lastTurnRecall = null,
   queuedMessages = [],
@@ -1292,6 +1300,15 @@ export function Composer({
   }, [editLastTurnSupported, onRecallLastTurnReady, recallLastTurn]);
 
   const submit = (value: string) => {
+    // An empty box while the turn runs: Enter or the button stops this chat's turn (TurnStop.tsx).
+    if (
+      turnStop &&
+      !disabled &&
+      showsStop({ enabled, busy, text: value, attachments: attachmentsRef.current.length, canStop: !!onStop })
+    ) {
+      onStop?.();
+      return;
+    }
     if (disabled || worktreeRemoved || submitLockRef.current) return;
     submitLockRef.current = true;
     void completeSubmit(value).finally(() => {
@@ -2035,6 +2052,7 @@ export function Composer({
             />
           </div>
         ) : null}
+        {modelLine ? <ModelLineRow>{modelLine}</ModelLineRow> : null}
         <div
           ref={boxRef}
           data-composer-box
@@ -2431,6 +2449,7 @@ export function Composer({
               }}
             >
               <div className="flex shrink-0 items-center gap-1">
+                {modelLine ? null : (<>
                 <ModelPicker
                   harness={harness}
                   model={model}
@@ -2456,6 +2475,7 @@ export function Composer({
                     onClose={() => ref.current?.focus()}
                   />
                 ) : null}
+                </>)}
                 {!compact && harness !== "fx" ? (
                   <AccessPicker
                     value={runtimeMode}
@@ -2481,6 +2501,11 @@ export function Composer({
               </button>
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
+              {turnStop &&
+              !disabled &&
+              showsStop({ enabled, busy, text: draft, attachments: attachments.length, canStop: !!onStop }) ? (
+                <TurnStopButton onClick={() => onStop?.()} />
+              ) : (
               <ComposerAction
                 busy={busy}
                 disabled={disabled}
@@ -2490,6 +2515,7 @@ export function Composer({
                 onSend={() => submit(ref.current?.value ?? "")}
                 onStop={() => onStop?.()}
               />
+              )}
             </div>
           </div>
         </div>

@@ -79,6 +79,8 @@ type Props = {
   triggerLabel?: string;
   /** A chevron after the name that opens the whole menu (always there with `cycle`). */
   chevron?: boolean;
+  /** The name alone, without the provider's coloured mark (the Mono model line is plain grey text). */
+  noIcon?: boolean;
   /**
    * Classes for the trigger's text, so a narrow surface can hide it and keep
    * just the icon; the button's label still names the choice.
@@ -342,6 +344,7 @@ export function ModelPicker({
   variant = "pill",
   triggerLabel,
   chevron,
+  noIcon = false,
   labelClassName = "",
   cycle,
   onChange,
@@ -834,10 +837,12 @@ export function ModelPicker({
                 }`
         }
       >
-        <HarnessIcon
-          harness={current.harness}
-          className={`${variant === "pill" ? "size-4" : "size-3.5"} shrink-0`}
-        />
+        {noIcon ? null : (
+          <HarnessIcon
+            harness={current.harness}
+            className={`${variant === "pill" ? "size-4" : "size-3.5"} shrink-0`}
+          />
+        )}
         <span
           className={`whitespace-nowrap ${variant === "pill" ? "text-[11px]" : ""} ${labelClassName}`}
         >

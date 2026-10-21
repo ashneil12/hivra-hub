@@ -1,4 +1,5 @@
 import { ContextMeter } from "../../sessions/ui/ContextMeter";
+import { ModelLineRow, TurnStopButton, showsStop } from "./TurnStop";
 import type { ContextUsage } from "../../sessions/model/contextUsage";
 import {
   lazy,
@@ -84,13 +85,7 @@ type Props = {
   onStop?: () => void;
 };
 
-/**
- * Send becomes Stop exactly while a turn runs and nothing waits to go: the box is empty and no attachment waits
- * (UniiChat web/src/main.ts bars(): `stop = on && v.busy && BOX.value.trim() === "" && P.imgs.length === 0`).
- */
-export function showsStop(state: { enabled: boolean; busy: boolean; text: string; attachments: number; canStop: boolean }): boolean {
-  return state.enabled && state.canStop && state.busy && state.text.trim() === "" && state.attachments === 0;
-}
+export { showsStop };
 
 /**
  * A messaging app's input for the Mono: attach, type, send, whether or not
@@ -449,17 +444,8 @@ export function MonoComposer({
   );
   const sendButton = (className: string) =>
     stop ? (
-      // The same button in the same spot and size: a grey fill and a filled square, never red (UniiChat style.css
-      // `.send.stop { background: var(--block); color: var(--ink) }`).
-      <button
-        type="submit"
-        aria-label="Stop"
-        title="Stop"
-        data-mono-stop
-        className={`grid size-6.5 place-items-center rounded-md bg-content/12 text-content transition-[background-color,color,transform] duration-150 hover:bg-content/16 active:scale-90 ${className}`}
-      >
-        <span aria-hidden className="size-2.5 rounded-[2px] bg-current" />
-      </button>
+      // The same button in the same spot and size (TurnStop.tsx); a submit, so the form's send() stops the turn.
+      <TurnStopButton type="submit" className={className} />
     ) : (
       <button
         type="submit"
@@ -480,12 +466,7 @@ export function MonoComposer({
         send();
       }}
     >
-      {modelLine ? (
-        <div data-mono-pick className="flex min-w-0 items-center gap-1 pb-1 pl-1 pr-1.5">
-          <span aria-hidden className="h-px min-w-6 flex-1 bg-content/8" />
-          {modelLine}
-        </div>
-      ) : null}
+      {modelLine ? <ModelLineRow>{modelLine}</ModelLineRow> : null}
       <div
         ref={box}
         className={`agent-chat-composer relative rounded-lg border bg-content/3 backdrop-blur-sm ${fileDrag ? "border-accent/60" : "border-content/10 has-focus:border-content/20"}`}

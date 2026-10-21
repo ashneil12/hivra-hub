@@ -1,4 +1,5 @@
-// Port map idea 5 (our own idea): one divider after Ash has been away 3 h or more, counting what came meanwhile.
+// Port map idea 5 (our own idea, an extra; not C9): one divider after Ash has been away AWAY_GAP_MS or more, counting
+// what came meanwhile. The 3 h gap is our own number, not Ash's and not either source's.
 import { describe, expect, it } from "vitest";
 import type { Block } from "../../sessions/model/session";
 import { AWAY_GAP_MS, sinceLabel, sinceYouWereHere } from "./sinceYouWereHere";
@@ -12,7 +13,7 @@ const report = (at: number): Block =>
 const isReport = (block: Block) => !!block.monoSessionCompletion;
 
 describe("sinceYouWereHere", () => {
-  it("the gap is 3 hours", () => expect(AWAY_GAP_MS).toBe(3 * H));
+  it("the gap is our own number, 3 hours", () => expect(AWAY_GAP_MS).toBe(3 * H));
 
   it("shows at exactly 3 h, not at 2h59m59s", () => {
     const at = (gap: number) => sinceYouWereHere([[ash(0), reply()], [report(gap), reply("Done.")]], isReport);

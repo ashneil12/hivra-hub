@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
@@ -27,6 +27,22 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 // Ash's saved look on Chief of Staff: the green crab, picked on purpose; the rest of the team is filled in as usual.
 const ASH_COS = { id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] };
+
+/** For each rail row with a creature: its status dot touches none of the creature's pixels and stays inside its row. */
+const dotsClear = (rail: Locator) =>
+  rail.locator("button[aria-label][title]").evaluateAll((buttons) =>
+    buttons
+      .filter((b) => b.querySelector("svg.pixel-mascot") && b.querySelector("[data-mono-dot]"))
+      .map((b) => {
+        const dot = b.querySelector("[data-mono-dot]")!.getBoundingClientRect();
+        const row = (b.closest(".reorder-item") as HTMLElement).getBoundingClientRect();
+        const hits = [...b.querySelectorAll("svg.pixel-mascot rect")].some((r) => {
+          const p = r.getBoundingClientRect();
+          return p.width && p.height && p.left < dot.right && p.right > dot.left && p.top < dot.bottom && p.bottom > dot.top;
+        });
+        return !hits && dot.top >= row.top && dot.bottom <= row.bottom;
+      }),
+  );
 
 async function open(page: Page) {
   await page.addInitScript((cos) => localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos])), ASH_COS);
@@ -119,19 +135,7 @@ test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps h
   const faces = await Promise.all(["Chief of Staff", "EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
   expect(new Set(faces).size).toBe(5);
   // Each status dot sits just off its tile: it touches none of the creature's pixels and stays inside its row.
-  const clear = await rail.locator("button[aria-label][title]").evaluateAll((buttons) =>
-    buttons
-      .filter((b) => b.querySelector("svg.pixel-mascot") && b.querySelector("[data-mono-dot]"))
-      .map((b) => {
-        const dot = b.querySelector("[data-mono-dot]")!.getBoundingClientRect();
-        const row = (b.closest(".reorder-item") as HTMLElement).getBoundingClientRect();
-        const hits = [...b.querySelectorAll("svg.pixel-mascot rect")].some((r) => {
-          const p = r.getBoundingClientRect();
-          return p.width && p.height && p.left < dot.right && p.right > dot.left && p.top < dot.bottom && p.bottom > dot.top;
-        });
-        return !hits && dot.top >= row.top && dot.bottom <= row.bottom;
-      }),
-  );
+  const clear = await dotsClear(rail);
   expect(clear.length).toBeGreaterThan(7);
   expect(new Set(clear)).toEqual(new Set([true]));
   const looks = await page.evaluate(() => Object.fromEntries((JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; mascot: string; color: string }[]).map((m) => [m.id, `${m.mascot} ${m.color}`])));
@@ -234,4 +238,47 @@ test("PM-20: made-up data says Example: on Today (the stub's jobs and asks); Stu
   await expect(page.getByText(/Tried before it reached the lead/)).toHaveCount(0);
   await page.mouse.move(5, 450);
   await shot(page, "pm20-today-example-labels");
+});
+
+test("G4 dots in every state: a working Mono (mid-hop) and one that reads Not sure keep the dot off the creature", async ({ page }) => {
+  await page.addInitScript((cos) => {
+    localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos]));
+    localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
+    localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
+  }, ASH_COS);
+  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  const rail = page.locator("[data-mono-rail]").first();
+  await expect(rail).toBeVisible({ timeout: 60_000 });
+  const notNow = page.getByRole("button", { name: "Not now" });
+  await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
+  const hold = () => page.evaluate(() => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push("hold"));
+  const status = (name: string) => rail.locator("[data-mono-status]").filter({ has: page.locator(`button[aria-label^="${name},"]`) }).first();
+  // Two turns held open: Chief of Staff's and the EXO lead's.
+  for (const name of ["Chief of Staff", "EXO lead"]) {
+    await rail.locator(`button[aria-label^="${name},"]`).first().click();
+    await hold();
+    const field = page.getByLabel(`Message ${name}`);
+    await field.fill("Example: start on this week's plan");
+    await field.press("Enter");
+    await expect(status(name)).toHaveAttribute("data-mono-status", "working", { timeout: 15_000 });
+  }
+  await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
+  // Chief of Staff's running chat leaves the window (dev hook): Not sure from 8 s; the EXO lead keeps working.
+  const cos = await page.evaluate(
+    () => (JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as Array<{ id: string; sessionId?: string }>).find((m) => m.id === "chief-of-staff")?.sessionId ?? "",
+  );
+  await page.evaluate((id) => (window as unknown as { __devChatLeavesWindow(id: string): void }).__devChatLeavesWindow(id), cos);
+  await expect(status("Chief of Staff")).toHaveAttribute("data-mono-status", "unknown", { timeout: 12_000 });
+  await expect(status("EXO lead")).toHaveAttribute("data-mono-status", "working");
+  await expect(status("EXO lead").locator(".pixel-hop")).toHaveCount(1);
+  // Sampled through the hop (the working creature moves), every dot stays clear, in all three states on screen.
+  for (let frame = 0; frame < 12; frame += 1) {
+    const clear = await dotsClear(rail);
+    expect(clear.length).toBeGreaterThan(7);
+    expect(new Set(clear)).toEqual(new Set([true]));
+    await page.waitForTimeout(110);
+  }
+  const shown = await rail.locator("[data-mono-dot]").evaluateAll((dots) => dots.map((d) => d.getAttribute("data-mono-dot")));
+  expect(shown).toEqual(expect.arrayContaining(["working", "unknown", "idle"]));
+  await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
 });

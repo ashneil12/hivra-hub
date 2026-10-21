@@ -834,7 +834,7 @@ function AgentTranscriptComponent({
     [messageDeliveries],
   );
   const turns = turnCache.group(blocks, managed, inlineWork);
-  // After Ash has been away 3 h or more: one quiet line saying what came meanwhile (sinceYouWereHere.ts, our own idea).
+  // After Ash has been away 3 h or more (our own number): one quiet line saying what came meanwhile (sinceYouWereHere.ts, our own idea).
   const awayLines = useMemo(
     () =>
       inlineWork && daySeparators
