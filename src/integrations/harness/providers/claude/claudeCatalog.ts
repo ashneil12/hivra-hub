@@ -1,4 +1,5 @@
 import { homeDir } from "../../../../platform/tauri/fs";
+import { claudeRunsOnGrok } from "./claudeGrokBridge";
 import { claudeGuardArgs } from "./claudeExtraArgs";
 import {
   setHarnessModels,
@@ -221,6 +222,9 @@ let inflight: Promise<void> | null = null;
 
 export function refreshClaudeCatalog(): Promise<void> {
   if (inflight) return inflight;
+  // On Grok the CLI lists the gateway's own aliases ("Gemini 4 Argon through …"), which aren't what runs: keep the
+  // built-in list; every Claude Code chat asks for Grok 4.7 anyway (claudeProtocol.ts).
+  if (claudeRunsOnGrok()) return Promise.resolve();
   inflight = discoverClaudeModels()
     .then((models) => {
       if (models.length > 0) setHarnessModels("claude", models);

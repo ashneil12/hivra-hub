@@ -51,6 +51,7 @@ import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { LAYER } from "../../../shared/lib/layers";
 import { HarnessIcon } from "./HarnessIcon";
+import { claudePillName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover } from "../../../shared/ui/Popover";
 import { MOD } from "../../../platform/tauri/platform";
 import { keybindingPressed } from "../../settings/model/settings";
@@ -405,7 +406,7 @@ export function ModelPicker({
     : undefined;
   const triggerModelName =
     current.harness === "claude"
-      ? current.name.replace(/^Claude /, "")
+      ? claudePillName(current.name)
       : current.name;
   useCustomModels();
   const pill = pillText(model, triggerModelName);

@@ -127,3 +127,12 @@ describe("claudeRunsOnGrok on the real bench", () => {
     expect(claudeRunsOnGrok("/tmp/run/bin/claude", false)).toBe(false);
   });
 });
+
+describe("the model pill on Grok", () => {
+  it("says Grok 4.7 for any Claude Code model on Grok, and the model's own name otherwise", async () => {
+    const { claudePillName } = await import("./claudeGrokBridge");
+    expect(claudePillName("Gemini 4 Argon", true)).toBe("Grok 4.7");
+    expect(claudePillName("Claude Sonnet 5", true)).toBe("Grok 4.7");
+    expect(claudePillName("Claude Sonnet 5", false)).toBe("Sonnet 5");
+  });
+});
