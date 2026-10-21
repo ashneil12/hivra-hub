@@ -283,12 +283,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const monoOf = Object.fromEntries((snap?.monos ?? []).filter((m) => m.sessionId).map((m) => [m.sessionId, m.id]));
     const texts = (await ctx.claudeTexts(t0)).map((line) => ({ ...line, who: monoOf[line.session] ?? (workers.has(line.session) ? "worker" : line.session ? `chat ${line.session.slice(0, 8)}` : "app helper call") }));
     const room = roomMessages(events, ctx.roomId, t0);
-    const toAsh = [
+    const toAsh = [];
+    const toAshAll = [
       ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
       // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
       ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
       ...(place.room ? [] : (await appNotices(await placeSession())).map((n) => ({ t: n.t, who: "app", where: "chat", text: n.text }))),
     ].sort((a, b) => a.t - b.t);
+    const shown = dropRoomEchoes(toAshAll);
+    toAsh.length = 0;
+    toAsh.push(...shown);
     const leaks = (ctx.spec.leak ?? []).flatMap((pattern) => [...toAsh, ...texts.filter((l) => l.text)].filter((m) => new RegExp(pattern, "i").test(m.text)).map((m) => ({ pattern, who: m.who, text: m.text.slice(0, 200) })));
     const changes = gitChanges(ctx.project, mark);
     const tests = scene.expect?.projectTests ? projectTests(ctx.project, scene.expect.projectTests, changes.checkouts) : null;
@@ -322,6 +326,17 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 }
 
 /** What a person and the judge read: every line in time order, then the host's facts. */
+/**
+ * A seat's room turn runs in its own chat, so the same words show up as its chat text and as its room post. Ash sees
+ * them once, in the room: the chat copy is dropped.
+ */
+export function dropRoomEchoes(lines) {
+  const key = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const roomPosts = lines.filter((l) => l.where === "room");
+  const echoed = (l) => key(l.text) && roomPosts.some((r) => r.who === l.who && Math.abs(r.t - l.t) < 120_000 && String(r.text).replace(/\s+/g, " ").includes(key(l.text).slice(0, 80)));
+  return lines.filter((l) => l.where !== "chat" || !echoed(l));
+}
+
 /** A copy's new commits since the mark, one line each (what landed on which branch). */
 export function copyLog(folder, mark) {
   if (!mark) return { commits: [] };

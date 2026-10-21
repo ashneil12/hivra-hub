@@ -9,6 +9,7 @@ import {
   failureNotice,
   hostOf,
   isProgress,
+  isGreeting,
   isShortMessage,
   isSilent,
   laneChimes,
@@ -266,5 +267,12 @@ describe("what the room says when a turn can't run", () => {
     expect(failureNotice("frank", "You've hit your usage limit. Resets at 4pm.")).toBe("frank couldn't answer: You've hit your usage limit. Resets at 4pm.");
     expect(failureNotice("frank", "Not logged in · Please run /login", "claude")).toBe("frank isn't signed in to Claude in this copy. Your message is saved.");
     expect(failureNotice("frank", "")).toBe("frank couldn't answer: Its turn did not finish.");
+  });
+});
+
+describe("isGreeting", () => {
+  it("is a hello with nothing asked", () => {
+    for (const t of ["yo morning", "hey", "Morning all!", "gm team", "hiya guys", "yo", "good morning everyone", "hey hey"]) expect(isGreeting(t), t).toBe(true);
+    for (const t of ["hey can u check the board", "morning, wats left", "yo ship it", "hi frank wat did i say", "", "skip review just ship the fix pls"]) expect(isGreeting(t), t).toBe(false);
   });
 });

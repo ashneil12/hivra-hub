@@ -382,3 +382,13 @@ test("in a clicks scene the tester may click a listed button, and an unlisted on
   assert.equal(move.label, "Discard");
   assert.match(move.refused[0], /no button "Delete"/);
 });
+
+test("a seat's room turn is counted once, in the room, not again as its chat text", async () => {
+  const { dropRoomEchoes } = await import("./realconv/player.mjs");
+  const lines = [
+    { t: 8000, who: "chief-of-staff", where: "chat", text: "Morning. Nothing new on Tally." },
+    { t: 8100, who: "chief-of-staff", where: "room", text: "Morning. Nothing new on Tally." },
+    { t: 9000, who: "chief-of-staff", where: "chat", text: "Different words in its own chat." },
+  ];
+  assert.deepEqual(dropRoomEchoes(lines).map((l) => l.where + ":" + l.text.slice(0, 9)), ["room:Morning. ", "chat:Different"]);
+});
