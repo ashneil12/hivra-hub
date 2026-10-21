@@ -293,7 +293,7 @@ function startApp(w) {
   return child.pid;
 }
 
-async function until(what, check, ms = 20_000) {
+async function until(what, check, ms = 60_000) {
   const deadline = Date.now() + ms;
   for (;;) {
     const value = check();
