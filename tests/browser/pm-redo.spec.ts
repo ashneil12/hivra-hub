@@ -98,16 +98,35 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
 });
 
-test("G4 tiles: every Mono's tile is its little image by default; letters are a choice in the picker, shown as typed", async ({ page }) => {
+test("G4 tiles: Ash's old creatures by default (robots for the team, CoS amber; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
-  const alfred = rail.locator('button[aria-label^="Alfred"]').first();
-  // Images by default on every rail tile: no tile is letters until Ash picks them.
-  expect(await rail.locator("button[aria-label][title] svg.pixel-mascot").count()).toBeGreaterThan(3);
+  const tile = (name: string) => rail.locator(`button[aria-label^="${name},"] svg.pixel-mascot`).first();
+  // Creatures by default on every rail tile: no tile is letters until Ash picks them.
+  expect(await rail.locator("button[aria-label][title] svg.pixel-mascot").count()).toBeGreaterThan(7);
   expect(await rail.locator("button[aria-label][title] svg text").count()).toBe(0);
-  // The default four each wear a different image.
-  const faces = await Promise.all(["Chief of Staff", "Projects Manager", "frank", "Alfred"].map((n) => rail.locator(`button[aria-label^="${n}"] svg.pixel-mascot`).first().innerHTML()));
+  const fills = (name: string) => tile(name).evaluate((svg) => [...new Set([...svg.querySelectorAll("rect")].map((r) => r.getAttribute("fill")))].join(" "));
+  // The robots are one drawing; the grey built-ins share a colour, the amber Nibbii lead has its own.
+  const robot = await tile("Projects Manager").innerHTML();
+  expect(await tile("frank").innerHTML()).toBe(robot);
+  expect(await tile("Alfred").innerHTML()).toBe(robot);
+  expect(await fills("Nibbii lead")).not.toBe(await fills("Projects Manager"));
+  // The Leads all look different; Chief of Staff is the amber robot, like the Nibbii lead was before 15 Oct.
+  const faces = await Promise.all(["EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
   expect(new Set(faces).size).toBe(4);
+  expect(await tile("Chief of Staff").innerHTML()).toBe(await tile("Nibbii lead").innerHTML());
+  const looks = await page.evaluate(() => Object.fromEntries((JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; mascot: string; color: string }[]).map((m) => [m.id, `${m.mascot} ${m.color}`])));
+  expect(looks).toMatchObject({
+    "chief-of-staff": "robot hsl(45 90% 55%)",
+    "projects-manager": "robot hsl(210 8% 58%)",
+    frank: "robot hsl(210 8% 58%)",
+    alfred: "robot hsl(210 8% 58%)",
+    "vg-game-lead": "invader hsl(211 92% 62%)",
+    "hivra-lead": "dino hsl(12 80% 58%)",
+    "nibbii-lead": "robot hsl(45 90% 55%)",
+    "hub-lead": "cat hsl(142 55% 50%)",
+  });
+  const alfred = rail.locator('button[aria-label^="Alfred"]').first();
   await alfred.click();
   await page.getByRole("button", { name: "Alfred settings" }).click();
   await page.getByRole("button", { name: "Change mascot and color" }).click();
@@ -118,6 +137,48 @@ test("G4 tiles: every Mono's tile is its little image by default; letters are a 
   await look.locator("[data-mono-tile-letters]").press("Enter");
   await expect(alfred.locator("svg text").first()).toHaveText("Af");
   await shot(page, "g4-tile-letters");
+});
+
+test("G4 tiles: the Hivra lead appears once, and its tile stays inside its row at 38px and 32px, even mid-bob", async ({ page }) => {
+  await open(page);
+  const rail = page.locator("[data-mono-rail]").first();
+  await expect(rail.locator('button[aria-label^="Hivra lead,"]')).toHaveCount(1);
+  const fits = () =>
+    rail.locator('button[aria-label^="Hivra lead,"]').first().evaluate((button) => {
+      const row = button.closest(".reorder-item") as HTMLElement;
+      const r = row.getBoundingClientRect();
+      const prev = (row.previousElementSibling as HTMLElement | null)?.getBoundingClientRect();
+      const next = (row.nextElementSibling as HTMLElement | null)?.getBoundingClientRect();
+      const svg = button.querySelector("svg.pixel-mascot")!;
+      const art = svg.querySelector("g") as SVGGElement;
+      const box = () => {
+        const rects = [...svg.querySelectorAll("rect")].map((x) => x.getBoundingClientRect()).filter((b) => b.width && b.height);
+        return { top: Math.min(...rects.map((b) => b.top)), bottom: Math.max(...rects.map((b) => b.bottom)) };
+      };
+      const at = box();
+      art.style.transform = "translateY(-0.75px)"; // the top of the bob
+      const up = box();
+      art.style.transform = "";
+      const inside = (b: { top: number; bottom: number }) => b.top >= r.top && b.bottom <= r.bottom && (!prev || b.top >= prev.bottom - 0.01) && (!next || b.bottom <= next.top + 0.01);
+      return { height: Math.round(r.height), rest: inside(at), bob: inside(up) };
+    });
+  expect(await fits()).toEqual({ height: 38, rest: true, bob: true });
+  await rail.locator('button[aria-label^="Hivra lead,"]').first().evaluate((b) => ((b.closest(".reorder-item") as HTMLElement).style.height = "32px"));
+  expect(await fits()).toEqual({ height: 32, rest: true, bob: true });
+});
+
+test("Reduced motion stops the bob and the blink", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await open(page);
+  await page.locator("[data-mono-rail]").first().locator('button[aria-label^="Chief of Staff"]').first().click();
+  const moving = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll(".pixel-mascot .pixel-bob, .pixel-mascot .pixel-eyes-open, .pixel-mascot .pixel-eyes-closed, .pixel-mascot .pixel-hop")].map((el) => getComputedStyle(el).animationName),
+    );
+  await expect.poll(async () => (await moving()).length).toBeGreaterThan(0);
+  expect(new Set(await moving())).toEqual(new Set(["none"]));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect((await moving()).some((name) => name !== "none")).toBe(true);
 });
 
 test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
