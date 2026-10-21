@@ -23,6 +23,7 @@ import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
+import { CalendarBlock, monthOf } from "./CalendarBlock";
 
 /*
  * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
@@ -136,6 +137,17 @@ export function Block({ block }: { block: PageBlock }) {
         </BlockFrame>
       );
     case "calendar": {
+      const month = monthOf(block.month);
+      if (month)
+        return (
+          <BlockFrame title={`${block.title} · ${block.month}`} example={example}>
+            <CalendarBlock month={month} marked={block.marked} />
+            <div className="mt-2 flex flex-wrap gap-x-3 text-[11px] text-content/60">
+              {block.marked.map((m) => <span key={m.day}>{m.day}: {m.text}</span>)}
+            </div>
+          </BlockFrame>
+        );
+      // A month the picker can't read ("Sprint 4"): the plain grid from the block's own first weekday and length.
       const cells = [...Array(block.firstWeekday).fill(null), ...Array.from({ length: block.days }, (_, i) => i + 1)];
       return (
         <BlockFrame title={`${block.title} · ${block.month}`} example={example}>

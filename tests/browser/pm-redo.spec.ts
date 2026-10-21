@@ -77,3 +77,18 @@ test("G4: each Mono's role shows after its name on the rail, in the header and t
   const railBox = await rail.boundingBox();
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
 });
+
+test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: /^Pages/ }).first().click();
+  const newButton = page.locator("[data-pages-new-button]").first();
+  if (await newButton.isVisible().catch(() => false)) await newButton.click();
+  await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
+  await page.getByLabel("Send to a Mono").click();
+  const calendar = page.locator("[data-block-calendar]").first();
+  await expect(calendar).toBeVisible({ timeout: 30_000 });
+  await expect(calendar.locator("th")).toHaveText(["M", "T", "W", "T", "F", "S", "S"]);
+  await calendar.scrollIntoViewIfNeeded();
+  await page.mouse.move(5, 450);
+  await shot(page, "c6-calendar-block");
+});

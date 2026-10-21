@@ -85,6 +85,7 @@
     "prettier": "^3.9.6",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
+    "react-day-picker": "^10.0.2",
     "react-dom": "^19.1.0",
     "react-material-icon-theme": "^1.2.0",
     "rehype-harden": "^1.1.8",
