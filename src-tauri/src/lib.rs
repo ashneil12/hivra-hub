@@ -652,6 +652,7 @@ pub fn run() {
             verify_live::verify_live_take,
             verify_live::verify_live_done,
             harness::harness_resolve_claude,
+            harness::harness_claude_grok_bridge,
             harness::claude_mcp_list,
             mcp::mcp_discover,
             mcp::mcp_add,

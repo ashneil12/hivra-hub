@@ -145,6 +145,7 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
+import { claudeRunsOnGrok, GROK_BRIDGE_MODEL, grokBridgeEffort } from "./claudeGrokBridge";
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -1006,7 +1007,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     undefined,
     undefined,
     // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
-    customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
+    // On the Grok bridge nothing is routed: the bridge launcher brings its own gateway.
+    claudeRunsOnGrok()
+      ? undefined
+      : customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
 
   liveByThread.set(input.sessionId, live);
@@ -1364,7 +1368,9 @@ function seedRoutedWindow(
   live: Live,
   input: Pick<HarnessSessionInput, "model" | "modelSettings">,
 ): void {
-  const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
+  const route = claudeRunsOnGrok()
+    ? null
+    : customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
   const window = modelKeyStore().contextWindow;
   if (!route || !window) return;
   void Promise.resolve(
@@ -2535,10 +2541,12 @@ function writeJson(
 /** What a process for this input would be started with. */
 function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
   const options = launchOptions(input);
-  const route = customModelRoute({
-    model: input.model,
-    modelSettings: input.modelSettings ?? {},
-  });
+  const route = claudeRunsOnGrok()
+    ? null
+    : customModelRoute({
+        model: input.model,
+        modelSettings: input.modelSettings ?? {},
+      });
   return {
     model: options.model,
     ...(route
@@ -2709,9 +2717,19 @@ function launchOptions(
   // Long-running chats compact at their ceiling instead of near the window.
   const ceiling = contextCeilingFor({ harness: "claude", model: input.model });
   if (ceiling) settings.autoCompactWindow = ceiling;
+  // Claude Code on Grok 4.7 (claudeGrokBridge.ts): one model for every chat, and Grok's own levels.
+  const onGrok = claudeRunsOnGrok();
   return {
-    model: route ? route.modelId : resolveClaudeApiModelId(native, context),
-    effort: route ? undefined : normalizeClaudeCliEffort(effortRaw, native),
+    model: onGrok
+      ? GROK_BRIDGE_MODEL
+      : route
+        ? route.modelId
+        : resolveClaudeApiModelId(native, context),
+    effort: onGrok
+      ? grokBridgeEffort(normalizeClaudeCliEffort(effortRaw, native))
+      : route
+        ? undefined
+        : normalizeClaudeCliEffort(effortRaw, native),
     permissionMode:
       input.intent === "plan"
         ? "plan"
