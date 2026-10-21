@@ -205,6 +205,8 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "How I talk to Ash": "{name} will now talk to Ash the newer way: outcome first, plain words, one question at a time.",
   "How I talk": "{name} will now talk the newer way: plain words, short, and saying what's real before anyone asks.",
   "What I own": "{name}'s list of what it owns is updated.",
+  "Ash's standing rules": "{name}'s list of Ash's standing rules is updated.",
+  "Limits": "{name}'s list of what it stays out of is updated.",
   "How I hand work to a project Lead and get the report back": "{name} will now brief a Lead with the outcome, what's already done and what not to touch, and expect a start confirmation and proof back.",
   "How I hand work to Leads and read the report back": "{name} will now brief Leads the newer way and check their reports against the board.",
   "RED (Ash's call, never mine)": "{name} will now leave money, customer emails, launches and anything that can't be undone to Ash.",

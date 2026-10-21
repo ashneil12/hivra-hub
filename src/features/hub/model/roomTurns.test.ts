@@ -154,7 +154,7 @@ describe("the prompts", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript };
     const answer = turnPrompt({ ...base, me: COS, kind: "answer", batch: 3 });
     expect(answer).toContain(ROOM_RULES);
-    expect(answer).toContain("Ash just wrote (3 messages; answer them together). You host this room, so you answer first, now, like a person texting back");
+    expect(answer).toContain("Ash just wrote (3 messages; answer them together). You host this room, so you answer first, now.");
     expect(answer).toContain("- Projects Manager: the board and tickets");
     expect(answer).toContain("Your reply is posted to the room for you");
     expect(answer).toContain("<room_conversation>\nAsh: what did we decide");
@@ -173,16 +173,14 @@ describe("the prompts", () => {
     expect(busy).not.toContain("Your reply is posted to the room for you");
   });
 
-  it("posts are short and point to the detail; Ash is asked only what is his call; no review rounds", () => {
-    for (const rule of ["2 to 5 short lines", "a path, a commit, a test count", "never restate", "truly his call", "group chat", "name a seat", "is back", "no em dashes"])
+  it("the room rules are the basics: who is speaking, answer when it's for you, stop when done; nothing on formats or review rounds", () => {
+    for (const rule of ["group chat", "shows who wrote it", "answer when it's for you", "name a seat", "stop when you're done"])
       expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
-    for (const gone of ["pass from me", "a review ends in", "Locked:", "digest"]) expect(ROOM_RULES.toLowerCase(), gone).not.toContain(gone.toLowerCase());
+    for (const gone of ["pass from me", "a review ends in", "Locked:", "digest", "short lines", "em dash", "400 characters"]) expect(ROOM_RULES.toLowerCase(), gone).not.toContain(gone.toLowerCase());
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const host = turnPrompt({ ...base, me: COS, kind: "answer" });
     expect(host).toContain("say so by name");
-    expect(host).toContain("2 to 5 short lines");
-    const reply = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
-    expect(reply).not.toContain("pass from me");
+    for (const gone of ["400 characters", "em dashes", "short lines", "pass from me"]) expect(host, gone).not.toContain(gone);
   });
 
   it("a turn that answers a Mono says so, so its words are never saved as Ash's", () => {
@@ -196,9 +194,9 @@ describe("the prompts", () => {
   it("a turn ends on how long its post may be; the project's memory goes ahead of the conversation, not after it", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const answer = turnPrompt({ ...base, me: COS, kind: "answer" });
-    expect(answer.trimEnd().split("\n").at(-1)).toBe(`Now write your post: 2 to 5 short lines, under about 400 characters, or exactly ${"NO_REPLY"}.`);
+    expect(answer.trimEnd().split("\n").at(-1)).toBe(`Now write your post, or exactly ${"NO_REPLY"}.`);
     const busy = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "PM", viaTool: true });
-    expect(busy.trimEnd().split("\n").at(-1)).toBe("Now answer with room_post (2 to 5 short lines, under about 400 characters), or post nothing.");
+    expect(busy.trimEnd().split("\n").at(-1)).toBe("Now answer with room_post, or post nothing.");
     const withMemory = withRoomMemory(answer, "<project_memory>\nTeal is the brand colour.\n</project_memory>");
     expect(withMemory.startsWith("[MonoCode room] You are Chief of Staff")).toBe(true);
     expect(withMemory.indexOf("<project_memory>")).toBeLessThan(withMemory.indexOf("<room_conversation>"));
