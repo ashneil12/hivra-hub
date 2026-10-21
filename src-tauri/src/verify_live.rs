@@ -101,7 +101,9 @@ pub fn parse(text: &str) -> Result<Plan, String> {
         }
     }
     if plan.grok && plan.claude_binary.is_none() {
-        return Err("verify plan: grok needs claudeBinary (the bench's Claude on the bridge)".into());
+        return Err(
+            "verify plan: grok needs claudeBinary (the bench's Claude on the bridge)".into(),
+        );
     }
     if plan.goals && plan.claude_binary.is_none() {
         return Err(
@@ -307,12 +309,16 @@ mod tests {
     #[test]
     fn a_bench_on_the_grok_bridge_says_so_to_the_window() {
         let plan =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#).unwrap();
+            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#)
+                .unwrap();
         assert!(plan.grok);
         assert_eq!(window_info(&plan)["grok"], true);
-        let off = parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#).unwrap();
+        let off =
+            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#).unwrap();
         assert!(window_info(&off).get("grok").is_none());
-        assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#).unwrap_err().contains("grok"));
+        assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#)
+            .unwrap_err()
+            .contains("grok"));
     }
 
     #[test]
