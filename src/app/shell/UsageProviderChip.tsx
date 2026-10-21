@@ -25,7 +25,7 @@ import {
   resolveTabGroupMascot,
 } from "../../features/workspace/model/tabGroups";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import { ArrowLeft, Check, ChevronRight, Plus, RefreshCw } from "../../shared/ui/icons";
+import { ArrowLeft, Check, ChevronRight, Gauge, Plus, RefreshCw } from "../../shared/ui/icons";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import {
   ProviderSignInPanel,
@@ -100,8 +100,11 @@ export function UsageProviderChip({
   onReconnect,
   presentation,
   variant = "footer",
+  meterIcon = false,
 }: {
   limits: ProviderRateLimits;
+  /** A neutral meter glyph instead of the provider's mark (under a Mono's box: no Claude starburst there). */
+  meterIcon?: boolean;
   now: number;
   presentation?: { harness: HarnessId; label: string; sourceLabel?: string };
   project?: string;
@@ -265,7 +268,11 @@ export function UsageProviderChip({
         }
         onClick={() => setOpen((value) => !value)}
       >
-        <HarnessIcon harness={iconHarness} className="size-3 shrink-0" />
+        {meterIcon ? (
+          <Gauge data-usage-meter-icon aria-hidden className="size-3 shrink-0 text-content/55" />
+        ) : (
+          <HarnessIcon harness={iconHarness} className="size-3 shrink-0" />
+        )}
         {loading ? (
           <span className="animate-pulse text-content/35">···</span>
         ) : disconnected ? (

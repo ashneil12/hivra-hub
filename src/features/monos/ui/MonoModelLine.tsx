@@ -6,10 +6,10 @@
 // of stepping through names that would all run the same model.
 import { useEffect, useState, type ComponentProps } from "react";
 import { ModelControlPills, ModelPicker } from "../../sessions/ui/ModelPicker";
-import { claudeRunsOnGrok } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 
-/** What a Claude Code chat on the Grok bridge runs (claudeGrokBridge.ts GROK_BRIDGE_MODEL). */
-export const GROK_BRIDGE_LABEL = "Grok 4.7";
+// The one source for "what really runs" (claudeGrokBridge.ts), shared with the transcript's turn header.
+export { GROK_BRIDGE_LABEL };
 
 /** UniiChat main.ts toast(): how long "Now <model>." stays. */
 export const MODEL_NOTE_MS = 7000;
@@ -18,7 +18,7 @@ type PickerProps = ComponentProps<typeof ModelPicker>;
 
 export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron" | "noIcon">) {
   const [note, setNote] = useState<string | null>(null);
-  const onGrok = props.harness === "claude" && claudeRunsOnGrok();
+  const onGrok = onGrokBridge(props.harness);
   useEffect(() => {
     if (!note) return;
     const timer = setTimeout(() => setNote(null), MODEL_NOTE_MS);

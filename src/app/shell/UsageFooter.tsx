@@ -209,6 +209,7 @@ export function UsageChips({
   accountPicker = true,
   fallback = null,
   variant = "footer",
+  meterIcon = false,
 }: {
   providers: RateLimitProvider[];
   session?: UsageFooterSession;
@@ -222,6 +223,8 @@ export function UsageChips({
   /** Shown when there is no usage to show. */
   fallback?: ReactNode;
   variant?: UsageChipVariant;
+  /** Each chip shows a neutral meter glyph, not its provider's mark. */
+  meterIcon?: boolean;
 }) {
   const wantClaude = providers.includes("claude");
   const wantCodex = providers.includes("codex");
@@ -485,6 +488,7 @@ export function UsageChips({
           limits={claude}
           now={now}
           variant={variant}
+          meterIcon={meterIcon}
           {...claudeAccountProps}
           onReconnect={reconnectClaude}
         />
@@ -495,6 +499,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
           {...codexAccountProps}
           onConsumeReset={consumeCodexReset}
           onReconnect={reconnectCodex}
@@ -506,6 +511,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
         />
       ) : null}
       {wantDevin ? (
@@ -515,6 +521,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
           onReconnect={reconnectDevin}
         />
       ) : null}

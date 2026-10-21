@@ -201,7 +201,6 @@ import {
   noteCodingTeamView,
 } from "../features/hub/model/codingTeamList";
 import { MonoRailMascot } from "../features/monos/ui/MonoRailMascot";
-import { monoLiveness } from "../features/monos/model/monoLiveness";
 import type { CodingTeamList } from "./shell/Sidebar";
 import {
   forgetWaitingChat,
@@ -15418,23 +15417,14 @@ function Workspace({
         onClose={() => setMonoSettingsFor(null)}
       />
     ) : null;
-  // The rail re-reads each Mono every second, so one the app has lost sight of turns "Not sure" on time (monoLiveness.ts).
-  // Re-read the rail when a Mono's state can change on its own (monoLiveness.nextChange), not on a constant tick.
-  const [railTick, setRailTick] = useState(0);
   const monoRailState = useMemo(() => {
-    const now = Date.now();
     const states = new Map<string, MonoState>();
     const unseen = new Map<string, number>();
     for (const mono of listMonos()) {
       const session = mono.sessionId
         ? sessions.find((entry) => entry.id === mono.sessionId)
         : undefined;
-      // Keyed by the chat: a Mono that starts a new conversation is read from its new chat, not its old one's last state.
-      const liveKey = mono.sessionId ?? mono.id;
-      monoLiveness.note(liveKey, { present: !!session, busy: !!session?.busy }, now);
-      if (monoLiveness.state(liveKey, !!mono.sessionId, now) === "unknown") {
-        states.set(mono.id, { status: "unknown" });
-      } else if (session) {
+      if (session) {
         // An idle Mono that is waiting on a pull request says so instead of nothing.
         const state = monoState(session);
         const waiting =
@@ -15450,13 +15440,7 @@ function Workspace({
     }
     return { states, unseen };
     // The roster is read through its snapshot.
-  }, [monosSnap, sessions, monoReplies.counts, prWatches, prWatchVersion, railTick]);
-  useEffect(() => {
-    const at = monoLiveness.nextChange(Date.now());
-    if (at == null) return;
-    const timer = setTimeout(() => setRailTick((tick) => tick + 1), Math.max(0, at - Date.now()));
-    return () => clearTimeout(timer);
-  }, [monoRailState]);
+  }, [monosSnap, sessions, monoReplies.counts, prWatches, prWatchVersion]);
   const monoRail = useStableValue(monoRailState);
   const busyProjectPaths = useStableValue(
     promptableSessions.flatMap((session) =>

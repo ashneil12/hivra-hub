@@ -420,6 +420,9 @@ export function MonoRailSection({
                   color={look.color}
                   status={state.status}
                   tone={state.tone}
+                  // The dot sits just off the tile's top-right corner; this gap is its own, so it touches neither the
+                  // creature nor the first letter of the name (the room, 21 Oct).
+                  className="mr-1 size-4 shrink-0"
                 />
                 {shown(look).secondary === look.name ? (
                   state.status === "working" ? (

@@ -2520,7 +2520,8 @@ export function Composer({
           </div>
         </div>
         {workspaceBarOutside ? workspaceBar : null}
-        {runnerLive && runnerEnabled && !remote ? (
+        {/* No runner while the model line shows: it would float on the line's rule (the room, 21 Oct). */}
+        {runnerLive && runnerEnabled && !remote && !modelLine ? (
           <ComposerRunner
             boxRef={boxRef}
             cwd={cwd}

@@ -591,8 +591,7 @@ function plainLine(text: string): string {
 /** What the agent is doing right now, as the Monos roster shows it. */
 /** "paused": stopped at a usage limit and resuming by itself at its reset (features/autopilot/model/limitResume). */
 /** "failed": its last turn failed (out of credits, overloaded, a usage limit): it can't answer until that is dealt with. */
-/** "unknown": the app can't tell right now (monoLiveness.ts); never shown as idle. */
-export type MonoStatus = "working" | "needs-you" | "failed" | "paused" | "idle" | "unknown";
+export type MonoStatus = "working" | "needs-you" | "failed" | "paused" | "idle";
 
 export type MonoState = {
   status: MonoStatus;
@@ -610,7 +609,6 @@ export const MONO_STATUS_LABEL: Record<MonoStatus, string> = {
   failed: "Can't answer",
   paused: "Paused",
   idle: "Idle",
-  unknown: "Not sure",
 };
 
 /** The agent's state, with the step it is on or the call it is waiting for. */

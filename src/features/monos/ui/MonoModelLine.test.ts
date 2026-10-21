@@ -14,7 +14,11 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 }));
 vi.mock("../../../integrations/harness/core/registry", () => ({ refreshHarnessCatalogs: () => Promise.resolve() }));
 const bridge = vi.hoisted(() => ({ on: false }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () => ({ claudeRunsOnGrok: () => bridge.on }));
+vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () => ({
+  claudeRunsOnGrok: () => bridge.on,
+  onGrokBridge: (harness: string | undefined) => harness === "claude" && bridge.on,
+  GROK_BRIDGE_LABEL: "Grok 4.7",
+}));
 
 import { MODEL_NOTE_MS, MonoModelLine } from "./MonoModelLine";
 import { resetHarnessModelOverlays } from "../../sessions/model/models";

@@ -29,6 +29,22 @@ export function claudeRunsOnGrok(
   return bench || (!!path && baseName(path.trim()) === CLAUDE_GROK_BRIDGE_NAME);
 }
 
+/** What a Claude Code chat on the bridge really runs, as the hub names it (GROK_BRIDGE_MODEL). */
+export const GROK_BRIDGE_LABEL = "Grok 4.7";
+
+/** True when a chat on this harness runs on the bridge (so its Claude model name and mark aren't what runs). */
+export function onGrokBridge(harness: string | undefined): boolean {
+  return harness === "claude" && claudeRunsOnGrok();
+}
+
+/**
+ * The model a chat really runs, by name: Grok 4.7 for a Claude Code chat on the bridge, whatever Claude model it names;
+ * otherwise the name given. The one source the model line and the transcript's turn header both read.
+ */
+export function modelInUseLabel(harness: string | undefined, name: string | undefined): string | undefined {
+  return name && onGrokBridge(harness) ? GROK_BRIDGE_LABEL : name;
+}
+
 /** Grok 4.7 takes low, medium, high or xhigh. Claude-only levels step down to the nearest one Grok has. */
 export function grokBridgeEffort(effort: string | undefined): string | undefined {
   if (!effort) return undefined;

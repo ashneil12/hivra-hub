@@ -118,6 +118,10 @@ import {
   type TurnMetrics,
 } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
+import {
+  modelInUseLabel,
+  onGrokBridge,
+} from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { TranscriptPacing, TranscriptVisibility } from "./transcriptVisibility";
 import {
   innerScrollerTakes,
@@ -1380,10 +1384,15 @@ function AgentTranscriptComponent({
           // turn settling does not shuffle the layout around the answer.
           const live = visible && !settled && !preparingHandoff;
           // A Mono's turns are its own, whichever model ran them.
+          // The model really in use, from the same source as the model line (modelInUseLabel): Grok 4.7 for a Claude
+          // Code chat on the Grok bridge. On the bridge the turn shows no Claude mark either (markHarness).
           const turnModelName =
             agentName ??
-            turnModel?.name ??
-            (live ? currentModelName : undefined);
+            modelInUseLabel(
+              turnHarness,
+              turnModel?.name ?? (live ? currentModelName : undefined),
+            );
+          const markHarness = onGrokBridge(turnHarness) ? undefined : turnHarness;
           // The fold line speaks for the main agent only. A delegated run has
           // its own row, which says who is working and how it went, so saying
           // it again here would be two lines telling the same story.
@@ -1607,7 +1616,7 @@ function AgentTranscriptComponent({
                   blocks={turn}
                   title={foldTitle}
                   name={turnModelName}
-                  harness={turnHarness}
+                  harness={markHarness}
                   agentMascot={agentMascot}
                   active={!settled}
                   live={live}
@@ -1634,7 +1643,7 @@ function AgentTranscriptComponent({
                 <WorkFoldLine
                   title={foldTitle}
                   kind={workKind(summarizedWork)}
-                  harness={turnHarness}
+                  harness={markHarness}
                   agentMascot={agentMascot}
                   live={live}
                   expandable={!!fold}
@@ -1845,7 +1854,7 @@ function AgentTranscriptComponent({
                       : undefined
                   }
                   workExpanded={activeWorkTurnId === turnId}
-                  harness={turnHarness}
+                  harness={markHarness}
                   fromHarness={turnHarness}
                   fromModel={turnModel?.id}
                   onSecondOpinion={

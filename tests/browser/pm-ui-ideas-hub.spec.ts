@@ -3,9 +3,9 @@ import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
 
-// Ideas 2 and 4 in the real app in a browser (hub-dev.html reading the stub Ash OS, ?fakeClaude for the Claude CLI):
-// a coding team's own chat gets the Mono chat's Stop and model line; and the real Monos rail says "Not sure" once a
-// chat seen running has left the window for 8 s. Example data only. A browser preview, not Ash's Mac.
+// Idea 2 in the real app in a browser (hub-dev.html reading the stub Ash OS, ?fakeClaude for the Claude CLI): a coding
+// team's own chat gets the Mono chat's Stop and model line, and its turn header names the model really in use.
+// Example data only. A browser preview, not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-ui-ideas";
 type Stub = { url: string; close(): Promise<void> };
 let stub: Stub;
@@ -98,17 +98,14 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   await expect(stop).toBeVisible();
   await closeOffer(page);
   await page.mouse.move(1300, 100);
-  // The turn's runner (ComposerRunner) runs the model line's rule, never over the model text or the box.
-  const rule = (await pane.locator("[data-model-line-rule]").boundingBox())!;
+  // No runner mascot while the model line shows: nothing floats on the line's rule.
   await page.waitForTimeout(600);
-  const runner = await page.evaluate(() => {
-    const sprite = document.querySelector(".pointer-events-none.fixed.inset-0.z-40 .origin-bottom svg");
-    const r = sprite?.getBoundingClientRect();
-    return r ? { left: r.left, right: r.right, bottom: r.bottom } : null;
-  });
-  expect(runner).not.toBeNull();
-  expect(runner!.right).toBeLessThanOrEqual(rule.x + rule.width + 2);
-  expect(Math.abs(runner!.bottom - rule.y)).toBeLessThan(6);
+  expect(await page.locator(".pointer-events-none.fixed.inset-0.z-40 .origin-bottom svg").count()).toBe(0);
+  // The turn's header names the model really in use (the model line's source): Grok 4.7, with no Claude mark.
+  const chat = box.locator("xpath=ancestor::*[@data-session-drop][1]");
+  await expect(chat.getByText(/Grok 4\.7 working/)).toBeVisible();
+  await expect(chat.getByText(/Sonnet|Claude/)).toHaveCount(0);
+  expect(await chat.locator('img[src*="claude"]').count()).toBe(0);
   // The chat's last lines too (the turn's working mark sits just above the model line), then the composer.
   // The whole chat (its title, the turn and the composer), as Ash sees it in EXO's coding team.
   const chatBox = (await box.locator("xpath=ancestor::*[@data-session-drop][1]").boundingBox())!;
@@ -119,45 +116,4 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   await expect.poll(() => fake<Array<{ sessionId: string; kind: string }>>(page, "stops")).toContainEqual({ sessionId: TEAM_CHAT, kind: "interrupt" });
   expect((await fake<Array<{ kind: string }>>(page, "stops")).filter((s) => s.kind === "stop_task")).toEqual([]);
   await expect(box.locator('[aria-label="Send"]')).toBeVisible({ timeout: 15_000 });
-});
-
-test("the real rail: a Mono whose running chat left the window reads Not sure from 8 s, faded and still", async ({ page }) => {
-  await onGrokBridge(page);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
-  const rail = page.locator("[data-mono-rail]").first();
-  await expect(rail).toBeVisible({ timeout: 60_000 });
-  await closeOffer(page);
-  const cosRow = rail.locator('button[aria-label^="Chief of Staff"]').first();
-  await cosRow.click();
-  const field = page.getByLabel("Message Chief of Staff");
-  await expect(field).toBeVisible({ timeout: 15_000 });
-  await next(page, "hold");
-  await field.fill("Example: draft the week's plan");
-  await field.press("Enter");
-  const row = rail.locator('[data-mono-status]').filter({ has: page.locator('button[aria-label^="Chief of Staff"]') }).first();
-  await expect(row).toHaveAttribute("data-mono-status", "working", { timeout: 15_000 });
-  const chat = await page.evaluate(
-    () => (JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as Array<{ id: string; sessionId?: string }>).find((m) => m.id === "chief-of-staff")?.sessionId ?? "",
-  );
-  expect(chat).not.toBe("");
-
-  // Off the chat (Today), then the chat leaves this window mid-turn, as a move to another window does (dev hook).
-  await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
-  const left = Date.now();
-  await page.evaluate((id) => (window as unknown as { __devChatLeavesWindow(id: string): void }).__devChatLeavesWindow(id), chat);
-  // Under 8 s it is not "Not sure" yet; from 8 s it is, and stays.
-  await page.waitForTimeout(6500);
-  await expect(row).not.toHaveAttribute("data-mono-status", "unknown");
-  await expect(row).toHaveAttribute("data-mono-status", "unknown", { timeout: 6000 });
-  expect(Date.now() - left).toBeGreaterThanOrEqual(8000);
-  await expect(cosRow).toHaveAttribute("title", /Not sure/);
-  await expect(cosRow).toHaveAttribute("aria-label", /Not sure/);
-  await expect(row.locator("[data-mono-unsure] svg.pixel-mascot")).toHaveClass(/opacity-40/);
-  await expect(row.locator(".pixel-bob, .pixel-hop")).toHaveCount(0);
-  await expect(row.locator("[data-mono-dot]")).toHaveClass(/bg-content\/30/);
-  await closeOffer(page);
-  await cosRow.hover();
-  const railBox = (await rail.boundingBox())!;
-  await area(page, "pm-ui-4-not-sure-rail", { ...railBox, height: Math.min(railBox.height, 320) }, 4);
-  await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
 });

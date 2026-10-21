@@ -1277,8 +1277,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     // drops it first, then shows the model controls as icons.
                     tools={
                       monoComposerUsage ? (
-                        // Grey like the rest of the line: no provider colour under a Mono's box (Critiquito, 21 Oct).
-                        <div data-mono-usage className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 grayscale @max-md:hidden">
+                        // Grey like the rest of the line, with a neutral meter glyph: no provider mark under a Mono's box
+                        // (Critiquito and the room, 21 Oct).
+                        <div data-mono-usage className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
                           <UsageChips
                             providers={monoUsageProviders(session.harness)}
                             session={{
@@ -1290,6 +1291,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                             project={session.cwd}
                             accountPicker={false}
                             variant="composer"
+                            meterIcon
                           />
                         </div>
                       ) : undefined
