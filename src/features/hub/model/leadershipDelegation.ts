@@ -49,6 +49,19 @@ export function leadTargetsFor(monoId: string, projects: readonly HubProject[]):
 }
 
 /**
+ * How a Lead is named in a Mono's note: the id delegate_task takes, plus the name the room and the board use when it
+ * differs ('"vg-game" (EXO lead)'), so a seat that hears "EXO lead" knows it is vg-game's Lead (AD3: PM and Alfred
+ * said "there is no EXO lead" while CoS's brief to it was running).
+ */
+export function leadNoteName(target: Pick<LeadTarget, "projectId" | "leadName">): string {
+  const name = target.leadName.trim();
+  const plain = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return !name || plain(name) === plain(`${target.projectId} lead`) || plain(name) === plain(target.projectId)
+    ? `"${target.projectId}"`
+    : `"${target.projectId}" (${name})`;
+}
+
+/**
  * Whether a Mono briefs project Leads: every Mono (Ash, 20 Oct: a project's work is picked up with its coding team),
  * except a Lead, which hands its own project's work to its workers, and the checker, which only reads.
  */

@@ -15,6 +15,7 @@ import {
   leadBriefPrompt,
   leadDelegationReady,
   leadTargetsFor,
+  leadNoteName,
   setLeadDelegator,
 } from "./leadershipDelegation";
 import type { HubProject } from "./types";
@@ -107,5 +108,13 @@ describe("leadership -> Lead", () => {
     // The checker only reads.
     addMono({ id: "checker", name: "Checker", mascot: "ghost", color: "#888", projects: ["/p/vg-game"] });
     expect(briefsLeads("checker")).toBe(false);
+  });
+});
+
+describe("leadNoteName", () => {
+  it("adds the Lead's own name when it differs from the project id", () => {
+    expect(leadNoteName({ projectId: "vg-game", leadName: "EXO lead" })).toBe('"vg-game" (EXO lead)');
+    expect(leadNoteName({ projectId: "tally", leadName: "Tally lead" })).toBe('"tally"');
+    expect(leadNoteName({ projectId: "hub", leadName: "" })).toBe('"hub"');
   });
 });

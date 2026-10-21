@@ -109,6 +109,11 @@ export type AgentAppTasksHost = {
   ): Promise<Delegation[]>;
   /** Every row of a task's tree (for the counts of what it delegated in turn). */
   tree?(id: string): Promise<Delegation[]>;
+  /**
+   * Every row still running or owed, anyone's (delegations listOpen): task_status with no ids shows the team's other
+   * open jobs, so a seat that asks "is anyone on it?" sees the job CoS handed a Lead instead of only its own (none).
+   */
+  teamOpen?(): Promise<Delegation[]>;
   /** The owner read these finished results in its turn: they are acknowledged and their report turns dropped. */
   acknowledge(owner: string, rows: Delegation[]): Promise<void>;
   /** Resolves on the next change to any row, or after `ms`. */
@@ -714,6 +719,7 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   );
   // Waiting for a free worker: no task yet, only the chat it will be (H8).
   const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
+  const team = ids ? [] : await othersOpen(source, tasks);
   return {
     tasks: rows.map((row, index) =>
       taskView(
@@ -733,8 +739,38 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
           })),
         }
       : {}),
-    ...(rows.length || queued.length ? {} : { note: "You have no tasks running or owed." }),
+    ...(team.length ? { othersRunning: team } : {}),
+    ...(rows.length || queued.length
+      ? {}
+      : {
+          note: team.length
+            ? "You have no tasks of your own running or owed. othersRunning lists the team's open jobs (read only)."
+            : "You have no tasks running or owed, and nobody else on the team has one open.",
+        }),
   };
+}
+
+/** The team's other open jobs (top-level rows only, not the caller's own), for task_status with no ids. */
+async function othersOpen(source: Session, tasks: AgentAppTasksHost) {
+  if (!tasks.teamOpen) return [];
+  const rows = await tasks.teamOpen().catch(() => [] as Delegation[]);
+  return rows
+    .filter(
+      (row) =>
+        row.ownerSession !== source.id &&
+        !row.parentId &&
+        (row.state === "running" || row.state === "question"),
+    )
+    .slice(0, 10)
+    .map((row) => {
+      const child = tasks.child?.(row.childSession);
+      return {
+        ...statusView(row, child),
+        ...(row.ownerMono ? { from: row.ownerMono } : {}),
+        ...(row.project ? { project: row.project } : {}),
+        startedAt: iso(row.createdAt),
+      };
+    });
 }
 
 async function wait(source: Session, input: Record<string, unknown>, host: AgentAppHost) {

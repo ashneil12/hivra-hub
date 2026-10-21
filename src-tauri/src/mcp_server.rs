@@ -228,7 +228,7 @@ fn tools() -> Value {
         {
             "name": "task_status",
             "title": "Read your tasks",
-            "description": "Your delegated tasks: status (running, question, completed, failed, cancelled), activity, last active time, the result or the provider's reason for a failure, a worker's pending question, and counts of the tasks it delegated in turn. Reading a finished result marks it read, so no report turn follows for it.",
+            "description": "Your delegated tasks: status (running, question, completed, failed, cancelled), activity, last active time, the result or the provider's reason for a failure, a worker's pending question, and counts of the tasks it delegated in turn. Reading a finished result marks it read, so no report turn follows for it. Without taskIds it also lists the team's other open jobs (othersRunning: each job's title, who started it and its project; read only).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "taskIds": task_ids.clone() },

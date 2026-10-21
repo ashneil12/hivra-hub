@@ -56,6 +56,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
   return {
     owned: (owner, query) => deps.backend.owned({ ownerSession: owner, ...query }),
     tree: (id) => deps.backend.tree(id),
+    teamOpen: () => deps.backend.listOpen(),
     acknowledge: async (owner, rows) => {
       await tracker().acknowledge(
         owner,

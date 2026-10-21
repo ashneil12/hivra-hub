@@ -641,6 +641,37 @@ describe("tasks.status", () => {
     expect(again.tasks).toHaveLength(1);
   });
 
+  it("with no ids, also lists the team's other open jobs read only (AD3: PM saw none while CoS's brief to EXO lead ran)", async () => {
+    const rows = [
+      row({ id: "t-cos", ownerSession: "mono-cos", ownerMono: "chief-of-staff", title: "Fix EXO footer and mobile nav" }),
+      row({ id: "t-cos-child", ownerSession: "lead-chat", ownerMono: "vg-game-lead", parentId: "t-cos", rootId: "t-cos" }),
+      row({ id: "t-old", ownerSession: "mono-cos", ownerMono: "chief-of-staff", state: "completed", delivery: "pending" }),
+    ];
+    const { source, host, api, acknowledged } = fixture(rows);
+    api.teamOpen = vi.fn(async () => rows);
+    const out = (await handleAgentApp(source, "s-team", "tasks.status", {}, host)) as {
+      tasks: unknown[];
+      othersRunning?: Array<Record<string, unknown>>;
+      note?: string;
+    };
+    expect(out.tasks).toEqual([]);
+    expect(out.othersRunning).toEqual([
+      expect.objectContaining({ taskId: "t-cos", title: "Fix EXO footer and mobile nav", from: "chief-of-staff", project: "vg-game", status: "running" }),
+    ]);
+    expect(out.note).toContain("no tasks of your own");
+    expect(acknowledged).toEqual([]); // reading the team's jobs never marks someone else's result read
+    // By id it stays the caller's own only.
+    await expect(handleAgentApp(source, "s-team2", "tasks.status", { taskIds: ["t-cos"] }, host)).rejects.toThrow("No task t-cos of yours");
+  });
+
+  it("with no ids and nobody running, says so plainly", async () => {
+    const { source, host, api } = fixture([]);
+    api.teamOpen = vi.fn(async () => []);
+    const out = (await handleAgentApp(source, "s-none", "tasks.status", {}, host)) as Record<string, unknown>;
+    expect(out).not.toHaveProperty("othersRunning");
+    expect(out.note).toBe("You have no tasks running or owed, and nobody else on the team has one open.");
+  });
+
   it("never reads another chat's task, even by its id", async () => {
     const rows = [row({ id: "t-mine" }), row({ id: "t-theirs", ownerSession: "mono-hivra" })];
     const { source, host, acknowledged, cancelled, answered } = fixture(rows);

@@ -83,6 +83,7 @@ import {
   delegateToLead,
   findLeadTarget,
   leadTargetsFor,
+  leadNoteName,
   formatLeadBrief,
   leadBriefPrompt,
   setLeadDelegator,
@@ -9011,9 +9012,7 @@ function Workspace({
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
                       teams: true,
-                      leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
-                        (target) => `"${target.projectId}"`,
-                      ),
+                      leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(leadNoteName),
                     }
                   : {}),
               });
