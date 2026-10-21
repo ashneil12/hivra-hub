@@ -73,7 +73,10 @@ Ash, 21 Oct 20:40: "transferable" means the whole setup, Monos and all, moves in
 the code: projects, Monos (soul, habits, skills list, engine, look, role label; memory when ticked), teams/rooms and
 their conversations (workspace ticked), connectors (sign in again), Pages, custom models (key again), settings and
 themes, project memory, chats, notes, automations, reminders and delegation history all travel. Added on 21 Oct:
-`monocode:hub-user-name` (what the team calls the user) and `monocode:stall-minutes`. Still not carried:
+`monocode:hub-user-name` (what the team calls the user) and `monocode:stall-minutes`. Deleted Monos stay deleted:
+`monocode:mono-team-removed-by-user` travels and is merged (never replaced) on import; a default-team Mono a fresh
+copy seeded on first launch (never talked to, not in the export) is taken back off, and an older export's deleted
+Monos come unticked (importPlan.ts; test in portableRoundTrip.test.ts). Still not carried:
 - Keys and logins (by design): Claude/Grok sign-ins, custom-model keys (DeepSeek, xAI), connector logins.
 - Per-project worker limits ("Workers at once", heavy tests): they live in the app's Rust store (worker_queue.rs
   worker_limits/worker_heavy), not in localStorage, and the export does not read them yet. A fresh copy starts at 6/2.
