@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "about": "A short real check that the hub runs on Grok 4.7 through Ash's Grok subscription (npm run hub:realtest -- --grok-sub --scenarios tests/realtest/scenarios/grok-smoke.json): one Mono reply in the Lead's chat, then one small Claude Code task in Tally's coding team. Not a benchmark.",
+  "project": { "id": "tally", "name": "Tally", "shortName": "Tally" },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": ["Tally's accent colour is teal #0F766E (Ash, 18 Oct)."],
+    "ash": ["Ash wants plain English and the number first."]
+  },
+  "budget": { "maxTurns": 30, "maxRequests": 150, "maxMinutes": 15 },
+  "scenarios": [
+    {
+      "id": "g01-mono-reply",
+      "title": "A Mono answers on Grok 4.7",
+      "minutes": 4,
+      "maxTurns": 6,
+      "steps": [
+        { "send": { "mono": "lead" }, "label": "memory", "text": "check tally's memory and tell me our accent colour, one line" },
+        { "wait": { "monoReply": "lead", "maxSec": 180 } }
+      ],
+      "criteria": "One plain line naming teal #0F766E."
+    },
+    {
+      "id": "g02-claude-code-task",
+      "title": "Claude Code on Grok 4.7 fixes the red test",
+      "minutes": 9,
+      "maxTurns": 20,
+      "steps": [
+        { "send": { "codingTeam": "project" }, "as": "fix", "label": "bug", "text": "the stats test is red, can u sort it and tell me what was actually wrong, short" },
+        { "wait": { "chatReply": "fix", "maxSec": 240 } },
+        {
+          "wait": {
+            "any": [{ "settled": true }, { "chatText": "fix", "pattern": "(fixed|pass|green|tests? (now )?pass)" }],
+            "maxSec": 420
+          }
+        }
+      ],
+      "criteria": "The stats test passes after the chat's own edit, and the reply says what was wrong in plain words."
+    }
+  ]
+}

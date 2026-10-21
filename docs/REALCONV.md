@@ -163,3 +163,7 @@ Both are kept with their reasons (`--list`).
 
 `src/app/model/verifyDriver.customModel.test.ts` covers the window's `customModel` step. It adds a model with every
 level and refuses anything carrying a key.
+
+## On Grok 4.7 through the Grok subscription
+
+`--grok-sub` (realtest) or `--agents grok-sub` (realconv) runs every Claude Code call, chats and helper calls, on Grok 4.7 through Ash's bridge launcher `~/.local/bin/claude-grok` (Claude Code against his local gateway, signed in to Grok with his SuperGrok subscription). No Claude login or Claude budget is used; realconv's tester and judge go there too unless named. The bench only checks the launcher is there; it never reads the gateway key or the Grok sign-in. If the gateway's Grok sign-in lapses, Ash runs `claude-grok --bridge-login` himself.

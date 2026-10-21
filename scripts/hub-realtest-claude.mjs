@@ -15,6 +15,7 @@
 //     own recorded output (fixtures/claude-cli-2.1.302) comes back instead, with this session's id: what Claude Code
 //     prints when the model is down or the account is out of credit;
 //   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
+//   - on the Grok bridge (REALTEST_GROK_BRIDGE=1, `--grok-sub`) holds every call, helpers too, to REALTEST_MODEL;
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it.
@@ -41,7 +42,9 @@ const KEEP_MODELS = /haiku/i;
 const KEEP_EFFORTS = new Set(["low", "medium"]);
 
 /** The model to really run: haiku stays (cheap helper calls), everything else is the test model. */
-export function pickModel(asked) {
+export function pickModel(asked, { grok = process.env.REALTEST_GROK_BRIDGE === "1" } = {}) {
+  // On the Grok bridge (--grok-sub) every call is Grok 4.7: the gateway has no Haiku.
+  if (grok) return MODEL;
   return asked && KEEP_MODELS.test(asked) ? asked : MODEL;
 }
 export function pickEffort(asked) {
