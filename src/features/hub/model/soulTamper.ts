@@ -67,22 +67,86 @@ export function keptAshLine(name: string): string {
   return `${name}'s soul was edited outside the app. Kept your version.`;
 }
 
-/** What a chat's tool calls said (commands, file paths), by session id: App.tsx sets it from its sessions. */
-let toolTextSource: ((sessionId: string) => readonly string[]) | null = null;
-export function setRunToolTextSource(source: ((sessionId: string) => readonly string[]) | null): void {
-  toolTextSource = source;
+/** One tool call as a chat made it: its kind (edit, read, execute...) and what it said (command, file paths). */
+export type RunToolCall = { kind?: string; text: string };
+
+/** What a chat's tool calls were, by session id: App.tsx sets it from its sessions. */
+let toolCallSource: ((sessionId: string) => readonly RunToolCall[]) | null = null;
+export function setRunToolTextSource(source: ((sessionId: string) => readonly RunToolCall[]) | null): void {
+  toolCallSource = source;
+}
+
+type ToolBlockLike = { tool?: { callId?: string; kind?: string; title?: string; detail?: string; paths?: string[] } };
+const seenCalls = new Map<string, Map<string, RunToolCall>>();
+const SEEN_SESSIONS = 100;
+const SEEN_CALLS = 300;
+const RECENT_BLOCKS = 60;
+
+/**
+ * The tool calls of the chats running now, kept as they were asked for (App.tsx, on every sessions change). A finished
+ * shell call's detail becomes its output, so its command is only seen while it is pending: kept here, it still counts.
+ */
+export function noteToolCalls(sessions: readonly { id: string; busy?: boolean; blocks?: readonly ToolBlockLike[] }[]): void {
+  for (const session of sessions) {
+    if (!session.busy || !session.blocks?.length) continue;
+    let calls = seenCalls.get(session.id);
+    if (!calls) {
+      calls = new Map();
+      seenCalls.set(session.id, calls);
+      if (seenCalls.size > SEEN_SESSIONS) seenCalls.delete(seenCalls.keys().next().value!);
+    }
+    const blocks = session.blocks;
+    for (let i = Math.max(0, blocks.length - RECENT_BLOCKS); i < blocks.length; i++) {
+      const tool = blocks[i]!.tool;
+      if (!tool) continue;
+      const key = tool.callId ?? `#${i}`;
+      const text = [tool.title, tool.detail, ...(tool.paths ?? [])].filter(Boolean).join("\n");
+      const known = calls.get(key);
+      if (!known) calls.set(key, { kind: tool.kind, text });
+      else if (!known.text.includes(text)) calls.set(key, { kind: known.kind ?? tool.kind, text: `${known.text}\n${text}` });
+    }
+    while (calls.size > SEEN_CALLS) calls.delete(calls.keys().next().value!);
+  }
+}
+
+export function resetToolCallsForTest(): void {
+  seenCalls.clear();
+}
+
+function callsOf(sessionId: string): RunToolCall[] {
+  return [...(seenCalls.get(sessionId)?.values() ?? []), ...(toolCallSource?.(sessionId) ?? [])];
+}
+
+// A command that writes, moves or deletes a file named SOUL.md: a redirect or tee into it, an in-place sed or perl,
+// mv/rm/truncate/touch on it, cp onto it, or a script that opens a file to write or replaces one.
+const SHELL_WRITES_SOUL = [
+  />{1,2}\s*["']?[^\s"'|;&]*SOUL\.md/i,
+  /\btee\b[^|;&]*SOUL\.md/i,
+  /\b(?:sed|perl)\b[^|;&]*\s-\w*i\b[^|;&]*SOUL\.md/i,
+  /\b(?:mv|rm|truncate|touch|install|ln)\b[^|;&]*SOUL\.md/i,
+  /\bcp\b[^|;&]*SOUL\.md["']?\s*(?:$|[|;&])/im,
+];
+const SCRIPT_WRITES = /open\([^)]*,\s*(?:mode\s*=\s*)?["'][^"']*[wax+]|\.write\(|write_(?:text|bytes)\(|writeFile|appendFile|fs\.write|os\.(?:replace|rename|remove|unlink)\(|shutil\.(?:copy\w*|move)\(/;
+
+/** A tool call that changed a file named SOUL.md (not one that only read, searched or listed it). */
+export function callWritesSoul(call: RunToolCall): boolean {
+  if (!/SOUL\.md/i.test(call.text)) return false;
+  if (call.kind === "edit") return true;
+  if (call.kind === "read" || call.kind === "search") return false;
+  return SHELL_WRITES_SOUL.some((re) => re.test(call.text)) || SCRIPT_WRITES.test(call.text);
 }
 
 /**
- * A run whose tool calls named this Mono's soul: its id and SOUL.md in one command or path (Alfred's S19 case C, a
- * Hivra worker's python one-liner writing the Nibbii lead's SOUL.md). That run is an agent, whoever's it is.
+ * A run whose tool calls wrote this Mono's soul: its id and SOUL.md in one call that writes it (Alfred's S19 case C,
+ * a Hivra worker's python one-liner writing the Nibbii lead's SOUL.md). That run is an agent, whoever's it is. A run
+ * that only read the soul (cat, rg, a Read) doesn't count, so Ash's edit made meanwhile is kept.
  */
 export function runNamedSoul(
   run: Pick<RunWindow, "sessionId">,
   monoId: string,
-  texts: (sessionId: string) => readonly string[] = (id) => toolTextSource?.(id) ?? [],
+  calls: (sessionId: string) => readonly RunToolCall[] = callsOf,
 ): boolean {
-  return texts(run.sessionId).some((text) => text.includes(monoId) && /SOUL\.md/i.test(text));
+  return calls(run.sessionId).some((call) => call.text.includes(monoId) && callWritesSoul(call));
 }
 
 /**
@@ -93,7 +157,7 @@ export function runNamedSoul(
 export function runIsMonos(
   run: Pick<RunWindow, "sessionId" | "cwd">,
   monoId: string,
-  texts?: (sessionId: string) => readonly string[],
+  texts?: (sessionId: string) => readonly RunToolCall[],
 ): boolean {
   if (chatMonoOwner(run.sessionId) === monoId) return true;
   if (runNamedSoul(run, monoId, texts)) return true;

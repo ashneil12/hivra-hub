@@ -1,6 +1,6 @@
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
-import { setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
@@ -2678,6 +2678,8 @@ function Workspace({
     syncDockBadge(sessions);
     // When chats run, for the soul tamper check (hub/model/soulTamper.ts).
     noteSessionRuns(sessions);
+    // And what they ran, while it is still pending (a finished command's detail is its output).
+    noteToolCalls(sessions);
   }, [sessions]);
 
   useEffect(() => {
@@ -2686,7 +2688,9 @@ function Workspace({
     // What each chat's tool calls said, so a run that named another Mono's soul counts for it (soulTamper.ts).
     setRunToolTextSource((sessionId) =>
       (sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? []).flatMap((block) =>
-        block.tool ? [[block.tool.title, block.tool.detail, ...(block.tool.paths ?? [])].filter(Boolean).join("\n")] : [],
+        block.tool
+          ? [{ kind: block.tool.kind, text: [block.tool.title, block.tool.detail, ...(block.tool.paths ?? [])].filter(Boolean).join("\n") }]
+          : [],
       ),
     );
     // A heartbeat while a chat runs with nothing new on screen, so a reload or crash leaves when it last ran.
