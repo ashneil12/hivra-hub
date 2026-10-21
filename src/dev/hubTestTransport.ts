@@ -23,7 +23,7 @@ export function httpTransport(baseUrl: () => string, token: () => string): HubTr
                 /* not JSON */
               }
               if (res.statusCode === 401) reject(new HubCallError("unauthorized", "Ash OS didn't accept the app's key."));
-              else if (res.statusCode === 403) reject(new HubCallError("refused", json.error ?? "Ash OS refused the call."));
+              else if (res.statusCode === 403) reject(new HubCallError("refused", json.error ?? "Ash OS didn't take that."));
               else if (json.ok) resolve(json.result as never);
               else reject(new HubCallError("error", json.error ?? `Ash OS answered with an error (${res.statusCode}).`));
             });

@@ -94,7 +94,7 @@ impl App for LiveApp {
                     let error = value
                         .get("error")
                         .and_then(Value::as_str)
-                        .unwrap_or("MonoCode refused the call")
+                        .unwrap_or("MonoCode didn't take that request")
                         .to_string();
                     // The answer was lost, not refused: the app applies a request id at most once, so ask again.
                     (error.starts_with("Control request timed out"), error)

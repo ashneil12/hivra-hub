@@ -100,7 +100,7 @@ it("redacts secrets and refuses sessions that are not the Mono", async () => {
   await run("memory.add", { fact: "deploy token=abc123secretvalue" });
   expect(files.get("MEMORY.md")).not.toContain("abc123secretvalue");
   await expect(fixture(false).run("memory.read")).rejects.toThrow(
-    "Mono",
+    "Memory can only be changed from a Mono's own chat",
   );
 });
 
@@ -173,7 +173,7 @@ it("lets the Mono add, pause, try and remove its habits", async () => {
 
 it("keeps habits to the Mono's own conversation", async () => {
   await expect(habitsFixture(false).run("habits.list")).rejects.toThrow(
-    "Only a Mono",
+    "Habits can only be changed from that Mono's own chat",
   );
 });
 
