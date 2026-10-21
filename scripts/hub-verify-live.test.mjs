@@ -255,7 +255,8 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n>> ${round}`)), "room-frank-flag");
   assert.equal(step(turn("Projects Manager", "frank addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n>> ${flag}`)), "room-pm-retake");
   assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n${flag}\n\n>> ${retake}`)), "room-frank-pass");
-  assert.equal(step(turn("Chief of Staff", "3 seats have spoken since Ash's last message.", `${ash1}\n\n${round}`), cosTags), "room-cos-digest");
+  // No digest closes the round: nobody is named after "Pass from me.", so nobody else is asked.
+  assert.equal(rules.some((rule) => rule.name === "room-cos-digest"), false);
   // A room turn no rule is for stays quiet instead of posting the fake's "no rule matched".
   assert.equal(step(turn("Alfred", "Chief of Staff answered Ash. You may add ONE short message", ash1)), "room-quiet");
   // Exchange 2: frank's own work, Chief of Staff's answer (with its private message to Alfred), frank's wake.
@@ -285,7 +286,9 @@ test("the coding team: Ash's new chat, its worker and the report reach their own
   const fired = {};
   const pick = (prompt, tags = []) => pickRule(rules, prompt, tags, fired)?.name ?? null;
   const context = "<monocode_context>\n<coding_team>...</coding_team>\n<delegate_tools>Reports start with [MonoCode report]; a [MonoCode brief from you] ...</delegate_tools>\n</monocode_context>\n\n";
-  // A coding-team chat reads who it is ahead of Ash's message.
+  // On Claude Code a coding-team chat's message is Ash's own (its note is appended to the system prompt); another engine reads who it is ahead of it.
+  assert.equal(pick(`${CT_KICKOFF} run r1: have one worker check the verify widget.`), "ct-kickoff");
+  delete fired["ct-kickoff"];
   assert.equal(pick(`${context}${CT_KICKOFF} run r1: have one worker check the verify widget.`), "ct-kickoff");
   const kickoff = rules.find((rule) => rule.name === "ct-kickoff");
   const call = kickoff.steps.find((s) => s.app === "tasks.delegate");

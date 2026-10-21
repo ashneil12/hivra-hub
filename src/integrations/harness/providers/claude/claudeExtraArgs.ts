@@ -38,3 +38,32 @@ export async function claudeExtraArgs(sessionId: string): Promise<string[]> {
     return [];
   }
 }
+
+/**
+ * What a chat adds to Claude Code's own system prompt (`--append-system-prompt`; the default prompt is never replaced):
+ * the hub's short note, and a Mono's soul and memory (hub/model/hubNote.ts). `key` says when a running process needs a
+ * restart to take a new one (who it is changed); `text` is what a new process starts with.
+ */
+export type ClaudeAppend = { key: string; text: string };
+type AppendProvider = (sessionId: string) => ClaudeAppend | undefined;
+
+let appendProvider: AppendProvider | undefined;
+
+export function setClaudeAppend(next: AppendProvider | undefined): void {
+  appendProvider = next;
+}
+
+/** This session's appended prompt, if the app gives it one; never throws. */
+export function claudeAppend(sessionId: string): ClaudeAppend | undefined {
+  try {
+    const append = appendProvider?.(sessionId);
+    return append?.text.trim() ? append : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The arguments that carry it. */
+export function claudeAppendArgs(append: ClaudeAppend | undefined): string[] {
+  return append ? ["--append-system-prompt", append.text] : [];
+}

@@ -1,5 +1,5 @@
 import { TurnNotReadyError } from "../../core/types";
-import { claudeExtraArgs } from "./claudeExtraArgs";
+import { claudeAppend, claudeAppendArgs, claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
 import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
@@ -1000,6 +1000,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       // access chosen later on any other process restarts it (claudeLaunchDelta).
       ...buildClaudeSpawnArgs({ ...launch, allowBypass: launchNext.allowBypass }),
       ...(await claudeExtraArgs(input.sessionId)),
+      // The hub's additions ride on Claude Code's own system prompt, never in place of it.
+      ...claudeAppendArgs(claudeAppend(input.sessionId)),
     ],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
@@ -2565,6 +2567,7 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
     ultracode: options.settings?.ultracode === true,
     hooks: options.settings?.disableAllHooks !== true,
     autoCompactWindow: options.settings?.autoCompactWindow,
+    ...(claudeAppend(input.sessionId) ? { appendKey: claudeAppend(input.sessionId)!.key } : {}),
   };
 }
 

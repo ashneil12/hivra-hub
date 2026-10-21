@@ -45,9 +45,9 @@
 //       the question's answer in place, never a message queued behind it (the realtest baseline's Lead sat 20+ min).
 //   Then the room (docs/leadership/ROOM.md), in the same launch: Ash writes in the Verify project's Leadership team the
 //   way he types there (a room message from the stub):
-//   18. the host answers him first, then the Monos run a review round among themselves (round, flag, retake, "pass
-//       from me") by naming each other, and the host closes it with a digest; every message is a row in the app
-//       database, and each Mono's own chat shows its room turns as quiet lines;
+//   18. the host answers him first, then the Monos hand off among themselves by naming each other (round, flag,
+//       retake, "pass from me") until nobody is named, with no digest; every message is a row in the app database,
+//       and each Mono's own chat shows its room turns as quiet lines;
 //   19. a Mono busy in its own chat still answers: the room's wake is steered into its running turn and it posts with
 //       room_post, answering the message that woke it;
 //   20. a private message between Monos (mono_message) arrives as a hidden turn in the other Mono's own chat, shown as
@@ -596,13 +596,7 @@ export function scenario({ runId, failGate = false }) {
       times: 1,
       steps: [{ say: "Fair, frank. The label is fixed in commit def5678. frank, please re-check." }],
     },
-    { name: "room-frank-pass", match: `${roomTurn("frank")}[\\s\\S]*>> Projects Manager: Fair, frank`, times: 1, steps: [{ say: "Pass from me." }] },
-    {
-      name: "room-cos-digest",
-      match: `${roomTurn("Chief of Staff")}[\\s\\S]*seats have spoken`,
-      times: 1,
-      steps: [{ mark: "room-digest" }, { say: "Locked: round 1 passes. Nothing for Ash." }],
-    },
+    { name: "room-frank-pass", match: `${roomTurn("frank")}[\\s\\S]*>> Projects Manager: Fair, frank`, times: 1, steps: [{ mark: "room-pass" }, { say: "Pass from me." }] },
     // frank, busy in its own chat: the room's wake is steered into this turn and answered with room_post.
     {
       name: "room-frank-busy",
@@ -2227,12 +2221,12 @@ async function main() {
         .filter((row) => row.block.role === "user" && row.block.internal && row.block.monoNote?.kind === kind);
     const roomSent = ashInRoom(1, "plan round 1");
     const cosAnswered = await waitMark("room-cos-answered", 60_000);
-    const digest = await waitMark("room-digest", 120_000);
+    const passed = await waitMark("room-pass", 120_000);
     const loop = await until(async () => {
       const rows = await roomRows();
       const at = rows.findIndex((row) => row.author === "ash" && row.text.startsWith(ROOM_ASH(1)));
       const tail = at >= 0 ? rows.slice(at) : [];
-      return tail.some((row) => row.text.startsWith("Locked: round 1")) ? tail : null;
+      return tail.some((row) => row.text.startsWith("Pass from me")) ? tail : null;
     }, scale(30_000));
     const roomNotes = await notesIn("room");
     const loopEvidence = {
@@ -2244,21 +2238,21 @@ async function main() {
     };
     if (
       cosAnswered &&
-      digest &&
+      passed &&
       loop &&
-      JSON.stringify(loopEvidence.authors) === JSON.stringify(["ash", TEAM_MONO, "projects-manager", "frank", "projects-manager", "frank", TEAM_MONO]) &&
-      JSON.stringify(loopEvidence.picks) === JSON.stringify([null, "lead", "addressed", "addressed", "addressed", "addressed", "digest"]) &&
+      JSON.stringify(loopEvidence.authors) === JSON.stringify(["ash", TEAM_MONO, "projects-manager", "frank", "projects-manager", "frank"]) &&
+      JSON.stringify(loopEvidence.picks) === JSON.stringify([null, "lead", "addressed", "addressed", "addressed", "addressed"]) &&
       loop[1].reply_to === loop[0].id &&
       loopEvidence.latencyMs < scale(15_000) &&
       loopEvidence.quietLines.length >= 3
     )
       pass(
         "room_agents_talk",
-        "Ash writes in a room: the host answers first, the Monos run a review round among themselves by naming each other, and the host locks it",
-        `Chief of Staff answered ${loopEvidence.latencyMs} ms after Ash's message; then ${loopEvidence.authors.slice(2, -1).join(", ")} without Ash (round, flag, retake, "Pass from me."), then "${loopEvidence.texts.at(-1)}"; all ${loop.length} rows are in room_messages, and ${loopEvidence.quietLines.length} Mono chats show their room turns as quiet lines`,
+        "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest",
+        `Chief of Staff answered ${loopEvidence.latencyMs} ms after Ash's message; then ${loopEvidence.authors.slice(2).join(", ")} without Ash (round, flag, retake, "${loopEvidence.texts.at(-1)}"); all ${loop.length} rows are in room_messages, and ${loopEvidence.quietLines.length} Mono chats show their room turns as quiet lines`,
         { evidence: loopEvidence },
       );
-    else fail("room_agents_talk", "Ash writes in a room: the host answers first, the Monos run a review round among themselves by naming each other, and the host locks it", JSON.stringify({ cosAnswered: !!cosAnswered, digest: !!digest, ...loopEvidence }));
+    else fail("room_agents_talk", "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest", JSON.stringify({ cosAnswered: !!cosAnswered, passed: !!passed, ...loopEvidence }));
 
     phase();
     // 19. frank works in its own chat; Ash asks the room; frank answers from that work with room_post.
@@ -2368,6 +2362,11 @@ async function main() {
       }
     })();
     const ctFirstPrompt = prompts().find((entry) => entry.rule === "ct-kickoff")?.prompt ?? "";
+    // Vanilla Claude Code plus the hub's note (Ash, 21 Oct): the note rides on --append-system-prompt, never in the message.
+    const ctAppend = (() => {
+      const at = ctArgs.indexOf("--append-system-prompt");
+      return at >= 0 ? ctArgs[at + 1] ?? "" : "";
+    })();
     const ctBrief = prompts().find((entry) => entry.rule === "ct-worker")?.prompt ?? "";
     const ctEvidence = {
       call: ctTask?.ok ?? null,
@@ -2376,7 +2375,10 @@ async function main() {
       child: ctChildRow,
       chatIsMono: ctMonoBlocks > 0 || !!ctRow?.owner_mono,
       delegateTool: !!ctMcp.monocode && ctArgs.includes("mcp__monocode__*"),
-      firstPrompt: ["<coding_team>", "<chat_rules>", "<delegate_tools>", "<project_memory>"].filter((tag) => ctFirstPrompt.includes(tag)),
+      note: ["running inside MonoCode Hub", "coding team", "delegate_task", "<project_memory>"].filter((part) => ctAppend.includes(part)),
+      noteBytes: Buffer.byteLength(ctAppend),
+      systemPromptReplaced: ctArgs.includes("--system-prompt"),
+      messageClean: !!ctFirstPrompt && !ctFirstPrompt.includes("<monocode_context>"),
       brief: {
         signed: ctBrief.includes("[MonoCode brief from Verify coding team]"),
         rules: ctBrief.includes("<worker_rules>"),
@@ -2397,7 +2399,9 @@ async function main() {
       !ctChildRow.hidden &&
       ctRow.project === TREE_PROJECT.id &&
       ctEvidence.delegateTool &&
-      ctEvidence.firstPrompt.length === 4 &&
+      ctEvidence.note.length === 4 &&
+      !ctEvidence.systemPromptReplaced &&
+      ctEvidence.messageClean &&
       ctEvidence.brief.signed &&
       ctEvidence.brief.rules &&
       ctEvidence.brief.memory &&
@@ -2407,7 +2411,7 @@ async function main() {
       pass(
         "coding_team_delegates",
         "A chat Ash starts in a project's coding team (not a Mono) is an orchestrator: it delegates, its worker nests under it, and the report comes back to it",
-        `Ash's new chat in Verify's coding team (${ctChat}, in the project's folder, no Mono) started with the delegate tool and its first prompt carried ${ctEvidence.firstPrompt.join(", ")}; it delegated ${ctChild} (row ${ctRow.id}, project ${ctRow.project}), a chat in the same folder nested under it by its id, signed by "Verify coding team" with its worker rules and the project's memory; the worker's report came back to the same chat`,
+        `Ash's new chat in Verify's coding team (${ctChat}, in the project's folder, no Mono) started with the delegate tool and Claude Code's own system prompt plus a ${ctEvidence.noteBytes}-byte appended note (${ctEvidence.note.join(", ")}), its message untouched; it delegated ${ctChild} (row ${ctRow.id}, project ${ctRow.project}), a chat in the same folder nested under it by its id, signed by "Verify coding team" with its worker rules and the project's memory; the worker's report came back to the same chat`,
         { evidence: ctEvidence },
       );
     else fail("coding_team_delegates", "A chat Ash starts in a project's coding team (not a Mono) is an orchestrator: it delegates, its worker nests under it, and the report comes back to it", JSON.stringify({ delegated: !!ctDelegated, worker: !!ctWorker, report: !!ctReport, ...ctEvidence }));

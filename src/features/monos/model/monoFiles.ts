@@ -1,17 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { recordSavedSoul } from "./soulSaved";
-import { ASK_ASH_RULES } from "../../hub/model/askAshRules";
-import { AUTOPILOT_RULES } from "../../autopilot/model/autopilotRules";
 import {
   findMono,
   HANDED_KEY,
   migrateLegacyMonoStorage,
-  monoProjectsPhrase,
   updateMono,
   type MonoLook,
 } from "./mono";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
-import { CHECK_RULES, CHECKER_RULES } from "../../hub/model/checkerRules";
+import { CHECKER_RULES } from "../../hub/model/checkerRules";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -329,8 +326,8 @@ export function forgetAgentContext(sessionId: string): void {
   }
 }
 
-/** Bumped when the fixed rules below change, so live chats get them again (30: the minimal hub, 21 Oct: soul, memory and a short tools note). */
-export const MONO_PROMPT_VERSION = 30;
+/** Bumped when the fixed note below changes, so live chats get it again (31, 21 Oct: vanilla Claude Code plus a short appended note). */
+export const MONO_PROMPT_VERSION = 31;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -344,67 +341,54 @@ export function monoTurn(message: string, context: readonly string[]): string {
 
 /** Where the Mono works, with each project's folder. */
 export function monoProjectsBrief(look: Pick<MonoLook, "projects">): string {
-  if (!look.projects.length)
-    return "The user has not given you any projects yet; they add them from your details panel. Until then, help with whatever they bring, and say so if something needs a project.";
-  const list = look.projects
-    .map((project) => `- ${project.name}: ${project.path}`)
-    .join("\n");
-  return `You work on ${
-    look.projects.length === 1
-      ? "this project"
-      : `these ${look.projects.length} projects`
-  } (${monoProjectsPhrase(look.projects)}) with your full tools, in their folders:\n${list}\nWork in the folder the task is about, using its full path; only these are yours to change.`;
+  if (!look.projects.length) return "Ash hasn't given you a project yet.";
+  return `Your projects (only these folders are yours to change): ${look.projects.map((project) => `${project.name} (${project.path})`).join(", ")}.`;
 }
 
 /**
- * How every chat Ash talks to talks back (Ash, 20 Oct: "agents should chat as well not just do"; 21 Oct: a dump gets a
- * chat back, not a pile of cards, unless it is clearly a to-do list).
+ * The hub's whole note to a chat (Ash, 21 Oct: start from vanilla Claude Code and add back only what's needed; the text is
+ * Alfred's shared note, trimmed): it runs inside MonoCode Hub, how to reach Ash, who it is, and that the `monocode` tools
+ * exist (their descriptions explain them).
+ * Nothing about formats, numbering, recording, digests or review rounds. On Claude Code it is appended to Claude Code's
+ * own system prompt (hub/model/hubNote.ts); another engine gets it ahead of the message (monoTurn).
  */
-export const CHAT_RULES = `<chat_rules>
-Talk with Ash like a colleague texting back: answer first, short, plain words, no filler, no em dashes. When he thinks out loud or dumps a lot at once, talk it through with him: pick up the threads, give your view, ask the one thing that matters. Start work from a dump only when it is clearly a to-do list or he says go. Never claim something is done or passing without having seen it.
-</chat_rules>`;
+export const HUB_NOTE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
+- Ash talks to you in chats and rooms; other Monos are in the rooms too. To reach him, just reply here.
+- Deletes and money need Ash to click yes himself.`;
 
-/**
- * The delegate tools (the `monocode` MCP server, hub/model/hubMcp.ts), in one note: they describe themselves. Ash OS
- * keeps what Ash says only when he says remember or lock (21 Oct). The hourly look at a worker is the Lead's own habit
- * (Ash, 14 Oct), nudged by useStallWatch.ts.
- */
-export const DELEGATE_NOTE = `<delegate_tools>
-You have MonoCode's delegate tools (delegate_task, task_status, task_wait, task_cancel, task_answer; pr_watch for a pull request). Do small things yourself; hand a real piece of work to a worker with the full context in its brief, tell Ash in a line, and end your turn. Reports come back as [MonoCode report] turns, even after a restart; workers' questions come to you as [MonoCode question]. After about an hour, check a worker is really moving (commits, changed files, passing tests); if not, stop, split or retry it. Save to Ash OS (ash_remember) only when Ash says remember or lock. ${CHECK_RULES}
-</delegate_tools>`;
+/** The hub tools, named once: they describe themselves (the `monocode` MCP server, hub/model/hubMcp.ts). */
+export const DELEGATE_NOTE = `- Hub tools (the \`monocode\` MCP tools): hand work to a worker or another Mono, post in a room, make a page, and propose a change to the hub; their descriptions explain them. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard.`;
+
+/** Where the hub's own docs are on this machine (the app's bundled hub-docs, hub/model/hubData.ts), once known. */
+let hubDocsPath: string | undefined;
+export function setHubDocsPath(path: string | undefined): void {
+  hubDocsPath = path?.trim() || undefined;
+}
+/** Alfred's line (21 Oct): read the docs before guessing. None until the path is known. */
+export function hubDocsLine(): string {
+  return hubDocsPath ? `\n- If you need to know how a hub feature works, read the hub docs at ${hubDocsPath} before guessing.` : "";
+}
 
 /** Who a coding-team chat is (hub/model/codingTeam.ts): the project, its folder, and its Lead's name. */
 export type CodingTeamLook = { projectId: string; projectName: string; folder: string; leadName?: string };
 
 /**
- * What a chat in a project's coding team is handed (Ash, 20 Oct: "I don't talk to workers. I only talk to
- * orchestrators."): who it is, the chat and delegate notes, and its project's memory primer. It has no soul or memory
- * file of its own; MONO_PROMPT_VERSION hands it again when the rules change.
+ * What a chat in a project's coding team is told (Ash, 20 Oct: "I don't talk to workers. I only talk to
+ * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
 export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
-  return [
-    `<coding_team>\nYou are a chat in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}. Ash talks to you directly: you orchestrate, your workers (Claude Code chats you start with delegate_task, on sonnet unless the job needs more) never talk to him.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}\n</coding_team>`,
-    CHAT_RULES,
-    ASK_ASH_RULES,
-    DELEGATE_NOTE,
-    ...(options.projectMemory?.trim() ? [options.projectMemory.trim()] : []),
-  ].join("\n\n");
+  const note = [
+    HUB_NOTE,
+    `- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`,
+    DELEGATE_NOTE + hubDocsLine(),
+  ].join("\n");
+  return options.projectMemory?.trim() ? `${note}\n\n${options.projectMemory.trim()}` : note;
 }
 
 /**
- * Where a Mono that isn't a project's Lead sends work (hub/model/monoTeams.ts, leadershipDelegation.ts; Ash, 20 Oct:
- * "monos shouldn't really have sub chats"). `leads`: the Leads this Mono may brief.
- */
-export function teamNote(leads: readonly string[] = []): string {
-  return `<team_rules>\nKeep no sub-chats: small things you do here; ${
-    leads.length ? `a project's work goes to its Lead with delegate_task and "lead" set to the project (${leads.join(", ")}); ` : ""
-  }your own work outside any project goes to delegate_task with no project, in your own team.\n</team_rules>`;
-}
-
-/**
- * The blocks this turn adds to the user's message: who it is, its soul and memory, and a short note on its tools.
- * `delegate`: this chat has the delegate tool. `projectMemory`: a project Lead's memory primer (hubMemoryPrimer.ts),
- * handed with the soul, so a fresh conversation starts on what holds now.
+ * Who a Mono is: the hub note, its name and projects, its soul and memory, and the tools in a line each.
+ * `delegate`: this chat has the delegate tool. `leads`: the project Leads it may brief. `projectMemory`: a Lead's memory
+ * primer (hubMemoryPrimer.ts). `cli`: the app CLI's command, when known.
  */
 export function monoContext(
   look: MonoLook,
@@ -416,30 +400,28 @@ export function monoContext(
     projectMemory?: string;
     /** A Mono that isn't a project's Lead: its work goes to teams. */
     teams?: boolean;
+    cli?: string;
   } = {},
 ): string {
   const parts: string[] = [];
   if (plan.soul) {
-    const soul = `<soul>\nYour standing instructions, from SOUL.md; the user's current request ranks above them. Change them only when the user asks: app soul.read, then app soul.update with the complete text and the hash it gave.\n\n${files.soul.trim()}\n</soul>`;
-    // The checker only reads (hub/model/hubChecker.ts): who it is, its soul and memory, never the tools for work.
+    const cli = options.cli ?? "app";
+    const soul = `<soul>\n${files.soul.trim()}\n</soul>`;
+    // The checker only reads (hub/model/hubChecker.ts).
     if (files.id === CHECKER_MONO_ID) {
-      parts.push(
-        `<mono>\nYou are ${look.name}, MonoCode's checker: a small agent that compares Ash's messages with what the chat that owns them did, and asks that chat privately when something looks missed.\n</mono>`,
-        soul,
-        CHECKER_RULES,
-      );
+      parts.push(`${HUB_NOTE.split("\n")[0]}\n- You are ${look.name}, its checker. ${CHECKER_RULES}`, soul);
       return withMemory(parts, files, plan);
     }
+    const leads = options.delegate && options.leads?.length ? ` A project's work goes to its Lead (delegate_task with "lead": ${options.leads.join(", ")}).` : "";
     parts.push(
-      `<mono>\nYou are ${look.name}, a Mono in MonoCode: an agent of your own, in one long conversation the user comes back to. ${monoProjectsBrief(look)}\n</mono>`,
+      [
+        HUB_NOTE,
+        `- You are ${look.name}. Your soul file says who you are and what you own; your memory files are yours (both below; \`${cli} --help\` changes them).`,
+        `- ${monoProjectsBrief(look)}`,
+        ...(options.delegate ? [`${DELEGATE_NOTE}${leads}`] : []),
+      ].join("\n") + hubDocsLine(),
       soul,
-      `<tools>\nThe app CLI (app --help) is yours: memory.add/replace/remove/search to keep facts that stay useful (never secrets), habits for things you do on a schedule (add one only once the user agrees), artifacts.write for a long report or a visual (a self-contained page using the app's CSS variables), and sessions.start for work in another session (it reports back to you; say what you started and end your turn). A bare thanks or sign-off can get <reaction>👍</reaction> instead of words.\n</tools>`,
-      CHAT_RULES,
-      ASK_ASH_RULES,
-      AUTOPILOT_RULES,
     );
-    if (options.delegate) parts.push(DELEGATE_NOTE);
-    if (options.delegate && (options.teams || options.leads?.length)) parts.push(teamNote(options.leads));
     if (options.projectMemory?.trim()) parts.push(options.projectMemory.trim());
   }
   return withMemory(parts, files, plan);

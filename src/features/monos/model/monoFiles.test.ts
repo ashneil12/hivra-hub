@@ -8,9 +8,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { createMono, findMono, HANDED_KEY, updateMono } from "./mono";
 import {
-  CHAT_RULES,
   defaultSoul,
   DELEGATE_NOTE,
+  HUB_NOTE,
+  setHubDocsPath,
   loadMonoFiles,
   MEMORY_MAX_LINES,
   memoryWithinBudget,
@@ -107,7 +108,7 @@ it("loads only whole lines within the memory budget", () => {
   expect(memoryWithinBudget("").lines).toBe(0);
 });
 
-it("hands who the Mono is, its soul, its memory and a short note on its tools", () => {
+it("tells the Mono it runs in MonoCode Hub, who it is, its soul and memory, and how to reach Ash", () => {
   const look = {
     name: "Skull",
     mascot: "skull",
@@ -117,76 +118,55 @@ it("hands who the Mono is, its soul, its memory and a short note on its tools", 
       { path: "/code/site", name: "site" },
     ],
   };
-  const full = monoContext(look, files(), { soul: true, memory: true });
-  expect(full).toContain("You are Skull, a Mono in MonoCode");
-  expect(full).toContain("these 2 projects (monocode and site)");
-  expect(full).toContain("- site: /code/site");
-  expect(full).toContain("Be brief.");
-  // The soul changes only when the user asks, through the app.
-  expect(full).toContain("Change them only when the user asks: app soul.read, then app soul.update");
-  for (const tool of ["memory.add", "habits", "artifacts.write", "sessions.start", "<reaction>👍</reaction>"]) expect(full).toContain(tool);
+  const full = monoContext(look, files(), { soul: true, memory: true }, { cli: "/Apps/monocode app" });
+  expect(full.startsWith(HUB_NOTE)).toBe(true);
+  expect(full).toContain("running inside MonoCode Hub");
+  expect(full).toContain("Deletes and money need Ash to click yes himself.");
+  expect(full).toContain("To reach him, just reply here");
+  expect(full).toContain("You are Skull.");
+  expect(full).toContain("site (/code/site)");
+  expect(full).toContain("<soul>\n# Soul\n\nBe brief.\n</soul>");
+  expect(full).toContain("`/Apps/monocode app --help`");
   expect(full).toContain("Topic notes, read on demand with memory.read: releases");
   expect(full).toContain("releases are tag-triggered");
   expect(full).not.toMatch(/\u2014/);
   const memoryOnly = monoContext(look, files(), { soul: false, memory: true });
   expect(memoryOnly).not.toContain("<soul>");
   expect(memoryOnly).toContain("<memory>");
-  const alone = monoContext({ ...look, projects: [] }, files(), { soul: true, memory: false });
-  expect(alone).toContain("has not given you any projects yet");
+  expect(monoContext({ ...look, projects: [] }, files(), { soul: true, memory: false })).toContain("Ash hasn't given you a project yet.");
 });
 
-// Ash, 21 Oct: the hub is a thin layer over Claude Code. What it adds to a turn stays small: soul, memory, a tools note.
-it("keeps the fixed rules a Mono is handed small", () => {
+// Ash, 21 Oct: vanilla Claude Code plus a short note. Beyond the soul and memory, under 1 KB, and none of the old rules.
+it("keeps the hub's note under 1 KB, with nothing about formats, recording, digests or review rounds", () => {
   const look = { name: "Chief of Staff", mascot: "skull", color: "#fff", projects: [{ path: "/code/hub", name: "hub" }] };
   const empty = { ...files(), soul: "", memory: "", topics: [] };
-  const rules = monoContext(look, empty, { soul: true, memory: true }, { delegate: true, teams: true, leads: ['Hub lead (lead "hub")'] });
-  expect(new TextEncoder().encode(rules).length).toBeLessThan(5_000);
-  for (const gone of ["<delegate_rules>", "<talk_rules>", "<session_completion_rules>", "<pull_request_rules>", "ash_record", "List every ask back"])
-    expect(rules).not.toContain(gone);
+  const note = monoContext(look, empty, { soul: true, memory: true }, { delegate: true, teams: true, leads: ['Hub lead (lead "hub")'], cli: "/Applications/MonoCode.app/Contents/MacOS/monocode app" });
+  expect(new TextEncoder().encode(note.replace("<soul>\n\n</soul>", "").replace(/<memory>[\s\S]*<\/memory>/, "")).length).toBeLessThan(1_000);
+  for (const gone of ["<delegate_rules>", "<chat_rules>", "<ask_ash_rules>", "<autopilot_rules>", "Needs Ash:", "My pick:", "ash_record", "ash_remember", "digest", "review round", "numbered", "em dash", "Right:"])
+    expect(note, gone).not.toContain(gone);
 });
 
-it("talks a dump through instead of sorting it, unless it is clearly a to-do list", () => {
-  const look = { name: "EXO lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
-  const context = monoContext(look, files(), { soul: true, memory: true });
-  expect(context).toContain(CHAT_RULES);
-  expect(CHAT_RULES).toContain("talk it through with him");
-  expect(CHAT_RULES).toContain("Start work from a dump only when it is clearly a to-do list or he says go");
+it("points every chat at the hub's docs once their path is known", () => {
+  const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [] };
+  expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("hub docs");
+  setHubDocsPath("/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md");
+  try {
+    expect(monoContext(look, files(), { soul: true, memory: false })).toContain(
+      "- If you need to know how a hub feature works, read the hub docs at /Applications/MonoCode.app/Contents/Resources/hub-docs/README.md before guessing.",
+    );
+  } finally {
+    setHubDocsPath(undefined);
+  }
 });
 
-it("tells only a chat with the delegate tool about it, once, with the soul", () => {
-  const look = { name: "EXO lead", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
-  expect(monoContext(look, files(), { soul: true, memory: true })).not.toContain("<delegate_tools>");
-  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true });
-  expect(taught).toContain(DELEGATE_NOTE);
-  for (const point of [
-    "delegate_task",
-    "pr_watch",
-    "end your turn",
-    "[MonoCode report]",
-    "[MonoCode question]",
-    // The hourly progress check stays (Ash, 14 Oct), as the Lead's own habit.
-    "After about an hour, check a worker is really moving",
-    "stop, split or retry it",
-    // Ash OS saves only on remember or lock (21 Oct).
-    "only when Ash says remember or lock",
-    // The checker's private ping, answered in one line.
-    "[MonoCode check]",
-    '"Right:" or "Fixed:"',
-  ])
-    expect(DELEGATE_NOTE).toContain(point);
-  expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain("<delegate_tools>");
-});
-
-// Ash, 20 Oct: "monos shouldn't really have sub chats".
-it("tells a Mono that isn't a Lead where its work goes: itself, a project's Lead, or its own team", () => {
+it("names the delegate tools only to a chat that has them, and a non-Lead's Leads", () => {
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
+  expect(monoContext(look, files(), { soul: true, memory: true })).not.toContain(DELEGATE_NOTE);
   const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['EXO lead (lead "vg-game")'] });
-  expect(taught).toContain("<team_rules>");
-  expect(taught).toContain('EXO lead (lead "vg-game")');
-  expect(taught).toContain("Keep no sub-chats");
-  expect(taught).toContain("delegate_task with no project");
-  expect(monoContext(look, files(), { soul: true, memory: true }, { teams: true })).not.toContain("<team_rules>");
-  expect(monoContext(look, files(), { soul: true, memory: true }, { delegate: true })).not.toContain("<team_rules>");
+  expect(taught).toContain(DELEGATE_NOTE);
+  expect(DELEGATE_NOTE).toContain("their descriptions explain them");
+  expect(taught).toContain('delegate_task with "lead": EXO lead (lead "vg-game")');
+  expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(DELEGATE_NOTE);
 });
 
 it("starts a Lead's fresh conversation on its project's memory, handed with the soul and never again mid-session", () => {
@@ -194,8 +174,8 @@ it("starts a Lead's fresh conversation on its project's memory, handed with the 
   const projectMemory = "<project_memory>\n- Never delete a customer VM as a fix\n</project_memory>";
   const fresh = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, projectMemory });
   expect(fresh).toContain(projectMemory);
-  // before its own MEMORY.md block, after the rules
-  expect(fresh.indexOf(projectMemory)).toBeGreaterThan(fresh.indexOf("<delegate_tools>"));
+  // after its soul, before its own MEMORY.md block
+  expect(fresh.indexOf(projectMemory)).toBeGreaterThan(fresh.indexOf("</soul>"));
   expect(fresh.indexOf(projectMemory)).toBeLessThan(fresh.indexOf("<memory>"));
   // a turn that only hands a changed MEMORY.md, or a chat with no project, carries none
   expect(monoContext(look, files(), { soul: false, memory: true }, { projectMemory })).not.toContain("<project_memory>");

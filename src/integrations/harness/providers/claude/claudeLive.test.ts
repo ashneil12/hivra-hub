@@ -829,6 +829,22 @@ describe("claude task tools", () => {
     }
   });
 
+  // Ash, 21 Oct: vanilla Claude Code plus the hub's note. The default system prompt is never replaced.
+  it("appends the hub's note to Claude Code's own system prompt, and never replaces it", async () => {
+    const { setClaudeAppend } = await import("./claudeExtraArgs");
+    setClaudeAppend((id) => (id === "note-session" ? { key: "k1", text: "You are running inside MonoCode Hub." } : undefined));
+    try {
+      const { turn } = await startTurn("note-session");
+      const args = spawned.at(-1)!;
+      expect(args.slice(-2)).toEqual(["--append-system-prompt", "You are running inside MonoCode Hub."]);
+      expect(args).not.toContain("--system-prompt");
+      emit({ type: "result", subtype: "success", session_id: "sess_1" });
+      await turn.catch(() => undefined);
+    } finally {
+      setClaudeAppend(undefined);
+    }
+  });
+
   it("starts a clean task map when Claude reports a different conversation", async () => {
     await conversationWithTasks();
 

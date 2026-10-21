@@ -59,6 +59,13 @@ describe("claudeLaunchDelta", () => {
     expect(claudeLaunchDelta(base, { ...base, effort: undefined }).restart).toEqual(["effort"]);
   });
 
+  it("needs a new process when the hub's appended note changes who the chat is, not for anything else", () => {
+    const noted = { ...base, appendKey: "soul-1" };
+    expect(claudeLaunchDelta(noted, { ...noted, appendKey: "soul-2" }).restart).toEqual(["MonoCode note"]);
+    expect(claudeLaunchDelta(base, noted).restart).toEqual(["MonoCode note"]);
+    expect(claudeLaunchDelta(noted, { ...noted })).toEqual({ restart: [], requests: [] });
+  });
+
   it("names what changed for the chat", () => {
     expect(joinLabels(["model"])).toBe("model");
     expect(joinLabels(["model", "effort, fast mode", "permission mode"])).toBe(
