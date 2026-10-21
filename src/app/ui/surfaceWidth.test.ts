@@ -46,7 +46,15 @@ describe("main surfaces fill the width", () => {
   });
 
   it("Today and a project's dashboard put project sections side by side above about 1800px", () => {
-    expect(read("src/features/hub/ui/HubSurface.tsx")).toContain('className="grid items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects');
+    expect(read("src/features/hub/ui/HubSurface.tsx")).toContain('className="grid grid-cols-1 items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects');
+  });
+
+  it("an ask's long title never widens Today past the window (Ash's Mac, 21 Oct: rows ran off the right edge)", () => {
+    // A grid with no columns sizes its one column to the widest content, and a one-line (truncated) title is as wide as
+    // all its words, so the rows ran off the window, cut without an ellipsis. One shrinkable column, below 1800px too.
+    const today = read("src/features/hub/ui/HubSurface.tsx");
+    const grid = today.split("\n").find((line) => line.includes("data-hub-today-projects>"))!;
+    expect(grid).toMatch(/className="grid grid-cols-1\b/);
   });
 
   it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {

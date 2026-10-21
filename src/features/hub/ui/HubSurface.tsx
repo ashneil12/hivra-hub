@@ -199,7 +199,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
             {matches.slice(0, shown).map((n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />)}
             {matches.length > shown ? <button type="button" onClick={() => setShown((n) => n + 25)} className="mt-2 self-start rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/70">Show 25 more</button> : null}</>;
         })()}
-      </section> : <div className="grid items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects>{projects.map((p) => {
+      </section> : <div className="grid grid-cols-1 items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects>{projects.map((p) => {
         const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
         const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
         const pOther = waiting.filter((w) => w.projectId === p.id && !w.state && !w.need);
