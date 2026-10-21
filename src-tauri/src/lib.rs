@@ -80,6 +80,7 @@ mod window;
 mod window_transfer;
 #[cfg(windows)]
 mod windows;
+mod worker_queue;
 pub mod worktree_janitor;
 mod worktree_lifecycle;
 mod worktrees;
@@ -466,6 +467,10 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            worker_queue::worker_queue_list,
+            worker_queue::worker_queue_add,
+            worker_queue::worker_queue_take,
+            worker_queue::worker_queue_import_local,
             autopilot::autopilot_status,
             autopilot::autopilot_set,
             autopilot::autopilot_off,

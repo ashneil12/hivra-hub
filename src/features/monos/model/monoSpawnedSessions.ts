@@ -202,6 +202,9 @@ export type LaunchedSessionState =
 export type LaunchedSessionView = {
   state: LaunchedSessionState;
   title: string;
+  /** Out of its provider's usage and held (H8): when it tries again by itself, and the provider's name. */
+  retryAt?: number;
+  provider?: string;
 };
 
 export function launchedSessionState(session: Session): LaunchedSessionState {

@@ -612,7 +612,7 @@ import {
   supportsProviderAccounts,
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
-import { firstTurnAccount, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
+import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import {
   HARNESSES,
@@ -786,10 +786,15 @@ import {
 import {
   holdForLimit,
   nextWake,
+  planHeld,
   pumpWorkers,
   queuedWorkers,
+  retryNow,
+  setWorkerQueueBackend,
   subscribeWorkerPool,
+  tauriWorkerQueue,
   workerPoolHost,
+  type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
@@ -12428,22 +12433,57 @@ function Workspace({
     };
   }, [pumpWorkersNow]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
-  // carries on at the reset by itself, once per refusal.
-  const heldWorkers = useRef(new Map<string, number | undefined>());
-  useEffect(() => {
+  // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
+  // reading's, else five hours on; a fresh reading that shows room brings the retry forward.
+  const heldWorkers = useRef(new Map<string, HeldSeen>());
+  const heldSessions = (all: readonly Session[]) => {
     const open = new Set(openDelegationRows().filter((row) => !row.follow).map((row) => row.childSession));
-    for (const session of sessions) {
-      const limit = session.usageLimit;
-      if (!limit) {
-        heldWorkers.current.delete(session.id);
-        continue;
-      }
-      if (session.busy || limit.resumeAtReset || !open.has(session.id)) continue;
-      if (heldWorkers.current.has(session.id) && heldWorkers.current.get(session.id) === limit.resetsAt) continue;
-      heldWorkers.current.set(session.id, limit.resetsAt);
-      onUsageLimitResumeAtReset(session.id, true);
+    return all.filter((session) => session.usageLimit && !session.busy && open.has(session.id));
+  };
+  const readingFor = (session: Session) =>
+    supportsProviderAccounts(session.harness)
+      ? getCachedRateLimits(session.harness, session.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID)
+      : undefined;
+  useEffect(() => {
+    for (const session of sessions) if (!session.usageLimit) heldWorkers.current.delete(session.id);
+    for (const session of heldSessions(sessions)) {
+      const plan = planHeld({
+        limit: session.usageLimit!,
+        seen: heldWorkers.current.get(session.id),
+        now: Date.now(),
+        reading: readingFor(session),
+      });
+      heldWorkers.current.set(session.id, plan.seen);
+      const resetsAt = plan.arm;
+      if (resetsAt == null) continue;
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) =>
+          entry.id === session.id && entry.usageLimit
+            ? { ...entry, usageLimit: { ...entry.usageLimit, resetsAt, resumeAtReset: true } }
+            : entry,
+        ),
+      );
     }
-  }, [sessions, onUsageLimitResumeAtReset]);
+  }, [sessions]);
+  const onUsageLimitResumeRef = useRef(onUsageLimitResume);
+  onUsageLimitResumeRef.current = onUsageLimitResume;
+  useEffect(() => {
+    // Early retry: the provider's usage reading, taken after the refusal, shows room again.
+    const look = () => {
+      const now = Date.now();
+      for (const session of heldSessions(sessionsRef.current)) {
+        const seen = heldWorkers.current.get(session.id);
+        if (seen && retryNow(readingFor(session), seen.refusedAt, now)) onUsageLimitResumeRef.current(session.id);
+      }
+    };
+    look();
+    const timer = window.setInterval(look, 60_000);
+    return () => window.clearInterval(timer);
+  }, [sessions]);
+  useEffect(() => {
+    // The waiting queue lives in the app's database: survives a restart, shared by every window (worker_queue.rs).
+    void setWorkerQueueBackend(tauriWorkerQueue);
+  }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -15208,8 +15248,16 @@ function Workspace({
   const monoLaunchesKey = JSON.stringify(
     monoLaunches.map((launch) => {
       const live = sessions.find((entry) => entry.id === launch.sessionId);
+      // Out of usage and held (H8): when it tries again by itself.
+      const retryAt =
+        live?.usageLimit?.resumeAtReset && !live.busy ? usageLimitResumeAt(live.usageLimit) : undefined;
       return live
-        ? [launch.sessionId, launchedSessionState(live), live.title]
+        ? [
+            launch.sessionId,
+            launchedSessionState(live),
+            live.title,
+            ...(retryAt ? [retryAt, providerName(live.harness)] : []),
+          ]
         : [
             launch.sessionId,
             "done",
@@ -15225,8 +15273,13 @@ function Workspace({
             string,
             LaunchedSessionState,
             string,
+            number?,
+            string?,
           ][]
-        ).map(([id, state, title]) => [id, { state, title }]),
+        ).map(([id, state, title, retryAt, provider]) => [
+          id,
+          { state, title, ...(retryAt ? { retryAt, provider } : {}) },
+        ]),
       ),
     [monoLaunchesKey],
   );
