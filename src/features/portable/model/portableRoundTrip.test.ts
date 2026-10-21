@@ -399,3 +399,22 @@ it("a Mono's own role label travels: set, cleared, or left to the built-in one",
   expect(role("frank")).toBeUndefined();
   expect(role("alfred")).toBe("Team setup");
 });
+
+// A10 (Ash, 21 Oct 20:40, "transferable"): the whole setup moves into a fresh MonoCode. Two preferences used to stay
+// behind: what the team calls the user (G5's onboarding name, so a fresh copy fell back to "the user") and how long a
+// quiet worker may sit before it counts as stalled.
+it("a fresh copy gets the user's name and the stall minutes back with the rest of the setup", async () => {
+  const a = await app();
+  await seed(a);
+  localStorage.setItem("monocode:hub-user-name", "Sam");
+  localStorage.setItem("monocode:stall-minutes", "12");
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  localStorage.clear();
+  const b = await app();
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  expect(plan.settings.add).toEqual(expect.arrayContaining(["monocode:hub-user-name", "monocode:stall-minutes"]));
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan));
+  expect(localStorage.getItem("monocode:hub-user-name")).toBe("Sam");
+  expect(localStorage.getItem("monocode:stall-minutes")).toBe("12");
+});

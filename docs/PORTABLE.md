@@ -67,6 +67,22 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
 another folder (it sets `MONOCODE_HUB_MEMORY_ROOT`, which hub:dev otherwise strips). A dev copy never writes into
 `~/agent-memory`, `~/.claude` or the daily data folder, and never keeps a provider session id.
 
+## What does not travel (A10 check, 21 Oct)
+
+Ash, 21 Oct 20:40: "transferable" means the whole setup, Monos and all, moves into a fresh MonoCode. Checked against
+the code: projects, Monos (soul, habits, skills list, engine, look, role label; memory when ticked), teams/rooms and
+their conversations (workspace ticked), connectors (sign in again), Pages, custom models (key again), settings and
+themes, project memory, chats, notes, automations, reminders and delegation history all travel. Added on 21 Oct:
+`monocode:hub-user-name` (what the team calls the user) and `monocode:stall-minutes`. Still not carried:
+- Keys and logins (by design): Claude/Grok sign-ins, custom-model keys (DeepSeek, xAI), connector logins.
+- Per-project worker limits ("Workers at once", heavy tests): they live in the app's Rust store (worker_queue.rs
+  worker_limits/worker_heavy), not in localStorage, and the export does not read them yet. A fresh copy starts at 6/2.
+- A Mono's own team folder (`<app data>/mono-teams/<id>`): machine-local, made again the first time it hands off work;
+  what the old one held is not copied.
+- Which chats are a project's coding team (`monocode:coding-team-chats`): not exported, but re-noted on a chat's next
+  turn in the project's folder, so it heals itself.
+- Machine paths (provider binaries, the Grok bridge launcher, project folders: mapped by project id on import).
+
 ## Tests
 
 - Rust (`src-tauri/src/portable/tests.rs`): round trip into an empty data folder for both forms (same chats incl. a
