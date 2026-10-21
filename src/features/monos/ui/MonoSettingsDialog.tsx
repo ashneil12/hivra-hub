@@ -28,7 +28,9 @@ import {
   type MonoLook,
   type MonoState,
 } from "../model/mono";
+import { closeTree, openTree } from "../model/monoTreeStore";
 import { ConfirmReset } from "./ConfirmReset";
+import { LongChatView } from "./LongChatView";
 import { MemoryPage, SoulPage, useMonoFiles } from "./MonoFilePages";
 import { MonoProjects } from "./MonoProjects";
 import { ColorPicker, MascotPicker, SwitchRow } from "./monoPanelParts";
@@ -156,6 +158,10 @@ function GeneralSection({
     subscribeMonos,
     () => findMono(monoId)?.useSidebarFolders === true,
   );
+  const longChat = useSyncExternalStore(
+    subscribeMonos,
+    () => findMono(monoId)?.longChat === true,
+  );
   return (
     <div
       ref={lock}
@@ -243,6 +249,26 @@ function GeneralSection({
             )
           }
         />
+      </SettingGroup>
+
+      <GroupHeading
+        title="Long chat"
+        description="Off: each conversation starts on its soul and memory notes. On: it also remembers the whole chat."
+      />
+      <SettingGroup>
+        <SwitchRow
+          label="Keep one long chat"
+          description="Remembers the whole chat and opens it back up word for word. Memory notes and New conversation stay as they are."
+          on={longChat}
+          onChange={(on) => {
+            updateMono(monoId, ({ longChat: _, ...mono }) =>
+              on ? { ...mono, longChat: true } : mono,
+            );
+            if (on) void openTree(monoId).catch(() => undefined);
+            else closeTree(monoId);
+          }}
+        />
+        {longChat ? <LongChatView monoId={monoId} /> : null}
       </SettingGroup>
 
       {onReset ? (
