@@ -34,6 +34,8 @@ const SEEDED_KEY = "monocode:mono-team-seeded";
 const OLD_TEAM_KEY = "monocode:mono-team-added";
 /** Default-team ids Ash removed or retired on purpose. Only restoring the Mono (Undo) clears an entry. */
 const REMOVED_KEY = "monocode:mono-team-removed-by-user";
+/** A10: the list travels with an export (setupDoc PORTABLE_SETTINGS), so a Mono Ash deleted stays deleted on import. */
+export const REMOVED_BY_USER_KEY = REMOVED_KEY;
 
 const norm = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
 type Entry = { id?: unknown; name?: unknown; projects?: unknown };
@@ -85,6 +87,31 @@ export function clearMonoRemovedByUser(id: string, name?: string): void {
 
 export function isMonoRemovedByUser(id: string): boolean {
   return readRemoved().has(norm(id));
+}
+
+/** A Mono (by its team id, or its own id) is on Ash's deleted list. */
+export function monoDeletedByUser(m: { id?: unknown; name?: unknown }): boolean {
+  return readRemoved().has(teamIdOf(m) ?? norm(m.id));
+}
+
+/**
+ * A10 import: add an export's deleted list to this Mac's (a union: never un-deletes anything here). Returns the ids the
+ * export marks deleted, so the import can take a default-team Mono this copy seeded on first launch back off.
+ */
+export function adoptRemovedByUser(raw: string): Set<string> {
+  let incoming: Set<string>;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    incoming = new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map(norm) : []);
+  } catch {
+    return new Set();
+  }
+  try {
+    writeRemoved(new Set([...readRemoved(), ...incoming]));
+  } catch {
+    /* storage unavailable */
+  }
+  return incoming;
 }
 
 /**

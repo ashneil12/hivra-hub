@@ -123,6 +123,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode:hub-role-names",
   // What the team calls the user (G5 onboarding). A10: a fresh copy otherwise says "the user".
   "monocode:hub-user-name",
+  // Monos Ash deleted on purpose (A10: "Deleted Monos stay deleted"). Merged, not copied, on import (importPlan.ts).
+  "monocode:mono-team-removed-by-user",
   // How the app behaves
   "monocode.showRemainingUsage",
   "monocode.maskEmails",
