@@ -67,8 +67,11 @@ export function keptAshLine(name: string): string {
   return `${name}'s soul was edited outside the app. Kept your version.`;
 }
 
-/** One tool call as a chat made it: its kind (edit, read, execute...) and what it said (command, file paths). */
-export type RunToolCall = { kind?: string; text: string };
+/**
+ * One tool call as a chat made it: its kind (edit, read, execute...), what it said (command, file paths), and when its
+ * turn started (or when it was first seen), so a write from an earlier turn of the same chat isn't blamed on this run.
+ */
+export type RunToolCall = { kind?: string; text: string; at?: number };
 
 /** What a chat's tool calls were, by session id: App.tsx sets it from its sessions. */
 let toolCallSource: ((sessionId: string) => readonly RunToolCall[]) | null = null;
@@ -79,6 +82,8 @@ export function setRunToolTextSource(source: ((sessionId: string) => readonly Ru
 type ToolBlockLike = { tool?: { callId?: string; kind?: string; title?: string; detail?: string; paths?: string[] } };
 const seenCalls = new Map<string, Map<string, RunToolCall>>();
 const SEEN_SESSIONS = 100;
+/** How much earlier than its run window a turn's start can be (the page notices a chat is busy a little late). */
+const TURN_SLACK_MS = 30_000;
 const SEEN_CALLS = 300;
 const RECENT_BLOCKS = 60;
 
@@ -86,7 +91,10 @@ const RECENT_BLOCKS = 60;
  * The tool calls of the chats running now, kept as they were asked for (App.tsx, on every sessions change). A finished
  * shell call's detail becomes its output, so its command is only seen while it is pending: kept here, it still counts.
  */
-export function noteToolCalls(sessions: readonly { id: string; busy?: boolean; blocks?: readonly ToolBlockLike[] }[]): void {
+export function noteToolCalls(
+  sessions: readonly { id: string; busy?: boolean; blocks?: readonly ToolBlockLike[] }[],
+  now: number = Date.now(),
+): void {
   for (const session of sessions) {
     if (!session.busy || !session.blocks?.length) continue;
     let calls = seenCalls.get(session.id);
@@ -102,8 +110,8 @@ export function noteToolCalls(sessions: readonly { id: string; busy?: boolean; b
       const key = tool.callId ?? `#${i}`;
       const text = [tool.title, tool.detail, ...(tool.paths ?? [])].filter(Boolean).join("\n");
       const known = calls.get(key);
-      if (!known) calls.set(key, { kind: tool.kind, text });
-      else if (!known.text.includes(text)) calls.set(key, { kind: known.kind ?? tool.kind, text: `${known.text}\n${text}` });
+      if (!known) calls.set(key, { kind: tool.kind, text, at: now });
+      else if (!known.text.includes(text)) calls.set(key, { ...known, kind: known.kind ?? tool.kind, text: `${known.text}\n${text}` });
     }
     while (calls.size > SEEN_CALLS) calls.delete(calls.keys().next().value!);
   }
@@ -142,11 +150,13 @@ export function callWritesSoul(call: RunToolCall): boolean {
  * that only read the soul (cat, rg, a Read) doesn't count, so Ash's edit made meanwhile is kept.
  */
 export function runNamedSoul(
-  run: Pick<RunWindow, "sessionId">,
+  run: Pick<RunWindow, "sessionId"> & Partial<Pick<RunWindow, "start">>,
   monoId: string,
   calls: (sessionId: string) => readonly RunToolCall[] = callsOf,
 ): boolean {
-  return calls(run.sessionId).some((call) => call.text.includes(monoId) && callWritesSoul(call));
+  // Only this run's own calls: one from an earlier turn of the same chat started before this run did.
+  const inRun = (call: RunToolCall) => call.at == null || run.start == null || call.at >= run.start - TURN_SLACK_MS;
+  return calls(run.sessionId).some((call) => inRun(call) && call.text.includes(monoId) && callWritesSoul(call));
 }
 
 /**
@@ -155,7 +165,7 @@ export function runNamedSoul(
  * was only running at the time doesn't count, so an edit made then is Ash's and is kept.
  */
 export function runIsMonos(
-  run: Pick<RunWindow, "sessionId" | "cwd">,
+  run: Pick<RunWindow, "sessionId" | "cwd"> & Partial<Pick<RunWindow, "start">>,
   monoId: string,
   texts?: (sessionId: string) => readonly RunToolCall[],
 ): boolean {
