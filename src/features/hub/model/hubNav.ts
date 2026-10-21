@@ -106,3 +106,22 @@ export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
   if (monoTeamOpener) monoTeamOpener(monoId, target);
   else setHubSelection({ project: "today", item: monoTeamItem(monoId) });
 }
+
+/**
+ * Opening a Mono's own chat from anywhere, Settings included (Bot changes' "Ask Alfred"): Settings closes and the
+ * chat shows at once, in the Mono's team when it has one. Mac round 2 (21 Oct): through openMonoTeam alone the chat
+ * opened behind Settings and only showed after Back. Without the app's opener it falls back to openMonoTeam.
+ */
+let monoChatOpener: ((monoId: string) => void) | undefined;
+
+export function setMonoChatOpener(open: (monoId: string) => void): () => void {
+  monoChatOpener = open;
+  return () => {
+    if (monoChatOpener === open) monoChatOpener = undefined;
+  };
+}
+
+export function openMonoChat(monoId: string): void {
+  if (monoChatOpener) monoChatOpener(monoId);
+  else openMonoTeam(monoId, { owner: true });
+}

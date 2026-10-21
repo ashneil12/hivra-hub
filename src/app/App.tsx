@@ -189,6 +189,7 @@ import {
   monoTeamItem,
   setCodingTeamOpener,
   setHubSelection,
+  setMonoChatOpener,
   setMonoTeamOpener,
   useHubSelection,
   type CodingTeamTarget,
@@ -5326,7 +5327,7 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string, options: { inTeam?: boolean } = {}) => {
+    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean } = {}) => {
       // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
@@ -5383,6 +5384,9 @@ function Workspace({
       setInboxViewOpen(false);
       setNotesViewOpen(false);
       setAutomationsViewOpen(false);
+      // Asked from Settings (Bot changes' Ask Alfred): Settings goes with the Mono's arrival, so its chat shows now
+      // rather than after Back.
+      if (options.leaveSettings) setSettingsOpen(false);
       setMonoViewId(session.id);
       if (insetLayoutRef.current) {
         setOpenMonoTabs((current) =>
@@ -6924,6 +6928,8 @@ function Workspace({
     [closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
+  // A Mono's chat opened from anywhere, Settings included (hubNav.ts openMonoChat): in its team when it has one.
+  useEffect(() => setMonoChatOpener((monoId) => void onOpenMono(monoId, { inTeam: true, leaveSettings: true })), [onOpenMono]);
   /**
    * A new chat in a project's coding team, as Ash's New session there makes one: the coding team opens and the chat
    * starts in the project's folder. Its id, or null for a project with no code folder. The benches' way in

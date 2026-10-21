@@ -136,3 +136,41 @@ it("a put-back soul's row offers 'Keep that change' in place of Undo", () => {
   const row = rowWith("while a worker was running");
   expect(row.querySelector("[data-hub-bot-change-undo]")!.textContent).toBe("Keep that change");
 });
+
+it("a two-line row's 'and 4 more' opens it, and so does a click anywhere on the row (Mac round 2)", async () => {
+  // As on the Mac: a Lead's refresh row long enough to wrap, its "and 4 more" at the end of the second line.
+  const line = "Hivra lead will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him. (and 4 more)";
+  const details = ["one", "two", "three", "four", "Hivra lead kept its old folder because its project's folder wasn't found on this Mac."];
+  const files = new Map<string, string>([["hivra-lead/SOUL.md", "after"]]);
+  setBotFiles({ read: async (id, p) => ({ text: files.get(`${id}/${p}`) ?? null, hash: `h:${files.get(`${id}/${p}`) ?? ""}` }), write: async (id, p, t) => (files.set(`${id}/${p}`, t), `h:${t}`) });
+  recordBotChange({ id: "soul-refresh:hivra-lead:wrap", bot: "Hivra lead", day: "Today", line, now: "Its soul as it was", after: "Its soul on the app's newer version", details, monoId: "hivra-lead", file: "SOUL.md", beforeText: "before", afterText: "after" });
+  openBots();
+  const row = rowWith("Hivra lead will now act") as HTMLElement;
+  const shown = () => row.querySelectorAll("[data-hub-bot-change-details] li").length;
+  const click = (el: Element) => act(() => void el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+  // On the "and 4 more" itself (the span, as a pointer lands on it): opens on the full list.
+  const more = row.querySelector("[data-hub-bot-change-more]")!;
+  expect(more.textContent).toBe("and 4 more");
+  click(more);
+  expect(shown()).toBe(5);
+  expect(row.textContent).toContain("kept its old folder");
+  // Reading the opened list doesn't close it.
+  click(row.querySelector("[data-hub-bot-change-details] li")!);
+  expect(shown()).toBe(5);
+  // The row's own padding (under the second line, beside the text): closes, then opens again.
+  click(row);
+  expect(shown()).toBe(0);
+  click(row.firstElementChild!);
+  expect(shown()).toBe(5);
+  // A drag that selected some of the line isn't a click on the row.
+  const sel = window.getSelection()!;
+  sel.selectAllChildren(row.querySelector("[data-hub-bot-change-line]")!);
+  click(row);
+  expect(shown()).toBe(5);
+  sel.removeAllRanges();
+  // Undo acts alone: the row stays open and the soul goes back.
+  await act(async () => (row.querySelector("[data-hub-bot-change-undo]") as HTMLButtonElement).click());
+  await vi.waitFor(() => expect(files.get("hivra-lead/SOUL.md")).toBe("before"));
+  expect(shown()).toBe(5);
+});

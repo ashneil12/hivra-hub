@@ -3,7 +3,7 @@
 // gets it when its chat is made (saveMonoSessionId).
 import { getComposerDraft, setComposerDraft } from "../../sessions/model/draftCache";
 import { appendComposerInsert } from "../../sessions/model/quoteDraft";
-import { openMonoTeam } from "../../hub/model/hubNav";
+import { openMonoChat } from "../../hub/model/hubNav";
 import { findMono } from "./mono";
 
 /** An open chat pane listens for this ({ sessionId, text }) to add the text to the composer it already shows. */
@@ -24,7 +24,8 @@ export function openMonoChatWith(monoId: string, text: string): void {
   const sessionId = findMono(monoId)?.sessionId;
   if (sessionId) typeInto(sessionId, text);
   else pending.set(monoId, text);
-  openMonoTeam(monoId, { owner: true });
+  // Straight to the chat, out of Settings (where Ask Alfred sits), with the text in its composer, not sent.
+  openMonoChat(monoId);
 }
 
 /** A Mono's chat was just made: what was waiting for it is typed in. */

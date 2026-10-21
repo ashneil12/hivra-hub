@@ -199,6 +199,16 @@ export function chatMonoOwner(sessionId: string, lookups: HubChatLookups | undef
 }
 
 /**
+ * What kind of run a chat is, for words Ash reads (the soul tamper row): a Mono's own chat, a habit run, or a worker
+ * (`app-<chat>-<request>`, started by a chat at any depth). Anything else (a plain chat) is a chat.
+ */
+export function chatRunKind(sessionId: string, lookups: HubChatLookups | undefined = registered?.lookups): "chat" | "habit" | "worker" {
+  if (lookups?.monoOf(sessionId)) return "chat";
+  if (lookups?.habitRunMono(sessionId)) return "habit";
+  return sessionId.startsWith("app-") ? "worker" : "chat";
+}
+
+/**
  * Whether this chat gets the delegate tool: the chats Ash talks to, a Mono's own chat (not the checker's: it only
  * reads) and a coding-team chat.
  */
