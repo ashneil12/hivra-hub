@@ -22,6 +22,9 @@
 //   npm run hub:realtest -- --grade-only evidence/realtest/<run>   # grade a finished run again
 //   npm run hub:realtest -- --keep                         # keep the temporary HOME afterwards
 //   npm run hub:realtest -- --claude-config ~/claude-acct-2   # more Claude accounts Ash signed in himself (repeatable)
+//   npm run hub:realtest -- --grok-sub                     # every chat on Grok 4.7 through Ash's Grok subscription:
+//                                                          # Claude Code behind ~/.local/bin/claude-grok (his own bridge
+//                                                          # launcher, which keeps its key and sign-in to itself)
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -39,6 +42,19 @@ export const DEV_CLAUDE_CONFIG = path.join(REAL_HOME, ".monocode-hub-dev/claude-
 const LOGIN_KEYCHAIN = path.join(REAL_HOME, "Library/Keychains/login.keychain-db");
 const DEFAULT_SCENARIOS = path.join(ROOT, "tests/realtest/scenarios/baseline.json");
 const TEMPLATE = path.join(ROOT, "tests/realtest/tally");
+/** Ash's launcher for Claude Code on Grok 4.7 through his Grok subscription (src/.../claudeGrokBridge.ts). */
+export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
+export const GROK_BRIDGE_MODEL = "grok-4.7";
+
+/** The bridge launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
+export function grokBridge(file = GROK_BRIDGE) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return file;
+  } catch {
+    throw new Error(`--grok-sub needs the Grok bridge launcher at ${file} (Claude Code on Grok 4.7 through the Grok subscription); it isn't there`);
+  }
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const iso = (ms) => new Date(ms).toISOString();
@@ -83,6 +99,7 @@ export function parseArgs(argv) {
     maxMinutes: Number(value("--max-minutes", "0")) || null,
     maxRequests: Number(value("--max-requests", "0")) || null,
     claudeConfigs: claudeConfigArgs(argv),
+    grokSub: argv.includes("--grok-sub"),
   };
 }
 
@@ -226,6 +243,9 @@ async function main() {
  */
 export async function runBench(options, hooks = {}) {
   const spec = hooks.spec ?? readJson(options.scenarios);
+  // On the Grok bridge no chat spends Claude: limits are logged, not enforced, as for routed agents.
+  const bridge = options.grokSub ? grokBridge() : null;
+  const unmetered = !!hooks.routedAgents || !!bridge;
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
     maxMinutes: options.maxMinutes ?? spec.budget?.maxMinutes ?? 110,
@@ -389,6 +409,8 @@ export async function runBench(options, hooks = {}) {
       }
     };
     const readings = accounts.map((account) => {
+      // On the Grok bridge the Claude login isn't used at all: no login check, no Haiku use reading.
+      if (bridge) return { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
       const login = loginOf(account.config);
       if (login.loggedIn) log(`claude account ${account.n} signed in under the temporary HOME (${login.authMethod}, ${login.subscriptionType}): ${account.config}`);
       else log(`claude account ${account.n} isn't signed in: ${account.config}`);
@@ -396,14 +418,15 @@ export async function runBench(options, hooks = {}) {
       return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     });
     const status = { loggedIn: readings.some((r) => r.loggedIn) };
-    if (!status.loggedIn && !hooks.routedAgents) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
-    if (!status.loggedIn) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
+    if (bridge) log(`every chat and helper call on ${GROK_BRIDGE_MODEL} through the Grok subscription bridge (${bridge}); no Claude login used`);
+    if (!status.loggedIn && !unmetered) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
+    if (!status.loggedIn && !bridge) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
     const use = readings[0];
     fs.writeFileSync(path.join(evidence, "account-before.json"), JSON.stringify({ ...use, accounts: accounts.map((a, i) => ({ ...a, ...readings[i] })) }, null, 2));
     for (const [i, reading] of readings.entries()) log(`account ${i + 1} use: 5-hour ${pctOf(reading.fiveHour)}, 7-day ${pctOf(reading.sevenDay)}${reading.status ? ` (${reading.status})` : ""}`);
     // A run whose agents are on a custom model only spends Claude on helper calls, so its limits are logged, not enforced.
-    const checked = startCheck(accounts, hooks.routedAgents ? readings.map((r) => ({ ...r, fiveHour: null, sevenDay: null, status: null })) : readings, budget);
-    if (!checked.ok && !hooks.routedAgents)
+    const checked = startCheck(accounts, unmetered ? readings.map((r) => ({ ...r, fiveHour: null, sevenDay: null, status: null })) : readings, budget);
+    if (!checked.ok && !unmetered)
       throw new Error(`no Claude account has room to start (each must be under ${pctOf(budget.startBelowFiveHour)} of its 5-hour window; Ash's own work shares them): ${checked.list.map((a) => `account ${a.n} ${a.out}`).join("; ")}`);
     accountList = checked.list;
     writeAccounts(state, accountList);
@@ -425,7 +448,8 @@ export async function runBench(options, hooks = {}) {
     fs.cpSync(memoryDir, path.join(evidence, "memory-before"), { recursive: true });
 
     // -- the claude wrapper -----------------------------------------------------------------------------------------------
-    const realClaude = fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
+    // The bridge launcher is passed as itself (it maps grok-4.7 to its gateway's alias by its own name), never resolved.
+    const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
     const claude = path.join(bin, "claude");
     const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
     fs.writeFileSync(
@@ -435,7 +459,8 @@ export async function runBench(options, hooks = {}) {
         `export REALTEST_STATE=${quote(state)}`,
         `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
         `export REALTEST_CLAUDE_CONFIG=${quote(DEV_CLAUDE_CONFIG)}`,
-        `export REALTEST_MODEL=${quote(spec.model ?? "sonnet")}`,
+        `export REALTEST_MODEL=${quote(bridge ? GROK_BRIDGE_MODEL : (spec.model ?? "sonnet"))}`,
+        ...(bridge ? ["export REALTEST_GROK_BRIDGE=1"] : []),
         `export REALTEST_EFFORT=${quote(spec.effort ?? "medium")}`,
         `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
         `exec ${quote(process.execPath)} ${quote(path.join(ROOT, "scripts/hub-realtest-claude.mjs"))} "$@"`,
@@ -591,7 +616,7 @@ export async function runBench(options, hooks = {}) {
       const limitedNow = limitedFiles(state, accountList);
       const watched = watchAccounts(
         accountList,
-        hooks.routedAgents ? accountList.map(() => ({})) : latestReadings(readNdjson(path.join(state, "ratelimits.ndjson")), accountList.length),
+        unmetered ? accountList.map(() => ({})) : latestReadings(readNdjson(path.join(state, "ratelimits.ndjson")), accountList.length),
         limitedNow,
         budget,
       );
@@ -603,7 +628,7 @@ export async function runBench(options, hooks = {}) {
       }
       const why =
         // A run on a custom model only needs Claude for helper calls: it stops on a refusal, not on a missing login.
-        watched.stop && !(hooks.routedAgents && !Object.keys(limitedNow).length) ? watched.stop
+        watched.stop && !(unmetered && !Object.keys(limitedNow).length) ? watched.stop
         : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
         : Date.now() > deadline ? "time budget spent" : null;
       if (why && !fs.existsSync(path.join(state, "stop"))) {

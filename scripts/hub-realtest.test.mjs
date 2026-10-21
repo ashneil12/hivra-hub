@@ -3,13 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isRouted, rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
+import { isRouted, pickModel, rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
 import { parseGrade } from "./hub-realtest-grade.mjs";
 import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-realtest-scenarios.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { jobsFromDelegations, usageOf } from "./hub-realtest.mjs";
+import { grokBridge, jobsFromDelegations, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -160,4 +160,22 @@ test("a chat routed to a custom model keeps its own model and effort through the
   const live = JSON.stringify({ type: "control_request", request: { subtype: "set_model", model: "grok-4" } });
   assert.equal(rewriteInput(live, { routed: true }), live);
   assert.notEqual(rewriteInput(live), live);
+});
+
+// Ash, 21 Oct: "switch the runtime as well to cc running grok 4.7 … via sub".
+test("--grok-sub: every call, helpers too, goes to the bench model; without it Haiku helpers stay Haiku", () => {
+  assert.equal(benchArgs(["--grok-sub"]).grokSub, true);
+  assert.equal(benchArgs([]).grokSub, false);
+  assert.equal(pickModel("claude-haiku-4-5", { grok: false }), "claude-haiku-4-5");
+  assert.notEqual(pickModel("claude-haiku-4-5", { grok: true }), "claude-haiku-4-5");
+  assert.notEqual(pickModel("opus", { grok: true }), "opus");
+});
+
+test("--grok-sub refuses in plain words when the bridge launcher isn't there, and takes it when it is", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-bridge-"));
+  const launcher = path.join(dir, "claude-grok");
+  assert.throws(() => grokBridge(launcher), /needs the Grok bridge launcher/);
+  fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(grokBridge(launcher), launcher);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
