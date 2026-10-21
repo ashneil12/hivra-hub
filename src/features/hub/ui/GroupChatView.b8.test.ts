@@ -10,6 +10,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Attachment } from "../../sessions/model/session";
 
+// UI timing under a busy Mac (hub:check-all with Xcode builds alongside, load 35+): generous limits, same checks.
+vi.setConfig({ testTimeout: 30_000 });
+
 // The composer is a stand-in that hands GroupChatView what Ash typed and attached (MonoComposer has its own tests).
 const composer = vi.hoisted(() => ({ submit: undefined as undefined | ((text: string, files: Attachment[]) => unknown) }));
 vi.mock("../../monos/ui/MonoComposer", () => ({

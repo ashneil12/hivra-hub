@@ -17,6 +17,9 @@ import { HubStore } from "../model/hubStore";
 import { createLiveHubData } from "../model/liveHubData";
 import { HubSurface } from "./HubSurface";
 
+// UI timing under a busy Mac (hub:check-all with Xcode builds alongside, load 35+): generous limits, same checks.
+vi.setConfig({ testTimeout: 30_000 });
+
 const FAST = { coalesceMs: 5, minGapMs: 0, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 };
 const roster = [{ id: "projects-manager" }, { id: "hivra-lead" }];
 let stub: Stub;
@@ -24,7 +27,7 @@ let store: HubStore;
 let root: Root;
 let container: HTMLElement;
 
-async function until(read: () => unknown, what: string, ms = 4000) {
+async function until(read: () => unknown, what: string, ms = 15000) {
   const end = Date.now() + ms;
   while (!read()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${container.textContent}`);
