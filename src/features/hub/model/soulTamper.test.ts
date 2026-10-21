@@ -22,7 +22,7 @@ import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
 import { setHubMcpServers, setMonoHomeRoot, type HubChatLookups } from "./hubMcp";
-import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, runIsMonos, runningKinds, type TamperFiles } from "./soulTamper";
+import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -349,6 +349,30 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
     const row = findBotChange(`soul-put-back:hivra-lead:${hash(OUTSIDE)}`)!;
     expect(row.undoLabel).toBe("Keep that change");
     expect(row.details![0]).toBe("When it changed, a worker was running.");
+  });
+
+  it("another Mono's worker whose command named this soul is put back (S19 case C), and only that one", async () => {
+    const texts: Record<string, string[]> = {
+      "app-exo-chat-r1": [`python3 -c "open('/Users/ash/agent-memory/monos/hivra-lead/SOUL.md','a').write('x')"`],
+      "exo-chat": ["npm test", "/Users/ash/Projects/vg-game/src/main.ts"],
+    };
+    expect(runNamedSoul({ sessionId: "app-exo-chat-r1" }, "hivra-lead", (id) => texts[id] ?? [])).toBe(true);
+    expect(runNamedSoul({ sessionId: "exo-chat" }, "hivra-lead", (id) => texts[id] ?? [])).toBe(false);
+    // Built from parts, as a one-liner does with os.path.join.
+    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [`os.path.join(home, "hivra-lead", "SOUL.md")`])).toBe(true);
+    expect(runNamedSoul({ sessionId: "j" }, "hivra-lead", () => [`cat nibbii-lead/SOUL.md`])).toBe(false);
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setRunToolTextSource((id) => texts[id] ?? []);
+    try {
+      noteSessionRuns([{ id: "app-exo-chat-r1", busy: true, cwd: "/Users/ash/Projects/vg-game" }], 1_000);
+      files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+    } finally {
+      setRunToolTextSource(null);
+    }
   });
 
   it("another Mono's process working in this Mono's home folder (app process record) is put back", async () => {
