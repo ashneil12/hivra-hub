@@ -142,6 +142,24 @@ it("Ash's hello gets the host's hello and then each other seat's, once, with no 
   expect(posts(said(ask))).toEqual(["chief-of-staff"]);
 });
 
+it("a question to each of them gets each seat's own answer, the host's for itself only, and no digest", async () => {
+  const { chat, id, said } = await room();
+  const script = scripted({
+    "chief-of-staff": "I set priority and hand work on.",
+    "projects-manager": "I keep the board.",
+    frank: "I check what we say against your words.",
+    alfred: "I gate which Monos exist.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "who's on my team rn n what does each of u actually do");
+  await chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(posts(said(conv))).toHaveLength(4));
+  expect(script.calls[0].prompt).toContain("Answer for yourself only");
+  expect(script.calls.find((c) => c.monoId === "alfred")!.prompt).toContain("Answer for yourself now");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(script.who().filter((w) => w === "chief-of-staff")).toHaveLength(1);
+});
+
 it("@-mentioning a seat, or opening with its name, makes it answer first", async () => {
   const { chat, id, said } = await room();
   const script = scripted({ alfred: "Smallest structure: a skill on CoS, not a new Mono.", frank: "You said Fridays on 14 Oct." });

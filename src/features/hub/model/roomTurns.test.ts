@@ -10,6 +10,7 @@ import {
   hostOf,
   isProgress,
   isGreeting,
+  roundOf,
   isShortMessage,
   isSilent,
   laneChimes,
@@ -274,5 +275,15 @@ describe("isGreeting", () => {
   it("is a hello with nothing asked", () => {
     for (const t of ["yo morning", "hey", "Morning all!", "gm team", "hiya guys", "yo", "good morning everyone", "hey hey"]) expect(isGreeting(t), t).toBe(true);
     for (const t of ["hey can u check the board", "morning, wats left", "yo ship it", "hi frank wat did i say", "", "skip review just ship the fix pls"]) expect(isGreeting(t), t).toBe(false);
+  });
+});
+
+describe("roundOf", () => {
+  it("a hello or a question to each seat is a round; other asks are not", () => {
+    expect(roundOf("yo morning")).toBe("hello");
+    expect(roundOf("who's on my team rn n what does each of u actually do")).toBe("each");
+    expect(roundOf("ok all of u, wat r u working on")).toBe("each");
+    expect(roundOf("cos can u look into competitor pricing")).toBeNull();
+    expect(roundOf("progeress? i only see cos working atm")).toBeNull();
   });
 });
