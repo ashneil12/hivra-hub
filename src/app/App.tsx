@@ -32,7 +32,9 @@ import {
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
 import {
+  isOpenDelegation,
   tauriDelegations,
+  type Delegation,
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
@@ -609,7 +611,7 @@ import {
   supportsProviderAccounts,
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
-import { firstTurnAccount, reactToLimit } from "../features/providers/model/accountWaterfall";
+import { firstTurnAccount, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import {
   HARNESSES,
@@ -776,8 +778,19 @@ import {
 import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import {
   delegationActions,
+  delegationRows,
+  subscribeDelegations,
   useDelegationRows,
 } from "../features/monos/model/delegationStore";
+import {
+  holdForLimit,
+  nextWake,
+  pumpWorkers,
+  queuedWorkers,
+  subscribeWorkerPool,
+  workerPoolHost,
+  type QueuedWorker,
+} from "../features/monos/model/workerPool";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -12325,6 +12338,103 @@ function Workspace({
   onStopRef.current = onStop;
   const delegationTreeRef = useRef(delegationTree);
   delegationTreeRef.current = delegationTree;
+  const controlRequestRef = useRef<
+    | ((payload: {
+        namespace: string;
+        sessionId: string;
+        requestId: string;
+        action: string;
+        input: Record<string, unknown>;
+      }) => Promise<unknown>)
+    | undefined
+  >(undefined);
+  // H8: every chat's open worker rows (a project's count, its checkouts and the ports in use): the recent rows the
+  // UI reads, and the ones this window launched since.
+  const openDelegationRows = (): Delegation[] => {
+    const byId = new Map<string, Delegation>();
+    for (const row of [...delegationRows(), ...(delegationsRef.current?.known() ?? [])]) {
+      const seen = byId.get(row.id);
+      if (!seen || row.version >= seen.version) byId.set(row.id, row);
+    }
+    return [...byId.values()].filter(isOpenDelegation);
+  };
+  const providerRoomNow = (harness: string) =>
+    workerRoom(harness, {
+      now: Date.now(),
+      usageFor: (entry) => getCachedRateLimits(entry.provider, entry.id),
+    });
+  // Waiting workers start by themselves, in order, when a worker frees up or a provider's limit resets (H8).
+  const pumpingWorkers = useRef(false);
+  const pumpWorkersNow = useCallback(() => {
+    if (pumpingWorkers.current || !controlRequestRef.current || !delegationsRef.current) return;
+    if (!queuedWorkers().length) return;
+    pumpingWorkers.current = true;
+    void pumpWorkers({
+      openRows: openDelegationRows,
+      room: providerRoomNow,
+      // A Lead's chat that isn't open in this window keeps its workers waiting until it is.
+      canStart: (job) => sessionsRef.current.some((session) => session.id === job.ownerSession),
+      start: (job: QueuedWorker) => {
+        // Its first ask answered "waiting"; this one starts it under the same request, so the same chat and card.
+        appReceipts.current.delete(`${job.ownerSession}:${job.requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: job.ownerSession,
+          requestId: job.requestId,
+          action: "tasks.delegate",
+          input: job.input,
+        });
+      },
+      failed: (job, error) =>
+        console.warn(`A waiting worker (${job.title}) could not start`, error),
+    })
+      .catch(console.error)
+      .finally(() => {
+        pumpingWorkers.current = false;
+      });
+  }, []);
+  useEffect(() => {
+    pumpWorkersNow();
+  }, [sessions, pumpWorkersNow]);
+  useEffect(() => {
+    const offRows = subscribeDelegations(pumpWorkersNow);
+    const offPool = subscribeWorkerPool(pumpWorkersNow);
+    // A provider's reset changes no row: look again then, and now and then anyway.
+    let timer = 0;
+    const arm = () => {
+      const wake = nextWake(providerRoomNow, Date.now());
+      timer = window.setTimeout(
+        () => {
+          pumpWorkersNow();
+          arm();
+        },
+        Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
+      );
+    };
+    arm();
+    return () => {
+      offRows();
+      offPool();
+      window.clearTimeout(timer);
+    };
+  }, [pumpWorkersNow]);
+  // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
+  // carries on at the reset by itself, once per refusal.
+  const heldWorkers = useRef(new Map<string, number | undefined>());
+  useEffect(() => {
+    const open = new Set(openDelegationRows().filter((row) => !row.follow).map((row) => row.childSession));
+    for (const session of sessions) {
+      const limit = session.usageLimit;
+      if (!limit) {
+        heldWorkers.current.delete(session.id);
+        continue;
+      }
+      if (session.busy || limit.resumeAtReset || !open.has(session.id)) continue;
+      if (heldWorkers.current.has(session.id) && heldWorkers.current.get(session.id) === limit.resetsAt) continue;
+      heldWorkers.current.set(session.id, limit.resetsAt);
+      onUsageLimitResumeAtReset(session.id, true);
+    }
+  }, [sessions, onUsageLimitResumeAtReset]);
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -12337,6 +12447,33 @@ function Workspace({
       action: string;
       input: Record<string, unknown>;
     }>("monocode-control-request", ({ payload }) => {
+      void runControlRequest(payload)
+        .then(
+          (result) =>
+            invoke("control_reply", {
+              id: payload.id,
+              response: { ok: true, result },
+            }),
+          (error: unknown) =>
+            invoke("control_reply", {
+              id: payload.id,
+              response: {
+                ok: false,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            }),
+        )
+        .catch(console.error);
+    });
+    // A worker that waited for a free worker (H8) starts through its own delegate_task, asked again by the app.
+    controlRequestRef.current = runControlRequest;
+    async function runControlRequest(payload: {
+      namespace: string;
+      sessionId: string;
+      requestId: string;
+      action: string;
+      input: Record<string, unknown>;
+    }): Promise<unknown> {
       const handle = async () => {
         if (payload.namespace === "control") {
           return orchestrator.handle(
@@ -12389,6 +12526,10 @@ function Workspace({
             return;
           }
           if (!sourceTurnId) return;
+          // A worker that waited (H8) already has its card, from the turn that asked for it.
+          const asked = sessionsRef.current.find((session) => session.id === source.id);
+          if (asked?.blocks.some((block) => block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId)))
+            return;
           const next = sessionsRef.current.map((session) =>
             session.id === source.id
               ? recordMonoSpawnedSession(session, sourceTurnId, entry)
@@ -12454,6 +12595,12 @@ function Workspace({
                   (session) => session.id === sessionId,
                 ),
               });
+              // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
+              // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
+              if (holdForLimit(result)) {
+                settle.discard();
+                return;
+              }
               launch?.settle(result);
               settle(result);
             },
@@ -13016,6 +13163,18 @@ function Workspace({
                     },
                   }
                 : {}),
+              pool: workerPoolHost({
+                openRows: openDelegationRows,
+                room: providerRoomNow,
+                card: (job, launch) =>
+                  rememberSession({
+                    sessionId: job.id,
+                    cwd: launch.cwd,
+                    title: job.title,
+                    harness: launch.harness as HarnessId,
+                    model: launch.model || launch.harness,
+                  }),
+              }),
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
@@ -13067,25 +13226,10 @@ function Workspace({
         }
         return promise;
       };
-      void handle()
-        .then(
-          (result) =>
-            invoke("control_reply", {
-              id: payload.id,
-              response: { ok: true, result },
-            }),
-          (error: unknown) =>
-            invoke("control_reply", {
-              id: payload.id,
-              response: {
-                ok: false,
-                error: error instanceof Error ? error.message : String(error),
-              },
-            }),
-        )
-        .catch(console.error);
-    });
+      return handle();
+    }
     return () => {
+      controlRequestRef.current = undefined;
       void listening.then((unlisten) => unlisten());
     };
   }, []);

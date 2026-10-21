@@ -13,6 +13,7 @@ import {
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES } from "./projectShapeIcons";
+import { DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits } from "../../monos/model/workerPool";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -77,7 +78,7 @@ export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size
   );
 }
 
-type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "remove" };
+type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" };
 
 /**
  * Right-click (or the hover "⋯") on a project: Change icon or image, Rename, Show folder in Finder, Move up / down,
@@ -89,6 +90,7 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
   const at = ids.indexOf(project.id);
   if (mode.kind === "icon") return <IconChooser project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "rename") return <RenameProject project={project} anchor={anchor} onClose={onClose} />;
+  if (mode.kind === "workers") return <ProjectWorkers project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "remove") return <RemoveFromHub project={project} anchor={anchor} onClose={onClose} />;
   const item = (label: string, run: () => void, opts: { disabled?: boolean; danger?: boolean } = {}) => (
     <button
@@ -109,6 +111,7 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
       {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
+      {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {
         if (project.folder) void projectFileActions().then((a) => a.showFolder(project.folder!));
         onClose();
@@ -218,6 +221,40 @@ function RenameProject({ project, anchor, onClose }: { project: HubProject; anch
         onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") onClose(); }}
         className="w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none focus:border-content/30" />
       {problem ? <p className="px-0.5 text-[11px] leading-4 text-content/70" role="alert" data-project-rename-problem>{problem}</p> : null}
+    </Popover>
+  );
+}
+
+/**
+ * How many workers the project's Lead runs at once, and how many of them on heavy tests (board H8; Ash, 16 Oct: "maybe
+ * today I want, like, 10 or 20 parallel workers ... it's really a per-project thing"). The rest wait and start by
+ * themselves. Telling the Lead in chat does the same.
+ */
+export function ProjectWorkers({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
+  const [limits, setLimits] = useState(() => workerLimits(project.id));
+  const change = (next: Partial<typeof limits>) => setLimits(setWorkerLimits(project.id, next));
+  const field = (label: string, value: number, key: "workers" | "heavy", max: number) => (
+    <label className="flex items-center justify-between gap-2 text-[13px] text-content">
+      {label}
+      <input type="number" min={1} max={max} value={value} aria-label={label} data-project-workers={key}
+        onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n) && n >= 1) change({ [key]: n }); }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") onClose(); }}
+        className="w-16 rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-right text-[13px] text-content outline-none focus:border-content/30" />
+    </label>
+  );
+  return (
+    <Popover anchor={anchor} side="right" align="start" width={280} constrainHeight={false} role="dialog" aria-label={`${project.name} workers`}
+      onDismiss={onClose} className="flex flex-col gap-2 p-2.5" data-project-workers-dialog>
+      {field("Workers at once", limits.workers, "workers", MAX_WORKERS)}
+      {field("Of them on heavy tests", limits.heavy, "heavy", limits.workers)}
+      <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
+        {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
+      </p>
+      {limits.workers !== DEFAULT_LIMITS.workers || limits.heavy !== DEFAULT_LIMITS.heavy ? (
+        <button type="button" onClick={() => change({ ...DEFAULT_LIMITS })} className="self-start text-[12px] text-content/55 hover:text-content">
+          Back to {DEFAULT_LIMITS.workers} and {DEFAULT_LIMITS.heavy}
+        </button>
+      ) : null}
     </Popover>
   );
 }

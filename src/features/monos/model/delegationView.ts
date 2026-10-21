@@ -19,6 +19,7 @@ export type RollupState = LaunchedSessionState | "stuck";
 
 const ROLLUP_ORDER: ReadonlyArray<[RollupState, (n: number) => string]> = [
   ["working", (n) => `${n} working`],
+  ["waiting", (n) => `${n} waiting for a free worker`],
   ["input", (n) => `${n} asking`],
   ["stuck", (n) => `${n} stuck`],
   ["failed", (n) => `${n} failed`],

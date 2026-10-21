@@ -14,6 +14,7 @@ import {
 import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
 import { useDelegationPane } from "../hooks/useDelegationPane";
 import { DelegationBatchRow } from "./DelegationBatchRow";
+import { enqueueWorker, queuedWorkers, resetWorkerPool } from "../model/workerPool";
 import {
   DelegatedChatNotice,
   DelegationWaitingLine,
@@ -178,6 +179,48 @@ describe("DelegationBatchRow", () => {
     expect(container.querySelector("[data-delegation-rollup]")).toBeNull();
     // Asking its Lead still counts as running: it can be stopped.
     expect(container.querySelector("[data-delegation-stop]")).not.toBeNull();
+  });
+});
+
+describe("a worker waiting for a free worker (H8)", () => {
+  it("shows its card as waiting, counts it, lets Ash take it out of the queue, and becomes a normal card once it starts", () => {
+    localStorage.clear();
+    resetWorkerPool();
+    enqueueWorker({
+      id: "w2",
+      ownerSession: "lead-chat",
+      requestId: "r2",
+      project: "vg-game",
+      projectName: "vg-game",
+      title: "Fix audio",
+      heavy: false,
+      harness: "claude",
+      queuedAt: 1,
+      input: { brief: "Fix audio" },
+    });
+    setDelegationRows([row("t-1", "w1", "running")]);
+    const views = new Map<string, LaunchedSessionView>([["w1", { state: "working", title: "Fix saves" }]]);
+    const onOpen = vi.fn();
+    const render = () =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w1", "Fix saves"), launch("w2", "Fix audio")],
+          views,
+          onOpen,
+        }),
+      );
+    act(render);
+    expect(container.querySelector("[data-delegation-rollup]")?.textContent).toBe(
+      "Delegated 2: 1 working, 1 waiting for a free worker",
+    );
+    const card = container.querySelector<HTMLButtonElement>('[data-launched-session="w2"]')!;
+    expect(card.dataset.state).toBe("waiting");
+    expect(card.textContent).toContain("Waiting for a free worker");
+    // Nothing to open yet.
+    expect(card.disabled).toBe(true);
+    act(() => container.querySelector<HTMLButtonElement>('[data-delegation-unqueue="w2"]')!.click());
+    expect(queuedWorkers()).toEqual([]);
+    expect(container.querySelector('[data-delegation-unqueue="w2"]')).toBeNull();
   });
 });
 
