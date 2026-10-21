@@ -1012,8 +1012,6 @@ pub fn set_delivery(
         changed.push(row);
     }
     tx.commit().map_err(|e| e.to_string())?;
-    if !changed.is_empty() {
-    }
     Ok(changed)
 }
 
@@ -1057,8 +1055,6 @@ pub fn cancel(
         changed.push(row);
     }
     tx.commit().map_err(|e| e.to_string())?;
-    if !changed.is_empty() {
-    }
     Ok(changed)
 }
 
@@ -2782,5 +2778,4 @@ mod tests {
         );
         assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DELIVERED);
     }
-
 }

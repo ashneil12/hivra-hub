@@ -410,7 +410,7 @@ export function ModelPicker({
   const onGrokBridge = current.harness === "claude" && claudeRunsOnGrok();
   const triggerModelName =
     current.harness === "claude"
-      ? claudePillName(current.name)
+      ? claudePillName(current.name, onGrokBridge)
       : current.name;
   useCustomModels();
   const pill = pillText(model, triggerModelName);

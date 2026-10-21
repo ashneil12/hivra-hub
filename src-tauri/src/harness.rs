@@ -4832,6 +4832,7 @@ mod dev_claude_tests {
                 "autoCompactWindow": 350000,
                 "ultracode": true,
                 "disableAllHooks": true,
+                "skillOverrides": { "dump-triage": "user-invocable-only" },
             })
         );
         assert_eq!(
