@@ -113,7 +113,7 @@ export function jobsScenario(now = Date.now()) {
     }),
     job("j_sender", "hivra", "Example: sending the waitlist emails", "lead_gave_up", {
       ago: 200, active: 55,
-      wire: { reason: "The email sender refused the login.", circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"], why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt." },
+      wire: { reason: "The email sender refused the login.", circle: "red", word: "Needs you", tried: ["the runner's own attempt", "splitting the job", "a different worker"], why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. It failed before the lead took over." },
     }),
     job("j_footer", "hivra", "Example: fixing the footer link", "done", { ago: 90, active: 30, wire: { finishedAt: iso2(now - 30 * min) } }),
     job("j_sound", "nibbii", "Example: tidying the sound files", "stuck", { noLead: true, ago: 80, active: 14, wire: { reason: "No sound card in the test box.", circle: "amber", word: "Stuck" } }),
@@ -122,7 +122,7 @@ export function jobsScenario(now = Date.now()) {
     { id: "s:a_cannon", projectId: "nibbii", title: "Example: rework the app's notch pet", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "accept", actionTarget: "ask:a_cannon", rank: 3, since: now - 6 * 3600_000, state: "open", later: false },
     // What Ash OS sent for a Looks-right row before "accept" existed: action Open, marked seen instead.
     { id: "s:a_legacy", projectId: "nibbii", title: "Example: tidy the settings page", why: "Finished and flagged critical: check it, then tap Looks right.", actionType: "open", actionTarget: "ask:a_legacy", rank: 3, since: now - 7 * 3600_000, state: "open", later: false },
-    { id: "j:j_sender", projectId: "hivra", title: "Example: sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. Tried before it reached the lead: the runner's own attempt.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
+    { id: "j:j_sender", projectId: "hivra", title: "Example: sending the waitlist emails", why: "Coding team lead tried splitting the job and a different worker since 11:10am, still failing. It failed before the lead took over.", actionType: "see_options", actionTarget: "job:j_sender", rank: 0, since: now - 55 * min, state: "open", later: false, circle: "red", word: "Needs you" },
     ...[
       ["o1", "hivra", "Example: which Hivra folder is the real one?"], ["o2", "hivra", "Example: should the old waitlist be archived?"],
       ["o3", "vg-game", "Example: is the second boss still wanted?"],

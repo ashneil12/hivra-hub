@@ -151,7 +151,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(mark.textContent).toBe("Stuck"); // Ash OS sends "Needs you"; Ash's default is red Stuck
     expect(container.querySelector(row)!.textContent).not.toMatch(/Needs you|Lead gave up/);
     const why = container.querySelector(`${row} [data-hub-need-why]`)!;
-    expect(why.textContent).toMatch(/since 11:10am, still failing\. Tried before it reached the lead: the runner's own attempt\.$/);
+    expect(why.textContent).toMatch(/since 11:10am, still failing\. It failed before the lead took over\.$/);
     expect(why.className).not.toContain("truncate");
     expect(mark.querySelector("svg")?.getAttribute("width")).toBe("14");
     expect(mark.className).toContain("text-content/60");
