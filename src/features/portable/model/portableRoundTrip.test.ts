@@ -320,6 +320,31 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
   expect(c.souls.waitingSouls().find((s) => s.monoId === "chief-of-staff")!.memory).toBe("- private");
 });
 
+it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL } }, workspace: false }));
+  localStorage.clear();
+  const b = await app();
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m",
+    memory: [{ name: "monos", targetExists: true, history: false, files: [{ path: "hivra-lead/SOUL.md", status: "new" as const }] }],
+    workspace: null,
+  };
+  const pending = { name: "x", path: "/tmp/export", doc: b.doc.setupDocFromFiles(files), inspection, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const report = { sessionsAdded: 0, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 0, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 1, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [], soulsRestored: ["hivra-lead"] };
+  const recordSouls = vi.fn(async (_ids: string[]) => undefined);
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { rustImport: async () => report, recordSouls });
+  expect(recordSouls).toHaveBeenCalledTimes(1);
+  expect(recordSouls.mock.calls[0][0]).toEqual(["hivra-lead"]);
+
+  // Nothing written to any soul: nothing to record.
+  recordSouls.mockClear();
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { rustImport: async () => ({ ...report, soulsRestored: [] }), recordSouls });
+  expect(recordSouls).not.toHaveBeenCalled();
+});
+
 it("a v1 setup file still imports: its bots and souls wait, its chats, Pages and connectors come back", async () => {
   const b = await app();
   const v1 = {

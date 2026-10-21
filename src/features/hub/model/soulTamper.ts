@@ -107,6 +107,25 @@ export async function checkSoul(
   return "kept-ash";
 }
 
+/**
+ * A portable restore wrote these Monos' souls (some from Rust, which the app's own save path never sees): each soul as
+ * it now stands is the app's save, so no "edited outside the app" row appears and nothing is put back.
+ */
+export async function recordRestoredSouls(
+  monoIds: readonly string[],
+  files: Pick<TamperFiles, "read"> = { read: readAgentFile },
+  now: number = Date.now(),
+): Promise<void> {
+  for (const id of new Set(monoIds)) {
+    try {
+      const soul = await files.read(id, "SOUL.md");
+      if (soul.text != null) recordSavedSoul(id, soul.text, soul.hash, now);
+    } catch {
+      /* unreadable now: its next check records it, or treats it as Ash's */
+    }
+  }
+}
+
 /** Opening a Mono's files checks its soul first (monoFiles.ts readMonoFiles). */
 export function watchSoulOpens(): void {
   setSoulOpenCheck(async (monoId) => {

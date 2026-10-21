@@ -1,6 +1,7 @@
 // Export… and Import… (Phase 5, docs/PORTABLE.md): the webview builds the setup files, Rust reads what lives on disk
 // (each Mono's files, the project memory, the database's chats, notes, automations, reminders and delegations), writes
 // the folder or archive, and on import reads one back for the preview and restores what Ash ticked.
+import { recordRestoredSouls } from "../../hub/model/soulTamper";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSyncExternalStore } from "react";
@@ -170,6 +171,7 @@ export function restore(p: PendingImport, plan: Plan, choices: Choices): Promise
   return applyImport(p, plan, choices, {
     rustImport: (request: RustImportRequest) => invoke<RustImportReport>("portable_import", { request }),
     registerProject,
+    recordSouls: (ids) => recordRestoredSouls(ids),
   });
 }
 

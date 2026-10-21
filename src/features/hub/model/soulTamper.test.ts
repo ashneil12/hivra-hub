@@ -13,7 +13,8 @@ import type { AgentFilePath } from "../../monos/model/monoFiles";
 import { noteSessionRuns, resetSessionRuns, runsAt } from "../../monos/model/sessionRuns";
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
-import { changedSoulNote, checkSoul, keptAshLine, putBackLine, type TamperFiles } from "./soulTamper";
+import { botChangeRows } from "./botChanges";
+import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -101,6 +102,38 @@ describe("a soul changed outside the app", () => {
     recordSavedSoul("frank", SAVED, "old-format-hash");
     expect(await checkSoul("frank", "frank", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("unchanged");
     expect(files.get("frank/SOUL.md")!.text).toBe(SAVED);
+  });
+});
+
+describe("a portable restore writing souls", () => {
+  const RESTORED = "# Soul\n\n## Your job\n- You lead the Hivra project, as on the other Mac.\n";
+  const rows = (id: string) => botChangeRows().filter((r) => (r.kind === "one" ? [r.change] : r.items).some((c) => c.monoId === id));
+
+  it("records the restored souls as the app's saves: no outside-edit row, nothing put back, even with chats running", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("restored-lead", "SOUL.md", SAVED);
+    await f.write("restored-cos", "SOUL.md", SAVED);
+    // Rust writes them straight to disk (memory restore), while a chat is running.
+    noteSessionRuns([{ id: "worker-r", busy: true }], 1_000);
+    files.set("restored-lead/SOUL.md", { text: RESTORED, at: 2_000 });
+    files.set("restored-cos/SOUL.md", { text: RESTORED, at: 2_000 });
+    await recordRestoredSouls(["restored-lead", "restored-cos", "restored-lead"], f);
+    const running = (at: number) => runsAt(at, 0, 9_000);
+    expect(await checkSoul("restored-lead", "Hivra lead", f, running, 9_000)).toBe("unchanged");
+    expect(await checkSoul("restored-cos", "Chief of Staff", f, running, 9_000)).toBe("unchanged");
+    expect(files.get("restored-lead/SOUL.md")!.text).toBe(RESTORED);
+    expect(rows("restored-lead")).toEqual([]);
+    expect(rows("restored-cos")).toEqual([]);
+  });
+
+  it("without the record the same write would have been put back (the check is live)", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("unrecorded-lead", "SOUL.md", SAVED);
+    noteSessionRuns([{ id: "worker-r", busy: true }], 1_000);
+    files.set("unrecorded-lead/SOUL.md", { text: RESTORED, at: 2_000 });
+    expect(await checkSoul("unrecorded-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
   });
 });
 

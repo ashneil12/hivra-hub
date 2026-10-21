@@ -221,6 +221,9 @@ pub struct Env {
     /// Claude Code's config folder, to say where a chat's provider transcript is.
     pub claude_home: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// Where the Monos live (`mono::resolved_root`): on the daily app `~/agent-memory/monos`, inside `memory_root`, so a
+    /// memory restore can write a Mono's soul, and the report names each one (`souls_restored`).
+    pub monos_root: PathBuf,
 }
 
 impl Env {
@@ -256,6 +259,7 @@ impl Env {
             .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
             .or_else(|| home.as_ref().map(|home| home.join(".claude")));
         Ok(Self {
+            monos_root: crate::mono::resolved_root(&data_dir),
             db_path: data_dir.join("monocode.db"),
             data_dir,
             memory_root,
@@ -1813,6 +1817,9 @@ pub struct ImportReport {
     /// Old ids to new ones, for chats and notes that came in as copies.
     pub renamed: BTreeMap<String, String>,
     pub notes: Vec<String>,
+    /// Monos whose SOUL.md this restore wrote from Rust (a memory folder that is the Monos home). The app records these
+    /// as its own saves, so its soul tamper check doesn't take them for outside edits (hub/model/soulTamper.ts).
+    pub souls_restored: Vec<String>,
 }
 
 /// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the workspace's
@@ -2223,9 +2230,13 @@ fn import_memory(
                 ));
                 continue;
             };
-            match fs::read_to_string(&dest) {
-                Ok(local) if local == text => {}
-                Ok(_) if fresh => write_within(&inside, &dest, &text)?,
+            // Whether `dest` now holds the export's text because of this restore (a fresh folder's history counts).
+            let wrote = match fs::read_to_string(&dest) {
+                Ok(local) if local == text => fresh,
+                Ok(_) if fresh => {
+                    write_within(&inside, &dest, &text)?;
+                    true
+                }
                 Ok(_) => {
                     if wanted.keep_both {
                         write_within(&inside, &beside_name(&dest), &text)?;
@@ -2233,10 +2244,19 @@ fn import_memory(
                     } else {
                         report.kept += 1;
                     }
+                    false
                 }
                 Err(_) => {
                     write_within(&inside, &dest, &text)?;
                     report.memory_files_added += 1;
+                    true
+                }
+            };
+            if wrote {
+                if let Some(mono) = restored_soul(&env.monos_root, &dest) {
+                    if !report.souls_restored.contains(&mono) {
+                        report.souls_restored.push(mono);
+                    }
                 }
             }
         }
@@ -2313,6 +2333,19 @@ fn within(inside: &Path, dest: &Path) -> bool {
 }
 
 /// Writes `dest` only when its folder is inside `inside`, checked before the folder is made and again after.
+/// The Mono whose soul `dest` is, when it is `<monos_root>/<id>/SOUL.md` (links resolved on both sides).
+fn restored_soul(monos_root: &Path, dest: &Path) -> Option<String> {
+    if dest.file_name()? != "SOUL.md" {
+        return None;
+    }
+    let folder = resolved(dest.parent()?);
+    if folder.parent()? != resolved(monos_root) {
+        return None;
+    }
+    let id = folder.file_name()?.to_str()?.to_string();
+    plain_name(&id).then_some(id)
+}
+
 fn write_within(inside: &Path, dest: &Path, text: &str) -> Result<(), String> {
     let refused = || {
         format!(

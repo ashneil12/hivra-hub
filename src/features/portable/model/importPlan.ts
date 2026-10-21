@@ -317,6 +317,8 @@ export type RustImportReport = {
   kept: number;
   renamed: Record<string, string>;
   notes: string[];
+  /** Monos whose SOUL.md Rust wrote (a memory folder that is the Monos home); older builds leave it out. */
+  soulsRestored?: string[];
 };
 
 export type RustImportRequest = {
@@ -341,6 +343,11 @@ export type ImportDeps = {
   here?: Here;
   /** A Mono's files (tests pass their own; the app reads and writes its data folder). */
   agentFiles?: Pick<Parameters<typeof mergeIntoSeated>[1] & object, "read" | "write">;
+  /**
+   * Records the souls this restore wrote as the app's own saves (hub/model/soulTamper.ts recordRestoredSouls), so the
+   * soul tamper check never reads them as outside edits or puts them back.
+   */
+  recordSouls?: (monoIds: string[]) => Promise<void>;
 };
 
 export type ImportSummary = { lines: string[]; rust: RustImportReport | null; problems: string[] };
@@ -494,16 +501,25 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   );
   if (waitingNow) lines.push(`${plural(waitingNow, "Mono")} waiting for your OK in the Monos list.`);
   let merged = 0;
+  const soulsWritten = new Set(rust?.soulsRestored ?? []);
   for (const m of plan.monos.filter((x) => x.state === "here" && choices.monos.has(x.mono.id))) {
     try {
       const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), { replace: choices.replaceSouls.has(m.mono.id), ...deps.agentFiles });
       if (r.written.length) merged++;
+      if (r.written.includes("SOUL.md")) soulsWritten.add(m.mono.id);
       for (const problem of r.problems) problems.push(`${m.mono.name}: ${problem}`);
     } catch (e) {
       problems.push(`${m.mono.name}: ${e instanceof Error ? e.message : "its files couldn't be written"}`);
     }
   }
   if (merged) lines.push(`${plural(merged, "Mono")} already here got the files they didn't have.`);
+  if (soulsWritten.size && deps.recordSouls) {
+    try {
+      await deps.recordSouls([...soulsWritten]);
+    } catch {
+      /* the tamper check then sees them as Ash's own edits: kept, never put back unless a chat was running */
+    }
+  }
 
   // Teams, and with the workspace their conversations.
   const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);

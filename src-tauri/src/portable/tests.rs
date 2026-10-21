@@ -66,6 +66,8 @@ fn env_for(root: &Path) -> Env {
         protected: Vec::new(),
         claude_home: Some(root.join("claude")),
         home: Some(root.join("home")),
+        // As on the daily app: the Monos home is a folder of the memory root.
+        monos_root: root.join("memory/monos"),
     }
 }
 
@@ -1093,6 +1095,66 @@ fn memory_never_lands_outside_its_folder_through_a_link() {
         "{:?}",
         report.notes
     );
+}
+
+#[test]
+fn a_memory_restore_that_writes_a_monos_soul_names_it() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    // The Monos home, exported as a memory folder (it has a MEMORY.md of its own).
+    let monos = source.memory_root.join("monos");
+    fs::create_dir_all(monos.join("hivra-lead")).unwrap();
+    fs::create_dir_all(monos.join("frank")).unwrap();
+    fs::write(monos.join("MEMORY.md"), "# monos\n").unwrap();
+    fs::write(monos.join("hivra-lead/SOUL.md"), "# Soul\n\n- restored\n").unwrap();
+    fs::write(monos.join("frank/SOUL.md"), "# Soul\n\n- frank's\n").unwrap();
+    fs::write(monos.join("frank/MEMORY.md"), "- a note\n").unwrap();
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.files.clear();
+    request.workspace = false;
+    request.memory = Some(MemoryChoice {
+        projects: vec!["monos".into()],
+        history: false,
+    });
+    export(&source, &request).unwrap();
+    // frank's soul is here already with his own text: kept (no write), so not named.
+    fs::create_dir_all(target.monos_root.join("frank")).unwrap();
+    fs::write(
+        target.monos_root.join("frank/SOUL.md"),
+        "# Soul\n\n- mine\n",
+    )
+    .unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let import = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: Some(MemoryImport {
+            projects: vec!["monos".into()],
+            keep_both: false,
+            history: false,
+        }),
+        workspace: None,
+    };
+    let report = import_held(&target, &conn, &import).unwrap();
+    assert_eq!(
+        fs::read_to_string(target.monos_root.join("hivra-lead/SOUL.md")).unwrap(),
+        "# Soul\n\n- restored\n"
+    );
+    assert_eq!(
+        report.souls_restored,
+        vec!["hivra-lead".to_string()],
+        "{report:?}"
+    );
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["soulsRestored"], serde_json::json!(["hivra-lead"]));
+    // Again: nothing new is written, nothing named.
+    let again = import_held(&target, &conn, &import).unwrap();
+    assert!(again.souls_restored.is_empty(), "{again:?}");
 }
 
 /// Puts `bytes` at `relative` in a folder export and lists it in the manifest, as an export would.
