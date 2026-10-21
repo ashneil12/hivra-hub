@@ -9,6 +9,7 @@ import { createProject, defaultProjectFolder, projectSlug } from "../model/proje
 import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
+import { askChiefOfStaff, NoInterviewRuntime, type InterviewLine, type InterviewReply } from "../model/projectInterview";
 import { plainName } from "../model/roleNames";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { addTeamAddon } from "../model/hubTeam";
@@ -19,21 +20,7 @@ const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
 const COS = "Chief of Staff";
 
-const QUESTIONS = [
-  "What is it, in a sentence?",
-  "Who is it for?",
-  "What matters most first?",
-];
-
-type Line = { from: "cos" | "ash"; text: string };
-
-/** Best guess at a template from the answers; Ash can change it on the card. */
-function guessTemplate(text: string): TemplateId {
-  const t = text.toLowerCase();
-  if (/game|play|level|player/.test(t)) return "game-studio";
-  if (/team|org|ops|hiring|office/.test(t)) return "org-ops";
-  return "product-saas";
-}
+type Line = InterviewLine;
 
 /** A first shape from the template (Ash changes it on the card): never the ghost. */
 const SHAPE_FOR: Record<TemplateId, ProjectIconShape> = { "game-studio": "gamepad", "product-saas": "rocket", "org-ops": "briefcase" };
@@ -50,8 +37,9 @@ async function pickFolder(): Promise<string | null> {
 }
 
 /**
- * New project is chat-first: Ash types a name, then Chief of Staff asks a few
- * questions in chat. It ends on a preview card that says exactly what Create makes; nothing exists until Create.
+ * New project is chat-first: Ash types a name, then Chief of Staff talks it through with him (projectInterview.ts: its
+ * own Mono on its own engine, asking what it needs). It ends on a preview card from its proposal that says exactly what
+ * Create makes; nothing exists until Create.
  * Create goes to Ash OS (`ash-hub-project-create`): the project, its own memory, and (by default) its code folder at
  * ~/Projects/<id> as a local git repo with a README. Then its Lead Mono is seeded and it joins the strip.
  */
@@ -62,8 +50,9 @@ export function NewProjectView() {
   const [started, setStarted] = useState(saved?.started ?? false);
   const [lines, setLines] = useState<Line[]>(saved?.lines ?? []);
   const [typing, setTyping] = useState(false);
+  const [stuck, setStuck] = useState<string>();
   const [draft, setDraft] = useState("");
-  const [answers, setAnswers] = useState<string[]>(saved?.answers ?? []);
+  const [oneLine, setOneLine] = useState(saved?.oneLine ?? "");
   const [tpl, setTpl] = useState<TemplateId | null>(saved?.tpl ?? null);
   const [addon, setAddon] = useState(saved?.addon ?? false);
   const [shape, setShape] = useState<ProjectIconShape | undefined>(saved?.shape);
@@ -73,45 +62,55 @@ export function NewProjectView() {
   const [problem, setProblem] = useState<string>();
   const ended = useRef(false);
   useEffect(() => {
-    if (!ended.current && started) saveProjectDraft({ name, started, lines, answers, tpl, addon, shape, code, folder });
-  }, [name, started, lines, answers, tpl, addon, shape, code, folder]);
+    if (!ended.current && started) saveProjectDraft({ name, started, lines, oneLine, tpl, addon, shape, code, folder });
+  }, [name, started, lines, oneLine, tpl, addon, shape, code, folder]);
   const end = useRef<HTMLDivElement>(null);
   const n = name.trim();
-  const done = answers.length >= QUESTIONS.length;
 
-  const cosSays = (text: string, after?: () => void) => {
+  // One turn in flight at a time; leaving drops it, and the draft (ending on Ash's line) asks again on return.
+  const turn = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => turn.current?.abort(), []);
+  const cosTurn = (forName: string, chat: Line[]) => {
+    turn.current?.abort();
+    const controller = new AbortController();
+    turn.current = controller;
     setTyping(true);
-    window.setTimeout(() => {
-      setTyping(false);
-      setLines((l) => [...l, { from: "cos", text }]);
-      after?.();
-    }, 900);
+    setStuck(undefined);
+    askChiefOfStaff(forName, chat, controller.signal).then(
+      (reply) => { if (!controller.signal.aborted) took(reply); },
+      (e: Error) => { if (!controller.signal.aborted) setStuck(e instanceof NoInterviewRuntime ? e.message : `Chief of Staff couldn't answer: ${e.message}`); },
+    ).finally(() => { if (turn.current === controller) setTyping(false); });
+  };
+  const took = ({ text, proposal }: InterviewReply) => {
+    if (text) setLines((l) => [...l, { from: "cos", text }]);
+    if (!proposal) return;
+    if (proposal.name) setName(proposal.name);
+    setOneLine(proposal.oneLine);
+    setTpl(proposal.template);
+    setCode(proposal.code);
+    if (proposal.folder) setFolder(proposal.folder);
+    setAddon(proposal.addon);
   };
 
   useEffect(() => {
-    if (saved?.started && saved.lines[saved.lines.length - 1]?.from === "ash" && !saved.tpl) {
-      const a = saved.answers;
-      if (a.length < QUESTIONS.length) cosSays(QUESTIONS[a.length]);
-      else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(a.join(" "))));
-    }
+    // Back to a draft whose last word is Ash's (or that never got a first reply): Chief of Staff answers it now.
+    if (saved?.started && saved.lines[saved.lines.length - 1]?.from !== "cos") cosTurn(saved.name.trim(), saved.lines);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [lines.length, typing]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [lines.length, typing, stuck]);
 
   const start = () => {
     if (!n) return;
     setStarted(true);
-    cosSays(`Let's set up ${n}. ${QUESTIONS[0]}`);
+    cosTurn(n, []);
   };
   const answer = () => {
     const a = draft.trim();
-    if (!a || typing || done) return;
-    const next = [...answers, a];
-    setAnswers(next);
+    if (!a || typing) return;
+    const next = [...lines, { from: "ash" as const, text: a }];
     setDraft("");
-    setLines((l) => [...l, { from: "ash", text: a }]);
-    if (next.length < QUESTIONS.length) cosSays(QUESTIONS[next.length]);
-    else cosSays("Thanks. Here's how it will look. Nothing is created until you press Create project.", () => setTpl(guessTemplate(next.join(" "))));
+    setLines(next);
+    cosTurn(n, next);
   };
 
   const id = projectSlug(n);
@@ -135,7 +134,7 @@ export function NewProjectView() {
     }
     setCreating(true);
     setProblem(undefined);
-    void createProject({ name: n, oneLine: answers[0] ?? n, code: code !== "none", folder: code === "existing" ? folder : undefined, shape: pickedShape }).then(
+    void createProject({ name: n, oneLine: oneLine || n, code: code !== "none", folder: code === "existing" ? folder : undefined, shape: pickedShape }).then(
       (made) => finish(made.project),
       (e: Error) => { setCreating(false); setProblem(e.message); },
     );
@@ -185,7 +184,7 @@ export function NewProjectView() {
                     <StripButton label={n.split(" ")[0]} title={n} selected onClick={() => {}} Icon={SHAPES[pickedShape]} />
                     <div className="min-w-0">
                       <div className="text-[13px] font-medium text-content">{n}</div>
-                      <div className="text-xs text-content/60">{answers[0]}</div>
+                      <div className="text-xs text-content/60">{oneLine}</div>
                     </div>
                   </div>
                   <div className="flex flex-col gap-1.5" data-hub-new-project-shapes>
@@ -254,17 +253,21 @@ export function NewProjectView() {
                   {problem ? <p className="text-[13px] leading-5 text-content/70" role="alert" data-hub-new-project-problem>{problem}</p> : null}
                 </div>
               ) : null}
+              {stuck ? (
+                <div className="flex items-center gap-2 text-[13px] text-content/70" role="alert" data-hub-new-project-stuck>
+                  <span>{stuck}</span>
+                  <button type="button" className={QUIET} onClick={() => cosTurn(n, lines)}>Try again</button>
+                </div>
+              ) : null}
               <div className="h-5 text-xs text-content/60" aria-live="polite">{typing ? `${COS} is typing…` : null}</div>
               <div ref={end} />
             </div>
           </div>
-          {!done ? (
-            <div className="mx-auto w-full max-w-[640px] shrink-0 px-8 pb-4">
-              <input data-hub-new-project-answer autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") answer(); }} placeholder={`Reply to ${COS}`}
-                className="w-full rounded-lg bg-content/5 px-3 py-2.5 text-[13px] text-content outline-none placeholder:text-content/45" />
-            </div>
-          ) : null}
+          <div className="mx-auto w-full max-w-[640px] shrink-0 px-8 pb-4">
+            <input data-hub-new-project-answer autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") answer(); }} placeholder={`Reply to ${COS}`}
+              className="w-full rounded-lg bg-content/5 px-3 py-2.5 text-[13px] text-content outline-none placeholder:text-content/45" />
+          </div>
         </>
       )}
     </div>

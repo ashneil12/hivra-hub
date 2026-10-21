@@ -72,12 +72,11 @@ afterEach(async () => {
   await stub.close();
 });
 
-/** The Chief of Staff chat already answered: the preview card shows (the chat itself is covered elsewhere). */
+/** Chief of Staff already proposed it: the preview card shows (the interview itself: projectDraft.test.ts). */
 function answered(name: string) {
   saveProjectDraft({
-    name, started: true, tpl: "product-saas", addon: false,
-    answers: ["A cosy farming game for the Mac notch", "People who like calm games", "A first playable build"],
-    lines: [{ from: "cos", text: `Let's set up ${name}.` }, { from: "ash", text: "A cosy farming game for the Mac notch" }],
+    name, started: true, tpl: "product-saas", addon: false, oneLine: "A cosy farming game for the Mac notch",
+    lines: [{ from: "cos", text: `Let's set up ${name}.` }, { from: "ash", text: "A cosy farming game for the Mac notch" }, { from: "cos", text: "Here's how it will look." }],
   });
 }
 
