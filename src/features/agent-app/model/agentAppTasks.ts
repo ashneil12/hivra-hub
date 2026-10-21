@@ -510,6 +510,20 @@ async function delegate(
     () => undefined,
   );
   const id = `app-${source.id}-${requestId}`;
+  // Idempotent (H8c): a task already recorded for this request is never started a second time, so a waiting worker
+  // asked again after a window died mid-start (its claim ran out) or a retried call only reads it back.
+  const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
+  if (already && already.state !== "cancelled") {
+    tasks.pool?.started({ id, heavy });
+    return {
+      taskId: already.id,
+      childSessionId: id,
+      status: already.state,
+      title: already.title ?? title,
+      alreadyStarted: true,
+      note: "This task had already started; it was not started again. Its report comes back to you as its own turn.",
+    };
+  }
   // The workers this chat still has out: each holds a port, and one working in the same project shares its repo.
   const out = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
   // Every chat's workers, where the app knows them: a Lead's and its coding-team chats' share one repo and the ports.
