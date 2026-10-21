@@ -1,5 +1,6 @@
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
-import { noteSessionRuns } from "../features/monos/model/sessionRuns";
+import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
+import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
@@ -2657,6 +2658,14 @@ function Workspace({
     // When chats run, for the soul tamper check (hub/model/soulTamper.ts).
     noteSessionRuns(sessions);
   }, [sessions]);
+
+  useEffect(() => {
+    // The app process's record of its chats' turns, which a reload doesn't lose (sessionRuns.ts).
+    setProcessRunSource(listHarnessRuns);
+    // A heartbeat while a chat runs with nothing new on screen, so a reload or crash leaves when it last ran.
+    const timer = setInterval(() => noteSessionRuns(sessionsRef.current), RUN_HEARTBEAT_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

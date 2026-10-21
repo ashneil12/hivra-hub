@@ -20,6 +20,7 @@ mod external_editor;
 mod fs;
 mod gitlab;
 mod harness;
+mod harness_runs;
 mod harness_updates;
 mod hub;
 mod hub_keychain;
@@ -661,6 +662,7 @@ pub fn run() {
             harness::harness_write,
             harness::harness_kill,
             harness::harness_kill_all,
+            harness::harness_runs,
             harness::harness_http,
             harness::harness_sse_open,
             harness::harness_sse_close,
