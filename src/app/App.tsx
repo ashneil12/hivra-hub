@@ -74,6 +74,8 @@ import {
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
+import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
+import { useMonoTrees } from "./hooks/useMonoTrees";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
@@ -8986,6 +8988,15 @@ function Workspace({
           if (monoRotation) {
             appContext.push(monoRotation.brief(sessionId));
           }
+          // A long-chat Mono's fresh conversation opens on its tree's view, ahead of the message: the system prompt
+          // stays as it is, so its cache holds (monoTreeStore.ts treeContext).
+          const treeMono = mono && !rawCommand && !current.providerSessionId ? monoForSession(sessionId) : undefined;
+          if (treeMono?.longChat) {
+            const treeNote = await treeContext(treeMono.id, appCliCommand(await invoke<string | null>("app_cli_path"))).catch(
+              () => undefined,
+            );
+            if (treeNote) appContext.push(treeNote);
+          }
           // Habit posts land in the chat outside any turn, so the Mono's
           // session has not seen them; the next message carries them once.
           const habitPosts = mono ? unseenHabitPosts(current.blocks) : [];
@@ -9802,6 +9813,8 @@ function Workspace({
     prWatches.subscribe,
     prWatches.snapshot,
   );
+  // A long-chat Mono's finished turns go into its summary tree, in the background (monoTreeStore.ts).
+  useMonoTrees(sessions, IS_HUB_BUNDLE);
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {
@@ -13181,6 +13194,11 @@ function Workspace({
             },
             isMono: (id) => isMonoSession(id),
             isHabitRun: (id) => isHabitRun(id),
+            tree: {
+              on: (monoId) => longChatOn(monoId),
+              zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
+              date: (monoId, id) => treeDate(monoId, id),
+            },
             // A chat in a hub project's coding team delegates and watches pull requests like the Lead (codingTeam.ts).
             codingTeamOf: (id) => {
               const projectId = codingTeamChatProject(id);
