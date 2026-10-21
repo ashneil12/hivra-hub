@@ -548,11 +548,15 @@ export async function pickFolders(title = "Open projects"): Promise<string[]> {
   return typeof selected === "string" && selected ? [slash(selected)] : [];
 }
 
-export async function pickFiles(title = "Attach files"): Promise<string[] | null> {
+export async function pickFiles(
+  title = "Attach files",
+  filters?: { name: string; extensions: string[] }[],
+): Promise<string[] | null> {
   const selected = await open({
     multiple: true,
     directory: false,
     title,
+    ...(filters?.length ? { filters } : {}),
   });
   if (Array.isArray(selected)) {
     const paths = selected

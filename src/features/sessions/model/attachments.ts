@@ -237,8 +237,17 @@ function dropMacScreenshotTwins(files: File[]): File[] {
   return files.filter((file) => !unnamedTiff(file));
 }
 
-export async function pickAttachments(): Promise<Attachment[]> {
-  const paths = await pickFilePaths();
+/** What the + menu offers: photos and videos (the picker shows only those), or any file. */
+export type AttachPick = "media" | "file";
+
+/** The extensions the Photos and videos picker shows. */
+export const MEDIA_EXTENSIONS = Object.keys(MIME_BY_EXT).filter((ext) => /^(image|video|audio)\//.test(MIME_BY_EXT[ext]));
+
+export async function pickAttachments(kind: AttachPick = "file"): Promise<Attachment[]> {
+  const paths =
+    kind === "media"
+      ? await pickFilePaths("Attach photos or videos", [{ name: "Photos and videos", extensions: MEDIA_EXTENSIONS }])
+      : await pickFilePaths();
   if (!paths?.length) return [];
   return attachmentsFromPaths(paths);
 }
