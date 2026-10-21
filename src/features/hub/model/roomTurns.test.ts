@@ -159,6 +159,10 @@ describe("the prompts", () => {
     expect(chime).toContain("Ash wrote to the whole room and Chief of Staff has answered. This is your one turn: reply to Ash as yourself, in your own voice");
     expect(chime).toContain("If you have nothing to add, reply with exactly NO_REPLY.");
     expect(chime).toContain("reply with exactly NO_REPLY");
+    // Ash's message to the room is for every seat: the rules don't tell a seat that isn't hosting to stay silent
+    // (Mac, 21 Oct: "hey" in Leadership got CoS alone, the other three answered NO_REPLY by that rule).
+    expect(chime).toContain("Answer when it's for you: Ash wrote to the room");
+    expect(chime).not.toMatch(/you host and Ash wrote/);
     const reply = turnPrompt({ ...base, me: PM, kind: "reply", other: "frank" });
     expect(reply).toContain("frank addressed you in the message marked >> below");
     expect(reply).toContain("Answer it or do it, from your lane");
