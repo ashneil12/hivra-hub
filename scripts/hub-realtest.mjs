@@ -776,7 +776,9 @@ export async function runBench(options, hooks = {}) {
               // What a chat asks Ash (or its Lead) is part of what it says.
               part.name === "AskUserQuestion"
                 ? `AskUserQuestion: ${(part.input?.questions ?? []).map((q) => `${q.question} [${(q.options ?? []).map((o) => o.label).join(" / ")}]`).join(" ; ")}`.slice(0, 600)
-                : part.name,
+                : part.name === "Bash"
+                  ? `Bash: ${String(part.input?.command ?? "")}`.slice(0, 600) // the command, so a held Allow card can be checked
+                  : part.name,
             );
             if (text || toolUses.length) out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, text, tools: toolUses, ...(hidden ? { hidden } : {}) });
           } else if (message.type === "result") out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, result: true, isError: !!message.is_error, text: String(message.result ?? "").slice(0, 400) });

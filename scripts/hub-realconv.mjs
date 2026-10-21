@@ -154,6 +154,12 @@ export async function runRealconv(options, { bench, clients } = {}) {
       async afterReady(ctx) {
         out = ctx.evidence;
         fs.writeFileSync(path.join(out, "realconv-plan.json"), JSON.stringify(plan, null, 2));
+        // The scenes play Ash's own Monos: a fresh dev copy starts with the plain team (G5), so pick his pre-load first.
+        if ((book.team ?? "ash") === "ash") {
+          const team = await ctx.act("teamPack", { pack: "ash" });
+          if (!team.ok) throw new Error(`the hub wouldn't pre-load Ash's team: ${team.error ?? team.pack}`);
+          ctx.log(`team: Ash's pre-load (souls written: ${(team.wrote ?? []).join(", ") || "none"})`);
+        }
         if (!custom) return;
         const added = await ctx.act("customModel", { model: custom });
         if (!added.ok) throw new Error(`the hub wouldn't take the custom model: ${added.error ?? added.skipped?.join("; ") ?? "?"}`);

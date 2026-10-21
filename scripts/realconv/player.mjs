@@ -49,6 +49,17 @@ const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blo
 
 /** Every branch and tag, but not the hub's own turn checkpoints (refs/monocode/checkpoints/...): those are parentless
  * snapshots of the whole tree, so counting them made a scene that touched nothing list every file as changed. */
+/** Commands the bench never lets Ash allow: GitHub, pushes, remotes, credentials, the Keychain (run 08f7, AD14: a held `gh pr list`). */
+export const RISKY_COMMAND = /\bgit\s+push\b|\bgh\s+[a-z]|\bgit\s+credential\b|\bsecurity\s+(find-|dump-keychain)|osxkeychain|\bgit\s+remote\s+(add|set-url)\b|--no-verify/i;
+const APPROVE_LABEL = /^(allow|allow once|always allow|approve|yes,? allow)$/i;
+
+/** The risky Bash command a chat is held on, if Ash's click would allow it: the session's last Bash call. */
+export function riskyAllow(label, lines, session) {
+  if (!APPROVE_LABEL.test(String(label ?? "").trim())) return null;
+  const bash = lines.filter((l) => (!session || l.session === session) && !l.result).flatMap((l) => (l.tools ?? []).map(String)).filter((t) => t.startsWith("Bash: ")).at(-1);
+  return bash && RISKY_COMMAND.test(bash) ? bash.slice(6, 206) : null;
+}
+
 export const ALL_BUT_CHECKPOINTS = ["--exclude=refs/monocode/*", "--all"];
 
 /**
@@ -303,6 +314,17 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       continue;
     }
     if (move.action === "click") {
+      // Never allow a GitHub, push, remote or credential command, whatever the tester picked: Deny it instead.
+      const risky = riskyAllow(move.label, await ctx.claudeTexts(t0).catch(() => []), place.room ? null : await placeSession());
+      if (risky) {
+        log(`  bench refuses to click "${move.label}" on a risky command (${risky.slice(0, 120)}); Deny instead`);
+        testerLog({ refusedClick: move.label, risky });
+        if (!(buttons ?? []).some((b) => b.label === "Deny" && !b.disabled)) {
+          await sleep(20_000);
+          continue;
+        }
+        move.label = "Deny";
+      }
       const clicked = await act("click", { label: move.label }).catch((error) => ({ ok: false, error: error.message }));
       clicks.push({ t: Date.now(), label: move.label, ok: clicked.ok !== false, error: clicked.error ?? null });
       log(`  Ash clicks "${move.label}"${clicked.ok === false ? ` (FAILED: ${clicked.error})` : ""}`);

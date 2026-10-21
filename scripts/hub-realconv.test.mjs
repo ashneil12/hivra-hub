@@ -272,6 +272,7 @@ function fakeBench({ reply }) {
         for (const [i, [from, text]] of reply(payload.text, project).entries()) events.push({ t: t + 10 + i, kind: "room-message", room: payload.to.room, from, text });
         return { ok: true, at: t, room: payload.to.room };
       }
+      if (op === "teamPack") return { ok: payload.pack === "ash", pack: "ash", wrote: ["chief-of-staff"] };
       if (op === "snapshot") return { ok: true, sessions: [], monos: [{ id: "tally-lead", sessionId: "s-lead" }], rooms: [], dom: { elements: [] } };
       return { ok: true, model: { efforts: [] } };
     };
@@ -483,4 +484,17 @@ test("a judge that times out gets one more go, and a run's UNGRADED scenes can b
   assert.equal(after.verdict, "PASS");
   assert.equal(after.before.verdict, "UNGRADED");
   assert.equal(JSON.parse(fs.readFileSync(path.join(run, "AD3", "result.json"), "utf8")).verdict, "FAIL");
+});
+
+test("the bench never lets Ash allow a GitHub, push, remote or credential command (run 08f7, AD14 held gh pr list)", async () => {
+  const { riskyAllow } = await import("./realconv/player.mjs");
+  const held = [{ session: "s1", tools: ["Read", "Bash: git log --oneline && gh pr list --state open"] }];
+  assert.match(riskyAllow("Allow", held, "s1"), /gh pr list/);
+  assert.match(riskyAllow("Always allow", held, "s1"), /gh pr list/);
+  assert.equal(riskyAllow("Deny", held, "s1"), null);
+  assert.equal(riskyAllow("Allow", held, "other"), null);
+  for (const cmd of ["git push origin main", "git remote add up x", "security find-generic-password -s x", "git credential fill", "git commit --no-verify -m x"])
+    assert.ok(riskyAllow("Allow", [{ session: "s", tools: [`Bash: ${cmd}`] }], "s"), cmd);
+  for (const cmd of ["git log --oneline", "npm test", "git status && git diff"])
+    assert.equal(riskyAllow("Allow", [{ session: "s", tools: [`Bash: ${cmd}`] }], "s"), null, cmd);
 });

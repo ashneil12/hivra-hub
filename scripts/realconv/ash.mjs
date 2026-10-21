@@ -61,7 +61,7 @@ export function testerPrompt(scene, seen, { elapsedSec, ashTurns, maxAshTurns, b
           "",
           `## Buttons Ash can see on the open screen`,
           buttons.length ? buttons.map((b) => `- "${b.label}"${b.disabled ? " (greyed out)" : ""}`).join("\n") : "(none)",
-          `He may click one instead of typing: {"action":"click","label":"<exact label>","why":"..."}. He never clicks anything that deletes; he cancels instead.`,
+          `He may click one instead of typing: {"action":"click","label":"<exact label>","why":"..."}. He never clicks anything that deletes; he cancels instead. He never clicks Allow on a command that pushes, opens or lists GitHub pull requests (gh), adds a remote, or touches credentials or the Keychain: he clicks Deny.`,
         ]
       : []),
   ];

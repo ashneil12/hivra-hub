@@ -30,6 +30,8 @@ import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFa
 import { customModelEfforts, importCustomModels, listCustomModels } from "../../features/sessions/model/customModels";
 import type { RuntimeMode, Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
+import { preloadAshTeam } from "../../features/hub/model/hubTeam";
+import { teamPack } from "../../features/hub/model/teamPack";
 
 /**
  * Where Ash writes: a room, a Mono's chat, a chat by id, or a project's coding team (a new chat there, as his New
@@ -390,6 +392,13 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       const id = typeof model.id === "string" ? model.id : "";
       const saved = listCustomModels().find((m) => m.id === id);
       return { ok: !!saved, added, skipped, model: saved ? { id: saved.id, name: saved.name, provider: saved.provider, modelId: saved.modelId, efforts: customModelEfforts(saved.reasoningEfforts) } : null };
+    }
+    case "teamPack": {
+      // A bench run that plays Ash's own Monos picks "Pre-load Ash's team" first, the same pre-load onboarding offers
+      // (G5: a fresh dev copy starts with the plain team). Only "ash"; the plain team is what a fresh copy already has.
+      if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
+      const wrote = await preloadAshTeam();
+      return { ok: teamPack() === "ash", pack: teamPack(), wrote };
     }
     case "defaults":
       host.setDefaults(String(action.model ?? "claude:sonnet-5"), String(action.effort ?? "medium"));
