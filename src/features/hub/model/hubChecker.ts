@@ -1,5 +1,6 @@
-// The Checker (docs/PHASE-2-DESIGN.md, H6): one small Mono on Haiku. Since 21 Oct the app's light look after each dump
-// (dumpCheck.ts, useHubChecks.ts) does the checking; its old hourly audit of Ash OS's queue is paused. A finding reaches
+// The Checker (docs/PHASE-2-DESIGN.md, H6): one small Mono, on whatever model the runtime gives it (grok-4.7 on the Grok
+// bridge). Since 21 Oct it runs once after each dump (dumpCheck.ts, useHubChecks.ts) and never on a schedule: its old
+// hourly audit (`checker-hourly`) is never given, and switched off where an older install has it. A finding reaches
 // the chat owning the message privately (hubChecks.ts delivers it as a `[MonoCode check]` turn), and the owner, who has
 // the full context, answers right or fixed.
 //
@@ -12,33 +13,33 @@
 // after two "right" answers and at most three new checks per chat a day.
 import { addMono, findMono } from "../../monos/model/mono";
 import { updateHabits } from "../../monos/model/monoHabits";
-import type { AgentModel } from "../../sessions/model/models";
-import { modelsFor } from "../../sessions/model/models";
 import { isMonoRemovedByUser } from "./builtInMonos";
 import { CHECKER_MONO_ID } from "./hubMcp";
 
 export { CHECKER_MONO_ID };
 export const CHECKER_NAME = "Checker";
 
-/** Its standing instructions, seeded once into SOUL.md (Ash edits it from there). */
-export const CHECKER_SOUL = `You are the Checker, a small agent on Haiku. Ash talks to his chats, and each chat owns what he says to it: it writes his asks down, delegates them and closes them with evidence. You compare his messages with that record, and when something looks missed you quietly ask the chat that owns it: "I noticed this. Is this right?" That chat has the full context and answers: right (because Ash said ...) or fixed.
+/** Its standing instructions, seeded once into SOUL.md (Ash edits it from there): Alfred's slim soul, 21 Oct. */
+export const CHECKER_SOUL = `# Soul
 
-- Precise. Say exactly what you noticed, with Ash's own words and the ask ids. Never a guess dressed up as a fact.
-- You never start work. No sessions, no delegations, nothing recorded, moved or closed. You read, and you leave notes.
-- You never nag. One note per message. When a chat says it was right, it was right. Ash doesn't hear from you; your notes go only to the chat that owns the message.
+## Role
+After Ash sends a dump, I take one quick look to see whether anything he asked for got missed.
+
+## Who I am
+I'm the Checker. I read what Ash said and what the chats did about it. If something looks dropped, I send one private note to whoever's in charge of that chat, quoting his words, and ask whether it's right. They have the full picture, so if they say it's fine, it's fine.
+
+## What I watch for
+Asks that nobody picked up, and work that got called done with nothing to show for it.
+
+## Limits
+I never start work, message Ash, or move or close anything. One note per dump at most, and none when nothing's missed.
 `;
 
 /** The hourly audit it used to run (retired 21 Oct: the light look after each dump replaced it, dumpCheck.ts). */
 export const CHECKER_HABIT_ID = "checker-hourly";
 
-/** Haiku: Haiku 5.5 when Claude Code lists it, otherwise its own `haiku` alias (the newest Haiku it has). */
-export function checkerModel(models: readonly AgentModel[] = modelsFor("claude")): string {
-  const listed = models.find((model) => /haiku[-.]5[-.]5/i.test(`${model.nativeId ?? ""} ${model.id}`));
-  return listed?.id ?? "claude:haiku";
-}
-
-/** The roster entry it starts as: no projects (it reads Ash OS, not folders), Claude Code on Haiku. */
-export function checkerRosterEntry(models?: readonly AgentModel[]) {
+/** The roster entry it starts as: no projects (it reads, not folders), Claude Code on whatever model the runtime gives it. */
+export function checkerRosterEntry() {
   return {
     id: CHECKER_MONO_ID,
     name: CHECKER_NAME,
@@ -46,7 +47,6 @@ export function checkerRosterEntry(models?: readonly AgentModel[]) {
     color: "hsl(210 6% 50%)",
     projects: [] as string[],
     engine: "claude",
-    engineModel: checkerModel(models),
     instructions: CHECKER_SOUL,
   };
 }

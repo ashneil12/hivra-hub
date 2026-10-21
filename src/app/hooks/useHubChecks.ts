@@ -37,7 +37,7 @@ export type HubChecksHost = {
     text: string,
     options: { monoCheck: Block["monoCheck"]; appRequestId: string },
   ): SubmissionAcceptance;
-  /** The one cheap look after a dump; defaults to an isolated Claude Code prompt. */
+  /** The one cheap look after a dump; defaults to an isolated Claude Code prompt on the runtime's own model. */
   look?(prompt: string): Promise<string>;
 };
 
@@ -45,7 +45,7 @@ const LOOK_TIMEOUT_MS = 90_000;
 
 async function isolatedLook(prompt: string): Promise<string> {
   if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the dump check");
-  return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", model: "claude:haiku", timeoutMs: LOOK_TIMEOUT_MS });
+  return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: LOOK_TIMEOUT_MS });
 }
 
 /** Look at each answered dump once; offer a check when something looks missed. */

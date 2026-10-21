@@ -3,7 +3,8 @@
 // 1. the lane: the app refuses its chat and its habit runs every action but models.list, memory and soul.read;
 // 2. the tool list: its Claude Code session gets ash-os as role checker, no delegate tool, and only Bash and reading;
 // 3. no delegate: tasks.* refuses it and its context never teaches delegation (or session starting).
-// Plus: it is made once as a Haiku Mono with an hourly habit, and never over Ash's "remove".
+// Plus: it is made once, on the runtime's own model, with Alfred's slim soul and no schedule (it runs once after each
+// dump), an older install's hourly audit is switched off, and it never comes back over Ash's "remove".
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appActions, handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import { newSession, type Session } from "../../sessions/model/session";
@@ -13,7 +14,7 @@ import { CHECKER_RULES, CHECK_RULES } from "./checkerRules";
 import {
   CHECKER_HABIT_ID,
   CHECKER_MONO_ID,
-  checkerModel,
+  CHECKER_SOUL,
   checkerRosterEntry,
   ensureChecker,
 } from "./hubChecker";
@@ -226,15 +227,14 @@ describe("3. no delegate: the tool, the tasks and the teaching all stay away fro
 });
 
 describe("the Checker Mono", () => {
-  it("runs on Haiku: Haiku 5.5 when Claude Code lists it, otherwise its haiku alias", () => {
-    expect(checkerModel([{ id: "claude:haiku-4.5", harness: "claude", name: "Haiku 4.5", nativeId: "claude-haiku-4-5" }])).toBe("claude:haiku");
-    expect(
-      checkerModel([
-        { id: "claude:haiku-4.5", harness: "claude", name: "Haiku 4.5", nativeId: "claude-haiku-4-5" },
-        { id: "claude:haiku-5.5", harness: "claude", name: "Haiku 5.5", nativeId: "claude-haiku-5-5" },
-      ]),
-    ).toBe("claude:haiku-5.5");
-    expect(checkerRosterEntry([])).toMatchObject({ id: "checker", name: "Checker", engine: "claude", engineModel: "claude:haiku", projects: [] });
+  it("runs on the runtime's own model (no Haiku pin) with Alfred's slim soul, and nothing in it says Haiku or hourly", () => {
+    const entry = checkerRosterEntry();
+    expect(entry).toMatchObject({ id: "checker", name: "Checker", engine: "claude", projects: [] });
+    expect(entry).not.toHaveProperty("engineModel");
+    expect(entry.instructions).toBe(CHECKER_SOUL);
+    expect(CHECKER_SOUL.startsWith("# Soul\n\n## Role\nAfter Ash sends a dump, I take one quick look")).toBe(true);
+    expect(CHECKER_SOUL).toContain("One note per dump at most, and none when nothing's missed.");
+    expect(CHECKER_SOUL).not.toMatch(/haiku|small agent|hourly|ash_checker/i);
   });
 
   function deps(start: { monos?: string[]; removed?: string[]; habits?: Habit[] } = {}) {
@@ -265,7 +265,8 @@ describe("the Checker Mono", () => {
   it("is made once, with no hourly audit; an old hourly audit is paused, once", async () => {
     const first = deps();
     expect(await ensureChecker(first.deps as never)).toEqual({ created: true, paused: false });
-    expect(first.added[0]).toMatchObject({ id: "checker", engineModel: "claude:haiku" });
+    expect(first.added[0]).toMatchObject({ id: "checker", engine: "claude" });
+    expect(first.added[0]).not.toHaveProperty("engineModel");
     expect(first.habits()).toEqual([]);
     const old = { id: CHECKER_HABIT_ID, name: "Check Ash's messages", enabled: true } as unknown as Habit;
     const later = deps({ monos: ["checker"], habits: [old] });
