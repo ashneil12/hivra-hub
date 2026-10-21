@@ -357,7 +357,7 @@ export const HUB_NOTE = `You're running inside MonoCode Hub, Ash's app for runni
 - Deletes and money need Ash to click yes himself.`;
 
 /** The hub tools, named once: they describe themselves (the `monocode` MCP server, hub/model/hubMcp.ts). */
-export const DELEGATE_NOTE = `- Hub tools (the \`monocode\` MCP tools): hand work to a worker or another Mono, post in a room, make a page, and propose a change to the hub; their descriptions explain them. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard.`;
+export const DELEGATE_NOTE = `- Hub tools (the \`monocode\` MCP tools): hand work to a worker or another Mono, post in a room, make a page, and propose a change to the hub; their descriptions explain them.`;
 
 /** Where the hub's own docs are on this machine (the app's bundled hub-docs, hub/model/hubData.ts), once known. */
 let hubDocsPath: string | undefined;
@@ -412,7 +412,7 @@ export function monoContext(
       parts.push(`${HUB_NOTE.split("\n")[0]}\n- You are ${look.name}, its checker. ${CHECKER_RULES}`, soul);
       return withMemory(parts, files, plan);
     }
-    const leads = options.delegate && options.leads?.length ? ` A project's work goes to its Lead (delegate_task with "lead": ${options.leads.join(", ")}).` : "";
+    const leads = options.delegate && options.leads?.length ? ` A project's work goes to its Lead (delegate_task "lead": ${options.leads.join(", ")}).` : "";
     parts.push(
       [
         HUB_NOTE,

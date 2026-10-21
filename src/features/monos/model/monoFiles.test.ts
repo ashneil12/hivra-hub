@@ -140,7 +140,7 @@ it("tells the Mono it runs in MonoCode Hub, who it is, its soul and memory, and 
 it("keeps the hub's note under 1 KB, with nothing about formats, recording, digests or review rounds", () => {
   const look = { name: "Chief of Staff", mascot: "skull", color: "#fff", projects: [{ path: "/code/hub", name: "hub" }] };
   const empty = { ...files(), soul: "", memory: "", topics: [] };
-  const note = monoContext(look, empty, { soul: true, memory: true }, { delegate: true, teams: true, leads: ['Hub lead (lead "hub")'], cli: "/Applications/MonoCode.app/Contents/MacOS/monocode app" });
+  const note = monoContext(look, empty, { soul: true, memory: true }, { delegate: true, teams: true, leads: ['"hub"'], cli: "/Applications/MonoCode.app/Contents/MacOS/monocode app" });
   expect(new TextEncoder().encode(note.replace("<soul>\n\n</soul>", "").replace(/<memory>[\s\S]*<\/memory>/, "")).length).toBeLessThan(1_000);
   for (const gone of ["<delegate_rules>", "<chat_rules>", "<ask_ash_rules>", "<autopilot_rules>", "Needs Ash:", "My pick:", "ash_record", "ash_remember", "digest", "review round", "numbered", "em dash", "Right:"])
     expect(note, gone).not.toContain(gone);
@@ -162,10 +162,10 @@ it("points every chat at the hub's docs once their path is known", () => {
 it("names the delegate tools only to a chat that has them, and a non-Lead's Leads", () => {
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
   expect(monoContext(look, files(), { soul: true, memory: true })).not.toContain(DELEGATE_NOTE);
-  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['EXO lead (lead "vg-game")'] });
+  const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['"vg-game"'] });
   expect(taught).toContain(DELEGATE_NOTE);
   expect(DELEGATE_NOTE).toContain("their descriptions explain them");
-  expect(taught).toContain('delegate_task with "lead": EXO lead (lead "vg-game")');
+  expect(taught).toContain('A project\'s work goes to its Lead (delegate_task "lead": "vg-game")');
   expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(DELEGATE_NOTE);
 });
 

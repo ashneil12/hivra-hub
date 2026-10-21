@@ -8990,7 +8990,7 @@ function Workspace({
                   ? {
                       teams: true,
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
-                        (target) => `${target.leadName} (lead "${target.projectId}")`,
+                        (target) => `"${target.projectId}"`,
                       ),
                     }
                   : {}),
