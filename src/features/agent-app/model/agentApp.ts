@@ -232,6 +232,12 @@ export type AgentAppHost = {
   } | undefined;
   /** A hidden run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
+  /** A Mono's long chat (monoTreeStore.ts), when it has "Keep one long chat" on. */
+  tree?: {
+    on(monoId: string): boolean;
+    zoom(monoId: string, id: number, n: number, at: number): Promise<string>;
+    date(monoId: string, id: number): Promise<string>;
+  };
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
   habits?: {
@@ -339,6 +345,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["memory.add", ["fact", "topic", "until"]],
   ["memory.replace", ["find", "fact", "topic", "until"]],
   ["memory.remove", ["find", "topic"]],
+  ["tree.zoom", ["id", "n", "at"]],
+  ["tree.date", ["id"]],
   ["habits.list", []],
   ["habits.add", ["name", "instructions", "schedule"]],
   ["habits.update", ["id", "name", "instructions", "schedule", "enabled"]],
@@ -839,6 +847,32 @@ async function keepMemoryInBudget(
   return fitted.moved;
 }
 
+function treeNumber(value: unknown, name: string, fallback?: number): number {
+  if (value === undefined && fallback !== undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0)
+    throw new Error(`${name} must be a whole number, 0 or more`);
+  return value;
+}
+
+/**
+ * tree.zoom / tree.date: a long-chat Mono reads its own tree back, from its own chat only. Never a worker it started,
+ * a habit run or another Mono's chat, and never a Mono without the setting (it has no tree).
+ */
+async function handleTree(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  const monoId = host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id)?.id : undefined;
+  if (!monoId) throw new Error("The long chat can only be read from a Mono's own chat");
+  if (!host.tree?.on(monoId))
+    throw new Error("This Mono doesn't keep one long chat (its settings: Keep one long chat)");
+  const id = treeNumber(input.id, "id");
+  if (action === "tree.date") return { date: await host.tree.date(monoId, id) };
+  return { lines: await host.tree.zoom(monoId, id, treeNumber(input.n, "n", 1), treeNumber(input.at, "at", 0)) };
+}
+
 async function handleMemory(
   source: Session,
   action: string,
@@ -1250,6 +1284,8 @@ export async function handleAgentApp(
   }
   if (action.startsWith("memory."))
     return handleMemory(source, action, input, host);
+  if (action.startsWith("tree."))
+    return handleTree(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
   if (action.startsWith("autopilot."))

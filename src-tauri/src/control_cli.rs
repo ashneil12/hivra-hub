@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 60] = [
+const APP_ACTIONS: [&str; 62] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -116,6 +116,8 @@ const APP_ACTIONS: [&str; 60] = [
     "memory.add",
     "memory.replace",
     "memory.remove",
+    "tree.zoom",
+    "tree.date",
     "habits.list",
     "habits.add",
     "habits.update",
@@ -313,6 +315,11 @@ Actions:
                   Strike the one entry containing find through and add fact.
   memory.remove  {"find":"text of the entry","topic":"..."}
                   Delete the one entry containing find, for a wrong entry.
+  tree.zoom      {"id":12,"n":4}  A Mono with "Keep one long chat" on, in
+                  its own chat only. Opens line 12+4 of its long chat's view
+                  into the two lines it was made from; n 1 gives message 12
+                  whole, as it was said ("at" pages a long one).
+  tree.date      {"id":12}  The date and time of message 12 of its long chat.
   habits.list    {}  Mono only. Your habits: what each does, when it runs
                   next, and how its last run went.
   habits.add     {"name":"Morning CI check","instructions":"...",
