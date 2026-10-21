@@ -9,8 +9,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { createMono, findMono, HANDED_KEY, updateMono } from "./mono";
 import {
   defaultSoul,
-  DELEGATE_NOTE,
-  HUB_NOTE,
+  HUB_NOTE_TEMPLATE,
+  hubNote,
   setHubDocsPath,
   loadMonoFiles,
   MEMORY_MAX_LINES,
@@ -119,10 +119,10 @@ it("tells the Mono it runs in MonoCode Hub, who it is, its soul and memory, and 
     ],
   };
   const full = monoContext(look, files(), { soul: true, memory: true }, { cli: "/Apps/monocode app" });
-  expect(full.startsWith(HUB_NOTE)).toBe(true);
+  expect(full.startsWith(`${hubNote()}\n\n- You are Skull.`)).toBe(true);
   expect(full).toContain("running inside MonoCode Hub");
-  expect(full).toContain("Deletes and money need Ash to click yes himself.");
-  expect(full).toContain("To reach him, just reply here");
+  expect(full).toContain("- Deletes need Ash to click yes himself.");
+  expect(full).not.toMatch(/money/i);
   expect(full).toContain("You are Skull.");
   expect(full).toContain("site (/code/site)");
   expect(full).toContain("<soul>\n# Soul\n\nBe brief.\n</soul>");
@@ -146,27 +146,34 @@ it("keeps the hub's note under 1 KB, with nothing about formats, recording, dige
     expect(note, gone).not.toContain(gone);
 });
 
-it("points every chat at the hub's docs once their path is known", () => {
+// Alfred's hub-note.md (hub-scenarios/slim-souls, 21 Oct), word for word, with the bundled docs path filled in.
+const ALFRED_NOTE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
+
+- Your soul file says who you are and what you own. Your memory files are yours.
+- Ash talks to you in chats and rooms. Other Monos are in the rooms too.
+- Hub tools: hand work to another Mono, post in a room, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- Deletes need Ash to click yes himself.
+- If you need to know how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+
+it("is Alfred's shared note word for word, the docs path filled in once known and its line left out before", () => {
+  expect(HUB_NOTE_TEMPLATE).toBe(ALFRED_NOTE);
+  expect(hubNote()).toBe(ALFRED_NOTE.split("\n").slice(0, -1).join("\n"));
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [] };
   expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("hub docs");
   setHubDocsPath("/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md");
   try {
-    expect(monoContext(look, files(), { soul: true, memory: false })).toContain(
-      "- If you need to know how a hub feature works, read the hub docs at /Applications/MonoCode.app/Contents/Resources/hub-docs/README.md before guessing.",
-    );
+    expect(hubNote()).toBe(ALFRED_NOTE.replace("HUB_DOCS_PATH", "/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md"));
+    expect(monoContext(look, files(), { soul: true, memory: false }).startsWith(hubNote())).toBe(true);
   } finally {
     setHubDocsPath(undefined);
   }
 });
 
-it("names the delegate tools only to a chat that has them, and a non-Lead's Leads", () => {
+it("names a non-Lead's Leads only to a chat that has the delegate tool", () => {
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [{ path: "/code/vg-game", name: "vg-game" }] };
-  expect(monoContext(look, files(), { soul: true, memory: true })).not.toContain(DELEGATE_NOTE);
   const taught = monoContext(look, files(), { soul: true, memory: true }, { delegate: true, teams: true, leads: ['"vg-game"'] });
-  expect(taught).toContain(DELEGATE_NOTE);
-  expect(DELEGATE_NOTE).toContain("their descriptions explain them");
-  expect(taught).toContain('A project\'s work goes to its Lead (delegate_task "lead": "vg-game")');
-  expect(monoContext(look, files(), { soul: false, memory: true }, { delegate: true })).not.toContain(DELEGATE_NOTE);
+  expect(taught).toContain('- A project\'s work goes to its Lead (delegate_task "lead": "vg-game")');
+  expect(monoContext(look, files(), { soul: true, memory: true }, { leads: ['"vg-game"'] })).not.toContain("delegate_task");
 });
 
 it("starts a Lead's fresh conversation on its project's memory, handed with the soul and never again mid-session", () => {

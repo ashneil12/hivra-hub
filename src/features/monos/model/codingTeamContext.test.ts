@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
 import { questionGoesToLead } from "../../notifications/model/stuckNotifications";
 import type { Delegation } from "./delegations";
-import { codingTeamContext, DELEGATE_NOTE, HUB_NOTE } from "./monoFiles";
+import { codingTeamContext, hubNote } from "./monoFiles";
 import { isOrchestratorChat } from "./orchestrators";
 
 const TEAM = { projectId: "vg-game", projectName: "EXO", folder: "/Users/ash/Projects/vg-game", leadName: "EXO lead" };
@@ -17,11 +17,12 @@ beforeEach(() => {
 });
 
 describe("codingTeamContext", () => {
-  it("is the hub note, the project and the delegate tools, and nothing else: under 1 KB before memory", () => {
+  it("is the hub note and the project, and nothing else: under 1 KB before memory", () => {
     const text = codingTeamContext(TEAM);
-    expect(text.startsWith(HUB_NOTE)).toBe(true);
+    expect(text.startsWith(`${hubNote()}\n\n- This`)).toBe(true);
     expect(text).toContain("- This chat is in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
-    expect(text).toContain(DELEGATE_NOTE);
+    expect(text).toContain("- Hub tools: hand work to another Mono");
+    expect(text).not.toMatch(/money/i);
     expect(text).not.toContain("<project_memory>");
     for (const gone of ["<chat_rules>", "<ask_ash_rules>", "Needs Ash:", "Right:", "ash_remember"]) expect(text, gone).not.toContain(gone);
     expect(new TextEncoder().encode(text).length).toBeLessThan(1_000);

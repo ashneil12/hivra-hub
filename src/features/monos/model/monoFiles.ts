@@ -346,27 +346,30 @@ export function monoProjectsBrief(look: Pick<MonoLook, "projects">): string {
 }
 
 /**
- * The hub's whole note to a chat (Ash, 21 Oct: start from vanilla Claude Code and add back only what's needed; the text is
- * Alfred's shared note, trimmed): it runs inside MonoCode Hub, how to reach Ash, who it is, and that the `monocode` tools
- * exist (their descriptions explain them).
- * Nothing about formats, numbering, recording, digests or review rounds. On Claude Code it is appended to Claude Code's
- * own system prompt (hub/model/hubNote.ts); another engine gets it ahead of the message (monoTurn).
+ * The hub's whole shared note to a chat: Alfred's hub-note.md (hub-scenarios/slim-souls), word for word, with the bundled
+ * docs path filled in (Ash, 21 Oct: start from vanilla Claude Code and add back only what's needed). Nothing about tone,
+ * formats, numbering, recording, digests or review rounds, and no money rule: that safety lives in the tool gates. On
+ * Claude Code it is appended to Claude Code's own system prompt (hub/model/hubNote.ts); another engine gets it ahead of
+ * the message (monoTurn). Each chat adds only its own lines after it (who it is, its project).
  */
-export const HUB_NOTE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
-- Ash talks to you in chats and rooms; other Monos are in the rooms too. To reach him, just reply here.
-- Deletes and money need Ash to click yes himself.`;
+export const HUB_NOTE_TEMPLATE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
 
-/** The hub tools, named once: they describe themselves (the `monocode` MCP server, hub/model/hubMcp.ts). */
-export const DELEGATE_NOTE = `- Hub tools (the \`monocode\` MCP tools): hand work to a worker or another Mono, post in a room, make a page, and propose a change to the hub; their descriptions explain them.`;
+- Your soul file says who you are and what you own. Your memory files are yours.
+- Ash talks to you in chats and rooms. Other Monos are in the rooms too.
+- Hub tools: hand work to another Mono, post in a room, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- Deletes need Ash to click yes himself.
+- If you need to know how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
 
 /** Where the hub's own docs are on this machine (the app's bundled hub-docs, hub/model/hubData.ts), once known. */
 let hubDocsPath: string | undefined;
 export function setHubDocsPath(path: string | undefined): void {
   hubDocsPath = path?.trim() || undefined;
 }
-/** Alfred's line (21 Oct): read the docs before guessing. None until the path is known. */
-export function hubDocsLine(): string {
-  return hubDocsPath ? `\n- If you need to know how a hub feature works, read the hub docs at ${hubDocsPath} before guessing.` : "";
+
+/** The shared note with the docs path in; the docs line is left out until the path is known. */
+export function hubNote(): string {
+  const lines = HUB_NOTE_TEMPLATE.split("\n");
+  return (hubDocsPath ? lines.map((line) => line.replace("HUB_DOCS_PATH", hubDocsPath!)) : lines.filter((line) => !line.includes("HUB_DOCS_PATH"))).join("\n");
 }
 
 /** Who a coding-team chat is (hub/model/codingTeam.ts): the project, its folder, and its Lead's name. */
@@ -377,11 +380,7 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
 export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
-  const note = [
-    HUB_NOTE,
-    `- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`,
-    DELEGATE_NOTE + hubDocsLine(),
-  ].join("\n");
+  const note = `${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
   return options.projectMemory?.trim() ? `${note}\n\n${options.projectMemory.trim()}` : note;
 }
 
@@ -409,17 +408,18 @@ export function monoContext(
     const soul = `<soul>\n${files.soul.trim()}\n</soul>`;
     // The checker only reads (hub/model/hubChecker.ts).
     if (files.id === CHECKER_MONO_ID) {
-      parts.push(`${HUB_NOTE.split("\n")[0]}\n- You are ${look.name}, its checker. ${CHECKER_RULES}`, soul);
+      parts.push(`${HUB_NOTE_TEMPLATE.split("\n")[0]}\n- You are ${look.name}, its checker. ${CHECKER_RULES}`, soul);
       return withMemory(parts, files, plan);
     }
     const leads = options.delegate && options.leads?.length ? ` A project's work goes to its Lead (delegate_task "lead": ${options.leads.join(", ")}).` : "";
     parts.push(
       [
-        HUB_NOTE,
-        `- You are ${look.name}. Your soul file says who you are and what you own; your memory files are yours (both below; \`${cli} --help\` changes them).`,
+        hubNote(),
+        "",
+        `- You are ${look.name}. Your soul and memory are below; \`${cli} --help\` changes them.`,
         `- ${monoProjectsBrief(look)}`,
-        ...(options.delegate ? [`${DELEGATE_NOTE}${leads}`] : []),
-      ].join("\n") + hubDocsLine(),
+        ...(options.delegate && options.leads?.length ? [`-${leads}`] : []),
+      ].join("\n"),
       soul,
     );
     if (options.projectMemory?.trim()) parts.push(options.projectMemory.trim());
