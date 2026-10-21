@@ -283,7 +283,10 @@ test("the run's git can't use Ash's logins or push to GitHub, even after an agen
   // Even a helper set in the repo is dropped: the environment's empty helper comes last.
   g("config", "credential.helper", "store");
   const helpers = execFileSync("git", ["config", "--get-all", "credential.helper"], { cwd: repo, env, encoding: "utf8" }).split("\n");
-  assert.deepEqual(helpers, ["", "store", "", ""]);
+  // A system gitconfig may list its own helper first (Xcode's git on the Mac: osxkeychain); the bench's empty helper
+  // resets the list after it, so only what follows the first "" counts, and the environment's "" comes last.
+  assert.deepEqual(helpers.slice(helpers.indexOf("")), ["", "store", "", ""]);
+  assert.ok(helpers.slice(0, helpers.indexOf("")).every((h) => h && h !== "store"), helpers.join(","));
   assert.equal(env.GIT_SSH_COMMAND, "false");
   fsm.rmSync(home, { recursive: true, force: true });
 });
