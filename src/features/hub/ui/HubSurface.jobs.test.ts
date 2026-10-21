@@ -142,14 +142,14 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(stub.calls.some((c) => c.path === "/api/ash-hub-need-seen")).toBe(true);
   });
 
-  it("a given-up job is one red row: a 14px circle and Stuck, the reason in full under it, then See options", async () => {
+  it("a given-up job is one row: a 14px circle and Needs you (D5), the reason in full under it, then See options", async () => {
     mount(surface());
     await until(() => container.querySelector('[data-hub-need="j:j_sender"]'), "given-up row");
     const row = '[data-hub-need="j:j_sender"]';
     const mark = container.querySelector(`${row} [data-hub-circle]`)!;
     expect(mark.getAttribute("data-hub-circle")).toBe("red");
-    expect(mark.textContent).toBe("Stuck"); // Ash OS sends "Needs you"; Ash's default is red Stuck
-    expect(container.querySelector(row)!.textContent).not.toMatch(/Needs you|Lead gave up/);
+    expect(mark.textContent).toBe("Needs you"); // D5, Ash 21 Oct 20:40: Needs you, not a separate red Stuck
+    expect(container.querySelector(row)!.textContent).not.toMatch(/Stuck|Lead gave up/);
     const why = container.querySelector(`${row} [data-hub-need-why]`)!;
     expect(why.textContent).toMatch(/since 11:10am, still failing\. It failed before the lead took over\.$/);
     expect(why.className).not.toContain("truncate");
@@ -222,7 +222,7 @@ describe("Being built, live", () => {
     expect(text()).not.toMatch(/helper|worker/i);
   });
 
-  it("Working is quiet, Stuck is red with the reason on a second line, Lead gave up is the same red Stuck with its reason, Done has a dot", async () => {
+  it("Working is quiet, Stuck is red with the reason on a second line, Lead gave up reads Needs you with its reason (D5), Done has a dot", async () => {
     mount(view());
     await until(() => container.querySelector("[data-hub-worker]"), "rows");
     expect(state("j_mail")).toBe("working");
@@ -232,16 +232,17 @@ describe("Being built, live", () => {
     expect(stuck.querySelector("svg circle")?.getAttribute("stroke")).toBe("rgb(239 68 68)");
     expect(stuck.querySelector("[data-hub-job-reason]")?.textContent).toBe("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
-    expect(state("j_sender")).toBe("gave_up");
+    // D5 (Ash, 21 Oct 20:40): Lead gave up goes to Needs you, not a separate red Stuck.
+    expect(state("j_sender")).toBe("needs_you");
     const gaveUp = container.querySelector('[data-hub-worker="j_sender"]')!;
-    expect(gaveUp.querySelector("[data-hub-job-state] svg circle")?.getAttribute("stroke")).toBe("rgb(239 68 68)");
-    expect(gaveUp.querySelector("[data-hub-job-state]")?.textContent).toBe("Stuck");
-    expect(gaveUp.querySelector("[data-hub-job-reason]")?.textContent).toBe("The email sender refused the login.");
-    expect(gaveUp.textContent).not.toMatch(/Needs you|Lead gave up/);
+    expect(gaveUp.querySelector("[data-hub-job-state] svg circle")).toBeNull();
+    expect(gaveUp.querySelector("[data-hub-job-state]")?.textContent).toContain("Needs you");
+    expect(gaveUp.textContent).toContain("The email sender refused the login.");
+    expect(gaveUp.textContent).not.toMatch(/Stuck|Lead gave up/);
     expect(state("j_footer")).toBe("done_unseen");
     expect(container.querySelector('[data-hub-worker="j_footer"] [aria-label="Not seen yet"]')).toBeTruthy();
     // no pill on any row
-    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(1); // only the Done dot
+    expect(container.querySelectorAll("[data-hub-job-state] .rounded-full").length).toBe(2); // the Done dot and the Needs you dot
   });
 
   it("a job waiting on a worker's question stays in Being built: Waiting, the reason under it", async () => {
@@ -401,8 +402,9 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(card?.querySelector("[data-stuck-reply]")).not.toBeNull();
   });
 
-  it("Today flags every stuck worker under Stuck, with its project, answerable there; Being built on Today says Stuck", async () => {
-    setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 })]);
+  it("Today flags every stalled or failed worker under Stuck, with its project, answerable there, but never a worker's question (D5: the Lead asks in its own chat); Being built on Today says Stuck", async () => {
+    setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 }),
+      delegation("q", { state: "question", pendingQuestion: "Which subject line? [Welcome | Hi]", updatedAt: at - 30 * 60_000 })]);
     mount(surface());
     await until(() => container.querySelector("[data-hub-stuck] [data-stuck-worker]"), "the Stuck section");
     const row = container.querySelector('[data-hub-stuck] [data-stuck-worker="w-s"]')!;
@@ -410,6 +412,8 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped without reporting back · 7 min ago");
     act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
     expect(actions.openChild).toHaveBeenCalledWith("hivra-chat", "w-s");
+    // Asked half an hour ago and still not on Today: it is the Lead's to ask Ash in the Lead's chat.
+    expect(container.querySelector('[data-stuck-worker="w-q"]')).toBeNull();
     await until(() => container.querySelector('[data-hub-today-job="j_mail"]'), "Being built on Today");
     expect(container.querySelector('[data-hub-today-job="j_mail"]')?.textContent).toContain("· Stuck");
   });

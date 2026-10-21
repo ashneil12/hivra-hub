@@ -123,9 +123,13 @@ export function durationLabel(min: number): string {
   return m ? `${Math.floor(min / 60)} h ${m} min` : `${Math.floor(min / 60)} h`;
 }
 
-/** Default (Ash approved): Lead gave up = red Stuck. Alternative kept behind a dev flag for comparison. */
+/**
+ * D5 (Ash, 21 Oct 20:40): a job the Lead gave up on goes to Needs you, not a separate red Stuck ("it would be needs me
+ * on something ... I would have to just go to the chat and find out why it's stuck. Or the lead would just tell me").
+ * The old red Stuck stays behind the dev flag `monocode:hub-gaveup-style=stuck`, for comparison only.
+ */
 export function gaveUpAsNeedsYou(): boolean {
-  try { return localStorage.getItem("monocode:hub-gaveup-style") === "needs_you"; } catch { return false; }
+  try { return localStorage.getItem("monocode:hub-gaveup-style") !== "stuck"; } catch { return true; }
 }
 
 /** Quiet last-active label: Now, 2m, 1h, 3d. Finished jobs: their finish time. */
