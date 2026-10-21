@@ -263,7 +263,7 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       }
     } else if (c.theme) {
       if (themeHook) themeHook(c.theme.before);
-      else next = { ...c, problem: "Settings isn't loaded yet, so nothing was undone." };
+      else next = { ...c, problem: "Settings hasn't opened yet, so nothing changed. Try again in a moment." };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Pages isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
@@ -338,7 +338,7 @@ export async function redoBotChange(ids: string[]): Promise<void> {
       }
     } else if (c.theme) {
       if (themeHook) themeHook(c.theme.after);
-      else next = { ...c, problem: "Settings isn't loaded yet, so nothing was redone." };
+      else next = { ...c, problem: "Settings hasn't opened yet, so nothing changed. Try again in a moment." };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Pages isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };

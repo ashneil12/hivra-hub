@@ -33,6 +33,7 @@ import { recordThemeChange, setThemeHook, type ThemeLook } from "../../hub/model
 import { loadMonoFiles, readAgentFile } from "../../monos/model/monoFiles";
 
 export const MAX_THEMES_PER_SCHEME = 7;
+const UNREADABLE = "This isn't a theme file we can read.";
 /** Themes tint over Monocode glass (the default) and never go solid, so some of the glass always shows. */
 export const MAX_THEME_OPACITY = 0.95;
 
@@ -47,24 +48,25 @@ export function checkThemeJson(text: string, existing: readonly ThemeScheme[] = 
   try {
     raw = JSON.parse(text);
   } catch {
-    return { ok: false, problems: ["That isn't JSON a theme can be read from."] };
+    return { ok: false, problems: [UNREADABLE] };
   }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, problems: ["A theme is one JSON object."] };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, problems: [UNREADABLE] };
   const t = raw as Record<string, unknown>;
   const problems: string[] = [];
   const name = typeof t.name === "string" ? t.name.trim() : "";
-  if (!name || name.length > 40) problems.push("It needs a name of up to 40 characters.");
+  if (!name || name.length > 40) problems.push("It needs a short name.");
   const scheme = t.scheme === undefined ? "dark" : t.scheme;
-  if (scheme !== "dark" && scheme !== "light") problems.push("Scheme must be \"dark\" or \"light\".");
-  if (!num(t.hue, 0, 360)) problems.push("Hue must be a number from 0 to 360.");
-  if (!num(t.saturation, 0, 100)) problems.push("Saturation must be a number from 0 to 100.");
-  if (scheme === "dark" && !num(t.lightness, 0, 20)) problems.push("A dark theme's lightness must be from 0 to 20.");
-  if (scheme === "light" && t.lightness !== undefined && !num(t.lightness, 0, 100)) problems.push("Lightness must be from 0 to 100.");
+  if (scheme !== "dark" && scheme !== "light") problems.push("It doesn't say whether it's a dark or a light theme.");
+  if (!num(t.hue, 0, 360)) problems.push("Its colour is missing or isn't one we can use.");
+  if (!num(t.saturation, 0, 100)) problems.push("How strong its colour is is missing or isn't something we can use.");
+  if (scheme === "dark" && !num(t.lightness, 0, 20))
+    problems.push(num(t.lightness, 20, 100) ? "It's too bright for a dark theme." : "It doesn't say how dark it is.");
+  if (scheme === "light" && t.lightness !== undefined && !num(t.lightness, 0, 100)) problems.push("Its brightness isn't something we can use.");
   if (!num(t.opacity, 0.15, MAX_THEME_OPACITY))
-    problems.push(`Opacity must be from 0.15 to ${MAX_THEME_OPACITY}. A theme tints the glass; it can't make it solid.`);
+    problems.push("It would make the glass solid or almost invisible.");
   const accent = t.accent ?? null;
   if (accent !== null && (typeof accent !== "string" || !/^(#[0-9a-f]{6}|hsl\(\s*[\d.]+(deg)?[\s,]+[\d.]+%[\s,]+[\d.]+%\s*\))$/i.test(accent)))
-    problems.push("Accent must be #rrggbb, hsl(…) or null.");
+    problems.push("Its accent colour is written in a way we can't read.");
   if (problems.length) return { ok: false, problems };
   const theme = {
     id: idOf(name),
@@ -78,13 +80,13 @@ export function checkThemeJson(text: string, existing: readonly ThemeScheme[] = 
   };
   if (theme.scheme === "dark") {
     const c = schemeTextContrast(theme);
-    if (c.body < 7) problems.push(`Text would be hard to read (contrast ${c.body.toFixed(1)}:1, needs 7:1).`);
-    else if (c.small < 4.5) problems.push(`Small text would be hard to read (contrast ${c.small.toFixed(1)}:1, needs 4.5:1).`);
+    if (c.body < 7) problems.push("Text would be hard to read on it.");
+    else if (c.small < 4.5) problems.push("Small text would be hard to read on it.");
   }
-  if (accentStatusDistance(theme.accent) < 20) problems.push("The accent is too close to the green, amber or red that mark status.");
+  if (accentStatusDistance(theme.accent) < 20) problems.push("Its accent looks too much like the green, amber or red we use to show how things are going.");
   const sameScheme = existing.filter((s) => (s.scheme ?? "dark") === theme.scheme && s.id !== theme.id);
   if (sameScheme.length >= MAX_THEMES_PER_SCHEME)
-    problems.push(`There are already ${MAX_THEMES_PER_SCHEME} ${theme.scheme} themes. Remove one first.`);
+    problems.push(`You already have as many ${theme.scheme} themes as we keep. Remove one first.`);
   return problems.length ? { ok: false, problems } : { ok: true, theme };
 }
 

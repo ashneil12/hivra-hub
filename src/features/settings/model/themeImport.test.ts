@@ -20,7 +20,7 @@ const tokens = () => document.documentElement.style;
 
 it("says every problem with a bad theme in plain words", async () => {
   const { t } = await load();
-  expect(t.checkThemeJson("{nope")).toEqual({ ok: false, problems: ["That isn't JSON a theme can be read from."] });
+  expect(t.checkThemeJson("{nope")).toEqual({ ok: false, problems: ["This isn't a theme file we can read."] });
   const bad = t.checkThemeJson(JSON.stringify({ name: "", hue: 400, saturation: 8, lightness: 40, opacity: 2, accent: "red" }));
   expect(bad.ok).toBe(false);
   if (!bad.ok) expect(bad.problems).toHaveLength(5);
@@ -30,7 +30,7 @@ it("turns down unreadable text and an accent that looks like a status colour", a
   const { t } = await load();
   const dim = t.checkThemeJson(JSON.stringify({ name: "Mud", hue: 30, saturation: 100, lightness: 20, opacity: 0.9, accent: "#34d399" }));
   expect(dim.ok).toBe(false);
-  if (!dim.ok) expect(dim.problems.join(" ")).toMatch(/status/);
+  if (!dim.ok) expect(dim.problems).toContain("Its accent looks too much like the green, amber or red we use to show how things are going.");
 });
 
 it("takes at most 7 themes per scheme", async () => {
@@ -38,7 +38,7 @@ it("takes at most 7 themes per scheme", async () => {
   for (let i = 0; i < 7; i++) s.saveCustomScheme({ name: `Dark ${i}`, hue: 220, saturation: 8, lightness: 8, opacity: 0.9, accent: null, scheme: "dark" });
   const eighth = t.checkThemeJson(NIGHT);
   expect(eighth.ok).toBe(false);
-  if (!eighth.ok) expect(eighth.problems).toEqual(["There are already 7 dark themes. Remove one first."]);
+  if (!eighth.ok) expect(eighth.problems).toEqual(["You already have as many dark themes as we keep. Remove one first."]);
   expect(t.checkThemeJson(JSON.stringify({ name: "Day", scheme: "light", hue: 220, saturation: 8, opacity: 0.9, accent: null })).ok).toBe(true);
 });
 
@@ -78,7 +78,7 @@ it("a theme can tint the glass but never make it solid; Glass stays the default"
   const { t, s } = await load();
   expect(s.loadActiveSchemeId()).toBe("glass");
   const solid = t.checkThemeJson(JSON.stringify({ name: "Brick", hue: 220, saturation: 8, lightness: 8, opacity: 1, accent: null }));
-  expect(solid).toEqual({ ok: false, problems: ["Opacity must be from 0.15 to 0.95. A theme tints the glass; it can't make it solid."] });
+  expect(solid).toEqual({ ok: false, problems: ["It would make the glass solid or almost invisible."] });
 });
 
 it("reads a Mono's themes/<name>.json and checks it like a pasted one", async () => {
@@ -88,4 +88,13 @@ it("reads a Mono's themes/<name>.json and checks it like a pasted one", async ()
   expect((await t.offerMonoTheme("critiquito", "night", "Critiquito")).ok).toBe(true);
   expect(t.pendingTheme()?.by).toBe("Critiquito");
   expect(await t.offerMonoTheme("critiquito", "gone", "Critiquito")).toEqual({ ok: false, problems: ["Critiquito has no theme called “gone”."] });
+});
+
+it("says why in plain words, with no numbers", async () => {
+  const { t } = await load();
+  const bright = t.checkThemeJson(JSON.stringify({ name: "Sun", hue: 220, saturation: 8, lightness: 60, opacity: 0.05, accent: null }));
+  expect(bright).toEqual({ ok: false, problems: ["It's too bright for a dark theme.", "It would make the glass solid or almost invisible."] });
+  const bad = t.checkThemeJson(JSON.stringify({ name: "", scheme: "dim", hue: 400, saturation: -1, opacity: 2, accent: "red" }));
+  expect(bad.ok).toBe(false);
+  if (!bad.ok) for (const p of bad.problems) expect(p).not.toMatch(/\d/);
 });

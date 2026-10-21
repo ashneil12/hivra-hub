@@ -2367,7 +2367,7 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
     setActive(scheme.id);
   };
   return (
-    <Row id="theme-schemes" label="Scheme" description="Each scheme restyles the whole app. Glass is the default.">
+    <Row id="theme-schemes" label="Scheme" description="Changes the look of the whole app. Glass is the default.">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         {schemes.map((scheme) => (
           <button
@@ -2444,11 +2444,11 @@ function ThemesRow() {
                   {theme.name}
                   <span className="text-content/55">· {theme.scheme} theme{pending.by ? ` from ${pending.by}` : ""}</span>
                 </p>
-                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "Previewing. Nothing is saved yet. The sliders show this theme." : "Checks passed."}</p>
+                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "You're seeing it now. Nothing changes for good until you apply it." : "Looks good. Preview it or apply it."}</p>
               </>
             ) : (
               <>
-                <p className="text-[12px] text-content">{pending.by ? `${pending.by}'s theme can't be used` : "This theme can't be used"}</p>
+                <p className="text-[12px] text-content">{pending.by ? `${pending.by}'s theme won't work` : "This theme won't work"}</p>
                 <ul className="mt-1 list-disc pl-4 text-[11px] leading-4 text-content/70" data-theme-problems>
                   {!pending.check.ok && pending.check.problems.map((p) => <li key={p}>{p}</li>)}
                 </ul>
@@ -2470,9 +2470,9 @@ function ThemesRow() {
           </div>
         ) : text === null ? (
           <div className="flex gap-1.5">
-            <button type="button" data-theme-paste onClick={() => setText("")} className={BTN}>Paste JSON…</button>
+            <button type="button" data-theme-paste onClick={() => setText("")} className={BTN}>Paste a theme…</button>
             <label className={`${BTN} cursor-default`}>
-              Choose file…
+              Pick a file…
               <input
                 type="file"
                 accept=".json,application/json"
@@ -2496,7 +2496,7 @@ function ThemesRow() {
           >
             <textarea
               autoFocus
-              aria-label="Theme JSON"
+              aria-label="Theme to paste"
               data-theme-json
               value={text}
               onChange={(e) => setText(e.target.value)}
