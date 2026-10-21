@@ -88,16 +88,30 @@ function LineText({ line }: { line: string }) {
   return <>{m[1]} <span className="text-content/60 underline decoration-content/30 underline-offset-2" data-hub-bot-change-more>and {m[2]} more</span></>;
 }
 
+/**
+ * A click anywhere on the row opens or closes it, as its highlight shows (Mac round 2, 21 Oct: on a two-line row the
+ * line's own button covered only its text, so "and 4 more" at the end of the second line sat beside the row's padding
+ * and a click just under or beside it did nothing). Its own buttons (Undo, Ask Alfred, Redo) act alone, a click in the
+ * opened list (for reading) keeps it open, and a drag that selects text isn't a click on the row.
+ */
+function rowToggles(e: { target: EventTarget | null }): boolean {
+  const target = e.target instanceof Element ? e.target : null;
+  if (!target || target.closest("button, a, [data-hub-bot-change-body]")) return false;
+  const selected = typeof window !== "undefined" ? window.getSelection?.()?.toString() : "";
+  return !selected;
+}
+
 function BotChangeLine({ row }: { row: BotChangeRow }) {
   const [open, setOpen] = useState(false);
   const items = row.kind === "one" ? [row.change] : row.items;
   const line = row.kind === "one" ? row.change.line : row.line;
   const undone = items.every((c) => c.undone);
+  const toggle = () => setOpen((was) => !was);
   return (
-    <div className="rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-bot-change>
+    <div className="cursor-pointer rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-bot-change onClick={(e) => rowToggles(e) && toggle()}>
       <div className="flex items-start gap-3">
-        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} data-hub-bot-change-line
-          className={`min-w-0 flex-1 break-words text-left text-[13px] leading-5 ${undone ? "text-content/60" : "text-content"}`}><LineText line={line} /></button>
+        <button type="button" onClick={toggle} aria-expanded={open} data-hub-bot-change-line
+          className={`min-w-0 flex-1 cursor-pointer break-words text-left text-[13px] leading-5 ${undone ? "text-content/60" : "text-content"}`}><LineText line={line} /></button>
         {undone ? (
           <span className="flex shrink-0 items-center gap-2 text-xs text-content/60" data-hub-bot-change-undone>
             <span>{row.kind === "one" ? undoneLine(row.change) : "Undone"}</span>
@@ -117,7 +131,7 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
       </div>
       {items.find((c) => c.problem) ? <div className="mt-1 text-xs text-content/60" data-hub-bot-change-problem>{items.find((c) => c.problem)!.problem}</div> : null}
       {open ? (
-        <div className="hub-fade-in mt-2 flex flex-col gap-2 text-[13px]">
+        <div className="hub-fade-in mt-2 flex cursor-auto flex-col gap-2 text-[13px]" data-hub-bot-change-body>
           {items.map((c) => (
             <div key={c.id} className="flex flex-col gap-0.5">
               {row.kind === "bundle" ? <div className="text-content/85">{c.line}</div> : null}
