@@ -6936,14 +6936,15 @@ function Workspace({
    * (verifyKickoff.ts, verifyDriver.ts).
    */
   const startCodingTeamChat = useCallback(
-    (projectId: string): string | null => {
+    (projectId: string, runtimeMode?: RuntimeMode): string | null => {
       const project = hubData()
         .listProjects()
         .find((entry) => entry.id === projectId);
       if (!project?.folder) return null;
       openCodingTeam(project.id, { lead: false });
       noteCodingTeamView(project.id, "chat");
-      const session = newWorkspaceSession(project.folder, sessionDefaults?.runtimeMode);
+      // Only the verify driver passes a mode (a bench scene in a dev copy); Ash's New session keeps his default.
+      const session = newWorkspaceSession(project.folder, runtimeMode ?? sessionDefaults?.runtimeMode);
       sessionsRef.current = [...sessionsRef.current, session];
       setSessions(sessionsRef.current);
       const tab = newTab(session.id);
@@ -11693,7 +11694,9 @@ function Workspace({
       closeMonoView();
       setHubSelection(selection);
     },
-    startCodingTeamChat: (projectId) => startCodingTeamChat(projectId),
+    startCodingTeamChat: (projectId, runtimeMode) => startCodingTeamChat(projectId, runtimeMode),
+    // Called after this render, so onApproval (declared below) is set by then.
+    approve: (sessionId, requestId) => onApproval(sessionId, requestId, "allow"),
     openSession: (sessionId, owner) => {
       const actions = delegationActions();
       if (owner && actions) actions.openChild(owner, sessionId);
@@ -11725,7 +11728,9 @@ function Workspace({
       openSession: (sessionId, owner) => verifyDriverHost.current!.openSession(sessionId, owner),
       setDefaults: (model, effort) => verifyDriverHost.current!.setDefaults(model, effort),
       showHub: (selection) => verifyDriverHost.current!.showHub(selection),
-      startCodingTeamChat: (projectId) => verifyDriverHost.current!.startCodingTeamChat?.(projectId) ?? null,
+      startCodingTeamChat: (projectId, runtimeMode) =>
+        verifyDriverHost.current!.startCodingTeamChat?.(projectId, runtimeMode) ?? null,
+      approve: (sessionId, requestId) => verifyDriverHost.current!.approve?.(sessionId, requestId),
     });
   }, []);
 

@@ -101,7 +101,9 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 
   const ashLines = [];
   const send = async (text, { verbatim }) => {
-    const answer = await act("send", { to: place, text }, 60_000).catch((error) => ({ ok: false, error: error.message }));
+    // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
+    const mode = place.codingTeam && scene.runtimeMode ? { runtimeMode: scene.runtimeMode } : {};
+    const answer = await act("send", { to: place, text, ...mode }, 60_000).catch((error) => ({ ok: false, error: error.message }));
     const t = answer.at ?? Date.now();
     // A new coding-team chat: later lines go to that chat, not another new one.
     if (place.codingTeam && answer.session) place = { session: answer.session };
