@@ -100,8 +100,15 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
   const screens = [];
+  // The place Ash is talking in, on screen (the room, the Mono's chat, the coding-team chat), as he'd have it open.
+  const showPlace = async () => {
+    const where = place.room ? { hub: { project: ctx.spec.project.id, item: "leadership-team" }, settleMs: 1200 } : place.mono ? { mono: place.mono } : place.session ? { session: place.session } : null;
+    if (where) await act("open", where, 30_000).catch(() => null);
+  };
   const shoot = async (name) => {
     if (!ctx.screenshot) return;
+    // A click's own result (a preview, a dialog) stays as it is; every other shot shows the place first.
+    if (!name.startsWith("click")) await showPlace();
     const shot = await ctx.screenshot(`${scene.id}-${name}`).catch((error) => ({ ok: false, why: error.message }));
     screens.push({ name, t: Date.now(), ...shot });
   };
@@ -249,6 +256,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const seen = await seenNow();
     // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete.
     const buttons = scene.clicks ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
+    // (The place was put on screen by the reply's screenshot just before.)
     const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck, buttons }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
     testerLog({ move });
     if (move.action === "invalid") {
