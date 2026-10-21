@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { newSession, type Block, type Session } from "../../features/sessions/model/session";
 import { groupMonoChatTurns, groupTurns } from "../../features/sessions/model/transcriptActivity";
 import { sanitizeSessionForPersist } from "../../features/sessions/data/sessionStore";
-import { answerAfter, liveAnswer, reportAnswer, wakeEnd } from "./useRoomRunner";
+import { answerAfter, liveAnswer, liveRoomText, reportAnswer, wakeEnd } from "./useRoomRunner";
 
 const chat = (patch: Partial<Session> = {}): Session => ({ ...newSession("claude", "/code/hub"), id: "mono-frank", ...patch });
 const note = { kind: "room" as const, from: "Leadership team", ref: "hub:leadership", line: "Answered Projects Manager" };
@@ -34,6 +34,18 @@ describe("a wake in a busy Mono's queue", () => {
 
 describe("a managed room turn as it is written", () => {
   const prompt: Block = { id: "p", role: "user", text: "[MonoCode room] ...", internal: true, appRequestId: "room-7", sentAt: 5 };
+  it("shows a question its chat is waiting on Ash for in the room, while it waits (AD13: CoS's question sat unseen)", () => {
+    const words: Block = { id: "a1", role: "assistant", text: "Postie, coming up." };
+    const pendingQuestion = {
+      requestId: 3,
+      questions: [{ id: "q", prompt: "Who should it answer to?", multiSelect: false, allowCustom: true, options: [{ id: "1", label: "Answers to me" }, { id: "2", label: "Answers to PM" }] }],
+    };
+    expect(liveRoomText(chat({ busy: true, blocks: [prompt, words], pendingQuestion }), "room-7")).toBe(
+      "Postie, coming up.\n\nWho should it answer to? (Answers to me / Answers to PM)",
+    );
+    expect(liveRoomText(chat({ busy: true, blocks: [prompt], pendingQuestion }), "room-7")).toBe("Who should it answer to? (Answers to me / Answers to PM)");
+    expect(liveRoomText(chat({ busy: true, blocks: [prompt, words] }), "room-7")).toBe("Postie, coming up.");
+  });
   it("is every word the Mono has written to the room so far, across its messages, without tool calls or Ash's next message", () => {
     expect(liveAnswer(chat({ blocks: [] }), "room-7")).toBe("");
     expect(liveAnswer(chat({ blocks: [prompt] }), "room-7")).toBe("");

@@ -9,7 +9,7 @@ import { HubStore } from "./hubStore";
 import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
-import { registerClaudeGuards, registeredHubMcpArgs, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { registerClaudeGuards, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
 import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
@@ -55,7 +55,10 @@ function startHubMcp(): void {
   registerClaudeGuards();
   // The hub's docs ship in the app (tauri.conf.json resources, docs/hub/README.md): every chat's note points at them.
   void resourceDir()
-    .then((dir) => setHubDocsPath(`${dir.replace(/\/+$/, "")}/hub-docs/README.md`))
+    .then((dir) => {
+      setHubDocsPath(`${dir.replace(/\/+$/, "")}/hub-docs/README.md`);
+      setHubDocsDir(`${dir.replace(/\/+$/, "")}/hub-docs`);
+    })
     .catch(() => undefined);
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);

@@ -111,6 +111,20 @@ export function monoHomeDirs(): string[] {
 export const MONOCODE_TOOL_TIMEOUT_MS = 3_900_000;
 export const MONOCODE_ALLOWED_TOOLS = "mcp__monocode__*";
 
+/** The folder of the hub's bundled docs (hub-docs), once known: the note sends every Mono there, so reading it never asks. */
+let hubDocsDir: string | undefined;
+export function setHubDocsDir(dir: string | undefined): void {
+  hubDocsDir = dir?.replace(/\/+$/, "") || undefined;
+}
+
+/**
+ * A delegate-tool chat's pre-approvals: the hub's tools, and reading the hub docs its note points at (AD14, run 24bf:
+ * a coding-team chat sat on an "Allow Read .../hub-docs/README.md" card for 6 minutes while Ash saw nothing to click).
+ */
+export function delegateAllowedTools(): string {
+  return hubDocsDir ? `${MONOCODE_ALLOWED_TOOLS},Read(/${hubDocsDir}/**)` : MONOCODE_ALLOWED_TOOLS;
+}
+
 export type HubRole = "lead" | "mono" | "worker" | "checker";
 
 /** Who a chat is to Ash OS. */
@@ -303,7 +317,7 @@ export function hubMcpArgs(
   if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [
     ...restrict,
-    ...(delegate ? ["--allowedTools", MONOCODE_ALLOWED_TOOLS] : []),
+    ...(delegate ? ["--allowedTools", delegateAllowedTools()] : []),
     "--mcp-config",
     JSON.stringify({ mcpServers }),
     ...fence,

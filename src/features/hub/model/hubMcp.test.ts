@@ -9,6 +9,7 @@ import {
   hubChatIdentity,
   hubMcpArgs,
   MONOCODE_ALLOWED_TOOLS,
+  setHubDocsDir,
   MONOCODE_TOOL_TIMEOUT_MS,
   MONO_HOME_FENCE,
   monoHomeDeniedTools,
@@ -174,6 +175,21 @@ describe("the delegate tool", () => {
       timeout: MONOCODE_TOOL_TIMEOUT_MS,
     });
     expect(MONOCODE_TOOL_TIMEOUT_MS).toBeGreaterThan(60 * 60 * 1000);
+  });
+
+  it("pre-approves reading the hub docs the note points at, once their folder is known", () => {
+    setHubDocsDir("/Applications/MonoCode Hub.app/Contents/Resources/hub-docs/");
+    try {
+      const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+      expect(args.slice(0, 2)).toEqual([
+        "--allowedTools",
+        "mcp__monocode__*,Read(//Applications/MonoCode Hub.app/Contents/Resources/hub-docs/**)",
+      ]);
+      // Nobody else gets a pre-approval for it.
+      expect(hubMcpArgs("plain-1", { ashOs: ASH_OS, cli: CLI }, lookups)).not.toContain("--allowedTools");
+    } finally {
+      setHubDocsDir(undefined);
+    }
   });
 
   it("never puts a real token in the arguments, whatever the environment holds", () => {

@@ -106,6 +106,21 @@ export function liveAnswer(session: Session, requestId: string): string {
   return parts.join("\n\n");
 }
 
+/**
+ * What the room shows of a managed turn while it runs: its words so far, plus a question its chat is waiting on Ash for
+ * (AskUserQuestion), so the question is in the room where Ash is (AD13, run 24bf: CoS's "Who should it answer to?"
+ * sat unseen in its own chat for 70 s until Ash asked "yo progress?" in the room). Ash answers it in the room.
+ */
+export function liveRoomText(session: Session, requestId: string): string {
+  const words = liveAnswer(session, requestId);
+  const asking = session.busy ? session.pendingQuestion : undefined;
+  if (!asking?.questions.length) return words;
+  const asked = asking.questions
+    .map((q) => (q.options.length ? `${q.prompt.trim()} (${q.options.map((o) => o.label).join(" / ")})` : q.prompt.trim()))
+    .join("\n");
+  return words ? `${words}\n\n${asked}` : asked;
+}
+
 /** The post: the turn's words as its chat has them (parts kept apart), when they are the reply's own words. */
 function postText(session: Session | undefined, requestId: string, reply: string): string {
   const written = session ? liveAnswer(session, requestId) : "";
@@ -193,7 +208,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
             let shown = "";
             const live = window.setInterval(() => {
               const now = latest.current.sessionsRef.current.find((s) => s.id === session.id);
-              const text = now ? liveAnswer(now, request.wakeId) : "";
+              const text = now ? liveRoomText(now, request.wakeId) : "";
               if (!text || text === shown) return;
               shown = text;
               request.onText?.(text);
