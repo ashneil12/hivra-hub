@@ -22,7 +22,7 @@ import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
-import { settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
+import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
 
@@ -451,6 +451,12 @@ export function PagesContent() {
     if (chat) { setBuild({ prompt: chat.page.request, status: "ready", spec: chat.page.spec, warnings: chat.page.warnings ?? [], chat: chat.page }); setOpen(undefined); setNewPage(false); }
     else setBuild((b) => (b?.chat ? undefined : b));
   }, [chat?.previewId]);
+  // On this screen, the chat-built preview is in front of Ash: the bar at the bottom doesn't offer See it again.
+  const showingChat = preview && ready?.chat ? ready.chat.id : undefined;
+  useEffect(() => {
+    setChatPreviewShown(showingChat);
+    return () => setChatPreviewShown(undefined);
+  }, [showingChat]);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
 

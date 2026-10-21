@@ -355,7 +355,7 @@ fn tools() -> Value {
         {
             "name": "mono_create",
             "title": "Make a new Mono",
-            "description": "Make one new Mono with Ash, Dr Eggbot style: ask him a few short questions first. Then call with name, role (one line), who (who it is), watchFor (what it watches for) and skills: that only drafts it. Its SOUL.md is the hub's short shape (src/features/selfBuild/templates/SOUL.md): ## Role, ## Who I am, ## What I watch for, ## Skills, and nothing on how it talks, tone or format; a soul you pass must keep to those four sections. Show Ash the one Mono in a short message (name, role line, a few lines of soul) and end your turn. After his yes, call with only draftId: it is made then (only if Ash has spoken since the draft), shows in the sidebar, and gets a Bot changes row with Undo.",
+            "description": "Make one new Mono with Ash, Dr Eggbot style: first ask him at least one real question in your chat (for example: should it post on its own or draft for his OK, and who does it answer to?) and end your turn. A draft is refused until you have asked a question and Ash has answered it. Then call with name, role (one line), who (who it is), watchFor (what it watches for) and skills: that only drafts it. Its SOUL.md is the hub's short shape (src/features/selfBuild/templates/SOUL.md): ## Role, ## Who I am, ## What I watch for, ## Skills, and nothing on how it talks, tone or format; a soul you pass must keep to those four sections. Show Ash the one Mono in a short message (name, role line, a few lines of soul) and end your turn. After his yes, call with only draftId: it is made then (only if Ash has spoken since the draft), shows in the sidebar, and gets a Bot changes row with Undo.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -364,7 +364,7 @@ fn tools() -> Value {
                     "who": { "type": "string", "maxLength": 1200, "description": "Who it is, in its own voice (\"I'm Postie. I turn Hivra's shipped work into X posts.\")." },
                     "watchFor": { "type": "string", "maxLength": 1200, "description": "What it watches for, in its own voice (\"Anything that shouldn't be public yet.\")." },
                     "soul": { "type": "string", "maxLength": 24000, "description": "Optional: its SOUL.md in the short shape (## Role, ## Who I am, ## What I watch for, ## Skills only). Usually leave it out and give role and who." },
-                    "skills": { "type": "array", "items": { "type": "string" }, "maxItems": 12, "description": "What it is good at, one short line each." },
+                    "skills": { "type": "array", "items": { "type": "string" }, "maxItems": 12, "description": "Names of skills that are installed here (as in the / list), nothing made up; leave out if none fit. Unknown names are refused with the list of real ones." },
                     "projects": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                     "connectors": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                     "rooms": { "type": "array", "items": { "type": "string" }, "maxItems": 10, "description": "Rooms of yours it joins once made." },

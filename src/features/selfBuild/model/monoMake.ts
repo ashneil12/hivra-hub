@@ -1,7 +1,19 @@
 import { addMember } from "../../hub/model/hubChats";
 import { recordMadeMono } from "../../hub/model/botChanges";
-import { addNamedMono, appDeps, resolveProjects, type MakeDeps } from "../../hub/model/hubTeams";
-import { listMonos, monoLook, saveMonoRole } from "../../monos/model/mono";
+import {
+  addNamedMono,
+  appDeps,
+  resolveProjects,
+  type MakeDeps,
+} from "../../hub/model/hubTeams";
+import { useSyncExternalStore } from "react";
+import {
+  listMonos,
+  monoLook,
+  nextMonoLook,
+  saveMonoRole,
+  updateMono,
+} from "../../monos/model/mono";
 import { ASK_ASH_FIRST } from "./ashSaid";
 import SOUL_TEMPLATE from "../templates/SOUL.md?raw";
 
@@ -21,6 +33,10 @@ export type MonoDraft = {
   projects: string[];
   connectors: string[];
   rooms: string[];
+  /** The creature and colour it gets, picked when drafted so the card shows what the sidebar will. */
+  look?: { mascot: string; color: string };
+  /** Ash waved it off on the card: it isn't shown again (the Mono can still draft another). */
+  dismissed?: boolean;
   /** Set once made: the same draft never makes a second Mono. */
   madeId?: string;
 };
@@ -29,27 +45,73 @@ const KEY = "monocode:mono-drafts";
 function load(): MonoDraft[] {
   try {
     const list = JSON.parse(localStorage.getItem(KEY) ?? "[]") as MonoDraft[];
-    return Array.isArray(list) ? list.filter((d) => d && typeof d.id === "string") : [];
+    return Array.isArray(list)
+      ? list.filter((d) => d && typeof d.id === "string")
+      : [];
   } catch {
     return [];
   }
 }
+let version = 0;
+const subs = new Set<() => void>();
 function save(list: MonoDraft[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(list.slice(-20)));
   } catch {
     /* best effort */
   }
+  version++;
+  subs.forEach((f) => f());
+}
+/** The drafts waiting on Ash's yes, newest last: the draft card at the bottom of the window shows them. */
+export function waitingDrafts(): MonoDraft[] {
+  return load().filter((d) => !d.madeId && !d.dismissed);
+}
+export function useWaitingDrafts(): MonoDraft[] {
+  useSyncExternalStore(
+    (f) => {
+      subs.add(f);
+      return () => subs.delete(f);
+    },
+    () => version,
+  );
+  return waitingDrafts();
+}
+/** Not this one: the card goes; nothing was made. */
+export function dismissDraft(id: string): void {
+  save(load().map((d) => (d.id === id ? { ...d, dismissed: true } : d)));
+}
+/** What the card shows of a draft's soul. */
+export function draftCard(d: MonoDraft): {
+  who: string;
+  watchFor: string;
+  skills: string[];
+} {
+  return {
+    who: sections(d.soul).get("who i am") ?? "",
+    watchFor: sections(d.soul).get("what i watch for") ?? "",
+    skills: skillsOf(d.soul),
+  };
 }
 
-function text(value: unknown, what: string, max: number, required = false): string | undefined {
+function text(
+  value: unknown,
+  what: string,
+  max: number,
+  required = false,
+): string | undefined {
   if (value === undefined && !required) return undefined;
-  if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error(`${what} must be text under ${max} characters`);
+  if (typeof value !== "string" || !value.trim() || value.length > max)
+    throw new Error(`${what} must be text under ${max} characters`);
   return value.trim();
 }
 function strings(value: unknown, what: string, max = 20): string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > max || value.some((v) => typeof v !== "string" || !v.trim() || v.length > 300))
+  if (
+    !Array.isArray(value) ||
+    value.length > max ||
+    value.some((v) => typeof v !== "string" || !v.trim() || v.length > 300)
+  )
     throw new Error(`${what} must be a list of at most ${max} short strings`);
   return value.map((v: string) => v.trim());
 }
@@ -67,23 +129,58 @@ function sections(soul: string): Map<string, string> {
   }
   return out;
 }
-export function draftSoul(parts: { role: string; who: string; watchFor: string; skills: string[] }): string {
-  const skills = parts.skills.length ? parts.skills.map((s) => `- ${s}`).join("\n") : "- (none yet)";
-  return SOUL_TEMPLATE.replace("{{role}}", parts.role).replace("{{who}}", parts.who).replace("{{watchFor}}", parts.watchFor).replace("{{skills}}", skills);
+function skillsOf(soul: string): string[] {
+  return (sections(soul).get("skills") ?? "")
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter((l) => l && l !== "(none yet)");
+}
+export function draftSoul(parts: {
+  role: string;
+  who: string;
+  watchFor: string;
+  skills: string[];
+}): string {
+  const skills = parts.skills.length
+    ? parts.skills.map((s) => `- ${s}`).join("\n")
+    : "- (none yet)";
+  return SOUL_TEMPLATE.replace("{{role}}", parts.role)
+    .replace("{{who}}", parts.who)
+    .replace("{{watchFor}}", parts.watchFor)
+    .replace("{{skills}}", skills);
 }
 /** The soul in the short shape, from the Mono's own SOUL.md or from role, who and watchFor. Refused in plain words otherwise. */
-function shortSoul(input: { name: string; role?: string; who?: string; watchFor?: string; soul?: string; skills: string[] }): string {
+function shortSoul(input: {
+  name: string;
+  role?: string;
+  who?: string;
+  watchFor?: string;
+  soul?: string;
+  skills: string[];
+}): string {
   const given = input.soul ? sections(input.soul) : new Map<string, string>();
   const extra = [...given.keys()].filter((h) => !SOUL_SECTIONS.includes(h));
   if (extra.length)
-    throw new Error(`Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: how it talks, its tone and format aren't part of a soul.`);
+    throw new Error(
+      `Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: how it talks, its tone and format aren't part of a soul.`,
+    );
   const role = given.get("role") || input.role;
   const who = given.get("who i am") || input.who;
   const watchFor = given.get("what i watch for") || input.watchFor;
   if (!role || !who || !watchFor)
-    throw new Error("Give its role (one line), who it is (who) and what it watches for (watchFor), or a soul with ## Role, ## Who I am and ## What I watch for.");
-  const listed = (given.get("skills") ?? "").split("\n").map((l) => l.replace(/^[-*]\s*/, "").trim()).filter((l) => l && l !== "(none yet)");
-  return draftSoul({ role: role.split("\n")[0].trim(), who, watchFor, skills: [...new Set([...listed, ...input.skills])] });
+    throw new Error(
+      "Give its role (one line), who it is (who) and what it watches for (watchFor), or a soul with ## Role, ## Who I am and ## What I watch for.",
+    );
+  const listed = (given.get("skills") ?? "")
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter((l) => l && l !== "(none yet)");
+  return draftSoul({
+    role: role.split("\n")[0].trim(),
+    who,
+    watchFor,
+    skills: [...new Set([...listed, ...input.skills])],
+  });
 }
 
 /** Draft one Mono: checked now, nothing made. Returns what to show Ash. */
@@ -91,18 +188,62 @@ export function draftMono(
   input: Record<string, unknown>,
   caller: { monoId: string; name: string; projects: readonly string[] },
   now = Date.now(),
-): { draftId: string; plan: { name: string; role?: string; soul: string; watchFor: string; skills: string[] }; note: string } {
+  /** The skills that exist here (the app's skill catalog). Every listed skill must be one of them. */
+  knownSkills?: ReadonlySet<string>,
+): {
+  draftId: string;
+  plan: {
+    name: string;
+    role?: string;
+    soul: string;
+    watchFor: string;
+    skills: string[];
+  };
+  note: string;
+} {
   const name = text(input.name, "name", 40, true)!;
-  if (listMonos().some((m) => monoLook(m).name.toLowerCase() === name.toLowerCase())) throw new Error(`A Mono called ${name} already exists.`);
-  const role = text(input.role, "role", 40) ?? (typeof input.soul === "string" ? sections(input.soul).get("role")?.split("\n")[0].trim().slice(0, 40) || undefined : undefined);
+  if (
+    listMonos().some(
+      (m) => monoLook(m).name.toLowerCase() === name.toLowerCase(),
+    )
+  )
+    throw new Error(`A Mono called ${name} already exists.`);
+  const role =
+    text(input.role, "role", 40) ??
+    (typeof input.soul === "string"
+      ? sections(input.soul).get("role")?.split("\n")[0].trim().slice(0, 40) ||
+        undefined
+      : undefined);
   const skills = strings(input.skills, "skills", 12);
   const given = text(input.soul, "soul", 24_000);
   const who = text(input.who, "who", 1200);
   const watchFor = text(input.watchFor, "watchFor", 1200);
   const connectors = strings(input.connectors, "connectors");
-  const soul = shortSoul({ name, ...(role ? { role } : {}), ...(who ? { who } : {}), ...(watchFor ? { watchFor } : {}), ...(given ? { soul: given } : {}), skills });
-  const projects = resolveProjects(strings(input.projects, "projects"), caller.projects);
-  const drafts = load().filter((d) => d.madeId || d.name.toLowerCase() !== name.toLowerCase());
+  const soul = shortSoul({
+    name,
+    ...(role ? { role } : {}),
+    ...(who ? { who } : {}),
+    ...(watchFor ? { watchFor } : {}),
+    ...(given ? { soul: given } : {}),
+    skills,
+  });
+  const listed = skillsOf(soul);
+  if (knownSkills) {
+    const unknown = listed.filter((s) => !knownSkills.has(s));
+    if (unknown.length) {
+      const have = [...knownSkills].sort().slice(0, 40).join(", ");
+      throw new Error(
+        `No skill called ${unknown.join(", ")} is installed. List only skills that exist${have ? `: ${have}` : " (none are installed)"}; leave skills out if none fit.`,
+      );
+    }
+  }
+  const projects = resolveProjects(
+    strings(input.projects, "projects"),
+    caller.projects,
+  );
+  const drafts = load().filter(
+    (d) => d.madeId || d.name.toLowerCase() !== name.toLowerCase(),
+  );
   const draft: MonoDraft = {
     id: `draft-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
     at: now,
@@ -113,13 +254,20 @@ export function draftMono(
     projects: projects.length ? projects : [...caller.projects],
     connectors,
     rooms: strings(input.rooms, "rooms", 10),
+    look: nextMonoLook(),
   };
   save([...drafts, draft]);
   return {
     draftId: draft.id,
     // What Ash is shown: its name, role line, who it is, what it watches for, and its skills.
-    plan: { name, ...(role ? { role } : {}), soul: sections(soul).get("who i am") ?? "", watchFor: sections(soul).get("what i watch for") ?? "", skills: sections(soul).get("skills")?.split("\n").map((l) => l.replace(/^[-*]\s*/, "").trim()).filter((l) => l && l !== "(none yet)") ?? [] },
-    note: "Nothing is made yet. Show Ash this one Mono in a short message (name, role line, who it is, what it watches for, its skills) and end your turn. After his yes, call mono_create with only draftId.",
+    plan: {
+      name,
+      ...(role ? { role } : {}),
+      soul: sections(soul).get("who i am") ?? "",
+      watchFor: sections(soul).get("what i watch for") ?? "",
+      skills: listed,
+    },
+    note: "Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the bottom of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId.",
   };
 }
 
@@ -132,19 +280,53 @@ export type MakeHost = {
 };
 
 /** Make the drafted Mono, once Ash has answered. */
-export async function makeDrafted(draftId: unknown, caller: { monoId: string }, host: MakeHost) {
-  if (typeof draftId !== "string" || !draftId) throw new Error("draftId must be the id mono_create gave you");
+export async function makeDrafted(
+  draftId: unknown,
+  caller: { monoId: string },
+  host: MakeHost,
+) {
+  if (typeof draftId !== "string" || !draftId)
+    throw new Error("draftId must be the id mono_create gave you");
   const drafts = load();
-  const draft = drafts.find((d) => d.id === draftId && d.by.monoId === caller.monoId);
-  if (!draft) throw new Error("No draft with that id from you. Draft it again with name, role and soul.");
+  const draft = drafts.find(
+    (d) => d.id === draftId && d.by.monoId === caller.monoId,
+  );
+  if (!draft)
+    throw new Error(
+      "No draft with that id from you. Draft it again with name, role and soul.",
+    );
   if (draft.madeId) {
     const made = listMonos().find((m) => m.id === draft.madeId);
-    return { made: draft.name, monoId: draft.madeId, alreadyMade: true, ...(made ? {} : { note: "It was made, then undone in Bot changes." }) };
+    return {
+      made: draft.name,
+      monoId: draft.madeId,
+      alreadyMade: true,
+      ...(made ? {} : { note: "It was made, then undone in Bot changes." }),
+    };
   }
   if (!host.ashSpokeSince(draft.at)) throw new Error(ASK_ASH_FIRST);
   const rooms = draft.rooms.map((r) => host.room(r));
-  const mono = await addNamedMono(undefined, { name: draft.name, brief: draft.role ?? "", engine: "claude", projects: draft.projects, connectors: draft.connectors, soul: draft.soul }, host.deps ?? appDeps);
+  const mono = await addNamedMono(
+    undefined,
+    {
+      name: draft.name,
+      brief: draft.role ?? "",
+      engine: "claude",
+      projects: draft.projects,
+      connectors: draft.connectors,
+      soul: draft.soul,
+    },
+    host.deps ?? appDeps,
+  );
   if (draft.role) saveMonoRole(mono.id, draft.role);
+  // The creature and colour Ash saw on the card.
+  const look = draft.look;
+  if (look)
+    updateMono(mono.id, (m) => ({
+      ...m,
+      mascot: look.mascot,
+      color: look.color,
+    }));
   for (const room of rooms) addMember(room.id, mono.id);
   save(load().map((d) => (d.id === draft.id ? { ...d, madeId: mono.id } : d)));
   recordMadeMono(mono.id, draft.by.name, draft.name, draft.role);

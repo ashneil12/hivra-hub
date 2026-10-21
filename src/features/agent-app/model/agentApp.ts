@@ -145,6 +145,8 @@ export type AppSessionPlacement = {
 };
 
 export type AgentAppHost = {
+  /** Tests and proofs: the skill names that exist (else the app's skill catalog for the Mono's folder). */
+  installedSkills?: () => Promise<string[]>;
   start(
     launch: QuickLaunch,
     id: string,

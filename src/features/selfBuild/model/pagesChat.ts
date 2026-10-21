@@ -19,6 +19,17 @@ const changed = () => {
   subs.forEach((f) => f());
 };
 
+/** The preview the Pages screen is showing right now, if any: the bar's See it hides then (Ash is already on it). */
+let shown: string | undefined;
+export function setChatPreviewShown(id: string | undefined): void {
+  if (shown === id) return;
+  shown = id;
+  changed();
+}
+export function chatPreviewShown(): string | undefined {
+  return shown;
+}
+
 /** The newest preview still waiting, for the Pages screen. */
 export function useChatPagePreview(): ChatPreview | undefined {
   useSyncExternalStore(

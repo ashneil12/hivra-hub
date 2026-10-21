@@ -3,7 +3,8 @@
 // yes; the checks live here and in Rust, not in the Mono's prompt.
 import type { Session } from "../../sessions/model/session";
 import { allChats } from "../../hub/model/hubChats";
-import { ashSpokeSince } from "../../selfBuild/model/ashSaid";
+import { loadSkills } from "../../skills/model/skills";
+import { askedAshAndHeardBack, ashSpokeSince, INTERVIEW_FIRST } from "../../selfBuild/model/ashSaid";
 import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../../selfBuild/model/hubCode";
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
@@ -25,6 +26,13 @@ function seated(source: Session, host: AgentAppHost) {
   return { monoId: mono.id, name: mono.name ?? mono.id, projects: mono.projects };
 }
 
+/** The skills that really exist for this Mono: its engine's catalog in its folder (the composer's / list). */
+async function installedSkills(source: Session, host: AgentAppHost): Promise<ReadonlySet<string>> {
+  if (host.installedSkills) return new Set(await host.installedSkills());
+  const list = await loadSkills({ harness: source.harness, cwd: source.cwd });
+  return new Set(list.filter((s) => s.kind !== "builtin").map((s) => s.name));
+}
+
 export async function handleSelfBuild(
   source: Session,
   action: string,
@@ -40,7 +48,8 @@ export async function handleSelfBuild(
         if (Object.keys(input).length > 1) throw new Error("With draftId, send nothing else: the draft is what gets made.");
         return makeDrafted(input.draftId, me, { ashSpokeSince: spoke, room: (ref) => resolveRoom(ref, me.monoId) });
       }
-      return draftMono(input, me);
+      if (!askedAshAndHeardBack(source, me.monoId, allChats())) throw new Error(INTERVIEW_FIRST);
+      return draftMono(input, me, Date.now(), await installedSkills(source, host));
     }
     case "pages.build": {
       if (input.previewId !== undefined || input.keep !== undefined) {

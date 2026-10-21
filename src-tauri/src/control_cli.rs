@@ -413,7 +413,8 @@ Actions:
                   chat Ash asked for, with you in it (MCP room_create).
   monos.create   {"name","role","who","watchFor","skills"} drafts one new
                   Mono (soul: templates/SOUL.md, Role/Who I am/What I watch
-                  for/Skills only); then
+                  for/Skills only; only after it asked Ash a question and
+                  he answered; skills must be installed ones); then
                   {"draftId"} makes it once Ash has said yes (MCP mono_create).
   pages.build    {"project","spec"} previews a Page from blocks; then
                   {"previewId","keep":true} keeps it (MCP page_build).

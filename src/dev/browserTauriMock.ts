@@ -128,6 +128,8 @@ mockIPC(
       return true;
     }
     if (cmd === "plugin:path|resolve_directory" || cmd === "home_dir") return "/Users/ash";
+    // The CLI paths Settings saved are the ones this run uses (harness.rs harness_runtime_binary_paths).
+    if (cmd === "harness_runtime_binary_paths") return (args as { paths?: unknown } | undefined)?.paths ?? {};
     if (fakeClaude && cmd === "app_cli_path") return "/fake/monocode";
     if (fakeClaude && cmd === "resolve_project_location") {
       const path = String((args as { path?: string } | undefined)?.path ?? "");

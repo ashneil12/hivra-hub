@@ -54,7 +54,10 @@ import { HarnessIcon } from "./HarnessIcon";
 import { Popover } from "../../../shared/ui/Popover";
 import { MOD } from "../../../platform/tauri/platform";
 import { keybindingPressed } from "../../settings/model/settings";
+import { claudeRunsOnGrok } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import "./ModelPicker.css";
+
+const GROK_BRIDGE_LABEL = "Grok 4.7";
 
 type Props = {
   harness: HarnessId;
@@ -403,8 +406,11 @@ export function ModelPicker({
   const triggerEffortLabel = triggerEffortSetting
     ? settingValueLabel(triggerEffortSetting, values)
     : undefined;
-  const triggerModelName =
-    current.harness === "claude"
+  // On the Grok subscription bridge every Claude Code chat runs on Grok 4.7, whatever Claude model is picked.
+  const onGrokBridge = current.harness === "claude" && claudeRunsOnGrok();
+  const triggerModelName = onGrokBridge
+    ? GROK_BRIDGE_LABEL
+    : current.harness === "claude"
       ? current.name.replace(/^Claude /, "")
       : current.name;
   useCustomModels();
@@ -412,7 +418,7 @@ export function ModelPicker({
   const triggerTitle = [
     HARNESS_TITLE[current.harness],
     current.provider?.name,
-    current.name,
+    onGrokBridge ? GROK_BRIDGE_LABEL : current.name,
     triggerEffortLabel,
   ]
     .filter(Boolean)
@@ -777,7 +783,7 @@ export function ModelPicker({
           triggerLabel ??
           `${HARNESS_TITLE[current.harness]}${
             current.provider ? `, ${current.provider.name},` : ""
-          } ${current.name}${
+          } ${onGrokBridge ? GROK_BRIDGE_LABEL : current.name}${
             triggerEffortLabel ? `, effort ${triggerEffortLabel}` : ""
           }`
         }

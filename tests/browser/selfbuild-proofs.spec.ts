@@ -25,88 +25,234 @@ test.beforeAll(async () => {
 test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const dev = <T,>(page: Page, code: string, arg?: unknown) =>
-  page.evaluate(([c, a]) => new Function("sb", "arg", `return (${c})(sb, arg)`)((window as unknown as { __devSelfBuild: unknown }).__devSelfBuild, a) as T, [code, arg] as const);
+const dev = <T>(page: Page, code: string, arg?: unknown) =>
+  page.evaluate(
+    ([c, a]) =>
+      new Function("sb", "arg", `return (${c})(sb, arg)`)(
+        (window as unknown as { __devSelfBuild: unknown }).__devSelfBuild,
+        a,
+      ) as T,
+    [code, arg] as const,
+  );
 const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: [] };
 
 async function open(page: Page) {
+  // Ash's Claude Code runs on Grok 4.7 through his Grok subscription (claudeGrokBridge.ts): the bridge launcher is its CLI.
   await page.addInitScript(() => {
-    localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
-    localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
+    localStorage.setItem(
+      "monocode.lastModel",
+      JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }),
+    );
+    localStorage.setItem(
+      "monocode.defaultModels",
+      JSON.stringify({ claude: "claude:sonnet-5" }),
+    );
+    localStorage.setItem(
+      "monocode.providerBinaryPaths.v1",
+      JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }),
+    );
   });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
-  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
+  await page.goto(
+    `/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`,
+  );
+  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({
+    timeout: 60_000,
+  });
   const notNow = page.getByRole("button", { name: "Not now" });
-  await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
+  await notNow.waitFor({ timeout: 4000 }).then(
+    () => notNow.click(),
+    () => undefined,
+  );
   await page.waitForFunction(() => "__devSelfBuild" in window);
 }
 
-test("13: the drafted Mono is shown to Ash before his yes, and nothing is made yet", async ({ page }) => {
+test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the one Mono it drafted; nothing is made yet", async ({
+  page,
+}) => {
   await open(page);
-  const draft = await dev<{ draftId: string; plan: { name: string; role: string; soul: string; watchFor: string; skills: string[] } }>(
-    page,
-    "(sb, me) => sb.draftMono({ name: 'Postie', role: 'X posts for Hivra', who: \"I'm Postie. I turn Hivra's shipped work into short X posts in Ash's voice.\", watchFor: \"Good bits worth a thread, and anything that shouldn't be public yet.\", skills: ['x-threads', 'hivra-changelog'] }, me)",
-    ME,
-  );
-  const card = [`Here's the one Mono I'd make:`, ``, `**${draft.plan.name}** · ${draft.plan.role}`, ``, `> ${draft.plan.soul}`, ``, `Watches for: ${draft.plan.watchFor}`, ``, `Skills: ${draft.plan.skills.join(", ")}`, ``, `Say yes and I'll make it.`].join("\n");
   const rail = page.locator("[data-mono-rail]").first();
   await rail.locator('button[aria-label^="Chief of Staff"]').first().click();
-  await page.evaluate((w) => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push(w), `say:${card}`);
+  const say = (text: string) =>
+    page.evaluate(
+      (w) =>
+        (
+          window as unknown as { __fakeClaude: { next: string[] } }
+        ).__fakeClaude.next.push(w),
+      `say:${text}`,
+    );
   const composer = page.getByLabel("Message Chief of Staff");
+  // 1. Ash asks; the Mono asks him one real question back and ends its turn.
+  await say(
+    "Happy to. Two quick questions first: should it post on its own, or draft each post for your OK? And who does it answer to?",
+  );
   await composer.fill("can u make me a mono that does x posts for hivra");
   await composer.press("Enter");
-  await expect(page.getByText("Say yes and I'll make it.")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("who does it answer to?")).toBeVisible({
+    timeout: 20_000,
+  });
+  // 2. Ash answers; only now does the Mono draft (mono_create), with skills that are really installed on his Mac.
+  const draft = await dev<{
+    draftId: string;
+    plan: {
+      name: string;
+      role: string;
+      soul: string;
+      watchFor: string;
+      skills: string[];
+    };
+  }>(
+    page,
+    `(sb, me) => sb.draftMono({ name: 'Postie', role: 'X posts for Hivra', who: "I'm Postie. I turn Hivra's shipped work into short X posts and draft each one for Ash's OK. I answer to Hivra lead.", watchFor: "Good bits worth a thread, and anything that shouldn't be public yet.", skills: ['ash-copywriting', 'human-writing', 'hivra-release'] }, me, ['ash-copywriting', 'human-writing', 'hivra-release', 'hivra-seo', 'humanizer'])`,
+    ME,
+  );
+  await say(
+    `Here's the one Mono I'd make: **${draft.plan.name}**, ${draft.plan.role}. It's on the card at the top. Say yes and I'll make it.`,
+  );
+  await composer.fill("draft for my ok. it answers to hivra lead");
+  await composer.press("Enter");
+  await expect(page.getByText("Say yes and I'll make it.")).toBeVisible({
+    timeout: 20_000,
+  });
+  // The draft card: the creature and colour it will get, drawn with monoAvatar like the sidebar tiles.
+  const card = page.locator(`[data-mono-draft="${draft.draftId}"]`);
+  await expect(card).toBeVisible();
+  await expect(card.locator("[data-mono-draft-name]")).toHaveText("Postie");
+  await expect(card.locator("[data-mono-draft-role]")).toHaveText(
+    "X posts for Hivra",
+  );
+  await expect(card.getByText(draft.plan.watchFor)).toBeVisible();
+  await expect(
+    card.locator("svg, canvas, img, [data-mono-letter]").first(),
+  ).toBeVisible();
   await expect(rail.locator('button[aria-label^="Postie"]')).toHaveCount(0);
+  await expect(page.locator("text=/Grok 4\\.7/ >> visible=true").first()).toBeVisible();
+  await card.screenshot({ path: `${SHOTS}/13-draft-mono-card.png` });
   await shot(page, "13-draft-mono-before-yes");
 });
 
-test("14: a Page built in chat shows as a preview with Keep and Throw away", async ({ page }) => {
+test("14: a Page built in chat shows as a preview with Keep and Throw away", async ({
+  page,
+}) => {
   await open(page);
   const spec = {
     kind: "blocks",
     title: "Hivra this week",
     blocks: [
-      { kind: "status", title: "This week", state: "warn", line: "5 shipped, 2 stuck", detail: "Mon 19 – Wed 21 Oct" },
-      { kind: "list", title: "Shipped and stuck", rows: [
-        { text: "Waitlist emails send in batches", state: "ok", label: "Shipped" },
-        { text: "Sign-up page copy", state: "ok", label: "Shipped" },
-        { text: "Pricing page A/B", state: "ok", label: "Shipped" },
-        { text: "Email sender login", state: "bad", label: "Stuck" },
-        { text: "Stripe webhook retries", state: "bad", label: "Stuck" },
-      ] },
-      { kind: "barlist", title: "Shipped per day", rows: [{ label: "Mon", value: 2 }, { label: "Tue", value: 2 }, { label: "Wed", value: 1 }] },
+      {
+        kind: "status",
+        title: "This week",
+        state: "warn",
+        line: "5 shipped, 2 stuck",
+        detail: "Mon 19 – Wed 21 Oct",
+      },
+      {
+        kind: "list",
+        title: "Shipped and stuck",
+        rows: [
+          {
+            text: "Waitlist emails send in batches",
+            state: "ok",
+            label: "Shipped",
+          },
+          { text: "Sign-up page copy", state: "ok", label: "Shipped" },
+          { text: "Pricing page A/B", state: "ok", label: "Shipped" },
+          { text: "Email sender login", state: "bad", label: "Stuck" },
+          { text: "Stripe webhook retries", state: "bad", label: "Stuck" },
+        ],
+      },
+      {
+        kind: "barlist",
+        title: "Shipped per day",
+        rows: [
+          { label: "Mon", value: 2 },
+          { label: "Tue", value: 2 },
+          { label: "Wed", value: 1 },
+        ],
+      },
     ],
   };
-  const made = await dev<{ previewId: string }>(page, "(sb, spec) => sb.previewFromChat({ project: 'hivra', spec, request: 'a page for hivra: whats shipped this week n whats stuck' }, { monoId: 'hivra-lead', name: 'Hivra lead' })", spec);
+  const made = await dev<{ previewId: string }>(
+    page,
+    "(sb, spec) => sb.previewFromChat({ project: 'hivra', spec, request: 'a page for hivra: whats shipped this week n whats stuck' }, { monoId: 'hivra-lead', name: 'Hivra lead' })",
+    spec,
+  );
   await expect(page.locator("[data-change-see]")).toBeVisible();
   await page.locator("[data-change-see]").click();
-  await expect(page.getByText("Hivra this week").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "Keep" }).first()).toBeVisible();
+  await expect(page.getByText("Hivra this week").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Keep" }).first(),
+  ).toBeVisible();
+  // Ash is on the page: the bar doesn't offer See it again.
+  await expect(page.locator("[data-change-see]")).toHaveCount(0);
   expect(made.previewId).toBeTruthy();
   await shot(page, "14-page-preview");
 });
 
-test("15: a hub change shows Now | Preview with Apply and Discard; after Apply, undoing the colour leaves the button", async ({ page }) => {
+test("15: a hub change shows Now | Preview with Apply and Discard; after Apply, undoing the colour leaves the button", async ({
+  page,
+}) => {
   await open(page);
-  await dev(page, `async (sb) => { const { changeId } = await sb.startHubChange("can u move the new chat button to the top n make the accent a bit more purple", "New chat button at the top, accent more purple", "Chief of Staff"); return sb.readyHubChange(changeId, "Chief of Staff"); }`);
+  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  await page.locator('[data-hub-item="leadership-team"]').click();
+  await expect(page.locator("[data-hub-new-conversation]")).toBeVisible();
+  const buttonTop = async () =>
+    (await page.locator("[data-hub-new-conversation]").boundingBox())!.y;
+  const before = await buttonTop();
+  await dev(
+    page,
+    `async (sb) => { const { changeId } = await sb.startHubChange("can u move the new chat button to the top n make the accent a bit more purple", "New chat button at the top, accent more purple", "Chief of Staff"); return sb.readyHubChange(changeId, "Chief of Staff"); }`,
+  );
   const offer = page.locator("[data-change-offer]");
   await expect(offer).toBeVisible();
   await offer.locator("[data-change-preview]").click();
   await expect(offer).toHaveAttribute("data-previewing", "1");
+  // Preview shows the change for real: the button sits higher and the accent is purple.
+  await expect.poll(buttonTop).toBeLessThan(before);
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--scheme-accent")
+        .trim(),
+    ),
+  ).toBe("hsl(268 85% 72%)");
   await expect(offer.locator("[data-change-apply]")).toBeVisible();
   await expect(offer.locator("[data-change-discard]")).toBeVisible();
   await shot(page, "15-now-preview-apply-discard");
 
   await offer.locator("[data-change-apply]").click();
   await expect(offer).toHaveCount(0);
-  await page.getByRole("button", { name: /^Settings/ }).first().click();
-  await page.getByRole("button", { name: /^Changes/ }).first().click();
+  await page
+    .getByRole("button", { name: /^Settings/ })
+    .first()
+    .click();
+  await page
+    .getByRole("button", { name: /^Changes/ })
+    .first()
+    .click();
   await page.getByRole("button", { name: "Bot changes" }).click();
-  const colour = page.locator("[data-hub-bot-change]", { has: page.getByText("Accent is a bit more purple", { exact: false }) }).first();
-  const button = page.locator("[data-hub-bot-change]", { has: page.getByText("New chat button is at the top", { exact: false }) }).first();
+  const colour = page
+    .locator("[data-hub-bot-change]", {
+      has: page.getByText("Accent is a bit more purple", { exact: false }),
+    })
+    .first();
+  const button = page
+    .locator("[data-hub-bot-change]", {
+      has: page.getByText("New chat button is at the top", { exact: false }),
+    })
+    .first();
   await expect(colour).toBeVisible();
   await colour.locator("[data-hub-bot-change-undo]").click();
   await expect(colour.locator("[data-hub-bot-change-undone]")).toBeVisible();
   await expect(button.locator("[data-hub-bot-change-undone]")).toHaveCount(0);
+  // Only the colour went back.
+  expect(
+    await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--scheme-accent")
+        .trim(),
+    ),
+  ).not.toBe("hsl(268 85% 72%)");
   await shot(page, "15-bot-changes-after-undo");
 });
