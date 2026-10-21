@@ -17,7 +17,8 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
-import { AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { noteRuns } from "../../monos/model/agentNoteView";
 import {
   memo,
   startTransition,
@@ -1492,8 +1493,19 @@ function AgentTranscriptComponent({
                 : stacksIntoNextTurn)
             );
           };
+          // Agent notes that landed together fold into one line (AgentNoteGroup); the rest of a run draws nothing.
+          const noteRunsHere = noteRuns(items.map((item) => (item.type === "block" ? item.block.agentNote : undefined)));
           const renderItem = (item: TurnItem, itemIndex: number) =>
-            item.type === "subagents" && !inlineWork ? (
+            item.type === "block" && item.block.agentNote && noteRunsHere.get(itemIndex) !== 1 ? (
+              noteRunsHere.get(itemIndex) ? (
+                <AgentNoteGroup
+                  key={item.block.id}
+                  notes={items
+                    .slice(itemIndex, itemIndex + noteRunsHere.get(itemIndex)!)
+                    .flatMap((x) => (x.type === "block" && x.block.agentNote ? [x.block.agentNote] : []))}
+                />
+              ) : null
+            ) : item.type === "subagents" && !inlineWork ? (
               <SubagentStack
                 key={item.blocks[0].id}
                 blocks={item.blocks}

@@ -287,7 +287,7 @@ export function MonoSessionList({
   if (workOnly && !narrowing && launches.length > 0 && matching.length === 0)
     return (
       <EmptyState icon={Search}>
-        Nothing running right now. Search or filter to find {agent.name}&apos;s earlier sessions.
+        <span data-mono-sessions-empty>Nothing running right now. Sessions show here while {agent.name} is working; search or filter for earlier ones.</span>
       </EmptyState>
     );
   if (launches.length > 0 && matching.length === 0)

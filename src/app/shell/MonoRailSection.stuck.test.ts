@@ -135,11 +135,12 @@ describe("'1 stuck' on a Mono's line leads somewhere (B6)", () => {
     expect(panel()!.querySelector('[data-stuck-done="w2"]')?.textContent).toContain("Skip the upload");
   });
 
-  it("Open chat jumps into the worker's chat under its Mono and closes the panel", () => {
+  it("Open chat jumps into the Lead's chat (Ash answers the Lead, D5) and closes the panel", () => {
     const { exo, actions } = setup();
     act(() => container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] [data-stuck-trigger]`)!.click());
     act(() => panel()!.querySelector<HTMLButtonElement>('[data-stuck-worker="w2"] [data-stuck-open]')!.click());
-    expect(actions.openChild).toHaveBeenCalledWith("exo-chat", "w2");
+    expect(actions.openOwner).toHaveBeenCalledWith("exo-chat");
+    expect(actions.openChild).not.toHaveBeenCalled();
     expect(panel()).toBeNull();
   });
 

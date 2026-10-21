@@ -374,14 +374,15 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
   });
   afterEach(() => resetDelegationStore());
 
-  it("a failed worker beside a running one makes the job Stuck, with its reason, and Open chat opens that worker", async () => {
+  it("a failed worker beside a running one makes the job Stuck, with its reason, and Open chat opens its Lead's chat (D5: Ash answers the Lead)", async () => {
     setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", errorClass: "billing", settledAt: at - 60_000 })]);
     mount(view());
     const job = () => container.querySelector('[data-hub-worker="j_mail"]');
     await until(() => job()?.querySelector('[data-hub-job-state="stuck"]'), "the stuck job");
     expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Failed: billing refused");
     act(() => job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!.click());
-    expect(actions.openChild).toHaveBeenCalledWith("hivra-chat", "w-b");
+    expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat");
+    expect(actions.openChild).not.toHaveBeenCalled();
   });
 
   it("a question on its Lead reads Waiting with the question, and Answer opens the answer under the row", async () => {
@@ -409,7 +410,8 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(row.querySelector("[data-stuck-where]")?.textContent).toBe("Hivra · its Lead · Write the welcome email");
     expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped without reporting back · 7 min ago");
     act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
-    expect(actions.openChild).toHaveBeenCalledWith("hivra-chat", "w-s");
+    expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat"); // the Lead's chat: Ash answers the Lead (D5)
+    expect(actions.openChild).not.toHaveBeenCalled();
     await until(() => container.querySelector('[data-hub-today-job="j_mail"]'), "Being built on Today");
     expect(container.querySelector('[data-hub-today-job="j_mail"]')?.textContent).toContain("· Stuck");
   });

@@ -181,7 +181,8 @@ describe("stuck workers in the Lead's chat", () => {
     expect(host.send).toHaveBeenCalledWith("w3", "Skip the flaky test and carry on");
     expect(container.querySelector('[data-stuck-done="w3"]')?.textContent).toContain("Skip the flaky test");
     act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
-    expect(actions.openChild).toHaveBeenCalledWith("lead-chat", "w4");
+    expect(actions.openOwner).toHaveBeenCalledWith("lead-chat"); // the Lead's chat, not the worker's (D5)
+    expect(actions.openChild).not.toHaveBeenCalled();
     await act(async () => card("w2")!.querySelector<HTMLButtonElement>("[data-stuck-stop]")!.click());
     expect(actions.stopRow).toHaveBeenCalledWith(expect.objectContaining({ id: "t-2" }));
   });

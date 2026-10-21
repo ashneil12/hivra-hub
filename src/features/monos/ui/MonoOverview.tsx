@@ -341,8 +341,8 @@ export function MonoOverview({
               </div>
             ) : (
               <EmptyState icon={MessageMultiple}>
-                Ask {agent.name} to start a session on one of your projects,
-                like a bug fix or a review, and it shows up here.
+                {/* A8 (Ash 21 Oct): sessions show only while they run, so the empty list says nothing is running. */}
+                <span data-mono-sessions-empty>Nothing running right now. Sessions show here while {agent.name} is working on something.</span>
               </EmptyState>
             )
           ) : tab === "habits" ? (

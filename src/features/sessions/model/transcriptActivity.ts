@@ -148,7 +148,8 @@ function isStatusStep(block: Block): boolean {
 export function isActivityBlock(block: Block): boolean {
   if (isThinkingBlock(block)) return true;
   if (block.role === "system") {
-    return !block.interjection && !isNoticeBlock(block);
+    // An agent-to-agent note keeps its own line in the chat, never folded into the work trail (Ash 21 Oct 20:45).
+    return !block.interjection && !isNoticeBlock(block) && !block.agentNote;
   }
   if (block.role !== "tool" && block.role !== "approval") return false;
   if (
