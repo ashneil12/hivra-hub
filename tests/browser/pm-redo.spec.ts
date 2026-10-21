@@ -47,3 +47,33 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
   await page.keyboard.press("Escape");
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(0);
 });
+
+test("G4: each Mono's role shows after its name on the rail, in the header and tooltip; a Lead has none; narrow rail cuts the role", async ({ page }) => {
+  await open(page);
+  const rail = page.locator("[data-mono-rail]").first();
+  const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
+  await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
+  await expect(rail.locator('button[aria-label^="EXO lead"] [data-mono-role]')).toHaveCount(0);
+  await cos.click();
+  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner");
+  await page.locator("[data-mono-title] [data-mono-role-edit]").click();
+  await page.locator("[data-mono-role-input]").fill("Business partner across every project");
+  await page.locator("[data-mono-role-input]").press("Enter");
+  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner across every project");
+  await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner across every project/);
+  await page.mouse.move(700, 450);
+  await shot(page, "g4-role-labels");
+  // The narrow rail: the role is cut, the name is not.
+  await page.evaluate(() => {
+    const list = document.querySelector("[data-mono-rail]") as HTMLElement;
+    let el: HTMLElement | null = list;
+    while (el && el.getBoundingClientRect().left > 80) el = el.parentElement;
+    (list.closest("aside") ?? list).style.width = "170px";
+    list.style.width = "170px";
+  });
+  const name = cos.locator("[data-mono-primary-name]");
+  const box = await name.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  expect(box.scroll).toBeLessThanOrEqual(box.client);
+  const railBox = await rail.boundingBox();
+  await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
+});

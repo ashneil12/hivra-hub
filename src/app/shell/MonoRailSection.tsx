@@ -172,7 +172,11 @@ export function MonoRailSection({
     );
   };
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
-  const shown = (name: string) => (rank ? plainName(name) : { primary: name });
+  // With role names on, the role leads and the name follows in grey; otherwise the name leads and the role follows.
+  const shown = (look: { name: string; role?: string }) => {
+    const plain = rank ? plainName(look.name) : { primary: look.name };
+    return plain.secondary ? { primary: look.role ?? plain.primary, secondary: look.name } : { primary: look.name, secondary: look.role };
+  };
   const monos = useMemo(
     () =>
       railMonos(listMonos(), projectFilter, rank).filter(
@@ -286,7 +290,7 @@ export function MonoRailSection({
       {collapsed && workSplit(total) ? (
         <FoldedWorkSummary counts={total} stuck={allStuck} onOpenStuck={(anchor) => toggleStuckPanel(anchor)} />
       ) : null}
-      {!collapsed && rank && roleNamesUndecided() && monos.some((m) => shown(monoLook(m).name).secondary) ? (
+      {!collapsed && rank && roleNamesUndecided() && monos.some((m) => plainName(monoLook(m).name).secondary) ? (
         <div className="mx-3 mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1 text-[11px] leading-4 text-content/50" data-role-names-offer>
           <span className="w-full">Monos now go by what they do.</span>
           <button type="button" onClick={() => setRoleNames(false)} className="-ml-1 shrink-0 rounded px-1 text-content/70 hover:bg-content/8 hover:text-content">
@@ -395,7 +399,7 @@ export function MonoRailSection({
             >
               <button
                 type="button"
-                title={[look.name, projects, status].filter(Boolean).join("\n")}
+                title={[look.name, look.role, projects, status].filter(Boolean).join("\n")}
                 aria-label={[
                   look.name,
                   status ?? "idle",
@@ -421,18 +425,32 @@ export function MonoRailSection({
                     duration={1.4}
                     className="min-w-0 flex-1 truncate text-sm font-medium leading-tight"
                   >
-                    {shown(look.name).primary}
+                    {shown(look).primary}
                   </Shimmer>
                 ) : (
                   <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
-                    <span className="min-w-0 truncate text-sm font-medium" data-mono-primary-name>
-                      {shown(look.name).primary}
-                    </span>
-                    {shown(look.name).secondary ? (
-                      <span className="shrink-0 text-xs font-normal text-content/45" data-mono-own-name>
-                        {shown(look.name).secondary}
-                      </span>
-                    ) : null}
+                    {/* On a narrow rail the role is cut first, wherever it sits; the Mono's own name keeps its room. */}
+                    {shown(look).secondary === look.name ? (
+                      <>
+                        <span className="min-w-0 truncate text-sm font-medium" data-mono-primary-name>
+                          {shown(look).primary}
+                        </span>
+                        <span className="shrink-0 text-xs font-normal text-content/45" data-mono-own-name>
+                          {shown(look).secondary}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="max-w-full shrink-0 truncate text-sm font-medium" data-mono-primary-name>
+                          {shown(look).primary}
+                        </span>
+                        {shown(look).secondary ? (
+                          <span className="min-w-0 truncate text-xs font-normal text-content/45" data-mono-role>
+                            {shown(look).secondary}
+                          </span>
+                        ) : null}
+                      </>
+                    )}
                   </span>
                 )}
                 <StuckMark stuck={[...attention.stuck.values()]} />
