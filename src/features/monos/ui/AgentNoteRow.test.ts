@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentNote } from "../model/agentNotes";
 import { setDelegationActions } from "../model/delegationStore";
-import { FOLD_MS, foldedLine, noteParts, noteRuns } from "../model/agentNoteView";
+import { detailOf, FOLD_MS, foldedLine, noteParts, noteRuns, noteText } from "../model/agentNoteView";
 import { isActivityBlock } from "../../sessions/model/transcriptActivity";
 import { agentNoteBlock } from "../model/agentNotes";
 import { AgentNoteGroup, AgentNoteRow } from "./AgentNoteRow";
@@ -48,7 +48,35 @@ describe("the words", () => {
     const a = note({ at: 0 }), b = note({ at: 30_000 }), c = note({ at: 60_000 }), d = note({ at: 60_000 + FOLD_MS + 1 });
     expect([...noteRuns([a, b, c, undefined, d]).entries()]).toEqual([[0, 3], [1, 0], [2, 0], [4, 1]]);
     expect([...noteRuns([a, undefined, b]).entries()]).toEqual([[0, 1], [2, 1]]);
-    expect(foldedLine([a, note({ kind: "stuck", from: worker, to: lead })])).toBe('2 team notes: Lead messaged Worker "Example: fix the save bug", Worker "Example: fix the save bug" got stuck');
+    expect(foldedLine([a, b])).toBe("2 team notes");
+  });
+
+  it("round 21: a stuck note never folds; routine notes either side of it fold on their own", () => {
+    const m = (at: number) => note({ at });
+    const stuck = note({ kind: "stuck", from: worker, to: lead, at: 3_000 });
+    // three routine, the stuck one, two routine, all within the fold window
+    expect([...noteRuns([m(0), m(1_000), m(2_000), stuck, m(4_000), m(5_000)]).entries()]).toEqual([
+      [0, 3], [1, 0], [2, 0], [3, 1], [4, 2], [5, 0],
+    ]);
+    // two stuck in a row stay two lines
+    expect([...noteRuns([stuck, { ...stuck, at: 3_500, taskId: "t-2" }]).entries()]).toEqual([[0, 1], [1, 1]]);
+  });
+
+  it("round 21: a folded line is just the count", () => {
+    expect(foldedLine([note(), note(), note()])).toBe("3 team notes");
+  });
+
+  it("round 21: the detail is left off when it only repeats the worker's label", () => {
+    expect(detailOf(note({ line: "Example: fix the save bug" }))).toBeUndefined();
+    expect(detailOf(note({ line: "Example: fix the save bug." }))).toBeUndefined();
+    // the label is cut at 60 characters, the line at 140: still the same task
+    const long = "Example: rework the save system so old saves load and the new format is written every time";
+    const cut = { session: "w-1", name: `Worker "${long.slice(0, 58)}…"` };
+    expect(detailOf(note({ to: cut, line: long }))).toBeUndefined();
+    // anything else is kept
+    expect(detailOf(note({ kind: "messaged", from: worker, to: lead, line: "Which format? [JSON | binary]" }))).toBe("Which format? [JSON | binary]");
+    expect(detailOf(note({ kind: "stuck", from: worker, to: lead, line: "Failed: the build broke" }))).toBe("Failed: the build broke");
+    expect(noteText(note({ line: "Example: fix the save bug" }))).toBe('Lead messaged Worker "Example: fix the save bug"');
   });
 
   it("a note keeps its own line in the chat, never folded into the work trail", () => {
@@ -64,7 +92,9 @@ describe("the row", () => {
     expect(row.getAttribute("data-agent-note")).toBe("messaged");
     expect(row.className).toContain("text-content/50");
     expect(row.className).not.toMatch(/rounded|bg-|border|shadow/);
-    expect(row.textContent).toBe('Lead messaged Worker "Example: fix the save bug": Example: fix the save bug');
+    // the brief's first line is the worker's label: said once, not twice
+    expect(row.textContent).toBe('Lead messaged Worker "Example: fix the save bug"');
+    expect(row.getAttribute("aria-label")).toBe('Lead messaged Worker "Example: fix the save bug"');
     const links = row.querySelectorAll("[data-agent-note-open]");
     expect(links).toHaveLength(1);
     expect(links[0].textContent).toBe('Worker "Example: fix the save bug"');
@@ -81,11 +111,11 @@ describe("the row", () => {
 
 describe("the fold", () => {
   it("several notes show as one line that expands into each, and folds back", () => {
-    const notes = [note({ at: 0 }), note({ at: 1, taskId: "t-2", to: { session: "w-2", name: "Worker \"Example: tidy the HUD\"" }, target: "w-2" }), note({ kind: "stuck", from: worker, to: lead, at: 2 })];
+    const notes = [note({ at: 0 }), note({ at: 1, taskId: "t-2", to: { session: "w-2", name: "Worker \"Example: tidy the HUD\"" }, target: "w-2" }), note({ kind: "reported", from: worker, to: lead, at: 2 })];
     render(createElement(AgentNoteGroup, { notes }));
     const fold = container.querySelector<HTMLButtonElement>("[data-agent-note-fold]")!;
     expect(fold.getAttribute("aria-expanded")).toBe("false");
-    expect(fold.textContent).toMatch(/^3 team notes: Lead messaged/);
+    expect(fold.textContent).toBe("3 team notes");
     expect(container.querySelectorAll("[data-agent-note]")).toHaveLength(0);
     act(() => fold.click());
     expect(fold.getAttribute("aria-expanded")).toBe("true");

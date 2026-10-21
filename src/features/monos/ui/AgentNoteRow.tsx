@@ -1,12 +1,11 @@
 // An agent-to-agent note in a chat (model/agentNotes.ts, CoS's data). Critiquito's look: one quiet line, muted grey,
 // no bubble, no log; the agent with a chat to open is its clickable name (no chat: plain text, never a dead link).
-// Several landing together fold into one line that expands (AgentNoteGroup). Words: model/agentNoteView.ts.
+// Several landing together fold into one line that expands (AgentNoteGroup); a stuck note never folds. Words: model/agentNoteView.ts.
 import { useState } from "react";
 import { ChevronRight } from "../../../shared/ui/icons";
 import type { AgentNote } from "../model/agentNotes";
-import { agentNoteText } from "../model/agentNotes";
 import { delegationActions } from "../model/delegationStore";
-import { foldedLine, noteParts } from "../model/agentNoteView";
+import { foldedLine, noteParts, noteText } from "../model/agentNoteView";
 
 /** Opens the note's chat under the chat that owns the work. */
 export function openAgentNote(note: AgentNote): void {
@@ -36,13 +35,13 @@ function NoteWords({ note }: { note: AgentNote }) {
 
 export function AgentNoteRow({ note, embedded = false }: { note: AgentNote; embedded?: boolean }) {
   return (
-    <div className={`${embedded ? "" : "px-4"} ${LINE}`} data-agent-note={note.kind} aria-label={agentNoteText(note)} role="note">
+    <div className={`${embedded ? "" : "px-4"} ${LINE}`} data-agent-note={note.kind} aria-label={noteText(note)} role="note">
       <NoteWords note={note} />
     </div>
   );
 }
 
-/** Notes that landed together: one line, the count and each head; a click shows each note on its own line. */
+/** Notes that landed together: one line with just the count; a click shows each note on its own line. */
 export function AgentNoteGroup({ notes, embedded = false }: { notes: readonly AgentNote[]; embedded?: boolean }) {
   const [open, setOpen] = useState(false);
   const pad = embedded ? "" : "px-4";

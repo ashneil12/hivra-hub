@@ -14,7 +14,8 @@ test("a single note, a folded group collapsed and expanded", async ({ page }) =>
   await page.goto("/tests/browser/agent-notes.html");
   const single = page.locator("[data-agent-note]").first();
   await expect(single).toBeVisible({ timeout: 60_000 });
-  await expect(single).toHaveText('EXO lead messaged Worker "Example: fix the save bug": Example: fix the save bug');
+  // Round 21: the brief's line repeats the worker's label, so it is said once.
+  await expect(single).toHaveText('EXO lead messaged Worker "Example: fix the save bug"');
   const style = await single.evaluate((el) => {
     const s = getComputedStyle(el);
     return { bg: s.backgroundColor, radius: s.borderRadius, border: s.borderTopWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(s.lineHeight)) };
@@ -25,13 +26,13 @@ test("a single note, a folded group collapsed and expanded", async ({ page }) =>
   await page.mouse.move(5, 5);
   await page.screenshot({ path: `${SHOTS}/pm-20-note-single.png` });
 
-  const fold = page.locator("[data-agent-note-fold]");
+  const fold = page.locator("[data-agent-note-fold]").first();
   await expect(fold).toHaveAttribute("aria-expanded", "false");
-  await expect(fold).toContainText("3 team notes: EXO lead messaged");
+  await expect(fold).toHaveText("3 team notes");
   await expect(page.locator("[data-agent-note-group] [data-agent-note]")).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/pm-20-notes-folded.png` });
   await fold.click();
-  await expect(page.locator("[data-agent-note-group] [data-agent-note]")).toHaveCount(3);
+  await expect(page.locator("[data-agent-note-group]").first().locator("[data-agent-note]")).toHaveCount(3);
   // The music worker has no chat: plain text, no link.
   const music = page.locator("[data-agent-note-group] [data-agent-note]").nth(1);
   await expect(music).toContainText("swap the menu music");
