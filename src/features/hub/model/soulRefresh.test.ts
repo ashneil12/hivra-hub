@@ -3,6 +3,9 @@
 // changes with Undo and never wait for a click). Ash's hand edits win, the row says in plain words what changes for the
 // Mono and what was skipped, and the whole old soul is saved first. The Mono files are a stand-in for the Rust
 // mono_read / mono_save commands (hash-checked, like mono.rs).
+import { mkdirSync, mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { botChangeRows, findBotChange, redoBotChange, setBotFiles, undoBotChange } from "./botChanges";
 import { LIVE_15_OCT_LEAD_SOULS } from "./testdata/leadSouls15Oct";
@@ -341,6 +344,80 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     // An edit in the body is still an edit, whatever the folder.
     const edited = exo.soul.replace("- Parallel work is fine.", "- Ash: no Fridays.\n- Parallel work is fine.");
     expect(await matchSeededSoul(edited, { ...exo.values, folder: null })).toBeNull();
+  });
+
+  describe("the project's folder must be on this Mac", () => {
+    // Real folders on disk, checked the way the app checks them (a folder, not a file), one with spaces in its path.
+    const root = mkdtempSync(join(tmpdir(), "soul refresh folders "));
+    const onDisk = async (path: string) => {
+      try {
+        return statSync(path).isDirectory();
+      } catch {
+        return false;
+      }
+    };
+    const exo = LIVE_15_OCT_LEAD_SOULS[2];
+    const hivra15 = LIVE_15_OCT_LEAD_SOULS[0];
+    function swap(l: (typeof LIVE_15_OCT_LEAD_SOULS)[number], id: string, folder: string) {
+      const f = fakeFiles();
+      f.set(id, "SOUL.md", l.soul.replaceAll(`ASH_MONO_ID=${l.monoId}`, `ASH_MONO_ID=${id}`));
+      const entry = leadEntry(l, folder, id);
+      return { f, entry, run: () => refreshSouls(f, [entry], DAY, onDisk) };
+    }
+    const details = (id: string) => {
+      const row = botChangeRows().find((r) => r.kind === "one" && r.change.monoId === id);
+      return row?.kind === "one" ? row.change.details! : [];
+    };
+
+    it("missing: the lead keeps its old soul's folder, and the row says so in plain words", async () => {
+      const missing = join(root, "hivra-not-here");
+      const { f, run } = swap(hivra15, "hivra-missing", missing);
+      expect((await run()).refreshed).toEqual(["hivra-missing"]);
+      const now = f.get("hivra-missing", "SOUL.md")!;
+      expect(now).toContain(`working in ${hivra15.values.folder}.`);
+      expect(now).not.toContain(missing);
+      expect(now).toContain("Your workers ask you, not Ash");
+      expect(details("hivra-missing")).toContain("Hivra lead kept its old folder because its project's folder wasn't found on this Mac.");
+      expect(details("hivra-missing").some((d) => d.includes("different folder"))).toBe(false);
+      for (const t of details("hivra-missing")) expectPlain(t);
+    });
+
+    it("there: the new soul uses the project's folder, as before", async () => {
+      const there = join(root, "hivra");
+      mkdirSync(there);
+      const { f, run } = swap(hivra15, "hivra-there", there);
+      expect((await run()).refreshed).toEqual(["hivra-there"]);
+      expect(f.get("hivra-there", "SOUL.md")).toContain(`working in ${there}.`);
+      expect(details("hivra-there")).toContain(
+        "Hivra lead's old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.",
+      );
+      expect(details("hivra-there").some((d) => d.includes("wasn't found"))).toBe(false);
+    });
+
+    it("a path with spaces (and EXO's '?'): found when it is there, the old folder kept when it isn't", async () => {
+      const spaced = join(root, "boxin game?", "vg game moved");
+      mkdirSync(spaced, { recursive: true });
+      const found = swap(exo, "exo-spaced", spaced);
+      expect((await found.run()).refreshed).toEqual(["exo-spaced"]);
+      expect(found.f.get("exo-spaced", "SOUL.md")).toContain(`working in ${spaced}.`);
+
+      const gone = swap(exo, "exo-spaced-gone", join(root, "boxin game?", "not here either"));
+      expect((await gone.run()).refreshed).toEqual(["exo-spaced-gone"]);
+      expect(gone.f.get("exo-spaced-gone", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
+      expect(details("exo-spaced-gone")).toContain("EXO lead kept its old folder because its project's folder wasn't found on this Mac.");
+    });
+
+    it("the same folder in the roster and the soul is never looked up", async () => {
+      let asked = 0;
+      const f = fakeFiles();
+      f.set("vg-game-lead", "SOUL.md", exo.soul);
+      await refreshSouls(f, [leadEntry(exo, exo.values.folder)], DAY, async () => {
+        asked += 1;
+        return false;
+      });
+      expect(asked).toBe(0);
+      expect(f.get("vg-game-lead", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
+    });
   });
 
   it("leaves an edited soul alone, with one plain row and no Undo", async () => {

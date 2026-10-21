@@ -21,7 +21,8 @@ import {
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
-import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, type TamperFiles } from "./soulTamper";
+import { setHubMcpServers, setMonoHomeRoot, type HubChatLookups } from "./hubMcp";
+import { changedSoulNote, checkSoul, keptAshLine, putBackLine, recordRestoredSouls, runIsMonos, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -46,9 +47,27 @@ function memFiles() {
   return { f, files, hash };
 }
 
+/** Whose chats are whose: each Mono's own chat; workers are `app-<chat>-<request>` under it (hubMcp.ts). */
+const CHATS: Record<string, string> = {
+  "hivra-chat": "hivra-lead",
+  "frank-chat": "frank",
+  "lead-chat": "hivra-lead",
+  "restored-chat": "restored-lead",
+  "unrecorded-chat": "unrecorded-lead",
+  "exo-chat": "vg-game-lead",
+  "cos-chat": "chief-of-staff",
+};
+const lookups: HubChatLookups = {
+  monoOf: (id) => (CHATS[id] ? { id: CHATS[id] } : undefined),
+  habitRunMono: (id) => (id === "habit-run-hivra" ? "hivra-lead" : undefined),
+  isLead: () => false,
+};
+
 beforeEach(() => {
   localStorage.clear();
   resetSessionRuns();
+  setHubMcpServers({ ashOs: null, cli: null }, lookups);
+  setMonoHomeRoot("/Users/ash/agent-memory/monos");
 });
 
 describe("a soul changed outside the app", () => {
@@ -56,9 +75,9 @@ describe("a soul changed outside the app", () => {
     const { f, files, hash } = memFiles();
     setBotFiles(f);
     await f.write("hivra-lead", "SOUL.md", SAVED);
-    noteSessionRuns([{ id: "worker-1", busy: true, cwd: "/Users/ash/Projects/hivra" }], 1_000);
+    noteSessionRuns([{ id: "app-hivra-chat-req1", busy: true, cwd: "/Users/ash/Projects/hivra" }], 1_000);
     files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
-    noteSessionRuns([{ id: "worker-1", busy: false }], 3_000);
+    noteSessionRuns([{ id: "app-hivra-chat-req1", busy: false }], 3_000);
 
     expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
     expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
@@ -85,8 +104,8 @@ describe("a soul changed outside the app", () => {
     const { f, files, hash } = memFiles();
     setBotFiles(f);
     await f.write("hivra-lead", "SOUL.md", SAVED);
-    noteSessionRuns([{ id: "worker-1", busy: true }], 1_000);
-    noteSessionRuns([{ id: "worker-1", busy: false }], 2_000);
+    noteSessionRuns([{ id: "app-hivra-chat-req1", busy: true }], 1_000);
+    noteSessionRuns([{ id: "app-hivra-chat-req1", busy: false }], 2_000);
     files.set("hivra-lead/SOUL.md", { text: ASH, at: 60_000 });
 
     expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 5_000, 90_000), 90_000)).toBe("kept-ash");
@@ -122,7 +141,7 @@ describe("a portable restore writing souls", () => {
     await f.write("restored-lead", "SOUL.md", SAVED);
     await f.write("restored-cos", "SOUL.md", SAVED);
     // Rust writes them straight to disk (memory restore), while a chat is running.
-    noteSessionRuns([{ id: "worker-r", busy: true }], 1_000);
+    noteSessionRuns([{ id: "app-restored-chat-r1", busy: true }], 1_000);
     files.set("restored-lead/SOUL.md", { text: RESTORED, at: 2_000 });
     files.set("restored-cos/SOUL.md", { text: RESTORED, at: 2_000 });
     await recordRestoredSouls(["restored-lead", "restored-cos", "restored-lead"], f);
@@ -138,7 +157,7 @@ describe("a portable restore writing souls", () => {
     const { f, files } = memFiles();
     setBotFiles(f);
     await f.write("unrecorded-lead", "SOUL.md", SAVED);
-    noteSessionRuns([{ id: "worker-r", busy: true }], 1_000);
+    noteSessionRuns([{ id: "app-unrecorded-chat-r1", busy: true }], 1_000);
     files.set("unrecorded-lead/SOUL.md", { text: RESTORED, at: 2_000 });
     expect(await checkSoul("unrecorded-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
   });
@@ -188,9 +207,9 @@ describe("a python script writing the soul file", () => {
     const soul = join(root, "hivra-lead", "SOUL.md");
 
     await f.write("hivra-lead", "SOUL.md", SAVED);
-    noteSessionRuns([{ id: "worker-py", busy: true }]);
+    noteSessionRuns([{ id: "app-hivra-chat-py", busy: true }]);
     pyWrite(soul, OUTSIDE);
-    noteSessionRuns([{ id: "worker-py", busy: false }]);
+    noteSessionRuns([{ id: "app-hivra-chat-py", busy: false }]);
     expect(await checkSoul("hivra-lead", "Hivra lead", f)).toBe("put-back");
     expect(readFileSync(soul, "utf8")).toBe(SAVED);
     const kept = (await f.read("hivra-lead", "SOUL.md")).modifiedMs;
@@ -272,5 +291,71 @@ describe("a python script writing the soul file", () => {
     setProcessRunSource(async () => [{ sessionId: "lead-chat", pid: 7, start: 1_000, turns: [{ start: 2_000, end: 10_000 }] }]);
     files.set("hivra-lead/SOUL.md", { text: ASH, at: 60_000 });
     expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 5_000, 90_000), 90_000)).toBe("kept-ash");
+  });
+});
+
+describe("whose run counts: only that Mono's own chats and workers, or one working in its home folder", () => {
+  it("a run of the same Mono's chat, habit run or worker (however deep) counts; another Mono's doesn't", () => {
+    expect(runIsMonos({ sessionId: "hivra-chat" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "habit-run-hivra" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "app-hivra-chat-r1" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "app-app-hivra-chat-r1-r2" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "exo-chat" }, "hivra-lead")).toBe(false);
+    expect(runIsMonos({ sessionId: "app-exo-chat-r1", cwd: "/Users/ash/Projects/vg-game" }, "hivra-lead")).toBe(false);
+    // The app's own helper processes and plain chats belong to no Mono.
+    expect(runIsMonos({ sessionId: "monocode-claude-text-3" }, "hivra-lead")).toBe(false);
+  });
+
+  it("any run working inside that Mono's own home folder counts, whoever's it is (daily home, ~ form, a dev copy's)", () => {
+    expect(runIsMonos({ sessionId: "exo-chat", cwd: "/Users/ash/agent-memory/monos/hivra-lead" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/hivra-lead/memory" }, "hivra-lead")).toBe(true);
+    expect(runIsMonos({ sessionId: "plain", cwd: "~/agent-memory/monos/hivra-lead" }, "hivra-lead")).toBe(true);
+    // Another Mono's home, or a name that only starts the same, is not this one's.
+    expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/hivra-lead-2" }, "hivra-lead")).toBe(false);
+    expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/frank" }, "hivra-lead")).toBe(false);
+    setMonoHomeRoot("/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos-home");
+    expect(
+      runIsMonos({ sessionId: "plain", cwd: "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos-home/hivra-lead" }, "hivra-lead"),
+    ).toBe(true);
+  });
+
+  it("an edit while only another Mono's chat runs is Ash's: kept, with Undo", async () => {
+    const { f, files, hash } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    noteSessionRuns([{ id: "exo-chat", busy: true, cwd: "/Users/ash/Projects/vg-game" }, { id: "app-cos-chat-r9", busy: true }], 1_000);
+    files.set("hivra-lead/SOUL.md", { text: ASH, at: 2_000 });
+    expect(runsAt(2_000, 0, 9_000).length).toBe(2);
+    expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("kept-ash");
+    expect(files.get("hivra-lead/SOUL.md")!.text).toBe(ASH);
+    const row = findBotChange(`soul-outside:hivra-lead:${hash(ASH)}`)!;
+    expect(row.line).toBe(keptAshLine("Hivra lead"));
+    expect(row.undoLabel).toBeUndefined();
+    await undoBotChange([row.id]);
+    expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+  });
+
+  it("the same edit while that Mono's own worker runs is put back, with Keep that change", async () => {
+    const { f, files, hash } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    noteSessionRuns([{ id: "exo-chat", busy: true }, { id: "app-hivra-chat-r7", busy: true, cwd: "/Users/ash/Projects/hivra" }], 1_000);
+    files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+    expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
+    expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+    const row = findBotChange(`soul-put-back:hivra-lead:${hash(OUTSIDE)}`)!;
+    expect(row.undoLabel).toBe("Keep that change");
+    expect(row.details![0]).toBe("One of Hivra lead's chats or workers was running when it changed.");
+  });
+
+  it("another Mono's process working in this Mono's home folder (app process record) is put back", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setProcessRunSource(async () => [
+      { sessionId: "app-exo-chat-r3", pid: 9, cwd: "/Users/ash/agent-memory/monos/hivra-lead", start: 500, turns: [{ start: 1_000 }] },
+    ]);
+    files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+    expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
   });
 });

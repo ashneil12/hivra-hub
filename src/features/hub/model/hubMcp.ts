@@ -62,6 +62,8 @@ export function checkerToolArgs(): string[] {
 export const MONO_HOME = "~/agent-memory/monos";
 export const MONO_HOME_FENCE = `The Monos' home (${MONO_HOME}/) is read-only for you: read a Mono's soul or memory there if it helps, but never write, move or delete anything in it, with any tool or shell command. Only the app changes it.`;
 let extraHome: string | undefined;
+/** The Monos' home this copy uses, absolute (mono_home_info), for telling whose home a chat works in. */
+let activeHome: string | undefined;
 /**
  * Where this copy's Monos live, when it isn't the daily home (a dev copy's data folder, the bench's throwaway home),
  * from mono_home_info. Written absolute (`//path`). Spaces and "?" are fine: the rule is one argv value and Claude Code
@@ -71,12 +73,18 @@ let extraHome: string | undefined;
  */
 export function setMonoHomeRoot(root: string | undefined): void {
   const path = root?.replace(/\/+$/, "");
+  activeHome = path && path.startsWith("/") ? path : undefined;
   extraHome = path && path.startsWith("/") && !/[,()\r\n]/.test(path) && !path.endsWith("/agent-memory/monos") ? path : undefined;
 }
 export function monoHomeDeniedTools(): string[] {
   const roots = [MONO_HOME, ...(extraHome ? [`/${extraHome}`] : [])];
   // Claude Code applies an Edit rule to every built-in tool that edits files (Write and NotebookEdit too).
   return roots.map((root) => `Edit(${root}/**)`);
+}
+
+/** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
+export function monoHomeDirs(): string[] {
+  return [MONO_HOME, ...(activeHome && activeHome !== MONO_HOME ? [activeHome] : [])];
 }
 
 /** Just over the longest wait (60 minutes), as T3 Code does. */
@@ -172,6 +180,22 @@ export function hubChatIdentity(sessionId: string, lookups: HubChatLookups): Hub
   const team = lookups.codingTeamProject?.(sessionId);
   if (team) return { kind: "team", chat: sessionId, projects: [team] };
   return { kind: "chat", chat: sessionId };
+}
+
+/**
+ * The Mono a chat belongs to: its own chat, one of its habit runs, or a worker started under one of those (however
+ * deep). A coding-team chat, a plain hub chat or the app's own helper processes belong to no Mono. Uses the lookups
+ * the hub registered; none registered, none known.
+ */
+export function chatMonoOwner(sessionId: string, lookups: HubChatLookups | undefined = registered?.lookups): string | undefined {
+  if (!lookups) return undefined;
+  const own = lookups.monoOf(sessionId)?.id;
+  if (own) return own;
+  const habit = lookups.habitRunMono(sessionId);
+  if (habit) return habit;
+  if (!sessionId.startsWith("app-")) return undefined;
+  const root = rootOwnerChat(sessionId, lookups);
+  return root ? chatMonoOwner(root, lookups) : undefined;
 }
 
 /**

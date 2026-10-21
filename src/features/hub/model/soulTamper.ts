@@ -1,6 +1,7 @@
 // The soul tamper check (Alfred's idea, the CoS's guard on it). The app keeps the hash of every soul it saves
 // (monos/model/soulSaved.ts). When it reads or opens a soul whose file no longer matches, something other than the app
-// changed it, and the file's change time is set against when chats were running (monos/model/sessionRuns.ts):
+// changed it, and the file's change time is set against when that Mono's own chats and workers (or any chat working in
+// its home folder) were running (monos/model/sessionRuns.ts):
 // - an agent or worker chat was running then: the last saved soul is put back, the changed file is kept beside it in
 //   that Mono's memory, and one Bot changes row says so, whose button ("Keep that change") brings the change back;
 // - nothing was running: it was Ash editing the file by hand. His version is kept and becomes the saved one, with a
@@ -11,6 +12,7 @@ import { readAgentFile, setSoulOpenCheck, writeAgentFile, type AgentFilePath } f
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { refreshProcessRuns, runsAt, type RunWindow } from "../../monos/model/sessionRuns";
 import { recordBotChange } from "./botChanges";
+import { chatMonoOwner, monoHomeDirs } from "./hubMcp";
 
 export type TamperFiles = {
   read(monoId: string, path: AgentFilePath): Promise<{ text: string | null; hash: string; modifiedMs?: number }>;
@@ -34,6 +36,21 @@ export function keptAshLine(name: string): string {
   return `${name}'s soul was edited outside the app. Kept your version.`;
 }
 
+/**
+ * Whether a run could have been the one that changed this Mono's soul: a chat or worker of that same Mono, or one
+ * working inside that Mono's own home folder. Another Mono's chat running at the time doesn't count, so an edit made
+ * then is Ash's and is kept.
+ */
+export function runIsMonos(run: Pick<RunWindow, "sessionId" | "cwd">, monoId: string): boolean {
+  if (chatMonoOwner(run.sessionId) === monoId) return true;
+  const cwd = run.cwd?.replace(/\/+$/, "");
+  if (!cwd) return false;
+  return monoHomeDirs().some((home) => {
+    const dir = `${home.replace(/\/+$/, "")}/${monoId}`;
+    return cwd === dir || cwd.startsWith(`${dir}/`);
+  });
+}
+
 /** One Mono's soul, checked against the last one the app saved. */
 export async function checkSoul(
   monoId: string,
@@ -41,6 +58,7 @@ export async function checkSoul(
   files: TamperFiles = { read: readAgentFile, write: writeAgentFile },
   running: (at: number) => RunWindow[] = (at) => runsAt(at),
   now: number = Date.now(),
+  belongs: (run: RunWindow, monoId: string) => boolean = runIsMonos,
 ): Promise<SoulCheck> {
   const soul = await files.read(monoId, "SOUL.md");
   const saved = savedSoul(monoId);
@@ -58,7 +76,8 @@ export async function checkSoul(
   const changedAt = soul.modifiedMs ?? now;
   // The app process's record of its chats' turns, as it stands now (it holds across a window reload).
   await refreshProcessRuns(now);
-  const runs = running(changedAt);
+  // Only this Mono's own chats and workers, or one working in its home folder (another Mono's chat doesn't count).
+  const runs = running(changedAt).filter((run) => belongs(run, monoId));
   if (runs.length) {
     // 1. The changed file, kept beside it in its memory (never lost).
     const note = changedSoulNote(changedAt);
@@ -77,7 +96,9 @@ export async function checkSoul(
       now: "Changed from outside the app",
       after: "Back to the soul the app last saved",
       details: [
-        `${runs.length === 1 ? "A chat was" : `${runs.length} chats were`} running when it changed.`,
+        runs.length === 1
+          ? `One of ${name}'s chats or workers was running when it changed.`
+          : `${runs.length} of ${name}'s chats or workers were running when it changed.`,
         `The changed version is kept in ${name}'s memory, and "Keep that change" brings it back.`,
       ],
       undoLabel: "Keep that change",
@@ -98,7 +119,7 @@ export async function checkSoul(
     line: keptAshLine(name),
     now: "The soul the app last saved",
     after: "Your version",
-    details: ["No chat was running when it changed, so it was you. Undo goes back to the soul the app last saved."],
+    details: [`None of ${name}'s chats or workers was running when it changed, so it was you. Undo goes back to the soul the app last saved.`],
     undoneText: `Undone: ${name}'s soul is back to how the app last saved it.`,
     monoId,
     file: "SOUL.md",
