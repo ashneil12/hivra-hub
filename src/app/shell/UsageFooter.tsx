@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
 import {
@@ -209,6 +210,7 @@ export function UsageChips({
   accountPicker = true,
   fallback = null,
   variant = "footer",
+  meterIcon = false,
 }: {
   providers: RateLimitProvider[];
   session?: UsageFooterSession;
@@ -222,8 +224,12 @@ export function UsageChips({
   /** Shown when there is no usage to show. */
   fallback?: ReactNode;
   variant?: UsageChipVariant;
+  /** Each chip shows a neutral meter glyph, not its provider's mark. */
+  meterIcon?: boolean;
 }) {
-  const wantClaude = providers.includes("claude");
+  // On the Grok bridge there is no Claude usage to show: its numbers come from the Claude plan's feed, and Grok 4.7
+  // runs on Ash's Grok subscription, so the chip and its popover are left out entirely. Off the bridge, unchanged.
+  const wantClaude = providers.includes("claude") && !onGrokBridge("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
   const wantDevin = providers.includes("devin");
@@ -485,6 +491,7 @@ export function UsageChips({
           limits={claude}
           now={now}
           variant={variant}
+          meterIcon={meterIcon}
           {...claudeAccountProps}
           onReconnect={reconnectClaude}
         />
@@ -495,6 +502,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
           {...codexAccountProps}
           onConsumeReset={consumeCodexReset}
           onReconnect={reconnectCodex}
@@ -506,6 +514,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
         />
       ) : null}
       {wantDevin ? (
@@ -515,6 +524,7 @@ export function UsageChips({
           now={now}
           project={project}
           variant={variant}
+          meterIcon={meterIcon}
           onReconnect={reconnectDevin}
         />
       ) : null}
@@ -590,6 +600,8 @@ function SessionChip({
     }
   };
 
+  // Its sign-in and its name are Claude's: on the Grok bridge the footer shows no chip for a Claude Code chat.
+  if (onGrokBridge(session.harness)) return null;
   if (!canLogin) {
     return (
       <span

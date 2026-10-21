@@ -16,6 +16,8 @@ export type FakeClaudeState = {
   answers: Array<{ sessionId: string; behavior: string; answers: Record<string, string> | null }>;
   /** Ends every turn held by "hold". */
   release(): void;
+  /** What the app asked of the CLI to stop a turn: control requests (`interrupt`, `stop_task`) and kills, by chat. */
+  stops: Array<{ sessionId: string; kind: string }>;
 };
 
 type Handler = (event: { payload: unknown }) => void;
@@ -35,6 +37,7 @@ export function fakeClaudeBackend(): ChildBackend {
     prompts: [],
     answers: [],
     release: () => held.splice(0).forEach((done) => done()),
+    stops: [],
   };
   (window as unknown as { __fakeClaude: FakeClaudeState }).__fakeClaude = state;
 
@@ -162,6 +165,11 @@ export function fakeClaudeBackend(): ChildBackend {
           const record = JSON.parse(String(args?.line)) as Record<string, unknown>;
           const request = record.request as { subtype?: string } | undefined;
           if (record.type === "control_request") {
+            if (request?.subtype === "interrupt" || request?.subtype === "stop_task") {
+              state.stops.push({ sessionId, kind: request.subtype });
+              // As the CLI does: an interrupt ends the running turn.
+              if (request.subtype === "interrupt") state.release();
+            }
             if (request?.subtype !== "interrupt" && request?.subtype !== "stop_task")
               setTimeout(() => emit(sessionId, { type: "control_response", response: { subtype: "success", request_id: record.request_id, response: {} } }), 10);
           } else if (record.type === "control_response") {
@@ -185,6 +193,7 @@ export function fakeClaudeBackend(): ChildBackend {
         }
         case "harness_kill":
         case "harness_kill_all":
+          state.stops.push({ sessionId: String(args?.sessionId ?? "*"), kind: command });
           return undefined as T;
         default:
           return null as T;

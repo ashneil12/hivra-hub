@@ -9,7 +9,7 @@ import {
 } from "../../../shared/ui/icons";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { Modal } from "../../../shared/ui/Modal";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import {
   sessionDisplayTitle,
   type Session,
@@ -313,7 +313,7 @@ export function ResourcePressureNotice({
                         <div className="flex items-center gap-2.5">
                           <span className="grid size-6 shrink-0 place-items-center rounded-md bg-content/5 text-content/50">
                             {session ? (
-                              <HarnessIcon harness={session.harness} />
+                              <ModelInUseIcon harness={session.harness} />
                             ) : (
                               <CircleAlert className="size-3.5" />
                             )}

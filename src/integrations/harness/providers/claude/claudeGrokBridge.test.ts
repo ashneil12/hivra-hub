@@ -143,3 +143,22 @@ it("session rows, cards and tabs say Grok 4.7 for a Claude Code chat on Grok, an
   expect(shownModelName("claude", "Claude Sonnet 5", false)).toBe("Claude Sonnet 5");
   expect(shownModelName("codex", "GPT-5.5", true)).toBe("GPT-5.5");
 });
+
+describe("the model in use, as the model line and the turn header both name it", () => {
+  afterEach(() => {
+    cliPath = null;
+  });
+  it("on the bridge a Claude Code chat reads Grok 4.7 whatever Claude model it names; off it, the name given", async () => {
+    const { modelInUseLabel, onGrokBridge, GROK_BRIDGE_LABEL } = await import("./claudeGrokBridge");
+    expect(GROK_BRIDGE_LABEL).toBe("Grok 4.7");
+    expect(modelInUseLabel("claude", "Claude Sonnet 5")).toBe("Claude Sonnet 5");
+    expect(onGrokBridge("claude")).toBe(false);
+    cliPath = "/Users/example/.local/bin/claude-grok";
+    expect(onGrokBridge("claude")).toBe(true);
+    expect(modelInUseLabel("claude", "Claude Sonnet 5")).toBe("Grok 4.7");
+    // Other harnesses and a turn with no model name are left as they are.
+    expect(onGrokBridge("codex")).toBe(false);
+    expect(modelInUseLabel("codex", "GPT-5.5")).toBe("GPT-5.5");
+    expect(modelInUseLabel("claude", undefined)).toBeUndefined();
+  });
+});

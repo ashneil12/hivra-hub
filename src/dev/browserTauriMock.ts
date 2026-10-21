@@ -196,6 +196,8 @@ mockIPC(
       return found.data;
     }
     if (cmd === "write_attachment") return `/tmp/monocode-attachments/dev-${(args as { name?: string }).name ?? "attachment"}`;
+    // The CLI paths set in Settings, as the Rust side hands them back when they exist (a proof sets the Grok bridge).
+    if (cmd === "harness_runtime_binary_paths") return (args as { paths?: Record<string, string> } | undefined)?.paths ?? {};
     if (cmd.startsWith("plugin:event|")) return 1;
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;

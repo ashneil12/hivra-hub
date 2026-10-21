@@ -26,7 +26,38 @@ export type ChatQuestion = {
   pick?: string;
   /** Touches one of Ash's red lines (said by the agent, or the words do): Autopilot never answers it. */
   redLine: boolean;
+  /** The "(sign in)" style flag on a "Needs Ash" line, as written, when it named one other than a red line. */
+  flag?: string;
 };
+
+// ---- why Ash is needed ---------------------------------------------------------------------------------------
+// Port map idea 3, behaviour matched to Alan's Workspace (desktop/src/renderer.js HANDBACK_TEXT, GPL-3.0: our own code):
+// every ask names one reason from a short fixed list. Alan lets the bot's own note replace the reason; ours never does
+// (the agent's words stay the question line), so a vague ask can't hide what kind of thing it is.
+
+/** The only reasons a row can give, in Ash's words. */
+export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "pick an option", "approve a red-line step", "review"] as const;
+export type NeedsReason = (typeof NEEDS_REASONS)[number];
+
+const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
+  [/\b(?:sign[\s-]?in|log[\s-]?in|login)\b/i, "sign in"],
+  [/\b(?:code|2fa|two[\s-]factor|verification|otp)\b/i, "enter a code"],
+  [/\b(?:pay|payment|card|billing)\b/i, "pay"],
+  [/\b(?:pick|choose|option)\b/i, "pick an option"],
+  [/\breview\b/i, "review"],
+];
+
+/**
+ * Why Ash is needed: a flag the agent wrote wins, then a red line (approve a red-line step), then a choice with a pick or
+ * a live question (pick an option); anything else is "review" (Alan's fallback is "take a look").
+ */
+export function needsReason(q: Pick<ChatQuestion, "source" | "pick" | "redLine" | "flag">): NeedsReason {
+  const flagged = q.flag ? FLAG_REASONS.find(([rx]) => rx.test(q.flag!))?.[1] : undefined;
+  if (flagged) return flagged;
+  if (q.redLine) return "approve a red-line step";
+  if (q.pick || q.source === "ask") return "pick an option";
+  return "review";
+}
 
 const ONE_LINE_MAX = 220;
 
@@ -65,7 +96,7 @@ export function plainOptionLabel(label: string): string {
 const NEEDS_ASH = /^[\s>*_\-•]*needs\s+ash\s*(\((?<flag>[^)]*)\))?\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<q>.+)$/im;
 const MY_PICK = /^[\s>*_\-•]*(?:my\s+pick|my\s+recommendation|recommend(?:ation|ed)?|suggested|i\s+recommend)\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<p>.+)$/im;
 
-export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean };
+export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean; flag?: string };
 
 /** The last "Needs Ash:" line in an agent's text, with the "My pick:" line after it. */
 export function parseNeedsAsh(text: string): NeedsAshMarker | null {
@@ -78,7 +109,8 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   const after = text.slice(found.index + found[0].length);
   const pick = MY_PICK.exec(after)?.groups?.p;
   const flagged = /red/i.test(found.groups.flag ?? "");
-  return { question, ...(pick && oneLine(pick) ? { pick: oneLine(pick) } : {}), redLine: flagged || looksRedLine(`${question} ${pick ?? ""}`) };
+  const flag = !flagged && found.groups.flag?.trim() ? { flag: found.groups.flag.trim() } : {};
+  return { question, ...(pick && oneLine(pick) ? { pick: oneLine(pick) } : {}), redLine: flagged || looksRedLine(`${question} ${pick ?? ""}`), ...flag };
 }
 
 // ---- Ash's red lines -------------------------------------------------------------------------------------------
@@ -166,7 +198,9 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
   if (chat.busy) return null;
   const marker = parseNeedsAsh(lastTurnText(chat.blocks));
-  return marker ? { source: "marker", question: marker.question, more: 0, ...(marker.pick ? { pick: marker.pick } : {}), redLine: marker.redLine } : null;
+  return marker
+    ? { source: "marker", question: marker.question, more: 0, ...(marker.pick ? { pick: marker.pick } : {}), redLine: marker.redLine, ...(marker.flag ? { flag: marker.flag } : {}) }
+    : null;
 }
 
 // ---- answering -------------------------------------------------------------------------------------------------

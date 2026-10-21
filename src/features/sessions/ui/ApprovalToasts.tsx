@@ -12,7 +12,7 @@ import {
   sessionDisplayTitle,
   type Session,
 } from "../model/session";
-import { HarnessIcon } from "./HarnessIcon";
+import { ModelInUseIcon } from "./HarnessIcon";
 
 type Notice = PendingApprovalNotice & { session: Session };
 
@@ -104,7 +104,7 @@ function ApprovalToastCard({
         className="flex w-full flex-col gap-2 px-3.5 py-3 text-left hover:bg-content/5"
       >
         <span className="flex items-center gap-2">
-          <HarnessIcon harness={session.harness} className="size-4 shrink-0" />
+          <ModelInUseIcon harness={session.harness} className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-snug text-content">
             {title}
           </span>

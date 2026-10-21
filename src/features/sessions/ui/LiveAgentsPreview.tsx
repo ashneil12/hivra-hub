@@ -12,7 +12,7 @@ import {
   resolveTabGroupMascot,
 } from "../../workspace/model/tabGroups";
 import { Check, ChevronDown, ChevronUp, CircleAlert } from "../../../shared/ui/icons";
-import { HarnessIcon } from "./HarnessIcon";
+import { ModelInUseIcon } from "./HarnessIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { TerminalSpinner } from "./TerminalSpinner";
 
@@ -220,7 +220,7 @@ function LiveAgentCard({
         <span className="min-w-0 truncate">{activity}</span>
       </span>
       <span className="mt-1 flex min-w-0 items-center gap-1.5 pl-4 text-[11px] leading-tight text-content/45">
-        <HarnessIcon harness={agent.harness} className="size-3 shrink-0" />
+        <ModelInUseIcon harness={agent.harness} className="size-3 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{project}</span>
         {elapsed ? (
           <span className="shrink-0 tabular-nums">{elapsed}</span>

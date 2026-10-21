@@ -15,3 +15,18 @@ it("the sidebar avatar is a neutral letter tile, not a mascot", () => {
   expect(el.querySelector("svg, canvas")).toBeNull();
   act(() => root.unmount());
 });
+
+it("a working dot is a stronger grey that pulses, not the Mono's own colour; idle is the plain grey", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const el = document.createElement("div");
+  const root = createRoot(el);
+  act(() => root.render(createElement(MonoRailMascot, { name: "robot", color: "hsl(45 90% 55%)", status: "working" })));
+  const dot = el.querySelector<HTMLElement>("[data-mono-dot]")!;
+  expect(dot.className).toContain("bg-content/60");
+  expect(dot.style.backgroundColor).toBe("");
+  expect(el.querySelector(".pixel-hop")).not.toBeNull();
+  act(() => root.render(createElement(MonoRailMascot, { name: "robot", color: "hsl(45 90% 55%)", status: "idle" })));
+  expect(el.querySelector("[data-mono-dot]")!.className).toContain("bg-content/30");
+  expect(el.querySelector(".pixel-bob, .pixel-hop")).toBeNull();
+  act(() => root.unmount());
+});

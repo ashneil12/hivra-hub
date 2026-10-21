@@ -192,7 +192,7 @@ import {
   type ExplorerMenuItem,
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../features/sessions/ui/HarnessIcon";
 import { SessionCardPreview } from "../../features/sessions/ui/SessionCardPreview";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
@@ -5607,7 +5607,7 @@ export const SessionCard = memo(function SessionCard({
                 ) : mark ? (
                   <span className={`grid size-4 shrink-0 place-items-center${markHover}`}>{mark}</span>
                 ) : (
-                  <HarnessIcon
+                  <ModelInUseIcon
                     harness={session.harness}
                     className={`${nested ? "size-3.5" : "size-4"} shrink-0${markHover}`}
                   />
@@ -5703,7 +5703,7 @@ export const SessionCard = memo(function SessionCard({
                   {mark ? (
                     <span className="grid size-3.5 shrink-0 place-items-center">{mark}</span>
                   ) : (
-                    <HarnessIcon
+                    <ModelInUseIcon
                       harness={session.harness}
                       className="size-3.5 shrink-0"
                     />
@@ -5791,7 +5791,7 @@ export const SessionCard = memo(function SessionCard({
                     <span className="max-w-0 truncate pr-0 opacity-0 transition-[max-width,opacity,padding] duration-200 ease-out group-focus-within:max-w-32 group-focus-within:pr-1.5 group-focus-within:opacity-100 group-hover:max-w-32 group-hover:pr-1.5 group-hover:opacity-100 motion-reduce:transition-none">
                       {model}
                     </span>
-                    <HarnessIcon
+                    <ModelInUseIcon
                       harness={session.harness}
                       className="size-3.5 shrink-0"
                     />
@@ -5904,7 +5904,7 @@ export const SessionCard = memo(function SessionCard({
                     key={task.sessionId}
                     className="flex min-w-0 items-center gap-1.5 rounded-md px-1 py-1"
                   >
-                    <HarnessIcon
+                    <ModelInUseIcon
                       harness={task.harness}
                       className="size-3.5 shrink-0 opacity-75"
                     />

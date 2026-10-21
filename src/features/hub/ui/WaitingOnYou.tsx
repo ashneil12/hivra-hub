@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Check } from "../../../shared/ui/icons";
+import { needsReason } from "../model/chatQuestions";
 import {
+  answerApproval,
   answerInWords,
   openWaitingChat,
   takePick,
@@ -88,22 +90,40 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
     if (!res.ok) return setProblem(res.reason);
     next?.focus();
   };
-  const where = [showProject ? (chat.projectName ?? "No project") : null, chat.chatName].filter(Boolean).join(" · ");
+  // A row with no project shows just its chat's name: no "No project ·" in front.
+  const where = [showProject ? chat.projectName : null, chat.chatName].filter(Boolean).join(" · ");
   return (
     <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
-        <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span>
-        {chat.redLine ? <span className="shrink-0 rounded bg-content/8 px-1.5 text-[11px] text-content/70" data-hub-red-line>Red line</span> : null}
+        {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
+        {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3). */}
+        {where ? <span className="shrink-0" aria-hidden>·</span> : null}
+        <span className="shrink-0" data-hub-waiting-reason>{needsReason(chat)}</span>
+        {chat.redLine ? <span className="sr-only" data-hub-red-line>Red line</span> : null}
       </div>
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>
         {chat.question}
         {chat.more ? <span className="text-content/60"> (+{chat.more} more)</span> : null}
       </div>
-      <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
-        {chat.pick ? `Suggests: ${chat.pick}` : "No suggestion. Answer in your words or open the chat."}
-      </div>
+      {/* No suggestion, no line: the reply box and Open chat already say what to do. */}
+      {chat.pick ? (
+        <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
+          Suggests: {chat.pick}
+        </div>
+      ) : null}
       <div className="mt-1 flex items-center gap-2">
-        {chat.pick ? (
+        {chat.redLine ? (
+          // A red line is an approval: two explicit choices in the same quiet style, neither one the default, and no
+          // "this session" or "always" (matched to Alan's Workspace approvalBody, minus its broader grants).
+          <span className="flex shrink-0 items-center gap-2" data-hub-approval role="group" aria-label="Approve or deny">
+            <button type="button" className={BTN} disabled={busy} data-hub-approve-once onClick={(e) => void run(() => answerApproval(chat.sessionId, "approve-once", chat), e.currentTarget)}>
+              Approve once
+            </button>
+            <button type="button" className={BTN} disabled={busy} data-hub-deny onClick={(e) => void run(() => answerApproval(chat.sessionId, "deny", chat), e.currentTarget)}>
+              Deny
+            </button>
+          </span>
+        ) : chat.pick ? (
           <button type="button" className={PRIMARY} disabled={busy} data-hub-take-pick onClick={(e) => void run(() => takePick(chat.sessionId), e.currentTarget)}>
             Take the pick
           </button>

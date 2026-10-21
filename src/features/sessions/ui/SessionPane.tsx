@@ -69,16 +69,17 @@ import {
   subscribeMonos,
 } from "../../monos/model/mono";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
-import { useDelegationPane } from "../../monos/hooks/useDelegationPane";
+import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
+import { readTeamReport } from "../../monos/model/teamReport";
+import { MonoModelLine } from "../../monos/ui/MonoModelLine";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
-import { useCodingTeamVersion } from "../../hub/model/codingTeam";
+import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import {
   DelegatedChatNotice,
   DelegationWaitingLine,
 } from "../../monos/ui/DelegationNotices";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
-import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { UsageChips } from "../../../app/shell/UsageFooter";
 import type { RateLimitProvider } from "../../providers/model/rateLimits";
 import { MonoUsageLimitNotice } from "../../monos/ui/MonoUsageLimitNotice";
@@ -197,6 +198,8 @@ export type SessionPaneProps = {
   ) => boolean | void;
   onRemoveDraft: (sessionId: string, draftBlockId: string) => boolean | void;
   onStop: (sessionId: string) => void;
+  /** Stop only this chat's own turn, never the work it handed out (a Mono's Stop button). */
+  onStopTurn?: (sessionId: string) => void;
   onCompactContext: (sessionId: string) => boolean;
   onPlaceSessionInFolder: (
     sessionId: string,
@@ -289,6 +292,9 @@ type Props = SessionPaneProps & {
   allowedModelHarnesses?: readonly HarnessId[];
 };
 
+/** A coding team's report in a Mono's chat, named by the team its Lead runs (port map idea 1). */
+const monoTeamReport = (block: Block) => readTeamReport(block, reportTeamOf);
+
 export const SessionPane = memo(function SessionPane(input: SessionPaneProps) {
   const session = useSessionSnapshot(input.session, input.visible);
   const props = session === input.session ? input : { ...input, session };
@@ -341,6 +347,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onRemoveDraft,
   onSubmit,
   onStop,
+  onStopTurn,
   onCompactContext,
   onPlaceSessionInFolder,
   onDeleteQueuedMessage,
@@ -434,6 +441,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   // A worker's chat runs on its own; a chat Ash talks to (a Mono, or a coding-team chat) with work out reads what is
   // out ("2 working: API · 1 stuck: Tests"), with a card for each stuck worker (H4).
   useCodingTeamVersion();
+  // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
+  const teamChat = !agent && isCodingTeamChat(session.id);
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id));
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
@@ -777,7 +786,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
         return onSubmit(session.id, text, attachments, options);
       }}
       onBtwCommand={btw.openWith}
-      onStop={() => onStop(session.id)}
+      // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
+      onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
+      turnStop={teamChat}
+      modelLine={
+        teamChat ? (
+          <MonoModelLine
+            harness={session.harness}
+            model={session.model}
+            values={session.modelSettings}
+            allowedHarnesses={allowedModelHarnesses}
+            project={session.cwd}
+            hotkeys={focused && !btw.open}
+            onChange={(harness, model) => onModelChange(session.id, harness, model)}
+            onSettingsChange={(settings) => onModelSettingsChange(session.id, settings)}
+          />
+        ) : undefined
+      }
       onCompactContext={() => onCompactContext(session.id)}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
@@ -1027,6 +1052,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     openSessionId={openMonoSessionId}
                     // A Mono's turn keeps copy, save as note and the time.
                     daySeparators={!!agent}
+                    teamReportOf={agent ? monoTeamReport : undefined}
                     hideTurnMetrics={!!agent}
                     harness={session.harness}
                     model={session.model}
@@ -1251,7 +1277,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     // drops it first, then shows the model controls as icons.
                     tools={
                       monoComposerUsage ? (
-                        <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
+                        // Grey like the rest of the line, with a neutral meter glyph: no provider mark under a Mono's box
+                        // (Critiquito and the room, 21 Oct).
+                        <div data-mono-usage className="flex shrink-0 items-center gap-0.5 text-[11px] text-content/55 @max-md:hidden">
                           <UsageChips
                             providers={monoUsageProviders(session.harness)}
                             session={{
@@ -1263,41 +1291,32 @@ const LocalSessionPane = memo(function LocalSessionPane({
                             project={session.cwd}
                             accountPicker={false}
                             variant="composer"
+                            meterIcon
                           />
                         </div>
                       ) : undefined
                     }
-                    controls={
-                      <>
-                        <ModelPicker
-                          harness={session.harness}
-                          model={session.model}
-                          values={session.modelSettings}
-                          allowedHarnesses={allowedModelHarnesses}
-                          project={workCwd}
-                          hideSettings
-                          hotkeys={focused && !btw.open}
-                          variant="text"
-                          labelClassName="@max-sm:hidden"
-                          onChange={(harness, model) =>
-                            onModelChange(session.id, harness, model)
-                          }
-                          onSettingsChange={(settings) =>
-                            onModelSettingsChange(session.id, settings)
-                          }
-                        />
-                        <ModelControlPills
-                          harness={session.harness}
-                          model={session.model}
-                          values={session.modelSettings}
-                          variant="text"
-                          labelClassName="@max-sm:hidden"
-                          onSettingsChange={(settings) =>
-                            onModelSettingsChange(session.id, settings)
-                          }
-                        />
-                      </>
+                    // The model as small text above the box (port map idea 2), in place of the picker under it.
+                    modelLine={
+                      <MonoModelLine
+                        harness={session.harness}
+                        model={session.model}
+                        values={session.modelSettings}
+                        allowedHarnesses={allowedModelHarnesses}
+                        project={workCwd}
+                        hotkeys={focused && !btw.open}
+                        labelClassName="@max-sm:hidden"
+                        onChange={(harness, model) =>
+                          onModelChange(session.id, harness, model)
+                        }
+                        onSettingsChange={(settings) =>
+                          onModelSettingsChange(session.id, settings)
+                        }
+                      />
                     }
+                    busy={!!session.busy}
+                    // Stop is this chat's own turn; "Stop all" on the delegation line stops what it handed out.
+                    onStop={() => (onStopTurn ?? onStop)(session.id)}
                   />
                 </>
               ) : delegationPane?.kind === "worker" ? (

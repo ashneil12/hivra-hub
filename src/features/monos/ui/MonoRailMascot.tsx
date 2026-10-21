@@ -57,12 +57,12 @@ export function MonoRailMascot({
 /** The status circle alone, for rails that dim the mascot but not its state. */
 export function MonoStatusDot({
   status,
-  color,
   className,
   tone,
 }: {
   status: MonoStatus;
-  color: string;
+  /** Unused: a working dot is grey, not the Mono's colour. Kept so callers needn't change. */
+  color?: string;
   className: string;
   /** A failed last turn: red (fix something first) or amber (Try again can work). */
   tone?: "red" | "amber";
@@ -73,7 +73,9 @@ export function MonoStatusDot({
       data-mono-dot={status}
       className={`absolute rounded-full ring-1 ring-background-base ${className} ${
         status === "working"
-          ? "motion-safe:animate-pulse"
+          ? // Working is a stronger grey that pulses, not the Mono's own colour (the room, 21 Oct): the rail's only
+            // colours are the ones that ask something of Ash.
+            "bg-content/60 motion-safe:animate-pulse"
           : status === "needs-you"
             ? "bg-accent"
             : status === "failed"
@@ -82,7 +84,6 @@ export function MonoStatusDot({
                 : "bg-amber-400"
               : "bg-content/30"
       }`}
-      style={status === "working" ? { backgroundColor: color } : undefined}
     />
   );
 }

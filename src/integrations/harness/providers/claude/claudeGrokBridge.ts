@@ -29,6 +29,22 @@ export function claudeRunsOnGrok(
   return bench || (!!path && baseName(path.trim()) === CLAUDE_GROK_BRIDGE_NAME);
 }
 
+/** What a Claude Code chat on the bridge really runs, as the hub names it (GROK_BRIDGE_MODEL). */
+export const GROK_BRIDGE_LABEL = "Grok 4.7";
+
+/** True when a chat on this harness runs on the bridge (so its Claude model name and mark aren't what runs). */
+export function onGrokBridge(harness: string | undefined): boolean {
+  return harness === "claude" && claudeRunsOnGrok();
+}
+
+/**
+ * The model a chat really runs, by name: Grok 4.7 for a Claude Code chat on the bridge, whatever Claude model it names;
+ * otherwise the name given. The one source the model line and the transcript's turn header both read.
+ */
+export function modelInUseLabel(harness: string | undefined, name: string | undefined): string | undefined {
+  return name && onGrokBridge(harness) ? GROK_BRIDGE_LABEL : name;
+}
+
 /** Grok 4.7 takes low, medium, high or xhigh. Claude-only levels step down to the nearest one Grok has. */
 export function grokBridgeEffort(effort: string | undefined): string | undefined {
   if (!effort) return undefined;
@@ -47,18 +63,15 @@ export async function findClaudeGrokBridge(): Promise<string | null> {
   }
 }
 
-/** What the model pill says for a Claude Code chat on Grok: every Claude Code chat runs on Grok 4.7 then. */
-export const GROK_BRIDGE_LABEL = "Grok 4.7";
-
-/**
- * A Claude Code model's name in the composer's pill. On Grok it is Grok 4.7, whatever model the chat had saved (S14 on
- * Grok showed the gateway's own label for claude-sonnet-5, "Gemini 4 Argon", though the chat ran on grok-4.7).
- */
 /** A chat's model name wherever the app shows it (session rows, cards, tabs): Grok 4.7 for Claude Code on Grok. */
 export function shownModelName(harness: string, name: string, onGrok: boolean = claudeRunsOnGrok()): string {
   return harness === "claude" && onGrok ? GROK_BRIDGE_LABEL : name;
 }
 
+/**
+ * A Claude Code model's name in the composer's pill. On Grok it is Grok 4.7, whatever model the chat had saved (S14 on
+ * Grok showed the gateway's own label for claude-sonnet-5, "Gemini 4 Argon", though the chat ran on grok-4.7).
+ */
 export function claudePillName(name: string, onGrok: boolean = claudeRunsOnGrok()): string {
   return onGrok ? GROK_BRIDGE_LABEL : name.replace(/^Claude /, "");
 }

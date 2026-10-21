@@ -6,7 +6,7 @@ import {
   type OrchestrationSummary,
 } from "../model/orchestrationSummary";
 import { HARNESS_TITLE } from "../../sessions/model/session";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import {
   OrchestrationActions,
   OrchestrationWorkers,
@@ -167,7 +167,7 @@ export function OrchestrationSidebarAgents({
                     rail the mark stays: the curve already shows the nesting. */}
                 <span className="grid size-3.5 shrink-0 place-items-center text-content/45">
                   {tree ? (
-                    <HarnessIcon
+                    <ModelInUseIcon
                       harness={task.harness}
                       className="size-3.5 opacity-75"
                     />
@@ -175,7 +175,7 @@ export function OrchestrationSidebarAgents({
                     <ChevronDown className="size-3" strokeWidth={1.75} />
                   ) : (
                     <>
-                      <HarnessIcon
+                      <ModelInUseIcon
                         harness={task.harness}
                         className="size-3.5 opacity-75 group-focus-visible/agent:hidden group-hover/agent:hidden"
                       />
@@ -232,7 +232,7 @@ export function OrchestrationSidebarAgents({
                     className="flex min-w-0 items-center gap-1.5 text-[11px] text-content/45"
                     title={`${model} · ${HARNESS_TITLE[task.harness]}`}
                   >
-                    <HarnessIcon
+                    <ModelInUseIcon
                       harness={task.harness}
                       className="size-3.5 shrink-0"
                     />
