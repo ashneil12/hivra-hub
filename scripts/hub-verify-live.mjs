@@ -2376,7 +2376,7 @@ async function main() {
       child: ctChildRow,
       chatIsMono: ctMonoBlocks > 0 || !!ctRow?.owner_mono,
       delegateTool: !!ctMcp.monocode && ctArgs.includes("mcp__monocode__*"),
-      firstPrompt: ["<coding_team>", "<talk_rules>", "<delegate_rules>", "<project_memory>"].filter((tag) => ctFirstPrompt.includes(tag)),
+      firstPrompt: ["<coding_team>", "<chat_rules>", "<delegate_tools>", "<project_memory>"].filter((tag) => ctFirstPrompt.includes(tag)),
       brief: {
         signed: ctBrief.includes("[MonoCode brief from Verify coding team]"),
         rules: ctBrief.includes("<worker_rules>"),

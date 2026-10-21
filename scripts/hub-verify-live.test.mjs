@@ -284,7 +284,7 @@ test("the coding team: Ash's new chat, its worker and the report reach their own
   const { rules } = scenario({ runId: "r1" });
   const fired = {};
   const pick = (prompt, tags = []) => pickRule(rules, prompt, tags, fired)?.name ?? null;
-  const context = "<monocode_context>\n<coding_team>...</coding_team>\n<delegate_rules>Reports start with [MonoCode report]; a [MonoCode brief from you] ...</delegate_rules>\n</monocode_context>\n\n";
+  const context = "<monocode_context>\n<coding_team>...</coding_team>\n<delegate_tools>Reports start with [MonoCode report]; a [MonoCode brief from you] ...</delegate_tools>\n</monocode_context>\n\n";
   // A coding-team chat reads who it is ahead of Ash's message.
   assert.equal(pick(`${context}${CT_KICKOFF} run r1: have one worker check the verify widget.`), "ct-kickoff");
   const kickoff = rules.find((rule) => rule.name === "ct-kickoff");

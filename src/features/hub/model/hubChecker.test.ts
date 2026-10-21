@@ -222,8 +222,8 @@ describe("3. no delegate: the tool, the tasks and the teaching all stay away fro
     const look = { name: "EXO lead", mascot: "robot", color: "x", projects: [] };
     const lead = monoContext(look, { ...FILES, id: "vg-game-lead" }, { soul: true, memory: false }, { delegate: true });
     expect(lead).toContain(CHECK_RULES);
-    expect(CHECK_RULES).toContain('ash_record check {"id": "<check id>", "verdict": "right"');
     expect(CHECK_RULES).toContain("[MonoCode check]");
+    expect(CHECK_RULES).toContain('"Right:" or "Fixed:"');
     expect(monoContext(look, { ...FILES, id: "frank" }, { soul: true, memory: false })).not.toContain(CHECK_RULES);
   });
 });

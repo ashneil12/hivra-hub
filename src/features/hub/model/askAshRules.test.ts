@@ -14,9 +14,10 @@ describe("asking Ash, as every Mono is told", () => {
   it("is in the Mono's context with its soul (live chats get it once: the prompt version moved)", () => {
     const full = monoContext(look, files, { soul: true, memory: false });
     expect(full).toContain(ASK_ASH_RULES);
-    expect(full).toContain("Come back to him only with something that truly needs him");
-    expect(full).toContain("Don't queue questions with ash_ask_ash");
-    expect(full).toContain("Workers you delegate to ask you, not Ash");
+    expect(full).toContain("ask Ash only what truly needs him");
+    expect(full).toContain('its label ending "(Recommended)"');
+    expect(full).toContain("Needs Ash: <the question, one line>\nMy pick: <your answer>");
+    expect(full).toContain("Your workers ask you, not Ash");
     expect(monoContext(look, files, { soul: false, memory: true })).not.toContain("<ask_ash_rules>");
   });
 

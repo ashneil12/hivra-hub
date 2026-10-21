@@ -8,7 +8,7 @@ import { CHECK_RULES } from "../../hub/model/checkerRules";
 import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
 import { questionGoesToLead } from "../../notifications/model/stuckNotifications";
 import type { Delegation } from "./delegations";
-import { codingTeamContext, DELEGATE_RULES, PULL_REQUEST_RULES, TALK_RULES } from "./monoFiles";
+import { CHAT_RULES, codingTeamContext, DELEGATE_NOTE } from "./monoFiles";
 import { isOrchestratorChat } from "./orchestrators";
 
 const TEAM = { projectId: "vg-game", projectName: "EXO", folder: "/Users/ash/Projects/vg-game", leadName: "EXO lead" };
@@ -19,14 +19,17 @@ beforeEach(() => {
 });
 
 describe("codingTeamContext", () => {
-  it("says who the chat is, then carries a Lead's delegate, check, pull request and ask-Ash rules", () => {
+  it("says who the chat is, then carries the chat, ask-Ash and delegate notes", () => {
     const text = codingTeamContext(TEAM);
     expect(text.startsWith("<coding_team>\nYou are a chat in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game.")).toBe(true);
-    expect(text).toContain("Ash talks to you here directly, like EXO lead: you are an orchestrator, not a worker");
-    expect(text).toContain("start them on the sonnet model");
-    for (const block of [ASK_ASH_RULES, TALK_RULES, DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES]) expect(text).toContain(block);
+    expect(text).toContain("Ash talks to you directly: you orchestrate");
+    expect(text).toContain("on sonnet unless the job needs more");
+    for (const block of [CHAT_RULES, ASK_ASH_RULES, DELEGATE_NOTE]) expect(text).toContain(block);
+    expect(DELEGATE_NOTE).toContain(CHECK_RULES);
     expect(text).not.toContain("<project_memory>");
-    expect(text).not.toMatch(/—/);
+    expect(text).not.toMatch(/\u2014/);
+    // Small: a thin layer over Claude Code (Ash, 21 Oct).
+    expect(new TextEncoder().encode(text).length).toBeLessThan(3_000);
   });
 
   it("ends with the project's memory primer when there is one", () => {
