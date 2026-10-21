@@ -90,7 +90,7 @@ it("hub, clean first launch: the default team in normal rows, no intro card, no 
   const { hubMonoRank } = await import("../../features/hub/model/hubData");
   render({ rank: hubMonoRank });
   const names = [...container.querySelectorAll("[data-mono-status] > button[title]")].map((b) => b.getAttribute("title")!.split("\n")[0]).filter((t) => t !== "Mono options");
-  expect(names).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred", "Critiquito"]);
+  expect(names).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred"]);
   expect(intro()).toBeNull();
   expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(container.querySelector(".bg-accent")).toBeNull();

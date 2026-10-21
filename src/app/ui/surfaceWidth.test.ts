@@ -44,4 +44,14 @@ describe("main surfaces fill the width", () => {
     expect(today).toContain('className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body');
     expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 py-6 xl:px-8" data-pages-list');
   });
+
+  it("Today and a project's dashboard put project sections side by side above about 1800px", () => {
+    expect(read("src/features/hub/ui/HubSurface.tsx")).toContain('className="grid items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects');
+  });
+
+  it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {
+    const pages = read("src/features/pages/ui/PagesView.tsx");
+    expect(pages).not.toMatch(/-rotate-12[^"]*">Preview</);
+    expect(pages).toContain("This is a preview. Nothing is saved until you apply it.");
+  });
 });

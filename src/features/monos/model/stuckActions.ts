@@ -126,8 +126,12 @@ export async function sendWords(stuck: StuckWorker, text: string): Promise<Stuck
 }
 
 /** Open the worker's chat under the Mono that started it. */
+/**
+ * A stuck item opens its Lead's chat, not the worker's (Ash 21 Oct, D5): Ash answers the Lead, and the Lead relays to
+ * its worker. The worker's own chat stays a click away there (its note in the Lead's chat opens it).
+ */
 export function openStuck(stuck: StuckWorker): void {
-  delegationActions()?.openChild(stuck.row.ownerSession, stuck.row.childSession);
+  delegationActions()?.openOwner(stuck.row.ownerSession);
 }
 
 /** Open a Mono's own chat (a stuck job whose worker this app has no row for: its Lead's chat is where it stands). */

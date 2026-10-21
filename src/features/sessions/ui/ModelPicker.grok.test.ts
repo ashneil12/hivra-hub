@@ -65,12 +65,16 @@ vi.mock("../../../shared/ui/Popover", () => ({
 
 // On the Grok subscription bridge (claudeGrokBridge.ts) every Claude Code chat runs on Grok 4.7: the label says so.
 const bridge = vi.hoisted(() => ({ on: true }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
+vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../integrations/harness/providers/claude/claudeGrokBridge")>();
+  return {
+  ...actual,
   claudeRunsOnGrok: () => bridge.on,
-  // The picker asks onGrokBridge (one source with the model line); the original calls its own claudeRunsOnGrok.
-  onGrokBridge: (harness: string | undefined) => harness === "claude" && bridge.on,
-}));
+  // The picker asks onGrokBridge (one source with the model line); the original calls its own claudeRunsOnGrok. A chat
+  // on a non-Grok Other model is off the bridge (E7, routedOffBridge).
+  onGrokBridge: (harness: string | undefined, model?: string) => harness === "claude" && bridge.on && !actual.routedOffBridge({ model }),
+  };
+});
 
 import { ModelPicker } from "./ModelPicker";
 import { resetHarnessModelOverlays } from "../model/models";
@@ -107,5 +111,38 @@ describe("model picker on the Grok bridge", () => {
     bridge.on = false;
     render();
     expect(trigger().textContent).not.toContain("Grok");
+  });
+});
+
+describe("E7: the bridge's model list also offers the Other models", () => {
+  const DEEPSEEK = { id: "ds", name: "DeepSeek V4", provider: "deepseek", baseUrl: "https://api.deepseek.com", modelId: "deepseek-v4" };
+  const OPENROUTER = { id: "or", name: "Qwen Coder", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", modelId: "qwen/qwen-coder" };
+  const open = (model: string, onChange = vi.fn()) => {
+    localStorage.setItem("monocode:custom-models", JSON.stringify([DEEPSEEK, OPENROUTER]));
+    act(() => root.render(createElement(ModelPicker, { harness: "claude", model, values: {}, hideSettings: true, onChange, onSettingsChange: vi.fn() })));
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click());
+    return onChange;
+  };
+
+  it("a bridge chat's picker lists Grok 4.7, then DeepSeek and the other Other models; picking one moves the chat to it", () => {
+    bridge.on = true;
+    const onChange = open("claude:sonnet-4.6");
+    // The bridge's list (the test's Popover keeps only data-model-picker): Grok 4.7 first, then the Other models.
+    const list = container.querySelector("[data-model-picker]")!;
+    expect(list.querySelector("[data-bridge-other-models]")).not.toBeNull();
+    const rows = [...list.querySelectorAll('[role="menuitemradio"]')];
+    expect(rows.map((r) => r.textContent)).toEqual(["Grok 4.7", "DeepSeek V4DeepSeek", "Qwen CoderOpenRouter"]);
+    expect(rows.map((r) => r.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    expect(list.querySelector('[aria-label="Other models"]')).not.toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[data-bridge-other-model="ds"]')!.click());
+    expect(onChange).toHaveBeenCalledWith("claude", "custom:ds");
+  });
+
+  it("a chat already on DeepSeek is off the bridge: the full list, as before, not the bridge's", () => {
+    bridge.on = true;
+    open("custom:ds");
+    expect(container.querySelector("[data-bridge-other-models]")).toBeNull();
+    expect(container.querySelector('button[aria-haspopup="dialog"]')!.textContent).not.toContain("Grok 4.7");
+    expect(container.querySelector("[data-other-models]")).not.toBeNull();
   });
 });

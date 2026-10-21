@@ -28,12 +28,12 @@ const storage = () => Object.fromEntries(Object.keys(localStorage).map((k) => [k
 beforeEach(() => localStorage.clear());
 
 describe("a fresh install", () => {
-  it("starts with the leadership team, names and personalities kept, minus anything personal to Ash", async () => {
+  it("starts with the default team, names and personalities kept, minus anything personal to Ash", async () => {
     localStorage.setItem("monocode:mono-roster", "[]"); // an empty roster is no data yet
     ensureBuiltInMonos();
     expect(teamPack()).toBe("plain");
-    expect(listMonos().map((m) => m.id)).toEqual(SHIPPED_IDS);
-    expect(listMonos().map((m) => m.name)).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred", "Critiquito"]);
+    expect(listMonos().map((m) => m.id)).toEqual(TEAM_IDS); // Critiquito is an add-on, offered unticked (Ash 14 Oct)
+    expect(listMonos().map((m) => m.name)).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred"]);
     for (const m of listMonos()) expect(m.instructions, m.id).toBe(PLAIN_SOULS[m.id]);
     // The same people: each shipped soul keeps its role, who it is and its skills.
     for (const id of SHIPPED_IDS) {
@@ -42,8 +42,8 @@ describe("a fresh install", () => {
       expect(PLAIN_SOULS[id].split("## Skills")[1], id).toBe(TEAM_SOULS[id].split("## Skills")[1]);
     }
     const f = files();
-    expect(await seedTeamFiles(f.read, f.write)).toEqual(SHIPPED_IDS);
-    for (const id of SHIPPED_IDS) {
+    expect(await seedTeamFiles(f.read, f.write)).toEqual(TEAM_IDS);
+    for (const id of TEAM_IDS) {
       expect(f.store.get(`${id}/SOUL.md`), id).toBe(PLAIN_SOULS[id]);
       expect(f.store.has(`${id}/MEMORY.md`), id).toBe(false);
     }

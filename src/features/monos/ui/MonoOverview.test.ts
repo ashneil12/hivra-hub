@@ -212,6 +212,10 @@ it("lists every running session it started, newest first; finished history stays
   await render("sessions");
   expect(container.querySelectorAll("[data-mono-session]")).toHaveLength(0);
   expect(container.textContent).toContain("Nothing running right now.");
+  // Plain and calm: what the empty list means, and when sessions show. No ghost words.
+  const empty = container.querySelector("[data-mono-sessions-empty]")?.textContent ?? "";
+  expect(empty).toMatch(/^Nothing running right now\. Sessions show here while .+ is working/);
+  expect(empty).not.toMatch(/ghost|haunt|spook|empty|nothing here yet/i);
   await render("sessions", vi.fn(), { sessions: [running("a"), running("b")] });
   const rows = [...container.querySelectorAll("[data-mono-session]")];
   expect(rows.map((row) => row.getAttribute("data-mono-session"))).toEqual([

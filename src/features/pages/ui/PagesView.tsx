@@ -523,10 +523,7 @@ export function PagesContent() {
             {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {asker}: “{sentBack}”</div> : null}
           </div>
         ) : null}
-        <div className="relative rounded-xl border border-dashed border-content/30 p-4">
-          <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
-            <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
-          </div>
+        <div className="relative rounded-xl border border-dashed border-content/30 p-4" data-pages-preview-frame>
           <div className="relative"><PageBody page={preview} /></div>
         </div>
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
@@ -686,10 +683,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
           {keeps.length ? `It keeps what you allowed it (${allowedLabel(keeps.length).replace(/^Allowed: /, "")}).` : "The page stays as it is until you use this version."}
         </div>
         {added.length ? <div className="mb-3"><div className="mb-1 text-[12px] text-content/70">The new version also asks:</div><Permissions asks={added} /></div> : null}
-        <div className="relative rounded-xl border border-dashed border-content/30 p-4">
-          <div aria-hidden className="pointer-events-none absolute inset-0 grid select-none place-items-center overflow-hidden rounded-xl">
-            <span className="-rotate-12 text-[64px] font-semibold tracking-widest text-content/[0.05]">Preview</span>
-          </div>
+        <div className="relative rounded-xl border border-dashed border-content/30 p-4" data-pages-preview-frame>
           <div className="relative"><PageBody page={preview} /></div>
         </div>
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">

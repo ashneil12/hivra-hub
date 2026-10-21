@@ -5,8 +5,8 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
 // - Ash 21 Oct, width: Pages and Today fill the window at 1280, 1920 and 2560 wide, with modest side padding.
-// - Ash 21 Oct, team: a fresh install's onboarding shows the leadership team (names kept, a role line under each) and
-//   no pre-load option; nothing of Ash's.
+// - Ash 21 Oct, team: a fresh install's onboarding shows the default team (names kept, a role line under each) and
+//   no pre-load option; nothing of Ash's. Round 20: the team is the four, Critiquito an unticked add-on (pm-20-review).
 //   PM_PROOF_SPEC=pm-19-width-team.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-19";
@@ -80,9 +80,9 @@ test("fresh install onboarding: our team with a role line under each name, and n
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.locator("[data-hub-onboarding-next]").click();
   const text = () => page.evaluate(() => document.body.innerText);
-  await expect.poll(text).toMatch(/Critiquito/);
+  await expect.poll(text).toMatch(/Team setup/);
   const body = await text();
-  for (const [name, role] of [["Chief of Staff", "Business partner"], ["Projects Manager", "Screens and board"], ["frank", "Memory and checks"], ["Alfred", "Team setup"], ["Critiquito", "Design review"]]) {
+  for (const [name, role] of [["Chief of Staff", "Business partner"], ["Projects Manager", "Screens and board"], ["frank", "Memory and checks"], ["Alfred", "Team setup"]]) {
     expect(body).toContain(name);
     expect(body).toContain(role);
   }

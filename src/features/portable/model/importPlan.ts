@@ -17,6 +17,9 @@ import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templa
 import type { GroupChat, HubProject } from "../../hub/model/types";
 import { isPortableSetting, settingLooksSecret, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
 import { forYou } from "../../hub/model/userName";
+import { isKnownSeededSoul } from "../../hub/model/soulRefresh";
+import { teamSpecOf } from "../../hub/model/builtInMonos";
+import { knownTeamPack, setTeamPack } from "../../hub/model/teamPack";
 
 // ---- what Rust found (src-tauri/src/portable.rs, Inspection) ---------------------------------------------------------
 
@@ -519,7 +522,13 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   const soulsWritten = new Set(rust?.soulsRestored ?? []);
   for (const m of plan.monos.filter((x) => x.state === "here" && choices.monos.has(x.mono.id))) {
     try {
-      const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), { replace: choices.replaceSouls.has(m.mono.id), ...deps.agentFiles });
+      // A soul that is still only the one the app seeded here is no one's edit: the file's own soul takes its place
+      // (a fresh install taking its team in from an export). Anything edited here stays unless ticked to replace.
+      const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), {
+        replace: choices.replaceSouls.has(m.mono.id),
+        stale: async (path, current) => path === "SOUL.md" && (await isKnownSeededSoul(current)),
+        ...deps.agentFiles,
+      });
       if (r.written.length) merged++;
       if (r.written.includes("SOUL.md")) soulsWritten.add(m.mono.id);
       for (const problem of r.problems) problems.push(`${m.mono.name}: ${problem}`);
@@ -528,6 +537,10 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     }
   }
   if (merged) lines.push(`${plural(merged, "Mono")} already here got the files they didn't have.`);
+  // A fresh install whose team now carries the export's souls is no longer fresh: say so, so nothing reads it as one.
+  if (knownTeamPack() === "plain" && [...soulsWritten].some((id) => { const mono = listMonos().find((x) => x.id === id); return !!mono && !!teamSpecOf(mono); })) {
+    setTeamPack("imported");
+  }
   if (soulsWritten.size && deps.recordSouls) {
     try {
       await deps.recordSouls([...soulsWritten]);

@@ -231,6 +231,7 @@ export function StuckWorkerCard({
           type="button"
           className={BTN}
           data-stuck-open
+          title={`Opens ${leadNameOf(stuck)}'s chat: you answer it there, and it passes the answer on`}
           onClick={() => {
             openStuck(stuck);
             onOpened?.();

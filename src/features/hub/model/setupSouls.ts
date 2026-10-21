@@ -123,7 +123,12 @@ export type SoulFilesResult = { written: AgentFilePath[]; kept: AgentFilePath[];
 export async function writeSoulFiles(
   monoId: string,
   files: [AgentFilePath, string][],
-  { write = writeAgentFile as Writer, read = readAgentFile as Read, replace = false }: { write?: Writer; read?: Read; replace?: boolean } = {},
+  {
+    write = writeAgentFile as Writer,
+    read = readAgentFile as Read,
+    replace = false,
+    stale,
+  }: { write?: Writer; read?: Read; replace?: boolean; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
 ): Promise<SoulFilesResult> {
   const written: AgentFilePath[] = [];
   const kept: AgentFilePath[] = [];
@@ -139,7 +144,8 @@ export async function writeSoulFiles(
       continue;
     }
     if (current === text) continue;
-    if (current?.trim() && !replace) {
+    // `stale`: a file that is only what the app seeded (no one's edit), which an import may take the place of.
+    if (current?.trim() && !replace && !(stale && (await stale(path, current)))) {
       kept.push(path);
       continue;
     }
@@ -180,7 +186,12 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
  */
 export async function mergeIntoSeated(
   soul: SetupSoul,
-  { replace = false, write, read }: { replace?: boolean; write?: Writer; read?: Read } = {},
+  {
+    replace = false,
+    write,
+    read,
+    stale,
+  }: { replace?: boolean; write?: Writer; read?: Read; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
 ): Promise<SoulFilesResult> {
   const mono = findMono(soul.monoId);
   if (!mono) return { written: [], kept: [], problems: [] };
@@ -191,7 +202,7 @@ export async function mergeIntoSeated(
     ...(engine.engine && (!m.engine || replace) ? engine : {}),
     ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
   }));
-  return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}) });
+  return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}), ...(stale ? { stale } : {}) });
 }
 /** Not now: drops the waiting soul; nothing was seated or written. */
 export function dismissWaitingSoul(monoId: string): void {

@@ -1,7 +1,7 @@
 // A clean first launch (and every new project) starts with the default team:
 // Chief of Staff, Projects Manager, frank, Alfred. Critiquito is only an
 // add-on offer. Everything else comes via a setup file.
-import { knownTeamPack, teamPack, teamSouls } from "./teamPack";
+import { teamPack, teamSouls } from "./teamPack";
 
 const ROSTER_KEY = "monocode:mono-roster";
 
@@ -134,11 +134,10 @@ export function ensureBuiltInMonos(): number {
     }
     localStorage.setItem(SEEDED_KEY, "1");
     localStorage.setItem(OLD_TEAM_KEY, "1");
-    // A fresh install's team is the whole leadership team, Critiquito included (Ash 21 Oct); Ash's own install keeps
-    // Critiquito as the add-on it has always been there.
-    const team = knownTeamPack() === "plain" ? [...BUILT_IN, ...TEAM_ADDONS] : BUILT_IN;
+    // The default team is the four on every install; Critiquito is an add-on, offered unticked in onboarding and on
+    // a new project (Ash 14 Oct).
     const present = new Set(list.map((m) => teamSpecOf(m)?.id).filter(Boolean));
-    const missing = team.filter((m) => !present.has(m.id) && !removed.has(m.id));
+    const missing = BUILT_IN.filter((m) => !present.has(m.id) && !removed.has(m.id));
     if (!missing.length) return 0;
     localStorage.setItem(ROSTER_KEY, JSON.stringify([...missing.map((m) => teamRosterEntry(m)), ...list]));
     window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
