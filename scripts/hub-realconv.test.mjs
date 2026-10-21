@@ -429,6 +429,13 @@ test("the hub's turn checkpoints don't count as changes to a copy (AD9F listed e
   assert.equal(copyLog(dir, mark).commits.length, 1);
 });
 
+test("the tester gets the screen's buttons when a chat is held on Ash, not only in click scenes (AD14 run f451: 'there's no button to click')", async () => {
+  const { shouldOfferButtons } = await import("./realconv/player.mjs");
+  assert.equal(shouldOfferButtons({}, { busy: "", stuck: "" }), false);
+  assert.equal(shouldOfferButtons({}, { busy: "", stuck: "Hivra chat" }), true);
+  assert.equal(shouldOfferButtons({ clicks: true }, { busy: "", stuck: "" }), true);
+});
+
 test("a judge that narrates instead of answering gets one more go for the JSON", async () => {
   const { judgeScene } = await import("./realconv/judge.mjs");
   const answers = ["I'll check each seat's soul first.", '{"grade":"PASS","replies":[]}'];

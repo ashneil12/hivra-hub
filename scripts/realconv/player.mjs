@@ -43,6 +43,11 @@ const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blo
  * snapshots of the whole tree, so counting them made a scene that touched nothing list every file as changed. */
 export const ALL_BUT_CHECKPOINTS = ["--exclude=refs/monocode/*", "--all"];
 
+/** Whether the tester is shown the screen's buttons: a scene about clicking, or a chat held on Ash (a card to answer). */
+export function shouldOfferButtons(scene, state) {
+  return !!scene.clicks || !!state?.stuck;
+}
+
 /** The project's refs and worktrees now: where to measure changes from. */
 export function gitMark(project) {
   try {
@@ -258,9 +263,13 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       break;
     }
     const seen = await seenNow();
-    // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete.
-    const buttons = scene.clicks ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
-    // (The place was put on screen by the reply's screenshot just before.)
+    // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete. So does a
+    // chat held on something only he can answer (an Allow/Deny card): in AD14 (run f451) the Hivra chat sat on a Bash
+    // card and the tester, given no buttons, told it three times "there's no button to click".
+    const offerButtons = shouldOfferButtons(scene, state);
+    // The stuck check may have opened Today; put the place back on screen before reading its buttons.
+    if (offerButtons && state.stuck) await showPlace();
+    const buttons = offerButtons ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
     const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck, buttons }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
     testerLog({ move });
     if (move.action === "invalid") {
