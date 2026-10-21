@@ -18,6 +18,11 @@ import {
 } from "../model/delegationView";
 import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
 import { LaunchedSessionCard } from "./LaunchedSessionCard";
+import {
+  dequeueWorker,
+  queuedWorker,
+  useWorkerPoolVersion,
+} from "../model/workerPool";
 
 /** The row a launched chat's Stop acts on: its newest one, still running or asking. */
 function stoppableRow(
@@ -40,12 +45,21 @@ export function DelegationBatchRow({
   onOpen?: (sessionId: string) => void;
 }) {
   const rows = useDelegationRows();
+  useWorkerPoolVersion();
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
-  const states = launches.map((launch) =>
-    launchState(
-      views?.get(launch.sessionId),
-      delegationOf(launch.sessionId, rows),
-    ),
+  // One that waits for a free worker (H8) has no chat or row yet: its card says it waits.
+  const waiting = launches.map((launch) =>
+    !views?.get(launch.sessionId) && !delegationOf(launch.sessionId, rows)
+      ? queuedWorker(launch.sessionId)
+      : undefined,
+  );
+  const states = launches.map((launch, index) =>
+    waiting[index]
+      ? ("waiting" as const)
+      : launchState(
+          views?.get(launch.sessionId),
+          delegationOf(launch.sessionId, rows),
+        ),
   );
   const stop = (row: Delegation) => {
     const actions = delegationActions();
@@ -89,10 +103,31 @@ export function DelegationBatchRow({
           >
             <LaunchedSessionCard
               launch={launch}
-              view={views?.get(launch.sessionId)}
+              view={
+                waiting[index]
+                  ? { state: "waiting", title: waiting[index]!.title }
+                  : views?.get(launch.sessionId)
+              }
               open={openSessionId === launch.sessionId}
-              onOpen={onOpen ? () => onOpen(launch.sessionId) : undefined}
+              onOpen={
+                onOpen && !waiting[index]
+                  ? () => onOpen(launch.sessionId)
+                  : undefined
+              }
             />
+            {waiting[index] ? (
+              <button
+                type="button"
+                data-delegation-unqueue={launch.sessionId}
+                onClick={() => dequeueWorker(launch.sessionId)}
+                title="Take it out of the queue: it never starts"
+                aria-label={`Don't start ${waiting[index]!.title}`}
+                className="flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 font-sans text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
+              >
+                <Square className="size-3" strokeWidth={2} />
+                Stop
+              </button>
+            ) : null}
             {states[index] === "stuck" ? (
               <span
                 data-delegation-stuck={launch.sessionId}

@@ -190,7 +190,14 @@ export function monoSpawnedSessions(
 
 /** Where a launched session stands, for its card in the Mono's chat. */
 export type LaunchedSessionState =
-  "working" | "input" | "draft" | "failed" | "stopped" | "done";
+  | "working"
+  | "input"
+  | "draft"
+  | "failed"
+  | "stopped"
+  | "done"
+  /** Not started yet: its project's workers are all busy, or its provider is at its limit (H8, workerPool.ts). */
+  | "waiting";
 
 export type LaunchedSessionView = {
   state: LaunchedSessionState;

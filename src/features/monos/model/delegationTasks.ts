@@ -43,6 +43,8 @@ export type DelegationTasksDeps = {
   briefLead?: AgentAppTasksHost["briefLead"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
+  /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
+  pool?: AgentAppTasksHost["pool"];
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -127,6 +129,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
+    ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.now ? { now: deps.now } : {}),
