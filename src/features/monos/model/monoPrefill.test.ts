@@ -7,7 +7,7 @@ import { clearComposerDraft, getComposerDraft, setComposerDraft } from "../../se
 const roster = new Map<string, { id: string; sessionId?: string }>();
 vi.mock("./mono", () => ({ findMono: (id: string) => roster.get(id) }));
 const opened: unknown[] = [];
-vi.mock("../../hub/model/hubNav", () => ({ openMonoTeam: (...a: unknown[]) => opened.push(a) }));
+vi.mock("../../hub/model/hubNav", () => ({ openMonoChat: (...a: unknown[]) => opened.push(a) }));
 const { MONO_PREFILL_EVENT, openMonoChatWith, takeMonoPrefill } = await import("./monoPrefill");
 
 beforeEach(() => {
@@ -24,7 +24,7 @@ it("types the ask into Alfred's chat and opens it on his own chat", () => {
   openMonoChatWith("alfred", "merge Nibbii lead's update");
   window.removeEventListener(MONO_PREFILL_EVENT, on);
   expect(getComposerDraft("s-alfred")?.trim()).toBe("merge Nibbii lead's update");
-  expect(opened).toEqual([["alfred", { owner: true }]]);
+  expect(opened).toEqual([["alfred"]]);
   expect(heard).toEqual([{ sessionId: "s-alfred", text: "merge Nibbii lead's update" }]);
 });
 
@@ -41,7 +41,7 @@ it("keeps what Ash had typed, and a second click doesn't type it twice", () => {
 it("Alfred with no chat yet: the ask waits for his chat, then is typed in once", () => {
   roster.set("alfred", { id: "alfred" });
   openMonoChatWith("alfred", "merge Hivra lead's update");
-  expect(opened).toEqual([["alfred", { owner: true }]]);
+  expect(opened).toEqual([["alfred"]]);
   takeMonoPrefill("alfred", "s-alfred");
   expect(getComposerDraft("s-alfred")?.trim()).toBe("merge Hivra lead's update");
   clearComposerDraft("s-alfred");
