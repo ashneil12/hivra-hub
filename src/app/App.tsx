@@ -2688,13 +2688,16 @@ function Workspace({
     // The app process's record of its chats' turns, which a reload doesn't lose (sessionRuns.ts).
     setProcessRunSource(listHarnessRuns);
     // What each chat's tool calls said, so a run that named another Mono's soul counts for it (soulTamper.ts).
-    setRunToolTextSource((sessionId) =>
-      (sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? []).flatMap((block) =>
-        block.tool
-          ? [{ kind: block.tool.kind, text: [block.tool.title, block.tool.detail, ...(block.tool.paths ?? [])].filter(Boolean).join("\n") }]
-          : [],
-      ),
-    );
+    setRunToolTextSource((sessionId) => {
+      // Each call carries when its turn started (the user block before it), so an earlier turn's write isn't this run's.
+      let turnAt: number | undefined;
+      return (sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? []).flatMap((block) => {
+        if (block.startedAt != null) turnAt = block.startedAt;
+        return block.tool
+          ? [{ kind: block.tool.kind, text: [block.tool.title, block.tool.detail, ...(block.tool.paths ?? [])].filter(Boolean).join("\n"), at: turnAt }]
+          : [];
+      });
+    });
     // A heartbeat while a chat runs with nothing new on screen, so a reload or crash leaves when it last ran.
     const timer = setInterval(() => noteSessionRuns(sessionsRef.current), RUN_HEARTBEAT_MS);
     return () => clearInterval(timer);

@@ -433,6 +433,45 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
     }
   });
 
+  it("a chat that wrote the soul in an earlier turn and only reads it now doesn't undo Ash's edit (Mac, 21 Oct)", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    const soul = "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md";
+    const write: RunToolCall = { kind: "execute", text: `python3 -c "open('${soul}','a').write('x')"`, at: 1_000 };
+    const read: RunToolCall = { kind: "execute", text: `cat '${soul}' | wc -l; sleep 45`, at: 200_000 };
+    let calls: RunToolCall[] = [write];
+    setRunToolTextSource((id) => (id === "app-exo-chat-r5" ? calls : []));
+    resetToolCallsForTest();
+    try {
+      // Turn 1 wrote it; that change was dealt with then (saved again here).
+      noteSessionRuns([{ id: "app-exo-chat-r5", busy: true, cwd: "/Users/ash" }], 1_000);
+      noteSessionRuns([{ id: "app-exo-chat-r5", busy: false }], 3_000);
+      // Turn 2 only reads it, and Ash edits the soul by hand while it runs.
+      calls = [write, read];
+      noteSessionRuns([{ id: "app-exo-chat-r5", busy: true, cwd: "/Users/ash" }], 200_000);
+      files.set("hivra-lead/SOUL.md", { text: ASH, at: 210_000 });
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 220_000), 220_000)).toBe("kept-ash");
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(ASH);
+      // The same chat writing it again in this turn is put back.
+      calls = [write, read, { ...write, at: 200_000 }];
+      files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 215_000 });
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 220_000), 220_100)).toBe("put-back");
+    } finally {
+      setRunToolTextSource(null);
+    }
+  });
+
+  it("a pending call seen in an earlier turn doesn't count for a later one", () => {
+    resetToolCallsForTest();
+    const soul = "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md";
+    const pending = { tool: { callId: "t9", kind: "execute", title: "python3", detail: `python3 -c "open('${soul}','a').write('x')"` } };
+    noteToolCalls([{ id: "app-exo-chat-r6", busy: true, blocks: [pending] }], 1_000);
+    expect(runNamedSoul({ sessionId: "app-exo-chat-r6", start: 900 }, "hivra-lead")).toBe(true);
+    expect(runNamedSoul({ sessionId: "app-exo-chat-r6", start: 200_000 }, "hivra-lead")).toBe(false);
+    resetToolCallsForTest();
+  });
+
   it("another Mono's process working in this Mono's home folder (app process record) is put back", async () => {
     const { f, files } = memFiles();
     setBotFiles(f);
