@@ -25,7 +25,7 @@ import {
   whenLabel,
   type RoomBackend,
 } from "./roomStore";
-import type { ChatConversation, ChatMessage, GroupChat } from "./types";
+import type { ChatConversation, ChatMessage, GroupChat, RoomAttachment } from "./types";
 
 const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
   id,
@@ -508,20 +508,29 @@ export function appendMessage(
   return { convId: target.id, message: full };
 }
 
-/** Ash writes in a conversation (the newest, or a new one when there is none from today). Returns the message id. */
-export function sendMessage(chatId: string, text: string, convId?: string): string {
+/** A conversation's name from its first message: its words, else what was attached ("plan.pdf, photo.png"). */
+function firstTitle(text: string, attachments?: readonly RoomAttachment[]): string {
+  return autoTitle(text) || autoTitle((attachments ?? []).map((a) => a.name).join(", ")) || "Conversation";
+}
+
+/**
+ * Ash writes in a conversation (the newest, or a new one when there is none from today), with anything he attached.
+ * Returns the message id.
+ */
+export function sendMessage(chatId: string, text: string, convId?: string, attachments?: readonly RoomAttachment[]): string {
   const at = Date.now();
-  const msg: ChatMessage = { id: crypto.randomUUID(), from: "ash", kind: "ash", text, at };
+  const msg: ChatMessage = { id: crypto.randomUUID(), from: "ash", kind: "ash", text, at, ...(attachments?.length ? { attachments: [...attachments] } : {}) };
   whenLoaded(() => {
     const c = getChat(chatId);
     if (!c) return;
     const target = convId ? c.conversations.find((x) => x.id === convId) : undefined;
     if (target) {
+      // Only a conversation nobody named takes its name from the first message: Ash's own name always stays.
       const retitle = !target.messages.length && !target.named;
       update(chatId, (chat) => ({
         ...chat,
         conversations: chat.conversations.map((x) =>
-          x.id === target.id ? capped({ ...x, title: retitle ? autoTitle(text) : x.title, messages: [...x.messages, msg] }) : x),
+          x.id === target.id ? capped({ ...x, title: retitle ? firstTitle(text, attachments) : x.title, messages: [...x.messages, msg] }) : x),
       }));
       if (retitle) persistConversation(chatId, getChat(chatId)?.conversations.find((x) => x.id === target.id));
       persistMessage(chatId, target.id, msg);
@@ -533,7 +542,7 @@ export function sendMessage(chatId: string, text: string, convId?: string): stri
       appendMessage(chatId, first.id, msg);
       return;
     }
-    const conv = newConversationRecord(msg.id, autoTitle(text), at, [msg]);
+    const conv = newConversationRecord(msg.id, firstTitle(text, attachments), at, [msg]);
     update(chatId, (chat) => ({ ...chat, conversations: [conv, ...chat.conversations] }));
     persistConversation(chatId, conv);
     persistMessage(chatId, conv.id, msg);
@@ -554,14 +563,23 @@ export function renameConversation(chatId: string, convId: string, title: string
 }
 
 /**
- * The New conversation screen sends its first message: only now is a conversation made, named from that message.
- * Returns its id.
+ * The New conversation screen sends its first message: only now is a conversation made. It is named from that message
+ * unless Ash already named it on the screen (then it stays his name). Returns its id.
  */
-export function startConversation(chatId: string, text: string): string {
+export function startConversation(
+  chatId: string,
+  text: string,
+  options: { title?: string; attachments?: readonly RoomAttachment[] } = {},
+): string {
   const at = Date.now();
   const id = `conv-${at.toString(36)}-${++seq}`;
-  const msg: ChatMessage = { id: `${id}-1`, from: "ash", kind: "ash", text, at };
-  const conv = newConversationRecord(id, autoTitle(text), at, [msg]);
+  const attachments = options.attachments?.length ? { attachments: [...options.attachments] } : {};
+  const msg: ChatMessage = { id: `${id}-1`, from: "ash", kind: "ash", text, at, ...attachments };
+  const named = options.title?.trim();
+  const conv: ChatConversation = {
+    ...newConversationRecord(id, named || firstTitle(text, options.attachments), at, [msg]),
+    ...(named ? { named: true } : {}),
+  };
   update(chatId, (c) => ({ ...c, conversations: [conv, ...c.conversations] }));
   persistConversation(chatId, conv);
   persistMessage(chatId, id, msg);

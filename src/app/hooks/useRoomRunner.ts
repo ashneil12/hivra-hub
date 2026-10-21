@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { canRunHarnessTextPrompt, canSteerHarness, runHarnessTextPrompt } from "../../integrations/harness";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
-import type { Block, Session } from "../../features/sessions/model/session";
+import type { Attachment, Block, Session } from "../../features/sessions/model/session";
 import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/monoMessaging";
 import { monoForSession, monoLook } from "../../features/monos/model/mono";
@@ -55,6 +55,8 @@ export type RoomRunnerHost = {
       monoNote?: Block["monoNote"];
       appRequestId?: string;
       onSettled?: (outcome: ControlOutcome) => void;
+      /** Files Ash attached in the room: they go with the turn as they would from the Mono's own chat. */
+      attachments?: Attachment[];
     },
   ): SubmissionAcceptance;
   /** A Mono's own chat, made if it has none yet (ensureMonoSession). */
@@ -184,6 +186,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const memory = await roomMemory(current, request.projectId).catch(() => undefined);
         const prompt = memory ? withRoomMemory(request.prompt, memory.block) : request.prompt;
         const wakePrompt = memory ? withRoomMemory(request.wakePrompt, memory.block) : request.wakePrompt;
+        const attachments: Attachment[] = (request.attachments ?? []).map((file) => ({ ...file }));
         if (monoTakesRoomTurnNow(current)) {
           const reply = await new Promise<string | undefined>((resolve, reject) => {
             const timer = window.setTimeout(
@@ -211,6 +214,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
                 managed: true,
                 monoNote: note,
                 appRequestId: request.wakeId,
+                ...(attachments.length ? { attachments } : {}),
                 onSettled: (outcome) =>
                   done(() => {
                     if (outcome.status === "completed") {
@@ -228,7 +232,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
           });
           if (reply !== undefined) return { kind: "reply", text: reply };
         }
-        const queued = wake(session, request.wakeId, wakePrompt, note);
+        const queued = wake(session, request.wakeId, wakePrompt, note, attachments);
         // A wake that went in carried the memory; one taken back out didn't.
         if (memory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && memory.delivered());
         return queued;
@@ -249,10 +253,10 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         if (holder) change(h, holder.id, (s) => dequeueQueuedMessage(s, wakeId));
       },
     };
-    const wake = (session: Session, wakeId: string, text: string, note: NonNullable<Block["monoNote"]>): RoomTurnOutcome => {
+    const wake = (session: Session, wakeId: string, text: string, note: NonNullable<Block["monoNote"]>, attachments: Attachment[] = []): RoomTurnOutcome => {
       const h = latest.current;
       const now = h.sessionsRef.current.find((s) => s.id === session.id) ?? session;
-      change(h, session.id, (s) => queueMonoNote(s, { id: wakeId, text, note }));
+      change(h, session.id, (s) => queueMonoNote(s, { id: wakeId, text, note, ...(attachments.length ? { attachments } : {}) }));
       const delivery = now.busy && canSteerHarness(now.harness) && !now.queuedMessages?.length ? "steered" : "queued";
       const done = new Promise<RoomWakeEnd>((resolve) => {
         const started = Date.now();

@@ -5,6 +5,7 @@
 // with Keep going.
 import { useState, type ReactNode } from "react";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
+import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
 import {
   keepGoing,
   react,
@@ -140,7 +141,16 @@ export function RoomMessage({
   if (message.from === "ash")
     return (
       <div className="flex flex-col items-end" data-hub-msg-id={message.id}>
-        <div className="agent-chat-user-bubble max-w-[70%] rounded-2xl bg-content/10 px-3 py-1.5 text-content">{message.text}</div>
+        {message.attachments?.length ? (
+          <div className="flex max-w-[70%] flex-wrap justify-end gap-1.5 pb-1" data-hub-msg-attachments>
+            {message.attachments.map((file) => (
+              <span key={file.id} data-hub-msg-attachment={file.name}>
+                <AttachmentChip attachment={file} />
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {message.text ? <div className="agent-chat-user-bubble max-w-[70%] rounded-2xl bg-content/10 px-3 py-1.5 text-content">{message.text}</div> : null}
         <Reactions chatId={chatId} message={message} nameOf={nameOf} align="end" />
       </div>
     );

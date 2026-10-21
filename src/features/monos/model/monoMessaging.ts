@@ -63,7 +63,7 @@ export function monoTakesRoomTurnNow(session: Session): boolean {
  */
 export function queueMonoNote(
   session: Session,
-  message: { id: string; text: string; note: NonNullable<QueuedMessage["monoNote"]>; waitForIdle?: boolean },
+  message: { id: string; text: string; note: NonNullable<QueuedMessage["monoNote"]>; waitForIdle?: boolean; attachments?: Attachment[] },
 ): Session {
   if (session.queuedMessages?.some((m) => m.id === message.id) || session.blocks.some((b) => b.appRequestId === message.id)) return session;
   return {
@@ -73,7 +73,7 @@ export function queueMonoNote(
       {
         id: message.id,
         text: message.text,
-        attachments: [],
+        attachments: message.attachments ?? [],
         appRequestId: message.id,
         monoNote: message.note,
         ...(message.waitForIdle ? { waitForIdle: true } : {}),

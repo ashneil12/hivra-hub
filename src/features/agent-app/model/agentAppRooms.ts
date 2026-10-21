@@ -144,6 +144,8 @@ async function read(mono: { id: string }, input: Record<string, unknown>) {
       ...(message.from !== "ash" && message.from !== "app" ? { fromId: message.from } : {}),
       kind: message.kind ?? (message.from === "ash" ? "ash" : "mono"),
       text: message.text,
+      // What Ash attached: open them from these paths with your own tools.
+      ...(message.attachments?.length ? { attachments: message.attachments.map((a) => ({ name: a.name, path: a.path, type: a.mimeType })) } : {}),
       ...(message.replyTo ? { replyTo: message.replyTo } : {}),
       ...(message.at ? { at: new Date(message.at).toISOString() } : {}),
       ...(message.reactions ? { reactions: Object.fromEntries(Object.entries(message.reactions).map(([emoji, who]) => [emoji, who.map(nameOf)])) } : {}),

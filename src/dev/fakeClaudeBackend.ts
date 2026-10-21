@@ -10,7 +10,8 @@ import fixture529 from "../integrations/harness/providers/claude/fixtures/claude
 
 export type FakeClaudeState = {
   next: string[];
-  prompts: Array<{ sessionId: string; text: string }>;
+  /** Every prompt as the CLI got it on stdin: its text, and the message's content blocks as sent (images, files). */
+  prompts: Array<{ sessionId: string; text: string; content?: unknown }>;
   answers: Array<{ sessionId: string; behavior: string; answers: Record<string, string> | null }>;
   /** Ends every turn held by "hold". */
   release(): void;
@@ -175,7 +176,7 @@ export function fakeClaudeBackend(): ChildBackend {
             }
             const content = (record.message as { content?: unknown } | undefined)?.content;
             const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (part as { text?: string }).text ?? "").join("\n") : "";
-            state.prompts.push({ sessionId, text });
+            state.prompts.push({ sessionId, text, content });
             void play(sessionId, text);
           }
           return undefined as T;

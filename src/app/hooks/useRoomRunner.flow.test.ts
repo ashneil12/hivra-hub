@@ -240,3 +240,26 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", pick: { by: "back" } });
   expect(done).toEqual(["app-mono-chief-of-staff-q1"]);
 });
+
+// B8 (Ash, 15 Oct): what Ash attaches in a room reaches the Mono answering, with the turn, as it would from its own chat.
+it("a photo and a file Ash attached in the room go with the Mono's turn: managed, or in a busy Mono's queue", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const photo = { id: "p1", name: "hud.png", mimeType: "image/png", kind: "image" as const, size: 68, path: "/tmp/monocode-attachments/hud.png" };
+  const doc = { id: "f1", name: "combo-notes.md", mimeType: "text/markdown", kind: "file" as const, size: 120, path: "/Users/ash/Desktop/combo-notes.md" };
+  const conv = chat.startConversation(room.id, "cos look at this hud and the notes", { attachments: [photo, doc] });
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  expect(submitted[0].sessionId).toBe(chatOf("chief-of-staff"));
+  expect(submitted[0].options.attachments).toEqual([photo, doc]);
+  // The prompt names them by path too, so the transcript keeps them for later turns and other seats.
+  expect(submitted[0].text).toContain('[Attached: hud.png ("/tmp/monocode-attachments/hud.png"), combo-notes.md ("/Users/ash/Desktop/combo-notes.md")]');
+  settle.get(chatOf("chief-of-staff"))!("Seen both.");
+  await chat.roomIdle(room.id);
+
+  // frank is busy: the wake waits in his queue with the files on it.
+  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("frank") ? { ...s, busy: true } : s)));
+  chat.sendMessage(room.id, "frank check this one", conv, [photo]);
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages).toHaveLength(1));
+  expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages![0].attachments).toEqual([photo]);
+});

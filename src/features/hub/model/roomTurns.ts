@@ -336,7 +336,7 @@ export function pingPong(authors: readonly string[], limit = PING_PONG_LIMIT): b
 
 /** The conversation as the room sees it: the latest messages, each under its speaker's name; `mark` flags one. */
 export function roomTranscript(
-  messages: readonly { id?: string; from: string; text: string; kind?: string }[],
+  messages: readonly { id?: string; from: string; text: string; kind?: string; attachments?: readonly { name: string; path: string }[] }[],
   nameOf: (id: string) => string,
   limit = 30,
   mark?: string,
@@ -345,9 +345,15 @@ export function roomTranscript(
     .slice(-limit)
     .map((m) => {
       const who = m.from === "ash" ? "Ash" : m.from === "app" || m.kind === "notice" || m.kind === "system" ? "(app)" : nameOf(m.from);
-      return `${mark && m.id === mark ? ">> " : ""}${who}: ${m.text}`;
+      return `${mark && m.id === mark ? ">> " : ""}${who}: ${m.text}${attachedLine(m.attachments)}`;
     })
     .join("\n\n");
+}
+
+/** What a message carried, by name and path, so every seat can open it with its own tools (any later turn too). */
+export function attachedLine(files: readonly { name: string; path: string }[] | undefined): string {
+  if (!files?.length) return "";
+  return `\n[Attached: ${files.map((f) => `${f.name} (${JSON.stringify(f.path)})`).join(", ")}]`;
 }
 
 function memberCards(seats: readonly Seat[]): string {

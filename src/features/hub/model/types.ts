@@ -303,6 +303,21 @@ export type ChatMessage = {
   pick?: { by: ChatPickSource; why: string };
   /** A notice about a Mono: who, and whether Try again can run its turn once more. */
   notice?: { mono?: string; retry?: boolean };
+  /**
+   * What Ash attached (photos, files): kept by path on this Mac (a pasted picture is saved to a file first), so the
+   * Monos answering get them as they would in their own chat, and they are still there after a restart.
+   */
+  attachments?: RoomAttachment[];
+};
+
+/** A file on a room message: where it is on disk and what it is (never its bytes; those are read when a turn sends it). */
+export type RoomAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  kind: "image" | "audio" | "file";
+  size: number;
+  path: string;
 };
 
 export type ChatConversation = {

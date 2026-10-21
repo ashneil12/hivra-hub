@@ -7,7 +7,7 @@
 // reads them back; the old key stays where it is, untouched, until the copy is confirmed and beyond, so a rolled-back
 // build still finds its chats. Anything an older build wrote there later comes across on the next launch.
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatConversation, ChatMessage, ChatMessageKind, GroupChat } from "./types";
+import type { ChatConversation, ChatMessage, ChatMessageKind, GroupChat, RoomAttachment } from "./types";
 
 export const CHAT_KEY = "monocode:hub-chats";
 export const SEATED_KEY = "monocode:hub-leadership-seated";
@@ -169,7 +169,33 @@ export function messageMeta(message: ChatMessage): Record<string, unknown> {
     ...(message.status ? { status: message.status } : {}),
     ...(message.pick ? { pick: message.pick } : {}),
     ...(message.notice ? { notice: message.notice } : {}),
+    ...(message.attachments?.length ? { attachments: message.attachments.map(roomAttachment) } : {}),
   };
+}
+
+/** Only what finds the file again: never its bytes or a preview link. */
+function roomAttachment(file: RoomAttachment): RoomAttachment {
+  return { id: file.id, name: file.name, mimeType: file.mimeType, kind: file.kind, size: file.size, path: file.path };
+}
+
+/** Attachments as the store has them (anything not a file on disk is left out). */
+export function attachmentsOf(value: unknown): RoomAttachment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.flatMap((v): RoomAttachment[] => {
+    if (!v || typeof v !== "object") return [];
+    const x = v as Record<string, unknown>;
+    if (typeof x.path !== "string" || !x.path || typeof x.name !== "string") return [];
+    const kind = x.kind === "image" || x.kind === "audio" ? x.kind : "file";
+    return [{
+      id: typeof x.id === "string" && x.id ? x.id : x.path,
+      name: x.name,
+      mimeType: typeof x.mimeType === "string" ? x.mimeType : "application/octet-stream",
+      kind,
+      size: typeof x.size === "number" ? x.size : 0,
+      path: x.path,
+    }];
+  });
+  return out.length ? out : undefined;
 }
 
 export function messageInput(roomId: string, conversationId: string, message: ChatMessage): MessageInput {
@@ -228,6 +254,7 @@ export function chatMessage(stored: StoredMessage): ChatMessage {
   const pick = meta.pick as { by?: unknown; why?: unknown } | undefined;
   const notice = meta.notice as { mono?: unknown; retry?: unknown } | undefined;
   const reactions = reactionsOf(stored.reactions ?? {});
+  const attachments = attachmentsOf(meta.attachments);
   return {
     id: stored.id,
     from: stored.author,
@@ -245,6 +272,7 @@ export function chatMessage(stored: StoredMessage): ChatMessage {
     ...(notice && typeof notice === "object"
       ? { notice: { ...(typeof notice.mono === "string" ? { mono: notice.mono } : {}), ...(notice.retry === true ? { retry: true } : {}) } }
       : {}),
+    ...(attachments ? { attachments } : {}),
   };
 }
 
