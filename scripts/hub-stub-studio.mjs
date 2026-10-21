@@ -81,8 +81,11 @@ export function createStudio(ctx) {
       studio.builds.set(key, b);
     }
     const wait = Math.max(0, Math.min(40, Number(waitSeconds ?? 12) || 0)) * 1000;
-    const left = b.doneAt - Date.now();
-    if (left > 0) await new Promise((r) => setTimeout(r, Math.min(left, wait)));
+    // Sleep until the build is done or the wait is up, by the same clock both are set on. A timer can wake a
+    // millisecond before Date.now() reaches its mark (timers run on a monotonic clock, rounded), so one sleep of
+    // exactly `left` sometimes woke at 1499 of 1500 ms and answered "still building" to a call that waited 5 s.
+    const until = Math.min(b.doneAt, Date.now() + wait);
+    while (Date.now() < until) await new Promise((r) => setTimeout(r, until - Date.now()));
     if (Date.now() < b.doneAt) throw new Error(`${by} is still building this ${what}. Press Try again in a moment to see it.`);
     if (!("result" in b) && !("error" in b)) {
       try {
