@@ -13,9 +13,9 @@ const TEAM = ["Chief of Staff", "Projects Manager", "frank", "Alfred"];
 beforeEach(() => localStorage.clear());
 
 describe("the default team, added once", () => {
-  it("a clean launch gets the whole leadership team, Critiquito included (Ash 21 Oct)", () => {
-    expect(ensureBuiltInMonos()).toBe(5);
-    expect(roster().map((m) => m.name)).toEqual([...TEAM, "Critiquito"]);
+  it("a clean launch gets the four, and no Critiquito", () => {
+    expect(ensureBuiltInMonos()).toBe(4);
+    expect(roster().map((m) => m.name)).toEqual(TEAM);
   });
 
   it("existing data with only the 4 Leads (even after the old seed step ran) gets the team on top, Leads kept below", () => {
@@ -85,7 +85,7 @@ describe("the default team, added once", () => {
     markMonoRemovedByUser("cos-old", "Chief of Staff");
     markMonoRemovedByUser("my-mono", "Scout");
     expect(JSON.parse(localStorage.getItem("monocode:mono-team-removed-by-user") ?? "[]")).toEqual(["chief-of-staff", "my-mono"]);
-    expect(ensureBuiltInMonos()).toBe(4); // the other four of the five
+    expect(ensureBuiltInMonos()).toBe(3);
     expect(roster().map((m) => m.name)).not.toContain("Chief of Staff");
   });
 });
@@ -99,7 +99,6 @@ describe("the default four's look", () => {
       ["robot", "hsl(210 8% 58%)"],
       ["robot", "hsl(210 8% 58%)"],
       ["robot", "hsl(210 8% 58%)"],
-      ["robot", "hsl(210 8% 58%)"], // Critiquito, on a fresh install
     ]);
     const picked = [{ id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] }];
     localStorage.setItem("monocode:mono-roster", JSON.stringify(picked));

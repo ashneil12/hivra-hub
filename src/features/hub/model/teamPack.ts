@@ -5,7 +5,12 @@
 // Ash's Mac, keeps his team, souls and memory exactly as they are: nothing is written.
 import { PLAIN_SOULS, TEAM_SOULS, teamMemorySeed } from "./teamSouls";
 
-export type TeamPack = "plain" | "ash";
+/**
+ * "plain": a fresh install, the shipped team. "ash": an install that already had a team (Ash's Mac), never written.
+ * "imported": a fresh install that took a team in from an export; its souls and memory are the file's, so it is no
+ * longer fresh, and the user's name is the one the export carried.
+ */
+export type TeamPack = "plain" | "ash" | "imported";
 const KEY = "monocode:hub-team-pack";
 const EVENT = "monocode:hub-team-pack-changed";
 /** Keys only an install that has already launched has: the team's seed steps, and a roster with someone on it. */
@@ -30,7 +35,7 @@ export function teamPack(): TeamPack {
 export function knownTeamPack(): TeamPack {
   try {
     const v = localStorage.getItem(KEY);
-    if (v === "plain" || v === "ash") return v;
+    if (v === "plain" || v === "ash" || v === "imported") return v;
     return hasRoster() || SEED_KEYS.some((k) => localStorage.getItem(k) !== null) ? "ash" : "plain";
   } catch {
     // Storage unavailable: assume an existing install, so no soul is ever swapped under it.

@@ -1,6 +1,7 @@
 // The setup part of an export (Phase 5, docs/PORTABLE.md): everything the webview keeps, as one document and as the
 // files under `setup/` that Rust writes into the export folder or archive. Never a key, a login or an account: a
 // connector says only where its login lives, a custom model carries no key, settings that look like secrets stay home.
+import { userName } from "../../hub/model/userName";
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
@@ -121,6 +122,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.rightPanelTabOrder",
   "monocode:hub-strip-backdrop",
   "monocode:hub-role-names",
+  // What the team calls the user (G5 onboarding). A10: a fresh copy otherwise says "the user".
+  "monocode:hub-user-name",
   // How the app behaves
   "monocode.showRemainingUsage",
   "monocode.maskEmails",
@@ -160,6 +163,7 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode:model-picker-fold-older",
 ];
 const PORTABLE = new Set(PORTABLE_SETTINGS);
+const USER_NAME_KEY = "monocode:hub-user-name";
 const SETTING_MAX = 200_000;
 
 export function isPortableSetting(key: string): boolean {
@@ -201,6 +205,12 @@ export function collectSettings(storage: Storage = localStorage): { settings: Re
       continue;
     }
     settings[key] = clean;
+  }
+  // Ash's install names him without storing it (userName.ts): the export carries the name, so a fresh install that
+  // takes this export in calls its user what this one does.
+  if (!settings[USER_NAME_KEY] && storage === globalThis.localStorage) {
+    const name = userName();
+    if (name) settings[USER_NAME_KEY] = name;
   }
   return { settings: Object.fromEntries(Object.entries(settings).sort(([a], [b]) => a.localeCompare(b))), leftOut: leftOut.sort() };
 }

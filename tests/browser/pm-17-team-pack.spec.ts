@@ -8,7 +8,7 @@ import { expect, test } from "@playwright/test";
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test("fresh install onboarding: no pre-load, the leadership team behind it", async ({ page }) => {
+test("fresh install onboarding: no pre-load, the default four behind it", async ({ page }) => {
   await page.goto("/hub-dev.html?onboarding");
   const onboarding = page.locator("[data-hub-onboarding]");
   await expect(onboarding).toBeVisible({ timeout: 60_000 });
@@ -16,6 +16,6 @@ test("fresh install onboarding: no pre-load, the leadership team behind it", asy
   if (await notNow.isVisible().catch(() => false)) await notNow.click();
   await page.locator("[data-hub-onboarding-next]").click();
   await expect(page.getByText("Pre-load a saved team")).toHaveCount(0);
-  await expect(page.getByText("Critiquito").first()).toBeVisible();
+  await expect(page.locator("[data-hub-onboarding-team]")).toHaveText("Chief of Staff, Projects Manager, frank and Alfred.");
   expect(await page.evaluate(() => localStorage.getItem("monocode:hub-team-pack"))).toBe("plain");
 });

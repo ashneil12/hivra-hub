@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 
 import { HubOnboarding } from "./HubOnboarding";
 import { storedUserName } from "../model/userName";
+import { listMonos } from "../../monos/model/mono";
 
 let root: Root;
 let container: HTMLElement;
@@ -52,4 +53,22 @@ it("offers no pre-load, and a skipped name stores none", () => {
 it("the name typed is what the team calls you", () => {
   finish(undefined, " Sam ");
   expect(storedUserName()).toBe("Sam");
+});
+
+it("offers Critiquito as an add-on, unticked: the default team is the four (Ash 14 Oct)", () => {
+  act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toBe("Chief of Staff, Projects Manager, frank and Alfred.");
+  const box = container.querySelector("[data-hub-onboarding-addon]")!;
+  expect(box.textContent).toContain("Also add Critiquito");
+  expect(box.getAttribute("aria-checked")).toBe("false");
+  act(() => root.unmount());
+  root = createRoot(container);
+  finish();
+  expect(listMonos().some((m) => m.id === "critiquito")).toBe(false);
+});
+
+it("ticked, Critiquito joins when onboarding finishes", () => {
+  finish("Also add Critiquito");
+  expect(listMonos().find((m) => m.id === "critiquito")?.name).toBe("Critiquito");
 });

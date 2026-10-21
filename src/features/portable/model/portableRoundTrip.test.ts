@@ -247,7 +247,7 @@ it("settings come back only as real preferences: never this install's state, a p
   const b = await app();
   const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   const plan = b.plan.planImport(pending);
-  expect([...plan.settings.add].sort()).toEqual(["monocode.accentColor", "monocode.keybindingOverrides", "monocode.themeScheme", "monocode:hub-role-names"]);
+  expect([...plan.settings.add].sort()).toEqual(["monocode.accentColor", "monocode.keybindingOverrides", "monocode.themeScheme", "monocode:hub-role-names", "monocode:hub-user-name"]);
   // Even a plan that names them can't write them.
   plan.settings.add.push(...Object.keys(crafted));
   pending.doc.settings = { ...pending.doc.settings, ...crafted };

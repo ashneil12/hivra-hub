@@ -2,7 +2,9 @@ import { useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
+import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { setHubSelection } from "../model/hubNav";
+import { addTeamAddon } from "../model/hubTeam";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 
@@ -15,6 +17,8 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
   const [name, setName] = useState("");
+  // Critiquito is an add-on, offered unticked (Ash 14 Oct); the default team is the four.
+  const [addon, setAddon] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -41,6 +45,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const done = (next: "today" | "new-project" | "restore" = "today") => {
     finishOnboarding();
     if (name.trim()) setUserName(name);
+    if (addon && start === "fresh") addTeamAddon(ADDON_OFFER.id);
     setHubSelection({ project: "today", item: next === "today" ? "inbox" : next });
     onClose();
   };
@@ -81,6 +86,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             </Group>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
               onChange={(e) => void onFile(e.target.files?.[0])} />
+            {start === "fresh" ? (
+              <Group label="Your team">
+                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>{DEFAULT_TEAM.join(", ").replace(/, ([^,]*)$/, " and $1")}.</p>
+                <Check2 on={addon} onClick={() => setAddon(!addon)} title={`Also add ${ADDON_OFFER.name}`} sub="Design review, optional" />
+              </Group>
+            ) : null}
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
             <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
               Built-in dashboards: Game studio, Product / SaaS, Org / ops.
@@ -150,6 +161,20 @@ function Toggle({ on, onClick, title, sub }: { on: boolean; onClick: () => void;
         {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
       </span>
       <span className={`min-w-0 flex-1 text-[13px] text-content ${on ? "font-medium" : ""}`}>{title}</span>
+      {sub ? <span className="shrink-0 text-xs text-content/60">{sub}</span> : null}
+    </button>
+  );
+}
+
+/** A tick box for an optional extra (square, so it doesn't read as one of a set of choices). */
+function Check2({ on, onClick, title, sub }: { on: boolean; onClick: () => void; title: string; sub?: string }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={on} onClick={onClick} data-hub-onboarding-addon
+      className="flex items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-content/5">
+      <span className={`grid size-4 shrink-0 place-items-center rounded ${on ? "bg-content text-background-base" : "bg-content/10"}`}>
+        {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
+      </span>
+      <span className="min-w-0 flex-1 text-[13px] text-content">{title}</span>
       {sub ? <span className="shrink-0 text-xs text-content/60">{sub}</span> : null}
     </button>
   );
