@@ -153,6 +153,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             <input
               autoFocus
               data-hub-rename-input
+              data-tauri-drag-region="false"
               defaultValue={chat.name}
               onBlur={(e) => {
                 renameChat(chat.id, e.currentTarget.value);
@@ -295,9 +296,12 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-stroke px-3" data-tauri-drag-region="deep">
           <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
           {drafting || conv ? (
+            // Out of the header's drag region: a double-click here renames the conversation, and must not also zoom
+            // the window (Mac round 4, 21 Oct). The rest of the header still drags and zooms like a title bar.
             <span
               className="min-w-0 truncate text-[13px] text-content"
               data-hub-conversation-title
+              data-tauri-drag-region="false"
               title="Double-click to rename"
               onDoubleClick={() => setRenamingConv(drafting ? "draft" : conv!.id)}
             >
