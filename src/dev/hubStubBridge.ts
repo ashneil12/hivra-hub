@@ -38,7 +38,7 @@ export function createStubBridge(baseUrl: string, getToken: () => Promise<string
       /* not JSON */
     }
     if (response.status === 401) throw plain("unauthorized", "Ash OS didn't accept the app's key. Restart Ash OS.");
-    if (response.status === 403) throw plain("refused", body.error ?? "Ash OS refused the call.");
+    if (response.status === 403) throw plain("refused", body.error ?? "Ash OS didn't take that.");
     if (body.ok === true) return body.result ?? null;
     throw plain("error", body.error ?? `Ash OS answered with an error (${response.status}).`);
   }

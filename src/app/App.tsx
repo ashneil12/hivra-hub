@@ -51,7 +51,8 @@ import {
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
-import { hasDelegateTool } from "../features/hub/model/hubMcp";
+import { hasAshOsTools, hasDelegateTool } from "../features/hub/model/hubMcp";
+import { hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
 import {
   codingTeamChatProject,
   codingTeamName,
@@ -8987,37 +8988,40 @@ function Workspace({
           if (habitPosts.length) {
             appContext.push(habitPostsContext(habitPosts));
           }
-          if (
-            agentFiles &&
-            agentLook &&
-            agentPlan &&
-            (agentPlan.soul || agentPlan.memory)
-          ) {
-            // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
-            const projectMemory = agentPlan.soul
-              ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
-              : undefined;
-            appContext.push(
-              monoContext(agentLook, agentFiles, agentPlan, {
+          // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
+          // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
+          const appended = hasAshOsTools(current.harness) && !rawCommand;
+          let notedMono = false;
+          if (agentFiles && agentLook && agentPlan && handedFiles) {
+            const noteKey = handedFiles.soulHash;
+            const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
+            if (fresh) {
+              // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
+              const projectMemory = agentPlan.soul || appended
+                ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
+                : undefined;
+              const note = monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
-                // A project's Lead is an orchestrator Ash talks to: it talks back like a colleague (TALK_RULES).
-                talk: !!leadFor(monoRecord!.id),
+                cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
-                // Every Mono but a Lead briefs project Leads (double delegation) and keeps its own work in its own
-                // team (monoTeams.ts): no sub-chats of its own.
+                // Every Mono but a Lead briefs project Leads (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
                       teams: true,
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(
-                        (target) => `${target.leadName} (lead "${target.projectId}")`,
+                        (target) => `"${target.projectId}"`,
                       ),
                     }
                   : {}),
-              }),
-            );
+              });
+              if (appended) setHubNote(sessionId, { key: noteKey, text: note });
+              else appContext.push(note);
+              notedMono = true;
+            } else if (appended && agentPlan.memory && !agentPlan.soul) {
+              appContext.push(monoContext(agentLook, agentFiles, { soul: false, memory: true }));
+            }
           }
-          // A coding-team chat is handed who it is, a Lead's rules and its project's memory once per conversation, and
-          // again when the rules change (monoFiles.ts codingTeamContext).
+          // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
           const teamHanded =
             team && teamDelegates && !rawCommand
               ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate`, memoryHash: "" }
@@ -9025,24 +9029,24 @@ function Workspace({
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
-          if (team && teamPlan?.soul) {
+          if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
-            appContext.push(
-              codingTeamContext(
-                {
-                  projectId: team.id,
-                  projectName: team.name,
-                  folder: team.folder!,
-                  leadName: leadSpecFor(team).name,
-                },
-                projectMemory ? { projectMemory } : {},
-              ),
+            const note = codingTeamContext(
+              {
+                projectId: team.id,
+                projectName: team.name,
+                folder: team.folder!,
+                leadName: leadSpecFor(team).name,
+              },
+              projectMemory ? { projectMemory } : {},
             );
+            if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
+            else appContext.push(note);
           }
-          if (operatorCommand.matched || handAgent) {
+          if (operatorCommand.matched || (handAgent && !notedMono)) {
             const cli = appCliCommand(await invoke<string | null>("app_cli_path"));
             appContext.push(
-              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} You can start sessions, list and create project worktrees, choose a new session's checkout, read, continue, stop, archive or delete other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` when you need the exact commands and JSON fields. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. Sessions you start appear in the user's sidebar under this session without opening; the user opens them when they want. Only set placement right or down, or reveal:true, when the user asks to see a session open or side by side. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`,
+              `<monocode_app>\n${handAgent ? "App access is always enabled in this thread." : "The user's Operator command enables app access in this thread, including later turns without the command."} Run \`${cli} --help\` for its commands (sessions, worktrees, notes and more). Its credential is already in your environment; never print it.\n</monocode_app>`,
             );
           }
           // A Mono reads who it is ahead of the message, so it never takes it

@@ -46,6 +46,14 @@ export const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 
 export const CLAUDE_SETTING_SOURCES = "user,project,local";
 
+/**
+ * Ash's own ~/.claude skills a hub chat must not fire by itself (Mac finding, 21 Oct: `dump-triage` sorted every dump
+ * into tickets). Each stays usable when Ash calls it by name; ~/.claude itself is never changed. Add a name to extend.
+ */
+export const HUB_OFF_SKILLS: readonly string[] = ["dump-triage"];
+
+export type ClaudeSkillOverride = "user-invocable-only";
+
 export const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -82,6 +90,8 @@ export type ClaudeCliSettings = {
   disableAllHooks?: boolean;
   /** Tokens at which Claude Code compacts (100K-1M); it uses the smaller of this and the model window. */
   autoCompactWindow?: number;
+  /** Per-skill overrides; a hub chat sets HUB_OFF_SKILLS to user-invocable-only. */
+  skillOverrides?: Record<string, ClaudeSkillOverride | string>;
 };
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
@@ -292,7 +302,7 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--settings", JSON.stringify(settings));
   } else {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
-    args.push("--settings", JSON.stringify(settings));
+    args.push("--settings", JSON.stringify(withHubOffSkills(settings)));
   }
   // Claude Code on Grok 4.7 (claudeGrokBridge.ts): every process asks for Grok 4.7, whatever was picked.
   const onGrok = claudeRunsOnGrok();
@@ -313,6 +323,12 @@ export function buildClaudeSpawnArgs(input: {
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
   return args;
+}
+
+/** `settings` plus the hub-off skills as user-invocable-only, keeping every other key and any override already set. */
+export function withHubOffSkills(settings: ClaudeCliSettings): ClaudeCliSettings {
+  const off = Object.fromEntries(HUB_OFF_SKILLS.map((name) => [name, "user-invocable-only"]));
+  return { ...settings, skillOverrides: { ...off, ...settings.skillOverrides } };
 }
 
 export function buildControlRequest(

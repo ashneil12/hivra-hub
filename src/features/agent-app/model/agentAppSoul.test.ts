@@ -107,14 +107,14 @@ it.each(["habit", "session"] as const)(
   async (kind) => {
     const { run, write, agentFiles } = fixture(kind);
     await expect(run("soul.read")).rejects.toThrow(
-      "Only a Mono's own conversation",
+      "A soul can only be changed from that Mono's own chat",
     );
     await expect(
       run("soul.update", {
         text: "# Soul\n",
         expectedHash: "soul@0",
       }),
-    ).rejects.toThrow("Only a Mono's own conversation");
+    ).rejects.toThrow("A soul can only be changed from that Mono's own chat");
     expect(agentFiles).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
   },

@@ -9,11 +9,10 @@
 // - Private messages between Monos (monos.message): a hidden turn in the receiver's own chat, shown as "From frank".
 // - Work a Mono delegated during a room turn comes back to that room: once the Mono has had its report turn, the room
 //   gets "X is back" from it (roomConductor.postBack).
-// - The room's cheap router: one isolated prompt to the smallest model.
 // - A room belongs to a project: each seat's room turn carries that project's memory primer, once per conversation of
 //   its chat (hub/model/roomMemory.ts).
 import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { canRunHarnessTextPrompt, canSteerHarness, runHarnessTextPrompt } from "../../integrations/harness";
+import { canSteerHarness } from "../../integrations/harness";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import type { Attachment, Block, Session } from "../../features/sessions/model/session";
 import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
@@ -21,10 +20,8 @@ import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/
 import { monoForSession, monoLook } from "../../features/monos/model/mono";
 import {
   postBack,
-  ROUTER_TIMEOUT_MS,
   roomTurnOf,
   setGroupChatRunner,
-  setRoomRouter,
   type GroupChatRunner,
   type RoomTurnOutcome,
   type RoomWakeEnd,
@@ -34,7 +31,6 @@ import { roomMemory } from "../../features/hub/model/roomMemory";
 import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
-import { homeDir } from "../../platform/tauri/fs";
 import type { SubmissionAcceptance } from "../model/submissionAcceptance";
 
 /** A managed room turn that takes longer than this is reported as not finished (its chat keeps the work). */
@@ -271,17 +267,6 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
     };
     return setGroupChatRunner(runner);
   }, []);
-
-  // The room's cheap router (who else may add something): the smallest model, isolated and read-only. When Claude
-  // can't run one, or it doesn't answer in time, the room falls back to its lane rules.
-  useEffect(
-    () =>
-      setRoomRouter(async (prompt) => {
-        if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the room's router");
-        return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: ROUTER_TIMEOUT_MS });
-      }),
-    [],
-  );
 
   // Work delegated from a room comes back to it, once its owner has had the report turn. Looked at shortly after a change
   // to the chats (once per burst: a streaming chat changes constantly, so this never waits for a quiet moment).

@@ -36,6 +36,8 @@ export type ClaudeLaunch = {
   ultracode: boolean;
   hooks: boolean;
   autoCompactWindow?: number;
+  /** The appended prompt's key (claudeExtraArgs.ts claudeAppend): a new one needs a new process. */
+  appendKey?: string;
 };
 
 export type ClaudeLiveRequest = {
@@ -71,6 +73,7 @@ export function claudeLaunchDelta(
   }
   if (live.thinking !== next.thinking) restart.push("thinking");
   if (live.hooks !== next.hooks) restart.push("hooks");
+  if (live.appendKey !== next.appendKey) restart.push("MonoCode note");
 
   const flags: Record<string, unknown> = {};
   const flagLabels: string[] = [];

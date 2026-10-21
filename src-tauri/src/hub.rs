@@ -234,7 +234,7 @@ fn status_error(code: u16, response: ureq::Response) -> HubError {
         ),
         403 => HubError::new(
             "refused",
-            said.unwrap_or_else(|| "Ash OS refused the call.".into()),
+            said.unwrap_or_else(|| "Ash OS didn't take that.".into()),
         ),
         // Up but failing (Ash OS answers a refused call with 400): worth trying again later.
         500..=599 => HubError::new(
@@ -295,7 +295,7 @@ pub fn call_blocking(endpoint: &Endpoint, action: &str, payload: Value) -> Resul
         let said = value
             .get("error")
             .and_then(Value::as_str)
-            .unwrap_or("Ash OS refused the call.");
+            .unwrap_or("Ash OS didn't take that.");
         Err(HubError::new("error", said))
     }
 }

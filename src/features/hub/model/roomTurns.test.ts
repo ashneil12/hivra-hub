@@ -1,16 +1,12 @@
 // The room's turn rules, without a model: who answers, who may add something, who was addressed, what is never posted,
-// what counts as progress, and what each turn is told.
+// the one loop brake, and what each turn is told.
 import { describe, expect, it } from "vitest";
 import {
   addressedIn,
   answerPick,
-  chimePrompt,
   cleanPost,
   failureNotice,
   hostOf,
-  isProgress,
-  isGreeting,
-  roundOf,
   isShortMessage,
   isSilent,
   laneChimes,
@@ -18,12 +14,8 @@ import {
   MONO_POSTS_CEILING,
   namedPick,
   openingPick,
-  parseChimes,
-  pingPong,
   plainFailure,
-  QUIET_CEILING_MS,
   roomTranscript,
-  sameSaying,
   turnPrompt,
   withRoomMemory,
   type Seat,
@@ -136,25 +128,13 @@ describe("what is never posted, and what a post looks like", () => {
   });
 });
 
-describe("progress", () => {
-  it("a post that repeats a recent one is no progress; new ground is", () => {
-    expect(sameSaying("frank, the board moves to Fridays, noted.", "PM, the board moves to Fridays, noted.")).toBe(true);
-    expect(isProgress("06 passes from me.", ["Round 3 is ready: 9 screens.", "PM, 06 doesn't do what Ash asked."])).toBe(true);
-    expect(isProgress("The board moves to Fridays, noted.", ["the board moves to fridays noted"])).toBe(false);
-  });
-  it("two seats alternating for the whole tail is a ping-pong; a third voice breaks it", () => {
-    const ab = Array.from({ length: 8 }, (_, i) => (i % 2 ? "frank" : "projects-manager"));
-    expect(pingPong(ab)).toBe(true);
-    expect(pingPong(ab.slice(1))).toBe(false);
-    expect(pingPong([...ab.slice(0, 7), "chief-of-staff"])).toBe(false);
-  });
-  it("the ceiling is 40 Mono posts or 30 minutes without Ash", () => {
-    expect(MONO_POSTS_CEILING).toBe(40);
-    expect(QUIET_CEILING_MS).toBe(30 * 60_000);
+describe("the loop brake", () => {
+  it("is one ceiling of Mono posts without Ash", () => {
+    expect(MONO_POSTS_CEILING).toBe(20);
   });
 });
 
-describe("the gate and the prompts", () => {
+describe("the prompts", () => {
   const transcript = roomTranscript(
     [
       { id: "1", from: "ash", text: "what did we decide about colour?" },
@@ -168,18 +148,6 @@ describe("the gate and the prompts", () => {
 
   it("the transcript names who said what and marks the message being answered", () => {
     expect(transcript).toBe("Ash: what did we decide about colour?\n\n>> frank: Colour means status only.\n\n(app): Alfred couldn't answer: offline.");
-  });
-
-  it("reads the chime gate's list: members only, never the answerer, once each, in room order; an empty list is an answer", () => {
-    expect(parseChimes('{"chime":[{"id":"alfred","why":"gate"},{"id":"frank","why":"missed ask"},{"id":"frank"},{"id":"chief-of-staff"},{"id":"nobody"}]}', TEAM, "chief-of-staff")).toEqual([
-      { id: "frank", why: "missed ask" },
-      { id: "alfred", why: "gate" },
-    ]);
-    expect(parseChimes('{"chime":[]}', TEAM, "chief-of-staff")).toEqual([]);
-    expect(parseChimes("nobody", TEAM, "chief-of-staff")).toBeUndefined();
-    expect(chimePrompt(TEAM, COS, transcript)).not.toContain("- chief-of-staff:");
-    expect(chimePrompt(TEAM, COS, transcript)).toContain("pushback when he asks for something that clashes with an earlier decision");
-    expect(chimePrompt(TEAM, PM, transcript, "post")).toContain("must look at it now");
   });
 
   it("each turn carries the room rules, the seats' lanes and the conversation as data, and says how its words reach the room", () => {
@@ -196,8 +164,7 @@ describe("the gate and the prompts", () => {
     expect(chime).toContain("reply with exactly NO_REPLY");
     const reply = turnPrompt({ ...base, me: PM, kind: "reply", other: "frank" });
     expect(reply).toContain("frank addressed you in the message marked >> below");
-    expect(reply).toContain('"That\'s Ash\'s call"');
-    expect(turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 4 })).toContain("4 seats have spoken since Ash's last message");
+    expect(reply).toContain("Answer it or do it, from your lane");
     const back = turnPrompt({ ...base, me: COS, kind: "back", back: { title: "Launch shortlist", answer: "Base, then Clanker." } });
     expect(back).toContain('start with "Launch shortlist is back"');
     expect(back).toContain("<your_answer>\nBase, then Clanker.\n</your_answer>");
@@ -206,30 +173,30 @@ describe("the gate and the prompts", () => {
     expect(busy).not.toContain("Your reply is posted to the room for you");
   });
 
-  it("posts are short and point to the detail; reviews verify and close; Ash is asked only what is his call", () => {
-    for (const rule of ["400 characters", "a file path, a commit, a test count", "only the host", "check it yourself", "a review ends in", "Locked:", "truly his call"])
+  it("the room rules are the basics: who is speaking, answer when it's for you, stop when done; nothing on formats or review rounds", () => {
+    for (const rule of ["group chat", "shows who wrote it", "answer when it's for you", "name a seat", "stop when you're done"])
       expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
+    for (const gone of ["pass from me", "a review ends in", "Locked:", "digest", "short lines", "em dash", "400 characters"]) expect(ROOM_RULES.toLowerCase(), gone).not.toContain(gone.toLowerCase());
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const host = turnPrompt({ ...base, me: COS, kind: "answer" });
-    expect(host).toContain("one short line each");
-    // Ash sees the host's words as they are written: its first line comes before any tool call (a brief to a Lead).
-    expect(host).toContain("Write that first line before you call any tool");
-    expect(host).toContain("Don't list his asks back");
-    expect(host).toContain("2 to 5 short lines");
-    const reviewer = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager" });
-    expect(reviewer).toContain("check it yourself first");
-    expect(reviewer).toContain('"pass from me"');
-    const digest = turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 });
-    expect(digest).toContain("Locked:");
-    expect(digest).toContain("only when every reviewer has passed");
+    expect(host).toContain("say so by name");
+    for (const gone of ["400 characters", "em dashes", "short lines", "pass from me"]) expect(host, gone).not.toContain(gone);
+  });
+
+  it("a turn that answers a Mono says so, so its words are never saved as Ash's", () => {
+    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
+    expect(turnPrompt({ ...base, me: FRANK, kind: "reply", other: "Projects Manager", speaker: "Projects Manager" })).toContain(
+      "The message you answer is from Projects Manager, a Mono: never save, record or quote it as Ash's words.",
+    );
+    expect(turnPrompt({ ...base, me: COS, kind: "answer", speaker: "Ash" })).not.toContain("a Mono: never save");
   });
 
   it("a turn ends on how long its post may be; the project's memory goes ahead of the conversation, not after it", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
     const answer = turnPrompt({ ...base, me: COS, kind: "answer" });
-    expect(answer.trimEnd().split("\n").at(-1)).toBe(`Now write your post: 2 to 5 short lines, under about 400 characters, or exactly ${"NO_REPLY"}.`);
+    expect(answer.trimEnd().split("\n").at(-1)).toBe(`Now write your post, or exactly ${"NO_REPLY"}.`);
     const busy = turnPrompt({ ...base, me: FRANK, kind: "reply", other: "PM", viaTool: true });
-    expect(busy.trimEnd().split("\n").at(-1)).toBe("Now answer with room_post (2 to 5 short lines, under about 400 characters), or post nothing.");
+    expect(busy.trimEnd().split("\n").at(-1)).toBe("Now answer with room_post, or post nothing.");
     const withMemory = withRoomMemory(answer, "<project_memory>\nTeal is the brand colour.\n</project_memory>");
     expect(withMemory.startsWith("[MonoCode room] You are Chief of Staff")).toBe(true);
     expect(withMemory.indexOf("<project_memory>")).toBeLessThan(withMemory.indexOf("<room_conversation>"));
@@ -238,17 +205,6 @@ describe("the gate and the prompts", () => {
     expect(withRoomMemory("hello", "<m/>")).toBe("hello\n\n<m/>");
   });
 
-  it("an unanswered question to Ash is never asked again and never holds up the rest; flags name the builder", () => {
-    for (const rule of ["never ask it again", "doesn't hold up", "name the builder"])
-      expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
-    const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };
-    expect(turnPrompt({ ...base, me: COS, kind: "digest", seatsSpoke: 3 })).toContain("don't ask it again");
-  });
-
-  it("the room rules carry what the Grok room did and what it must not copy", () => {
-    for (const rule of ["answers Ash first", "by name", "pass from me", "Stand down out loud", "skip review", "That's Ash's call", "Locked", "is back", "no em dashes", "don't just agree"])
-      expect(ROOM_RULES.toLowerCase()).toContain(rule.toLowerCase());
-  });
 });
 
 describe("what the room says when a turn can't run", () => {
@@ -268,22 +224,5 @@ describe("what the room says when a turn can't run", () => {
     expect(failureNotice("frank", "You've hit your usage limit. Resets at 4pm.")).toBe("frank couldn't answer: You've hit your usage limit. Resets at 4pm.");
     expect(failureNotice("frank", "Not logged in · Please run /login", "claude")).toBe("frank isn't signed in to Claude in this copy. Your message is saved.");
     expect(failureNotice("frank", "")).toBe("frank couldn't answer: Its turn did not finish.");
-  });
-});
-
-describe("isGreeting", () => {
-  it("is a hello with nothing asked", () => {
-    for (const t of ["yo morning", "hey", "Morning all!", "gm team", "hiya guys", "yo", "good morning everyone", "hey hey"]) expect(isGreeting(t), t).toBe(true);
-    for (const t of ["hey can u check the board", "morning, wats left", "yo ship it", "hi frank wat did i say", "", "skip review just ship the fix pls"]) expect(isGreeting(t), t).toBe(false);
-  });
-});
-
-describe("roundOf", () => {
-  it("a hello or a question to each seat is a round; other asks are not", () => {
-    expect(roundOf("yo morning")).toBe("hello");
-    expect(roundOf("who's on my team rn n what does each of u actually do")).toBe("each");
-    expect(roundOf("ok all of u, wat r u working on")).toBe("each");
-    expect(roundOf("cos can u look into competitor pricing")).toBeNull();
-    expect(roundOf("progeress? i only see cos working atm")).toBeNull();
   });
 });

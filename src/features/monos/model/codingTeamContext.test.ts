@@ -1,14 +1,12 @@
 // @vitest-environment happy-dom
-// What a chat in a project's coding team is handed (monoFiles.ts codingTeamContext), and who owns delegated work
+// What a chat in a project's coding team is told (monoFiles.ts codingTeamContext), and who owns delegated work
 // (orchestrators.ts): Ash, 20 Oct, "mainly the coding team is the main place i want to talk to" and "I don't talk to
 // workers. I only talk to orchestrators."
 import { beforeEach, describe, expect, it } from "vitest";
-import { ASK_ASH_RULES } from "../../hub/model/askAshRules";
-import { CHECK_RULES } from "../../hub/model/checkerRules";
 import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
 import { questionGoesToLead } from "../../notifications/model/stuckNotifications";
 import type { Delegation } from "./delegations";
-import { codingTeamContext, DELEGATE_RULES, PULL_REQUEST_RULES, TALK_RULES } from "./monoFiles";
+import { codingTeamContext, hubNote } from "./monoFiles";
 import { isOrchestratorChat } from "./orchestrators";
 
 const TEAM = { projectId: "vg-game", projectName: "EXO", folder: "/Users/ash/Projects/vg-game", leadName: "EXO lead" };
@@ -19,14 +17,15 @@ beforeEach(() => {
 });
 
 describe("codingTeamContext", () => {
-  it("says who the chat is, then carries a Lead's delegate, check, pull request and ask-Ash rules", () => {
+  it("is the hub note and the project, and nothing else: under 1 KB before memory", () => {
     const text = codingTeamContext(TEAM);
-    expect(text.startsWith("<coding_team>\nYou are a chat in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game.")).toBe(true);
-    expect(text).toContain("Ash talks to you here directly, like EXO lead: you are an orchestrator, not a worker");
-    expect(text).toContain("start them on the sonnet model");
-    for (const block of [ASK_ASH_RULES, TALK_RULES, DELEGATE_RULES, CHECK_RULES, PULL_REQUEST_RULES]) expect(text).toContain(block);
+    expect(text.startsWith(`${hubNote()}\n\n- This`)).toBe(true);
+    expect(text).toContain("- This chat is in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
+    expect(text).toContain("- Hub tools: hand work to another Mono");
+    expect(text).not.toMatch(/money/i);
     expect(text).not.toContain("<project_memory>");
-    expect(text).not.toMatch(/—/);
+    for (const gone of ["<chat_rules>", "<ask_ash_rules>", "Needs Ash:", "Right:", "ash_remember"]) expect(text, gone).not.toContain(gone);
+    expect(new TextEncoder().encode(text).length).toBeLessThan(1_000);
   });
 
   it("ends with the project's memory primer when there is one", () => {

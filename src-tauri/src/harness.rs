@@ -4595,13 +4595,34 @@ mod reap_logic_tests {
 }
 
 /// The settings MonoCode itself passes a session (`ClaudeCliSettings` in claudeProtocol.ts), kept in a dev copy so it
-/// runs like the daily app: thinking, fast mode, ultracode and the long-chat compaction ceiling.
-const DEV_CLAUDE_SETTINGS: [&str; 4] = [
+/// runs like the daily app: thinking, fast mode, ultracode, the long-chat compaction ceiling and the skill overrides.
+const DEV_CLAUDE_SETTINGS: [&str; 5] = [
     "alwaysThinkingEnabled",
     "fastMode",
     "ultracode",
     "autoCompactWindow",
+    "skillOverrides",
 ];
+
+/// Ash's own ~/.claude skills a hub chat must not fire by itself (HUB_OFF_SKILLS in claudeProtocol.ts): a session that
+/// loads user settings keeps them to Ash calling them by name.
+const HUB_OFF_SKILLS: [&str; 1] = ["dump-triage"];
+
+/// `settings` with every hub-off skill set to user-invocable-only, keeping any override already given.
+fn with_hub_off_skills(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let entry = settings
+        .entry("skillOverrides")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !entry.is_object() {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(map) = entry.as_object_mut() {
+        for name in HUB_OFF_SKILLS {
+            map.entry(name)
+                .or_insert_with(|| serde_json::Value::String("user-invocable-only".into()));
+        }
+    }
+}
 
 /// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
 /// only ever reaches this copy's own control port. It is kept only exactly as the app writes it
@@ -4674,6 +4695,8 @@ fn isolated_dev_claude_args(args: Vec<String>, own_exe: Option<&str>) -> Vec<Str
         }
     }
     settings.insert("disableAllHooks".into(), serde_json::Value::Bool(true));
+    // It loads user settings (--setting-sources=user), so Ash's dump-triage skill stays his to call by name.
+    with_hub_off_skills(&mut settings);
     let servers = match delegate {
         Some(entry) => serde_json::json!({ "mcpServers": { "monocode": entry } }).to_string(),
         None => "{\"mcpServers\":{}}".into(),
@@ -4829,5 +4852,31 @@ mod dev_claude_tests {
             .iter()
             .any(|a| a.contains("ash-os") || a.contains("project")));
         assert!(isolated.contains(&"--setting-sources=user".into()));
+    }
+
+    #[test]
+    fn a_dev_copy_keeps_dump_triage_to_ash_calling_it() {
+        let settings = |out: &[String]| -> serde_json::Value {
+            let at = out.iter().position(|a| a == "--settings").unwrap();
+            serde_json::from_str(&out[at + 1]).unwrap()
+        };
+        let bare = super::isolated_dev_claude_args(args(&["-p"]), Some(OWN_EXE));
+        assert_eq!(
+            settings(&bare)["skillOverrides"],
+            serde_json::json!({ "dump-triage": "user-invocable-only" })
+        );
+        let given = super::isolated_dev_claude_args(
+            args(&[
+                "--settings",
+                r#"{"skillOverrides":{"dump-triage":"off","other":"off"},"hooks":{"x":1}}"#,
+            ]),
+            Some(OWN_EXE),
+        );
+        let s = settings(&given);
+        assert_eq!(
+            s["skillOverrides"],
+            serde_json::json!({ "dump-triage": "off", "other": "off" })
+        );
+        assert!(s.get("hooks").is_none());
     }
 }

@@ -759,7 +759,7 @@ async function handleSoul(
     ? host.monoOf?.(source.id)?.id
     : undefined;
   if (!monoId)
-    throw new Error("Only a Mono's own conversation can manage its soul");
+    throw new Error("A soul can only be changed from that Mono's own chat");
   if (action === "soul.read") {
     const files = await host.agentFiles(monoId);
     return { file: "SOUL.md", text: files.soul, hash: files.soulHash };
@@ -846,7 +846,7 @@ async function handleMemory(
   host: AgentAppHost,
 ): Promise<unknown> {
   const monoId = host.monoOf?.(source.id)?.id;
-  if (!monoId) throw new Error("Memory belongs to the Mono's conversation");
+  if (!monoId) throw new Error("Memory can only be changed from a Mono's own chat");
   const path = memoryPath(input.topic);
   const date = memoryDate(host.now?.() ?? new Date());
   const until = optionalString(input.until, "until", 10);
@@ -974,7 +974,7 @@ async function handleHabits(
     ? host.monoOf?.(source.id)?.id
     : undefined;
   if (!habits || !monoId)
-    throw new Error("Only a Mono's own conversation can manage its habits");
+    throw new Error("Habits can only be changed from that Mono's own chat");
   const now = host.now?.() ?? new Date();
   const find = (list: Habit[]) => {
     const id = requiredString(input.id, "id", 128);

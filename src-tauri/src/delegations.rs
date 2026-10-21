@@ -23,22 +23,18 @@
 //!   watcher (monos/model/workerStall.ts). A stall is not a state: the row stays `running` (Ash OS knows five states), and
 //!   any move of the row (a question, a settle, a resumed turn, a Stop, a take-over) clears it. Activity again clears it
 //!   too. It is copied to Ash OS with the row (`stalled`) and logged (`stalled` / `unstalled`).
-//! - **Outbox**: every change bumps `version`. One thread copies rows newer than `mirrored_version` to Ash OS
-//!   (`ash-hub-delegation`), and each chat's Claude session binding (`ash-hub-chat-bind`), and replays whatever is left
-//!   at boot. It goes through `hub::Endpoint`, so a dev copy only ever reaches the stub or the read-only proxy.
+//! - **No mirror** (21 Oct): rows live here only. Every change still bumps `version`; the old `mirrored_version` and
+//!   `mirror_error` columns stay for older stores, unused. Reports still arrive after a restart: they are owed rows here.
 //!
 //! Own tables, made by `ensure_tables` (no numbered migration, so upstream's migration numbers can't collide).
 
 use std::collections::HashSet;
-use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
-use crate::hub::{self, HubError};
 use crate::session_store::{now_millis, SessionStore};
 
 /// Tauri event after any change: `{ids}`.
@@ -64,10 +60,6 @@ const ERROR_MAX: usize = 2_000;
 const QUESTION_MAX: usize = 2_000;
 const LOG_MAX: usize = 50;
 const ASKS_MAX: usize = 50;
-/// What the studio's copy keeps (ashos/hub.py DELEGATION_TEXT); sending more only costs bytes.
-const MIRROR_BRIEF_MAX: usize = 4_000;
-const MIRROR_RESULT_MAX: usize = 2_000;
-const OUTBOX_BATCH: usize = 50;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -526,7 +518,6 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             save(&tx, &existing)?;
         }
         tx.commit().map_err(|e| e.to_string())?;
-        nudge();
         return Ok(existing);
     }
     // A followed brief waits its turn (or joins the work) instead of taking the child over, and a plain request only
@@ -609,7 +600,6 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
     );
     insert(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(row)
 }
 
@@ -679,7 +669,6 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Change {
         applied: true,
         row: Some(row),
@@ -750,7 +739,6 @@ pub fn reattach(
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Some(row))
 }
 
@@ -830,7 +818,6 @@ pub fn set_question_with(
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Change {
         applied: true,
         row: Some(row),
@@ -916,7 +903,6 @@ pub fn set_stall(conn: &mut Connection, input: StallInput, now: i64) -> Result<C
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Change {
         applied: true,
         row: Some(row),
@@ -1027,7 +1013,6 @@ pub fn set_delivery(
     }
     tx.commit().map_err(|e| e.to_string())?;
     if !changed.is_empty() {
-        nudge();
     }
     Ok(changed)
 }
@@ -1073,7 +1058,6 @@ pub fn cancel(
     }
     tx.commit().map_err(|e| e.to_string())?;
     if !changed.is_empty() {
-        nudge();
     }
     Ok(changed)
 }
@@ -1107,7 +1091,6 @@ pub fn note_redo(
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Change {
         applied: true,
         row: Some(row),
@@ -1147,7 +1130,6 @@ pub fn refuse(
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(Change {
         applied: true,
         row: Some(row),
@@ -1351,306 +1333,7 @@ pub fn bind_chat(conn: &mut Connection, input: ChatBindInput, now: i64) -> Resul
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
-    nudge();
     Ok(true)
-}
-
-// ---- the outbox --------------------------------------------------------------------------------------------------------
-
-const ACTION_DELEGATION: &str = "ash-hub-delegation";
-const ACTION_CHAT_BIND: &str = "ash-hub-chat-bind";
-
-/// One thing to copy to Ash OS.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct OutboxItem {
-    pub action: &'static str,
-    pub key: String,
-    pub version: i64,
-    pub payload: Value,
-}
-
-/// What this run has given up on until the next boot: a version the studio refused (malformed, not allowed) and an
-/// action it doesn't know or refuses outright (an older studio, the read-only proxy).
-#[derive(Default)]
-pub(crate) struct Skip {
-    versions: HashSet<(&'static str, String, i64)>,
-    actions: HashSet<&'static str>,
-}
-
-/// The project as a word the studio can resolve: the folder's name.
-fn project_word(path: &str) -> Option<String> {
-    let name = path
-        .trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .trim();
-    (!name.is_empty()).then(|| cap(name, 60))
-}
-
-/// The row as ashos/hub.py `delegation` reads it (docs/HUB-BACKEND.md, "Delegations and who owns an ask").
-pub(crate) fn delegation_payload(d: &Delegation) -> Value {
-    let mut payload = json!({
-        "id": d.id,
-        "version": d.version,
-        "state": d.state,
-        "owner_session": d.owner_session,
-        "ask_ids": d.ask_ids,
-        "project": d.project.as_deref().and_then(project_word),
-        "title": d.title,
-        "brief": d.brief.as_deref().map(|b| cap(b, MIRROR_BRIEF_MAX)),
-        "goal": d.goal,
-        "error_class": d.error_class,
-        "error": d.error,
-        "retryable": d.retryable,
-        "resets_at": d.resets_at,
-        "result": d.result.as_deref().map(|r| cap(r, MIRROR_RESULT_MAX)),
-        "pending_question": d.pending_question,
-        "delivery": d.delivery,
-        "log": d.log,
-        "batch_id": d.batch_id,
-        "parent_id": d.parent_id,
-        "root_id": d.root_id,
-        "child_session": d.child_session,
-        "request_id": d.request_id,
-        "generation": d.generation,
-        "created_at": d.created_at,
-        "updated_at": d.updated_at,
-    });
-    if let Some(mono) = d.owner_mono.as_deref().filter(|m| mono_id_ok(m)) {
-        payload["owner_mono"] = json!(mono);
-    }
-    // Ash OS keeps what it knows and ignores the rest (ashos/hub.py `_delegation_row`); the log carries it either way.
-    if let Some(kind) = d.stall_kind.as_deref() {
-        payload["stalled"] =
-            json!({ "kind": kind, "reason": d.stall_reason, "since": d.stalled_at });
-    }
-    payload
-}
-
-/// Everything newer than its copy, oldest change first, minus what this run gave up on.
-pub(crate) fn outbox_due(
-    conn: &Connection,
-    skip: &Skip,
-    limit: usize,
-) -> Result<Vec<OutboxItem>, String> {
-    let mut items = Vec::new();
-    if !skip.actions.contains(ACTION_DELEGATION) {
-        for d in query(
-            conn,
-            "WHERE version > mirrored_version ORDER BY updated_at, rowid",
-            &[],
-        )? {
-            if !skip
-                .versions
-                .contains(&(ACTION_DELEGATION, d.id.clone(), d.version))
-            {
-                items.push(OutboxItem {
-                    action: ACTION_DELEGATION,
-                    key: d.id.clone(),
-                    version: d.version,
-                    payload: delegation_payload(&d),
-                });
-            }
-        }
-    }
-    if !skip.actions.contains(ACTION_CHAT_BIND) {
-        let mut statement = conn
-            .prepare(
-                "SELECT provider_session, chat_id, mono_id, role, delegation_id, bound_at, version
-                 FROM delegation_chat_binds WHERE version > mirrored_version ORDER BY bound_at",
-            )
-            .map_err(|e| e.to_string())?;
-        let binds = statement
-            .query_map([], |row| {
-                let provider: String = row.get(0)?;
-                let version: i64 = row.get(6)?;
-                let mut payload = json!({
-                    "provider_session": provider,
-                    "chat_id": row.get::<_, String>(1)?,
-                    "bound_at": row.get::<_, i64>(5)?,
-                });
-                for (index, key) in [(2, "mono_id"), (3, "role"), (4, "delegation_id")] {
-                    if let Some(value) = row.get::<_, Option<String>>(index)? {
-                        payload[key] = json!(value);
-                    }
-                }
-                Ok((provider, version, payload))
-            })
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        for (provider, version, payload) in binds {
-            if !skip
-                .versions
-                .contains(&(ACTION_CHAT_BIND, provider.clone(), version))
-            {
-                items.push(OutboxItem {
-                    action: ACTION_CHAT_BIND,
-                    key: provider,
-                    version,
-                    payload,
-                });
-            }
-        }
-    }
-    items.truncate(limit);
-    Ok(items)
-}
-
-/// Record what the studio said: the version it has (sent) or why it refused it.
-pub(crate) fn outbox_mark(
-    conn: &Connection,
-    item: &OutboxItem,
-    error: Option<&str>,
-) -> Result<(), String> {
-    let table_key = match item.action {
-        ACTION_DELEGATION => ("delegations", "id"),
-        _ => ("delegation_chat_binds", "provider_session"),
-    };
-    let (table, key) = table_key;
-    match error {
-        None => conn.execute(
-            &format!(
-                "UPDATE {table} SET mirrored_version = MAX(mirrored_version, ?2), mirror_error = NULL
-                 WHERE {key} = ?1"
-            ),
-            params![item.key, item.version],
-        ),
-        Some(error) => conn.execute(
-            &format!("UPDATE {table} SET mirror_error = ?2 WHERE {key} = ?1"),
-            params![item.key, cap(error, 500)],
-        ),
-    }
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// One pass of the outbox.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Pump {
-    /// Nothing left to send.
-    Idle,
-    /// Sent (or gave up on) this many; there may be more.
-    Progress(usize),
-    /// Ash OS can't be reached right now: try again later, from where it stopped.
-    Down(HubError),
-}
-
-/// Send what is due, holding the database only between calls. A send that cannot reach Ash OS stops the pass (it is
-/// tried again later); one the studio refuses is given up for this run (and tried again at the next boot).
-pub(crate) fn pump(
-    store: &SessionStore,
-    send: &mut dyn FnMut(&'static str, Value) -> Result<Value, HubError>,
-    skip: &mut Skip,
-) -> Result<Pump, String> {
-    let items = {
-        let conn = store.lock_conn()?;
-        outbox_due(&conn, skip, OUTBOX_BATCH)?
-    };
-    if items.is_empty() {
-        return Ok(Pump::Idle);
-    }
-    let mut done = 0;
-    for item in items {
-        if skip.actions.contains(item.action) {
-            continue;
-        }
-        match send(item.action, item.payload.clone()) {
-            Ok(_) => {
-                // `applied: false` too: the copy already has this version or a newer one.
-                outbox_mark(&*store.lock_conn()?, &item, None)?;
-            }
-            // Not reachable, or reachable but failing (a 5xx): down for now, sent again later from here.
-            Err(error)
-                if matches!(
-                    error.kind,
-                    "unreachable" | "timeout" | "unauthorized" | "server"
-                ) =>
-            {
-                return Ok(Pump::Down(error));
-            }
-            Err(error) => {
-                // A whole action refused (403) or unknown to this studio: no other row of it will fare better.
-                if error.kind == "refused" || error.message.contains("Unknown hub action") {
-                    skip.actions.insert(item.action);
-                }
-                skip.versions
-                    .insert((item.action, item.key.clone(), item.version));
-                outbox_mark(&*store.lock_conn()?, &item, Some(&error.message))?;
-            }
-        }
-        done += 1;
-    }
-    Ok(Pump::Progress(done))
-}
-
-fn wake() -> &'static (Mutex<bool>, Condvar) {
-    static WAKE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
-    WAKE.get_or_init(|| (Mutex::new(false), Condvar::new()))
-}
-
-/// Something changed: let the outbox look now rather than at its next timer.
-pub(crate) fn nudge() {
-    let (flag, signal) = wake();
-    if let Ok(mut flag) = flag.lock() {
-        *flag = true;
-        signal.notify_all();
-    }
-}
-
-fn rest(timeout: Duration) {
-    let (flag, signal) = wake();
-    let Ok(guard) = flag.lock() else {
-        std::thread::sleep(timeout);
-        return;
-    };
-    if let Ok((mut guard, _)) = signal.wait_timeout_while(guard, timeout, |nudged| !*nudged) {
-        *guard = false;
-    }
-}
-
-/// The outbox thread: replays everything not yet copied at boot, then sends each change as it happens.
-pub(crate) fn init(app: &AppHandle) {
-    let app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("delegation-outbox".into())
-        .spawn(move || {
-            let mut skip = Skip::default();
-            let mut down = 0u32;
-            loop {
-                // Read every time: Ash OS may start later, and a dev copy has only the stub or proxy hub:dev gave it.
-                let endpoint = match hub::Endpoint::from_env() {
-                    Ok(endpoint) => endpoint,
-                    Err(_) => {
-                        rest(Duration::from_secs(300));
-                        continue;
-                    }
-                };
-                let store = app.state::<SessionStore>();
-                let mut send = |action: &'static str, payload: Value| {
-                    hub::call_blocking(&endpoint, action, payload)
-                };
-                match pump(store.inner(), &mut send, &mut skip) {
-                    Ok(Pump::Progress(_)) => down = 0,
-                    Ok(Pump::Idle) => {
-                        down = 0;
-                        rest(Duration::from_secs(120));
-                    }
-                    Ok(Pump::Down(_)) => {
-                        down = down.saturating_add(1);
-                        rest(hub::backoff(down).max(Duration::from_secs(5)) * 4);
-                    }
-                    Err(error) => {
-                        eprintln!("Delegation outbox: {error}");
-                        rest(Duration::from_secs(60));
-                    }
-                }
-            }
-        });
-    if let Err(error) = spawned {
-        eprintln!("Could not start the delegation outbox: {error}");
-    }
 }
 
 // ---- Tauri commands ----------------------------------------------------------------------------------------------------
@@ -2761,31 +2444,6 @@ mod tests {
     }
 
     #[test]
-    fn ash_os_gets_the_stall_with_the_row() {
-        let store = store();
-        let mut conn = store.lock_conn().unwrap();
-        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
-        assert!(delegation_payload(&row).get("stalled").is_none());
-        let stalled = set_stall(&mut conn, stall(&row.id, 1, Some("quiet"), 400), 700)
-            .unwrap()
-            .row
-            .unwrap();
-        let payload = delegation_payload(&stalled);
-        assert_eq!(
-            payload["state"], "running",
-            "Ash OS knows five states; a stall is not one of them"
-        );
-        assert_eq!(
-            payload["stalled"],
-            json!({ "kind": "quiet", "reason": "went quiet", "since": 400 })
-        );
-        assert_eq!(
-            payload["log"].as_array().unwrap().last().unwrap()["event"],
-            "stalled"
-        );
-    }
-
-    #[test]
     fn an_older_store_gets_the_stall_columns() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -3125,416 +2783,4 @@ mod tests {
         assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DELIVERED);
     }
 
-    /// The studio's version rule, as `ash-hub-delegation` applies it: a write lands only when newer.
-    #[derive(Default)]
-    struct FakeStudio {
-        copies: std::collections::HashMap<String, Value>,
-        calls: Vec<(&'static str, Value)>,
-        binds: Vec<Value>,
-        down: bool,
-        knows_chat_bind: bool,
-    }
-
-    impl FakeStudio {
-        fn send(&mut self, action: &'static str, payload: Value) -> Result<Value, HubError> {
-            self.calls.push((action, payload.clone()));
-            if self.down {
-                return Err(HubError {
-                    kind: "unreachable",
-                    message: "Ash OS isn't running.".into(),
-                });
-            }
-            if action == ACTION_CHAT_BIND {
-                if !self.knows_chat_bind {
-                    return Err(HubError {
-                        kind: "error",
-                        message: "Unknown hub action".into(),
-                    });
-                }
-                self.binds.push(payload);
-                return Ok(json!({ "applied": true }));
-            }
-            let id = payload["id"].as_str().unwrap().to_string();
-            let version = payload["version"].as_i64().unwrap();
-            let have = self
-                .copies
-                .get(&id)
-                .and_then(|c| c["version"].as_i64())
-                .unwrap_or(0);
-            if version <= have {
-                return Ok(json!({ "id": id, "applied": false, "version": have }));
-            }
-            self.copies.insert(id.clone(), payload);
-            Ok(json!({ "id": id, "applied": true, "version": version }))
-        }
-    }
-
-    fn drain(store: &SessionStore, studio: &mut FakeStudio, skip: &mut Skip) -> Pump {
-        loop {
-            let mut send = |action: &'static str, payload: Value| studio.send(action, payload);
-            match pump(store, &mut send, skip).unwrap() {
-                Pump::Progress(_) => continue,
-                other => return other,
-            }
-        }
-    }
-
-    #[test]
-    fn the_outbox_sends_the_studios_shape_and_waits_while_ash_os_is_down() {
-        let store = store();
-        let row = {
-            let mut conn = store.lock_conn().unwrap();
-            record(
-                &mut conn,
-                launch("mono-exo", "app-mono-exo-a", "app-mono-exo-a"),
-                10,
-            )
-            .unwrap()
-        };
-        let mut studio = FakeStudio {
-            down: true,
-            ..Default::default()
-        };
-        let mut skip = Skip::default();
-        assert!(matches!(
-            drain(&store, &mut studio, &mut skip),
-            Pump::Down(_)
-        ));
-        assert_eq!(
-            get(&store.lock_conn().unwrap(), &row.id)
-                .unwrap()
-                .unwrap()
-                .mirrored_version,
-            0
-        );
-
-        studio.down = false;
-        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
-        let copy = &studio.copies[&row.id];
-        assert_eq!(copy["owner_mono"], "vg-game-lead");
-        assert_eq!(copy["owner_session"], "mono-exo");
-        assert_eq!(copy["state"], "running");
-        assert_eq!(
-            copy["project"], "vg-game",
-            "the folder's name, which the studio resolves"
-        );
-        assert_eq!(copy["ask_ids"], json!([]));
-        assert_eq!(copy["generation"], 1);
-        // Exactly the fields ashos/hub.py `delegation` reads (docs/HUB-BACKEND.md), nothing of the hub's own.
-        let mut keys: Vec<&str> = copy
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
-                "ask_ids",
-                "batch_id",
-                "brief",
-                "child_session",
-                "created_at",
-                "delivery",
-                "error",
-                "error_class",
-                "generation",
-                "goal",
-                "id",
-                "log",
-                "owner_mono",
-                "owner_session",
-                "parent_id",
-                "pending_question",
-                "project",
-                "request_id",
-                "resets_at",
-                "result",
-                "retryable",
-                "root_id",
-                "state",
-                "title",
-                "updated_at",
-                "version",
-            ]
-        );
-        assert_eq!(copy["log"][0]["event"], "recorded");
-        assert_eq!(
-            get(&store.lock_conn().unwrap(), &row.id)
-                .unwrap()
-                .unwrap()
-                .mirrored_version,
-            1
-        );
-        let sent = studio.calls.len();
-        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
-        assert_eq!(studio.calls.len(), sent, "nothing is sent twice");
-    }
-
-    /// Boot replay: what a run could not send (Ash OS down, then the app quit) goes out at the next boot, newest
-    /// version only, and the studio's copy ends at the hub's state whatever order the sends took.
-    #[test]
-    fn the_outbox_replays_at_boot_and_the_copy_ends_at_the_hubs_version() {
-        let store = store();
-        let id = {
-            let mut conn = store.lock_conn().unwrap();
-            let row = record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
-            settle(
-                &mut conn,
-                finish(&row.id, 1, COMPLETED, &"r".repeat(5_000)),
-                11,
-            )
-            .unwrap();
-            set_delivery(&mut conn, deliver(&[&row.id], QUEUED, Some("m")), 12).unwrap();
-            row.id
-        };
-        let mut studio = FakeStudio {
-            down: true,
-            ..Default::default()
-        };
-        assert!(matches!(
-            drain(&store, &mut studio, &mut Skip::default()),
-            Pump::Down(_)
-        ));
-        // The app restarts: a fresh outbox run, Ash OS back.
-        studio.down = false;
-        assert_eq!(drain(&store, &mut studio, &mut Skip::default()), Pump::Idle);
-        let copy = &studio.copies[&id];
-        assert_eq!(
-            (copy["version"].as_i64(), copy["state"].as_str()),
-            (Some(3), Some("completed"))
-        );
-        assert_eq!(copy["delivery"], "queued");
-        assert_eq!(copy["result"].as_str().unwrap().len(), MIRROR_RESULT_MAX);
-        // An older version arriving late changes nothing in the copy.
-        let mut stale = copy.clone();
-        stale["version"] = json!(1);
-        stale["state"] = json!("running");
-        assert_eq!(
-            studio.send(ACTION_DELEGATION, stale).unwrap()["applied"],
-            false
-        );
-        assert_eq!(studio.copies[&id]["state"], "completed");
-    }
-
-    #[test]
-    fn a_refusal_is_given_up_for_this_run_and_an_unknown_action_stops_that_action() {
-        let store = store();
-        {
-            let mut conn = store.lock_conn().unwrap();
-            for n in 0..3 {
-                bind_chat(
-                    &mut conn,
-                    ChatBindInput {
-                        provider_session: format!("claude-{n}"),
-                        chat_id: format!("chat-{n}"),
-                        ..Default::default()
-                    },
-                    n,
-                )
-                .unwrap();
-            }
-            record(&mut conn, launch("mono", "req", "child"), 10).unwrap();
-        }
-        let mut studio = FakeStudio::default();
-        let mut skip = Skip::default();
-        assert_eq!(drain(&store, &mut studio, &mut skip), Pump::Idle);
-        let bind_calls = studio
-            .calls
-            .iter()
-            .filter(|(a, _)| *a == ACTION_CHAT_BIND)
-            .count();
-        assert_eq!(
-            bind_calls, 1,
-            "an older studio without chat-bind is asked once per run"
-        );
-        let error: Option<String> = store
-            .lock_conn()
-            .unwrap()
-            .query_row(
-                "SELECT mirror_error FROM delegation_chat_binds WHERE provider_session = 'claude-0'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(error.as_deref(), Some("Unknown hub action"));
-        // The next boot, against a studio that knows it: every bind goes out.
-        studio.knows_chat_bind = true;
-        assert_eq!(drain(&store, &mut studio, &mut Skip::default()), Pump::Idle);
-        assert_eq!(studio.binds.len(), 3);
-        assert_eq!(studio.binds[0]["chat_id"], "chat-0");
-        assert!(
-            studio.binds[0].get("mono_id").is_none(),
-            "unknown fields are left out, not null"
-        );
-    }
-
-    /// Ash OS is running but failing (a 5xx, a proxy in front of it): that is "down, try later", never a refusal that
-    /// gives the copy up.
-    #[test]
-    fn a_server_error_from_ash_os_waits_instead_of_giving_up() {
-        use std::io::{Read, Write};
-        let dir = std::env::temp_dir().join(format!("delegations-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let token = dir.join("token");
-        std::fs::write(&token, "test-only-token").unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            for answer in [
-                ("503 Service Unavailable", r#"{"ok":false,"error":"busy"}"#),
-                ("200 OK", r#"{"ok":true,"result":{"applied":true}}"#),
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut seen = Vec::new();
-                let mut buf = [0u8; 4096];
-                loop {
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    seen.extend_from_slice(&buf[..n]);
-                    let text = String::from_utf8_lossy(&seen).to_string();
-                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                        let want = head
-                            .lines()
-                            .find_map(|l| {
-                                l.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                            })
-                            .unwrap_or(0);
-                        if body.len() >= want {
-                            break;
-                        }
-                    }
-                }
-                let (status, body) = answer;
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        let store = store();
-        let id = record(
-            &mut store.lock_conn().unwrap(),
-            launch("mono", "req", "child"),
-            10,
-        )
-        .unwrap()
-        .id;
-        let endpoint = hub::Endpoint::local(port, token);
-        let mut send =
-            |action: &'static str, payload: Value| hub::call_blocking(&endpoint, action, payload);
-        let mut skip = Skip::default();
-        let first = pump(&store, &mut send, &mut skip).unwrap();
-        assert!(
-            matches!(&first, Pump::Down(error) if error.kind == "server"),
-            "{first:?}"
-        );
-        let row = get(&store.lock_conn().unwrap(), &id).unwrap().unwrap();
-        assert_eq!((row.mirrored_version, row.mirror_error), (0, None));
-        // Later, in the same run, it goes through.
-        assert_eq!(
-            pump(&store, &mut send, &mut skip).unwrap(),
-            Pump::Progress(1)
-        );
-        assert_eq!(
-            get(&store.lock_conn().unwrap(), &id)
-                .unwrap()
-                .unwrap()
-                .mirrored_version,
-            1
-        );
-        server.join().unwrap();
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    /// The real wire: `hub::call_blocking` posts the row to /api/ash-hub-delegation with the key.
-    #[test]
-    fn the_outbox_posts_to_ash_os_through_the_hub_bridge() {
-        use std::io::{Read, Write};
-        let dir = std::env::temp_dir().join(format!("delegations-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let token = dir.join("token");
-        std::fs::write(&token, "test-only-token").unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut seen = Vec::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = stream.read(&mut buf).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                seen.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&seen).to_string();
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let want = head
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                        })
-                        .unwrap_or(0);
-                    if body.len() >= want {
-                        break;
-                    }
-                }
-            }
-            let body = r#"{"ok":true,"result":{"applied":true}}"#;
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .as_bytes(),
-            );
-            String::from_utf8_lossy(&seen).to_string()
-        });
-        let store = store();
-        let id = record(
-            &mut store.lock_conn().unwrap(),
-            launch("mono", "req", "child"),
-            10,
-        )
-        .unwrap()
-        .id;
-        let endpoint = hub::Endpoint::local(port, token);
-        let mut send =
-            |action: &'static str, payload: Value| hub::call_blocking(&endpoint, action, payload);
-        assert_eq!(
-            pump(&store, &mut send, &mut Skip::default()).unwrap(),
-            Pump::Progress(1)
-        );
-        let request = server.join().unwrap();
-        assert!(
-            request.starts_with("POST /api/ash-hub-delegation HTTP/1.1"),
-            "{request}"
-        );
-        assert!(request.contains("Bearer test-only-token"));
-        assert!(request.contains(&format!("\"id\":\"{id}\"")));
-        assert_eq!(
-            get(&store.lock_conn().unwrap(), &id)
-                .unwrap()
-                .unwrap()
-                .mirrored_version,
-            1
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }

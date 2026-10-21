@@ -20,9 +20,10 @@ import { renameAshLeadToHubLead } from "./monoRename";
 import { applyMemoryLineFixes } from "./memoryLineFixes";
 import { checkSouls, watchSoulOpens } from "./soulTamper";
 import { stripProjects } from "./hubProjects";
-import { defaultSoul, loadMonoFiles, readAgentFile, writeAgentFile } from "../../monos/model/monoFiles";
+import { defaultSoul, loadMonoFiles, readAgentFile, setHubDocsPath, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
+import { resourceDir } from "@tauri-apps/api/path";
 import { pathKey } from "../../../shared/lib/paths";
 import { createLiveHubData } from "./liveHubData";
 import { mockHubData } from "./mockData";
@@ -52,6 +53,10 @@ function startHubMcp(): void {
   };
   // The app's own helper Claude processes (titles, commit text, the room's gate) carry the Monos-home fence too.
   registerClaudeGuards();
+  // The hub's docs ship in the app (tauri.conf.json resources, docs/hub/README.md): every chat's note points at them.
+  void resourceDir()
+    .then((dir) => setHubDocsPath(`${dir.replace(/\/+$/, "")}/hub-docs/README.md`))
+    .catch(() => undefined);
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
   setHubMcpServers({ ashOs: null, cli: null }, lookups);
   const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());

@@ -62,7 +62,7 @@ export function stallOptions(): StallOptions {
   };
 }
 
-/** `final`: the hourly check's self-repair gave up; its plain line wins over the watcher's own (workerProgress.ts). */
+/** `final`: the self-repair gave up; its plain line wins over the watcher's own (selfRepair.ts). */
 export type Stall = { kind: StallKind; reason: string; since: number; final?: boolean };
 
 type WorkerChat = Pick<Session, "busy" | "blocks" | "pendingQuestion" | "queuedMessages" | "queueStatus" | "usageLimit" | "cwd">;
@@ -163,7 +163,7 @@ export function judgeStall(
         reason: look.runningTool ? `Still running ${look.runningTool}` : "",
         since: lastActive,
       };
-    // An hour with no real progress is the hourly check's to judge (workerProgress.ts), on more than new steps.
+    // An hour with no real progress is the hourly check's to judge (selfRepair.ts), on more than new steps.
     return null;
   }
   if ((look.asking || look.queued || look.limited) && !look.resumeStopped) return null;
@@ -185,7 +185,7 @@ export type StallWatchHost = {
   openOwned(chat: string): number;
   now?(): number;
   options?(): StallOptions;
-  /** The hourly progress check's verdict on a row, while it holds one (workerProgress.ts). */
+  /** The hourly progress check's verdict on a row, while it holds one (selfRepair.ts). */
   hourly?(row: Delegation): Stall | null;
 };
 
