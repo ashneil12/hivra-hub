@@ -1942,6 +1942,56 @@ describe("claude background tasks", () => {
     }
   });
 
+  it("lets the turn go a minute after Claude yields with only a server left running", async () => {
+    // Ash day AD3: a worker answered, left `python -m http.server` up, and its Lead never heard back.
+    const { events, turn } = await startTurn("s1");
+    let settled = false;
+    void turn.then(() => {
+      settled = true;
+    });
+    vi.useFakeTimers();
+    try {
+      emitBackgroundBash("srv");
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(backgroundUpdates(events).at(-1)).toEqual([]);
+    // The server isn't stopped: only Stop ends what Claude left going.
+    const requests = parse().flatMap((m) => {
+      const request = m.request as Record<string, unknown> | undefined;
+      return request ? [request] : [];
+    });
+    expect(requests).not.toContainEqual({ subtype: "stop_task", task_id: "srv" });
+  });
+
+  it("still holds for a background subagent past the shell minute", async () => {
+    const { turn } = await startTurn("s1");
+    let settled = false;
+    void turn.then(() => {
+      settled = true;
+    });
+    vi.useFakeTimers();
+    try {
+      emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "a1",
+        tool_use_id: "toolu_agent_bg",
+        description: "Explore the auth module",
+        task_type: "local_agent",
+      });
+      emit({ type: "result", subtype: "success", session_id: "sess_1" });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops background commands when the turn is stopped", async () => {
     const { events, turn } = await startTurn("s1");
     emitBackgroundBash("b7");
