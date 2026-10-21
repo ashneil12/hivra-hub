@@ -1,6 +1,6 @@
 import { ChevronRight, Replace, X } from "../../../shared/ui/icons";
 import { HARNESS_TITLE, type HarnessId } from "../model/session";
-import { HarnessIcon } from "./HarnessIcon";
+import { ModelInUseIcon } from "./HarnessIcon";
 
 type Card = {
   from: HarnessId;
@@ -38,13 +38,13 @@ export function HandoffMiniCard({ card, onDismiss }: Props) {
             </span>
           </span>
           <span className="mt-1 flex min-w-0 items-center gap-1.5 text-[13px] font-semibold leading-snug text-content">
-            <HarnessIcon harness={card.from} className="size-3.5 shrink-0" />
+            <ModelInUseIcon harness={card.from} className="size-3.5 shrink-0" />
             <span className="min-w-0 truncate">{HARNESS_TITLE[card.from]}</span>
             <ChevronRight
               className="size-3 shrink-0 text-content/35"
               strokeWidth={1.75}
             />
-            <HarnessIcon harness={card.to} className="size-3.5 shrink-0" />
+            <ModelInUseIcon harness={card.to} className="size-3.5 shrink-0" />
             <span className="min-w-0 truncate">{HARNESS_TITLE[card.to]}</span>
           </span>
           {card.request ? (

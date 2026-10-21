@@ -6,7 +6,8 @@ import { NO_BRANCH_LABEL } from "../../source-control/model/worktrees";
 import type { SessionSummary } from "../data/sessionStore";
 import { resolveModel } from "../model/models";
 import { sessionDisplayTitle } from "../model/session";
-import { HarnessIcon } from "./HarnessIcon";
+import { ModelInUseIcon } from "./HarnessIcon";
+import { modelInUseLabel } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 
 export function SessionCardPreview({
   anchor,
@@ -74,12 +75,12 @@ export function SessionCardPreview({
     >
       <div className="flex items-center justify-between gap-3">
         <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-content/55">
-          <HarnessIcon
+          <ModelInUseIcon
             harness={session.harness}
             className="size-3.5 shrink-0"
           />
           <span className="min-w-0 truncate">
-            {resolveModel(session.harness, session.model).name}
+            {modelInUseLabel(session.harness, resolveModel(session.harness, session.model).name)}
           </span>
         </span>
         {status}

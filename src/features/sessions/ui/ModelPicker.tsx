@@ -1,3 +1,4 @@
+import { onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   Check,
   ChevronDown,
@@ -800,7 +801,10 @@ export function ModelPicker({
         type="button"
         title={
           triggerLabel
-            ? `${triggerLabel} · ${triggerTitle}`
+            ? // On the Grok bridge the Claude model it names isn't what runs, so the tooltip doesn't name it either.
+              onGrokBridge(current.harness)
+              ? triggerLabel
+              : `${triggerLabel} · ${triggerTitle}`
             : cycle
               ? `${triggerTitle} · Click for the next model`
               : `${triggerTitle} · Recent models: right-click or ${MOD}.`

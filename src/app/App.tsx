@@ -615,7 +615,7 @@ import {
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
-import { claudeRunsOnGrok } from "../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnGrok, modelInUseLabel } from "../integrations/harness/providers/claude/claudeGrokBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import {
   HARNESSES,
@@ -8218,7 +8218,7 @@ function Workspace({
             author: {
               harness: current.harness,
               model: current.model,
-              name: resolveModel(current.harness, current.model).name,
+              name: modelInUseLabel(current.harness, resolveModel(current.harness, current.model).name) ?? "",
             },
             settings: { choices: [], maxWorkers: 2 },
             status: "planning",

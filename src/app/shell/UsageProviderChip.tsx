@@ -25,6 +25,7 @@ import {
   resolveTabGroupMascot,
 } from "../../features/workspace/model/tabGroups";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { GROK_BRIDGE_LABEL, markHarnessInUse, onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { ArrowLeft, Check, ChevronRight, Gauge, Plus, RefreshCw } from "../../shared/ui/icons";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import {
@@ -152,8 +153,12 @@ export function UsageProviderChip({
   const tooltip = windows
     .map((entry) => rateLimitWindowTooltip(entry.window, now, showRemaining))
     .join(" · ");
-  const providerLabel = presentation?.label ?? HARNESS_TITLE[limits.provider];
-  const iconHarness = presentation?.harness ?? limits.provider;
+  // On the Grok bridge a Claude Code chat runs Grok 4.7: the chip and its popover name that and show Grok's plain mark,
+  // never Claude's (claudeGrokBridge.ts, the one source). Off the bridge nothing changes.
+  const providerLabel =
+    presentation?.label ??
+    (onGrokBridge(limits.provider) ? GROK_BRIDGE_LABEL : HARNESS_TITLE[limits.provider]);
+  const iconHarness = markHarnessInUse(presentation?.harness ?? limits.provider);
   const activeAccount = accounts.find((account) => account.id === accountId);
   const canManageAccounts = Boolean(onSelectAccount && onAddAccount);
   const activeAccountLabel = activeAccount?.label ?? "Removed account";

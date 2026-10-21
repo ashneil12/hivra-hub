@@ -20,7 +20,6 @@ import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hu
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
-import { Shimmer } from "../../shared/ui/Shimmer";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
@@ -424,16 +423,9 @@ export function MonoRailSection({
                   // creature nor the first letter of the name (the room, 21 Oct).
                   className="mr-1 size-4 shrink-0"
                 />
+                {/* The name reads the same in every state, at full contrast: the dot and the creature already say
+                    what it is doing (Critiquito, 21 Oct: a working name's shimmer sat near 2:1). */}
                 {shown(look).secondary === look.name ? (
-                  state.status === "working" ? (
-                    <Shimmer
-                      as="span"
-                      duration={1.4}
-                      className="min-w-0 flex-1 truncate text-sm font-medium leading-tight"
-                    >
-                      {shown(look).primary}
-                    </Shimmer>
-                  ) : (
                     <span className="flex min-w-0 flex-1 items-baseline gap-1.5 leading-tight">
                       <span className="min-w-0 truncate text-sm font-medium @max-[200px]/monorail:hidden" data-mono-primary-name>
                         {shown(look).primary}
@@ -442,20 +434,13 @@ export function MonoRailSection({
                         {shown(look).secondary}
                       </span>
                     </span>
-                  )
                 ) : (
                   // The name has the whole first row; the role is a small second line under it, at any rail width
                   // (Ash, 15 Oct: "frank", "Alfred" don't say what they do). Grey at 80% is 4.5:1 on glass even dimmed.
                   <span className="flex min-w-0 flex-1 flex-col">
-                    {state.status === "working" ? (
-                      <Shimmer as="span" duration={1.4} className="truncate text-sm font-medium leading-[18px]">
-                        {shown(look).primary}
-                      </Shimmer>
-                    ) : (
-                      <span className="truncate text-sm font-medium leading-[18px]" data-mono-primary-name>
-                        {shown(look).primary}
-                      </span>
-                    )}
+                    <span className="truncate text-sm font-medium leading-[18px]" data-mono-primary-name>
+                      {shown(look).primary}
+                    </span>
                     {shown(look).secondary ? (
                       <span className="truncate text-[11px] font-normal leading-[14px] text-content/80" data-mono-role>
                         {shown(look).secondary}

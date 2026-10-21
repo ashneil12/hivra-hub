@@ -2043,10 +2043,11 @@ function LiveFoldTitle({
     : background?.length
       ? `${formatWorkingDuration(elapsedMs, modelName)} · ${backgroundLabel(background)}`
       : formatWorkingDuration(elapsedMs, modelName);
+  // One grey for the whole line, no sweep (Critiquito, 21 Oct: "for 1s" read brighter than the model's name).
   const shimmer = (
-    <Shimmer className="min-w-0 truncate font-sans text-sm" duration={1}>
+    <span data-live-fold-title className="min-w-0 truncate font-sans text-sm text-content/60">
       {text}
-    </Shimmer>
+    </span>
   );
   return background?.length ? (
     <span className="flex min-w-0" title={background.join("\n")}>

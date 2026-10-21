@@ -15,6 +15,7 @@ import {
 } from "../model/transcriptJump";
 import { HarnessIcon } from "./HarnessIcon";
 import { findModel } from "../model/models";
+import { modelInUseLabel } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   HARNESS_TITLE,
   sessionDisplayTitle,
@@ -122,7 +123,7 @@ export function AgentTabView({
       </div>
     );
   }
-  const model = findModel(session.model)?.name ?? session.model;
+  const model = modelInUseLabel(session.harness, findModel(session.model)?.name ?? session.model);
   return (
     <div data-agent-tab className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">

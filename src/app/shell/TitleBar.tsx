@@ -39,7 +39,7 @@ import {
 import { useTabCloseMotion } from "../../features/workspace/hooks/useTabCloseMotion";
 import { TabWidthMotion } from "./ClosingTab";
 import { FileTypeIcon } from "../../features/files/ui/FileTypeIcon";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../features/sessions/ui/HarnessIcon";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { TabLabel } from "../../shared/ui/TabLabel";
@@ -319,7 +319,7 @@ function TabHarnesses({
                 strokeWidth={2}
               />
             ) : (
-              <HarnessIcon harness={harness} className="size-3.5 shrink-0" />
+              <ModelInUseIcon harness={harness} className="size-3.5 shrink-0" />
             )}
           </span>
         );

@@ -13,7 +13,7 @@ import {
   sessionDisplayTitle,
   type MonoSpawnedSession,
 } from "../../sessions/model/session";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import type {
   LaunchedSessionState,
   LaunchedSessionView,
@@ -138,7 +138,7 @@ export function LaunchedSessionCard({
         className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
         title={launch.cwd}
       >
-        <HarnessIcon harness={launch.harness} className="size-3.5 shrink-0" />
+        <ModelInUseIcon harness={launch.harness} className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate">{projectName(launch.cwd)}</span>
       </span>
     </button>

@@ -1,3 +1,4 @@
+import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   ArrowUp,
   AiIdea,
@@ -2454,6 +2455,9 @@ export function Composer({
                   harness={harness}
                   model={model}
                   values={modelSettings}
+                  // On the Grok bridge the toolbar names what really runs (claudeGrokBridge.ts): Grok 4.7, no Claude mark.
+                  triggerLabel={onGrokBridge(harness) ? GROK_BRIDGE_LABEL : undefined}
+                  noIcon={onGrokBridge(harness)}
                   allowedHarnesses={allowedModelHarnesses}
                   project={cwd}
                   hideSettings={controlsBeside}

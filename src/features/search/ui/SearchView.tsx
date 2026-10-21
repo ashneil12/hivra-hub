@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import { MatchText } from "../../../shared/ui/MatchText";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { OverlayNav } from "../../../app/shell/TitleBar";
@@ -602,7 +602,7 @@ function rowCopy(
 ): { icon: ReactNode; title: ReactNode; meta: string } {
   if (hit.kind === "conversation") {
     return {
-      icon: <HarnessIcon harness={hit.harness} className="size-3.5" />,
+      icon: <ModelInUseIcon harness={hit.harness} className="size-3.5" />,
       title: <MatchText text={hit.title} positions={hit.positions} active />,
       meta: projectName(hit.cwd),
     };

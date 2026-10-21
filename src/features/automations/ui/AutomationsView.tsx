@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { AccessPicker } from "../../sessions/ui/AccessPicker";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import {
   AlertCircle,
   CheckCircle,
@@ -588,7 +588,7 @@ function AutomationCard({
             title={model.name}
             className="ml-auto flex min-w-0 max-w-28 items-center gap-1 text-content/50"
           >
-            <HarnessIcon
+            <ModelInUseIcon
               harness={automation.harness}
               className="size-3.5 shrink-0"
             />

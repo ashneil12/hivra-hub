@@ -6,7 +6,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { HarnessIcon, ModelInUseIcon } from "../../features/sessions/ui/HarnessIcon";
+import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
 import {
@@ -601,10 +602,11 @@ function SessionChip({
     return (
       <span
         className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
-        title={HARNESS_TITLE[session.harness]}
+        title={onGrokBridge(session.harness) ? GROK_BRIDGE_LABEL : HARNESS_TITLE[session.harness]}
       >
-        <HarnessIcon harness={session.harness} className="size-3 shrink-0" />
-        <span>{HARNESS_LABEL[session.harness]}</span>
+        {/* On the Grok bridge: what really runs, with Grok's plain mark (claudeGrokBridge.ts). */}
+        <ModelInUseIcon harness={session.harness} className="size-3 shrink-0" />
+        <span>{onGrokBridge(session.harness) ? GROK_BRIDGE_LABEL : HARNESS_LABEL[session.harness]}</span>
       </span>
     );
   }

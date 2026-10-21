@@ -38,7 +38,7 @@ import {
 } from "../../files/ui/ExplorerMenu";
 import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
-import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import { ModelInUseIcon } from "../../sessions/ui/HarnessIcon";
 import { TabLabel } from "../../../shared/ui/TabLabel";
 
 type Props = {
@@ -372,7 +372,7 @@ export function SurfaceTabs({
                 {terminal ? (
                   <Terminal className="size-3.5 shrink-0" strokeWidth={1.75} />
                 ) : agent ? (
-                  <HarnessIcon
+                  <ModelInUseIcon
                     harness={agent.harness}
                     className="size-3.5 shrink-0"
                   />

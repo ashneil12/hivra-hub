@@ -11,6 +11,7 @@ import opencode from "../../../assets/providers/opencode.svg";
 import pi from "../../../assets/providers/pi.svg";
 import antigravity from "../../../assets/providers/antigravity.svg";
 import type { HarnessId } from "../model/session";
+import { markHarnessInUse } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 
 export const HARNESS_ICONS: Record<HarnessId, string> = {
   claude,
@@ -143,4 +144,9 @@ export function HarnessIcon({
       className={`block object-contain ${className}`}
     />
   );
+}
+
+/** A chat's mark for the model it really runs (claudeGrokBridge.ts markHarnessInUse): Grok's on the bridge. */
+export function ModelInUseIcon({ harness, className }: { harness: HarnessId; className?: string }) {
+  return <HarnessIcon harness={markHarnessInUse(harness)} className={className} />;
 }
