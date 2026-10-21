@@ -430,6 +430,8 @@ export async function startHubBridge(mode, tokenFile) {
     const scenario = process.env.MONOCODE_HUB_STUB_SCENARIO ?? "";
     const stub = await startStub({
       port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex"), jobs: /\bjobs\b/.test(scenario), questions: /\bquestions\b/.test(scenario),
+      // MONOCODE_HUB_STUB_PROJECTS: a folder of throwaway repos for the invented projects, so coding-team chats can start.
+      projectsRoot: process.env.MONOCODE_HUB_STUB_PROJECTS || null,
     });
     return { port: stub.port, tokenFile, label: `stub on 127.0.0.1:${stub.port} (invented data)`, close: () => stub.close() };
   }

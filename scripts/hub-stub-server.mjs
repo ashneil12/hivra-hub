@@ -11,6 +11,7 @@
 // stands in for the Rust plugin can reach it and a person can move things while the page is open. The real service
 // has none of that. In tests, `startStub()` returns an object that moves things directly.
 
+import { execFileSync } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -49,6 +50,27 @@ const clock = (ms) => {
 };
 
 const ACTION_LABELS = { start: "Start", open: "Open", sign_in: "Sign in", see_options: "See options", accept: "Looks right" };
+
+/**
+ * The invented projects pointed at real throwaway folders under `root` (never Ash's own repos): each is a local git
+ * repo with a README and no remote, made if missing. The dev slot's coding-team chats then have a folder to start in
+ * (Mac click tests 21 Oct: every slot project pointed at /Users/example, so no coding chat could start).
+ */
+export function throwawayProjects(projects, root) {
+  const base = path.resolve(String(root));
+  return projects.map((project) => {
+    const folder = path.join(base, project.id);
+    if (!fs.existsSync(path.join(folder, ".git"))) {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "README.md"), `# ${project.name} (throwaway test copy)\n\nInvented project for a MonoCode Hub dev slot. Never pushed.\n`);
+      const git = (...args) => execFileSync("git", args, { cwd: folder, stdio: "ignore", env: { ...process.env, GIT_AUTHOR_NAME: "hub test", GIT_AUTHOR_EMAIL: "test@hub.invalid", GIT_COMMITTER_NAME: "hub test", GIT_COMMITTER_EMAIL: "test@hub.invalid" } });
+      git("init", "-q");
+      git("add", "README.md");
+      git("commit", "-qm", "init");
+    }
+    return { ...project, folder };
+  });
+}
 
 /** The invented starting state: four projects, a few Needs, a "since" paragraph. */
 export function seedState(now = Date.now()) {
@@ -177,8 +199,11 @@ export async function startStub({
   now = () => Date.now(),
   /** How long a page or change preview takes to "build" (HUB_STUB_BUILD_MS, default 1.5 s): longer than the app's wait shows "still building". */
   buildMs = Number(process.env.HUB_STUB_BUILD_MS ?? 1500),
+  /** A folder of throwaway project repos (MONOCODE_HUB_STUB_PROJECTS): each invented project points at <root>/<id>, made as a local git repo with a README if missing, so a coding-team chat can start. Unset: the /Users/example paths. */
+  projectsRoot = null,
 } = {}) {
   const state = seedState(now());
+  if (projectsRoot) state.projects = throwawayProjects(state.projects, projectsRoot);
   state.jobs = [];
   if (withJobs) {
     const extra = jobsScenario(now());
