@@ -307,7 +307,15 @@ fn agent_dir(root: &Path, mono: &str, legacy_project: Option<&str>) -> Result<Pa
         return Err("Not a Mono id".into());
     }
     std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
-    let dir = root.join(mono);
+    let mut dir = root.join(mono);
+    if !dir.exists() {
+        // A Mono renamed in this home: a call still naming the old id (one already on its way when the rename ran)
+        // uses the renamed folder, never a new empty one under the old name.
+        if let Some(renamed) = mono_home::renamed_to(root, mono).filter(|to| root.join(to).is_dir())
+        {
+            dir = root.join(renamed);
+        }
+    }
     if let Some(project) = legacy_project.filter(|project| !project.trim().is_empty()) {
         adopt_legacy_folder(root, &dir, project)?;
     }
@@ -681,6 +689,62 @@ mod tests {
         let root = std::env::temp_dir().join(format!("mono-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// The leftover `ash-lead/` on Ash's Mac (21 Oct): after ash-lead became hub-lead, a read still naming ash-lead
+    /// (already on its way when the rename ran) made an empty ash-lead/ beside hub-lead/. Now it reads hub-lead's
+    /// folder, a write lands there too, and an empty leftover from before this fix goes on the next rename pass.
+    #[test]
+    fn a_late_call_with_a_renamed_monos_old_id_never_makes_an_empty_folder() {
+        let root = temp_root();
+        std::fs::create_dir_all(root.join("ash-lead/memory")).unwrap();
+        std::fs::write(
+            root.join("ash-lead/SOUL.md"),
+            "# Soul\nASH_MONO_ID=ash-lead\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("ash-lead/MEMORY.md"), "- kept\n").unwrap();
+        mono_home::rename_mono_folder(&root, "ash-lead", "hub-lead").unwrap();
+        let late = load(&root, "ash-lead", None).unwrap();
+        assert!(
+            !root.join("ash-lead").exists(),
+            "no folder under the old id"
+        );
+        assert_eq!(late.memory, "- kept\n");
+        assert!(late.soul.unwrap().contains("ASH_MONO_ID=hub-lead"));
+        save(
+            &root,
+            "ash-lead",
+            None,
+            "MEMORY.md",
+            "- kept\n- late\n",
+            None,
+        )
+        .unwrap();
+        assert!(!root.join("ash-lead").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("hub-lead/MEMORY.md")).unwrap(),
+            "- kept\n- late\n"
+        );
+        // A leftover made before this fix (empty memory, empty notes) goes; the renamed Mono is untouched.
+        std::fs::create_dir_all(root.join("ash-lead/memory")).unwrap();
+        std::fs::write(root.join("ash-lead/MEMORY.md"), "").unwrap();
+        let again = mono_home::rename_mono_folder(&root, "ash-lead", "hub-lead").unwrap();
+        assert!(!again.moved);
+        assert!(!root.join("ash-lead").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("hub-lead/MEMORY.md")).unwrap(),
+            "- kept\n- late\n"
+        );
+        // A leftover that holds anything is never removed.
+        std::fs::create_dir_all(root.join("ash-lead")).unwrap();
+        std::fs::write(root.join("ash-lead/MEMORY.md"), "- something\n").unwrap();
+        assert!(mono_home::rename_mono_folder(&root, "ash-lead", "hub-lead").is_err());
+        assert!(root.join("ash-lead/MEMORY.md").is_file());
+        // A Mono that was never renamed still gets its folder on first use.
+        load(&root, "frank", None).unwrap();
+        assert!(root.join("frank/MEMORY.md").is_file());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Point 13, item 1: a fact told to Mono A is on disk in A's folder only. A fresh load (what a restart does: the

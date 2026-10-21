@@ -36,6 +36,38 @@ pub const CHATS_FILE: &str = "chats.json";
 pub const SOUL_TEMPLATE_FILE: &str = "soul-template.md";
 const ARCHIVE_DIR: &str = ".archive";
 const INDEX_FILE: &str = "index.json";
+/// `{ "<old id>": "<new id>" }` for every Mono renamed in this home, so a late read or write that still names the old
+/// id lands in the renamed folder instead of making an empty one (the leftover `ash-lead/` beside `hub-lead/`).
+pub const RENAMED_FILE: &str = ".renamed.json";
+
+/// The id a renamed Mono has now, if `id` was renamed in this home (followed through later renames).
+pub fn renamed_to(root: &Path, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(RENAMED_FILE)).ok()?;
+    let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&text).ok()?;
+    let mut current = map.get(id)?.clone();
+    for _ in 0..map.len() {
+        match map.get(&current) {
+            Some(next) if next != id => current = next.clone(),
+            _ => break,
+        }
+    }
+    valid_id(&current).then_some(current)
+}
+
+fn record_rename(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let path = root.join(RENAMED_FILE);
+    let mut map: std::collections::BTreeMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    if map.get(from).map(String::as_str) == Some(to) {
+        return Ok(());
+    }
+    map.remove(to);
+    map.insert(from.to_string(), to.to_string());
+    let text = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
+    write_private(&path, text.as_bytes())
+}
 
 fn hash_bytes(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -356,6 +388,10 @@ pub fn rename_mono_folder(root: &Path, from: &str, to: &str) -> Result<Renamed, 
     let old = root.join(from);
     let new = root.join(to);
     let mut moved = false;
+    if old.is_dir() && new.is_dir() && only_defaults(&old) && !only_defaults(&new) {
+        // Already renamed, and something made an empty folder under the old id since: it holds nothing, so it goes.
+        std::fs::remove_dir_all(&old).map_err(|e| format!("{}: {e}", old.display()))?;
+    }
     if old.is_dir() {
         if new.exists() {
             if !only_defaults(&new) {
@@ -365,6 +401,9 @@ pub fn rename_mono_folder(root: &Path, from: &str, to: &str) -> Result<Renamed, 
         }
         std::fs::rename(&old, &new).map_err(|e| format!("{}: {e}", new.display()))?;
         moved = true;
+    }
+    if new.is_dir() {
+        record_rename(root, from, to)?;
     }
     let mut renamed = Renamed {
         moved,
