@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // H8 with E5: a new worker waits only while every account it may use is out, and knows when the first comes back.
 import { describe, expect, it } from "vitest";
-import { providerRoom } from "./accountWaterfall";
+import { markAccountLimited, orderedAccounts, providerRoom, workerRoom } from "./accountWaterfall";
 import type { ProviderAccount } from "./providerAccounts";
 
 const account = (id: string) => ({ id, provider: "claude", label: id }) as unknown as ProviderAccount;
@@ -27,5 +27,14 @@ describe("providerRoom", () => {
   it("an account back from its reset has room again", () => {
     const marks = { "claude:default": { at: 0, until: 900 } };
     expect(providerRoom("claude", { order: order.slice(0, 1), enabled: true, now: 1_000, usageFor, marks })).toEqual({ room: true });
+  });
+});
+
+describe("workerRoom", () => {
+  it("a spent Claude account holds Claude Code workers back, but not while Claude Code runs on Grok 4.7", () => {
+    const [first] = orderedAccounts("claude");
+    markAccountLimited(first, { now: 1_000, resetsAt: 9_000_000 });
+    expect(workerRoom("claude", { now: 2_000, usageFor })).toMatchObject({ room: false, provider: "Claude" });
+    expect(workerRoom("claude", { now: 2_000, usageFor, elsewhere: true })).toEqual({ room: true });
   });
 });

@@ -469,7 +469,8 @@ export async function runBench(options, hooks = {}) {
       { mode: 0o755 },
     );
     const planFile = path.join(scratch, "verify-plan.json");
-    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver };
+    // On the bridge the window knows it (plan `grok`): Grok 4.7 for every chat, and no Claude account's limit holds workers.
+    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(bridge ? { grok: true } : {}) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);
 
@@ -684,8 +685,10 @@ export async function runBench(options, hooks = {}) {
       for (const name of fs.existsSync(logs) ? fs.readdirSync(logs).filter((n) => n.endsWith(".ndjson")) : []) {
         let provider = null;
         let cwd = null;
+        let hidden = null;
         for (const entry of readNdjson(path.join(state, "claude", name))) {
           if (entry.dir === "start") cwd = entry.cwd;
+          if (entry.dir === "prompt") hidden = entry.hidden ?? null;
           if (entry.dir !== "out" && entry.dir !== "fault-out") continue;
           let message;
           try {
@@ -703,7 +706,7 @@ export async function runBench(options, hooks = {}) {
                 ? `AskUserQuestion: ${(part.input?.questions ?? []).map((q) => `${q.question} [${(q.options ?? []).map((o) => o.label).join(" / ")}]`).join(" ; ")}`.slice(0, 600)
                 : part.name,
             );
-            if (text || toolUses.length) out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, text, tools: toolUses });
+            if (text || toolUses.length) out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, text, tools: toolUses, ...(hidden ? { hidden } : {}) });
           } else if (message.type === "result") out.push({ t: entry.t, pid: name.replace(".ndjson", ""), provider, session: providers[provider] ?? null, cwd, result: true, isError: !!message.is_error, text: String(message.result ?? "").slice(0, 400) });
         }
       }

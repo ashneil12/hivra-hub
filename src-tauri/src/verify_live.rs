@@ -54,6 +54,11 @@ pub struct Plan {
     /// it then). Only with `claudeBinary`, so only ever to the fake Claude, which keeps a goal the way 2.1.302 does.
     #[serde(default)]
     pub goals: bool,
+    /// The bench's Claude Code runs on Grok 4.7 through the Grok subscription bridge (scripts/hub-realtest.mjs
+    /// `--grok-sub`): the window treats Claude Code as on Grok, as it does when Ash's CLI path is `claude-grok`.
+    /// Only with `claudeBinary`.
+    #[serde(default)]
+    pub grok: bool,
     /// How long a worker may be silent before the window marks it stalled (monos/model/workerStall.ts), so the bench
     /// sees a stall in seconds instead of minutes. 1 s to 10 min.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +99,9 @@ pub fn parse(text: &str) -> Result<Plan, String> {
         if !Path::new(driver).is_absolute() || !Path::new(driver).is_dir() {
             return Err("verify plan: driver must be an existing absolute folder".into());
         }
+    }
+    if plan.grok && plan.claude_binary.is_none() {
+        return Err("verify plan: grok needs claudeBinary (the bench's Claude on the bridge)".into());
     }
     if plan.goals && plan.claude_binary.is_none() {
         return Err(
@@ -184,6 +192,9 @@ pub fn window_info(plan: &Plan) -> Value {
     }
     if plan.driver.is_some() {
         info["driver"] = Value::Bool(true);
+    }
+    if plan.grok {
+        info["grok"] = Value::Bool(true);
     }
     info
 }
@@ -291,6 +302,17 @@ mod tests {
         assert!(!allowed(&identity(Kind::Dev), None));
         assert!(!allowed(&identity(Kind::Daily), Some(temp)));
         assert!(!allowed(&identity(Kind::Daily), None));
+    }
+
+    #[test]
+    fn a_bench_on_the_grok_bridge_says_so_to_the_window() {
+        let plan =
+            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#).unwrap();
+        assert!(plan.grok);
+        assert_eq!(window_info(&plan)["grok"], true);
+        let off = parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#).unwrap();
+        assert!(window_info(&off).get("grok").is_none());
+        assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#).unwrap_err().contains("grok"));
     }
 
     #[test]

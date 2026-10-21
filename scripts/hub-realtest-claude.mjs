@@ -27,6 +27,17 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
+/**
+ * A turn the app folds into one quiet line in the chat (RoomNoteCard): a room turn ("[MonoCode room]") or another
+ * Mono's private message ("[MonoCode message from …]"). Its NO_REPLY shows as "nothing new to add", never as words.
+ */
+export function hiddenTurnOf(prompt) {
+  const text = String(prompt ?? "");
+  if (text.includes("[MonoCode room]")) return "room";
+  if (text.includes("[MonoCode message from")) return "message";
+  return null;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STATE = process.env.REALTEST_STATE;
 const REAL = process.env.REALTEST_REAL_CLAUDE;
@@ -259,7 +270,7 @@ function main() {
     }
     if (message?.type === "user") {
       const prompt = promptOf(message);
-      log({ dir: "prompt", text: prompt.length > 6000 ? `${prompt.slice(0, 6000)}…[${prompt.length}]` : prompt });
+      log({ dir: "prompt", text: prompt.length > 6000 ? `${prompt.slice(0, 6000)}…[${prompt.length}]` : prompt, ...(hiddenTurnOf(prompt) ? { hidden: hiddenTurnOf(prompt) } : {}) });
       if (helper) usage({ kind: "helper-turn", session, model });
       else {
         if (stopped()) {

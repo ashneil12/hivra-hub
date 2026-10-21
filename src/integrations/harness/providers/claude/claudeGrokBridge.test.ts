@@ -120,3 +120,10 @@ describe("Claude Code on Grok 4.7 through the Grok subscription", () => {
     expect(flag(spawned[0]!.args, "--model")).toContain("claude");
   });
 });
+
+describe("claudeRunsOnGrok on the real bench", () => {
+  it("is on Grok when the bench's plan says so, whatever its wrapper is called", () => {
+    expect(claudeRunsOnGrok("/tmp/run/bin/claude", true)).toBe(true);
+    expect(claudeRunsOnGrok("/tmp/run/bin/claude", false)).toBe(false);
+  });
+});

@@ -231,3 +231,10 @@ test("a coding-team step can start in Full access, and an approve step taps Allo
   assert.deepEqual(calls.find((c) => c.kind === "approve")?.args, { session: "chat-1" });
   fs.rmSync(evidence, { recursive: true, force: true });
 });
+
+test("a room turn or a Mono's private message is a hidden turn, whose NO_REPLY the app folds away", async () => {
+  const { hiddenTurnOf } = await import("./hub-realtest-claude.mjs");
+  assert.equal(hiddenTurnOf("<monocode_context>…</monocode_context>\n[MonoCode room] You are frank, in the group chat"), "room");
+  assert.equal(hiddenTurnOf("[MonoCode message from Tally lead] <message>Start-ack</message>"), "message");
+  assert.equal(hiddenTurnOf("<monocode_context>… [MonoCode report] …</monocode_context>\nthe stats test is red"), null);
+});
