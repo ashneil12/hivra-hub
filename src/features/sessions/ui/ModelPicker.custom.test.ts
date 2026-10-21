@@ -229,6 +229,20 @@ describe("the bottom pill", () => {
     expect(q('button[aria-haspopup="dialog"]')!.textContent).toBe("Opus 5.5");
     expect(q("[data-pill-billing]")).toBeNull();
   });
+
+  // E7 (live 21 Oct): the coding team's DeepSeek default runs at High, but the pill hid the effort on a custom model.
+  it("a custom model with an effort set says it: 'DeepSeek · billed separately · High'", () => {
+    localStorage.setItem("monocode:custom-models", JSON.stringify([{ id: "ds-1", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-chat" }]));
+    setHarnessModels("claude", [{ id: "claude:opus-5-5", harness: "claude", name: "Claude Opus 5.5", nativeId: "claude-opus-5-5" }]);
+    // The new-chat composer's own pill (settings in its menu, not beside it).
+    act(() => root.render(createElement(ModelPicker, { harness: "claude", model: "custom:ds-1", values: { effort: "high" }, onChange, onSettingsChange })));
+    const pill = q("[data-pill-effort]");
+    expect(pill?.textContent).toBe(" · High");
+    expect(pill?.parentElement?.textContent).toBe("DeepSeek · billed separately · High");
+    // No effort chosen: the pill stays as it was.
+    act(() => root.render(createElement(ModelPicker, { harness: "claude", model: "custom:ds-1", values: {}, onChange, onSettingsChange })));
+    expect(q("[data-pill-effort]")).toBeNull();
+  });
 });
 
 describe("a session on a custom model", () => {

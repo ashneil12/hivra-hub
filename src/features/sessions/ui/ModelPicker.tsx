@@ -864,6 +864,11 @@ export function ModelPicker({
           {!triggerLabel && pill.billing ? (
             <span className="text-content/50" data-pill-billing> · {pill.billing}</span>
           ) : null}
+          {/* E7: an effort set on one of Ash's own models shows too ("DeepSeek · billed separately · High"), so the
+              coding team's DeepSeek-on-High default can be seen without opening the menu. */}
+          {!triggerLabel && pill.billing && triggerEffortSetting && values[triggerEffortSetting.id] !== undefined && triggerEffortLabel ? (
+            <span className="text-content/50" data-pill-effort> · {triggerEffortLabel}</span>
+          ) : null}
         </span>
         {!triggerLabel && triggerEffortLabel && !pill.billing ? (
           <span
