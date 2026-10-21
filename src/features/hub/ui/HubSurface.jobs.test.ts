@@ -199,11 +199,11 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(container.querySelector("[data-hub-options-sheet]")).toBeNull();
   });
 
-  it("a stuck job is an amber row with its reason and when it was sent, and no button", async () => {
+  it("a stuck job is a red Stuck row with its reason and when it was sent, and no button", async () => {
     mount(surface());
     await until(() => text().includes("Example: moving the nightly backup"), "stuck row");
     const stuck = [...container.querySelectorAll("div")].find((d) => d.textContent?.startsWith("Example: moving the nightly backup") && d.className.includes("hover:bg-content/5"))!;
-    expect(stuck.querySelector('[data-hub-circle="amber"]')?.textContent).toBe("Stuck");
+    expect(stuck.querySelector('[data-hub-circle="red"]')?.textContent).toBe("Stuck");
     expect(stuck.textContent).toContain("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
     expect(stuck.querySelector("button")).toBeNull();
@@ -222,14 +222,14 @@ describe("Being built, live", () => {
     expect(text()).not.toMatch(/helper|worker/i);
   });
 
-  it("Working is quiet, Stuck is amber with the reason on a second line, Lead gave up is red Stuck with its reason, Done has a dot", async () => {
+  it("Working is quiet, Stuck is red with the reason on a second line, Lead gave up is the same red Stuck with its reason, Done has a dot", async () => {
     mount(view());
     await until(() => container.querySelector("[data-hub-worker]"), "rows");
     expect(state("j_mail")).toBe("working");
     expect(container.querySelector('[data-hub-worker="j_mail"] [data-hub-job-state]')?.className).toContain("text-content/60");
     expect(state("j_backup")).toBe("stuck");
     const stuck = container.querySelector('[data-hub-worker="j_backup"]')!;
-    expect(stuck.querySelector("svg circle")?.getAttribute("stroke")).toBe("rgb(245 158 11)");
+    expect(stuck.querySelector("svg circle")?.getAttribute("stroke")).toBe("rgb(239 68 68)");
     expect(stuck.querySelector("[data-hub-job-reason]")?.textContent).toBe("The disk was full twice.");
     expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
     expect(state("j_sender")).toBe("gave_up");
