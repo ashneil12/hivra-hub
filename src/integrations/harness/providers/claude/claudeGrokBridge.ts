@@ -45,14 +45,6 @@ export function modelInUseLabel(harness: string | undefined, name: string | unde
   return name && onGrokBridge(harness) ? GROK_BRIDGE_LABEL : name;
 }
 
-/**
- * Whose mark a chat shows for the model it runs: Grok's own (a plain mark in the text colour) for a Claude Code chat on
- * the bridge, never Claude's starburst; otherwise its harness's. Off the bridge nothing changes.
- */
-export function markHarnessInUse<H extends string>(harness: H): H | "grok" {
-  return onGrokBridge(harness) ? "grok" : harness;
-}
-
 /** Grok 4.7 takes low, medium, high or xhigh. Claude-only levels step down to the nearest one Grok has. */
 export function grokBridgeEffort(effort: string | undefined): string | undefined {
   if (!effort) return undefined;

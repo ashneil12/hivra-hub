@@ -3,9 +3,9 @@ import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
 
-// Round 15: with Claude Code on the Grok bridge, no surface names a Claude model or shows Claude's mark: the chat
-// toolbar's model picker, the chat card and its hover preview, the usage chip and its popover, and the turn header.
-// They all read claudeGrokBridge.ts (modelInUseLabel, markHarnessInUse). Also, rail names and the turn header line
+// Rounds 15 and 16: with Claude Code on the Grok bridge, no surface names a Claude model or shows Claude's mark (the
+// chat toolbar's model picker and its menu, the chat card and its hover preview, the tab, the turn header), and the
+// usage chip is gone (its numbers are the Claude plan's). They all read claudeGrokBridge.ts. Also, rail names and the turn header line
 // keep at least 4.5:1 in every state. Example data only. A browser preview, not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-bridge-names";
 type Stub = { url: string; close(): Promise<void> };
@@ -106,31 +106,65 @@ const SURFACES = {
   usage: "[data-usage-footer], .inset-footer, .border-t.border-stroke.px-3",
 };
 
-test("on the Grok bridge: no Claude model name or logo on the toolbar picker, chat card, tab, usage chip and popover, turn header", async ({ page }) => {
+/** The union of two boxes, for a photo of a menu with its open submenu. */
+const union = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) => {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+};
+const shotBox = async (page: Page, name: string, box: { x: number; y: number; width: number; height: number }, pad = 8) => {
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: `${SHOTS}/${name}.png`, clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: box.width + 2 * pad, height: box.height + 2 * pad } });
+};
+/** How opaque a panel's own fill is (0 to 1). */
+const fillAlpha = (page: Page, selector: string) =>
+  page.locator(selector).first().evaluate((el) => {
+    const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+    ctx.fillStyle = getComputedStyle(el).backgroundColor;
+    ctx.fillRect(0, 0, 1, 1);
+    return ctx.getImageData(0, 0, 1, 1).data[3] / 255;
+  });
+
+test("on the Grok bridge: no Claude model name or logo anywhere, no usage chip, and the model menu lists only Grok 4.7", async ({ page }) => {
   await openChat(page, true);
   await park(page);
-  // The toolbar picker names what runs, with no Claude mark.
+  // The toolbar picker names what runs, with no mark beside it.
   const picker = page.locator("[data-composer-box]:visible button[aria-haspopup]").filter({ hasText: "Grok 4.7" });
   await expect(picker).toHaveCount(1);
+  await expect(picker.locator("img")).toHaveCount(0);
+  // Nor Grok's own mark (a slashed circle that reads as "disabled"), anywhere.
+  await expect(page.locator('svg[viewBox="0 0 35 33"]')).toHaveCount(0);
   // The whole app as rendered: no Claude model text (text, title or label) and no Claude logo anywhere.
   expect(await claudeTraces(page, "body")).toEqual([]);
-  await shotOf(page, "pm-15-toolbar-picker", "[data-composer-box]:visible");
-  await shotOf(page, "pm-15-chat-card", SURFACES.card);
-  const chip = page.getByRole("button", { name: /usage details$/ }).first();
-  await expect(chip).toHaveAttribute("aria-label", "Grok 4.7 usage details");
-  const footer = chip.locator("xpath=ancestor::*[contains(@class,'shrink-0') and contains(@class,'items-center')][1]");
-  await shotOf(page, "pm-15-usage-chip", await footer.evaluate((el) => (el.setAttribute("data-proof-usage", ""), "[data-proof-usage]")));
-  await shotOf(page, "pm-15-tab", `button:has-text("Example: Tidy the readme") >> nth=0`, 6);
+  // No usage chip, no popover, and no footer chip in its place: those numbers are the Claude plan's.
+  await expect(page.getByRole("button", { name: /usage details$/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Refresh usage" })).toHaveCount(0);
+  // The chat's mark is an empty slot (no Claude starburst, no slashed Grok circle).
+  const card = page.locator(SURFACES.card).first();
+  await expect(card.locator("[data-model-mark-empty]")).toHaveCount(1);
+  await expect(card.locator("img")).toHaveCount(0);
+  await shotOf(page, "pm-16-toolbar-picker", "[data-composer-box]:visible");
+  await shotOf(page, "pm-16-chat-card", SURFACES.card);
+  await shotOf(page, "pm-16-tab", `button:has-text("Example: Tidy the readme") >> nth=0`, 6);
 
-  // The usage chip's popover: Grok 4.7 usage, Grok's plain mark.
-  await chip.click();
-  const pop = page.getByRole("heading", { name: "Grok 4.7 usage" });
-  await expect(pop).toBeVisible();
+  // The opened model menu: its Model row reads Grok 4.7 and its list holds only Grok 4.7, already chosen.
+  await picker.click();
+  const menu = page.getByRole("menu", { name: "Model and settings" });
+  await expect(menu).toBeVisible();
+  const modelRow = menu.getByRole("menuitem").filter({ hasText: /^Model/ });
+  await expect(modelRow).toContainText("Grok 4.7");
+  await modelRow.hover();
+  const list = page.locator("[data-bridge-model-list]");
+  await expect(list).toBeVisible();
+  await expect(list.getByRole("menuitemradio")).toHaveText(["Grok 4.7"]);
+  await expect(list.getByRole("menuitemradio")).toHaveAttribute("aria-checked", "true");
   expect(await claudeTraces(page, "body")).toEqual([]);
-  const panel = pop.locator("xpath=ancestor::*[@role='dialog'][1]");
-  await panel.evaluate((el) => el.setAttribute("data-proof-pop", ""));
+  // Both menus on the more solid panel glass, so the chat behind doesn't read through.
+  expect(await fillAlpha(page, '[role="menu"][aria-label="Model and settings"]')).toBeGreaterThanOrEqual(0.85);
+  expect(await fillAlpha(page, "[data-bridge-model-list]")).toBeGreaterThanOrEqual(0.85);
   await park(page);
-  await shotOf(page, "pm-15-usage-popover", "[data-proof-pop]");
+  await shotBox(page, "pm-16-model-menu", union((await menu.boundingBox())!, (await list.boundingBox())!));
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
 
   // A turn: its header says Grok 4.7 working, the whole line one grey, and at least 4.5:1.
@@ -148,11 +182,11 @@ test("on the Grok bridge: no Claude model name or logo on the toolbar picker, ch
   await park(page);
   const row = title.locator("xpath=ancestor::*[contains(@class,'items-center')][1]");
   await row.evaluate((el) => el.setAttribute("data-proof-header", ""));
-  await shotOf(page, "pm-15-turn-header", "[data-proof-header]", 12);
+  await shotOf(page, "pm-16-turn-header", "[data-proof-header]", 12);
   await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
 });
 
-test("on the Grok bridge: the chat card's hover preview names Grok 4.7 with no Claude logo", async ({ page }) => {
+test("on the Grok bridge: the chat card's hover preview names Grok 4.7, no logo, on the more solid glass", async ({ page }) => {
   await openChat(page, true, true);
   await park(page);
   const cards = page.locator(SURFACES.card);
@@ -162,18 +196,46 @@ test("on the Grok bridge: the chat card's hover preview names Grok 4.7 with no C
   await expect(preview).toContainText("Grok 4.7");
   await preview.evaluate((el) => el.setAttribute("data-proof-preview", ""));
   expect(await claudeTraces(page, "[data-proof-preview]")).toEqual([]);
+  // The more solid panel glass (a 92% fill with a 24px blur): the screen behind doesn't show through.
+  await expect(preview).toHaveClass(/solid-panel-glass/);
+  expect(await fillAlpha(page, "[data-proof-preview]")).toBeGreaterThanOrEqual(0.85);
+  await page.waitForTimeout(300);
   // A hover surface: it only exists while the card is hovered, so this one photo is taken hovered.
-  await shotOf(page, "pm-15-card-preview", "[data-proof-preview]");
+  await shotOf(page, "pm-16-card-preview", "[data-proof-preview]");
 });
 
-test("off the bridge nothing changes: the same chat names Claude Sonnet 5 with Claude's mark", async ({ page }) => {
+test("off the bridge nothing changes: Claude Sonnet 5 with Claude's mark, the full model list, the usage chip and its popover", async ({ page }) => {
   await openChat(page, false);
   await park(page);
-  await expect(page.locator("[data-composer-box]:visible button[aria-haspopup]").filter({ hasText: "Sonnet 5" })).toHaveCount(1);
+  const picker = page.locator("[data-composer-box]:visible button[aria-haspopup]").filter({ hasText: "Sonnet 5" });
+  await expect(picker).toHaveCount(1);
   await expect(page.locator(SURFACES.card)).toContainText("Sonnet 5");
   const traces = await claudeTraces(page, "body");
   expect(traces.some((t) => t.startsWith("Claude logo"))).toBe(true);
-  await expect(page.getByRole("button", { name: /usage details$/ }).first()).toHaveAttribute("aria-label", "Claude Code usage details");
+  // The usage chip is still there.
+  const chip = page.getByRole("button", { name: /usage details$/ }).first();
+  await expect(chip).toHaveAttribute("aria-label", "Claude Code usage details");
+  // The full model list, with Claude's models.
+  await picker.click();
+  const menu = page.getByRole("menu", { name: "Model and settings" });
+  await menu.getByRole("menuitem").filter({ hasText: /^Model/ }).hover();
+  await expect(page.locator("[data-bridge-model-list]")).toHaveCount(0);
+  await expect(page.getByText(/Sonnet|Opus|Haiku/).nth(2)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await park(page);
+  // Its popover: the account name whole (no "Default a…"), on the more solid glass.
+  await chip.click();
+  const pop = page.getByRole("dialog", { name: "Claude Code usage details" });
+  await expect(pop).toBeVisible();
+  await pop.evaluate((el) => el.setAttribute("data-proof-pop", ""));
+  const label = pop.locator("[data-usage-account-label]");
+  if (await label.count()) {
+    expect(await label.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  }
+  expect(await fillAlpha(page, "[data-proof-pop]")).toBeGreaterThanOrEqual(0.85);
+  await park(page);
+  await shotOf(page, "pm-16-usage-popover-off-bridge", "[data-proof-pop]");
 });
 
 /** WCAG contrast of an element's text over what is painted under it (its ancestors' backgrounds, composited). */

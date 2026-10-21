@@ -71,7 +71,9 @@ export function SessionCardPreview({
       onDismiss={onClose}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      className="overflow-y-auto overscroll-contain px-3 py-2.5"
+      // The more solid glass (styles/index.css .solid-panel-glass), so the screen behind
+      // doesn't show through.
+      className="solid-panel-glass overflow-y-auto overscroll-contain px-3 py-2.5"
     >
       <div className="flex items-center justify-between gap-3">
         <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-content/55">

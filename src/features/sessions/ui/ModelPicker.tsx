@@ -1,4 +1,4 @@
-import { onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   Check,
   ChevronDown,
@@ -52,7 +52,8 @@ import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { LAYER } from "../../../shared/lib/layers";
 import { HarnessIcon } from "./HarnessIcon";
-import { Popover } from "../../../shared/ui/Popover";
+import { Popover, type PopoverAnchor, type PopoverDismissReason } from "../../../shared/ui/Popover";
+import type { PopoverSide } from "../../../shared/lib/popover";
 import { MOD } from "../../../platform/tauri/platform";
 import { keybindingPressed } from "../../settings/model/settings";
 import "./ModelPicker.css";
@@ -400,6 +401,8 @@ export function ModelPicker({
 
   const current = source.resolve(harness, model);
   currentRef.current = current;
+  // On the Grok bridge every Claude model it names runs as Grok 4.7, so the menus list only that (BridgeModelList).
+  const bridged = onGrokBridge(current.harness);
   const settings = useMemo(() => {
     void catalogVersion;
     // In beside-picker mode every option row renders as a toolbar pill, so the
@@ -509,6 +512,11 @@ export function ModelPicker({
   const openRecentMenu = () => {
     const selected = currentRef.current;
     if (!selected) return;
+    if (onGrokBridge(selected.harness)) {
+      // Recent Claude models would all run the same model on the bridge: open the one-entry list instead.
+      setOpen(true);
+      return;
+    }
     const models = recentMenuModels(selected, source);
     const selectedIndex = models.findIndex((item) => item.id === selected.id);
     setOpen(false);
@@ -885,7 +893,9 @@ export function ModelPicker({
         </button>
       ) : null}
 
-      {open && hideSettings ? (
+      {open && hideSettings && bridged ? (
+        <BridgeModelList anchor={button} side={side} onDismiss={(reason) => dismiss(reason === "escape")} onPick={() => dismiss(true)} />
+      ) : open && hideSettings ? (
         <ModelFlyout
           anchor={button}
           side={side}
@@ -924,7 +934,8 @@ export function ModelPicker({
             tabIndex={-1}
             onKeyDown={onMenuKey}
             data-model-picker
-            className="p-1 font-sans"
+            // The more solid panel glass, so the chat behind doesn't read through the menu.
+            className="solid-panel-glass p-1 font-sans"
           >
             {entries.map((entry, index) => {
               const highlighted = index === active;
@@ -952,11 +963,13 @@ export function ModelPicker({
                   >
                     <span className="min-w-0 flex-1">Model</span>
                     <span className="flex min-w-0 max-w-36 items-center gap-1 text-content/55">
-                      <HarnessIcon
-                        harness={current.harness}
-                        className="size-3.5 shrink-0"
-                      />
-                      <span className="min-w-0 truncate">{current.name}</span>
+                      {bridged ? null : (
+                        <HarnessIcon
+                          harness={current.harness}
+                          className="size-3.5 shrink-0"
+                        />
+                      )}
+                      <span className="min-w-0 truncate">{bridged ? GROK_BRIDGE_LABEL : current.name}</span>
                     </span>
                     <ChevronRight
                       className="size-3.5 shrink-0 text-content/45"
@@ -1092,7 +1105,16 @@ export function ModelPicker({
             </Popover>
           ) : null}
 
-          {showSubmenu && submenu.kind === "models" ? (
+          {showSubmenu && submenu.kind === "models" && bridged ? (
+            <BridgeModelList
+              anchor={activeRow}
+              side="right"
+              gap={SUBMENU_OVERLAP}
+              layer={LAYER.submenu}
+              onMouseEnter={() => setSubmenu(submenu)}
+              onPick={() => dismiss(true)}
+            />
+          ) : showSubmenu && submenu.kind === "models" ? (
             <ModelFlyout
               anchor={activeRow}
               autoFocusSearch
@@ -1574,6 +1596,59 @@ function SelectPill({
         </Popover>
       ) : null}
     </>
+  );
+}
+
+/**
+ * The model list on the Grok bridge: only what the bridge runs, Grok 4.7, already chosen, with no mark beside it.
+ * Picking it changes nothing; off the bridge the full list (ModelFlyout) shows as before.
+ */
+function BridgeModelList({
+  anchor,
+  side,
+  gap,
+  layer,
+  onDismiss,
+  onMouseEnter,
+  onPick,
+}: {
+  anchor: PopoverAnchor;
+  side?: PopoverSide;
+  gap?: number;
+  layer?: number;
+  onDismiss?: (reason: PopoverDismissReason) => void;
+  onMouseEnter?: () => void;
+  onPick: () => void;
+}) {
+  return (
+    <Popover
+      anchor={anchor}
+      side={side}
+      gap={gap}
+      layer={layer}
+      width={SETTING_MENU_WIDTH}
+      autoFocus
+      onDismiss={onDismiss}
+      onMouseEnter={onMouseEnter}
+      role="menu"
+      aria-label="Model"
+      tabIndex={-1}
+      data-model-picker
+      data-bridge-model-list
+      className="solid-panel-glass p-1 font-sans"
+    >
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onPick}
+        className="flex h-8 w-full items-center gap-2 rounded-lg bg-selection px-2 text-left text-[13px] text-content"
+      >
+        <span className="min-w-0 flex-1 truncate">{GROK_BRIDGE_LABEL}</span>
+        <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} />
+      </button>
+    </Popover>
   );
 }
 

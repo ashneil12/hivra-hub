@@ -465,6 +465,19 @@ html.is-mac.has-native-glass.has-native-glass-tint:not(.theme-light)
   background: color-mix(in srgb, var(--color-background-base) 0%, transparent);
 }
 
+/* A floating panel over content (the chat card's hover preview, the usage popover): the sidebar's dark fill at 92%
+   with a 24px blur, so the screen behind never shows through. Unlike .sidebar-glass it is not cleared when AppKit
+   paints the window tint: that tint sits behind the whole window, not behind a panel floating over the chat. */
+.solid-panel-glass {
+  background: color-mix(in srgb, color-mix(in srgb, var(--color-background-base) 90%, black) 92%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+
+html.theme-light .solid-panel-glass {
+  background: color-mix(in srgb, var(--color-background-base) 94%, transparent);
+}
+
 /* The activity dot sits at (23px, 9px) in a 32px button. Its icon is
    centered at (8px, 8px), so this cuts a 2px gap around the 6px dot. */
 .compact-rail-icon-with-dot {

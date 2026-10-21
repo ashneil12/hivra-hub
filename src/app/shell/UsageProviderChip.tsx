@@ -25,7 +25,6 @@ import {
   resolveTabGroupMascot,
 } from "../../features/workspace/model/tabGroups";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import { GROK_BRIDGE_LABEL, markHarnessInUse, onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { ArrowLeft, Check, ChevronRight, Gauge, Plus, RefreshCw } from "../../shared/ui/icons";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import {
@@ -153,12 +152,8 @@ export function UsageProviderChip({
   const tooltip = windows
     .map((entry) => rateLimitWindowTooltip(entry.window, now, showRemaining))
     .join(" · ");
-  // On the Grok bridge a Claude Code chat runs Grok 4.7: the chip and its popover name that and show Grok's plain mark,
-  // never Claude's (claudeGrokBridge.ts, the one source). Off the bridge nothing changes.
-  const providerLabel =
-    presentation?.label ??
-    (onGrokBridge(limits.provider) ? GROK_BRIDGE_LABEL : HARNESS_TITLE[limits.provider]);
-  const iconHarness = markHarnessInUse(presentation?.harness ?? limits.provider);
+  const providerLabel = presentation?.label ?? HARNESS_TITLE[limits.provider];
+  const iconHarness = presentation?.harness ?? limits.provider;
   const activeAccount = accounts.find((account) => account.id === accountId);
   const canManageAccounts = Boolean(onSelectAccount && onAddAccount);
   const activeAccountLabel = activeAccount?.label ?? "Removed account";
@@ -323,7 +318,8 @@ export function UsageProviderChip({
           role="dialog"
           aria-label={`${providerLabel} usage details`}
           tabIndex={-1}
-          className={`overflow-y-auto text-content ${accountView === "usage" && loginView ? "" : "p-2.5"}`}
+          // The more solid glass (styles/index.css .solid-panel-glass), so the screen behind doesn't show through.
+          className={`solid-panel-glass overflow-y-auto text-content ${accountView === "usage" && loginView ? "" : "p-2.5"}`}
         >
           {accountView === "accounts" ? (
             <ProviderAccountPicker
@@ -399,7 +395,8 @@ export function UsageProviderChip({
                         aria-label={`Switch ${providerLabel} account`}
                         onClick={() => setAccountView("accounts")}
                       />
-                      <span className="max-w-[60%] shrink-0 truncate">
+                      {/* A fixed cap, not a percentage of this shrink-to-fit row, which cut "Default account" to "Default a…". */}
+                      <span className="min-w-0 max-w-[12rem] shrink-0 truncate" data-usage-account-label>
                         {activeAccountLabel}
                       </span>
                       <ProviderAccountSubtitle

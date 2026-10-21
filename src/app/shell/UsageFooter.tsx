@@ -6,8 +6,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { HarnessIcon, ModelInUseIcon } from "../../features/sessions/ui/HarnessIcon";
-import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
+import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
 import {
@@ -227,7 +227,9 @@ export function UsageChips({
   /** Each chip shows a neutral meter glyph, not its provider's mark. */
   meterIcon?: boolean;
 }) {
-  const wantClaude = providers.includes("claude");
+  // On the Grok bridge there is no Claude usage to show: its numbers come from the Claude plan's feed, and Grok 4.7
+  // runs on Ash's Grok subscription, so the chip and its popover are left out entirely. Off the bridge, unchanged.
+  const wantClaude = providers.includes("claude") && !onGrokBridge("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
   const wantDevin = providers.includes("devin");
@@ -598,15 +600,16 @@ function SessionChip({
     }
   };
 
+  // Its sign-in and its name are Claude's: on the Grok bridge the footer shows no chip for a Claude Code chat.
+  if (onGrokBridge(session.harness)) return null;
   if (!canLogin) {
     return (
       <span
         className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
-        title={onGrokBridge(session.harness) ? GROK_BRIDGE_LABEL : HARNESS_TITLE[session.harness]}
+        title={HARNESS_TITLE[session.harness]}
       >
-        {/* On the Grok bridge: what really runs, with Grok's plain mark (claudeGrokBridge.ts). */}
-        <ModelInUseIcon harness={session.harness} className="size-3 shrink-0" />
-        <span>{onGrokBridge(session.harness) ? GROK_BRIDGE_LABEL : HARNESS_LABEL[session.harness]}</span>
+        <HarnessIcon harness={session.harness} className="size-3 shrink-0" />
+        <span>{HARNESS_LABEL[session.harness]}</span>
       </span>
     );
   }

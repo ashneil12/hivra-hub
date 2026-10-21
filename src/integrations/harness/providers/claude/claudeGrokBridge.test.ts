@@ -144,11 +144,5 @@ describe("the model in use, as the model line and the turn header both name it",
     expect(onGrokBridge("codex")).toBe(false);
     expect(modelInUseLabel("codex", "GPT-5.5")).toBe("GPT-5.5");
     expect(modelInUseLabel("claude", undefined)).toBeUndefined();
-    // The mark follows the same rule: Grok's plain mark on the bridge, the harness's own otherwise.
-    const { markHarnessInUse } = await import("./claudeGrokBridge");
-    expect(markHarnessInUse("claude")).toBe("grok");
-    expect(markHarnessInUse("codex")).toBe("codex");
-    cliPath = null;
-    expect(markHarnessInUse("claude")).toBe("claude");
   });
 });

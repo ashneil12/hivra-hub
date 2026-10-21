@@ -11,7 +11,7 @@ import opencode from "../../../assets/providers/opencode.svg";
 import pi from "../../../assets/providers/pi.svg";
 import antigravity from "../../../assets/providers/antigravity.svg";
 import type { HarnessId } from "../model/session";
-import { markHarnessInUse } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 
 export const HARNESS_ICONS: Record<HarnessId, string> = {
   claude,
@@ -146,7 +146,12 @@ export function HarnessIcon({
   );
 }
 
-/** A chat's mark for the model it really runs (claudeGrokBridge.ts markHarnessInUse): Grok's on the bridge. */
-export function ModelInUseIcon({ harness, className }: { harness: HarnessId; className?: string }) {
-  return <HarnessIcon harness={markHarnessInUse(harness)} className={className} />;
+/**
+ * A chat's mark for the model it really runs. On the Grok bridge there is none: an empty slot the same size, so rows
+ * keep their alignment (no Claude starburst, and no Grok mark, whose slashed circle reads as "disabled"). Off the
+ * bridge, the harness's own mark as before.
+ */
+export function ModelInUseIcon({ harness, className = "size-3.5" }: { harness: HarnessId; className?: string }) {
+  if (onGrokBridge(harness)) return <span aria-hidden data-model-mark-empty className={`inline-block ${className}`} />;
+  return <HarnessIcon harness={harness} className={className} />;
 }
