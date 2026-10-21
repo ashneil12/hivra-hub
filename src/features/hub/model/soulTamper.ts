@@ -12,7 +12,7 @@ import { readAgentFile, setSoulOpenCheck, writeAgentFile, type AgentFilePath } f
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { refreshProcessRuns, runsAt, type RunWindow } from "../../monos/model/sessionRuns";
 import { recordBotChange } from "./botChanges";
-import { chatMonoOwner, monoHomeDirs } from "./hubMcp";
+import { chatMonoOwner, chatRunKind, monoHomeDirs } from "./hubMcp";
 
 export type TamperFiles = {
   read(monoId: string, path: AgentFilePath): Promise<{ text: string | null; hash: string; modifiedMs?: number }>;
@@ -28,8 +28,39 @@ export function changedSoulNote(at: number): AgentFilePath {
   return `memory/soul-changed-outside-${stamp(at)}.md`;
 }
 
-export function putBackLine(name: string): string {
-  return `Something outside the app changed ${name}'s soul while a worker was running, so it was put back.`;
+/** What was running when the soul changed, by the run records' own kind (chat, worker or habit run). */
+export type RunningKinds = { chats?: number; otherChats?: number; workers?: number; habits?: number };
+
+/** "frank's chat", "a worker", "Hivra lead's chat and 2 workers": what was running, in plain words. */
+function runningPhrase(name: string, k: RunningKinds): { phrase: string; many: boolean } {
+  const parts: string[] = [];
+  const n = (x?: number) => x ?? 0;
+  if (n(k.chats)) parts.push(n(k.chats) === 1 ? `${name}'s chat` : `${n(k.chats)} of ${name}'s chats`);
+  if (n(k.otherChats)) parts.push(n(k.otherChats) === 1 ? `a chat working in ${name}'s folder` : `${n(k.otherChats)} chats working in ${name}'s folder`);
+  if (n(k.workers)) parts.push(n(k.workers) === 1 ? "a worker" : `${n(k.workers)} workers`);
+  if (n(k.habits)) parts.push(n(k.habits) === 1 ? `one of ${name}'s habits` : `${n(k.habits)} of ${name}'s habits`);
+  if (!parts.length) parts.push("a worker");
+  const total = n(k.chats) + n(k.otherChats) + n(k.workers) + n(k.habits);
+  const phrase = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0]!;
+  return { phrase, many: total > 1 };
+}
+
+export function putBackLine(name: string, running: RunningKinds = { workers: 1 }): string {
+  const { phrase, many } = runningPhrase(name, running);
+  return `Something outside the app changed ${name}'s soul while ${phrase} ${many ? "were" : "was"} running, so it was put back.`;
+}
+
+/** The runs, counted by kind: this Mono's own chat, another chat working in its home folder, a worker, a habit run. */
+export function runningKinds(runs: readonly Pick<RunWindow, "sessionId">[], monoId: string): RunningKinds {
+  const out: Required<RunningKinds> = { chats: 0, otherChats: 0, workers: 0, habits: 0 };
+  for (const run of runs) {
+    const kind = chatRunKind(run.sessionId);
+    if (kind === "worker") out.workers++;
+    else if (kind === "habit") out.habits++;
+    else if (chatMonoOwner(run.sessionId) === monoId) out.chats++;
+    else out.otherChats++;
+  }
+  return out;
 }
 
 export function keptAshLine(name: string): string {
@@ -88,17 +119,17 @@ export async function checkSoul(
     const back = await files.read(monoId, "SOUL.md");
     if (back.text !== saved.text) return "skipped";
     recordSavedSoul(monoId, saved.text, back.hash, now);
+    const kinds = runningKinds(runs, monoId);
+    const { phrase, many } = runningPhrase(name, kinds);
     recordBotChange({
       id: `soul-put-back:${monoId}:${soul.hash}`,
       bot: name,
       day: "Today",
-      line: putBackLine(name),
+      line: putBackLine(name, kinds),
       now: "Changed from outside the app",
       after: "Back to the soul the app last saved",
       details: [
-        runs.length === 1
-          ? `One of ${name}'s chats or workers was running when it changed.`
-          : `${runs.length} of ${name}'s chats or workers were running when it changed.`,
+        `When it changed, ${phrase} ${many ? "were" : "was"} running.`,
         `The changed version is kept in ${name}'s memory, and "Keep that change" brings it back.`,
       ],
       undoLabel: "Keep that change",
