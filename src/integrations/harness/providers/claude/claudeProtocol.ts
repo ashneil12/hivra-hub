@@ -34,6 +34,7 @@ import {
   type ClaudeFailure,
   type ClaudeFailureContext,
 } from "./claudeFailure";
+import { claudeRunsOnGrok, GROK_BRIDGE_MODEL, grokBridgeEffort } from "./claudeGrokBridge";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -293,8 +294,12 @@ export function buildClaudeSpawnArgs(input: {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push("--settings", JSON.stringify(settings));
   }
-  if (input.model) args.push("--model", input.model);
-  if (input.effort) args.push("--effort", input.effort);
+  // Claude Code on Grok 4.7 (claudeGrokBridge.ts): every process asks for Grok 4.7, whatever was picked.
+  const onGrok = claudeRunsOnGrok();
+  const model = onGrok ? GROK_BRIDGE_MODEL : input.model;
+  const effort = onGrok ? grokBridgeEffort(input.effort) : input.effort;
+  if (model) args.push("--model", model);
+  if (effort) args.push("--effort", effort);
   if (input.permissionMode) {
     args.push("--permission-mode", input.permissionMode);
   }

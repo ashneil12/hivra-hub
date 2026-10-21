@@ -440,6 +440,22 @@ pub fn harness_runtime_binary_paths(
     paths
 }
 
+/// File name of the launcher that runs Claude Code on Grok 4.7 through a Grok (SuperGrok / X Premium+) subscription.
+pub(crate) const CLAUDE_GROK_BRIDGE_NAME: &str = "claude-grok";
+
+/// Where the Grok subscription bridge launcher is installed, when it is: `~/.local/bin/claude-grok`, executable.
+/// Only its presence is checked; the launcher keeps its own gateway key and Grok sign-in to itself.
+pub(crate) fn claude_grok_bridge_in(home: &Path) -> Option<PathBuf> {
+    existing_binary(home.join(".local/bin").join(CLAUDE_GROK_BRIDGE_NAME))
+}
+
+/// The Grok 4.7 bridge for Claude Code, if this Mac has it (Settings → Claude Code → Runs on).
+#[tauri::command(async)]
+pub fn harness_claude_grok_bridge() -> Option<String> {
+    let home = dirs_home().map(PathBuf::from)?;
+    claude_grok_bridge_in(&home).map(|path| path.to_string_lossy().into_owned())
+}
+
 /// Resolve the Claude Code CLI (`claude`).
 #[tauri::command(async)]
 pub fn harness_resolve_claude() -> Result<CursorBinary, String> {
@@ -2260,7 +2276,9 @@ fn resolve_harness_binary_override_with(
         return Err("Antigravity ACP server overrides are not supported on Windows.".into());
     }
     let names: &[&str] = match provider {
-        "claude" => &["claude"],
+        // `claude-grok` is the subscription bridge launcher: it starts this same Claude Code against Grok 4.7 through
+        // Ash's own local gateway and Grok sign-in (harness_claude_grok_bridge). The hub never sees its key.
+        "claude" => &["claude", CLAUDE_GROK_BRIDGE_NAME],
         "codex" => &["codex"],
         "cursor" => &["cursor-agent", "agent"],
         "grok" => &["grok"],
@@ -3324,6 +3342,30 @@ fn command_basename(command: &str) -> &str {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_grok_bridge_is_found_only_when_its_launcher_is_installed_and_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("grok-bridge-{}", std::process::id()));
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(super::claude_grok_bridge_in(&home), None);
+        let launcher = bin.join("claude-grok");
+        std::fs::write(&launcher, "#!/bin/sh\necho '2.1.304 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(super::claude_grok_bridge_in(&home), None, "not executable");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(super::claude_grok_bridge_in(&home), Some(launcher.clone()));
+        // Accepted as Claude Code's configured CLI; any other name still is not.
+        let path = launcher.to_string_lossy().into_owned();
+        assert!(super::resolve_configured_harness_binary(&path, "claude", &["claude", super::CLAUDE_GROK_BRIDGE_NAME]).is_ok());
+        assert!(super::resolve_harness_binary_override("claude", &path).is_ok());
+        let other = bin.join("claude-gpt");
+        std::fs::copy(&launcher, &other).unwrap();
+        assert!(super::resolve_harness_binary_override("claude", &other.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     use super::*;
     use std::os::unix::process::CommandExt;
 
