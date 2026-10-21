@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Eye, Loader } from "../../../shared/ui/icons";
 import { checkVerdict } from "../model/hubChecks";
+import { forYou } from "../model/userName";
 
 /** The chat's own answer: the last thing it said in the turn. */
 function finalReply(turn: readonly Block[]): string {
@@ -55,7 +56,7 @@ export function CheckTurnCard({
         <div className="mt-1 ml-1 flex max-w-[40rem] flex-col gap-1.5 border-l border-content/10 pl-3 font-sans text-[12.5px] leading-relaxed text-content/65">
           <p className="whitespace-pre-wrap">
             <span className="text-content/45">The checker noticed: </span>
-            {check?.finding ?? "something about one of Ash's messages."}
+            {check?.finding ?? forYou("something about one of Ash's messages.")}
           </p>
           {reply ? (
             <p className="whitespace-pre-wrap">

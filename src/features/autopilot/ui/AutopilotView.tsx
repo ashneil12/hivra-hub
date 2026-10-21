@@ -25,6 +25,8 @@ import { byDay, heldThisRun, isCall, outcomeLabel, switchLines, timeLabel, type 
 import { formatUntil, untilPresets } from "../model/endTime";
 import { exampleAutopilot } from "../model/memoryAutopilot";
 import { RED_LIST } from "../model/redList";
+import { userLabel } from "../../hub/model/userName";
+import { forYou } from "../../hub/model/userName";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
 const QUIET = "rounded-md px-2.5 py-1 text-[12px] text-content/70 hover:bg-content/5 hover:text-content";
@@ -132,7 +134,7 @@ export function AutopilotView() {
                 <h2 className="mb-1 text-xs text-content/60">Never automated</h2>
                 <ul className="grid gap-x-6 gap-y-0.5 px-2 text-[12px] leading-5 text-content/70 sm:grid-cols-2" data-autopilot-red-list>
                   {RED_LIST.map((item) => (
-                    <li key={item.id}>{item.label}</li>
+                    <li key={item.id}>{forYou(item.label)}</li>
                   ))}
                 </ul>
               </section>
@@ -203,7 +205,7 @@ function TurnOff({ scopes, onError }: { scopes: string[]; onError: (error: strin
         setBusy(true);
         onError(null);
         void backend
-          .off({ scopes, by: "ash", who: "Ash" })
+          .off({ scopes, by: "ash", who: userLabel() })
           .then(adoptStatus)
           .catch((e: unknown) => {
             onError(message(e));
@@ -247,7 +249,7 @@ function TurnOn({ projects, on, now }: { projects: { id: string; name: string }[
     setBusy(true);
     setError(null);
     void backend
-      .set({ scopes, untilMs: chosen, by: "ash", who: "Ash" })
+      .set({ scopes, untilMs: chosen, by: "ash", who: userLabel() })
       .then((next) => {
         adoptStatus(next);
         setUntil(null);

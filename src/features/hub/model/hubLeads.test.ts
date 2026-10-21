@@ -46,7 +46,10 @@ const PROJECTS: HubProject[] = [
 /** The old harness project, now Ash's global memory: it must never get a Lead even if Ash OS still sends it. */
 const GLOBAL_ASH: HubProject = { id: "ash", name: "Harness", shortName: "Harness", iconShape: "gauge", folder: "/Users/ash/Projects/exo-cc-studio" };
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 
 describe("the project Leads", () => {
   it("are made once each, named '<Project> lead', tied to their project's folder, and registered as the Lead in Ash OS", () => {

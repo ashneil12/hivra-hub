@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { hubData } from "../../hub/model/hubData";
 import { checkBuiltSpec } from "../../pages/model/buildPage";
 import { findPage, keepPage, pageFromSpec, type Page } from "../../pages/model/pages";
+import { forUser } from "../../hub/model/userName";
 
 /**
  * A Mono builds a Page from its own chat (ash-day step 14): it reads the real data itself, fills the hub's ready-made
@@ -81,7 +82,7 @@ export function previewFromChat(input: Record<string, unknown>, by: { monoId: st
     title: result.spec.title,
     project: project.name,
     ...(result.warnings.length ? { warnings: result.warnings.map((w) => w.plain) } : {}),
-    note: "Ash sees it at the bottom of the window (See it opens the preview on Pages, with Apply and Discard). Tell him in one line; after he says it looks good, call page_build with previewId and keep true.",
+    note: forUser("Ash sees it at the bottom of the window (See it opens the preview on Pages, with Apply and Discard). Tell him in one line; after he says it looks good, call page_build with previewId and keep true."),
   };
 }
 
@@ -92,12 +93,12 @@ export async function keepFromChat(previewId: unknown, by: { monoId: string }, a
   if (!preview) {
     const kept = findPage(previewId);
     if (kept?.keptAt && !kept.removed) return { kept: kept.title, alreadyKept: true };
-    throw new Error("That preview isn't waiting any more: Ash threw it away, or it was never made. Build it again if he wants it.");
+    throw new Error(forUser("That preview isn't waiting any more: Ash threw it away, or it was never made. Build it again if he wants it."));
   }
   if (preview.monoId !== by.monoId) throw new Error("That preview is another Mono's.");
-  if (!ashSpokeSince(preview.at)) throw new Error("Ash hasn't answered since the preview. Wait for his okay.");
+  if (!ashSpokeSince(preview.at)) throw new Error(forUser("Ash hasn't answered since the preview. Wait for his okay."));
   const ok = await keepPage(preview.page);
-  if (!ok) throw new Error("Pages couldn't save it just now. Ask Ash to tap Keep on the preview.");
+  if (!ok) throw new Error(forUser("Pages couldn't save it just now. Ask Ash to tap Keep on the preview."));
   settleChatPreview(previewId);
   return { kept: preview.page.title, pageId: preview.page.id, note: "It's on the project's Pages, with Undo in Bot changes." };
 }

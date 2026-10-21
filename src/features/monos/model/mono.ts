@@ -1,4 +1,5 @@
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
+import { shownTeamPack } from "../../hub/model/teamPack";
 import { pausedLabel } from "../../autopilot/model/limitResume";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import {
@@ -75,6 +76,8 @@ const DEFAULT_ROLES: Readonly<Record<string, string>> = {
   alfred: "Team setup",
   critiquito: "Design review",
 };
+/** The plain team's (teamPack.ts): the same seats, no one's own lines. */
+const PLAIN_ROLES: Readonly<Record<string, string>> = { ...DEFAULT_ROLES, "chief-of-staff": "Talks with you first", "projects-manager": "Keeps the board" };
 
 /** A project's Lead is named for its project and carries no role label. */
 export function isProjectLeadId(id: string): boolean {
@@ -88,7 +91,7 @@ export function isProjectLeadId(id: string): boolean {
 export function monoRole(mono: Pick<Mono, "id" | "role">): string | undefined {
   if (isProjectLeadId(mono.id)) return "Runs the coding team";
   if (mono.role !== undefined) return mono.role.trim() || undefined;
-  return DEFAULT_ROLES[mono.id];
+  return (shownTeamPack() === "plain" ? PLAIN_ROLES : DEFAULT_ROLES)[mono.id];
 }
 
 /** A Mono's engine as an export carries it: a harness id ("claude", "codex", …) and, optionally, its model. */

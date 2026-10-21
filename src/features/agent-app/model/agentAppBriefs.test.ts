@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 // Briefs to a busy chat queue or steer instead of failing (sessions.send mode, sessions.queue), and the leadership
 // team's brief to a project Lead through the delegate tool (tasks.delegate {lead}).
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import type { Delegation } from "../../monos/model/delegations";
 import { handleAgentApp, type AgentAppHost, type QueuedBrief } from "./agentApp";
 import type { AgentAppTasksHost } from "./agentAppTasks";
+
+beforeEach(() => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "claude",

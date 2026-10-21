@@ -12,6 +12,7 @@ import {
   type UserQuestionReply,
 } from "../../sessions/model/userQuestion";
 import type { Block } from "../../sessions/model/session";
+import { forUser } from "./userName";
 
 export type ChatQuestion = {
   /** "ask": a live AskUserQuestion; "marker": a "Needs Ash:" line ending the agent's last turn. */
@@ -181,7 +182,7 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
  * agents hear its state (never "busy" or "queued behind its work", which is not why it stands still).
  */
 export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
-  return `waiting on Ash: ${fromPrompt(prompt)?.question ?? "a question"}`;
+  return forUser`waiting on Ash: ${fromPrompt(prompt)?.question ?? "a question"}`;
 }
 
 export type ChatLike = {

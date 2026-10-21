@@ -9,6 +9,7 @@ import {
 } from "./mono";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { CHECKER_RULES } from "../../hub/model/checkerRules";
+import { forUser } from "../../hub/model/userName";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -344,7 +345,7 @@ export function monoTurn(message: string, context: readonly string[]): string {
 
 /** Where the Mono works, with each project's folder. */
 export function monoProjectsBrief(look: Pick<MonoLook, "projects">): string {
-  if (!look.projects.length) return "Ash hasn't given you a project yet.";
+  if (!look.projects.length) return forUser("Ash hasn't given you a project yet.");
   return `Your projects (only these folders are yours to change): ${look.projects.map((project) => `${project.name} (${project.path})`).join(", ")}.`;
 }
 
@@ -373,7 +374,7 @@ export function setHubDocsPath(path: string | undefined): void {
 /** The shared note with the docs path in; the docs line is left out until the path is known. */
 export function hubNote(): string {
   const lines = HUB_NOTE_TEMPLATE.split("\n");
-  return (hubDocsPath ? lines.map((line) => line.replace("HUB_DOCS_PATH", hubDocsPath!)) : lines.filter((line) => !line.includes("HUB_DOCS_PATH"))).join("\n");
+  return forUser((hubDocsPath ? lines.map((line) => line.replace("HUB_DOCS_PATH", hubDocsPath!)) : lines.filter((line) => !line.includes("HUB_DOCS_PATH"))).join("\n"));
 }
 
 /** Who a coding-team chat is (hub/model/codingTeam.ts): the project, its folder, and its Lead's name. */
@@ -384,7 +385,7 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
 export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
-  const note = `${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
+  const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
   return options.projectMemory?.trim() ? `${note}\n\n${options.projectMemory.trim()}` : note;
 }
 
@@ -412,7 +413,7 @@ export function monoContext(
     const soul = `<soul>\n${files.soul.trim()}\n</soul>`;
     // The checker only reads (hub/model/hubChecker.ts).
     if (files.id === CHECKER_MONO_ID) {
-      parts.push(`${HUB_NOTE_TEMPLATE.split("\n")[0]}\n- You are ${look.name}, its checker. ${CHECKER_RULES}`, soul);
+      parts.push(`${forUser(HUB_NOTE_TEMPLATE.split("\n")[0])}\n- You are ${look.name}, its checker. ${forUser(CHECKER_RULES)}`, soul);
       return withMemory(parts, files, plan);
     }
     const leads = options.delegate && options.leads?.length ? ` A project's work goes to its Lead (delegate_task "lead": ${options.leads.join(", ")}).` : "";

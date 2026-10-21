@@ -50,6 +50,7 @@ import {
   type WorkerLimits,
 } from "../../monos/model/workerPool";
 import { projectName } from "../../../shared/lib/paths";
+import { forUser } from "../../hub/model/userName";
 
 /**
  * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
@@ -273,7 +274,7 @@ function askIds(value: unknown): string[] {
     !value.every((id) => typeof id === "string" && /^a_[A-Za-z0-9]{1,40}$/.test(id.trim()))
   )
     throw new Error(
-      `asks must be up to ${ASKS_MAX} Ash OS ask ids (a_...), as ash_record returned them`,
+      forUser`asks must be up to ${ASKS_MAX} Ash OS ask ids (a_...), as ash_record returned them`,
     );
   return [...new Set(value.map((id: string) => id.trim()))];
 }
@@ -597,7 +598,7 @@ async function delegate(
         harness: launch.harness,
         model: launch.model,
         ...(heavy ? { heavy: true } : {}),
-        note: `${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits, then end your turn.`,
+        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits, then end your turn.`,
       };
     }
   }
@@ -639,7 +640,7 @@ async function delegate(
     // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
     ...(ownTeam ? { team: ownTeam.name } : {}),
     note: row
-      ? `Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
+      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
       : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }
@@ -691,7 +692,7 @@ async function briefLead(
     ...(asked ? { leadState: waitingOnAshLine(asked) } : {}),
     note:
       asked
-        ? `${out.leadName} is ${waitingOnAshLine(asked)}. Your brief waits in its chat and goes in as its own turn once Ash answers and ${out.leadName} is free. If you tell anyone where ${out.leadName} is, say it is waiting on Ash for that answer, not busy. Its final report comes back to you as a new turn: say in one line what you handed over and end your turn.`
+        ? forUser`${out.leadName} is ${waitingOnAshLine(asked)}. Your brief waits in its chat and goes in as its own turn once Ash answers and ${out.leadName} is free. If you tell anyone where ${out.leadName} is, say it is waiting on Ash for that answer, not busy. Its final report comes back to you as a new turn: say in one line what you handed over and end your turn.`
         : out.delivery === "queued"
         ? `Queued behind ${out.leadName}'s current work; it goes in as its own turn when ${out.leadName} is idle. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`
         : `Briefed ${out.leadName}${out.delivery === "steered" ? " (steered into its running turn)" : ""}. Its final report comes back to you as a new turn once its workers have reported: say in one line what you handed over and end your turn.`,
@@ -874,7 +875,7 @@ async function answer(source: Session, input: Record<string, unknown>, host: Age
     throw new Error(`Task ${id} has no open question.`);
   if (!tasks.answer)
     throw new Error(
-      "This build can't answer a worker's question. Ask Ash with your recommendation.",
+      forUser("This build can't answer a worker's question. Ask Ash with your recommendation."),
     );
   await tasks.answer(source.id, row, requestId, reply);
   return { taskId: id, ...(reply.kind === "skipped" ? { skipped: true } : { answered: true }) };

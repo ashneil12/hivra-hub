@@ -17,6 +17,7 @@ import { postFromMono } from "../../hub/model/roomConductor";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import type { GroupChat } from "../../hub/model/types";
 import type { AgentAppHost } from "./agentApp";
+import { forUser, userLabel } from "../../hub/model/userName";
 
 /** The FIELDS entries of the room actions (agentApp.ts). */
 export const ROOM_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
@@ -86,7 +87,7 @@ export function resolveRoom(ref: unknown, monoId: string): GroupChat {
   const want = ref.trim();
   const byId = getChat(want);
   if (byId) {
-    if (!byId.memberIds.includes(monoId)) throw new Error(`You're not in ${byId.name}. Ask Ash to add you if you should be.`);
+    if (!byId.memberIds.includes(monoId)) throw new Error(forUser`You're not in ${byId.name}. Ask Ash to add you if you should be.`);
     return byId;
   }
   const leadership = mine.find((c) => c.id === leadershipChatId(want) || lower(c.projectId) === lower(want));
@@ -98,7 +99,7 @@ export function resolveRoom(ref: unknown, monoId: string): GroupChat {
 }
 
 function nameOf(id: string): string {
-  if (id === "ash") return "Ash";
+  if (id === "ash") return userLabel();
   if (id === "app") return "MonoCode";
   const mono = listMonos().find((m) => m.id === id);
   return mono ? monoLook(mono).name : id;
@@ -120,7 +121,7 @@ async function read(mono: { id: string }, input: Record<string, unknown>) {
             room: c.id,
             name: c.name,
             project: c.projectId,
-            members: ["Ash", ...c.memberIds.map(nameOf)],
+            members: [userLabel(), ...c.memberIds.map(nameOf)],
             conversations: c.conversations.slice(0, 5).map((v) => ({ id: v.id, title: v.title })),
             ...(latest ? { latest: latest.id } : {}),
           };
@@ -151,7 +152,7 @@ async function read(mono: { id: string }, input: Record<string, unknown>) {
       ...(message.at ? { at: new Date(message.at).toISOString() } : {}),
       ...(message.reactions ? { reactions: Object.fromEntries(Object.entries(message.reactions).map(([emoji, who]) => [emoji, who.map(nameOf)])) } : {}),
     })),
-    note: FRAMING,
+    note: forUser(FRAMING),
   };
 }
 
@@ -243,7 +244,7 @@ function create(mono: { id: string; name: string }, input: Record<string, unknow
   const existing = allChats().find((c) => c.projectId === projectId && lower(c.name) === lower(name));
   if (existing) return { room: existing.id, name: existing.name, alreadyThere: true };
   const chat = createChat(projectId, name, [...new Set([mono.id, ...members])]);
-  return { room: chat.id, name: chat.name, members: ["Ash", ...chat.memberIds.map(nameOf)], note: "It's in the sidebar. Post in it with room_post." };
+  return { room: chat.id, name: chat.name, members: [userLabel(), ...chat.memberIds.map(nameOf)], note: "It's in the sidebar. Post in it with room_post." };
 }
 function initials(name: string): string {
   return name.split(/\s+/).map((w) => w[0] ?? "").join("").toLowerCase();

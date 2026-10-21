@@ -26,6 +26,7 @@ import {
   type SoulFiles,
   type SoulTemplate,
 } from "./soulRefresh";
+import { forUser } from "./userName";
 
 /** The Mono whose lane is looking after souls. By id only: a Mono can rename itself, not change its id. */
 export const SOUL_KEEPER_ID = "alfred";
@@ -51,7 +52,7 @@ export function checkMergedSoul(current: string, template: string, merged: strin
   const templateKeys = new Set(soulSections(template).map((s) => s.key));
   const mergedKeys = new Set(soulSections(merged).map((s) => s.key));
   const lost = soulSections(current).find((s) => s.key && !templateKeys.has(s.key) && !mergedKeys.has(s.key));
-  if (lost) return `The merged soul leaves out "${heading(lost.key)}", a part Ash added himself. Keep it.`;
+  if (lost) return forUser`The merged soul leaves out "${heading(lost.key)}", a part Ash added himself. Keep it.`;
   return undefined;
 }
 
@@ -90,7 +91,7 @@ export type SoulMergeCaller = { monoId: string | undefined; isOwnChat: boolean }
 function keeperOnly(caller: SoulMergeCaller, target: string): void {
   if (caller.monoId !== SOUL_KEEPER_ID || !caller.isOwnChat)
     throw new SoulMergeRefused(`Only ${SOUL_KEEPER_NAME}'s own chat can merge a Mono's soul update.`);
-  if (target === SOUL_KEEPER_ID) throw new SoulMergeRefused("Change your own soul with soul.update when Ash asks.");
+  if (target === SOUL_KEEPER_ID) throw new SoulMergeRefused(forUser("Change your own soul with soul.update when Ash asks."));
 }
 
 function templateFor(target: string, templates: SoulTemplate[]): SoulTemplate {
@@ -126,7 +127,7 @@ export async function mergeSoul(
   const soul = await files.read(input.mono, "SOUL.md");
   if (soul.text == null) throw new SoulMergeRefused(`${t.name} has no soul yet.`);
   if (soul.hash !== input.expectedHash)
-    throw new SoulMergeRefused(`${t.name}'s soul changed since you read it (Ash may be editing it). Nothing was saved; read it again with souls.read.`);
+    throw new SoulMergeRefused(forUser`${t.name}'s soul changed since you read it (Ash may be editing it). Nothing was saved; read it again with souls.read.`);
   const problem = checkMergedSoul(soul.text, t.template, input.text);
   if (problem) throw new SoulMergeRefused(`${problem} Nothing was saved.`);
   const tag = `merge-${templateFingerprint(input.text)}`;
@@ -135,7 +136,7 @@ export async function mergeSoul(
   try {
     await files.write(input.mono, "SOUL.md", input.text, soul.hash);
   } catch {
-    throw new SoulMergeRefused(`${t.name}'s soul changed while merging (Ash may be editing it). Nothing was saved; read it again with souls.read.`);
+    throw new SoulMergeRefused(forUser`${t.name}'s soul changed while merging (Ash may be editing it). Nothing was saved; read it again with souls.read.`);
   }
   if ((await files.read(input.mono, "SOUL.md")).text !== input.text)
     throw new SoulMergeRefused(`${t.name}'s soul didn't take the merge. Read it again with souls.read.`);

@@ -3,6 +3,7 @@
 // text of every call (its question, options, recommendation, a tool's command) is read here. A miss here would be the
 // one way autopilot could do something on the list, so the patterns lean to holding: a held call costs Ash one tap, a
 // taken one can't be undone.
+import { forUser } from "../../hub/model/userName";
 
 export type RedCategory =
   | "money"
@@ -28,7 +29,7 @@ export function isRedCategory(value: unknown): value is RedCategory {
 }
 
 export function redLabel(id: RedCategory): string {
-  return RED_LIST.find((r) => r.id === id)?.label ?? id;
+  return forUser(RED_LIST.find((r) => r.id === id)?.label ?? id);
 }
 
 // Each pattern is matched against the whole call, lower-cased (so flags read lower-case: -r, -d), with whitespace

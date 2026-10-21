@@ -79,6 +79,7 @@ vi.stubGlobal("localStorage", {
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   setHarnessModels("codex", [
     {
       id: "codex:test",

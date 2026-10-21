@@ -7,6 +7,7 @@ import { LEADS, leadMono } from "../../hub/model/hubLeads";
 import { findMono, type Mono } from "../../monos/model/mono";
 import { pageActionsHost } from "../../pages/model/pageActions";
 import { agentName } from "../../pages/model/pageData";
+import { forUser } from "../../hub/model/userName";
 
 export const HUB_PROJECT = "hub";
 export const APP_CHANGE_NOTE =
@@ -27,8 +28,8 @@ export function hubLeadMono(): Mono | undefined {
 /** What the Lead is told: Ash's words, and how MonoCode changes itself. */
 export function appChangeBrief(prompt: string): string {
   return [
-    `Ash asked in Change the hub: “${prompt.trim()}”`,
-    "That changes the app itself (a screen's look or behaviour), so it's yours: make it in a worktree, show Ash a dev copy of the app to try, and Ship it when he says so.",
+    forUser`Ash asked in Change the hub: “${prompt.trim()}”`,
+    forUser("That changes the app itself (a screen's look or behaviour), so it's yours: make it in a worktree, show Ash a dev copy of the app to try, and Ship it when he says so."),
     "",
     "(sent from Change the hub)",
   ].join("\n");

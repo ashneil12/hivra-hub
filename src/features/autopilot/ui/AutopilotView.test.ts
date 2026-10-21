@@ -9,6 +9,10 @@ import { setAutopilotBackend } from "../model/autopilot";
 import { memoryAutopilot, type MemoryAutopilot } from "../model/memoryAutopilot";
 import { AutopilotView } from "./AutopilotView";
 
+beforeEach(() => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
+
 let root: Root;
 let container: HTMLElement;
 let backend: MemoryAutopilot;

@@ -46,6 +46,7 @@ import {
 } from "../model/stopTree";
 import { useDelegationFeed } from "./useDelegationFeed";
 import { useStallWatch } from "./useStallWatch";
+import { forUser } from "../../hub/model/userName";
 
 /** What Ash's own Stop records on the rows it cancels. */
 export const ASH_STOP_REASON = "Stopped by Ash.";
@@ -195,7 +196,7 @@ export function useDelegationTree(options: {
         !hasWorkBeneath(sessionId, delegationRows())
       )
         return latest.current.stopSession(sessionId, managed);
-      return treeStop(sessionId, ASH_STOP_REASON, "user").then((result) => {
+      return treeStop(sessionId, forUser(ASH_STOP_REASON), "user").then((result) => {
         noteStopFailures(sessionId, result);
         return result;
       });
@@ -230,11 +231,11 @@ export function useDelegationTree(options: {
           });
         },
         stopTree: (chat) =>
-          treeStop(chat, ASH_STOP_REASON, "user").then((result) => {
+          treeStop(chat, forUser(ASH_STOP_REASON), "user").then((result) => {
             noteStopFailures(chat, result);
             return result;
           }),
-        stopRow: (row) => taskStop(row, ASH_STOP_REASON, "user"),
+        stopRow: (row) => taskStop(row, forUser(ASH_STOP_REASON), "user"),
         noteAnswer: (child, requestId, reply) =>
           questions.current!.noteAnswer(child, requestId, "user", reply),
       }),

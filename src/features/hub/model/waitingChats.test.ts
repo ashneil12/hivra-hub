@@ -57,6 +57,7 @@ function host(over: Partial<WaitingChatsHost> = {}) {
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   resetWaitingChats();
   setHubDataSource({ ...mockHubData, listProjects: () => PROJECTS });
 });

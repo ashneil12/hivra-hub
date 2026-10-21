@@ -5,6 +5,7 @@
 import type { Block, Session } from "../../sessions/model/session";
 import { CHECK_RULES } from "./checkerRules";
 import { CHECK_PREFIX, type HubCheck } from "./hubChecks";
+import { forUser } from "./userName";
 
 /** A dump: a long message, or one over several lines. Short asks are left to the chat. */
 export function isDump(text: string): boolean {
@@ -70,7 +71,7 @@ export function dumpCheck(sessionId: string, ask: Block, missed: readonly string
     chatId: sessionId,
     finding,
     askIds: [],
-    prompt: `${CHECK_PREFIX} I read Ash's last long message and your answer. This may have been missed:\n${finding}\nIs this right? ${CHECK_RULES}`,
+    prompt: forUser`${CHECK_PREFIX} I read Ash's last long message and your answer. This may have been missed:\n${finding}\nIs this right? ${CHECK_RULES}`,
   };
 }
 

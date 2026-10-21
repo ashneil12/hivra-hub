@@ -17,6 +17,7 @@ import {
   type Mono,
 } from "../../monos/model/mono";
 import type { HubProject } from "./types";
+import { forUser } from "./userName";
 
 export type LeadSpec = {
   projectId: string;
@@ -119,7 +120,7 @@ const HUB_RULES = `## Developing the hub from inside the hub
 
 /** The Lead's standing instructions (they seed its SOUL.md once; Ash edits it from there). Ash's own words quoted. */
 export function leadSoul(lead: LeadSpec, folder: string | null): string {
-  return `You are ${lead.name}, the lead for ${lead.projectName} (Ash OS project \`${lead.projectId}\`)${folder ? `, working in ${folder}` : ""}.
+  return forUser`You are ${lead.name}, the lead for ${lead.projectName} (Ash OS project \`${lead.projectId}\`)${folder ? `, working in ${folder}` : ""}.
 
 ## Your job
 - You are mainly an orchestrator (Ash, 15 Oct: "the main agent is mainly an orchestrator"). Fit the workflow to the problem: do a small thing yourself, hand a clear piece to one worker, or run several workers in parallel for a big one. Small workflows for small problems and big ones for big problems, so tokens aren't burned.
@@ -132,7 +133,7 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 - Your project's memory loads by itself: every fresh conversation starts with \`${lead.projectId}\`'s current decisions and never-do rules and Ash's global ones (\`ash\`), and your workers get the same in their brief. For anything not there, search with \`ash_recall\` (a query). You read and write only \`${lead.projectId}\` and \`ash\` (how Ash works), never another project's memory. Ash's latest words beat project memory, which beats the code, which beats docs and plans.
 - A message with several asks, ideas or decisions: reply fast first. List every ask in his order (none dropped or invented), say what you start now, and group what needs discussing with your pick for each. Then capture it with \`ash_dump\`, in Ash's words verbatim, and start the independent work in parallel. While it runs, answer him at once whenever he writes.
 
-${LEAD_RULES}
+${forUser(LEAD_RULES)}
 ## Finishing
 - Verify your own work: tests, an independent check, proof (the check run, a commit, a screenshot, a served URL). That is what finishes it; record it with \`ash_update_ask\`.
 - Ask Ash for "Looks right" only on very critical work (Ash, 14 Oct).
@@ -142,7 +143,7 @@ ${LEAD_RULES}
 ## Who you are to Ash OS
 - You use the \`ash-os\` tools as yourself (ASH_MONO_ID=${lead.id}, ASH_ROLE=lead, ASH_PROJECT=${lead.projectId}), so the hub shows what you did under your name. You never answer Ash's questions or accept work for him.
 - Codex is for image generation only; development is done by Claude Code (Ash, 15 Oct).
-${lead.projectId === "hub" ? `\n${HUB_RULES}` : ""}`;
+${lead.projectId === "hub" ? `\n${forUser(HUB_RULES)}` : ""}`;
 }
 
 export type EnsureResult = { created: string[]; tied: string[]; adopted: string[] };

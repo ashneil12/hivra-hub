@@ -91,7 +91,10 @@ function world(chats: Record<string, { mono: string; habit?: boolean }> = { "alf
   return { files, call, ashEdits };
 }
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 
 describe("souls.merge: Alfred merges a Mono's soul update through the app", () => {
   it("only Alfred's own chat may read or merge: another Mono, Alfred's habit run and a plain chat are refused", async () => {

@@ -19,6 +19,7 @@ import {
   monoSessionCompletionResult,
   type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
+import { forUser } from "../../hub/model/userName";
 
 /** A brief just recorded may not be in its chat's queue yet; give it this long before calling it taken out. */
 export const FOLLOW_GRACE_MS = 15_000;
@@ -165,7 +166,7 @@ export function reportRequest(row: Delegation): QueuedMessage {
     id: reportRequestId(row),
     attachments: [],
     monoSessionCompletion: { sessionId: row.ownerSession, title: `Report for ${owner}`, status: "completed" },
-    text: `${REPORT_REQUEST_PREFIX} MonoCode notification: you have finished the brief "${title}" from ${owner} and every task you started for it is back, but your last turn on it also answered a message that came in while you wrote it, so that reply is not a clean report. Write your final report on that brief for ${owner} now, in one message: what was done, how it was checked (the evidence), and anything unresolved or waiting on Ash. Only the report: it goes back to ${owner} exactly as you write it. This is an app notification, not a new message from Ash.`,
+    text: forUser`${REPORT_REQUEST_PREFIX} MonoCode notification: you have finished the brief "${title}" from ${owner} and every task you started for it is back, but your last turn on it also answered a message that came in while you wrote it, so that reply is not a clean report. Write your final report on that brief for ${owner} now, in one message: what was done, how it was checked (the evidence), and anything unresolved or waiting on Ash. Only the report: it goes back to ${owner} exactly as you write it. This is an app notification, not a new message from Ash.`,
   };
 }
 

@@ -32,6 +32,7 @@ import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
 import type { SubmissionAcceptance } from "../model/submissionAcceptance";
+import { forUser } from "../../features/hub/model/userName";
 
 /** A managed room turn that takes longer than this is reported as not finished (its chat keeps the work). */
 const TURN_TIMEOUT_MS = 10 * 60_000;
@@ -334,7 +335,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         if (current.queuedMessages?.some((m) => m.id === requestId)) return { delivery: "queued" as const };
         const line = text.split("\n")[0].slice(0, 160);
         const note = { kind: "message" as const, from: from.name, ref: from.id, line };
-        const prompt = `[MonoCode message from ${from.name}]
+        const prompt = forUser`[MonoCode message from ${from.name}]
 <message from=${JSON.stringify(from.name)}>
 ${text}
 </message>

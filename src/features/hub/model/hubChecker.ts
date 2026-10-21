@@ -15,6 +15,7 @@ import { addMono, findMono } from "../../monos/model/mono";
 import { updateHabits } from "../../monos/model/monoHabits";
 import { isMonoRemovedByUser } from "./builtInMonos";
 import { CHECKER_MONO_ID } from "./hubMcp";
+import { forUser } from "./userName";
 
 export { CHECKER_MONO_ID };
 export const CHECKER_NAME = "Checker";
@@ -47,7 +48,7 @@ export function checkerRosterEntry() {
     color: "hsl(210 6% 50%)",
     projects: [] as string[],
     engine: "claude",
-    instructions: CHECKER_SOUL,
+    instructions: forUser(CHECKER_SOUL),
   };
 }
 

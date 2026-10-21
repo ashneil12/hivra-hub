@@ -29,6 +29,7 @@ import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
 import { leadFor, leadSoul } from "./hubLeads";
 import { KNOWN_LEAD_SHAPES, KNOWN_SOUL_HASHES } from "./knownSouls.generated";
 import { teamSouls } from "./teamPack";
+import { forUser, forYou } from "./userName";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
 
@@ -72,7 +73,7 @@ export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplat
       const render = (f: string | null) => defaultSoul(leadSoul({ ...lead, id: mono.id }, f));
       return [{ monoId: mono.id, name, template: render(folder), values, render }];
     }
-    if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(CHECKER_SOUL) }];
+    if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(forUser(CHECKER_SOUL)) }];
     return [];
   });
 }
@@ -232,7 +233,7 @@ const fill = (sentence: string, name: string) => sentence.replace(/\{name\}/g, n
 
 /** One plain sentence for a section that changes: from SECTION_SENTENCES, else a plain fallback. */
 export function sectionSentence(key: string, name: string): string {
-  const known = SECTION_SENTENCES[heading(key)];
+  const known = SECTION_SENTENCES[heading(key)] && forYou(SECTION_SENTENCES[heading(key)]);
   return fill(known ?? `{name}'s “${heading(key)}” part is updated to the app's newer wording.`, name);
 }
 

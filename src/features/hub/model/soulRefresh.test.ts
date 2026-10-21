@@ -74,6 +74,7 @@ You are Hivra lead, the lead for Hivra, working in /Users/ash/Projects/Hivra.
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
 });
 
 const DAY = new Date(2026, 9, 21, 9, 0);
@@ -252,6 +253,7 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
 });
 
 describe("refreshSouls with no recorded template: only a soul the app itself seeded is swapped", () => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // the templates below are built at collection, on Ash's install
   const hivra = LIVE_15_OCT_LEAD_SOULS[0];
   const lead = { id: "hivra-lead", name: "Hivra lead", projectName: "Hivra", projectId: "hivra" } as Parameters<typeof leadSoul>[0];
   const template = defaultSoul(leadSoul(lead, hivra.values.folder));

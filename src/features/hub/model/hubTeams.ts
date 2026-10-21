@@ -16,6 +16,7 @@ import { loadMonoFiles, saveMonoFile } from "../../monos/model/monoFiles";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { projectKey } from "../../../shared/lib/paths";
 import { hubData } from "./hubData";
+import { forUser } from "./userName";
 
 export const OPEN_TEAMS_EVENT = "monocode:open-teams";
 /** Leave Settings for a hub view (App.tsx listens), e.g. a team's room. */
@@ -160,13 +161,13 @@ export function createTeam(input: { name: string; brief: string; projects: strin
 export function soulFromBrief(spec: Pick<MonoSpec, "name" | "brief" | "connectors">, teamName?: string): string {
   const brief = spec.brief.trim().replace(/\s+/g, " ");
   const connectors = spec.connectors.map((id) => catalogEntry(id)?.name ?? id);
-  return `# Soul
+  return forUser`# Soul
 
 ## Who I am
 I'm ${spec.name}${teamName ? `, on the ${teamName} team` : ""}. I'm a named Mono Ash works with directly.
 
 ## My lane
-${brief || "(Ash will describe this lane.)"}
+${brief || forUser("(Ash will describe this lane.)")}
 
 ## How I work
 - I stay in my lane, and say so when something belongs to someone else on the team.
@@ -259,7 +260,7 @@ export function proposeMono(
 ): MonoProposal {
   const spec = checkSpec(input.spec);
   if (pendingMonoProposals().some((p) => p.spec.name.toLowerCase() === spec.name.toLowerCase()))
-    throw new Error(`${spec.name} is already waiting for Ash's okay.`);
+    throw new Error(forUser`${spec.name} is already waiting for Ash's okay.`);
   const teamName = input.team?.trim();
   const team = teamName ? state.teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase() || t.id === teamName) : undefined;
   const proposal: MonoProposal = {
