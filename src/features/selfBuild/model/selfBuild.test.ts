@@ -345,6 +345,41 @@ it("Dr Eggbot style: a draft waits until the Mono asked Ash a question and he an
   ).toBe(false);
 });
 
+it("in a room, Ash writing back after the seat's post counts as heard back; his first ask alone never does", async () => {
+  const a = await app();
+  const chat = () => ({ blocks: [] }) as never;
+  const room = (messages: Array<{ from: string; text: string }>) =>
+    [{ id: "tally:leadership", memberIds: ["cos", "alfred"], conversations: [{ id: "c1", messages }] }] as never;
+  expect(a.said.askedAshAndHeardBack(chat(), "cos", room([{ from: "ash", text: "add a new mono for x posts" }]))).toBe(false);
+  expect(
+    a.said.askedAshAndHeardBack(chat(), "cos", room([
+      { from: "ash", text: "add a new mono for x posts" },
+      { from: "cos", text: "The X Mono is not made yet. It answers to me." },
+    ])),
+  ).toBe(false);
+  expect(
+    a.said.askedAshAndHeardBack(chat(), "cos", room([
+      { from: "ash", text: "add a new mono for x posts" },
+      { from: "cos", text: "The X Mono is not made yet. It answers to me." },
+      { from: "ash", text: "ye drafts only, it answers to cos" },
+    ])),
+  ).toBe(true);
+  // Another seat's question that Ash answers counts too; a seat the Mono isn't in never does.
+  expect(
+    a.said.askedAshAndHeardBack(chat(), "cos", room([
+      { from: "ash", text: "add a new mono for x posts" },
+      { from: "alfred", text: "Who does it answer to?" },
+      { from: "ash", text: "cos" },
+    ])),
+  ).toBe(true);
+  expect(
+    a.said.askedAshAndHeardBack(chat(), "pm", room([
+      { from: "cos", text: "Who does it answer to?" },
+      { from: "ash", text: "cos" },
+    ])),
+  ).toBe(false);
+});
+
 it("Not this one on the draft card hides it and makes nothing", async () => {
   const a = await app();
   const draft = a.make.draftMono(

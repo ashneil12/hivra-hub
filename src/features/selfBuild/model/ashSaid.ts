@@ -12,7 +12,8 @@ function ashTyped(b: Pick<Session, "blocks">["blocks"][number]): boolean {
 
 /**
  * Dr Eggbot style: before a Mono drafts a new Mono it asked Ash at least one real question (a line ending in "?", or
- * its question tool) and Ash answered it, in its own chat or a room it shares with him.
+ * its question tool) and Ash answered it in its own chat; or, in a room it shares with him, Ash wrote back after its
+ * post (or after another seat's question). Never in the same turn as Ash's first ask.
  */
 export function askedAshAndHeardBack(session: Pick<Session, "blocks"> | undefined, monoId: string, rooms: readonly GroupChat[]): boolean {
   let asked = false;
@@ -26,7 +27,10 @@ export function askedAshAndHeardBack(session: Pick<Session, "blocks"> | undefine
       room.conversations.some((c) => {
         let roomAsked = false;
         for (const m of c.messages) {
-          if (m.from === monoId && /\?\s*$/m.test(m.text)) roomAsked = true;
+          // In a room the caller's own post, or another seat's question, is what Ash answers (AD13, run 24bf: CoS
+          // described the Mono, Alfred and frank raised who it answers to, Ash replied "ye drafts only, it answers to
+          // cos" and "ye go", and the draft was still refused for want of CoS's own "?").
+          if (m.from === monoId || (m.from !== "ash" && /\?\s*$/m.test(m.text))) roomAsked = true;
           else if (roomAsked && m.from === "ash") return true;
         }
         return false;
