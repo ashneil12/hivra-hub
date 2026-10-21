@@ -55,8 +55,26 @@ export function copyProject(source, dest, env = {}) {
   run(["clone", "-q", "--no-hardlinks", "--single-branch", source, dest]);
   for (const remote of run(["remote"], dest).split("\n").filter(Boolean)) run(["remote", "remove", remote], dest);
   run(["config", "remote.pushDefault", "nowhere"], dest);
+  run(["config", "credential.helper", ""], dest);
   return fs.realpathSync(dest);
 }
+/**
+ * The run's git never reaches a real remote with Ash's logins (21 Oct: a worker re-added origin, pulled his GitHub token
+ * out of the login Keychain with `git credential fill`, and opened and merged real pull requests). The temporary HOME's
+ * gitconfig and the app's environment both empty the credential helper list (that also drops the system osxkeychain
+ * helper), push URLs for GitHub go nowhere, and git over ssh fails.
+ */
+export const BENCH_GITCONFIG =
+  '[credential]\n\thelper =\n[url "nowhere://bench-blocked/"]\n\tpushInsteadOf = https://github.com/\n\tpushInsteadOf = git@github.com:\n\tpushInsteadOf = ssh://git@github.com/\n';
+export const BENCH_GIT_ENV = {
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "credential.helper",
+  GIT_CONFIG_VALUE_0: "",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_SSH_COMMAND: "false",
+  GIT_ASKPASS: "false",
+  SSH_ASKPASS: "false",
+};
 /** Ash's launcher for Claude Code on Grok 4.7 through his Grok subscription (src/.../claudeGrokBridge.ts). */
 export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
 export const GROK_BRIDGE_MODEL = "grok-4.7";
@@ -407,7 +425,7 @@ export async function runBench(options, hooks = {}) {
     execFileSync("security", ["list-keychains", "-d", "user", "-s", LOGIN_KEYCHAIN], { env: { ...process.env, HOME: home } });
     fs.writeFileSync(
       path.join(home, ".gitconfig"),
-      "[user]\n\tname = Tally Agents\n\temail = agents@tally.invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
+      "[user]\n\tname = Tally Agents\n\temail = agents@tally.invalid\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n" + BENCH_GITCONFIG,
     );
     // Every Claude account the run may use (E5): the shared dev login first, then any folder Ash signed in himself and
     // named with --claude-config. Each is checked for its login and its use; the run starts when any has room.
@@ -578,6 +596,7 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_HUB_PORT: String(stub.port),
       MONOCODE_HUB_TOKEN_FILE: tokenFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
+      ...BENCH_GIT_ENV,
     });
     const out = fs.openSync(path.join(evidence, "app.log"), "w");
     const child = spawn(binary, [], { cwd: ROOT, env: appEnv, stdio: ["ignore", out, out] });

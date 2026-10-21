@@ -264,3 +264,26 @@ test("a scene's copy of a real repo is a clone with no remote, and the source is
   assert.throws(() => copyProject(src, dest), /already exists/);
   fsm.rmSync(root, { recursive: true, force: true });
 });
+
+test("the run's git can't use Ash's logins or push to GitHub, even after an agent re-adds origin", async () => {
+  const { BENCH_GITCONFIG, BENCH_GIT_ENV } = await import("./hub-realtest.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const home = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "bench-git-"));
+  fsm.writeFileSync(pathm.join(home, ".gitconfig"), BENCH_GITCONFIG);
+  const repo = pathm.join(home, "repo");
+  fsm.mkdirSync(repo);
+  const env = { PATH: process.env.PATH, HOME: home, ...BENCH_GIT_ENV };
+  const g = (...args) => execFileSync("git", args, { cwd: repo, env, encoding: "utf8" }).trim();
+  g("init", "-q", "-b", "main");
+  g("remote", "add", "origin", "https://github.com/ashneil12/hivra.git");
+  assert.equal(g("remote", "get-url", "--push", "origin"), "nowhere://bench-blocked/ashneil12/hivra.git");
+  // Even a helper set in the repo is dropped: the environment's empty helper comes last.
+  g("config", "credential.helper", "store");
+  const helpers = execFileSync("git", ["config", "--get-all", "credential.helper"], { cwd: repo, env, encoding: "utf8" }).split("\n");
+  assert.deepEqual(helpers, ["", "store", "", ""]);
+  assert.equal(env.GIT_SSH_COMMAND, "false");
+  fsm.rmSync(home, { recursive: true, force: true });
+});

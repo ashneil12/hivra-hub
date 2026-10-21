@@ -16,6 +16,9 @@ import {
   setMonoHomeRoot,
   setHubMcpServers,
   type HubChatLookups,
+  CREDENTIAL_DENIED_TOOLS,
+  chatDeniedTools,
+  monoHomeFenceArgs,
 } from "./hubMcp";
 import { workerRules } from "../../agent-app/model/agentAppTasks";
 import { leadBriefPrompt } from "./leadershipDelegation";
@@ -199,14 +202,14 @@ describe("the delegate tool", () => {
       "monocode",
     ]);
     // Only the fence round the Monos' home, which every hub chat has.
-    const fence = ["--disallowedTools", "Edit(~/agent-memory/monos/**)"];
+    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...CREDENTIAL_DENIED_TOOLS].join(",")];
     expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual(fence);
     expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual(fence);
   });
 
   it("is taught to a chat only when its Claude Code session really has it", () => {
     // Nothing registered yet: no servers, but the fence round the Monos' home is never left off.
-    expect(registeredHubMcpArgs("chat-exo")).toEqual(["--disallowedTools", monoHomeDeniedTools().join(",")]);
+    expect(registeredHubMcpArgs("chat-exo")).toEqual(["--disallowedTools", chatDeniedTools().join(",")]);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
     setHubMcpServers({ ashOs: null, cli: CLI }, lookups);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(true);
@@ -313,5 +316,12 @@ describe("the fence round the Monos' home (decided 20 Oct: only the app writes t
     expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain(`Fence: ${MONO_HOME_FENCE}`);
     expect(MONO_HOME_FENCE).toContain("~/agent-memory/monos/");
     expect(MONO_HOME_FENCE).toMatch(/never write, move or delete/);
+  });
+});
+
+describe("saved logins", () => {
+  it("no hub chat may read one by hand (a test worker pulled Ash's GitHub token with git credential fill, 21 Oct)", () => {
+    for (const rule of ["Bash(git credential:*)", "Bash(security find-internet-password:*)", "Bash(gh auth token:*)"]) expect(chatDeniedTools()).toContain(rule);
+    expect(monoHomeFenceArgs()[1].split(",")).toEqual(expect.arrayContaining(["Bash(git credential:*)"]));
   });
 });

@@ -46,7 +46,7 @@ export function checkerToolArgs(): string[] {
     "--tools",
     CHECKER_TOOLS.join(","),
     "--disallowedTools",
-    [...CHECKER_DENIED_TOOLS, ...monoHomeDeniedTools()].join(","),
+    [...CHECKER_DENIED_TOOLS, ...chatDeniedTools()].join(","),
     "--allowedTools",
     CHECKER_ALLOWED_TOOLS,
   ];
@@ -80,6 +80,26 @@ export function monoHomeDeniedTools(): string[] {
   const roots = [MONO_HOME, ...(extraHome ? [`/${extraHome}`] : [])];
   // Claude Code applies an Edit rule to every built-in tool that edits files (Write and NotebookEdit too).
   return roots.map((root) => `Edit(${root}/**)`);
+}
+
+/**
+ * No chat reads a saved login to use it itself: in a test run (21 Oct) a worker pulled Ash's GitHub token out of the
+ * Keychain with `git credential fill` and opened and merged pull requests on his real repo with it. Git's own pushes
+ * still use the login as before; only asking for the secret by hand is refused. Claude Code checks each part of a
+ * chained command against these, whatever the permission mode.
+ */
+export const CREDENTIAL_DENIED_TOOLS = [
+  "Bash(git credential:*)",
+  "Bash(git credential-osxkeychain:*)",
+  "Bash(security find-internet-password:*)",
+  "Bash(security find-generic-password:*)",
+  "Bash(security dump-keychain:*)",
+  "Bash(gh auth token:*)",
+];
+
+/** Everything every hub chat is denied: edits in the Monos' home, and reading a saved login by hand. */
+export function chatDeniedTools(): string[] {
+  return [...monoHomeDeniedTools(), ...CREDENTIAL_DENIED_TOOLS];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
@@ -260,7 +280,7 @@ export function hubMcpArgs(
   // The checker only reads, whatever else this chat gets (its deny list carries the fence round the Monos' home too).
   const restrict = identity.role === "checker" ? checkerToolArgs() : [];
   // Every other chat is fenced out of the Monos' home: last, so a chat's own arguments read as they always have.
-  const fence = identity.role === "checker" ? [] : ["--disallowedTools", monoHomeDeniedTools().join(",")];
+  const fence = identity.role === "checker" ? [] : ["--disallowedTools", chatDeniedTools().join(",")];
   const mcpServers: Record<string, unknown> = {};
   // A Mono's connectors go in first, so the hub's own entries below always keep their names.
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
@@ -302,7 +322,7 @@ export function setHubMcpServers(
 
 /** The fence round the Monos' home as Claude Code arguments: every Claude process the app starts carries it. */
 export function monoHomeFenceArgs(): string[] {
-  return ["--disallowedTools", monoHomeDeniedTools().join(",")];
+  return ["--disallowedTools", chatDeniedTools().join(",")];
 }
 
 /** The app's own helper Claude processes (titles, commit text, the room's gate, the catalog probe) carry the fence too. */

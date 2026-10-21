@@ -30,11 +30,11 @@ vi.mock("../../../../features/sessions/model/models", async (orig) => ({
 const { claudeGuardArgs, setClaudeGuardArgs } = await import("./claudeExtraArgs");
 const { runClaudeTextPrompt, textCallToolArgs } = await import("./claudeText");
 const { discoverClaudeModels } = await import("./claudeCatalog");
-const { monoHomeDeniedTools, monoHomeFenceArgs, registerClaudeGuards, registeredHubMcpArgs } = await import(
+const { chatDeniedTools, monoHomeDeniedTools, monoHomeFenceArgs, registerClaudeGuards, registeredHubMcpArgs } = await import(
   "../../../../features/hub/model/hubMcp"
 );
 
-const FENCE = () => ["--disallowedTools", monoHomeDeniedTools().join(",")];
+const FENCE = () => ["--disallowedTools", chatDeniedTools().join(",")];
 const hasFence = (args: string[]) => {
   const i = args.lastIndexOf("--disallowedTools");
   return i >= 0 && monoHomeDeniedTools().every((rule) => args[i + 1]?.split(",").includes(rule));
