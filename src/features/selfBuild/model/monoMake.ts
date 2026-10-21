@@ -121,7 +121,8 @@ function strings(value: unknown, what: string, max = 20): string[] {
 
 /**
  * A new Mono's SOUL.md is the short shape in templates/SOUL.md: its role, who it is, what it watches for, and its
- * skills. Nothing on how it talks, its tone or its format: those come from the hub, not from each soul.
+ * skills. No tone or format section: the hub adds no style rules of its own. What Ash himself says about how it
+ * should sound ("casual") is his and is kept, as his words in ## Who I am.
  */
 const SOUL_SECTIONS = ["role", "who i am", "what i watch for", "skills"];
 function sections(soul: string): Map<string, string> {
@@ -165,7 +166,7 @@ function shortSoul(input: {
   const extra = [...given.keys()].filter((h) => !SOUL_SECTIONS.includes(h));
   if (extra.length)
     throw new Error(
-      `Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: how it talks, its tone and format aren't part of a soul.`,
+      `Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: no tone or format sections. If Ash said how it should sound, put his words in ## Who I am.`,
     );
   const role = given.get("role") || input.role;
   const who = given.get("who i am") || input.who;

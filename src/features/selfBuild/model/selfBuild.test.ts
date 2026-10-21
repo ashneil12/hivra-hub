@@ -245,6 +245,21 @@ it("a drafted soul is the short shape: Role, Who I am, What I watch for, Skills,
         2000,
       ),
     ).toThrow(/short shape/);
+  // The refusal says where Ash's own words on how it sounds go (AD13 run f451: "keep the casual" was dropped twice).
+  expect(() =>
+    a.make.draftMono(
+      { name: "Chatty", soul: "# Soul\n\n## Role\nChats\n\n## Who I am\nI'm Chatty.\n\n## What I watch for\nQuiet rooms.\n\n## Tone\nCasual.\n" },
+      ME,
+      2100,
+    ),
+  ).toThrow(/If Ash said how it should sound, put his words in ## Who I am/);
+  // ...and a who that carries them is drafted as is.
+  const casual = a.make.draftMono(
+    { name: "Breezy", role: "X posts", who: "I'm Breezy. Ash said the posts are casual.", watchFor: "Product news." },
+    ME,
+    2200,
+  );
+  expect(JSON.stringify(casual)).toContain("Ash said the posts are casual.");
   // Without what it watches for, it isn't drafted.
   expect(() =>
     a.make.draftMono(
