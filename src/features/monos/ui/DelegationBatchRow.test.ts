@@ -183,10 +183,10 @@ describe("DelegationBatchRow", () => {
 });
 
 describe("a worker waiting for a free worker (H8)", () => {
-  it("shows its card as waiting, counts it, lets Ash take it out of the queue, and becomes a normal card once it starts", () => {
+  it("shows its card as waiting, counts it, lets Ash take it out of the queue, and becomes a normal card once it starts", async () => {
     localStorage.clear();
     resetWorkerPool();
-    enqueueWorker({
+    await enqueueWorker({
       id: "w2",
       ownerSession: "lead-chat",
       requestId: "r2",
@@ -218,9 +218,50 @@ describe("a worker waiting for a free worker (H8)", () => {
     expect(card.textContent).toContain("Waiting for a free worker");
     // Nothing to open yet.
     expect(card.disabled).toBe(true);
-    act(() => container.querySelector<HTMLButtonElement>('[data-delegation-unqueue="w2"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-delegation-unqueue="w2"]')!.click());
     expect(queuedWorkers()).toEqual([]);
     expect(container.querySelector('[data-delegation-unqueue="w2"]')).toBeNull();
+  });
+});
+
+describe("H8b on the Lead's batch", () => {
+  it("shows a waiting worker as waiting even where the app reads an unloaded chat as done", async () => {
+    localStorage.clear();
+    resetWorkerPool();
+    await enqueueWorker({
+      id: "w2", ownerSession: "lead-chat", requestId: "r2", project: "vg-game", projectName: "vg-game",
+      title: "Fix audio", heavy: false, harness: "claude", queuedAt: 1, input: { brief: "Fix audio" },
+    });
+    setDelegationRows([]);
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w2", "Fix audio")],
+          views: new Map<string, LaunchedSessionView>([["w2", { state: "done", title: "Fix audio" }]]),
+        }),
+      ),
+    );
+    expect(container.querySelector<HTMLElement>('[data-launched-session="w2"]')!.dataset.state).toBe("waiting");
+  });
+
+  it("says when a held worker tries again by itself", () => {
+    const at = new Date(2026, 9, 21, 15, 0).getTime();
+    vi.useFakeTimers({ now: new Date(2026, 9, 21, 10, 0) });
+    setDelegationRows([row("t-1", "w1", "running")]);
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w1", "Fix saves")],
+          views: new Map<string, LaunchedSessionView>([
+            ["w1", { state: "input", title: "Fix saves", retryAt: at, provider: "Claude" }],
+          ]),
+        }),
+      ),
+    );
+    expect(container.querySelector('[data-delegation-held="w1"]')?.textContent).toMatch(
+      /^Out of Claude usage\. Tries again by itself at 3:00\s?PM, sooner if Claude shows room\.$/i,
+    );
+    vi.useRealTimers();
   });
 });
 

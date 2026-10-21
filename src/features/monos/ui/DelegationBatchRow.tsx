@@ -20,6 +20,7 @@ import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
 import { LaunchedSessionCard } from "./LaunchedSessionCard";
 import {
   dequeueWorker,
+  heldLine,
   queuedWorker,
   useWorkerPoolVersion,
 } from "../model/workerPool";
@@ -48,8 +49,9 @@ export function DelegationBatchRow({
   useWorkerPoolVersion();
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   // One that waits for a free worker (H8) has no chat or row yet: its card says it waits.
+  // (The app shows a chat it hasn't loaded as done, so its row and the queue decide, not its view.)
   const waiting = launches.map((launch) =>
-    !views?.get(launch.sessionId) && !delegationOf(launch.sessionId, rows)
+    !delegationOf(launch.sessionId, rows)
       ? queuedWorker(launch.sessionId)
       : undefined,
   );
@@ -119,7 +121,7 @@ export function DelegationBatchRow({
               <button
                 type="button"
                 data-delegation-unqueue={launch.sessionId}
-                onClick={() => dequeueWorker(launch.sessionId)}
+                onClick={() => void dequeueWorker(launch.sessionId)}
                 title="Take it out of the queue: it never starts"
                 aria-label={`Don't start ${waiting[index]!.title}`}
                 className="flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 font-sans text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
@@ -127,6 +129,18 @@ export function DelegationBatchRow({
                 <Square className="size-3" strokeWidth={2} />
                 Stop
               </button>
+            ) : null}
+            {row && views?.get(launch.sessionId)?.retryAt ? (
+              <span
+                data-delegation-held={launch.sessionId}
+                className="min-w-0 truncate font-sans text-[12px] text-content/55"
+              >
+                {heldLine(
+                  views.get(launch.sessionId)!.provider ?? "the provider's",
+                  views.get(launch.sessionId)!.retryAt!,
+                  Date.now(),
+                )}
+              </span>
             ) : null}
             {states[index] === "stuck" ? (
               <span
