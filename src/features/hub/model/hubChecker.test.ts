@@ -218,13 +218,10 @@ describe("3. no delegate: the tool, the tasks and the teaching all stay away fro
       expect(context).not.toContain(word);
   });
 
-  it("teaches the chats that own Ash's asks how to answer it, with the delegate rules", () => {
+  it("leaves the check's own turn to say how to answer it: no chat's note carries it", () => {
     const look = { name: "EXO lead", mascot: "robot", color: "x", projects: [] };
-    const lead = monoContext(look, { ...FILES, id: "vg-game-lead" }, { soul: true, memory: false }, { delegate: true });
-    expect(lead).toContain(CHECK_RULES);
-    expect(CHECK_RULES).toContain("[MonoCode check]");
+    expect(monoContext(look, { ...FILES, id: "vg-game-lead" }, { soul: true, memory: false }, { delegate: true })).not.toContain(CHECK_RULES);
     expect(CHECK_RULES).toContain('"Right:" or "Fixed:"');
-    expect(monoContext(look, { ...FILES, id: "frank" }, { soul: true, memory: false })).not.toContain(CHECK_RULES);
   });
 });
 
@@ -265,25 +262,21 @@ describe("the Checker Mono", () => {
     };
   }
 
-  it("is made once with its hourly habit, and the habit is given only once", async () => {
+  it("is made once, with no hourly audit; an old hourly audit is paused, once", async () => {
     const first = deps();
-    expect(await ensureChecker(first.deps as never)).toEqual({ created: true, habit: true });
+    expect(await ensureChecker(first.deps as never)).toEqual({ created: true, paused: false });
     expect(first.added[0]).toMatchObject({ id: "checker", engineModel: "claude:haiku" });
-    expect(first.habits()).toEqual([
-      expect.objectContaining({ id: CHECKER_HABIT_ID, enabled: true, schedule: expect.objectContaining({ scheduleKind: "hourly" }) }),
-    ]);
-    expect(first.habits()[0].instructions).toContain("ash_checker_queue");
-    expect(first.habits()[0].instructions).toContain("ash_checker_note");
-    expect(first.habits()[0].instructions).toContain("NOTHING_TO_REPORT");
-    // Ash removed the habit afterwards: it stays removed.
-    const later = deps({ monos: ["checker"], habits: [] });
-    expect(await ensureChecker(later.deps as never)).toEqual({ created: false, habit: false });
-    expect(later.habits()).toEqual([]);
+    expect(first.habits()).toEqual([]);
+    const old = { id: CHECKER_HABIT_ID, name: "Check Ash's messages", enabled: true } as unknown as Habit;
+    const later = deps({ monos: ["checker"], habits: [old] });
+    expect(await ensureChecker(later.deps as never)).toEqual({ created: false, paused: true });
+    expect(later.habits()).toEqual([expect.objectContaining({ id: CHECKER_HABIT_ID, enabled: false })]);
+    expect(await ensureChecker(later.deps as never)).toEqual({ created: false, paused: false });
   });
 
   it("never comes back after Ash removes it", async () => {
     const gone = deps({ removed: ["checker"] });
-    expect(await ensureChecker(gone.deps as never)).toEqual({ created: false, habit: false });
+    expect(await ensureChecker(gone.deps as never)).toEqual({ created: false, paused: false });
     expect(gone.deps.add).not.toHaveBeenCalled();
   });
 });

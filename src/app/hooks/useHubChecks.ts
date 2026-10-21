@@ -1,15 +1,19 @@
 // The checker's notes reach their chats (hub/model/hubChecks.ts; docs/PHASE-2-DESIGN.md decision 4, H6). In the Hub
-// bundle's main window only: the store pulls the undelivered checks (at boot and on feed topic `checks`), and each goes
-// to its owner's chat as one quiet `[MonoCode check]` turn once that chat is idle. This hook also makes the Checker
-// Mono (hub/model/hubChecker.ts) and opens its chat, since a habit runs only for a Mono whose chat exists.
+// bundle's main window only: each goes to its owner's chat as one quiet `[MonoCode check]` turn once that chat is idle.
+// Two sources: Ash OS's undelivered checks (at boot and on feed topic `checks`), and the light look after each dump
+// (hub/model/dumpCheck.ts; Ash, 21 Oct: no hourly audit), run here once a chat Ash talks to has answered one.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { SubmissionAcceptance } from "../model/submissionAcceptance";
 import type { Block, Session } from "../../features/sessions/model/session";
-import { findMono } from "../../features/monos/model/mono";
+import { findMono, monoForSession } from "../../features/monos/model/mono";
 import { hubCheckFeed } from "../../features/hub/model/hubData";
 import { CHECKER_MONO_ID, ensureChecker } from "../../features/hub/model/hubChecker";
-import { CheckDelivery, checkMeta, checkReceipt } from "../../features/hub/model/hubChecks";
+import { CheckDelivery, checkMeta, checkReceipt, type HubCheck } from "../../features/hub/model/hubChecks";
+import { answeredDump, claimDumpCheck, dumpCheck, dumpCheckPrompt, parseMissed } from "../../features/hub/model/dumpCheck";
+import { isOrchestratorChat } from "../../features/monos/model/orchestrators";
+import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../integrations/harness";
+import { homeDir } from "../../platform/tauri/fs";
 
 const FLUSH_MS = 60_000;
 
@@ -33,7 +37,31 @@ export type HubChecksHost = {
     text: string,
     options: { monoCheck: Block["monoCheck"]; appRequestId: string },
   ): SubmissionAcceptance;
+  /** The one cheap look after a dump; defaults to an isolated Claude Code prompt. */
+  look?(prompt: string): Promise<string>;
 };
+
+const LOOK_TIMEOUT_MS = 90_000;
+
+async function isolatedLook(prompt: string): Promise<string> {
+  if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the dump check");
+  return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", model: "claude:haiku", timeoutMs: LOOK_TIMEOUT_MS });
+}
+
+/** Look at each answered dump once; offer a check when something looks missed. */
+export async function lookAtDumps(
+  sessions: readonly Session[],
+  look: (prompt: string) => Promise<string>,
+  offer: (checks: HubCheck[]) => unknown,
+): Promise<void> {
+  for (const session of sessions) {
+    if (session.busy || session.queuedMessages?.length || monoForSession(session.id)?.id === CHECKER_MONO_ID || !isOrchestratorChat(session.id)) continue;
+    const dump = answeredDump(session);
+    if (!dump || !claimDumpCheck(dump.ask.id)) continue;
+    const missed = parseMissed(await look(dumpCheckPrompt(dump.ask.text ?? "", dump.reply)).catch(() => ""));
+    if (missed.length) await offer([dumpCheck(session.id, dump.ask, missed)]);
+  }
+}
 
 export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
   const latest = useRef(host);
@@ -53,7 +81,9 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
             appRequestId: checkReceipt(check.id),
           })),
         delivered: async (ids) => {
-          await hubCheckFeed()?.checksDelivered(ids);
+          // The app's own dump checks (dc-...) have nothing to confirm in Ash OS.
+          const ashOs = ids.filter((id) => !id.startsWith("dc-"));
+          if (ashOs.length) await hubCheckFeed()?.checksDelivered(ashOs);
         },
         monoExists: (id) => !!findMono(id),
       }),
@@ -92,6 +122,10 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
     [host.sessions],
   );
   useEffect(() => {
-    if (on) void delivery.flush();
+    if (!on) return;
+    void delivery.flush();
+    void lookAtDumps(latest.current.sessionsRef.current, latest.current.look ?? isolatedLook, (checks) => delivery.offer(checks)).catch(
+      (error: unknown) => console.warn("The dump check failed", error),
+    );
   }, [on, delivery, idle]);
 }
