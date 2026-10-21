@@ -9,6 +9,8 @@ import {
   failureNotice,
   hostOf,
   isProgress,
+  isGreeting,
+  roundOf,
   isShortMessage,
   isSilent,
   laneChimes,
@@ -266,5 +268,22 @@ describe("what the room says when a turn can't run", () => {
     expect(failureNotice("frank", "You've hit your usage limit. Resets at 4pm.")).toBe("frank couldn't answer: You've hit your usage limit. Resets at 4pm.");
     expect(failureNotice("frank", "Not logged in · Please run /login", "claude")).toBe("frank isn't signed in to Claude in this copy. Your message is saved.");
     expect(failureNotice("frank", "")).toBe("frank couldn't answer: Its turn did not finish.");
+  });
+});
+
+describe("isGreeting", () => {
+  it("is a hello with nothing asked", () => {
+    for (const t of ["yo morning", "hey", "Morning all!", "gm team", "hiya guys", "yo", "good morning everyone", "hey hey"]) expect(isGreeting(t), t).toBe(true);
+    for (const t of ["hey can u check the board", "morning, wats left", "yo ship it", "hi frank wat did i say", "", "skip review just ship the fix pls"]) expect(isGreeting(t), t).toBe(false);
+  });
+});
+
+describe("roundOf", () => {
+  it("a hello or a question to each seat is a round; other asks are not", () => {
+    expect(roundOf("yo morning")).toBe("hello");
+    expect(roundOf("who's on my team rn n what does each of u actually do")).toBe("each");
+    expect(roundOf("ok all of u, wat r u working on")).toBe("each");
+    expect(roundOf("cos can u look into competitor pricing")).toBeNull();
+    expect(roundOf("progeress? i only see cos working atm")).toBeNull();
   });
 });

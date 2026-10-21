@@ -382,3 +382,23 @@ test("in a clicks scene the tester may click a listed button, and an unlisted on
   assert.equal(move.label, "Discard");
   assert.match(move.refused[0], /no button "Delete"/);
 });
+
+test("a seat's room turn is counted once, in the room, not again as its chat text", async () => {
+  const { dropRoomEchoes } = await import("./realconv/player.mjs");
+  const lines = [
+    { t: 8000, who: "chief-of-staff", where: "chat", text: "Morning. Nothing new on Tally." },
+    { t: 8100, who: "chief-of-staff", where: "room", text: "Morning. Nothing new on Tally." },
+    { t: 9000, who: "chief-of-staff", where: "chat", text: "Different words in its own chat." },
+  ];
+  assert.deepEqual(dropRoomEchoes(lines).map((l) => l.where + ":" + l.text.slice(0, 9)), ["room:Morning. ", "chat:Different"]);
+});
+
+test("a judge that narrates instead of answering gets one more go for the JSON", async () => {
+  const { judgeScene } = await import("./realconv/judge.mjs");
+  const answers = ["I'll check each seat's soul first.", '{"grade":"PASS","replies":[]}'];
+  const prompts = [];
+  const client = { provider: "fake", model: "m", real: false, complete: async ({ prompt }) => (prompts.push(prompt), { text: answers.shift() }) };
+  const judged = await judgeScene(client, { id: "AD2", title: "t", card: "c" }, "## Timeline", {}, "rubric");
+  assert.equal(judged.grade, "PASS");
+  assert.match(prompts[1], /no tools/);
+});

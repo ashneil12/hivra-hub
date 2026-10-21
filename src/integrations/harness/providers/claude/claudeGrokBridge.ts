@@ -54,6 +54,11 @@ export const GROK_BRIDGE_LABEL = "Grok 4.7";
  * A Claude Code model's name in the composer's pill. On Grok it is Grok 4.7, whatever model the chat had saved (S14 on
  * Grok showed the gateway's own label for claude-sonnet-5, "Gemini 4 Argon", though the chat ran on grok-4.7).
  */
+/** A chat's model name wherever the app shows it (session rows, cards, tabs): Grok 4.7 for Claude Code on Grok. */
+export function shownModelName(harness: string, name: string, onGrok: boolean = claudeRunsOnGrok()): string {
+  return harness === "claude" && onGrok ? GROK_BRIDGE_LABEL : name;
+}
+
 export function claudePillName(name: string, onGrok: boolean = claudeRunsOnGrok()): string {
   return onGrok ? GROK_BRIDGE_LABEL : name.replace(/^Claude /, "");
 }

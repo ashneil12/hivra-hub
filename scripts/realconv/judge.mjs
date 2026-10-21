@@ -37,8 +37,14 @@ export function judgePrompt(scene, transcriptText, hard) {
 
 export async function judgeScene(client, scene, transcriptText, hard, rubric) {
   try {
-    const answer = await client.complete({ system: judgeSystem(rubric), prompt: judgePrompt(scene, transcriptText, hard) });
-    const parsed = parseJsonObject(answer.text);
+    const prompt = judgePrompt(scene, transcriptText, hard);
+    let answer = await client.complete({ system: judgeSystem(rubric), prompt });
+    let parsed = parseJsonObject(answer.text);
+    if (!parsed) {
+      // A model that starts narrating ("I'll check each seat's soul...") gets one more go: it has no tools, only the transcript.
+      answer = await client.complete({ system: judgeSystem(rubric), prompt: `${prompt}\n\nYou have no tools and nothing else to read: everything is above. Answer now with the one JSON object only, no other words.` });
+      parsed = parseJsonObject(answer.text);
+    }
     if (!parsed) return { grade: "UNGRADED", error: `the judge's answer wasn't JSON: ${String(answer.text).slice(0, 200)}`, judge: meta(client) };
     return { ...parsed, judge: meta(client) };
   } catch (error) {

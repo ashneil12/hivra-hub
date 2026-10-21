@@ -100,8 +100,15 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
   const screens = [];
+  // The place Ash is talking in, on screen (the room, the Mono's chat, the coding-team chat), as he'd have it open.
+  const showPlace = async () => {
+    const where = place.room ? { hub: { project: ctx.spec.project.id, item: "leadership-team" }, settleMs: 1200 } : place.mono ? { mono: place.mono } : place.session ? { session: place.session } : null;
+    if (where) await act("open", where, 30_000).catch(() => null);
+  };
   const shoot = async (name) => {
     if (!ctx.screenshot) return;
+    // A click's own result (a preview, a dialog) stays as it is; every other shot shows the place first.
+    if (!name.startsWith("click")) await showPlace();
     const shot = await ctx.screenshot(`${scene.id}-${name}`).catch((error) => ({ ok: false, why: error.message }));
     screens.push({ name, t: Date.now(), ...shot });
   };
@@ -249,6 +256,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const seen = await seenNow();
     // A scene with `clicks` lets Ash use the buttons on screen (Apply, Discard, Undo, Cancel); never a delete.
     const buttons = scene.clicks ? ((await act("buttons").catch(() => null))?.buttons ?? []) : undefined;
+    // (The place was put on screen by the reply's screenshot just before.)
     const move = await nextAshMove(tester, scene, seen.map((l) => ({ who: l.who, text: l.text })), { elapsedSec: (Date.now() - t0) / 1000, ashTurns: ashLines.length, maxAshTurns: maxAsh, busy: state.busy, stuck: state.stuck, buttons }).catch((error) => ({ action: "invalid", refused: [`tester failed: ${error.message}`] }));
     testerLog({ move });
     if (move.action === "invalid") {
@@ -283,12 +291,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const monoOf = Object.fromEntries((snap?.monos ?? []).filter((m) => m.sessionId).map((m) => [m.sessionId, m.id]));
     const texts = (await ctx.claudeTexts(t0)).map((line) => ({ ...line, who: monoOf[line.session] ?? (workers.has(line.session) ? "worker" : line.session ? `chat ${line.session.slice(0, 8)}` : "app helper call") }));
     const room = roomMessages(events, ctx.roomId, t0);
-    const toAsh = [
+    const toAsh = [];
+    const toAshAll = [
       ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
       // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
       ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
       ...(place.room ? [] : (await appNotices(await placeSession())).map((n) => ({ t: n.t, who: "app", where: "chat", text: n.text }))),
     ].sort((a, b) => a.t - b.t);
+    const shown = dropRoomEchoes(toAshAll);
+    toAsh.length = 0;
+    toAsh.push(...shown);
     const leaks = (ctx.spec.leak ?? []).flatMap((pattern) => [...toAsh, ...texts.filter((l) => l.text)].filter((m) => new RegExp(pattern, "i").test(m.text)).map((m) => ({ pattern, who: m.who, text: m.text.slice(0, 200) })));
     const changes = gitChanges(ctx.project, mark);
     const tests = scene.expect?.projectTests ? projectTests(ctx.project, scene.expect.projectTests, changes.checkouts) : null;
@@ -322,6 +334,17 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 }
 
 /** What a person and the judge read: every line in time order, then the host's facts. */
+/**
+ * A seat's room turn runs in its own chat, so the same words show up as its chat text and as its room post. Ash sees
+ * them once, in the room: the chat copy is dropped.
+ */
+export function dropRoomEchoes(lines) {
+  const key = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const roomPosts = lines.filter((l) => l.where === "room");
+  const echoed = (l) => key(l.text) && roomPosts.some((r) => r.who === l.who && Math.abs(r.t - l.t) < 120_000 && String(r.text).replace(/\s+/g, " ").includes(key(l.text).slice(0, 80)));
+  return lines.filter((l) => l.where !== "chat" || !echoed(l));
+}
+
 /** A copy's new commits since the mark, one line each (what landed on which branch). */
 export function copyLog(folder, mark) {
   if (!mark) return { commits: [] };

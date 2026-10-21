@@ -50,11 +50,13 @@ import {
   QUIET_CEILING_MS,
   reviewChimes,
   roomTranscript,
+  roundOf,
   STALE_POSTS_LIMIT,
   turnPrompt,
   type Chime,
   type Pick,
   type Seat,
+  type Round,
   type TurnKind,
 } from "./roomTurns";
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
@@ -170,6 +172,8 @@ type Wake = {
   batch?: string[];
   seatsSpoke?: number;
   back?: { title: string; answer: string };
+  /** A round every seat answers for itself (Ash's hello, or a question to each of them). */
+  round?: Round;
 };
 type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean };
 /**
@@ -200,6 +204,8 @@ type Thread = {
   spoke: Set<string>;
   /** Seats that already added their one reply to Ash's message. */
   chimed: Set<string>;
+  /** Ash's last message was a round every seat answers (a hello, a question to each): it needs no digest. */
+  round?: Round | null;
   routing: number;
   paused?: { reason: PauseReason; wakes: Wake[] };
 };
@@ -440,6 +446,7 @@ function onAsh(chatId: string, convId: string): boolean {
     return true;
   }
   const pick = answerPick(batch.map((m) => m.text), seats, chat.leadId)!;
+  const round = roundOf(batch.map((m) => m.text ?? "").join("\n"));
   r.pick = pick;
   enqueue(chatId, {
     id: newWakeId(pick.id),
@@ -451,6 +458,7 @@ function onAsh(chatId: string, convId: string): boolean {
     trigger: batch[batch.length - 1].id,
     gen: t.gen,
     batch: batch.map((m) => m.id),
+    ...(round ? { round } : {}),
   });
   pump(chatId);
   return true;
@@ -566,6 +574,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     kind: wake.kind,
     batch: wake.batch?.length,
     other: wake.other,
+    ...(wake.round ? { round: wake.round } : {}),
     seatsSpoke: wake.seatsSpoke,
     back: wake.back,
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
@@ -744,11 +753,28 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
   }
   if (wake?.kind === "answer") {
     const ash = (wake.batch ?? []).map((id) => conv.messages.find((m) => m.id === id)?.text ?? "").join("\n");
-    if (!isShortMessage(ash)) void chimeIn(chatId, convId, message, named, "answer", ash);
+    t.round = roundOf(ash);
+    if (t.round) roundBack(chatId, convId, message, named, t.round);
+    else if (!isShortMessage(ash)) void chimeIn(chatId, convId, message, named, "answer", ash);
   } else if (!named.length && (wake?.kind === "back" || message.pick?.by === "report")) {
     void chimeIn(chatId, convId, message, named, "post", message.text);
   }
   pump(chatId);
+}
+
+/** A round (Ash's hello, or a question to each of them): after the host, every other seat answers once, for itself. */
+function roundBack(chatId: string, convId: string, post: ChatMessage, named: readonly string[], round: Round): void {
+  const r = roomOf(chatId);
+  const t = threadOf(r, convId);
+  const chat = getChat(chatId);
+  if (!chat) return;
+  const seats = seatsOf(chat);
+  const poster = seats.find((s) => s.id === post.from);
+  for (const seat of seats) {
+    if (seat.id === post.from || named.includes(seat.id) || t.chimed.has(seat.id)) continue;
+    t.chimed.add(seat.id);
+    enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId, kind: "chime", by: "chime", why: round === "hello" ? "Ash said hello to the room" : "Ash asked each seat", other: poster?.name, trigger: post.id, gen: t.gen, round });
+  }
 }
 
 /** The chime gate: who else may add something to Ash's message (once each), or must look at work that came back. */
@@ -871,6 +897,11 @@ function settleIfIdle(chatId: string): void {
   const chat = getChat(chatId);
   for (const [convId, t] of r.threads) {
     if (busyIn(r, convId) || t.paused || !chat || t.spoke.size < DIGEST_SEATS || !runner) continue;
+    if (t.round) {
+      // A round every seat answered for itself has nothing to close.
+      t.spoke = new Set();
+      continue;
+    }
     const host = hostOf(seatsOf(chat), chat.leadId);
     const conv = chat.conversations.find((c) => c.id === convId);
     const last = conv?.messages[conv.messages.length - 1];

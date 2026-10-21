@@ -113,6 +113,53 @@ it("a short message gets the host's answer and nobody else's; a bare acknowledge
   expect(last).toMatchObject({ from: "ash", text: "thanks", reactions: { "👍": ["chief-of-staff"] } });
 });
 
+it("Ash's hello gets the host's hello and then each other seat's, once, with no router and no digest", async () => {
+  const { chat, id, said } = await room();
+  const router = vi.fn(async () => '{"chime":[]}');
+  chat.setRoomRouter(router);
+  const script = scripted({
+    "chief-of-staff": "Morning. Nothing new on Tally from me overnight.",
+    "projects-manager": "Morning. Board's at three cards, nothing blocked.",
+    frank: "Morning, Ash.",
+    alfred: "Morning. Team's as it was.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "yo morning");
+  await chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(posts(said(conv))).toHaveLength(4));
+  expect(posts(said(conv))[0]).toBe("chief-of-staff");
+  expect(new Set(posts(said(conv)))).toEqual(new Set(TEAM));
+  expect(router).not.toHaveBeenCalled();
+  const hello = script.calls.find((c) => c.monoId === "frank")!.prompt;
+  expect(hello).toContain("Ash just said hello to the room");
+  expect(hello).not.toContain("You may add ONE short message");
+  await new Promise((r) => setTimeout(r, 20));
+  // Nobody closes a round of hellos with a digest.
+  expect(script.who().filter((w) => w === "chief-of-staff")).toHaveLength(1);
+  // An ask is not a hello: "hey can u check the board" stays the host's alone.
+  const ask = chat.startConversation(id, "hey can u check the board");
+  await chat.requestReply(id, ask);
+  expect(posts(said(ask))).toEqual(["chief-of-staff"]);
+});
+
+it("a question to each of them gets each seat's own answer, the host's for itself only, and no digest", async () => {
+  const { chat, id, said } = await room();
+  const script = scripted({
+    "chief-of-staff": "I set priority and hand work on.",
+    "projects-manager": "I keep the board.",
+    frank: "I check what we say against your words.",
+    alfred: "I gate which Monos exist.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "who's on my team rn n what does each of u actually do");
+  await chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(posts(said(conv))).toHaveLength(4));
+  expect(script.calls[0].prompt).toContain("Answer for yourself only");
+  expect(script.calls.find((c) => c.monoId === "alfred")!.prompt).toContain("Answer for yourself now");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(script.who().filter((w) => w === "chief-of-staff")).toHaveLength(1);
+});
+
 it("@-mentioning a seat, or opening with its name, makes it answer first", async () => {
   const { chat, id, said } = await room();
   const script = scripted({ alfred: "Smallest structure: a skill on CoS, not a new Mono.", frank: "You said Fridays on 14 Oct." });
