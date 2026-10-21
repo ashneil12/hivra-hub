@@ -1,7 +1,7 @@
 // A clean first launch (and every new project) starts with the default team:
 // Chief of Staff, Projects Manager, frank, Alfred. Critiquito is only an
 // add-on offer. Everything else comes via a setup file.
-import { TEAM_SOULS } from "./teamSouls";
+import { teamPack, teamSouls } from "./teamPack";
 
 const ROSTER_KEY = "monocode:mono-roster";
 
@@ -25,7 +25,7 @@ export const TEAM_ADDONS: readonly TeamSpec[] = [{ id: "critiquito", name: "Crit
 
 /** The roster entry a team Mono starts as: its soul rides in `instructions` until SOUL.md is first written. */
 export function teamRosterEntry(spec: TeamSpec, projects: string[] = []) {
-  return { id: spec.id, name: spec.name, ...LOOK, color: COLOR[spec.id] ?? LOOK.color, projects, engine: spec.engine, instructions: TEAM_SOULS[spec.id] };
+  return { id: spec.id, name: spec.name, ...LOOK, color: COLOR[spec.id] ?? LOOK.color, projects, engine: spec.engine, instructions: teamSouls()[spec.id] };
 }
 
 /** Set by the first version of this step, which only seeded an empty roster. */
@@ -95,6 +95,7 @@ export function isMonoRemovedByUser(id: string): boolean {
  */
 export function ensureBuiltInMonos(): number {
   try {
+    teamPack(); // decided before this step's keys exist, so a fresh install is told from an existing one
     const raw = localStorage.getItem(ROSTER_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     const list: Entry[] = Array.isArray(parsed) ? (parsed as Entry[]) : [];

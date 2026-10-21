@@ -96,8 +96,8 @@ for (const { from, source } of versions(FILES.leads)) {
 }
 for (const { from, source } of versions(FILES.team)) {
   try {
-    const { TEAM_SOULS } = load(source);
-    for (const soul of Object.values(TEAM_SOULS ?? {})) for (const text of wrapped(soul)) add(text, "team", from);
+    const { TEAM_SOULS, PLAIN_SOULS } = load(source);
+    for (const soul of [...Object.values(TEAM_SOULS ?? {}), ...Object.values(PLAIN_SOULS ?? {})]) for (const text of wrapped(soul)) add(text, "team", from);
   } catch (e) {
     problems.push(`${FILES.team} @ ${from}: ${e.message}`);
   }

@@ -1,4 +1,4 @@
-// The leadership team's souls, seeded once into each built-in Mono's SOUL.md (and its starting MEMORY.md), after which
+// Ash's own team (an optional pre-load since G5, teamPack.ts) and the plain pack. The leadership team's souls, seeded once into each built-in Mono's SOUL.md (and its starting MEMORY.md), after which
 // Ash edits them like any other Mono's. Alfred's slim souls (21 Oct, /workspace/hub-scenarios/slim-souls): a name and
 // what it owns, no tone rules. setupSouls.ts reads the first line under "## Role" and the bullets under "## Skills", so
 // every soul keeps both.
@@ -108,6 +108,20 @@ export const TEAM_SOULS: Readonly<Record<string, string>> = {
   frank: FRANK,
   alfred: ALFRED,
   critiquito: CRITIQUITO,
+};
+
+const PLAIN = (role: string) => `# Soul
+
+## Role
+${role}
+`;
+/** The plain pack a fresh install starts with (teamPack.ts): one neutral line per seat, by the same ids. */
+export const PLAIN_SOULS: Readonly<Record<string, string>> = {
+  "chief-of-staff": PLAIN("The Mono you talk to first: I work out with you what matters now, hand project work to the right team, and come back with proof."),
+  "projects-manager": PLAIN("I keep one plain board of your asks: who owns each one, what done means, and what's still open."),
+  frank: PLAIN("I check what gets built against what you actually said, and keep the team's shared memory tidy."),
+  alfred: PLAIN("I keep the team small and clear: who exists and what each one owns."),
+  critiquito: PLAIN("Design critic: I check screens and say what you'd trip on, with a fix for each."),
 };
 
 /**

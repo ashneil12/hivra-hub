@@ -8,7 +8,7 @@ import { defaultSoul } from "../../monos/model/monoFiles";
 import { ADDON_OFFER, DEFAULT_TEAM, ensureBuiltInMonos } from "./builtInMonos";
 import { getChat, leadershipChatId } from "./hubChats";
 import { addTeamAddon, noteTeamEngines, seatLeadershipTeams, seedTeamFiles, seatedTeam, tieTeamToProjects } from "./hubTeam";
-import { ROOM_RULES, TEAM_SOULS } from "./teamSouls";
+import { PLAIN_SOULS, ROOM_RULES, TEAM_SOULS } from "./teamSouls";
 import { roleOf, skillsOf } from "./setupSouls";
 import type { HubProject } from "./types";
 
@@ -45,14 +45,14 @@ describe("the team's souls", () => {
     expect(TEAM_SOULS.critiquito).toContain("with a fix for each");
   });
 
-  it("a clean launch's roster carries each soul until SOUL.md is written, and notes the engine (Claude Code)", () => {
+  it("a clean launch's roster carries each (plain) soul until SOUL.md is written, and notes the engine (Claude Code)", () => {
     ensureBuiltInMonos();
     const roster = listMonos();
     expect(roster.map((m) => m.name)).toEqual(DEFAULT_TEAM);
     for (const m of roster) {
       expect(m.engine).toBe("claude");
-      expect(m.instructions).toBe(TEAM_SOULS[m.id]);
-      expect(defaultSoul(m.instructions)).toBe(TEAM_SOULS[m.id]); // a whole soul is kept as it is, not wrapped
+      expect(m.instructions).toBe(PLAIN_SOULS[m.id]); // a fresh install starts plain (teamPack.test.ts)
+      expect(defaultSoul(m.instructions)).toBe(PLAIN_SOULS[m.id]); // a whole soul is kept as it is, not wrapped
     }
   });
 
@@ -137,7 +137,7 @@ describe("Critiquito, the add-on", () => {
   it("ticked, it joins with its soul and engine, works on the project and sits in its Leadership team", () => {
     ensureBuiltInMonos();
     expect(addTeamAddon("critiquito", [PROJECTS[3]])).toBe("critiquito");
-    expect(findMono("critiquito")).toMatchObject({ name: "Critiquito", engine: "claude", projects: ["/p/monocode-hub"], instructions: TEAM_SOULS.critiquito });
+    expect(findMono("critiquito")).toMatchObject({ name: "Critiquito", engine: "claude", projects: ["/p/monocode-hub"], instructions: PLAIN_SOULS.critiquito });
     expect(getChat(leadershipChatId("hub"))?.memberIds).toContain("critiquito");
     expect(addTeamAddon("critiquito", [PROJECTS[1]])).toBe("critiquito"); // again: no second Critiquito
     expect(listMonos().filter((m) => m.id === "critiquito")).toHaveLength(1);
