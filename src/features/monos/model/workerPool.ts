@@ -40,13 +40,6 @@ function read<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
-function write(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* storage full: this launch still holds it */
-  }
-}
 
 let version = 0;
 const listeners = new Set<() => void>();
@@ -63,24 +56,30 @@ export function useWorkerPoolVersion(): number {
 }
 
 // ---- limits ------------------------------------------------------------------------------------------------------
+// Kept in the app database with the queue (worker_queue.rs): every window reads the same ones, and they survive a
+// restart. This window keeps a copy for the synchronous reads and reloads it on every change.
+
+let settingsCopy: { limits: Record<string, Partial<WorkerLimits>>; heavy: Set<string> } = { limits: {}, heavy: new Set() };
 
 const clampCount = (n: unknown, fallback: number) =>
   typeof n === "number" && Number.isFinite(n) ? Math.min(MAX_WORKERS, Math.max(1, Math.round(n))) : fallback;
 
 export function workerLimits(project: string): WorkerLimits {
-  const saved = read<Record<string, Partial<WorkerLimits>>>(LIMITS_KEY, {})[project];
+  const saved = settingsCopy.limits[project];
   const workers = clampCount(saved?.workers, DEFAULT_LIMITS.workers);
   return { workers, heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))) };
 }
 
 /** Saves one project's limits (either part); heavy never exceeds workers. Returns what is now in force. */
 export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits {
-  const all = read<Record<string, Partial<WorkerLimits>>>(LIMITS_KEY, {});
   const now = workerLimits(project);
   const workers = next.workers === undefined ? now.workers : clampCount(next.workers, now.workers);
   const heavy = Math.min(workers, next.heavy === undefined ? now.heavy : clampCount(next.heavy, now.heavy));
-  write(LIMITS_KEY, { ...all, [project]: { workers, heavy } });
+  settingsCopy = { ...settingsCopy, limits: { ...settingsCopy.limits, [project]: { workers, heavy } } };
   changed();
+  void backend
+    .setLimits(project, { workers, heavy })
+    .catch((error: unknown) => console.warn("Could not save the project's worker limits", error));
   return { workers, heavy };
 }
 
@@ -93,12 +92,13 @@ export function limitsLine(projectName: string, limits: WorkerLimits): string {
 
 /** The Lead said this worker's job is heavy (it runs full test suites, e2e or builds). */
 export function markHeavy(childSession: string): void {
-  const all = read<string[]>(HEAVY_KEY, []);
-  if (all.includes(childSession)) return;
-  write(HEAVY_KEY, [...all, childSession].slice(-500));
+  if (settingsCopy.heavy.has(childSession)) return;
+  settingsCopy = { ...settingsCopy, heavy: new Set([...settingsCopy.heavy, childSession]) };
+  changed();
+  void backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error));
 }
 export function isHeavy(childSession: string): boolean {
-  return read<string[]>(HEAVY_KEY, []).includes(childSession);
+  return settingsCopy.heavy.has(childSession);
 }
 
 // ---- what is running ---------------------------------------------------------------------------------------------
@@ -135,6 +135,8 @@ export type QueuedWorker = {
   queuedAt: number;
   /** delegate_task's own input, to start it with exactly as asked. */
   input: Record<string, unknown>;
+  /** A window is starting it until then (its lease); free again after, in its place. From the store only. */
+  claimedUntil?: number;
 };
 
 /**
@@ -150,6 +152,16 @@ export type WorkerQueueBackend = {
   take(id: string): Promise<boolean>;
   /** A queue an older build kept in local storage, imported once; how many were added. */
   importLocal(jobs: QueuedWorker[]): Promise<number>;
+  /** Hold a job while this window starts it (a lease, LEASE_MS); true when this call got it. */
+  claim(id: string, by: string): Promise<boolean>;
+  /** The claimed job started: out of the queue (only the claimant's finish counts). */
+  finish(id: string, by: string): Promise<boolean>;
+  /** Each project's limits, and the workers marked heavy. */
+  settings(): Promise<{ limits: Record<string, Partial<WorkerLimits>>; heavy: string[] }>;
+  setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
+  markHeavy(child: string): Promise<boolean>;
+  /** Limits and the heavy list an older build kept in local storage, imported once. */
+  importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
   /** Any window changed the queue. */
   subscribe?(onChange: () => void): () => void;
 };
@@ -160,6 +172,12 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
   add: (job) => invoke<boolean>("worker_queue_add", { job }),
   take: (id) => invoke<boolean>("worker_queue_take", { id }),
   importLocal: (jobs) => invoke<number>("worker_queue_import_local", { jobs }),
+  claim: (id, by) => invoke<boolean>("worker_queue_claim", { id, by }),
+  finish: (id, by) => invoke<boolean>("worker_queue_finish", { id, by }),
+  settings: () => invoke("worker_settings"),
+  setLimits: (project, limits) => invoke<WorkerLimits>("worker_limits_set", { project, ...limits }),
+  markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
+  importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
     let off: (() => void) | undefined;
     let gone = false;
@@ -174,25 +192,72 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
 };
 export const WORKER_QUEUE_CHANGED = "worker-queue-changed";
 
-/** A store in memory (tests, and a build without the app's database). */
-export function memoryWorkerQueue(initial: QueuedWorker[] = []): WorkerQueueBackend & { jobs: QueuedWorker[]; imported: boolean } {
+/** How long a window has to start a job it claimed (worker_queue.rs LEASE_MS). */
+export const LEASE_MS = 2 * 60_000;
+
+type StoredJob = QueuedWorker & { claimedBy?: string };
+/** A store in memory with worker_queue.rs's rules (tests, and a build without the app's database). */
+export function memoryWorkerQueue(
+  initial: QueuedWorker[] = [],
+  now: () => number = Date.now,
+): WorkerQueueBackend & {
+  jobs: StoredJob[];
+  imported: boolean;
+  limits: Record<string, WorkerLimits>;
+  heavy: string[];
+  importedSettings: boolean;
+  /** What the app does on launch: every claim is free again. */
+  releaseAll(): void;
+} {
+  const notify = () => {
+    for (const l of store.listeners) l();
+  };
   const store = {
-    jobs: [...initial],
+    jobs: initial.map((job) => ({ ...job })) as StoredJob[],
     imported: false,
+    limits: {} as Record<string, WorkerLimits>,
+    heavy: [] as string[],
+    importedSettings: false,
     listeners: new Set<() => void>(),
-    list: async () => store.jobs.map((job) => ({ ...job })),
+    list: async () =>
+      store.jobs.map(({ claimedBy: _by, claimedUntil, ...job }) => ({
+        ...job,
+        ...(claimedUntil && claimedUntil > now() ? { claimedUntil } : {}),
+      })),
     add: async (job: QueuedWorker) => {
       if (store.jobs.some((q) => q.id === job.id)) return false;
-      store.jobs.push({ ...job });
-      for (const l of store.listeners) l();
+      const { claimedUntil: _c, ...plain } = job;
+      store.jobs.push(plain);
+      notify();
       return true;
     },
     take: async (id: string) => {
       const before = store.jobs.length;
       store.jobs = store.jobs.filter((q) => q.id !== id);
       if (store.jobs.length === before) return false;
-      for (const l of store.listeners) l();
+      notify();
       return true;
+    },
+    claim: async (id: string, by: string) => {
+      const job = store.jobs.find((q) => q.id === id);
+      if (!job || (job.claimedUntil && job.claimedUntil > now())) return false;
+      job.claimedUntil = now() + LEASE_MS;
+      job.claimedBy = by;
+      notify();
+      return true;
+    },
+    finish: async (id: string, by: string) => {
+      const before = store.jobs.length;
+      store.jobs = store.jobs.filter((q) => !(q.id === id && q.claimedBy === by));
+      if (store.jobs.length === before) return false;
+      notify();
+      return true;
+    },
+    releaseAll: () => {
+      for (const job of store.jobs) {
+        delete job.claimedUntil;
+        delete job.claimedBy;
+      }
     },
     importLocal: async (jobs: QueuedWorker[]) => {
       if (store.imported) return 0;
@@ -202,6 +267,28 @@ export function memoryWorkerQueue(initial: QueuedWorker[] = []): WorkerQueueBack
         if (job && typeof job.id === "string" && job.id && (await store.add(job))) added++;
       return added;
     },
+    settings: async () => ({ limits: { ...store.limits }, heavy: [...store.heavy] }),
+    setLimits: async (project: string, limits: WorkerLimits) => {
+      const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
+      store.limits[project] = { workers, heavy: Math.min(workers, clampCount(limits.heavy, DEFAULT_LIMITS.heavy)) };
+      notify();
+      return store.limits[project];
+    },
+    markHeavy: async (child: string) => {
+      if (store.heavy.includes(child)) return false;
+      store.heavy = [...store.heavy, child].slice(-500);
+      notify();
+      return true;
+    },
+    importLocalSettings: async (limits: Record<string, Partial<WorkerLimits>>, heavy: string[]) => {
+      if (store.importedSettings) return false;
+      store.importedSettings = true;
+      for (const [project, value] of Object.entries(limits ?? {}))
+        if (!store.limits[project] && typeof value?.workers === "number")
+          await store.setLimits(project, { workers: value.workers, heavy: value.heavy ?? DEFAULT_LIMITS.heavy });
+      for (const child of heavy ?? []) if (typeof child === "string") await store.markHeavy(child);
+      return true;
+    },
     subscribe: (onChange: () => void) => {
       store.listeners.add(onChange);
       return () => store.listeners.delete(onChange);
@@ -209,6 +296,9 @@ export function memoryWorkerQueue(initial: QueuedWorker[] = []): WorkerQueueBack
   };
   return store;
 }
+
+/** This window, as a claimant: a claim it left behind is never mistaken for another window's. */
+const windowId = `window-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 
 let backend: WorkerQueueBackend = memoryWorkerQueue();
 let unsubscribe: (() => void) | undefined;
@@ -220,6 +310,7 @@ export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   unsubscribe?.();
   backend = next;
   copy = [];
+  settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
   return loadWorkerQueue();
@@ -246,6 +337,20 @@ export function loadWorkerQueue(): Promise<void> {
         /* none */
       }
     }
+    const limits = read<Record<string, Partial<WorkerLimits>> | null>(LIMITS_KEY, null);
+    const heavy = read<string[] | null>(HEAVY_KEY, null);
+    if (limits || heavy) {
+      try {
+        await backend.importLocalSettings(
+          limits && typeof limits === "object" ? limits : {},
+          Array.isArray(heavy) ? heavy.filter((id) => typeof id === "string") : [],
+        );
+        localStorage.removeItem(LIMITS_KEY);
+        localStorage.removeItem(HEAVY_KEY);
+      } catch (error) {
+        console.warn("Could not move the worker limits into the app's store yet", error);
+      }
+    }
     await refreshWorkerQueue();
   })();
   return loading;
@@ -254,12 +359,31 @@ export function loadWorkerQueue(): Promise<void> {
 /** Read the store again (another window changed it). */
 export async function refreshWorkerQueue(): Promise<void> {
   try {
-    copy = await backend.list();
+    const [jobs, settings] = await Promise.all([backend.list(), backend.settings()]);
+    copy = jobs;
+    settingsCopy = { limits: settings.limits ?? {}, heavy: new Set(settings.heavy ?? []) };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
     return;
   }
   changed();
+}
+
+/** Hold a job while this window starts it. */
+export function claimWorker(id: string): Promise<boolean> {
+  return backend.claim(id, windowId).catch(() => false);
+}
+/** It started (or its start was refused): out of the queue, if this window still holds it. */
+export function finishWorker(id: string): Promise<boolean> {
+  if (copy.some((q) => q.id === id)) {
+    copy = copy.filter((q) => q.id !== id);
+    changed();
+  }
+  return backend.finish(id, windowId).catch(() => false);
+}
+/** Being started by some window right now (its lease hasn't run out). */
+export function isClaimed(job: QueuedWorker, now = Date.now()): boolean {
+  return !!job.claimedUntil && job.claimedUntil > now;
 }
 
 export function queuedWorkers(): QueuedWorker[] {
@@ -349,8 +473,10 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     const load = loads.get(job.project) ?? projectLoad(job.project, ctx.rows, ctx.heavy);
     loads.set(job.project, load);
     const limits = (ctx.limits ?? workerLimits)(job.project);
-    if (!decide(job, load, limits, ctx.room(job.harness)).start) continue;
-    start.push(job);
+    // Another window is starting it: it takes its place, but isn't this window's to start.
+    const claimed = isClaimed(job);
+    if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
+    if (!claimed) start.push(job);
     loads.set(job.project, { running: load.running + 1, heavy: load.heavy + (job.heavy ? 1 : 0) });
   }
   return start;
@@ -433,6 +559,7 @@ export function resetWorkerPool(): void {
   unsubscribe = undefined;
   backend = memoryWorkerQueue();
   copy = [];
+  settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   changed();
 }
@@ -504,12 +631,18 @@ export async function pumpWorkers(deps: {
   for (const job of ready) {
     startingNow.add(job.id);
     try {
-      // Claimed first: of two windows starting it, only the one that took it out of the store does.
-      if (!(await dequeueWorker(job.id))) continue;
-      await deps.start(job);
-      started.push(job);
-    } catch (error) {
-      deps.failed?.(job, error);
+      // Claimed first, for a lease: of two windows only one starts it, and if this one dies before it has, the job is
+      // free again when the lease runs out (or on the next launch), in its place. Starting is idempotent
+      // (agentAppTasks.ts delegate: a task already recorded for the request is never started again).
+      if (!(await claimWorker(job.id))) continue;
+      try {
+        await deps.start(job);
+        started.push(job);
+      } catch (error) {
+        deps.failed?.(job, error);
+      }
+      // Started, or refused for good: either way it no longer waits.
+      await finishWorker(job.id);
     } finally {
       startingNow.delete(job.id);
     }
@@ -520,6 +653,8 @@ export async function pumpWorkers(deps: {
 /** When a waiting worker might start without any row changing: the soonest provider reset among the waiting. */
 export function nextWake(room: (harness: string) => ProviderRoom, now: number): number | undefined {
   const times = queuedWorkers().flatMap((job) => {
+    // A claim that runs out frees its job.
+    if (job.claimedUntil && job.claimedUntil > now) return [job.claimedUntil];
     const r = room(job.harness);
     return !r.room && r.until && r.until > now ? [r.until] : [];
   });
