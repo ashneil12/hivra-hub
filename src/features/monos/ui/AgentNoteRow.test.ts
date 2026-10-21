@@ -104,7 +104,7 @@ describe("the row", () => {
 
   it("with no chat to open, it is plain text: no link at all", () => {
     render(createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, target: null }) }));
-    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('StuckWorker "Example: fix the save bug" got stuck');
+    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('Worker "Example: fix the save bug" got stuck');
     expect(container.querySelector("button")).toBeNull();
   });
 });
@@ -127,8 +127,8 @@ describe("the fold", () => {
   });
 });
 
-describe("the Stuck ring (round 22)", () => {
-  it("a stuck note carries Today's red Stuck ring; routine notes don't, and the words stay muted", () => {
+describe("the Stuck ring (rounds 22-23)", () => {
+  it("a stuck note carries Today's red Stuck ring, ring only with the accessible name 'Stuck'; routine notes don't", () => {
     render(createElement("div", null,
       createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, line: "Example: the test save file is missing" }) }),
       createElement(AgentNoteRow, { note: note() }),
@@ -137,11 +137,16 @@ describe("the Stuck ring (round 22)", () => {
     ));
     const rows = [...container.querySelectorAll<HTMLElement>("[data-agent-note]")];
     const [stuck, ...routine] = rows;
-    // Today's own mark (StatusMark → CircleWord): the red circle and the grey word.
-    const ring = stuck.querySelector("[data-agent-note-ring] [data-hub-circle=red]")!;
+    // Today's own mark (StatusMark → CircleWord), ring only: the red circle, no visible word, named "Stuck".
+    const ring = stuck.querySelector<HTMLElement>("[data-agent-note-ring] [data-hub-circle=red]")!;
     expect(ring).not.toBeNull();
     expect(ring.querySelector("circle")!.getAttribute("stroke")).toBe("rgb(239 68 68)");
-    expect(ring.textContent).toBe("Stuck");
+    expect(ring.getAttribute("role")).toBe("img");
+    expect(ring.getAttribute("aria-label")).toBe("Stuck");
+    expect(ring.textContent).toBe("");
+    // The line says stuck once.
+    expect(stuck.textContent).toBe('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');
+    expect(stuck.textContent!.match(/stuck/gi)).toHaveLength(1);
     expect(stuck.className).toContain("text-content/50");
     expect(stuck.className).not.toMatch(/red|rounded|bg-|border|shadow/);
     expect(stuck.getAttribute("aria-label")).toBe('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');

@@ -15,7 +15,7 @@ test("a stuck note has Today's red Stuck ring; routine notes don't", async ({ pa
   const stuck = page.locator('[data-agent-note="stuck"]');
   await expect(stuck).toBeVisible({ timeout: 60_000 });
   const ring = stuck.locator("[data-agent-note-ring] [data-hub-circle=red]");
-  await expect(ring).toHaveText("Stuck");
+  await expect(ring).toHaveAttribute("aria-label", "Stuck"); // round 23: ring only, the word is its accessible name
   await expect(ring.locator("circle")).toHaveAttribute("stroke", "rgb(239 68 68)");
   // The rest of the row stays muted grey.
   const color = await stuck.evaluate((el) => getComputedStyle(el.querySelector("[data-agent-note-ring] + span")!).color);
