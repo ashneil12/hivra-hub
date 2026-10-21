@@ -25,7 +25,11 @@ test.beforeAll(async () => {
 test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
+// Ash's saved look on Chief of Staff: the green crab, picked on purpose; the rest of the team is filled in as usual.
+const ASH_COS = { id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] };
+
 async function open(page: Page) {
+  await page.addInitScript((cos) => localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos])), ASH_COS);
   await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
@@ -98,7 +102,7 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
 });
 
-test("G4 tiles: Ash's old creatures by default (robots for the team, CoS amber; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
+test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps his picked green crab; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
   const tile = (name: string) => rail.locator(`button[aria-label^="${name},"] svg.pixel-mascot`).first();
@@ -111,13 +115,28 @@ test("G4 tiles: Ash's old creatures by default (robots for the team, CoS amber; 
   expect(await tile("frank").innerHTML()).toBe(robot);
   expect(await tile("Alfred").innerHTML()).toBe(robot);
   expect(await fills("Nibbii lead")).not.toBe(await fills("Projects Manager"));
-  // The Leads all look different; Chief of Staff is the amber robot, like the Nibbii lead was before 15 Oct.
-  const faces = await Promise.all(["EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
-  expect(new Set(faces).size).toBe(4);
-  expect(await tile("Chief of Staff").innerHTML()).toBe(await tile("Nibbii lead").innerHTML());
+  // Chief of Staff and the Leads all look different (CoS wears Ash's picked green crab).
+  const faces = await Promise.all(["Chief of Staff", "EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
+  expect(new Set(faces).size).toBe(5);
+  // Each status dot sits just off its tile: it touches none of the creature's pixels and stays inside its row.
+  const clear = await rail.locator("button[aria-label][title]").evaluateAll((buttons) =>
+    buttons
+      .filter((b) => b.querySelector("svg.pixel-mascot") && b.querySelector("[data-mono-dot]"))
+      .map((b) => {
+        const dot = b.querySelector("[data-mono-dot]")!.getBoundingClientRect();
+        const row = (b.closest(".reorder-item") as HTMLElement).getBoundingClientRect();
+        const hits = [...b.querySelectorAll("svg.pixel-mascot rect")].some((r) => {
+          const p = r.getBoundingClientRect();
+          return p.width && p.height && p.left < dot.right && p.right > dot.left && p.top < dot.bottom && p.bottom > dot.top;
+        });
+        return !hits && dot.top >= row.top && dot.bottom <= row.bottom;
+      }),
+  );
+  expect(clear.length).toBeGreaterThan(7);
+  expect(new Set(clear)).toEqual(new Set([true]));
   const looks = await page.evaluate(() => Object.fromEntries((JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; mascot: string; color: string }[]).map((m) => [m.id, `${m.mascot} ${m.color}`])));
   expect(looks).toMatchObject({
-    "chief-of-staff": "robot hsl(45 90% 55%)",
+    "chief-of-staff": "crab hsl(142 55% 50%)",
     "projects-manager": "robot hsl(210 8% 58%)",
     frank: "robot hsl(210 8% 58%)",
     alfred: "robot hsl(210 8% 58%)",

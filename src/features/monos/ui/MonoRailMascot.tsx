@@ -42,7 +42,8 @@ export function MonoRailMascot({
         status={status}
         color={color}
         tone={tone}
-        className="-top-0.5 -right-0.5 size-1.5"
+        // Just off the tile's top-right corner, so it never cuts into the creature (Critiquito, 21 Oct).
+        className="-top-1.5 -right-1.5 size-1.5"
       />
     </span>
   );
