@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { monoRole } from "../../monos/model/mono";
 import { promptSurfaces } from "./promptSurfaces.testkit";
 import { roomTranscript } from "./roomTurns";
-import { previewTeamPack, setTeamPack } from "./teamPack";
+import { setTeamPack } from "./teamPack";
 import { forUser, forYou, setUserName, userLabel, userName } from "./userName";
 
 const BEFORE: Record<string, string> = BEFORE_JSON;
@@ -24,7 +24,6 @@ const storage = () => Object.fromEntries(Object.keys(localStorage).sort().map((k
 
 beforeEach(() => {
   localStorage.clear();
-  previewTeamPack(undefined);
 });
 
 describe("Ash's install", () => {
@@ -93,16 +92,12 @@ describe("a fresh install", () => {
   });
 });
 
-describe("the sidebar's role lines follow the team picked", () => {
-  it("plain lines on a fresh install and while plain is picked; Ash's with his team", () => {
-    const cos = { id: "chief-of-staff" };
-    expect(monoRole(cos)).toBe("Talks with you first");
-    previewTeamPack("ash");
-    expect(monoRole(cos)).toBe("Business partner");
-    previewTeamPack("plain");
-    expect(monoRole(cos)).toBe("Talks with you first");
-    previewTeamPack(undefined);
+describe("the role line under each name (G4)", () => {
+  it("is the same on a fresh install and on Ash's", () => {
+    const lines = () => ["chief-of-staff", "projects-manager", "frank", "alfred", "critiquito"].map((id) => monoRole({ id }));
+    const fresh = lines();
+    expect(fresh).toEqual(["Business partner", "Screens and board", "Memory and checks", "Team setup", "Design review"]);
     localStorage.setItem("monocode:mono-team-seeded", "1");
-    expect(monoRole(cos)).toBe("Business partner");
+    expect(lines()).toEqual(fresh);
   });
 });

@@ -2706,8 +2706,8 @@ export function InboxDetail({
           }`}
         >
           <div
-            className={`mx-auto flex w-full max-w-5xl flex-col ${
-              panel ? "gap-2 px-4 pt-4" : "gap-2.5 px-8 pt-5"
+            className={`flex w-full flex-col ${
+              panel ? "gap-2 px-4 pt-4" : "gap-2.5 px-6 pt-5 xl:px-8"
             } ${isPr ? "" : panel ? "pb-4" : "pb-5"}`}
           >
             <header className={`flex flex-col ${panel ? "gap-2" : "gap-2.5"}`}>
@@ -2980,8 +2980,8 @@ export function InboxDetail({
           }
         >
           <div
-            className={`mx-auto flex w-full max-w-5xl flex-col ${
-              panel ? "gap-6 px-4 py-5" : "gap-5 px-8 py-5"
+            className={`flex w-full flex-col ${
+              panel ? "gap-6 px-4 py-5" : "gap-5 px-6 py-5 xl:px-8"
             }`}
           >
             {item.labels.length > 0 ? (

@@ -665,7 +665,7 @@ export function SettingsView({
             ref={lockOverscroll}
             className="@container/settings min-h-0 flex-1 overflow-y-auto overscroll-none"
           >
-            <div className="mx-auto w-full max-w-5xl px-5 py-6 pb-16 @min-[560px]/settings:px-8 @min-[560px]/settings:py-8">
+            <div className="w-full px-5 py-6 pb-16 @min-[560px]/settings:px-8 @min-[560px]/settings:py-8">
               <PageHeader
                 title={settingsSectionLabel(section)}
                 description={settingsSectionDescription(section)}

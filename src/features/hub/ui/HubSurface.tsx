@@ -232,7 +232,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
     : null;
   return (
-    <div className="mx-auto flex max-w-[720px] flex-col gap-6 px-8 py-8">
+    <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
       {!projectId ? <HomeTools /> : null}
       {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">

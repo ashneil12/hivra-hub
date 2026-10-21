@@ -2,7 +2,6 @@ import { Fragment } from "react";
 import { StuckMark } from "../../features/monos/ui/SubChatList";
 import { dismissWaitingSoul, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
-import { useTeamPackVersion } from "../../features/hub/model/teamPack";
 import {
   useEffect,
   useMemo,
@@ -152,7 +151,6 @@ export function MonoRailSection({
     [delegationRows],
   );
   useRoleNamesVersion();
-  useTeamPackVersion();
   useWaitingSoulsVersion();
   const waiting = rank ? waitingSouls() : [];
   // Why OK on a waiting Mono couldn't finish (a file it couldn't read, or a failure), by Mono id: it keeps waiting.

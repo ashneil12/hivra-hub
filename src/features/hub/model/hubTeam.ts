@@ -7,9 +7,7 @@ import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "
 import { clearMonoRemovedByUser, teamRosterEntry, teamSpecOf, TEAM_ADDONS } from "./builtInMonos";
 import { addMember, ensureLeadership, seatDefaultTeam } from "./hubChats";
 import { isGlobalProject } from "./hubProjects";
-import { setTeamPack, startingMemory, teamSouls } from "./teamPack";
-import { PLAIN_SOULS, teamMemorySeed, TEAM_SOULS } from "./teamSouls";
-import { writeSoulFiles } from "./setupSouls";
+import { startingMemory, teamSouls } from "./teamPack";
 import type { HubProject } from "./types";
 
 type Read = (monoId: string, path: AgentFilePath) => Promise<{ text: string | null; hash: string }>;
@@ -135,33 +133,4 @@ export function noteTeamEngines(): string[] {
     noted.push(mono.id);
   }
   return noted;
-}
-
-/**
- * The optional pre-load (G5): Ash's own team (teamSouls.ts) over the plain one, written the way a setup import writes a
- * Mono's files (setupSouls.writeSoulFiles). A soul still as the app seeded it (missing, the empty stub or the plain one)
- * takes his; a soul someone wrote is kept. Memory is written only where it is empty. From then on the team follows his
- * souls, soul refresh included. Returns the ids whose soul it wrote.
- */
-export async function preloadAshTeam(read: Read = readAgentFile, write: Write = writeAgentFile): Promise<string[]> {
-  setTeamPack("ash");
-  const wrote: string[] = [];
-  for (const { id, specId } of seatedTeam()) {
-    let current: string | null;
-    try {
-      current = (await read(id, "SOUL.md")).text;
-    } catch {
-      continue; // can't be read: left as it is
-    }
-    const seeded = [defaultSoul(), defaultSoul(PLAIN_SOULS[specId])].map((t) => t.trim());
-    const untouched = current == null || seeded.includes(current.trim());
-    const soul = await writeSoulFiles(id, [["SOUL.md", defaultSoul(TEAM_SOULS[specId])]], { read, write, replace: untouched });
-    const memory = teamMemorySeed(specId);
-    if (memory) await writeSoulFiles(id, [["MEMORY.md", memory]], { read, write });
-    if (soul.written.length) {
-      updateMono(id, (mono) => ({ ...mono, instructions: "" }));
-      wrote.push(id);
-    }
-  }
-  return wrote;
 }

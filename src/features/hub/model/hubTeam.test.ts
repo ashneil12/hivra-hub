@@ -45,10 +45,10 @@ describe("the team's souls", () => {
     expect(TEAM_SOULS.critiquito).toContain("with a fix for each");
   });
 
-  it("a clean launch's roster carries each (plain) soul until SOUL.md is written, and notes the engine (Claude Code)", () => {
+  it("a clean launch's roster carries each shipped soul until SOUL.md is written, and notes the engine (Claude Code)", () => {
     ensureBuiltInMonos();
     const roster = listMonos();
-    expect(roster.map((m) => m.name)).toEqual(DEFAULT_TEAM);
+    expect(roster.map((m) => m.name)).toEqual([...DEFAULT_TEAM, "Critiquito"]); // the whole leadership team (Ash 21 Oct)
     for (const m of roster) {
       expect(m.engine).toBe("claude");
       expect(m.instructions).toBe(PLAIN_SOULS[m.id]); // a fresh install starts plain (teamPack.test.ts)
@@ -85,7 +85,7 @@ describe("the team's souls", () => {
     const failing = vi.fn(async () => { throw new Error("no backend"); });
     expect(await seedTeamFiles(failing, failing)).toEqual([]);
     const f = files();
-    expect((await seedTeamFiles(f.read, f.write)).sort()).toEqual([...TEAM_IDS].sort());
+    expect((await seedTeamFiles(f.read, f.write)).sort()).toEqual([...TEAM_IDS, "critiquito"].sort());
   });
 
   it("team Monos made before engines were noted get Claude Code once; Ash's later change stays", () => {
@@ -104,11 +104,11 @@ describe("the team reaches every project", () => {
     ensureBuiltInMonos();
     const register = vi.fn(async () => undefined);
     const tied = tieTeamToProjects([...PROJECTS, GLOBAL_ASH], register);
-    expect(tied).toHaveLength(16);
+    expect(tied).toHaveLength(20);
     for (const id of TEAM_IDS) expect(findMono(id)?.projects).toEqual(PROJECTS.map((p) => p.folder));
     expect(register.mock.calls.some(([, project]) => project === "ash")).toBe(false);
     expect(register).toHaveBeenCalledWith("chief-of-staff", "hub");
-    expect(seatedTeam().map((t) => t.id)).toEqual(TEAM_IDS);
+    expect(seatedTeam().map((t) => t.id)).toEqual([...TEAM_IDS, "critiquito"]);
   });
 
   it("a project Ash takes off a team Mono stays off", () => {
@@ -128,10 +128,16 @@ describe("the team reaches every project", () => {
 });
 
 describe("Critiquito, the add-on", () => {
-  it("is offered for its real lane, ranked design critique, and starts unticked (never on a clean launch)", () => {
+  it("is offered for its real lane, ranked design critique; on Ash's install it starts unticked (never added by a launch)", () => {
     expect(ADDON_OFFER).toEqual({ id: "critiquito", name: "Critiquito", what: "reviews how each screen looks and reads, and ranks the fixes" });
+    localStorage.setItem("monocode:hub-team-pack", "ash");
     ensureBuiltInMonos();
     expect(listMonos().some((m) => m.id === "critiquito")).toBe(false);
+  });
+
+  it("is part of a fresh install's team (Ash 21 Oct: the default team is the leadership team)", () => {
+    ensureBuiltInMonos();
+    expect(findMono("critiquito")).toMatchObject({ name: "Critiquito", instructions: PLAIN_SOULS.critiquito });
   });
 
   it("ticked, it joins with its soul and engine, works on the project and sits in its Leadership team", () => {
