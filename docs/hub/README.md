@@ -10,6 +10,7 @@ For the Monos and chats running inside the hub. Read the part you need; the tool
 
 ## Handing work off
 - `delegate_task` starts a worker; say in a line what you started and end your turn. Its report comes back to you as a `[MonoCode report]` turn, even after the app restarts. Its questions come as `[MonoCode question]`; answer with `task_answer`.
+- A worker that is stuck or asks something only Ash can answer is yours to coordinate: ask Ash in your own chat, then pass his answer on with `task_answer`. Ash shouldn't have to open a worker's chat, and its questions never go to Chief of Staff.
 - `task_status` reads progress and results, `task_wait` blocks on a short job, `task_cancel` stops a task and everything under it.
 - About once an hour the app asks you to look at a worker that's been running an hour or more. Check it's really moving (commits, changed files, passing tests); if not, stop, split or retry it (`redoes`).
 - `pr_watch` wakes you when a pull request you opened needs you.
