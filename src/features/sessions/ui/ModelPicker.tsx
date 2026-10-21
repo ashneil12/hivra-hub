@@ -402,7 +402,7 @@ export function ModelPicker({
   const current = source.resolve(harness, model);
   currentRef.current = current;
   // On the Grok bridge every Claude model it names runs as Grok 4.7, so the menus list only that (BridgeModelList).
-  const bridged = onGrokBridge(current.harness);
+  const bridged = onGrokBridge(current.harness, current.id);
   const settings = useMemo(() => {
     void catalogVersion;
     // In beside-picker mode every option row renders as a toolbar pill, so the
@@ -513,7 +513,7 @@ export function ModelPicker({
   const openRecentMenu = () => {
     const selected = currentRef.current;
     if (!selected) return;
-    if (onGrokBridge(selected.harness)) {
+    if (onGrokBridge(selected.harness, selected.id)) {
       // Recent Claude models would all run the same model on the bridge: open the one-entry list instead.
       setOpen(true);
       return;
@@ -811,7 +811,7 @@ export function ModelPicker({
         title={
           triggerLabel
             ? // On the Grok bridge the Claude model it names isn't what runs, so the tooltip doesn't name it either.
-              onGrokBridge(current.harness)
+              onGrokBridge(current.harness, current.id)
               ? triggerLabel
               : `${triggerLabel} · ${triggerTitle}`
             : cycle

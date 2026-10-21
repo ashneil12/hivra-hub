@@ -5,7 +5,8 @@
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { importCustomModels, listCustomModels, type CustomModel } from "../../sessions/model/customModels";
-import { listMonos, type Mono } from "../../monos/model/mono";
+import { listMonos, removeMono, type Mono } from "../../monos/model/mono";
+import { adoptRemovedByUser, monoDeletedByUser, REMOVED_BY_USER_KEY, teamIdOf } from "../../hub/model/builtInMonos";
 import { allKeptPages, importPages, type Page } from "../../pages/model/pages";
 import { addConnectors, allConnectors, type Connector } from "../../hub/model/connectors";
 import { exportChats, importChats } from "../../hub/model/hubChats";
@@ -206,7 +207,8 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
       newConversations: fromFile?.conversations.filter((c) => !have.has(c.id)).length ?? 0,
     };
   });
-  const keys = Object.keys(doc.settings);
+  // The deleted-Monos list is merged on its own (applyImport), never offered as a setting to replace.
+  const keys = Object.keys(doc.settings).filter((k) => k !== REMOVED_BY_USER_KEY);
   const add = keys.filter((k) => here.setting(k) === null);
   const differ = keys.filter((k) => here.setting(k) !== null && here.setting(k) !== doc.settings[k]);
   return {
@@ -273,7 +275,8 @@ export function defaultChoices(plan: Plan): Choices {
   const ws = plan.workspace;
   return {
     projects: ids(plan.projects, (x) => x.state === "new", (x) => x.project.id),
-    monos: ids(plan.monos, (x) => x.state !== "waiting", (x) => x.mono.id),
+    // A Mono Ash deleted here isn't ticked when an older export still has it (A10: deleted Monos stay deleted).
+    monos: ids(plan.monos, (x) => x.state !== "waiting" && !(x.state === "new" && monoDeletedByUser(x.mono)), (x) => x.mono.id),
     replaceSouls: new Set(),
     teams: ids(plan.teams, () => true, (x) => x.team.id),
     connectors: ids(plan.connectors, (x) => x.state === "new", (x) => x.connector.id),
@@ -494,6 +497,16 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
         ? forYou`${plural(newProjects.length, "project")} added to Ash OS.`
         : `${plural(newProjects.length, "project")} added${registered ? forYou` (${registered} to Ash OS, the rest on this Mac's list until Ash OS takes them)` : forYou(" to this Mac's list; Ash OS wasn't reachable to take them")}.`,
     );
+  }
+
+  // A10: Monos Ash deleted stay deleted. The export's deleted list joins this Mac's, and a default-team Mono this copy
+  // seeded on its first launch (never talked to, and not in the export) is taken back off.
+  const deletedRaw = doc.settings[REMOVED_BY_USER_KEY];
+  if (typeof deletedRaw === "string") {
+    const deleted = adoptRemovedByUser(deletedRaw);
+    const inFile = new Set(doc.monos.map((m) => m.id));
+    for (const m of listMonos())
+      if (!inFile.has(m.id) && !m.sessionId && deleted.has(teamIdOf(m) ?? m.id.toLowerCase())) removeMono(m.id);
   }
 
   // Monos: never seated by a file. New ones wait for Ash's OK; ones already here gain only what they lack.

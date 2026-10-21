@@ -1,5 +1,5 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
-import { shownModelName } from "../../integrations/harness/providers/claude/claudeGrokBridge";
+import { chatOnGrokBridge, shownModelName } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   type WorktreeFocus,
   inWorktreeFocus,
@@ -5194,7 +5194,7 @@ export const SessionCard = memo(function SessionCard({
   const model =
     compact && !orchestrationExpanded
       ? null
-      : shownModelName(session.harness, resolveModel(session.harness, session.model).name);
+      : shownModelName(session.harness, resolveModel(session.harness, session.model).name, chatOnGrokBridge({ model: session.model }));
   // The footer line holds the branch, the work item and the hover archive button. With no branch or work item to show
   // it would be an empty band between this row and its sub-chats' fold, so the archive button moves up to take the
   // time's place on hover, as in the dense list.

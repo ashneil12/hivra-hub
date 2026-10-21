@@ -4,13 +4,12 @@
 // saves a model whose key it saved). Without one they start on the usual default, and the project's options say so.
 // A project's own provider default always wins (models.ts folderDefaultChoice).
 //
-// The Grok bridge: a custom model runs through Claude Code with the hub's router (claude.ts customModelRoute). On the
-// Grok bridge (claudeGrokBridge.ts) every Claude Code process is started with GROK_BRIDGE_MODEL (grok-4.7) and no
-// route, so a coding-team chat set to DeepSeek still RUNS on Grok 4.7 there; its model line already says "Grok 4.7"
-// (modelInUseLabel). The DeepSeek default takes effect wherever provider choice is honoured: Claude Code off the
-// bridge (the normal CLI with the router). The project's options line names this case.
+// The Grok bridge (Ash, 21 Oct 21:03: both Claude Code on Grok 4.7 AND the DeepSeek default): a custom model runs
+// through Claude Code with the hub's router (claude.ts customModelRoute). A chat on a non-Grok Other model leaves the
+// bridge (claudeGrokBridge.ts routedOffBridge): it starts on the plain `claude` with the router and DeepSeek's own key,
+// so the DeepSeek default holds on a Mac whose Claude Code runs through the bridge. GROK_BRIDGE_MODEL (grok-4.7) is
+// still forced on every other Claude Code chat: no model chosen (a Claude model), or a Grok model.
 import { pathKey } from "../../../shared/lib/paths";
-import { claudeRunsOnGrok, GROK_BRIDGE_LABEL } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { CUSTOM_MODEL_PREFIX, effortLabel, listCustomModels, type CustomModel } from "../../sessions/model/customModels";
 import { setFolderDefaultChoice, type FolderDefaultChoice } from "../../sessions/model/models";
 import { codingTeamsOn } from "./codingTeam";
@@ -45,10 +44,9 @@ export function installCodingTeamDefault(): void {
 }
 
 /** One plain line for the project's options: which model its coding team starts on, and why. */
-export function codingTeamModelLine(projectName: string, onBridge: boolean = claudeRunsOnGrok()): string {
+export function codingTeamModelLine(projectName: string): string {
   const model = deepSeekModel();
   if (!model)
     return `New ${projectName} coding-team chats use your usual default model: DeepSeek isn't set up yet. Add DeepSeek under Other models and they start on DeepSeek, ${effortLabel(CODING_TEAM_EFFORT)}.`;
-  const line = `New ${projectName} coding-team chats start on ${model.name}, ${effortLabel(CODING_TEAM_EFFORT)}.`;
-  return onBridge ? `${line} While Claude Code runs through the Grok bridge on this Mac, they run on ${GROK_BRIDGE_LABEL} instead.` : line;
+  return `New ${projectName} coding-team chats start on ${model.name}, ${effortLabel(CODING_TEAM_EFFORT)}.`;
 }

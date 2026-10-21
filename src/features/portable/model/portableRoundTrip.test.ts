@@ -418,3 +418,48 @@ it("a fresh copy gets the user's name and the stall minutes back with the rest o
   expect(localStorage.getItem("monocode:hub-user-name")).toBe("Sam");
   expect(localStorage.getItem("monocode:stall-minutes")).toBe("12");
 });
+
+it("A10: deleted Monos stay deleted, after a restart and after an import", async () => {
+  const a = await app();
+  const built = await import("../../hub/model/builtInMonos");
+  built.ensureBuiltInMonos();
+  a.mono.addMono({ id: "scout", name: "Scout", mascot: "crab", color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"] });
+  const ids = (list: { id: string }[]) => list.map((m) => m.id);
+  expect(ids(a.mono.listMonos())).toEqual(expect.arrayContaining(["alfred", "scout"]));
+  const before = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  a.mono.removeMono("alfred");
+  a.mono.removeMono("scout");
+
+  // Restart: the default-team repair runs again and brings back neither.
+  const r = await app();
+  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
+  expect(ids(r.mono.listMonos())).not.toContain("alfred");
+  expect(ids(r.mono.listMonos())).not.toContain("scout");
+  expect(ids(r.mono.listMonos())).toContain("frank");
+
+  // An older export that still has them: imported here, neither is ticked, so neither comes back.
+  const old = { name: "old", path: null, doc: r.doc.setupDocFromFiles(before), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const oldPlan = r.plan.planImport(old);
+  const oldChoices = r.plan.defaultChoices(oldPlan);
+  expect(oldChoices.monos.has("scout")).toBe(false);
+  expect(oldChoices.monos.has("alfred")).toBe(false);
+  await r.plan.applyImport(old, oldPlan, oldChoices);
+  expect(ids(r.mono.listMonos())).not.toContain("alfred");
+  expect((await import("../../hub/model/setupSouls")).waitingSouls().map((s) => s.monoId)).not.toContain("scout");
+
+  // Today's export into a fresh install, whose first launch seeded the default team (Alfred too): Alfred goes again.
+  const files = r.doc.setupDocToFiles(r.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  localStorage.clear();
+  const fresh = await app();
+  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
+  expect(ids(fresh.mono.listMonos())).toContain("alfred");
+  const pending = { name: "x", path: null, doc: fresh.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = fresh.plan.planImport(pending);
+  await fresh.plan.applyImport(pending, plan, fresh.plan.defaultChoices(plan));
+  expect(ids(fresh.mono.listMonos())).not.toContain("alfred");
+  expect(ids(fresh.mono.listMonos())).toContain("frank");
+  // And it stays gone on the fresh copy's next launch.
+  const next = await app();
+  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
+  expect(ids(next.mono.listMonos())).not.toContain("alfred");
+});

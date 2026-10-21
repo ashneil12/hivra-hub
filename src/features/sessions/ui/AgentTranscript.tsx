@@ -1392,8 +1392,9 @@ function AgentTranscriptComponent({
             modelInUseLabel(
               turnHarness,
               turnModel?.name ?? (live ? currentModelName : undefined),
+              turnModel?.id ?? (live ? model : undefined),
             );
-          const markHarness = onGrokBridge(turnHarness) ? undefined : turnHarness;
+          const markHarness = onGrokBridge(turnHarness, turnModel?.id ?? model) ? undefined : turnHarness;
           // The fold line speaks for the main agent only. A delegated run has
           // its own row, which says who is working and how it went, so saying
           // it again here would be two lines telling the same story.

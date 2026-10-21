@@ -274,6 +274,8 @@ export function buildClaudeSpawnArgs(input: {
    * Only for a chat in Full access at launch (claude.ts).
    */
   allowBypass?: boolean;
+  /** This process leaves the Grok bridge (a non-Grok Other model, claudeGrokBridge.ts routedOffBridge): its own model. */
+  offBridge?: boolean;
 }): string[] {
   const args = [
     "--output-format",
@@ -305,7 +307,7 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--settings", JSON.stringify(withHubOffSkills(settings)));
   }
   // Claude Code on Grok 4.7 (claudeGrokBridge.ts): every process asks for Grok 4.7, whatever was picked.
-  const onGrok = claudeRunsOnGrok();
+  const onGrok = claudeRunsOnGrok() && !input.offBridge;
   const model = onGrok ? GROK_BRIDGE_MODEL : input.model;
   const effort = onGrok ? grokBridgeEffort(input.effort) : input.effort;
   if (model) args.push("--model", model);

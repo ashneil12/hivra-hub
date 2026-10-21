@@ -18,7 +18,7 @@ type PickerProps = ComponentProps<typeof ModelPicker>;
 
 export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron" | "noIcon">) {
   const [note, setNote] = useState<string | null>(null);
-  const onGrok = onGrokBridge(props.harness);
+  const onGrok = onGrokBridge(props.harness, props.model);
   useEffect(() => {
     if (!note) return;
     const timer = setTimeout(() => setNote(null), MODEL_NOTE_MS);
