@@ -510,7 +510,7 @@ function NewConversationScreen({
         <div>
           <p className="text-[17px] font-medium text-content">New conversation with {phrase}</p>
           <p className="mt-1 text-[13px] leading-5 text-content/70">Say anything to start. Nothing is saved until you send.</p>
-          <p className="mt-0.5 text-[12px] leading-5 text-content/55">Tap the pencil to name it. + adds a photo or a file.</p>
+          <p className="mt-0.5 text-[12px] leading-5 text-content/60">Tap the pencil to name it. + adds a photo or a file.</p>
         </div>
         <div className="flex flex-wrap justify-center gap-2">
           {starters.map((s) => (
