@@ -216,7 +216,7 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
     away.length ? `${namesList(away)} will answer from ${away.length > 1 ? "their own chats" : "its own chat"}…` : "",
   ].filter(Boolean);
   return (
-    <div className="mx-auto flex h-6 w-full max-w-[760px] shrink-0 items-center gap-3 px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
+    <div className="flex h-6 w-full shrink-0 items-center gap-3 px-6 xl:px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
       {parts.length ? (
         <span className="min-w-0 truncate">{parts.join(" ")}</span>
       ) : strip ? (

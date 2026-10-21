@@ -1,12 +1,10 @@
 // @vitest-environment happy-dom
-// G5: onboarding starts with a plain team; "Pre-load a saved team" is the one way to choose Ash's. It asks what the
-// team should call you, and never says "Ash" on a fresh install.
+// G5: onboarding asks what the team should call you, offers no pre-load (Ash 21 Oct: his team arrives by importing his
+// export, like anyone's), and never says "Ash" on a fresh install.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 
-vi.mock("../model/hubTeam", () => ({ preloadAshTeam: vi.fn(async () => []) }));
-import { preloadAshTeam } from "../model/hubTeam";
 import { HubOnboarding } from "./HubOnboarding";
 import { storedUserName } from "../model/userName";
 
@@ -17,7 +15,6 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  vi.mocked(preloadAshTeam).mockClear();
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -40,21 +37,16 @@ function finish(pick?: string, name?: string) {
   if (name) typeName(name);
   act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
   expect(container.textContent).not.toMatch(/\bAsh\b/);
+  expect(container.textContent).not.toMatch(/pre-load|saved team/i); // step 2: no pre-load offered
   if (pick) act(() => button(pick).click());
   act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
   act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
   act(() => (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click());
 }
 
-it("a plain team is picked to start with, and finishing pre-loads nothing; a skipped name stores none", () => {
+it("offers no pre-load, and a skipped name stores none", () => {
   finish();
-  expect(preloadAshTeam).not.toHaveBeenCalled();
   expect(storedUserName()).toBe("");
-});
-
-it("Pre-load a saved team is a choice, and finishing with it pre-loads Ash's team", () => {
-  finish("Pre-load a saved team");
-  expect(preloadAshTeam).toHaveBeenCalledTimes(1);
 });
 
 it("the name typed is what the team calls you", () => {

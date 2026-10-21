@@ -625,7 +625,7 @@ function AutomationPicker({
       ref={lockOverscroll}
       className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
     >
-      <div className="mx-auto w-full max-w-5xl px-8 pt-5 pb-10">
+      <div className="w-full px-6 pt-5 pb-10 xl:px-8">
         <h1 className="text-[20px] font-semibold leading-tight text-content">
           New automation
         </h1>
@@ -1002,7 +1002,7 @@ function AutomationEditor({
   return (
     <form className="flex min-h-0 min-w-0 flex-1 flex-col" onSubmit={onSubmit}>
       <div className="relative w-full shrink-0 border-b border-stroke">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-2.5 px-8 pt-5">
+        <div className="flex w-full flex-col gap-2.5 px-6 pt-5 xl:px-8">
           <header className="flex flex-col gap-2.5">
             <div className="flex items-start gap-6">
               <input
@@ -1165,7 +1165,7 @@ function AutomationEditor({
         className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
       >
         {!showingHistory ? (
-          <div className="mx-auto w-full max-w-5xl space-y-8 px-8 py-5 pb-10">
+          <div className="w-full space-y-8 px-6 py-5 pb-10 xl:px-8">
             <section>
               <SectionTitle>Triggers</SectionTitle>
               <div className="mt-3 rounded-md border border-content/10">
@@ -1484,7 +1484,7 @@ function AutomationEditor({
             </details>
           </div>
         ) : (
-          <section className="mx-auto w-full max-w-5xl px-8 py-5 pb-10">
+          <section className="w-full px-6 py-5 pb-10 xl:px-8">
             <SectionTitle>Run history</SectionTitle>
             {runs.length > 0 ? (
               <div className="mt-3 overflow-hidden rounded-md border border-content/10">

@@ -359,7 +359,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             }}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-8 py-6 text-[13px] leading-5">
+            <div className="flex w-full flex-col gap-4 px-6 py-6 text-[13px] leading-5 xl:px-8">
               {conv && shown.length ? (
                 shown.map(({ message: msg, live }, index) =>
                   msg.from === "ash" || msg.kind === "notice" || msg.kind === "system" ? (
@@ -375,7 +375,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
                       <RoomMessage chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} live={live}>
-                        <RoomText text={msg.text} className={msg.quiet ? "text-content/85" : "text-content"} />
+                        <RoomText text={msg.text} className={`max-w-[75ch] ${msg.quiet ? "text-content/85" : "text-content"}`} />
                       </RoomMessage>
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;
@@ -405,15 +405,15 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             </div>
           </div>
         )}
-        {drafting ? <div className="mx-auto h-6 w-full max-w-[760px] shrink-0 px-8" /> : <RoomStatusLine chatId={chat.id} convId={conv?.id} nameOf={nameOf} />}
-        {chatSaveProblem() ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-amber-400" data-hub-chat-save-error>
+        {drafting ? <div className="h-6 w-full shrink-0 px-6 xl:px-8" /> : <RoomStatusLine chatId={chat.id} convId={conv?.id} nameOf={nameOf} />}
+        {chatSaveProblem() ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-amber-400 xl:px-8" data-hub-chat-save-error>
           {chatSaveProblem()}
         </div> : null}
-        {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="mx-auto w-full max-w-[760px] px-8 pb-2 text-[12px] text-content/70" data-hub-chat-error>
+        {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-content/70 xl:px-8" data-hub-chat-error>
           {roomPick(chat.id) ? <span data-hub-chat-error-pick={roomPick(chat.id)!.id}>{nameOf(roomPick(chat.id)!.id)} was picked to answer ({roomPick(chat.id)!.why}). </span> : null}
           {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>
         </div> : null}
-        <div className="mx-auto w-full max-w-[760px] shrink-0 px-8 pb-3">
+        <div className="w-full shrink-0 px-6 pb-3 xl:px-8">
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
             name={chatPhrase(chat)}

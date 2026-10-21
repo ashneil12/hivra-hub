@@ -76,7 +76,7 @@ export function BuildsView({ projectId, title }: { projectId: string; title: str
 function BuildList({ builds, onOpen }: { builds: Build[]; onOpen: (id: string) => void }) {
   const latest = builds.find((b) => b.status === "ready");
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-8 py-8">
+    <div className="flex w-full flex-col gap-5 px-6 py-8 xl:px-8">
       {latest ? (
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
@@ -122,7 +122,7 @@ function BuildList({ builds, onOpen }: { builds: Build[]; onOpen: (id: string) =
 function BuildDetail({ build }: { build: Build }) {
   const [draft, setDraft] = useState("");
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-8 py-8" data-hub-build-detail>
+    <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-build-detail>
       <div className="flex items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="text-[15px] text-content">

@@ -470,7 +470,7 @@ export function PagesContent() {
 
   if (build && !preview) {
     return (
-      <div className="mx-auto w-full max-w-2xl px-8 py-10" data-pages-build-state={"status" in build ? build.status : "building"}>
+      <div className="w-full px-6 py-10 xl:px-8" data-pages-build-state={"status" in build ? build.status : "building"}>
         <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {asker}</div>
         {"status" in build ? (
           build.status === "building" ? (
@@ -507,7 +507,7 @@ export function PagesContent() {
     // The same words as a hub change (ChangeBar): Discard and Apply, and Undo in Bot changes after.
     const keepLabel = asks.length ? "Apply and allow" : "Apply";
     return (
-      <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-preview>
+      <div className="w-full px-6 py-6 xl:px-8" data-pages-preview>
         <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made page · built on the same bridge a Mono's page uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
         <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
         <div className="mb-4 mt-1"><Limits /></div>
@@ -547,7 +547,7 @@ export function PagesContent() {
   if (shown) {
     return (
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-open>
+        <div className="w-full px-6 py-6 xl:px-8" data-pages-open>
           <PagesProblem />
           <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
           <div className="flex items-center gap-2">
@@ -597,7 +597,7 @@ export function PagesContent() {
   const withPages = [...projects.map((p) => p.id), "today"];
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div className="mx-auto w-full max-w-3xl px-8 py-6" data-pages-list>
+      <div className="w-full px-6 py-6 xl:px-8" data-pages-list>
         <PagesProblem />
         <div className="flex items-center gap-2">
           <h1 className="min-w-0 flex-1 text-[17px] font-medium text-content">Pages</h1>

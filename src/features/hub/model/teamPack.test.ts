@@ -1,18 +1,21 @@
 // @vitest-environment happy-dom
 // G5, Ash 14 Oct: "wouldn't ship with our stuff pre loaded by default ... as long as its easy to ship a clean app".
-// A fresh install's team is plain; Ash's own team is a pre-load that can be chosen; an install that already has his
-// team (his Mac) is left exactly as it is.
+// Ash 21 Oct: the default team is the leadership team minus personal memories. A fresh install gets the same five
+// Monos with nothing of Ash's in them and no pre-load (his team arrives by importing his export); an install that
+// already has his team (his Mac) is left exactly as it is.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addMono, listMonos } from "../../monos/model/mono";
 import { defaultSoul } from "../../monos/model/monoFiles";
 import { ensureBuiltInMonos } from "./builtInMonos";
-import { preloadAshTeam, seedTeamFiles } from "./hubTeam";
+import { seedTeamFiles } from "./hubTeam";
 import { soulTemplates } from "./soulRefresh";
 import { teamPack } from "./teamPack";
-import { PLAIN_SOULS, TEAM_SOULS, teamMemorySeed } from "./teamSouls";
+import { PLAIN_SOULS, TEAM_SOULS } from "./teamSouls";
 
 const TEAM_IDS = ["chief-of-staff", "projects-manager", "frank", "alfred"];
-const ASH_STUFF = /\bAsh\b|Hivra|Nibbii|EXO|Operator OS|MonoCode|Grok/;
+const SHIPPED_IDS = [...TEAM_IDS, "critiquito"];
+/** Ash's name, projects, product, accounts and pronouns: none of it ships (Ash 21 Oct). */
+const ASH_STUFF = /\bAsh\b|Hivra|Nibbii|EXO|Operator OS|MonoCode|Monocode|Grok|UK lawyer|ash-asks|\b(he|him|his|himself)\b/i;
 
 function files(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial));
@@ -25,15 +28,22 @@ const storage = () => Object.fromEntries(Object.keys(localStorage).map((k) => [k
 beforeEach(() => localStorage.clear());
 
 describe("a fresh install", () => {
-  it("starts with the plain team: neutral souls, no starting facts, nothing of Ash's", async () => {
+  it("starts with the leadership team, names and personalities kept, minus anything personal to Ash", async () => {
     localStorage.setItem("monocode:mono-roster", "[]"); // an empty roster is no data yet
     ensureBuiltInMonos();
     expect(teamPack()).toBe("plain");
-    expect(listMonos().map((m) => m.id)).toEqual(TEAM_IDS);
+    expect(listMonos().map((m) => m.id)).toEqual(SHIPPED_IDS);
+    expect(listMonos().map((m) => m.name)).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred", "Critiquito"]);
     for (const m of listMonos()) expect(m.instructions, m.id).toBe(PLAIN_SOULS[m.id]);
+    // The same people: each shipped soul keeps its role, who it is and its skills.
+    for (const id of SHIPPED_IDS) {
+      const heads = (t: string) => t.match(/^## .*$/gm)?.length;
+      expect(heads(PLAIN_SOULS[id]), id).toBe(heads(TEAM_SOULS[id]));
+      expect(PLAIN_SOULS[id].split("## Skills")[1], id).toBe(TEAM_SOULS[id].split("## Skills")[1]);
+    }
     const f = files();
-    expect(await seedTeamFiles(f.read, f.write)).toEqual(TEAM_IDS);
-    for (const id of TEAM_IDS) {
+    expect(await seedTeamFiles(f.read, f.write)).toEqual(SHIPPED_IDS);
+    for (const id of SHIPPED_IDS) {
       expect(f.store.get(`${id}/SOUL.md`), id).toBe(PLAIN_SOULS[id]);
       expect(f.store.has(`${id}/MEMORY.md`), id).toBe(false);
     }
@@ -42,26 +52,6 @@ describe("a fresh install", () => {
     // Still plain on the next launch, once its own team exists.
     ensureBuiltInMonos();
     expect(teamPack()).toBe("plain");
-  });
-});
-
-describe("the pre-load", () => {
-  it("can be chosen: Ash's souls and facts replace the plain ones, a soul or memory written here is kept", async () => {
-    ensureBuiltInMonos();
-    const f = files();
-    await seedTeamFiles(f.read, f.write);
-    f.store.set("frank/SOUL.md", "# Soul\n\nMy own frank.\n");
-    f.store.set("alfred/MEMORY.md", "- 2026-10-21 · something Alfred learnt here");
-    expect(await preloadAshTeam(f.read, f.write)).toEqual(["chief-of-staff", "projects-manager", "alfred"]);
-    expect(teamPack()).toBe("ash");
-    expect(f.store.get("chief-of-staff/SOUL.md")).toBe(TEAM_SOULS["chief-of-staff"]);
-    expect(f.store.get("chief-of-staff/MEMORY.md")).toBe(teamMemorySeed("chief-of-staff"));
-    expect(f.store.get("frank/SOUL.md")).toBe("# Soul\n\nMy own frank.\n");
-    expect(f.store.get("frank/MEMORY.md")).toBe(teamMemorySeed("frank"));
-    expect(f.store.get("alfred/SOUL.md")).toBe(TEAM_SOULS.alfred);
-    expect(f.store.get("alfred/MEMORY.md")).toBe("- 2026-10-21 · something Alfred learnt here");
-    // From now on the team follows his souls, so soul refresh never swaps them back.
-    for (const t of soulTemplates()) expect(t.template, t.monoId).toBe(TEAM_SOULS[t.monoId]);
   });
 });
 
@@ -77,7 +67,8 @@ describe("an install that already has Ash's team", () => {
     const before = storage();
     const roster = JSON.stringify(listMonos());
 
-    expect(ensureBuiltInMonos()).toBe(0);
+    expect(ensureBuiltInMonos()).toBe(0); // Critiquito stays the add-on it is on his install
+    expect(listMonos().some((m) => m.id === "critiquito")).toBe(false);
     expect(await seedTeamFiles(f.read, f.write)).toEqual([]);
     expect(teamPack()).toBe("ash");
 

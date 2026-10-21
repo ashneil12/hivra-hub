@@ -99,7 +99,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
         {open ? (
           <Activity worker={open} now={now} />
         ) : active.length || done.length || failed.length ? (
-          <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-8 py-8">
+          <div className="flex w-full flex-col gap-5 px-6 py-8 xl:px-8">
             {failed.length ? (
               <section aria-label="Can't answer" className="flex flex-col gap-0.5" data-hub-failed-monos>
                 <MonoFailureList failures={failed} now={now} />
@@ -216,7 +216,7 @@ function inCodingTeam(worker: Worker): boolean {
 function Activity({ worker, now }: { worker: Worker; now: number }) {
   const live = !worker.finishedAt && !worker.stuck;
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-6 px-8 py-8" data-hub-activity>
+    <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-activity>
       <div className="flex items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="text-[15px] text-content">{worker.doing}</div>

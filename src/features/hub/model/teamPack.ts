@@ -1,8 +1,8 @@
-// Which souls the default team starts with (G5, Ash 14 Oct: "wouldn't ship with our stuff pre loaded by default").
-// A fresh install gets the plain pack: the same four seats with neutral roles and no starting facts. Ash's own team
-// (teamSouls.ts) is an optional pre-load (hubTeam.ts preloadAshTeam, offered in onboarding and Settings → Export and
-// import). An install that already has data, like Ash's Mac, keeps Ash's team exactly as it is: nothing is written.
-import { useSyncExternalStore } from "react";
+// Which souls the default team starts with. Ash 21 Oct: the default team is the leadership team minus personal
+// memories. A fresh install ("plain" here, kept as the stored key) gets the same five Monos with their names and
+// personalities, souls that carry nothing of Ash's (teamSouls.ts PLAIN_SOULS) and no starting facts. There is no
+// pre-load: Ash's own team arrives by importing his export, like anyone's. An install that already has data, like
+// Ash's Mac, keeps his team, souls and memory exactly as they are: nothing is written.
 import { PLAIN_SOULS, TEAM_SOULS, teamMemorySeed } from "./teamSouls";
 
 export type TeamPack = "plain" | "ash";
@@ -47,31 +47,8 @@ export function setTeamPack(pack: TeamPack): void {
   changed();
 }
 
-let preview: TeamPack | undefined;
-let version = 0;
 function changed() {
-  version++;
   window.dispatchEvent(new CustomEvent(EVENT));
-}
-/** Onboarding's team choice before Continue: the sidebar's role lines show it; nothing is stored. */
-export function previewTeamPack(pack: TeamPack | undefined): void {
-  if (preview === pack) return;
-  preview = pack;
-  changed();
-}
-/** The pack the screens show: onboarding's choice while it is open, else the one in use (read only). */
-export function shownTeamPack(): TeamPack {
-  return preview ?? knownTeamPack();
-}
-export function useTeamPackVersion(): number {
-  return useSyncExternalStore(
-    (cb) => {
-      window.addEventListener(EVENT, cb);
-      return () => window.removeEventListener(EVENT, cb);
-    },
-    () => version,
-    () => version,
-  );
 }
 
 /** The team's souls for the pack in use, by id. */

@@ -850,7 +850,7 @@ function NoteEditor({
       ref={lockOverscroll}
       className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
     >
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-8 py-8">
+      <div className="flex w-full flex-col gap-5 px-6 py-8 xl:px-8">
         <header className="flex flex-col gap-3">
           <div className="flex min-w-0 items-center gap-2 text-[12px] text-content/50">
             <File className="size-3.5 shrink-0" strokeWidth={1.75} />
