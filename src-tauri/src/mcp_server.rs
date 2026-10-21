@@ -207,7 +207,7 @@ fn tools() -> Value {
         {
             "name": "delegate_task",
             "title": "Delegate a task",
-            "description": "Hand one job to a worker: a new chat nested under yours, started with only this brief (it does not see your conversation). The task is stored, survives app restarts, and reports back to you as a new turn once you are idle. Record Ash's asks first (ash_record) and pass their ids in asks; they move to working. Use mode async (the default) for real work: say in one line what you started, then end your turn; do not poll or do the work yourself. Use mode wait only for a short job whose result you need in this turn: it blocks until the task finishes, asks a question, or timeoutMinutes pass (waitTimedOut; the task keeps running and still reports). isolation worktree gives the worker its own git worktree from your project's current commit (uncommitted edits are not copied). Keep the same clientRequestId when retrying the same delegation so it never starts twice.",
+            "description": "Hand one job to a worker: a new chat nested under yours, started with only this brief (it does not see your conversation). The task is stored, survives app restarts, and reports back to you as a new turn once you are idle. Record Ash's asks first (ash_record) and pass their ids in asks; they move to working. Use mode async (the default) for real work: say in one line what you started, then end your turn; do not poll or do the work yourself. Use mode wait only for a short job whose result you need in this turn: it blocks until the task finishes, asks a question, or timeoutMinutes pass (waitTimedOut; the task keeps running and still reports). isolation worktree gives the worker its own git worktree from your project's current commit (uncommitted edits are not copied). Keep the same clientRequestId when retrying the same delegation so it never starts twice. Each project runs a set number of workers at once: over it, the task waits (status waiting, with why) and starts by itself when a worker frees up or the provider's limit resets; you have nothing to do about it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -219,6 +219,7 @@ fn tools() -> Value {
                     "model": { "type": "string", "description": "A model id (claude:sonnet-5) or family (sonnet). Inherits yours by default." },
                     "effort": { "type": "string", "description": "The model's effort setting, when it has one." },
                     "isolation": { "type": "string", "enum": ["shared", "worktree"], "default": "shared" },
+                    "heavy": { "type": "boolean", "default": false, "description": "Your call: true when the job runs heavy tests (full suites, e2e, builds). Each project runs only so many of those at once; the rest wait their turn and start by themselves." },
                     "mode": { "type": "string", "enum": ["async", "wait"], "default": "async" },
                     "timeoutMinutes": wait_minutes.clone(),
                     "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
@@ -341,7 +342,7 @@ fn tools() -> Value {
     tools
 }
 
-const DELEGATE_APP_FIELDS: [&str; 11] = [
+const DELEGATE_APP_FIELDS: [&str; 12] = [
     "brief",
     "title",
     "asks",
@@ -350,6 +351,7 @@ const DELEGATE_APP_FIELDS: [&str; 11] = [
     "model",
     "effort",
     "isolation",
+    "heavy",
     "lead",
     "whenBusy",
     "redoes",
@@ -442,7 +444,8 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         "waitTimedOut": false,
     });
     // A Lead brief says how it went in (started, queued behind the Lead's work, or steered into it) and to whom.
-    for key in ["delivery", "lead"] {
+    // A worker over its project's limit waits, and says why.
+    for key in ["delivery", "lead", "waiting"] {
         if let Some(value) = started.get(key) {
             out[key] = value.clone();
         }
@@ -1005,6 +1008,43 @@ mod tests {
                 "isolation": "worktree",
             }),
             "mode, timeoutMinutes and clientRequestId stay in the tool"
+        );
+    }
+
+    #[test]
+    fn a_worker_over_its_projects_limit_waits_even_in_wait_mode_and_says_why() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "tasks.delegate");
+            assert_eq!(
+                input["heavy"], true,
+                "the Lead's heavy call reaches the app"
+            );
+            Ok(json!({
+                "taskId": null,
+                "childSessionId": "app-mono-exo-r7",
+                "status": "waiting",
+                "waiting": "Waiting for a free worker: Hivra runs 2 heavy test jobs at once.",
+                "note": "Waiting for a free worker: Hivra runs 2 heavy test jobs at once. It starts by itself."
+            }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Run the e2e suite", "heavy": true, "mode": "wait", "clientRequestId": "r7" }),
+        );
+        let out = outcome.unwrap();
+        assert_eq!(out["status"], "waiting");
+        assert_eq!(out["taskId"], Value::Null);
+        assert_eq!(
+            out["waiting"],
+            "Waiting for a free worker: Hivra runs 2 heavy test jobs at once."
+        );
+        assert!(out["note"].as_str().unwrap().contains("starts by itself"));
+        assert_eq!(
+            app.calls.lock().unwrap().len(),
+            1,
+            "no task to wait on yet: nothing polls"
         );
     }
 

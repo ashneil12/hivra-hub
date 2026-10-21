@@ -42,13 +42,43 @@ import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import type { AgentAppHost } from "./agentApp";
+import {
+  limitsLine,
+  type Admission,
+  type AdmitInput,
+  type QueuedWorker,
+  type WorkerLimits,
+} from "../../monos/model/workerPool";
+import { projectName } from "../../../shared/lib/paths";
+
+/**
+ * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
+ * rows, E5's accounts and the saved queue; absent, every worker starts at once, as before.
+ */
+export type WorkerPoolHost = {
+  /** Every row still running or asking, from every chat (a project's count and the ports in use). */
+  openRows(): Delegation[];
+  /** Start this worker now, or let it wait and say why. One the app is starting from the queue always starts. */
+  admit(job: AdmitInput): Admission;
+  /** It waits: kept in order with what starts it later (and its card shows in the chat that asked). */
+  enqueue(job: QueuedWorker, launch: QuickLaunch): void;
+  /** It started: out of the queue, and counted as heavy if it is. */
+  started(job: { id: string; heavy: boolean }): void;
+  /** The chat's waiting workers, with why each waits now. */
+  queued(owner: string): { job: QueuedWorker; line: string }[];
+  /** The chat took back one of its waiting workers (task_cancel). */
+  unqueue(owner: string, id: string): boolean;
+  limits(project: string): WorkerLimits;
+  setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
+};
 
 /** The FIELDS entries of the task actions (agentApp.ts). */
 export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   [
     "tasks.delegate",
-    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "lead", "whenBusy", "redoes"],
+    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "heavy", "lead", "whenBusy", "redoes"],
   ],
+  ["tasks.workers", ["project", "workers", "heavy"]],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
@@ -106,6 +136,8 @@ export type AgentAppTasksHost = {
   hubProjectFolder?(id: string): string | undefined;
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
+  /** Workers per project, and the ones waiting for a free worker (H8). */
+  pool?: WorkerPoolHost;
   /**
    * The memory a worker of this chat starts with, in its brief: the chat's project's current memory and Ash's global one
    * (hub/model/hubMemoryPrimer.ts workerMemoryBlock, the default), or undefined for a chat with no project.
@@ -445,6 +477,10 @@ async function delegate(
   const asked = input.isolation;
   if (asked !== undefined && asked !== "shared" && asked !== "worktree")
     throw new Error('isolation must be "shared" or "worktree"');
+  if (input.heavy !== undefined && typeof input.heavy !== "boolean")
+    throw new Error("heavy must be true or false");
+  // The Lead's own call: this job runs heavy tests, so its project runs only so many like it at once.
+  const heavy = input.heavy === true;
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
@@ -476,9 +512,11 @@ async function delegate(
   const id = `app-${source.id}-${requestId}`;
   // The workers this chat still has out: each holds a port, and one working in the same project shares its repo.
   const out = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+  // Every chat's workers, where the app knows them: a Lead's and its coding-team chats' share one repo and the ports.
+  const everyone = [...out, ...(tasks.pool?.openRows() ?? []).filter((row) => row.childSession !== id)];
   const port = workerPort(
     id,
-    new Set(out.flatMap((row) => (row.brief ? [portOfBrief(row.brief)].filter((p): p is number => !!p) : []))),
+    new Set(everyone.flatMap((row) => (row.brief ? [portOfBrief(row.brief)].filter((p): p is number => !!p) : []))),
   );
   const launchWith = (workspaceMode: "worktree" | "current") =>
     helpers.startLaunch(
@@ -504,9 +542,46 @@ async function delegate(
   // (20 Oct) had two in one checkout stopping each other's dev server.
   const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
   // Never in a Mono's own team: its folder is no repository (the checkout would never be made, and the worker never run).
-  const auto = !ownTeam && asked === undefined && out.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+  const auto =
+    !ownTeam && asked === undefined && everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
+  // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
+  if (tasks.pool) {
+    const job = {
+      id,
+      project: projectOf(launch.cwd),
+      projectName: ownTeam?.name ?? projectName(launch.cwd),
+      heavy,
+      harness: launch.harness,
+    };
+    const admission = tasks.pool.admit(job);
+    if (!admission.start) {
+      tasks.pool.enqueue(
+        {
+          ...job,
+          ownerSession: source.id,
+          requestId,
+          title,
+          queuedAt: (tasks.now ?? Date.now)(),
+          input,
+        },
+        launch,
+      );
+      return {
+        taskId: null,
+        childSessionId: id,
+        status: "waiting",
+        waiting: admission.line,
+        title,
+        cwd: launch.cwd,
+        harness: launch.harness,
+        model: launch.model,
+        ...(heavy ? { heavy: true } : {}),
+        note: `${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits, then end your turn.`,
+      };
+    }
+  }
   const meta = {
     title,
     askIds: asks,
@@ -522,6 +597,7 @@ async function delegate(
     launch = launchWith("current");
     await host.start(launch, id, undefined, source.id, meta);
   }
+  tasks.pool?.started({ id, heavy });
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
@@ -536,8 +612,9 @@ async function delegate(
     model: launch.model,
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
-      ? { isolationWhy: "Another of your workers is working in this project, so this one has a checkout of its own." }
+      ? { isolationWhy: "Another worker is working in this project, so this one has a checkout of its own." }
       : {}),
+    ...(heavy ? { heavy: true } : {}),
     // Its port, which its brief tells it to use for any server it starts.
     port,
     // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
@@ -621,6 +698,8 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
       tasks.tree ? tasks.tree(row.id).catch(() => [] as Delegation[]) : [],
     ),
   );
+  // Waiting for a free worker: no task yet, only the chat it will be (H8).
+  const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
   return {
     tasks: rows.map((row, index) =>
       taskView(
@@ -629,7 +708,18 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
         trees[index].filter((entry) => entry.parentId === row.id),
       ),
     ),
-    ...(rows.length ? {} : { note: "You have no tasks running or owed." }),
+    ...(queued.length
+      ? {
+          waiting: queued.map(({ job, line }) => ({
+            childSessionId: job.id,
+            title: job.title,
+            status: "waiting",
+            waiting: line,
+            ...(job.heavy ? { heavy: true } : {}),
+          })),
+        }
+      : {}),
+    ...(rows.length || queued.length ? {} : { note: "You have no tasks running or owed." }),
   };
 }
 
@@ -679,9 +769,11 @@ async function wait(source: Session, input: Record<string, unknown>, host: Agent
 
 async function cancel(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
-  const id = text(input.taskId, "taskId", 128);
+  const id = text(input.taskId, "taskId", 600);
   const reason =
     input.reason === undefined ? "Cancelled by its owner." : text(input.reason, "reason", 500);
+  // One still waiting for a free worker (named by its childSessionId) never starts.
+  if (tasks.pool?.unqueue(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
   const [row] = await ownRows(source, tasks, [id]);
   const { stopFailed, cancelled } = await tasks.cancel(source.id, row, reason);
   const [after] = await tasks.owned(source.id, { ids: [id] });
@@ -738,6 +830,33 @@ async function answer(source: Session, input: Record<string, unknown>, host: Age
   return { taskId: id, ...(reply.kind === "skipped" ? { skipped: true } : { answered: true }) };
 }
 
+/**
+ * tasks.workers: how many workers the chat's project runs at once, and how many of them on heavy tests. Without numbers
+ * it reads them; with them (what Ash said: "let hivra run 20 workers today") it saves them, as the project's settings do.
+ */
+function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
+  const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
+  const folder = owner.team?.folder ?? (named !== undefined ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd);
+  const project = owner.team?.project ?? (named !== undefined && tasks.hubProjectFolder?.(named) ? named : (tasks.hubProjectId?.(folder) ?? folder));
+  const count = (value: unknown, field: string) => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 30)
+      throw new Error(`${field} must be a whole number from 1 to 30`);
+    return value;
+  };
+  const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
+  const limits =
+    next.workers === undefined && next.heavy === undefined
+      ? tasks.pool.limits(project)
+      : tasks.pool.setLimits(project, {
+          ...(next.workers !== undefined ? { workers: next.workers } : {}),
+          ...(next.heavy !== undefined ? { heavy: next.heavy } : {}),
+        });
+  return { project, ...limits, line: limitsLine(projectName(folder), limits) };
+}
+
 /** The `tasks.*` actions (agentApp.ts dispatches them here after checking their fields). */
 export function handleTasks(
   source: Session,
@@ -758,6 +877,8 @@ export function handleTasks(
       return cancel(source, input, host);
     case "tasks.answer":
       return answer(source, input, host);
+    case "tasks.workers":
+      return Promise.resolve().then(() => workers(source, input, host));
   }
   return Promise.reject(new Error(`Unknown app action: ${action}`));
 }

@@ -19,6 +19,16 @@ import {
   type AgentAppTasksHost,
 } from "./agentAppTasks";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
+import {
+  pumpWorkers,
+  queuedWorkers,
+  resetWorkerPool,
+  setWorkerLimits,
+  workerLimits,
+  workerPoolHost,
+  type ProviderRoom,
+} from "../../monos/model/workerPool";
+import { isOpenDelegation } from "../../monos/model/delegations";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 vi.mock("../../../integrations/harness/core/availability", () => ({
@@ -421,7 +431,7 @@ describe("tasks.delegate", () => {
     expect(launch1.workspaceMode).toBe("current");
     expect(first).not.toHaveProperty("isolation");
     expect(launch2.workspaceMode).toBe("worktree");
-    expect(second).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("Another of your workers") });
+    expect(second).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("Another worker") });
     // Each has a port of its own, named in its brief with the rules it works by.
     expect(first.port).not.toBe(second.port);
     expect(portOfBrief(launch1.prompt)).toBe(first.port);
@@ -855,5 +865,160 @@ describe("sessions.stop with cascade (H4)", () => {
       unloaded: [worker.id],
       note: `Couldn't load the workers under ${worker.id}; they may still be running.`,
     });
+  });
+});
+
+// H8, Ash 16 Oct 17:40: "maybe today I want, like, 10 or 20 parallel workers, obviously ones that need to do heavy
+// testing, then it would get throttled. But then it's really a per-project thing".
+describe("parallel workers per project, with throttling (H8)", () => {
+  function pooled(rows: Delegation[] = [], who: "mono" | "team" = "mono", room: () => ProviderRoom = () => ({ room: true })) {
+    resetWorkerPool();
+    const f = fixture(rows, who);
+    const cards: Array<{ id: string; cwd: string; title: string }> = [];
+    f.api.pool = workerPoolHost({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => room(),
+      card: (job, launch) => cards.push({ id: job.id, cwd: launch.cwd, title: job.title }),
+    });
+    // What App.tsx's pump does: ask the same delegate_task again, under the same request.
+    const pump = () =>
+      pumpWorkers({
+        openRows: () => rows.filter(isOpenDelegation),
+        room: () => room(),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+      });
+    return { ...f, cards, pump };
+  }
+
+  it("runs Ash's 20 workers at once in a project he set to 20; the 21st waits visibly and starts by itself", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, cards, pump } = pooled(rows);
+    setWorkerLimits("vg-game", { workers: 20 });
+    for (let i = 1; i <= 20; i++) {
+      const out = (await handleAgentApp(source, `r${i}`, "tasks.delegate", { brief: `Part ${i}.` }, host)) as Record<string, unknown>;
+      expect(out.status).toBe("running");
+    }
+    expect(started).toHaveLength(20);
+    const extra = (await handleAgentApp(source, "r21", "tasks.delegate", { brief: "Part 21.", title: "Part 21" }, host)) as Record<string, unknown>;
+    // Not started, not failed: it waits, says why, and the Lead has nothing to do about it.
+    expect(started).toHaveLength(20);
+    expect(extra).toMatchObject({
+      taskId: null,
+      childSessionId: "app-mono-exo-r21",
+      status: "waiting",
+      waiting: "Waiting for a free worker: all 20 of vg-game's are busy.",
+    });
+    expect(extra.note).toContain("starts by itself");
+    // Its card is in the Lead's chat already, under the chat it will be.
+    expect(cards).toEqual([{ id: "app-mono-exo-r21", cwd: PROJECT, title: "Part 21" }]);
+    // Nothing frees up: it keeps waiting.
+    await pump();
+    expect(started).toHaveLength(20);
+    // One finishes: the waiting one starts on its own, as the same chat, and is a task of the Lead's like any other.
+    rows[0].state = "completed";
+    await pump();
+    expect(started).toHaveLength(21);
+    expect((started[20] as unknown[])[1]).toBe("app-mono-exo-r21");
+    expect((started[20] as unknown[])[3]).toBe(source.id);
+    expect(queuedWorkers()).toEqual([]);
+    expect(rows.at(-1)).toMatchObject({ ownerSession: source.id, childSession: "app-mono-exo-r21", title: "Part 21" });
+  });
+
+  it("starts with a sensible default of 6 at once in a project Ash hasn't set", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started } = pooled(rows);
+    expect(workerLimits("vg-game").workers).toBe(6);
+    for (let i = 1; i <= 7; i++) await handleAgentApp(source, `r${i}`, "tasks.delegate", { brief: `Part ${i}.` }, host);
+    expect(started).toHaveLength(6);
+  });
+
+  it("throttles the jobs the Lead marks heavy, while light ones keep starting", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, pump } = pooled(rows);
+    for (const id of ["e2e-1", "e2e-2"]) await handleAgentApp(source, id, "tasks.delegate", { brief: "Run the full e2e suite.", heavy: true }, host);
+    const third = (await handleAgentApp(source, "e2e-3", "tasks.delegate", { brief: "Run the full e2e suite.", heavy: true }, host)) as Record<string, unknown>;
+    expect(third).toMatchObject({ status: "waiting", heavy: true, waiting: "Waiting for a free worker: vg-game runs 2 heavy test jobs at once." });
+    const light = (await handleAgentApp(source, "copy", "tasks.delegate", { brief: "Fix the button copy." }, host)) as Record<string, unknown>;
+    expect(light.status).toBe("running");
+    expect(started).toHaveLength(3);
+    // A heavy one finishes: the waiting heavy one starts.
+    rows.find((r) => r.childSession === "app-mono-exo-e2e-1")!.state = "completed";
+    await pump();
+    expect((started.at(-1) as unknown[])[1]).toBe("app-mono-exo-e2e-3");
+    await expect(handleAgentApp(source, "bad", "tasks.delegate", { brief: "x", heavy: "yes" }, host)).rejects.toThrow("heavy must be true or false");
+  });
+
+  it("counts every chat working on the project, and gives a worker its own checkout next to another chat's", async () => {
+    const rows: Delegation[] = [row({ id: "t-team", ownerSession: "team-exo", childSession: "app-team-exo-r1", requestId: "app-team-exo-r1" })];
+    const { source, host, started } = pooled(rows);
+    setWorkerLimits("vg-game", { workers: 2 });
+    const first = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build the UI." }, host)) as Record<string, unknown>;
+    // The Lead has no worker of its own out, but the coding-team chat's is in the same repo.
+    expect((started[0] as [{ workspaceMode: string }])[0].workspaceMode).toBe("worktree");
+    expect(first.isolationWhy).toContain("Another worker");
+    const second = (await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Build the API." }, host)) as Record<string, unknown>;
+    expect(second.status).toBe("waiting");
+  });
+
+  it("backs off while the provider has no account with room, then starts by itself (E5's accounts decide)", async () => {
+    const rows: Delegation[] = [];
+    let limited = true;
+    const until = new Date(2026, 9, 21, 15, 40).getTime();
+    const { source, host, started, pump } = pooled(rows, "mono", () => (limited ? { room: false, provider: "Claude", until } : { room: true }));
+    const out = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Build it." }, host)) as Record<string, unknown>;
+    expect(out.status).toBe("waiting");
+    expect(String(out.waiting)).toMatch(/^Waiting for Claude's limit to reset at 3:40/);
+    await pump();
+    expect(started).toHaveLength(0);
+    limited = false;
+    await pump();
+    expect(started).toHaveLength(1);
+  });
+
+  it("lists the waiting in task_status, and task_cancel takes one back (only the chat's own)", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, pump } = pooled(rows);
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "One." }, host);
+    await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Two.", title: "Two" }, host);
+    const status = (await handleAgentApp(source, "s", "tasks.status", {}, host)) as { tasks: unknown[]; waiting: unknown[] };
+    expect(status.tasks).toHaveLength(1);
+    expect(status.waiting).toEqual([
+      { childSessionId: "app-mono-exo-r2", title: "Two", status: "waiting", waiting: "Waiting for a free worker: vg-game runs one at a time." },
+    ]);
+    // Another chat can't take it back.
+    const other = { ...source, id: "mono-other" };
+    await expect(handleAgentApp(other, "c0", "tasks.cancel", { taskId: "app-mono-exo-r2" }, host)).rejects.toThrow("No task");
+    expect(await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-r2" }, host)).toEqual({
+      taskId: "app-mono-exo-r2",
+      status: "cancelled",
+      stopFailed: [],
+    });
+    rows[0].state = "completed";
+    await pump();
+    expect(started).toHaveLength(1);
+  });
+
+  it("saves the limit when Ash tells the Lead (tasks.workers), and reads it back", async () => {
+    const { source, host } = pooled();
+    expect(await handleAgentApp(source, "w0", "tasks.workers", {}, host)).toMatchObject({ project: "vg-game", workers: 6, heavy: 2 });
+    expect(await handleAgentApp(source, "w1", "tasks.workers", { workers: 20, heavy: 4 }, host)).toEqual({
+      project: "vg-game",
+      workers: 20,
+      heavy: 4,
+      line: "vg-game runs up to 20 workers at once, 4 of them on heavy tests.",
+    });
+    expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
+    await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
+  });
+
+  it("lets a coding-team chat's workers wait too, in its own project", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started } = pooled(rows, "team");
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "One." }, host);
+    const out = (await handleAgentApp(source, "r2", "tasks.delegate", { brief: "Two." }, host)) as Record<string, unknown>;
+    expect(started).toHaveLength(1);
+    expect(out.status).toBe("waiting");
   });
 });

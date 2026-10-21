@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 55] = [
+const APP_ACTIONS: [&str; 56] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -128,6 +128,7 @@ const APP_ACTIONS: [&str; 55] = [
     "tasks.wait",
     "tasks.cancel",
     "tasks.answer",
+    "tasks.workers",
     "autopilot.status",
     "autopilot.decide",
     "autopilot.set",
@@ -345,6 +346,9 @@ Actions:
                   are idle. asks are the Ash OS ask ids it covers; isolation
                   "worktree" gives it its own git worktree. Optional project,
                   model (an id or a family such as "sonnet") and effort.
+                  "heavy":true marks a job that runs heavy tests; a project
+                  runs only so many workers (and heavy ones) at once, and the
+                  rest wait (status "waiting") and start by themselves.
                   Leadership team: "lead":"<Lead id or project>" briefs that
                   project's Lead in its own chat instead ("whenBusy":"queue" or
                   "steer"); its final report comes back once its workers have
@@ -361,6 +365,10 @@ Actions:
                   any worker that would not stop.
   tasks.answer   {"taskId":"t-...","requestId":7,"answers":{"<questionId>":["<optionId>"]}}
                   Answer your worker's open question, or pass "skip":true.
+  tasks.workers  {"workers":20} or {"heavy":3} or {} (project optional)
+                  How many workers your project runs at once, and how many of
+                  them on heavy tests: {} reads them; numbers (1 to 30) save
+                  what Ash asked for, as the project's settings do.
   autopilot.status {"project":"hivra"}  Is autopilot on (for this chat, or
                   the project named), for what and until when.
   autopilot.decide {"question":"...","recommendation":"...","why":"...",
@@ -915,6 +923,7 @@ mod tests {
             "tasks.wait",
             "tasks.cancel",
             "tasks.answer",
+            "tasks.workers",
         ] {
             assert!(matches!(
                 parse_args_for(&args(&[action, "--json", "{}"]), true),
