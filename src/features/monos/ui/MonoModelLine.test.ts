@@ -85,3 +85,13 @@ it("on the Grok bridge it reads Grok 4.7, and a click opens the menu instead of 
   expect(onChange).not.toHaveBeenCalled();
   expect(name().getAttribute("aria-expanded")).toBe("true");
 });
+
+// Live 22 Oct: on a Lead chat running Ash's DeepSeek model, one click on "DeepSeek · billed separately" switched it
+// to Sonnet 5. His own model's name opens the menu and changes nothing.
+it("on one of Ash's own models the name is a label: a click opens the menu, never switches", () => {
+  const onChange = render("claude", "custom:deepseek-test");
+  act(() => name().click());
+  expect(onChange).not.toHaveBeenCalled();
+  expect(el.querySelector("[data-mono-model-note]")).toBeNull();
+  expect(name().getAttribute("aria-expanded")).toBe("true");
+});

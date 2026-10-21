@@ -7,6 +7,7 @@
 import { useEffect, useState, type ComponentProps } from "react";
 import { ModelControlPills, ModelPicker } from "../../sessions/ui/ModelPicker";
 import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { isCustomModelId } from "../../sessions/model/customModels";
 
 // The one source for "what really runs" (claudeGrokBridge.ts), shared with the transcript's turn header.
 export { GROK_BRIDGE_LABEL };
@@ -19,6 +20,9 @@ type PickerProps = ComponentProps<typeof ModelPicker>;
 export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron" | "noIcon">) {
   const [note, setNote] = useState<string | null>(null);
   const onGrok = onGrokBridge(props.harness, props.model);
+  // One of Ash's own models ("DeepSeek · billed separately") is a name, not a knob: a click opens the menu. Stepping on
+  // from it went to the next subscription model and left his model (live 22 Oct: DeepSeek -> "Now Sonnet 5.").
+  const custom = isCustomModelId(props.model);
   useEffect(() => {
     if (!note) return;
     const timer = setTimeout(() => setNote(null), MODEL_NOTE_MS);
@@ -38,7 +42,7 @@ export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hi
         noIcon
         variant="text"
         triggerLabel={onGrok ? GROK_BRIDGE_LABEL : props.triggerLabel}
-        cycle={onGrok ? undefined : (name) => setNote(`Now ${name}.`)}
+        cycle={onGrok || custom ? undefined : (name) => setNote(`Now ${name}.`)}
       />
       <ModelControlPills
         harness={props.harness}
