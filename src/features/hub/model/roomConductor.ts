@@ -25,6 +25,7 @@ import {
   settleNotice,
   unanswered,
 } from "./hubChats";
+import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
 import {
   addressedIn,
@@ -504,6 +505,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     chatName: chat.name,
     chatId,
     projectId: chat.projectId,
+    projectName: hubData().listProjects().find((p) => p.id === chat.projectId)?.name,
     me,
     seats,
     host: hostOf(seats, chat.leadId),

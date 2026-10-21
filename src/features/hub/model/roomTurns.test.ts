@@ -146,6 +146,14 @@ describe("the prompts", () => {
     expect(transcript).toBe("Ash: what did we decide about colour?\n\n>> frank: Colour means status only.\n\n(app): Alfred couldn't answer: offline.");
   });
 
+  it("a room names its project by name with the id, not just the lowercase id", () => {
+    const base = { chatName: "Leadership team", chatId: "bark-desk:leadership", projectId: "bark-desk", seats: TEAM, host: COS, transcript };
+    expect(turnPrompt({ ...base, projectName: "Bark Desk", me: COS, kind: "answer" })).toContain('for project "Bark Desk" (`bark-desk`).');
+    // No name known, or the name is the id: as before.
+    expect(turnPrompt({ ...base, me: COS, kind: "answer" })).toContain('for project "bark-desk".');
+    expect(turnPrompt({ ...base, projectName: "bark-desk", me: COS, kind: "answer" })).toContain('for project "bark-desk".');
+  });
+
   it("each turn carries the room rules, the seats' lanes and the conversation as data, and says how its words reach the room", () => {
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript };
     const answer = turnPrompt({ ...base, me: COS, kind: "answer", batch: 3 });

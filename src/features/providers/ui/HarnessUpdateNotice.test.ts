@@ -2,7 +2,7 @@
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HarnessUpdateNotice } from "./HarnessUpdateNotice";
+import { HarnessUpdateNotice, updateTitle } from "./HarnessUpdateNotice";
 
 let claimed = false;
 vi.mock("@tauri-apps/api/core", () => ({
@@ -72,7 +72,7 @@ describe("HarnessUpdateNotice", () => {
     });
 
     const notice = document.body.querySelector(
-      '[aria-label="Harness updates"]',
+      '[aria-label="Agent updates"]',
     );
     expect(notice?.textContent).toContain("Claude Code");
     expect(notice?.textContent).toContain("2.1.284 → 2.1.285");
@@ -119,7 +119,7 @@ describe("HarnessUpdateNotice", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    const notice = document.body.querySelector<HTMLElement>('[aria-label="Harness updates"]')!;
+    const notice = document.body.querySelector<HTMLElement>('[aria-label="Agent updates"]')!;
     expect(notice.dataset.placement).toBe("bottom-left");
     expect(notice.style.bottom).toBe("36px");
     expect(notice.style.left).toBe("8px");
@@ -128,7 +128,7 @@ describe("HarnessUpdateNotice", () => {
     expect(heights.every((h) => h === 0)).toBe(true);
     const dismiss = notice.querySelector<HTMLButtonElement>('[aria-label="Dismiss harness updates"]')!;
     await act(async () => dismiss.click());
-    expect(document.body.querySelector('[aria-label="Harness updates"]')).toBeNull();
+    expect(document.body.querySelector('[aria-label="Agent updates"]')).toBeNull();
     act(() => root.unmount());
   });
 });
@@ -159,7 +159,7 @@ describe("HarnessUpdateNotice fresh checks and failures", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(document.body.querySelector('[aria-label="Harness updates"]')).toBeNull();
+    expect(document.body.querySelector('[aria-label="Agent updates"]')).toBeNull();
     act(() => root.unmount());
   });
 
@@ -175,7 +175,7 @@ describe("HarnessUpdateNotice fresh checks and failures", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    const notice = document.body.querySelector('[aria-label="Harness updates"]')!;
+    const notice = document.body.querySelector('[aria-label="Agent updates"]')!;
     const update = Array.from(notice.querySelectorAll("button")).find((b) => b.textContent === "Update")!;
     await act(async () => {
       update.click();
@@ -188,5 +188,13 @@ describe("HarnessUpdateNotice fresh checks and failures", () => {
     const buttons = Array.from(notice.querySelectorAll("button")).filter((b) => !b.getAttribute("aria-label"));
     expect(buttons.map((b) => b.textContent)).toEqual(["Try again"]);
     act(() => root.unmount());
+  });
+});
+
+describe("the update card's title", () => {
+  it("names the tool, never 'Harness'", () => {
+    expect(updateTitle(["Claude Code"])).toBe("Claude Code update available");
+    expect(updateTitle(["Claude Code", "Codex"])).toBe("2 agent updates available");
+    expect(updateTitle(["Claude Code"])).not.toMatch(/harness/i);
   });
 });

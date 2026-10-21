@@ -65,6 +65,12 @@ type RowState =
   | { status: "updated"; version: string }
   | { status: "failed"; error: string; installed?: string; latest: string };
 
+/** The card's title in the app's words: the tool by name ("Claude Code update available"), never "Harness". */
+export function updateTitle(titles: readonly string[]): string {
+  if (titles.length === 1) return `${titles[0]} update available`;
+  return `${titles.length} agent updates available`;
+}
+
 export function updateFailedMessage(harness: HarnessId): string {
   return `Couldn't update ${HARNESS_TITLE[harness]}. Try again, or open Terminal for details.`;
 }
@@ -234,7 +240,7 @@ export function HarnessUpdateNotice({
   return createPortal(
     <section
       ref={panelRef}
-      aria-label="Harness updates"
+      aria-label="Agent updates"
       role="status"
       data-placement={placement}
       style={placement === "top-right" ? { zIndex: LAYER.toast, top: topOffset } : { zIndex: LAYER.toast, bottom: 36, left: 8 }}
@@ -246,9 +252,7 @@ export function HarnessUpdateNotice({
       <div className="relative z-[1]">
         <div className="flex items-center gap-2 border-b border-stroke px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-            {updates.length === 1
-              ? "Harness update available"
-              : "Harness updates available"}
+            {updateTitle(updates.map((u) => HARNESS_TITLE[u.harness]))}
           </span>
           {pending.length > 1 && !updates.some((u) => stateOf(u.harness).status === "failed") ? (
             <button

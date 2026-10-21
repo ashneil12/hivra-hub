@@ -289,10 +289,18 @@ export function attachedLine(files: readonly { name: string; path: string }[] | 
   return `\n[Attached: ${files.map((f) => `${f.name} (${JSON.stringify(f.path)})`).join(", ")}]`;
 }
 
+/** "Bark Desk" (`bark-desk`) when the project's name is known and differs from its id; else the id as before. */
+export function projectWords(input: { projectId: string; projectName?: string }): string {
+  const name = input.projectName?.trim();
+  return name && name !== input.projectId ? `${JSON.stringify(name)} (\`${input.projectId}\`)` : JSON.stringify(input.projectId);
+}
+
 export type TurnInput = {
   chatName: string;
   chatId: string;
   projectId: string;
+  /** The project's own name ("Bark Desk"); the prompt says it with the id, never the bare lowercase id. */
+  projectName?: string;
   me: Seat;
   seats: readonly Seat[];
   /** The room's host. */
@@ -342,7 +350,7 @@ export function turnPrompt(input: TurnInput): string {
   const how = input.viaTool
     ? `You are in the middle of your own work. Read anything newer with room_read (room "${input.chatId}"), then answer in the room with room_post (room "${input.chatId}"), once, and carry on with your work. If you have nothing new, don't post.`
     : `Your reply is posted to the room for you, under your name: write only the message, no "${me.name}:" label and no room_post call. To say nothing, reply with exactly ${NO_REPLY}.`;
-  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${JSON.stringify(input.projectId)}.${host}
+  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}
 In the room: Ash${others.length ? `, and:\n${others.map((s) => `- ${cardOf(s)}`).join("\n")}` : "."}
 
 Room rules:
