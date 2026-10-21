@@ -1,4 +1,5 @@
-import { allSchemes, applySchemeAccent, loadActiveSchemeId, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
@@ -2333,8 +2334,14 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
  * a scheme can carry real colour. "Save as scheme" keeps the current sliders under a name, as Ash or a Mono would.
  */
 function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
+  const themeVersion = useThemeImportVersion();
   const [schemes, setSchemes] = useState(allSchemes);
   const [active, setActive] = useState(loadActiveSchemeId);
+  // A theme applied or undone elsewhere (ThemesRow, Bot changes) shows here too.
+  useEffect(() => {
+    setSchemes(allSchemes());
+    setActive(loadActiveSchemeId());
+  }, [themeVersion]);
   const [naming, setNaming] = useState<string | null>(null);
   const apply = (scheme: ThemeScheme) => {
     appearance.onTint(scheme.hue, scheme.saturation);
@@ -2358,6 +2365,23 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
           >
             <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: scheme.accent ?? `hsl(${scheme.hue} ${scheme.saturation}% ${Math.max(scheme.lightness, 30)}%)` }} />
             {scheme.name}
+            {scheme.custom && scheme.id !== active ? (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={`Remove ${scheme.name}`}
+                title={`Remove ${scheme.name}`}
+                data-scheme-remove={scheme.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeCustomScheme(scheme.id);
+                  setSchemes(allSchemes());
+                }}
+                className="-mr-1 rounded px-0.5 text-content/50 hover:text-content"
+              >
+                ×
+              </span>
+            ) : null}
           </button>
         ))}
         {naming === null ? (
@@ -2375,6 +2399,100 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
             <input autoFocus aria-label="Scheme name" value={naming} onChange={(e) => setNaming(e.target.value)} placeholder="Name"
               className="w-24 rounded-md bg-surface px-2 py-1 text-[12px] text-content outline-none ring-1 ring-surface-ring placeholder:text-content/60" />
             <button type="submit" className="rounded-md bg-content/12 px-2 py-1 text-[12px] text-content">Save</button>
+          </form>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * F3: add a theme as JSON. Ash pastes it or picks a file (a Mono hands one in the same way); it is checked before
+ * anything changes, then Preview, Apply or Discard. Up to 7 per colour scheme.
+ */
+function ThemesRow() {
+  useThemeImportVersion();
+  const [text, setText] = useState<string | null>(null);
+  const pending = pendingTheme();
+  const theme = pending?.check.ok ? pending.check.theme : undefined;
+  const counts = (["dark", "light"] as const).map((scheme) => `${allSchemes().filter((s) => s.custom && (s.scheme ?? "dark") === scheme).length} of ${MAX_THEMES_PER_SCHEME} ${scheme}`);
+  const BTN = "rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ring-surface-ring text-content/85 hover:bg-selection-hover";
+  return (
+    <Row id="theme-files" label="Add a theme" description={`Paste a theme's JSON or pick a file. It's checked before anything changes. Added so far: ${counts.join(", ")}.`}>
+      <div className="flex w-[300px] flex-col items-end gap-2" data-theme-import>
+        {pending ? (
+          <div className="w-full rounded-md bg-surface p-2.5 ring-1 ring-surface-ring" data-theme-pending={pending.check.ok ? "ok" : "problems"}>
+            {theme ? (
+              <>
+                <p className="flex items-center gap-1.5 text-[12px] text-content">
+                  <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: theme.accent ?? `hsl(${theme.hue} ${theme.saturation}% ${Math.max(theme.lightness, 30)}%)` }} />
+                  {theme.name}
+                  <span className="text-content/55">· {theme.scheme} theme{pending.by ? ` from ${pending.by}` : ""}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "Previewing. Nothing is saved yet." : "Checks passed."}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-[12px] text-content">{pending.by ? `${pending.by}'s theme can't be used` : "This theme can't be used"}</p>
+                <ul className="mt-1 list-disc pl-4 text-[11px] leading-4 text-content/70" data-theme-problems>
+                  {!pending.check.ok && pending.check.problems.map((p) => <li key={p}>{p}</li>)}
+                </ul>
+              </>
+            )}
+            <div className="mt-2 flex justify-end gap-1.5">
+              {theme ? (
+                pending.previewing ? (
+                  <button type="button" data-theme-stop-preview onClick={stopPreview} className={BTN}>Stop preview</button>
+                ) : (
+                  <button type="button" data-theme-preview onClick={previewTheme} className={BTN}>Preview</button>
+                )
+              ) : null}
+              <button type="button" data-theme-discard onClick={discardTheme} className={BTN}>Discard</button>
+              {theme ? (
+                <button type="button" data-theme-apply onClick={() => applyTheme()} className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
+              ) : null}
+            </div>
+          </div>
+        ) : text === null ? (
+          <div className="flex gap-1.5">
+            <button type="button" data-theme-paste onClick={() => setText("")} className={BTN}>Paste JSON…</button>
+            <label className={`${BTN} cursor-default`}>
+              Choose file…
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0];
+                  if (file) void file.text().then((t) => offerTheme(t));
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+        ) : (
+          <form
+            className="flex w-full flex-col items-end gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              offerTheme(text);
+              setText(null);
+            }}
+          >
+            <textarea
+              autoFocus
+              aria-label="Theme JSON"
+              data-theme-json
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={5}
+              placeholder={'{ "name": "Night", "scheme": "dark", "hue": 220, "saturation": 8, "lightness": 8, "opacity": 0.9, "accent": null }'}
+              className="w-full resize-none rounded-md bg-surface px-2 py-1.5 font-mono text-[11px] text-content outline-none ring-1 ring-surface-ring placeholder:text-content/45"
+            />
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setText(null)} className={BTN}>Cancel</button>
+              <button type="submit" data-theme-check className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content">Check</button>
+            </div>
           </form>
         )}
       </div>
@@ -2419,6 +2537,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
         {/* Hub schemes set the classic layout's tint and translucency, which
             the inset workspace's own themes replace. */}
         {inset ? null : <SchemesRow appearance={appearance} />}
+        {inset ? null : <ThemesRow />}
         {inset ? (
           <Row
             id="workspace-theme"
