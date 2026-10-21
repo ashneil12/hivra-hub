@@ -1261,7 +1261,10 @@ mod tests {
     fn dev_bundle_carries_the_hub_docs() {
         let app = std::env::temp_dir().join(format!(
             "monocode-devbundle-{}.app",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let bundle = DevBundle {
             name: "MonoCode Hub Dev",
@@ -1271,8 +1274,13 @@ mod tests {
             signing_identity: None,
         };
         write_dev_bundle_icons(&app, "MonoCode Hub Dev", &bundle).unwrap();
-        let docs = std::fs::read_to_string(app.join("Contents/Resources/hub-docs/README.md")).unwrap();
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/hub/README.md")).unwrap();
+        let docs =
+            std::fs::read_to_string(app.join("Contents/Resources/hub-docs/README.md")).unwrap();
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/hub/README.md"
+        ))
+        .unwrap();
         assert_eq!(docs, source);
         let _ = std::fs::remove_dir_all(&app);
     }

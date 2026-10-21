@@ -386,7 +386,7 @@ fn tools() -> Value {
         {
             "name": "hub_change",
             "title": "Change the hub",
-            "description": "Change MonoCode Hub itself (how it looks or works) from Ash's words. Call with ask: the app makes a preview copy of the hub's own code and a Claude Code worker makes the change there, one commit per separate part; its report comes back to you. Then call with changeId and ready true: Ash gets Now | Preview with Apply and Discard. Call with undo (an applied part's title or id) to undo only that part. Settings, keys, the Monos list and the app's engine stay protected: the app says so in plain words.",
+            "description": "Change MonoCode Hub itself (how it looks or works) from Ash's words. Call with ask: the app makes a preview copy of the hub's own code and a Claude Code worker makes the change there, one commit per separate part; its report comes back to you. Then call with changeId and ready true: Ash gets Now | Preview with Apply and Discard. Call with undo (an applied part's title or id) to undo only that part. If Ash changes or adds to the ask while it builds, a running change can't be steered: task_cancel its task, then call with ask again quoting all his words, so only one preview copy builds. Settings, keys, the Monos list and the app's engine stay protected: the app says so in plain words.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1248,6 +1248,25 @@ mod tests {
                 "nothing is called for {tool} {args}"
             );
         }
+    }
+
+    /// AD15 (run f451): Ash added to a hub change while it built; CoS started a second one and the first kept running.
+    /// The tool says the running one is cancelled first, and the make-a-Mono tool keeps Ash's own words on how it sounds.
+    #[test]
+    fn hub_change_says_cancel_before_asking_again_and_mono_create_keeps_ashs_voice() {
+        let list = tools();
+        let desc = |name: &str| {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap()["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(desc("hub_change").contains("task_cancel its task, then call with ask again"));
+        assert!(desc("mono_create").contains("is his choice: keep it, in his words, in who"));
     }
 
     #[test]
