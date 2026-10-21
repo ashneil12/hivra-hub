@@ -1,5 +1,5 @@
 import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
-import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
+import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
@@ -2014,6 +2014,15 @@ function useAppearanceSettings(
   );
   const [bodyGlass, setBodyGlass] = useState(loadBodyGlass);
   const [insetGlass, setInsetGlass] = useState(loadInsetGlass);
+  // PM-21: a theme applied, or put back by Undo, shows on the sliders; one being previewed shows there until it stops.
+  const themeVersion = useThemeImportVersion();
+  useEffect(() => {
+    setThemeHue(loadThemeHue());
+    setThemeSaturation(loadThemeSaturation());
+    setThemeDarkLightness(loadThemeDarkLightness());
+    setOpacity(loadSidebarOpacity());
+  }, [themeVersion]);
+  const preview = previewLook();
   const insetLayout = useSyncExternalStore(
     subscribeInsetLayout,
     loadInsetLayout,
@@ -2066,6 +2075,7 @@ function useAppearanceSettings(
   }, []);
 
   const onOpacity = useCallback((percent: number) => {
+    stopPreview();
     const next = applySidebarOpacity(percent / 100);
     saveSidebarOpacity(next);
     setOpacity(next);
@@ -2077,7 +2087,9 @@ function useAppearanceSettings(
     setBlur(next);
   }, []);
 
+  // A real change (a scheme, a preset) ends a theme preview first, so it lands on the saved look.
   const onTint = useCallback((hue: number, saturation: number) => {
+    stopPreview();
     const next = applyThemeTint(hue, saturation);
     saveThemeHue(next.hue);
     saveThemeSaturation(next.saturation);
@@ -2086,6 +2098,7 @@ function useAppearanceSettings(
   }, []);
 
   const onDarkLightness = useCallback((value: number) => {
+    stopPreview();
     const next = applyThemeDarkLightness(value);
     saveThemeDarkLightness(next);
     setThemeDarkLightness(next);
@@ -2247,11 +2260,13 @@ function useAppearanceSettings(
     themePreference,
     accentColor,
     workspaceTheme,
-    opacity,
+    opacity: preview?.opacity ?? opacity,
     blur,
-    themeHue,
-    themeSaturation,
-    themeDarkLightness,
+    themeHue: preview?.hue ?? themeHue,
+    themeSaturation: preview?.saturation ?? themeSaturation,
+    themeDarkLightness: preview?.lightness ?? themeDarkLightness,
+    /** A theme is being previewed: the sliders show it and wait until it is applied or stopped. */
+    previewingTheme: !!preview,
     bodyGlass,
     insetGlass,
     insetLayout,
@@ -2429,7 +2444,7 @@ function ThemesRow() {
                   {theme.name}
                   <span className="text-content/55">· {theme.scheme} theme{pending.by ? ` from ${pending.by}` : ""}</span>
                 </p>
-                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "Previewing. Nothing is saved yet." : "Checks passed."}</p>
+                <p className="mt-0.5 text-[11px] text-content/60">{pending.previewing ? "Previewing. Nothing is saved yet. The sliders show this theme." : "Checks passed."}</p>
               </>
             ) : (
               <>
@@ -2634,6 +2649,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 onChange={(value) =>
                   appearance.onTint(value, appearance.themeSaturation)
                 }
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -2650,6 +2666,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 onChange={(value) =>
                   appearance.onTint(appearance.themeHue, value)
                 }
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -2669,6 +2686,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 max={THEME_DARK_LIGHTNESS_MAX}
                 onChange={appearance.onDarkLightness}
                 disabled={glassDisabled}
+                held={appearance.previewingTheme}
               />
             </Row>
           </Group>
@@ -2694,6 +2712,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
                 max={Math.round(SIDEBAR_OPACITY_MAX * 100)}
                 onChange={appearance.onOpacity}
                 disabled={glassDisabled}
+                held={appearance.previewingTheme}
               />
             </Row>
             <Row
@@ -4915,6 +4934,7 @@ function Slider({
   step = 1,
   onChange,
   disabled = false,
+  held = false,
 }: {
   label: string;
   value: number;
@@ -4924,6 +4944,8 @@ function Slider({
   step?: number;
   onChange: (value: number) => void;
   disabled?: boolean;
+  /** Showing a previewed theme's value: readable, not draggable until the preview is applied or stopped. */
+  held?: boolean;
 }) {
   return (
     <div
@@ -4939,7 +4961,7 @@ function Slider({
         aria-valuemax={max}
         aria-valuenow={value}
         aria-label={label}
-        disabled={disabled}
+        disabled={disabled || held}
         className="sidebar-opacity-slider min-w-0 flex-1 disabled:cursor-not-allowed"
         onChange={(event) => onChange(Number(event.target.value))}
       />

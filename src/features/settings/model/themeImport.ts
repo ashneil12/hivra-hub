@@ -140,6 +140,8 @@ export function useThemeImportVersion(): number {
   return useSyncExternalStore((f) => { subs.add(f); return () => subs.delete(f); }, () => version);
 }
 export const pendingTheme = (): PendingTheme | undefined => pending;
+/** The look being previewed, for the sliders to show (PM-21); undefined when nothing is. */
+export const previewLook = (): ThemeLook | undefined => (pending?.previewing && pending.check.ok ? lookOf(pending.check.theme) : undefined);
 /** Whether the app is showing a theme that isn't saved yet. */
 export const previewingTheme = (): boolean => !!pending?.previewing;
 

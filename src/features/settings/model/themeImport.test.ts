@@ -45,11 +45,14 @@ it("takes at most 7 themes per scheme", async () => {
 it("Preview restyles without saving; Stop preview and Discard put the look back", async () => {
   const { t, s } = await load();
   t.offerTheme(NIGHT);
+  expect(t.previewLook()).toBeUndefined();
   t.previewTheme();
   expect(t.previewingTheme()).toBe(true);
+  expect(t.previewLook()).toMatchObject({ hue: 220, saturation: 8, lightness: 8, opacity: 0.9 });
   expect(tokens().getPropertyValue("--scheme-accent")).toBe("hsl(220 80% 70%)");
   expect(s.loadActiveSchemeId()).toBe("glass");
   t.stopPreview();
+  expect(t.previewLook()).toBeUndefined();
   expect(tokens().getPropertyValue("--scheme-accent")).toBe("");
   t.previewTheme();
   t.discardTheme();

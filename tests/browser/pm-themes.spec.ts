@@ -52,16 +52,46 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   await page.locator("[data-theme-discard]").click();
   // Critiquito hands one in: Preview restyles the app, nothing saved.
   await page.evaluate((json) => (window as unknown as { __devOfferTheme(t: string, by?: string): void }).__devOfferTheme(json, "Critiquito"), TIDE);
+  const hue = page.getByRole("slider", { name: "Hue" });
+  await expect(hue).toHaveValue("240");
   await page.locator("[data-theme-preview]").click();
   await expect(page.locator("[data-theme-stop-preview]")).toBeVisible();
-  await page.locator("[data-theme-import]").scrollIntoViewIfNeeded();
-  await shot(page, "f3-theme-preview");
+  // PM-21: the sliders show the previewed theme, held until it is applied or stopped, and go back on Stop preview.
+  await expect(hue).toHaveValue("200");
+  await expect(hue).toBeDisabled();
+  await expect(page.getByRole("slider", { name: "Saturation" })).toHaveValue("35");
+  await expect(page.getByRole("slider", { name: "Dark-mode lightness" })).toHaveValue("10");
+  // One photo with the preview card and every slider it moved.
+  await page.setViewportSize({ width: 1440, height: 1500 });
+  await shot(page, "f3-pm21-preview-moves-sliders");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator("[data-theme-stop-preview]").click();
+  await expect(hue).toHaveValue("240");
+  await expect(hue).toBeEnabled();
+  // ...and on Discard.
+  await page.locator("[data-theme-preview]").click();
+  await expect(hue).toHaveValue("200");
+  await page.locator("[data-theme-discard]").click();
+  await expect(hue).toHaveValue("240");
+  await expect(page.getByRole("slider", { name: "Saturation" })).toHaveValue("0");
+  await page.evaluate((json) => (window as unknown as { __devOfferTheme(t: string, by?: string): void }).__devOfferTheme(json, "Critiquito"), TIDE);
+  await page.locator("[data-theme-preview]").click();
   await page.locator("[data-theme-apply]").click();
   await expect(page.locator('[data-scheme="custom-tide"]')).toHaveAttribute("aria-pressed", "true");
+  // Applied: the sliders keep the theme and can be moved again.
+  await expect(hue).toHaveValue("200");
+  await expect(hue).toBeEnabled();
   // Its Bot changes row, with Undo.
   await page.getByRole("button", { name: /^Changes/ }).first().click();
   await page.getByRole("button", { name: "Bot changes" }).click();
   const row = page.getByText("Critiquito changed the theme to “Tide”");
   await expect(row).toBeVisible();
   await shot(page, "f3-bot-changes-undo");
+  // Undo puts Glass back, and the sliders follow.
+  const themeRow = page.locator("[data-hub-bot-change]", { has: page.getByText("Critiquito changed the theme to “Tide”") });
+  await themeRow.locator("[data-hub-bot-change-undo]").click();
+  await expect(themeRow.locator("[data-hub-bot-change-undone]")).toBeVisible();
+  await page.getByRole("button", { name: "Appearance" }).first().click();
+  await expect(page.locator('[data-scheme="glass"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("slider", { name: "Hue" })).toHaveValue("240");
 });
