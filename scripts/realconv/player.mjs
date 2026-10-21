@@ -16,6 +16,15 @@ import { judgeScene, verdict } from "./judge.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
+
+const SETTLED_STATES = new Set(["completed", "failed", "cancelled"]);
+/**
+ * A handoff started in this scene that hasn't settled: the room isn't done while one runs (S10 on Grok: the room went
+ * quiet for 40 s while the Lead's workers ran, the scene ended at +3 min, and the review at +8 min was never judged).
+ */
+export function handoffsOpen(rows, since) {
+  return rows.some((row) => ms(row.created_at) >= since - 1000 && !SETTLED_STATES.has(String(row.state)));
+}
 const rel = (t, t0) => `+${Math.round((t - t0) / 1000)}s`;
 const STUCK = /stuck|waiting|needs? you|needs-you|question|permission|approv|blocked|failed|paused|out of credit|limit/i;
 
@@ -170,7 +179,10 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
         const msgs = roomMessages(events, place.room, since).filter((m) => m.from !== "ash");
         const typing = events.filter((e) => e.kind === "room-typing" && e.room === place.room).at(-1);
         const last = Math.max(since, ...msgs.map((m) => m.t), typing?.t ?? 0);
-        if (msgs.length && !typing?.who && Date.now() - last >= (scene.quietSec ?? 40) * 1000) return true;
+        if (msgs.length && !typing?.who && Date.now() - last >= (scene.quietSec ?? 40) * 1000) {
+          // Quiet, but its handoffs still run: their reports and the review are part of the scene.
+          if (!handoffsOpen(await ctx.delegationRows().catch(() => []), t0)) return true;
+        }
       } else {
         const session = await placeSession();
         if (session && (await ctx.claudeTexts(since)).some((line) => line.session === session && line.result)) return true;

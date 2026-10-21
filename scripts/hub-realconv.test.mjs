@@ -349,3 +349,14 @@ test("S5 runs its coding-team chat in Full access; no other scene changes the mo
   const modes = book.scenes.filter((s) => s.runtimeMode).map((s) => [s.id, s.runtimeMode]);
   assert.deepEqual(modes, [["S5", "full-access"]]);
 });
+
+test("a quiet room isn't settled while a handoff started in the scene still runs", async () => {
+  const { handoffsOpen } = await import("./realconv/player.mjs");
+  const t0 = Date.parse("2026-10-21T11:19:24Z");
+  const row = (state, created = "2026-10-21T11:20:00Z") => ({ state, created_at: created });
+  assert.equal(handoffsOpen([row("running")], t0), true);
+  assert.equal(handoffsOpen([row("question")], t0), true);
+  assert.equal(handoffsOpen([row("completed"), row("failed"), row("cancelled")], t0), false);
+  // One left open by an earlier scene isn't this scene's.
+  assert.equal(handoffsOpen([row("running", "2026-10-21T10:00:00Z")], t0), false);
+});
