@@ -16,6 +16,8 @@ import type { SessionSummary } from "../../sessions/data/sessionStore";
 import type { MonoSpawnedSession, Session } from "../../sessions/model/session";
 import type { MonoLook, MonoState } from "../model/mono";
 import { HABITS_MAX } from "../model/monoHabits";
+import { useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
+import { hasPendingApproval } from "../../sessions/model/session";
 import { HabitPage } from "./HabitPage";
 import { NewHabitPage } from "./NewHabitPage";
 import { habitActions, HabitsList, useHabits } from "./MonoHabits";
@@ -222,8 +224,16 @@ export function MonoOverview({
     });
 
   const habitsFull = !habits || habits.length >= HABITS_MAX;
+  // A8: the Sessions tab counts what its list shows (running, or finished and not yet clicked), not every session the
+  // Mono ever started (live 22 Oct: the badge said 2 with one row left).
+  useWorkSessionsVersion();
+  const shownSessions = launches.filter((launch) => {
+    const live = sessions.find((entry) => entry.id === launch.sessionId);
+    const active = !!live && (live.busy || hasPendingApproval(live.blocks) || !!live.pendingQuestion);
+    return workSessionView(launch.sessionId, active) !== "hidden";
+  }).length;
   const counts: Record<(typeof TABS)[number]["id"], number | undefined> = {
-    sessions: launches.length,
+    sessions: shownSessions,
     habits: habits?.length,
     documents: documents.length,
     changes: changes?.totals?.files,

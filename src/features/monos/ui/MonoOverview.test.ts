@@ -118,7 +118,8 @@ it("names only the open tab, with its count, and switches tabs", async () => {
     "Habits",
     "Changes",
   ]);
-  expect(tabs()[0].textContent).toBe("Sessions2");
+  // Nothing running: the badge counts what the list shows, so none.
+  expect(tabs()[0].textContent).toBe("Sessions");
   expect(tabs()[0].getAttribute("aria-selected")).toBe("true");
   act(() => tabs()[1].click());
   expect(onTabChange).toHaveBeenCalledWith("documents");
@@ -217,6 +218,7 @@ it("lists every running session it started, newest first; finished history stays
   expect(empty).toMatch(/^Nothing running right now\. Sessions show here while .+ is working/);
   expect(empty).not.toMatch(/ghost|haunt|spook|empty|nothing here yet/i);
   await render("sessions", vi.fn(), { sessions: [running("a"), running("b")] });
+  expect(tabs()[0].textContent).toBe("Sessions2");
   const rows = [...container.querySelectorAll("[data-mono-session]")];
   expect(rows.map((row) => row.getAttribute("data-mono-session"))).toEqual([
     "b",
