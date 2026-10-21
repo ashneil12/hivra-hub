@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { appIdentity } from "../../../../app/model/appIdentity";
 import { runtimeProviderBinaryPath } from "../../../../features/providers/model/providerBinaryPaths";
 
 /**
@@ -17,9 +18,15 @@ function baseName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
 }
 
-/** True when Claude Code runs on Grok 4.7: its CLI path (as this run of the app uses it) is the bridge launcher. */
-export function claudeRunsOnGrok(path: string | null = runtimeProviderBinaryPath("claude")): boolean {
-  return !!path && baseName(path.trim()) === CLAUDE_GROK_BRIDGE_NAME;
+/**
+ * True when Claude Code runs on Grok 4.7: its CLI path (as this run of the app uses it) is the bridge launcher, or
+ * this is the real bench on the bridge (its plan's `grok`, verify_live.rs), whose wrapper has to be named claude.
+ */
+export function claudeRunsOnGrok(
+  path: string | null = runtimeProviderBinaryPath("claude"),
+  bench: boolean = appIdentity()?.verify?.grok === true,
+): boolean {
+  return bench || (!!path && baseName(path.trim()) === CLAUDE_GROK_BRIDGE_NAME);
 }
 
 /** Grok 4.7 takes low, medium, high or xhigh. Claude-only levels step down to the nearest one Grok has. */

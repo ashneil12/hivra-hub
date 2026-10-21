@@ -229,7 +229,8 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const room = roomMessages(events, ctx.roomId, t0);
     const toAsh = [
       ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
-      ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call").map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
+      // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
+      ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
     ].sort((a, b) => a.t - b.t);
     const leaks = (ctx.spec.leak ?? []).flatMap((pattern) => [...toAsh, ...texts.filter((l) => l.text)].filter((m) => new RegExp(pattern, "i").test(m.text)).map((m) => ({ pattern, who: m.who, text: m.text.slice(0, 200) })));
     const changes = gitChanges(ctx.project, mark);

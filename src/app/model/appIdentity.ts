@@ -42,6 +42,8 @@ export type VerifyPlan = {
   stallMs?: number;
   /** The real-Claude bench (scripts/hub-realtest.mjs): the window takes scripted actions (verifyDriver.ts). */
   driver?: boolean;
+  /** The real bench's Claude Code runs on Grok 4.7 through the Grok subscription bridge (claudeGrokBridge.ts). */
+  grok?: boolean;
 };
 
 export type AppIdentity = {
@@ -64,6 +66,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
     ...(value.goals === true ? { goals: true } : {}),
     ...(typeof value.stallMs === "number" && value.stallMs >= 1_000 && value.stallMs <= 600_000 ? { stallMs: value.stallMs } : {}),
     ...(value.driver === true ? { driver: true } : {}),
+    ...(value.grok === true ? { grok: true } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

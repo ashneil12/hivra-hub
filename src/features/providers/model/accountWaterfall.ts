@@ -252,12 +252,16 @@ export function providerRoom(
   return { room: false, provider: PROVIDER_NAMES[provider], ...(until.length ? { until: Math.min(...until) } : {}) };
 }
 
-/** providerRoom with Ash's order, his switch and the saved marks; a harness without accounts always has room. */
+/**
+ * providerRoom with Ash's order, his switch and the saved marks; a harness without accounts always has room. A
+ * harness that runs on another service (`elsewhere`: Claude Code on Grok 4.7 through the Grok subscription) has
+ * room too: its own accounts' limits say nothing about the service it actually uses, which decides for itself.
+ */
 export function workerRoom(
   harness: string,
-  { now, usageFor }: { now: number; usageFor: UsageFor },
+  { now, usageFor, elsewhere = false }: { now: number; usageFor: UsageFor; elsewhere?: boolean },
 ): { room: true } | { room: false; provider: string; until?: number } {
-  if (!Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, harness)) return { room: true };
+  if (elsewhere || !Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, harness)) return { room: true };
   const provider = harness as ProviderAccountProvider;
   return providerRoom(provider, { order: orderedAccounts(provider), enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });
 }
