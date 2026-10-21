@@ -65,6 +65,8 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   await page.getByRole("slider", { name: "Sidebar opacity" }).scrollIntoViewIfNeeded();
   const bar = page.locator("[data-theme-preview-bar]");
   await expect(bar).toHaveText(/Previewing Tide/);
+  // Glass doesn't look selected while Tide is on show.
+  await expect(page.locator('[data-scheme="glass"]')).toHaveAttribute("aria-pressed", "false");
   await expect(bar).toBeInViewport();
   await expect(page.locator("[data-theme-import]")).not.toBeInViewport();
   await shot(page, "f3-pm21-preview-bar-and-sliders");

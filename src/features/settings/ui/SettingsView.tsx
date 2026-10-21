@@ -1,5 +1,5 @@
 import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
-import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
+import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
@@ -2351,7 +2351,9 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
 function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
   const themeVersion = useThemeImportVersion();
   const [schemes, setSchemes] = useState(allSchemes);
-  const [active, setActive] = useState(loadActiveSchemeId);
+  const [saved, setActive] = useState(loadActiveSchemeId);
+  // While another theme is previewed, none of these shows as the one in use.
+  const active = previewingTheme() ? undefined : saved;
   // A theme applied or undone elsewhere (ThemesRow, Bot changes) shows here too.
   useEffect(() => {
     setSchemes(allSchemes());
@@ -2380,7 +2382,7 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
           >
             <span aria-hidden className="size-2.5 rounded-full ring-1 ring-content/20" style={{ background: scheme.accent ?? `hsl(${scheme.hue} ${scheme.saturation}% ${Math.max(scheme.lightness, 30)}%)` }} />
             {scheme.name}
-            {scheme.custom && scheme.id !== active ? (
+            {scheme.custom && scheme.id !== saved ? (
               <span
                 role="button"
                 tabIndex={0}
@@ -2430,10 +2432,11 @@ function ThemesRow() {
   const [text, setText] = useState<string | null>(null);
   const pending = pendingTheme();
   const theme = pending?.check.ok ? pending.check.theme : undefined;
-  const counts = (["dark", "light"] as const).map((scheme) => `${allSchemes().filter((s) => s.custom && (s.scheme ?? "dark") === scheme).length} of ${MAX_THEMES_PER_SCHEME} ${scheme}`);
+  // Only said when it matters: a full set (the check says so too, if Ash tries another).
+  const full = (["dark", "light"] as const).filter((scheme) => allSchemes().filter((s) => s.custom && (s.scheme ?? "dark") === scheme).length >= MAX_THEMES_PER_SCHEME);
   const BTN = "rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ring-surface-ring text-content/85 hover:bg-selection-hover";
   return (
-    <Row id="theme-files" label="Add a theme" description={`Paste a theme's JSON or pick a file. It's checked before anything changes. Added so far: ${counts.join(", ")}.`}>
+    <Row id="theme-files" label="Add a theme" description={`Paste a theme or pick a file. We check it before anything changes.${full.length ? ` You have as many ${full.join(" and ")} themes as we keep, so remove one to add another.` : ""}`}>
       <div className="flex w-[300px] flex-col items-end gap-2" data-theme-import>
         {pending ? (
           <div className="w-full rounded-md bg-surface p-2.5 ring-1 ring-surface-ring" data-theme-pending={pending.check.ok ? "ok" : "problems"}>
