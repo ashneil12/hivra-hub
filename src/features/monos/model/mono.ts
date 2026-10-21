@@ -63,7 +63,30 @@ export type Mono = {
   legacyProject?: string;
   /** With `engine`: the model its conversation starts on (a setup import carries it). Absent: the engine's default. */
   engineModel?: string;
+  /** What it does, in a few words, shown after its name ("Design review"). Ash edits it; a project's Lead has none. */
+  role?: string;
 };
+
+/** A built-in Mono's role until Ash writes his own. */
+const DEFAULT_ROLES: Readonly<Record<string, string>> = {
+  "chief-of-staff": "Business partner",
+  "projects-manager": "Screens and board",
+  frank: "Memory and checks",
+  alfred: "Team setup",
+  critiquito: "Design review",
+};
+
+/** A project's Lead is named for its project and carries no role label. */
+export function isProjectLeadId(id: string): boolean {
+  return /-lead$/.test(id);
+}
+
+/** The role label a Mono shows: Ash's own, else the built-in one; none for a Lead or when cleared. */
+export function monoRole(mono: Pick<Mono, "id" | "role">): string | undefined {
+  if (isProjectLeadId(mono.id)) return undefined;
+  if (mono.role !== undefined) return mono.role.trim() || undefined;
+  return DEFAULT_ROLES[mono.id];
+}
 
 /** A Mono's engine as an export carries it: a harness id ("claude", "codex", …) and, optionally, its model. */
 export type MonoEngine = { harness: string; model?: string };
@@ -192,6 +215,7 @@ function parseMono(value: unknown): Mono | undefined {
   const engine = text("engine");
   const engineModel = text("engineModel");
   const legacyProject = text("legacyProject");
+  const role = text("role");
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
@@ -212,6 +236,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(engine ? { engine } : {}),
     ...(engine && engineModel ? { engineModel } : {}),
     ...(legacyProject ? { legacyProject } : {}),
+    ...(role !== undefined ? { role: role.slice(0, 40) } : {}),
   };
 }
 
@@ -409,6 +434,12 @@ export function saveMonoSessionId(monoId: string, sessionId: string): void {
   void import("./monoPrefill").then((m) => m.takeMonoPrefill(monoId, sessionId)).catch(() => undefined);
 }
 
+/** Ash's role label for a Mono; an empty one clears it (no label shows). */
+export function saveMonoRole(monoId: string, role: string): void {
+  if (isProjectLeadId(monoId)) return;
+  updateMono(monoId, (mono) => ({ ...mono, role: role.trim().slice(0, 40) }));
+}
+
 export function saveMonoName(monoId: string, name: string): void {
   updateMono(monoId, (mono) => ({ ...mono, name }));
 }
@@ -500,8 +531,11 @@ export function defaultMonoName(mascot: string): string {
 export type MonoProject = { path: string; name: string };
 
 export type MonoLook = {
+  id?: string;
   /** The user's name for it, or its default: "MonoInvader", "MonoCrab". */
   name: string;
+  /** Its role label (monoRole), if it has one. */
+  role?: string;
   mascot: string;
   color: string;
   projects: MonoProject[];
@@ -510,8 +544,11 @@ export type MonoLook = {
 /** How a Mono looks, and the projects it works on by their rail labels. */
 export function monoLook(mono: Mono): MonoLook {
   const labels = loadTabGroupLabels();
+  const role = monoRole(mono);
   return {
+    id: mono.id,
     name: mono.name?.trim() || defaultMonoName(mono.mascot),
+    ...(role ? { role } : {}),
     mascot: monoAvatar({ ...mono, name: mono.name?.trim() || defaultMonoName(mono.mascot) }),
     color: mono.color,
     projects: mono.projects.map((path) => ({

@@ -47,7 +47,9 @@ import { WindowControls } from "./WindowControls";
 import { PixelMascot } from "../../features/projects/ui/PixelMascot";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import {
+  isProjectLeadId,
   MONO_STATUS_LABEL,
+  saveMonoRole,
   type MonoLook,
   type MonoState,
 } from "../../features/monos/model/mono";
@@ -1417,6 +1419,7 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
       <span className="min-w-0 truncate text-[13px] font-medium text-content">
         {look.name}
       </span>
+      {look.id && !isProjectLeadId(look.id) ? <MonoRoleLabel id={look.id} role={look.role} /> : null}
       <span
         data-mono-status={state.status}
         className={`shrink-0 text-[12px] ${
@@ -1433,5 +1436,50 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
         {state.status === "failed" && state.activity ? ` · ${state.activity}` : ""}
       </span>
     </div>
+  );
+}
+
+/** A Mono's role after its name in the title bar. Click it to edit; Enter or leaving keeps it, Escape doesn't. */
+function MonoRoleLabel({ id, role }: { id: string; role?: string }) {
+  const [editing, setEditing] = useState(false);
+  const cancelled = useRef(false);
+  if (editing)
+    return (
+      <input
+        autoFocus
+        data-mono-role-input
+        data-tauri-drag-region="false"
+        aria-label="Role"
+        placeholder="What it does"
+        maxLength={40}
+        defaultValue={role ?? ""}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => {
+          if (!cancelled.current && e.currentTarget.value.trim() !== (role ?? "")) saveMonoRole(id, e.currentTarget.value);
+          cancelled.current = false;
+          setEditing(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancelled.current = true;
+            e.currentTarget.blur();
+          }
+        }}
+        className="h-5 w-[160px] min-w-0 rounded bg-content/8 px-1.5 text-[12px] text-content outline-none ring-1 ring-content/25"
+      />
+    );
+  return (
+    <button
+      type="button"
+      data-mono-role-edit
+      data-tauri-drag-region="false"
+      title="Edit role"
+      onClick={() => setEditing(true)}
+      className={`min-w-0 shrink truncate rounded px-1 text-[12px] hover:bg-content/8 hover:text-content ${role ? "text-content/55" : "text-content/35"}`}
+    >
+      {role ?? "Add a role"}
+    </button>
   );
 }
