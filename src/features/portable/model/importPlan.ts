@@ -15,6 +15,7 @@ import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../.
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
 import { isPortableSetting, settingLooksSecret, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { forYou } from "../../hub/model/userName";
 
 // ---- what Rust found (src-tauri/src/portable.rs, Inspection) ---------------------------------------------------------
 
@@ -490,8 +491,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   if (newProjects.length) {
     lines.push(
       registered === newProjects.length
-        ? `${plural(newProjects.length, "project")} added to Ash OS.`
-        : `${plural(newProjects.length, "project")} added${registered ? ` (${registered} to Ash OS, the rest on this Mac's list until Ash OS takes them)` : " to this Mac's list; Ash OS wasn't reachable to take them"}.`,
+        ? forYou`${plural(newProjects.length, "project")} added to Ash OS.`
+        : `${plural(newProjects.length, "project")} added${registered ? forYou` (${registered} to Ash OS, the rest on this Mac's list until Ash OS takes them)` : forYou(" to this Mac's list; Ash OS wasn't reachable to take them")}.`,
     );
   }
 

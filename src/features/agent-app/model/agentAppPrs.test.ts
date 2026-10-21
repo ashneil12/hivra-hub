@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 // The PR watch's app actions (agentAppPrs.ts): who may watch, what a registration sends to pr_watch.rs and answers, and
 // that a chat only ends and lists its own watches. The store is a stand-in with pr_watch.rs's owner rule.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import type { PrWatch, PrWatchAddInput } from "../../pr-watch/model/prWatches";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import type { AgentAppPrsHost } from "./agentAppPrs";
+
+beforeEach(() => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: () => true,

@@ -19,6 +19,7 @@ import { findMono, monoForSession, type Mono } from "../../monos/model/mono";
 import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { PageAction } from "./pageSpec";
 import { agentName } from "./pageData";
+import { forUser } from "../../hub/model/userName";
 
 /** The app's hands for a page's taps (App.tsx lends them; the same functions its own taps call). */
 export type PageActionsHost = {
@@ -67,7 +68,7 @@ export const appActionDeps: PageActionDeps = {
   openWaiting: openWaitingChat,
   answerNeed: (id, answer) => {
     const answer_ = hubData().answer;
-    if (!answer_) throw new Error("Ash OS isn't connected, so its questions can't be answered from here.");
+    if (!answer_) throw new Error(forUser("Ash OS isn't connected, so its questions can't be answered from here."));
     answer_(id, answer);
   },
   rows: delegationRows,

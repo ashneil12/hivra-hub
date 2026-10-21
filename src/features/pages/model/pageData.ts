@@ -11,6 +11,7 @@ import { failureLine, stallLine, stuckOf } from "../../monos/model/workerStuck";
 import { defaultMonoName, monoState, type Mono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
+import { userLabel } from "../../hub/model/userName";
 
 export type AgentState = "asking" | "stuck" | "working" | "paused" | "idle";
 export type WorkerState = "asking" | "stuck" | "working" | "failed" | "done" | "stopped";
@@ -342,7 +343,7 @@ export function roomsData(chats: readonly GroupChat[], nameOf: (monoId: string) 
                 id: conv.id,
                 title: conv.title,
                 when: conv.when,
-                messages: conv.messages.slice(-limit).map((m) => ({ id: m.id, from: m.from === "ash" ? "Ash" : nameOf(m.from), text: m.text })),
+                messages: conv.messages.slice(-limit).map((m) => ({ id: m.id, from: m.from === "ash" ? userLabel() : nameOf(m.from), text: m.text })),
               }
             : null,
         };

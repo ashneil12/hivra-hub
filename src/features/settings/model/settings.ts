@@ -279,6 +279,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "update upgrade release what's new build changelog",
   },
   {
+    id: "user-name",
+    section: "general",
+    label: "What should your team call you?",
+    keywords: "name user me my name call you onboarding agents",
+  },
+  {
     id: "sounds",
     section: "general",
     label: "Sounds",

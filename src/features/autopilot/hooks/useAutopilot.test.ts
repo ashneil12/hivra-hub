@@ -94,6 +94,7 @@ beforeEach(async () => {
   approvals = [];
   sent = [];
   localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   resetWaitingChats();
   delegated = new Set();
   links = {};

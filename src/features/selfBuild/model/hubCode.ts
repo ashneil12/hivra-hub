@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { flowChanges, undoBotChange } from "../../hub/model/botChanges";
 import { offerChange, offeredChanges, registerChangeKind } from "./changeFlow";
+import { forUser } from "../../hub/model/userName";
 
 /**
  * Change the hub itself by talking (ash-day step 15). A Mono passes Ash's words to `startHubChange`: the app makes a
@@ -81,9 +82,9 @@ export async function startHubChange(ask: string, title: string | undefined, by:
 /** The brief the Claude Code worker gets: Ash's words and where to work. The limits are enforced, not asked for. */
 export function hubChangeBrief(ask: string, folder: string): string {
   return [
-    `Ash asked for a change to MonoCode Hub itself: "${ask}"`,
-    `Make it in ${folder}, a preview copy of the hub's own code. The running hub doesn't change until Ash clicks Apply.`,
-    "One git commit per separate part of the ask, each subject a few plain words Ash can read (\"New chat button is at the top\").",
+    forUser`Ash asked for a change to MonoCode Hub itself: "${ask}"`,
+    forUser`Make it in ${folder}, a preview copy of the hub's own code. The running hub doesn't change until Ash clicks Apply.`,
+    forUser("One git commit per separate part of the ask, each subject a few plain words Ash can read (\"New chat button is at the top\")."),
     "Only src/ and public/ can change, and not Settings, keys, the Monos list or src/main.tsx: the app refuses those. If the ask needs them, say so plainly instead.",
     "Use the theme tokens for colour. Run npx tsc --noEmit and the tests of what you touched, then report each commit in one line.",
   ].join("\n");
@@ -98,7 +99,7 @@ export async function readyHubChange(changeId: string, by: string) {
     await commands.discard(changeId).catch(() => undefined);
     pending.delete(changeId);
     const areas = [...new Set(got.blocked.map((b) => b.area))].join(", ");
-    throw new Error(`That change touches ${areas}, which stays protected, so it can't go in. It was thrown away and nothing changed. Tell Ash in those words.`);
+    throw new Error(forUser`That change touches ${areas}, which stays protected, so it can't go in. It was thrown away and nothing changed. Tell Ash in those words.`);
   }
   if (!got.commits.length) throw new Error("The preview copy has no changes yet: wait for the worker's report.");
   const parts = got.commits.map((c) => c.subject || "Hub change");
@@ -107,7 +108,7 @@ export async function readyHubChange(changeId: string, by: string) {
   return {
     changeId,
     parts,
-    note: "Ash sees it at the bottom of the window: Now | Preview, Apply, Discard. Tell him in one line; he clicks.",
+    note: forUser("Ash sees it at the bottom of the window: Now | Preview, Apply, Discard. Tell him in one line; he clicks."),
   };
 }
 

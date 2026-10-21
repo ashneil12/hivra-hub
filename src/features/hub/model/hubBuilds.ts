@@ -3,6 +3,7 @@ import { examples } from "./examples";
 // Claude Code wires the real build list, play/open actions and notes.
 import { useSyncExternalStore } from "react";
 import type { Build } from "./types";
+import { forUser } from "./userName";
 
 let builds: Build[] = examples([
   { id: "b15", projectId: "exo-game", version: "0.15", title: "Example: air and dodge rules", status: "building", builtAt: "Started 8:05pm", notes: [] },
@@ -71,14 +72,14 @@ export type Actor = "ash" | { bot: string };
  * "Played" always means Ash really played it.
  */
 export function markPlayed(buildId: string, actor: Actor): void {
-  if (actor !== "ash") throw new Error("Only Ash can mark a build as played.");
+  if (actor !== "ash") throw new Error(forUser("Only Ash can mark a build as played."));
   builds = builds.map((b) => (b.id === buildId && !b.played ? { ...b, played: { by: "ash", at: "Just now" } } : b));
   changed();
 }
 
 /** Ash's playtest note; adding one also marks the build played by Ash. */
 export function addNote(buildId: string, text: string, actor: Actor = "ash"): void {
-  if (actor !== "ash") throw new Error("Only Ash can add playtest notes.");
+  if (actor !== "ash") throw new Error(forUser("Only Ash can add playtest notes."));
   const t = text.trim();
   if (!t) return;
   builds = builds.map((b) =>

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { newSession } from "../../sessions/model/session";
 import type { Worktree } from "../../source-control/model/worktrees";
 import type {
@@ -8,6 +8,10 @@ import type {
   ProjectFileStatus,
 } from "../../projects/model/projectActions";
 import { actionsListing, handleAgentApp, type AgentAppHost } from "./agentApp";
+
+beforeEach(() => {
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",

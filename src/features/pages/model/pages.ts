@@ -7,6 +7,7 @@ import type { DesignIssue } from "./designCheck";
 import type { Capability, PageBlock, PageSpec } from "./pageSpec";
 import { validatePageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
+import { forUser } from "../../hub/model/userName";
 
 export type { BlockKind, PageBlock } from "./pageSpec";
 
@@ -370,7 +371,7 @@ export async function importPages(list: Page[]): Promise<{ added: number; failed
       pageId: p.id, spec: p.spec, projectId: p.projectId ?? "today", ...(p.monoId ? { monoId: p.monoId } : {}), by: p.by, request: p.request, kept: true, permissions: [],
     });
     if (ok) added++;
-    else failed.push(`${p.title}: ${problem ?? "Ash OS didn't take it."}`);
+    else failed.push(`${p.title}: ${problem ?? forUser("Ash OS didn't take it.")}`);
   }
   return { added, failed };
 }

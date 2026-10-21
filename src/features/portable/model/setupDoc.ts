@@ -17,6 +17,7 @@ import { templateOf, TEMPLATES, type TemplateId } from "../../hub/model/template
 import type { GroupChat, HubProject } from "../../hub/model/types";
 import type { ProjectIconChoice } from "../../hub/model/projectPrefs";
 import { findSecrets, isSecretKey, redactText, redactValue } from "./secrets";
+import { forYou } from "../../hub/model/userName";
 
 export const SETUP_FORMAT = "monocode-hub-setup";
 /** The setup part's version: 1 was the single .json file; 2 lives in an export folder or archive. */
@@ -377,7 +378,7 @@ export function sheetOf(mono: PortableMono, projects: PortableProject[]): string
     `- Skills: ${mono.skills.length ? mono.skills.join(", ") : "none listed"}`,
     `- Memory in this export: ${mono.files["MEMORY.md"]?.trim() ? "yes" : "no"}`,
   ];
-  if (mono.waiting) lines.push("- Still waiting for Ash's OK where this export was made");
+  if (mono.waiting) lines.push(forYou("- Still waiting for Ash's OK where this export was made"));
   return `${lines.join("\n")}\n`;
 }
 

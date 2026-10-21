@@ -17,6 +17,7 @@ import {
   type PrWatchRemoveInput,
 } from "../../pr-watch/model/prWatches";
 import type { AgentAppHost } from "./agentApp";
+import { forUser } from "../../hub/model/userName";
 
 /** The FIELDS entries of the PR actions (agentApp.ts). */
 export const PR_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
@@ -56,7 +57,7 @@ function asksOf(value: unknown): string[] {
     value.length > 50 ||
     !value.every((id) => typeof id === "string" && /^a_[A-Za-z0-9]{1,40}$/.test(id.trim()))
   )
-    throw new Error("asks must be up to 50 Ash OS ask ids (a_...), as ash_record returned them");
+    throw new Error(forUser("asks must be up to 50 Ash OS ask ids (a_...), as ash_record returned them"));
   return [...new Set(value.map((id: string) => id.trim()))];
 }
 
@@ -148,7 +149,7 @@ async function watch(source: Session, input: Record<string, unknown>, host: Agen
     watching: true,
     wasWatching: added.wasWatching,
     checkout: added.checkout,
-    note: `MonoCode is watching it. It wakes you as a new turn ([MonoCode PR watch]) when a required check fails or they all pass, someone else comments or reviews, the branch conflicts, or it merges or closes.${act} Tell Ash in one line that you're waiting on CI and end your turn; don't poll.`,
+    note: forUser`MonoCode is watching it. It wakes you as a new turn ([MonoCode PR watch]) when a required check fails or they all pass, someone else comments or reviews, the branch conflicts, or it merges or closes.${act} Tell Ash in one line that you're waiting on CI and end your turn; don't poll.`,
   };
 }
 

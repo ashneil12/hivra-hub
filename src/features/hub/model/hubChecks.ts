@@ -13,6 +13,7 @@
 // call. Ash OS lists only checks for chats the app runs; one naming a chat this app doesn't have is left alone too.
 import type { Block, MonoCheck, Session } from "../../sessions/model/session";
 import { CHECKER_MONO_ID } from "./hubMcp";
+import { forUser } from "./userName";
 
 /** Every check turn starts with this, so nothing takes it for Ash's own words (the studio's sweep skips it). */
 export const CHECK_PREFIX = "[MonoCode check]";
@@ -38,7 +39,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 
 /** A turn of our own when Ash OS sent none (it always does): the same answer instruction. */
 function fallbackPrompt(id: string, dumpId: string, finding: string): string {
-  return `${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it (ash_dump_status ${dumpId}). If it was handled right as it is, answer with ash_record check {"id": "${id}", "verdict": "right", "note": "<why>"}. If not, fix it first, then answer with verdict "fixed" and say what you did.`;
+  return forUser`${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it (ash_dump_status ${dumpId}). If it was handled right as it is, answer with ash_record check {"id": "${id}", "verdict": "right", "note": "<why>"}. If not, fix it first, then answer with verdict "fixed" and say what you did.`;
 }
 
 export function mapCheck(raw: unknown): HubCheck | undefined {

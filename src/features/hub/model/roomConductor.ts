@@ -44,6 +44,7 @@ import {
   type TurnKind,
 } from "./roomTurns";
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
+import { forUser, userLabel } from "./userName";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -202,7 +203,7 @@ export function seatsOf(chat: GroupChat): Seat[] {
   });
 }
 function nameOf(id: string): string {
-  if (id === "ash") return "Ash";
+  if (id === "ash") return userLabel();
   return listMonos().find((m) => m.id === id)?.name?.trim() || id;
 }
 const isMonoPost = (m: ChatMessage) => (m.kind ?? (m.from === "ash" ? "ash" : "mono")) === "mono";
@@ -472,7 +473,7 @@ function free(r: RoomRun, wake: Wake): boolean {
 function noteLine(wake: Wake): string {
   switch (wake.kind) {
     case "answer":
-      return "Answered Ash";
+      return forUser("Answered Ash");
     case "chime":
       return `Added to ${wake.other ?? "the host"}'s answer`;
     case "reply":
@@ -567,7 +568,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
 /** Who wrote the message a turn answers: Ash for an answer or a chime, the Mono that posted it for a reply. */
 function speakerOf(messages: readonly ChatMessage[], wake: Wake): { id: string; name: string } {
   const from = wake.trigger ? messages.find((m) => m.id === wake.trigger)?.from : undefined;
-  if (wake.kind === "answer" || !from || from === "ash") return { id: "ash", name: "Ash" };
+  if (wake.kind === "answer" || !from || from === "ash") return { id: "ash", name: userLabel() };
   return { id: from, name: nameOf(from) };
 }
 
@@ -716,7 +717,7 @@ function roomTurn(chatId: string, wake: Wake, seats: readonly Seat[], other: str
   for (const seat of everyoneElse(seats, wake.monoId)) {
     if (named.includes(seat.id) || t.chimed.has(seat.id)) continue;
     t.chimed.add(seat.id);
-    enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId: wake.convId, kind: "chime", by: "room", why: "Ash wrote to the whole room", other, trigger: ash, gen: t.gen });
+    enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId: wake.convId, kind: "chime", by: "room", why: forUser("Ash wrote to the whole room"), other, trigger: ash, gen: t.gen });
   }
 }
 
@@ -764,13 +765,13 @@ export function keepGoing(chatId: string, convId: string): void {
   if (!t.paused) return;
   const held = t.paused.wakes;
   Object.assign(t, { paused: undefined, posts: 0 });
-  const line = appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: "Ash asked the team to keep going." });
+  const line = appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: forUser("Ash asked the team to keep going.") });
   const chat = getChat(chatId);
   if (held.length) for (const w of held) enqueue(chatId, { ...w, gen: t.gen });
   else if (chat && line) {
     const host = hostOf(seatsOf(chat), chat.leadId);
     if (host)
-      enqueue(chatId, { id: newWakeId(host.id), monoId: host.id, convId, kind: "reply", by: "lead", why: "Ash asked the team to keep going", other: "Ash", trigger: line.message.id, gen: t.gen });
+      enqueue(chatId, { id: newWakeId(host.id), monoId: host.id, convId, kind: "reply", by: "lead", why: forUser("Ash asked the team to keep going"), other: userLabel(), trigger: line.message.id, gen: t.gen });
   }
   pump(chatId);
 }
@@ -804,7 +805,7 @@ export function postFromMono(
 ): { posted?: ChatMessage; reacted?: string; convId: string; note: string } {
   const chat = getChat(chatId);
   if (!chat) throw new Error("That room doesn't exist.");
-  if (!chat.memberIds.includes(monoId)) throw new Error(`You're not in ${chat.name}. Ask Ash to add you if you should be.`);
+  if (!chat.memberIds.includes(monoId)) throw new Error(forUser`You're not in ${chat.name}. Ask Ash to add you if you should be.`);
   const r = roomOf(chatId);
   const running = r.running.get(monoId);
   if (running?.mode === "turn")
@@ -817,8 +818,8 @@ export function postFromMono(
   if (t?.paused)
     throw new Error(
       t.paused.reason === "stopped"
-        ? "Ash stopped this conversation. Post again only when he writes; tell him in your own chat if it can't wait."
-        : "This conversation is paused waiting for Ash. Tell him in your own chat if it can't wait.",
+        ? forUser("Ash stopped this conversation. Post again only when he writes; tell him in your own chat if it can't wait.")
+        : forUser("This conversation is paused waiting for Ash. Tell him in your own chat if it can't wait."),
     );
   const now = options.now ?? Date.now();
   const times = (r.posts.get(monoId) ?? []).filter((at) => now - at < 60_000);

@@ -20,6 +20,7 @@ import { CHECKER_MONO_ID } from "./hubMcp";
 import { leadFor, leadMono, leadSpecFor } from "./hubLeads";
 import { isGlobalProject } from "./hubProjects";
 import type { HubProject } from "./types";
+import { forUser } from "./userName";
 
 export type LeadTarget = {
   /** The Lead Mono's id (an adopted seat keeps its own id). */
@@ -87,7 +88,7 @@ export function formatLeadBrief(from: string, brief: LeadBrief): string {
     `Done looks like: ${brief.done}`,
     ...(brief.alreadyFinished ? [`Already finished: ${brief.alreadyFinished}`] : []),
     ...(brief.fence ? [`Fence: ${brief.fence}`] : []),
-    ...(brief.ashWords ? [`Ash's words:\n${brief.ashWords}`] : []),
+    ...(brief.ashWords ? [forUser`Ash's words:\n${brief.ashWords}`] : []),
     "Report: start-ack when work actually begins, then evidence when done (the commit, the check that ran, a screenshot or served URL) and what is not verified.",
   ].join("\n");
 }

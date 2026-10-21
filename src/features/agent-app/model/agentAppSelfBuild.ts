@@ -10,6 +10,7 @@ import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
 import type { AgentAppHost } from "./agentApp";
 import { resolveRoom } from "./agentAppRooms";
+import { forUser } from "../../hub/model/userName";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
@@ -48,7 +49,7 @@ export async function handleSelfBuild(
         if (Object.keys(input).length > 1) throw new Error("With draftId, send nothing else: the draft is what gets made.");
         return makeDrafted(input.draftId, me, { ashSpokeSince: spoke, room: (ref) => resolveRoom(ref, me.monoId) });
       }
-      if (!askedAshAndHeardBack(source, me.monoId, allChats())) throw new Error(INTERVIEW_FIRST);
+      if (!askedAshAndHeardBack(source, me.monoId, allChats())) throw new Error(forUser(INTERVIEW_FIRST));
       return draftMono(input, me, Date.now(), await installedSkills(source, host));
     }
     case "pages.build": {
@@ -64,14 +65,14 @@ export async function handleSelfBuild(
         if (input.ready !== true) throw new Error("Call with changeId and ready true once the worker's report is back.");
         return readyHubChange(input.changeId, me.name);
       }
-      if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error("ask must be Ash's words for the change");
+      if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error(forUser("ask must be Ash's words for the change"));
       const title = typeof input.title === "string" ? input.title : undefined;
       const { changeId, folder } = await startHubChange(input.ask.trim(), title, me.name);
       const task = await delegate(hubChangeBrief(input.ask.trim(), folder), title ?? "Change the hub", folder);
       return {
         changeId,
         task,
-        note: "A Claude Code worker is making it in a preview copy; your live hub is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true.",
+        note: forUser("A Claude Code worker is making it in a preview copy; your live hub is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true."),
       };
     }
     default:

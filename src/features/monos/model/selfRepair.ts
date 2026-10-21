@@ -12,6 +12,7 @@ import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import type { Delegation, DelegationTracker } from "./delegations";
 import type { Stall } from "./workerStall";
+import { forUser } from "../../hub/model/userName";
 
 const MIN = 60_000;
 /** How long a repaired worker must run cleanly before a later fault gets fresh tries. */
@@ -67,7 +68,7 @@ export function repairNoteMessage(row: Pick<Delegation, "id" | "childSession">, 
     id: `self-repair-${row.id}-${Math.floor(at / MIN)}`,
     attachments: [],
     monoNote: { kind: "message", from: "Self-repair", line: text.length > 160 ? `${text.slice(0, 159)}…` : text },
-    text: `[MonoCode self-repair] ${text} (worker chat ${row.childSession}; this is the app, not Ash.)`,
+    text: forUser`[MonoCode self-repair] ${text} (worker chat ${row.childSession}; this is the app, not Ash.)`,
   };
 }
 
@@ -168,7 +169,7 @@ export class SelfRepair {
       if (row.state === "running") r.verdict = { kind: "loop", reason, since: wentWrongAt, final: true };
       await this.host.tellLead(
         row,
-        `"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "${row.id}"), or stop it (task_cancel ${row.id}), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
+        forUser`"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "${row.id}"), or stop it (task_cancel ${row.id}), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
       );
       return;
     }

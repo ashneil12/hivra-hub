@@ -45,7 +45,10 @@ vi.stubGlobal("localStorage", {
   removeItem: (key: string) => storedValues.delete(key),
 });
 
-beforeEach(() => storedValues.clear());
+beforeEach(() => {
+  storedValues.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
+});
 afterEach(() => setHubMcpServers(undefined));
 
 const FILES: MonoFiles = {

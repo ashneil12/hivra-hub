@@ -11,6 +11,7 @@ import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
 import { safeCall } from "./safeApproval";
+import { forUser } from "../../hub/model/userName";
 
 export type CallVerdict =
   | { outcome: "off" }
@@ -38,7 +39,7 @@ export function decideCall(input: {
 
 /** What Ash's absence tells an agent whose question has no marked pick. */
 export function handBackText(untilLabel: string): string {
-  return `Ash is away on autopilot until ${untilLabel} and can't answer. Decide this yourself: take your own recommendation, carry on, and say what you chose and why in your report. Anything on his red list (money, deleting data without a backup, production hosts, mass destructive changes, messages sent as him, credentials) still waits for him.`;
+  return forUser`Ash is away on autopilot until ${untilLabel} and can't answer. Decide this yourself: take your own recommendation, carry on, and say what you chose and why in your report. Anything on his red list (money, deleting data without a backup, production hosts, mass destructive changes, messages sent as him, credentials) still waits for him.`;
 }
 
 /** The most an approval's words may run to and still be judged: past it, the red list can't read all of it. */
@@ -68,7 +69,7 @@ export type ApprovalVerdict =
  */
 export function approvalVerdict(block: ApprovalBlock, folder: string | undefined, forcedRed?: RedCategory): ApprovalVerdict {
   const what = approvalWhat(block);
-  if (forcedRed) return { kind: "held", red: forcedRed, what, why: "its chat was told to ask Ash" };
+  if (forcedRed) return { kind: "held", red: forcedRed, what, why: forUser("its chat was told to ask Ash") };
   const text = approvalText(block);
   if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
   const red = redListCategory(text);

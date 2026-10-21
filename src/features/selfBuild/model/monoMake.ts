@@ -16,6 +16,7 @@ import {
 } from "../../monos/model/mono";
 import { ASK_ASH_FIRST } from "./ashSaid";
 import SOUL_TEMPLATE from "../templates/SOUL.md?raw";
+import { forUser } from "../../hub/model/userName";
 
 /**
  * A Mono makes a new Mono with Ash, Dr Eggbot style (ash-day step 13): it asks him a few questions, drafts the one
@@ -166,7 +167,7 @@ function shortSoul(input: {
   const extra = [...given.keys()].filter((h) => !SOUL_SECTIONS.includes(h));
   if (extra.length)
     throw new Error(
-      `Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: no tone or format sections. If Ash said how it should sound, put his words in ## Who I am.`,
+      forUser`Keep the soul to the short shape: ## Role, ## Who I am, ## What I watch for, ## Skills. Leave out ${extra.map((h) => `"${h}"`).join(", ")}: no tone or format sections. If Ash said how it should sound, put his words in ## Who I am.`,
     );
   const role = given.get("role") || input.role;
   const who = given.get("who i am") || input.who;
@@ -271,7 +272,7 @@ export function draftMono(
       watchFor: sections(soul).get("what i watch for") ?? "",
       skills: listed,
     },
-    note: "Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the top of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId.",
+    note: forUser("Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the top of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId."),
   };
 }
 
@@ -308,7 +309,7 @@ export async function makeDrafted(
       ...(made ? {} : { note: "It was made, then undone in Bot changes." }),
     };
   }
-  if (!host.ashSpokeSince(draft.at)) throw new Error(ASK_ASH_FIRST);
+  if (!host.ashSpokeSince(draft.at)) throw new Error(forUser(ASK_ASH_FIRST));
   const rooms = draft.rooms.map((r) => host.room(r));
   const mono = await addNamedMono(
     undefined,
@@ -339,6 +340,6 @@ export async function makeDrafted(
     monoId: mono.id,
     ...(draft.role ? { role: draft.role } : {}),
     ...(rooms.length ? { rooms: rooms.map((r) => r.name) } : {}),
-    note: `${draft.name} is in the sidebar now, with Undo in Bot changes. Tell Ash in one line; greet it with mono_message if he wants to hear it.`,
+    note: forUser`${draft.name} is in the sidebar now, with Undo in Bot changes. Tell Ash in one line; greet it with mono_message if he wants to hear it.`,
   };
 }

@@ -19,6 +19,7 @@ import { sessionDisplayTitle } from "../../sessions/model/session";
 import { chatQuestion, pickMessage, pickReply, wordsMessage, wordsReply, type ChatQuestion } from "./chatQuestions";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
+import { forYou } from "./userName";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -259,7 +260,7 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
-  if (options.by === "autopilot" && chat.redLine) return { ok: false, reason: "This one touches a red line, so it waits for Ash." };
+  if (options.by === "autopilot" && chat.redLine) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat));

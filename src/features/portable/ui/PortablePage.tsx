@@ -15,6 +15,7 @@ import type { PendingImport } from "../model/importPlan";
 import { ImportPreview, Tick } from "./ImportPreview";
 import { preloadAshTeam } from "../../hub/model/hubTeam";
 import { teamPack } from "../../hub/model/teamPack";
+import { forYou } from "../../hub/model/userName";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -129,7 +130,7 @@ export function PortablePage() {
         </p>
         <Choice testId="setup" on disabled title="Setup" sub="Projects, Monos with their souls, habits, skills and engines, teams, connectors (only where each login lives), Pages, settings and themes." />
         <Choice testId="memory" on={memory} onClick={() => setMemory((v) => !v)} title="Memory"
-          sub={info?.memory.length ? `Ash OS project memory from ${info.memoryRoot}, and each Mono's own memory.` : info ? `No project memory found in ${info.memoryRoot || "this copy"}; each Mono's own memory still can go.` : "Ash OS project memory, and each Mono's own memory."} />
+          sub={info?.memory.length ? forYou`Ash OS project memory from ${info.memoryRoot}, and each Mono's own memory.` : info ? `No project memory found in ${info.memoryRoot || "this copy"}; each Mono's own memory still can go.` : forYou("Ash OS project memory, and each Mono's own memory.")} />
         {memory ? (
           <div className="flex flex-col gap-0.5 pl-7" data-portable-memory-folders>
             {info?.memory.map((m) => (
@@ -176,8 +177,8 @@ export function PortablePage() {
           <button type="button" data-portable-import-folder onClick={() => void doImport("folder")} className={BTN} disabled={!!busy}>Import a folder…</button>
           {teamPack() === "plain" && !preloaded ? (
             <button type="button" data-portable-preload-team className={BTN} disabled={!!busy}
-              onClick={() => void preloadAshTeam().then((ids) => setPreloaded(`Ash's team is pre-loaded${ids.length ? ` (${ids.length} souls)` : ""}. Souls you wrote yourself were kept.`))}>
-              Pre-load Ash's team
+              onClick={() => void preloadAshTeam().then((ids) => setPreloaded(`The saved team is pre-loaded${ids.length ? ` (${ids.length} souls)` : ""}. Souls you wrote yourself were kept.`))}>
+              Pre-load saved team
             </button>
           ) : null}
         </div>

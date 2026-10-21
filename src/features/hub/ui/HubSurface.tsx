@@ -482,7 +482,7 @@ function Pending({ what, unit }: { what: string; unit: number }) {
 /** Ash OS can't be reached: one calm sentence and one button. Never example data. */
 function AshOsDown({ message, retrying, onRetry }: { message?: string; retrying?: boolean; onRetry: () => void }) {
   const heading = "The harness service is unavailable.";
-  const help = message && message !== heading && !message.includes("Ash OS") ? message : "Start it, then try again. Your projects and Needs come back on their own.";
+  const help = message && message !== heading && !/\b(Ash|Hub) OS\b/.test(message) ? message : "Start it, then try again. Your projects and Needs come back on their own.";
   return (
     <div className="grid h-full place-items-center px-8" data-hub-down>
       <div className="flex max-w-[420px] flex-col items-center gap-3 text-center">

@@ -9,6 +9,7 @@
 // team, other Monos and plain chats have none and get no primer: they read memory as before.
 import { chatProjects, hasAshOsTools } from "./hubMcp";
 import { tauriHubTransport } from "./hubTransport";
+import { forUser } from "./userName";
 
 /** What Ash OS answers (`ash-hub-memory-primer`). */
 export type MemoryPrimer = {
@@ -92,21 +93,21 @@ export type PrimerReader = {
  */
 export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefined, reader: PrimerReader): string {
   const folder = primer?.memory_dir ?? `~/agent-memory/${project}`;
-  const own = `You read and write only ${project}'s memory and Ash's global memory (ash); never another project's.`;
+  const own = forUser`You read and write only ${project}'s memory and Ash's global memory (ash); never another project's.`;
   if (!primer) {
-    return `<project_memory>\nAsh OS could not load ${project}'s memory just now. Before you act, read it: ${
+    return forUser`<project_memory>\nAsh OS could not load ${project}'s memory just now. Before you act, read it: ${
       reader.tools
-        ? `ash_recall with project "${project}" (its current decisions and never-do rules, plus Ash's global ones).`
+        ? forUser`ash_recall with project "${project}" (its current decisions and never-do rules, plus Ash's global ones).`
         : `${folder}/MEMORY.md and ~/agent-memory/ash/MEMORY.md.`
     } ${own}\n</project_memory>`;
   }
   const more = reader.tools
-    ? `For anything not here (older lines, what Ash said, what changed and when), search with ash_recall: a query, project "${project}". ${own}${
-        reader.worker ? "" : " Save to it with ash_remember only when Ash says remember or lock (project ash only for how Ash works in every project)."
+    ? forUser`For anything not here (older lines, what Ash said, what changed and when), search with ash_recall: a query, project "${project}". ${own}${
+        reader.worker ? "" : forUser(" Save to it with ash_remember only when Ash says remember or lock (project ash only for how Ash works in every project).")
       }`
-    : `This chat has no Ash OS tools: for more, read never.md and decisions.md in ${folder}. ${own}`;
-  return `<project_memory>\nAsh OS loaded this at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
-    reader.worker ? " Anything Ash decides while you work goes in your report to whoever briefed you." : ""
+    : forUser`This chat has no Ash OS tools: for more, read never.md and decisions.md in ${folder}. ${own}`;
+  return forUser`<project_memory>\nAsh OS loaded this at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
+    reader.worker ? forUser(" Anything Ash decides while you work goes in your report to whoever briefed you.") : ""
   }\n\n${primer.text.trim()}\n\n${more}\n</project_memory>`;
 }
 

@@ -8,6 +8,7 @@ import type { RoomTurnOutcome, RoomTurnRequest } from "./roomConductor";
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   vi.resetModules();
 });
 

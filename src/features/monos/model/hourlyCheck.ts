@@ -3,6 +3,7 @@
 // stops nothing by itself.
 import type { QueuedMessage } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation } from "./delegations";
+import { forUser } from "../../hub/model/userName";
 
 export const HOUR_MS = 60 * 60_000;
 
@@ -25,6 +26,6 @@ export function hourlyCheckMessage(row: Pick<Delegation, "id" | "childSession" |
     id: `hourly-check-${row.id}-${Math.floor(at / HOUR_MS)}`,
     attachments: [],
     monoNote: { kind: "message", from: "Hourly check", line: line.length > 160 ? `${line.slice(0, 159)}…` : line },
-    text: `[MonoCode hourly check] ${line} (worker chat ${row.childSession}; this is the app, not Ash.)`,
+    text: forUser`[MonoCode hourly check] ${line} (worker chat ${row.childSession}; this is the app, not Ash.)`,
   };
 }

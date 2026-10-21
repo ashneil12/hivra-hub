@@ -118,6 +118,7 @@ import {
   AUTOPILOT_FIELDS,
   handleAutopilotApp,
 } from "../../autopilot/model/autopilotApp";
+import { forUser } from "../../hub/model/userName";
 
 export type AppSessionListing = {
   id: string;
@@ -556,7 +557,7 @@ function actionRunSummary(run: ActionRun) {
     ...(run.status === "running"
       ? {
           note: run.longRunning
-            ? "It keeps running until stopped; Ash stops it in Settings > Worktrees."
+            ? forUser("It keeps running until stopped; Ash stops it in Settings > Worktrees.")
             : "Still running: call actions.list later to see how it ended.",
         }
       : {}),
@@ -570,10 +571,10 @@ export function actionsListing(listing: ActionsListing) {
     status.state === "trusted"
       ? undefined
       : status.state === "changed"
-        ? "The project file changed since Ash imported it; the imported version still runs until he imports the new one."
+        ? forUser("The project file changed since Ash imported it; the imported version still runs until he imports the new one.")
         : status.state === "none"
           ? "This project has no .monocode/project.json."
-          : "Ash hasn't imported this project's .monocode/project.json yet; nothing in it runs until he does, once, in Settings > Worktrees.";
+          : forUser("Ash hasn't imported this project's .monocode/project.json yet; nothing in it runs until he does, once, in Settings > Worktrees.");
   return {
     project: status.projectRoot,
     projectFile: {
@@ -1283,7 +1284,7 @@ export async function handleAgentApp(
       proposed: proposal.spec.name,
       id: proposal.id,
       status: "pending",
-      note: "Filed as a proposal on Settings > Teams (it also shows on Today); nothing is created until they approve it there. To make a new Mono with Ash in chat instead, use mono_create: draft it, he says yes, and it is made.",
+      note: forUser("Filed as a proposal on Settings > Teams (it also shows on Today); nothing is created until they approve it there. To make a new Mono with Ash in chat instead, use mono_create: draft it, he says yes, and it is made."),
     };
   }
   switch (action) {
@@ -1311,7 +1312,7 @@ export async function handleAgentApp(
       // "restart" quits the app over chats still running: only Ash's Restart now tap does that.
       if (whenBusy === "restart")
         throw new Error(
-          'Only Ash\'s Restart now (in Today) restarts the app over running chats. Ship with whenBusy "wait" (the default): it restarts when they are quiet.',
+          forUser('Only Ash\'s Restart now (in Today) restarts the app over running chats. Ship with whenBusy "wait" (the default): it restarts when they are quiet.'),
         );
       if (whenBusy !== undefined && whenBusy !== "wait")
         throw new Error('whenBusy must be "wait"');
@@ -1601,7 +1602,7 @@ export async function handleAgentApp(
         (action) => action.id === actionId,
       );
       if (listed?.confirm)
-        throw new Error(`${listed.name} asks Ash first; ask him in your chat`);
+        throw new Error(forUser`${listed.name} asks Ash first; ask him in your chat`);
       // A session working in its own worktree runs actions there by default.
       let checkout =
         !host.monoOf?.(source.id) &&

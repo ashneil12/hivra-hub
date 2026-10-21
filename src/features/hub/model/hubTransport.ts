@@ -3,6 +3,7 @@
 // against a stand-in.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { forUser } from "./userName";
 
 /** `server`: Ash OS answered with a 5xx (running, but failing). */
 export type HubErrorKind = "unreachable" | "timeout" | "unauthorized" | "refused" | "server" | "error";
@@ -32,7 +33,7 @@ export function toHubError(raw: unknown): HubCallError {
       return new HubCallError(kind as HubErrorKind, message);
     }
   }
-  return new HubCallError("unreachable", "Ash OS isn't running.");
+  return new HubCallError("unreachable", forUser("Ash OS isn't running."));
 }
 
 /** One change from Ash OS's feed. */

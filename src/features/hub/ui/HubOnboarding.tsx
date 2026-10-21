@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
 import { setHubSelection } from "../model/hubNav";
 import { preloadAshTeam } from "../model/hubTeam";
+import { previewTeamPack } from "../model/teamPack";
+import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
@@ -15,6 +17,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
   const [team, setTeam] = useState<"plain" | "ash">("plain");
+  const [name, setName] = useState("");
+  // The sidebar behind the card shows the team picked here, until onboarding closes.
+  useEffect(() => {
+    previewTeamPack(team);
+    return () => previewTeamPack(undefined);
+  }, [team]);
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -40,6 +48,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [theme, setTheme] = useState<ThemePresetId>("monocode");
   const done = (next: "today" | "new-project" | "restore" = "today") => {
     finishOnboarding();
+    if (name.trim()) setUserName(name);
     if (team === "ash") void preloadAshTeam();
     setHubSelection({ project: "today", item: next === "today" ? "inbox" : next });
     onClose();
@@ -63,6 +72,11 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <p className="text-[13px] leading-5 text-content/75">
               This is where your projects, your Monos and the coding team live. Today gives you access to your projects, Pages and work that needs your attention.
             </p>
+            <label className="mt-2 flex flex-col gap-1">
+              <span className="text-xs text-content/60">What should your team call you?</span>
+              <input data-hub-onboarding-name value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name (optional)" maxLength={40}
+                className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
+            </label>
             <p className="text-[13px] leading-5 text-content/60">Two quick choices. You can change all of it later in Settings.</p>
           </div>
         ) : null}
@@ -79,10 +93,10 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
             <Group label="Your team">
               <Toggle on={team === "plain"} onClick={() => setTeam("plain")} title="A plain team" sub="Four roles, nothing pre-loaded" />
-              <Toggle on={team === "ash"} onClick={() => setTeam("ash")} title="Pre-load Ash's team" sub="His souls and starting facts" />
+              <Toggle on={team === "ash"} onClick={() => setTeam("ash")} title="Pre-load a saved team" sub="Souls and starting facts" />
             </Group>
-            <p className="text-[13px] leading-5 text-content/60">
-              Three dashboards come built in: Game studio, Product / SaaS and Org / ops.
+            <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
+              Built-in dashboards: Game studio, Product / SaaS, Org / ops.
             </p>
           </div>
         ) : null}

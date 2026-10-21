@@ -23,7 +23,7 @@ import {
 } from "./monoFiles";
 
 beforeEach(() => {
-  const stored = new Map<string, string>();
+  const stored = new Map<string, string>([["monocode:hub-team-pack", "ash"]]); // Ash's install: the app's words name him (userName.ts)
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,
     setItem: (key: string, value: string) => stored.set(key, value),
