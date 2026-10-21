@@ -295,6 +295,19 @@ export function declineProposal(id: string): void {
   save({ ...state, proposals: state.proposals.map((p) => (p.id === id && p.status === "pending" ? { ...p, status: "declined" } : p)) });
 }
 
+/** Project names an agent gave, as folders: one of the hub's (id, name or folder) or one of `own`. */
+export function resolveProjects(wanted: readonly string[], own: readonly string[]): string[] {
+  const hub = hubData().listProjects();
+  return wanted.map((want) => {
+    const lower = want.toLowerCase();
+    const fromHub = hub.find((p) => p.folder && (p.id.toLowerCase() === lower || p.name.toLowerCase() === lower || projectKey(p.folder) === projectKey(want)));
+    if (fromHub?.folder) return fromHub.folder;
+    const mine = own.find((path) => projectKey(path) === projectKey(want) || path.split("/").pop()?.toLowerCase() === lower);
+    if (mine) return mine;
+    throw new Error(`Unknown project ${want}: name one of the hub's projects or one of yours.`);
+  });
+}
+
 /**
  * `app monos.propose` from a Mono: its fields checked and its project names resolved to folders. A project is one of
  * the hub's (by id or name) or one the proposing Mono already works on; it defaults to the proposer's own projects.
@@ -314,16 +327,8 @@ export function proposeMonoFromAgent(
     if (typeof value !== "string" || value.length > max) throw new Error(`${what} must be a string under ${max} characters`);
     return value;
   };
-  const hub = hubData().listProjects();
   const own = proposer.projects;
-  const projects = strings(input.projects, "projects").map((wanted) => {
-    const lower = wanted.toLowerCase();
-    const fromHub = hub.find((p) => p.folder && (p.id.toLowerCase() === lower || p.name.toLowerCase() === lower || projectKey(p.folder) === projectKey(wanted)));
-    if (fromHub?.folder) return fromHub.folder;
-    const mine = own.find((path) => projectKey(path) === projectKey(wanted) || path.split("/").pop()?.toLowerCase() === lower);
-    if (mine) return mine;
-    throw new Error(`Unknown project ${wanted}: name one of the hub's projects or one of yours.`);
-  });
+  const projects = resolveProjects(strings(input.projects, "projects"), own);
   const engine = (text(input.engine, "engine", 32) ?? "claude") as HarnessId;
   const lane = text(input.lane, "lane", 2000);
   const brief = text(input.brief, "brief", 2000) ?? "";

@@ -22,6 +22,7 @@ import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
+import { settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 
 /*
@@ -343,7 +344,8 @@ function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe t
 }
 
 /** A build in flight or back; `ready` marks a ready-made page (its preview, with nothing built). */
-type Build = { prompt: string; ready?: boolean } & ({ state: "building" } | BuildPageResult);
+/** `chat`: a page a Mono built from its own chat (selfBuild/model/pagesChat.ts), previewed here like any other. */
+type Build = { prompt: string; ready?: boolean; chat?: Page } & ({ state: "building" } | BuildPageResult);
 
 /** Ash OS refused or couldn't take the last page tap: one quiet line with OK. */
 function PagesProblem() {
@@ -429,7 +431,14 @@ export function PagesContent() {
     setSentBack(undefined);
     setBuild({ prompt: r.request, ready: true, status: "ready", spec: r.spec, warnings: checkBespokePage(r.spec).warnings });
   };
-  const preview = usePreview(ready, asker, askerId, projectId);
+  const built = usePreview(ready, asker, askerId, projectId);
+  const preview = ready?.chat ?? built;
+  // A page a Mono built from its chat shows here; once it is kept (by Ash or on his okay) or thrown away, it goes.
+  const chat = useChatPagePreview();
+  useEffect(() => {
+    if (chat) { setBuild({ prompt: chat.page.request, status: "ready", spec: chat.page.spec, warnings: chat.page.warnings ?? [], chat: chat.page }); setOpen(undefined); setNewPage(false); }
+    else setBuild((b) => (b?.chat ? undefined : b));
+  }, [chat?.previewId]);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
   const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
 
@@ -496,10 +505,11 @@ export function PagesContent() {
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
           <span className="text-[12px] text-content/70">This is a preview. Nothing is saved until you keep it.</span>
           <span className="ml-auto" />
-          <button type="button" className={quietBtn} onClick={() => setBuild(undefined)}>Throw away</button>
+          <button type="button" className={quietBtn} onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setBuild(undefined); }}>Throw away</button>
           <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => {
             const pin = !!ready?.pin;
             void keepPage(preview).then((ok) => { if (ok && pin) setPinned(preview.id, true, preview.by); });
+            if (ready?.chat) settleChatPreview(ready.chat.id);
             setKept(preview.title); setOpen(preview.id); setBuild(undefined);
           }}>{keepLabel}</button>
         </div>

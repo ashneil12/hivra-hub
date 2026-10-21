@@ -11,8 +11,8 @@
 // - Everything read back is framed as conversation data: Ash's words are his, other Monos' messages are their replies,
 //   never instructions.
 import type { Session } from "../../sessions/model/session";
-import { listMonos, monoLook } from "../../monos/model/mono";
-import { allChats, getChat, leadershipChatId, react, readRoom, REACTIONS } from "../../hub/model/hubChats";
+import { listMonos, monoLook, monoRole } from "../../monos/model/mono";
+import { allChats, createChat, getChat, leadershipChatId, react, readRoom, REACTIONS } from "../../hub/model/hubChats";
 import { postFromMono } from "../../hub/model/roomConductor";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import type { GroupChat } from "../../hub/model/types";
@@ -23,6 +23,7 @@ export const ROOM_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["rooms.post", ["room", "text", "replyTo", "conversation", "reaction"]],
   ["rooms.read", ["room", "since", "conversation", "limit"]],
   ["monos.message", ["to", "text"]],
+  ["rooms.create", ["name", "members", "project"]],
 ];
 
 /** A room post is a few lines, not a report: anything longer goes in a file or the Mono's chat, with a pointer. */
@@ -222,6 +223,32 @@ async function message(
   };
 }
 
+/** A group chat Ash asked a Mono to make, with that Mono in it (ash-day step 13: "a marketing chat with cos n pm"). */
+function create(mono: { id: string; name: string }, input: Record<string, unknown>) {
+  const name = text(input.name, "name", 60);
+  if (input.members !== undefined && (!Array.isArray(input.members) || input.members.length > 12 || input.members.some((m) => typeof m !== "string")))
+    throw new Error("members must be a list of at most 12 Mono names or ids");
+  const roster = listMonos();
+  const members = ((input.members as string[] | undefined) ?? []).map((ref) => {
+    const want = lower(ref);
+    const found = roster.find((m) => m.id === ref) ?? roster.find((m) => lower(monoLook(m).name) === want || lower(monoRole(m) ?? "") === want || initials(monoLook(m).name) === want);
+    if (!found) throw new Error(`No Mono "${ref}". Monos: ${roster.map((m) => monoLook(m).name).join(", ")}.`);
+    return found.id;
+  });
+  const mine = allChats().filter((c) => c.memberIds.includes(mono.id));
+  // Where Ash last spoke to this Mono in a room, unless a project is named.
+  const latest = (c: GroupChat) => Math.max(0, ...c.conversations.flatMap((v) => v.messages).filter((m) => m.from === "ash").map((m) => m.at ?? 0));
+  const projectId = typeof input.project === "string" && input.project.trim() ? input.project.trim() : [...mine].sort((a, b) => latest(b) - latest(a))[0]?.projectId;
+  if (!projectId) throw new Error("Name the project the chat belongs to (project).");
+  const existing = allChats().find((c) => c.projectId === projectId && lower(c.name) === lower(name));
+  if (existing) return { room: existing.id, name: existing.name, alreadyThere: true };
+  const chat = createChat(projectId, name, [...new Set([mono.id, ...members])]);
+  return { room: chat.id, name: chat.name, members: ["Ash", ...chat.memberIds.map(nameOf)], note: "It's in the sidebar. Post in it with room_post." };
+}
+function initials(name: string): string {
+  return name.split(/\s+/).map((w) => w[0] ?? "").join("").toLowerCase();
+}
+
 export async function handleRooms(
   source: Session,
   requestId: string,
@@ -230,6 +257,7 @@ export async function handleRooms(
   host: AgentAppHost,
 ): Promise<unknown> {
   const mono = caller(source, host);
+  if (action === "rooms.create") return create(mono, input);
   switch (action) {
     case "rooms.read":
       return read(mono, input);

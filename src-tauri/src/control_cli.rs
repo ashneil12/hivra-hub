@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 56] = [
+const APP_ACTIONS: [&str; 60] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -139,6 +139,10 @@ const APP_ACTIONS: [&str; 56] = [
     "rooms.post",
     "rooms.read",
     "monos.message",
+    "rooms.create",
+    "monos.create",
+    "pages.build",
+    "hub.change",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -405,6 +409,15 @@ Actions:
   monos.message  {"to":"<Mono id or name>","text":"..."}
                   Mono only. A private message another Mono gets as a turn in its
                   own chat, shown as from you; it answers you the same way.
+  rooms.create   {"name":"Marketing","members":["CoS","PM"]}  Mono only. A group
+                  chat Ash asked for, with you in it (MCP room_create).
+  monos.create   {"name","role","soul","skills"} drafts one new Mono; then
+                  {"draftId"} makes it once Ash has said yes (MCP mono_create).
+  pages.build    {"project","spec"} previews a Page from blocks; then
+                  {"previewId","keep":true} keeps it (MCP page_build).
+  hub.change     {"ask"} starts a change to the hub in a preview copy;
+                  {"changeId","ready":true} shows Ash Now | Preview; {"undo"}
+                  undoes one applied part (MCP hub_change).
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.

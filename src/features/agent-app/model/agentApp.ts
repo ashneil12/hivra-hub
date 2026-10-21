@@ -107,6 +107,7 @@ import {
 } from "./agentAppTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
+import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
@@ -347,6 +348,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
   ...ROOM_FIELDS,
+  ...SELF_BUILD_FIELDS,
 ]);
 
 /**
@@ -1203,6 +1205,19 @@ export async function handleAgentApp(
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
+  if (action === "monos.create" || action === "pages.build" || action === "hub.change")
+    return handleSelfBuild(source, action, input, host, async (brief, title, folder) => {
+      // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.
+      await harnessesProbed();
+      const inFolder: AgentAppHost = {
+        ...host,
+        monoOf: (id) => {
+          const mono = host.monoOf?.(id);
+          return mono && { ...mono, projects: [...mono.projects, folder], team: undefined };
+        },
+      };
+      return handleTasks(source, requestId, "tasks.delegate", { brief, title, project: folder }, inFolder, { startLaunch, fileStarted });
+    });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))

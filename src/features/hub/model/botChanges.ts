@@ -33,6 +33,10 @@ export type BotChange = {
   hubChangeId?: string;
   /** A Mono pinned or unpinned a page: Undo flips it back, Redo flips it again. */
   pin?: { pageId: string; pinned: boolean };
+  /** One applied part of an offered change (selfBuild/model/changeFlow.ts): its kind's code undoes and redoes it. */
+  flow?: { kind: string; data: unknown; undone?: unknown };
+  /** A Mono made from a chat with Ash (step 13): Undo retires it (archived, not deleted), Redo brings it back. */
+  made?: { monoId: string; retired?: RetiredMono };
   /**
    * What changes for that Mono, one plain sentence each (soul refresh: one per part of its soul), shown when the row is
    * opened. Never a diff or a file path.
@@ -98,6 +102,33 @@ export function recordPageChange(pageId: string, by: string, title: string): voi
   changed();
 }
 
+/** How an offered change's part is undone and redone (changeFlow.ts registers it; no import back). */
+type FlowHooks = { undo(kind: string, data: unknown): Promise<unknown>; redo(kind: string, data: unknown, undone: unknown): Promise<void> };
+let flowHooks: FlowHooks | undefined;
+export function setFlowHooks(next: FlowHooks): void {
+  flowHooks = next;
+}
+/** One applied part of an offered change: a Bot changes row with its own Undo. Returns the row's id. */
+export function recordFlowChange(part: { kind: string; by: string; title: string; data: unknown }): string {
+  const id = `flow:${part.kind}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 6)}`;
+  list = [{ id, bot: part.by, day: "Today", line: `${part.by} changed the hub: ${part.title}`, now: "As it was", after: part.title, flow: { kind: part.kind, data: part.data }, at: Date.now() }, ...list];
+  saveReal();
+  changed();
+  return id;
+}
+/** The applied parts of offered changes, newest first (a Mono undoes one by its title). */
+export function flowChanges(kind?: string): BotChange[] {
+  return list.filter((c) => c.flow && (!kind || c.flow.kind === kind));
+}
+/** A Mono made a new Mono from a chat with Ash: a plain row whose Undo retires it again. */
+export function recordMadeMono(monoId: string, by: string, name: string, role?: string): string {
+  const id = `made:${monoId}`;
+  list = [{ id, bot: by, day: "Today", line: `${by} made a new Mono, ${name}${role ? ` (${role})` : ""}`, now: "Not there", after: `${name} in your Monos`, undoneText: `Undone: ${name} is retired, its soul and memory archived.`, made: { monoId }, at: Date.now() }, ...list.filter((c) => c.id !== id)];
+  saveReal();
+  changed();
+  return id;
+}
+
 /** Pages registers how a page's pin is set, for Undo and Redo of a Mono's pin (resolving to a refusal, if any). */
 type PinHook = (pageId: string, pinned: boolean) => Promise<string | undefined>;
 let pinHook: PinHook | undefined;
@@ -130,14 +161,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || (c.note && c.monoId)));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId)));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || (c.note && c.monoId))));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId))));
   } catch {
     /* best effort */
   }
@@ -237,7 +268,22 @@ export async function undoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || c.undone || c.note) continue;
     let next: BotChange = { ...c, undone: true, problem: undefined };
-    if (c.hubChangeId) {
+    if (c.flow) {
+      try {
+        if (!flowHooks) throw new Error("Not connected yet, so nothing was undone.");
+        next = { ...next, flow: { ...c.flow, undone: await flowHooks.undo(c.flow.kind, c.flow.data) } };
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    } else if (c.made) {
+      try {
+        const retired = await retireMono(c.made.monoId);
+        if (!retired) throw new Error("That Mono is already gone.");
+        next = { ...next, made: { ...c.made, retired } };
+      } catch (e) {
+        next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    } else if (c.hubChangeId) {
       try {
         if (!hubChangeHooks) throw new Error("Not connected yet, so nothing was undone.");
         await hubChangeHooks.undo(c.hubChangeId);
@@ -309,7 +355,23 @@ export async function redoBotChange(ids: string[]): Promise<void> {
     const c = list.find((x) => x.id === id);
     if (!c || !c.undone) continue;
     let next: BotChange = { ...c, undone: false, problem: undefined };
-    if (c.hubChangeId) {
+    if (c.flow) {
+      try {
+        if (!flowHooks) throw new Error("Not connected yet, so nothing was redone.");
+        await flowHooks.redo(c.flow.kind, c.flow.data, c.flow.undone);
+        next = { ...next, flow: { kind: c.flow.kind, data: c.flow.data } };
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.made) {
+      try {
+        if (!c.made.retired) throw new Error("Nothing to bring back.");
+        await restoreRetiredMono(c.made.retired);
+        next = { ...next, made: { monoId: c.made.monoId } };
+      } catch (e) {
+        next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.hubChangeId) {
       try {
         if (!hubChangeHooks) throw new Error("Not connected yet, so nothing was redone.");
         await hubChangeHooks.redo(c.hubChangeId);

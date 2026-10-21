@@ -66,6 +66,7 @@ mod remote_ssh;
 mod resources;
 mod rooms;
 mod search;
+mod self_build;
 mod session_store;
 mod ship;
 mod skills;
@@ -358,6 +359,8 @@ pub fn run() {
             if policy.reap_orphans {
                 harness::reap_orphaned_harness_processes();
             }
+            // A hub-change preview left on by a crash comes back out (self_build.rs).
+            self_build::start(app.handle());
             session_store::init(app.handle())?;
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             delegations::init(app.handle());
@@ -493,6 +496,14 @@ pub fn run() {
             pr_watch::pr_watch_list,
             pr_watch::pr_watch_wakes_open,
             pr_watch::pr_watch_wake_delivery,
+            self_build::hub_change_prepare,
+            self_build::hub_change_collect,
+            self_build::hub_change_preview,
+            self_build::hub_change_ping,
+            self_build::hub_change_live,
+            self_build::hub_change_apply,
+            self_build::hub_change_discard,
+            self_build::hub_change_revert,
             rooms::rooms_load,
             rooms::rooms_upsert,
             rooms::rooms_conversation_upsert,

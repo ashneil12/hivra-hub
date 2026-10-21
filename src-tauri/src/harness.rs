@@ -3358,11 +3358,18 @@ mod tests {
         assert_eq!(super::claude_grok_bridge_in(&home), Some(launcher.clone()));
         // Accepted as Claude Code's configured CLI; any other name still is not.
         let path = launcher.to_string_lossy().into_owned();
-        assert!(super::resolve_configured_harness_binary(&path, "claude", &["claude", super::CLAUDE_GROK_BRIDGE_NAME]).is_ok());
+        assert!(super::resolve_configured_harness_binary(
+            &path,
+            "claude",
+            &["claude", super::CLAUDE_GROK_BRIDGE_NAME]
+        )
+        .is_ok());
         assert!(super::resolve_harness_binary_override("claude", &path).is_ok());
         let other = bin.join("claude-gpt");
         std::fs::copy(&launcher, &other).unwrap();
-        assert!(super::resolve_harness_binary_override("claude", &other.to_string_lossy()).is_err());
+        assert!(
+            super::resolve_harness_binary_override("claude", &other.to_string_lossy()).is_err()
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

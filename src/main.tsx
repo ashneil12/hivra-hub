@@ -32,6 +32,7 @@ import { listenForEffortRefusals, setModelKeyStore, tauriModelKeyStore } from ".
 import { hydrateRosterFromHome, enableTauriHome } from "./features/monos/model/monoHome";
 import { setMonoHomeRoot } from "./features/hub/model/hubMcp";
 import { DevRibbon } from "./app/shell/DevRibbon";
+import { ChangeBar } from "./features/selfBuild/ui/ChangeBar";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
 if (isTauri()) {
@@ -147,5 +148,10 @@ void Promise.all([
         </BootGate>
       </React.StrictMode>,
     );
+    // What a Mono made and waits on Ash for (Now | Preview, Apply, Discard), in a root of its own: a previewed change
+    // that breaks the app's own screens can't take these buttons with it (selfBuild/ui/ChangeBar.tsx).
+    const bar = document.createElement("div");
+    document.body.appendChild(bar);
+    ReactDOM.createRoot(bar).render(<ChangeBar />);
   },
 );

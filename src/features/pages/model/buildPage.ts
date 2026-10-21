@@ -94,6 +94,11 @@ async function build(payload: Record<string, unknown>, stub: () => unknown, deps
       return { status: "error", reason: err.message || "The build didn't go through." };
     }
   }
+  return checkBuiltSpec(raw);
+}
+
+/** A built page as it came back (from Ash OS, or from a Mono's own chat through page_build): checked, then ready. */
+export function checkBuiltSpec(raw: unknown): BuildPageResult {
   const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown; replaces?: unknown }) : {};
   const extra = {
     ...(r.pin === true ? { pin: true } : {}),
