@@ -1,0 +1,17 @@
+1 view hashes 1:1:145:71dceb04644a:b0d317a3ada5 2:2:290:d8efefef8b19:d1c87fb5ba49 3:3:435:fe38596fe3d4:6341fb6c19d4 100:100:19253:305aee6d781c:19b2c39b5c70 200:200:38933:00e10c73ad12:10437dbc6058 255:255:49342:7630e2c64466:b5f623e88b40 256:256:49821:38f445e82c10:4474e9ae478c 257:257:49968:676b8750e0e9:8e8746fd78f3 300:300:58281:183b64c0ddc3:d56394b62631 400:400:77629:5bdec99c7659:d6dd2433793b 500:500:96977:953dbdab2bf9:b64cc9c29f89 600:600:116657:c42ac160cada:1a5b09070ff1 700:226:71591:0edf671de80e:d426ea995c73 800:326:90939:5fbc1382c188:618bdc0afb34 900:426:110619:01d3373e02f1:7a7aba709b23 1000:183:65197:af780381c83f:464af139e0ba 1023:206:69594:272c74f8d2c2:2d8f799fd722 1024:207:69742:f7a330f8ff49:ef59a8b4c8a4 1025:208:69890:74a45dfc474b:4b755c27bad6 1100:283:84631:e25004d04ce3:5b3a8c2dc58a 1200:383:104065:d5baaa5b887f:b1c29b6b7cc5 1300:483:123830:e208a2c5d5d2:267c50c16c85 1400:248:79096:ba646e4a229d:850c90b2e78c 1500:348:98530:8a10e190a605:0f7ca066d5a7 1600:448:118295:e1806708f51c:ac2b5ff7ad41 1700:217:73696:a29a16c551e1:3a8d9804eeb7 1800:317:93130:1456a97febca:934697fd4f81 1900:417:112564:05fabc670eb0:c3a26911ae33 2000:187:67934:3d03f3f2f0c0:4ec0da3ebf22
+1 detail grows toward now, breaks: 0
+1 views over 128000 bytes: 0
+1 views with an unsummarized line after idle: 0
+1 most nodes made by one message: 11
+1 nodes built 3994, complete(2000) = 3994
+1 tree hash 3bb118070001
+1 main hash 8538078cab71
+2 halving 1024 took 10 zooms; message: 777+0|mono: memory number 777, a thing that happened, was we
+2 bad zooms: No line 3+6: n is a power of 2, id a multiple of n. The tree || No line 2048+2048: n is a power of 2, id || No line 5+4: n is a power of 2, id a multiple of n. The tree
+4 reload keeps the view: true
+4 stopped at 1200 and went on, same view as straight through: true
+6 leaf sizes 479,600,512,479
+7 zoom before: 4+1|user: memory number 4, a thing that happened, was weighed against the rest of the week, turned out to matter more than anyone guessed at the time / 5+1|(not
+8 a 75000-character result became 3 messages
+8 zoom of a page: line of output\nline of output\nline of output\nline of output\n
+669738 passed, 0 failed
