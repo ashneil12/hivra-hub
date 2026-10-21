@@ -2520,7 +2520,8 @@ function ThemesRow() {
 
 /**
  * While a theme is previewed, a slim bar stays at the top of Appearance as Ash scrolls down to the sliders, so Stop
- * preview and Apply are always in reach.
+ * preview and Apply are always in reach. It wears the sidebar's glass fill (`sidebar-glass`) with the 24px backdrop
+ * blur the peeking sidebar uses, so text scrolling under it doesn't show through.
  */
 function ThemePreviewBar() {
   useThemeImportVersion();
@@ -2529,7 +2530,7 @@ function ThemePreviewBar() {
   return (
     <div
       data-theme-preview-bar
-      className="hub-fade-in sticky top-0 z-20 -mx-2 mb-4 flex items-center gap-3 rounded-lg bg-surface/95 px-3 py-2 ring-1 ring-surface-ring backdrop-blur"
+      className="sidebar-glass hub-fade-in sticky top-0 z-20 -mx-2 mb-4 flex items-center gap-3 rounded-lg px-3 py-2 ring-1 ring-surface-ring backdrop-blur-xl"
     >
       <p className="min-w-0 flex-1 truncate text-[13px] text-content">Previewing {pending.check.theme.name}</p>
       <button type="button" data-theme-bar-stop onClick={stopPreview}

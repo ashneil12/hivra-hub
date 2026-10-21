@@ -68,6 +68,9 @@ test("F3: a Mono's theme is checked, previewed, applied, and its Bot changes row
   // Glass doesn't look selected while Tide is on show.
   await expect(page.locator('[data-scheme="glass"]')).toHaveAttribute("aria-pressed", "false");
   await expect(bar).toBeInViewport();
+  // The sidebar's glass: its fill and a 24px blur, so text scrolling under it doesn't show through.
+  await expect(bar).toHaveClass(/sidebar-glass/);
+  expect(await bar.evaluate((el) => getComputedStyle(el).backdropFilter)).toBe("blur(24px)");
   await expect(page.locator("[data-theme-import]")).not.toBeInViewport();
   await shot(page, "f3-pm21-preview-bar-and-sliders");
   await bar.locator("[data-theme-bar-stop]").click();
