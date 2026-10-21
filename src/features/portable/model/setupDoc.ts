@@ -121,6 +121,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.rightPanelTabOrder",
   "monocode:hub-strip-backdrop",
   "monocode:hub-role-names",
+  // What the team calls the user (G5 onboarding). A10: a fresh copy otherwise says "the user".
+  "monocode:hub-user-name",
   // How the app behaves
   "monocode.showRemainingUsage",
   "monocode.maskEmails",
@@ -147,6 +149,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.autosave",
   "monocode.claudeHooks",
   "monocode.idleAgentLimit",
+  // How long a quiet worker may sit before it reads stalled (workerStall.ts).
+  "monocode:stall-minutes",
   "monocode.keybindingOverrides",
   "monocode.contextCeiling",
   "monocode.idleCompact",

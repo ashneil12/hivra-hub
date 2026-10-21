@@ -9,6 +9,7 @@ import type { OrchestrationProposal } from "../../orchestration/model/orchestrat
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
 import {
   defaultSessionChoice,
+  folderDefaultChoice,
   firstEnabledHarness,
   preferredModelId,
   preferredModelSettings,
@@ -488,6 +489,8 @@ export type Block = {
     | "account-moved"
     /** Ash wrote to a chat that is held on his OK for a tool call: it can't answer until he decides (approvalWait.ts). */
     | "waiting-on-you";
+  /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
+  agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */
@@ -734,7 +737,12 @@ export function newDefaultSession(
   runtimeMode: RuntimeMode = DEFAULT_RUNTIME_MODE,
 ): Session {
   const choice = defaultSessionChoice(cwd);
-  return newSession(choice.harness, cwd, choice.model, runtimeMode);
+  return withChoiceSettings(newSession(choice.harness, cwd, choice.model, runtimeMode), choice.modelSettings);
+}
+
+/** A folder default's own settings (the coding team's High) win over the last chat's. */
+function withChoiceSettings(session: Session, settings: Record<string, string> | undefined): Session {
+  return settings ? { ...session, modelSettings: { ...session.modelSettings, ...settings } } : session;
 }
 
 /**
@@ -771,6 +779,9 @@ export function newSessionForProject(
   seed: Session | undefined,
   cwd: string,
 ): Session {
+  // The hub's coding-team default (E7) wins over the seed when the project has no default of its own.
+  const folder = folderDefaultChoice(cwd);
+  if (folder) return withChoiceSettings(newSession(folder.harness, cwd, folder.model, seed?.runtimeMode), folder.modelSettings);
   const { harness, model } = projectSessionChoice(seed, cwd);
   const carriesSeed =
     model != null && model === seed?.model && harness === seed?.harness;

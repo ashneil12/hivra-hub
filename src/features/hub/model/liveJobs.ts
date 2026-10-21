@@ -74,8 +74,8 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
       if (job.sentText) w.sentNote = job.gotIt ? `${job.sentText} · ${job.gotIt.text}` : job.sentText;
       break;
     case "lead_gave_up":
-      // Ash's default: red "Stuck", the reason on the second line (the same as Today). "Needs you" only behind the
-      // `monocode:hub-gaveup-style=needs_you` dev flag (see jobState).
+      // D5 (Ash, 21 Oct 20:40): "Needs you", the reason on the second line (the same as Today). The old red "Stuck"
+      // only behind the `monocode:hub-gaveup-style=stuck` dev flag (see jobState).
       w.stuck = "lead_gave_up";
       w.stuckReason = job.reason || job.why || undefined;
       break;

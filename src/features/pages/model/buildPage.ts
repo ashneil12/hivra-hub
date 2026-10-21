@@ -61,6 +61,11 @@ export function devStubOn(): boolean {
 
 export type BuildDeps = { transport?: HubTransport; roster?: readonly { id: string }[]; stub?: boolean };
 
+/**
+ * No cap on how many pages build at once (H8, Ash 21 Oct 20:40: "if you build a page, you build a page ... Why does it
+ * need a cap?"). The "3 at once" was only ever a proposed call and was never built here: each build is its own call to
+ * Ash OS, nothing queues them, and buildPage.parallel.test.ts keeps it that way.
+ */
 export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the page should show." };

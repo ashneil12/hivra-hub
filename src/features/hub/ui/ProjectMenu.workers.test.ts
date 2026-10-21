@@ -40,6 +40,8 @@ describe("Workers at once", () => {
     const line = () => document.querySelector("[data-project-workers-line]")?.textContent ?? "";
     expect(line()).toContain("Hivra runs up to 6 workers at once, 2 of them on heavy tests.");
     expect(line()).toContain("You can also just tell its Lead.");
+    // E7: which model the coding team starts on, and why it isn't DeepSeek yet.
+    expect(document.querySelector("[data-project-model-line]")?.textContent).toContain("DeepSeek isn't set up yet");
     act(() => type(document.querySelector<HTMLInputElement>('[data-project-workers="workers"]')!, "20"));
     expect(workerLimits("hivra")).toEqual({ workers: 20, heavy: 2 });
     expect(line()).toContain("Hivra runs up to 20 workers at once");

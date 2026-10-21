@@ -16,6 +16,7 @@ import {
 } from "../model/delegations";
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
+import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
 
 /** How often an open brief is looked at again even when no chat changed (the queue grace, a store-side move). */
@@ -86,6 +87,9 @@ export function useFollowedBriefs(options: {
   const reported = useRef(new Set<string>());
   const asked = useRef(new Map<string, number>());
   const noted = useRef(new Set<string>());
+  // Agent-to-agent notes (model/agentNotes.ts): moves from this run on, each once; which worker chats exist, once each.
+  const notesSince = useRef<number | undefined>(undefined);
+  const chatThere = useRef(new Map<string, boolean>());
 
   const sweepRef = useRef<() => Promise<void>>(async () => undefined);
   sweepRef.current = async () => {
@@ -138,6 +142,19 @@ export function useFollowedBriefs(options: {
         if (!block || noted.current.has(block.id)) continue;
         noted.current.add(block.id);
         note(owner, block);
+      }
+      // Who messaged whom, who got stuck, who reported: a small note in the owner's chat, linking the worker's chat
+      // when it exists (none: plain text). Only this run's moves; a chat's older history isn't replayed.
+      notesSince.current ??= now;
+      for (const row of known) {
+        const id = row.childSession;
+        if (sessionsRef.current.some((s) => s.id === id)) chatThere.current.set(id, true);
+        else if (!chatThere.current.has(id)) chatThere.current.set(id, !!(await getSession(id).catch(() => null)));
+      }
+      const exists = (id: string) => chatThere.current.get(id) ?? sessionsRef.current.some((s) => s.id === id);
+      for (const { chatId, block } of newAgentNoteBlocks(known, sessionsRef.current, notesSince.current, now, exists, noted.current)) {
+        noted.current.add(block.id);
+        note(chatId, block);
       }
     }
     const onLeadReport = latest.current.onLeadReport;

@@ -34,6 +34,7 @@ import {
 import { SessionCard } from "../../../app/shell/Sidebar";
 import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
+import { noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
 
 /** A launched session open over the overview, live and fully usable. */
 export type ShownMonoSession = {
@@ -59,6 +60,7 @@ export function MonoSessionList({
   query = "",
   filters = DEFAULT_SESSION_SIDEBAR_FILTERS,
   onOpenSession,
+  workOnly = false,
 }: {
   agent: MonoLook;
   launches: readonly MonoSpawnedSession[];
@@ -68,7 +70,13 @@ export function MonoSessionList({
   query?: string;
   filters?: SessionSidebarFilters;
   onOpenSession: (sessionId: string) => void | Promise<void>;
+  /**
+   * A8: only the work that is running, and finished work until it is clicked (model/monoWorkSessions.ts). Search and
+   * the filters still list every session. The Mono overview's Sessions tab sets it.
+   */
+  workOnly?: boolean;
 }) {
+  useWorkSessionsVersion();
   const launchesKey = JSON.stringify(
     launches.map((entry) => [entry.sessionId, entry.cwd]),
   );
@@ -139,6 +147,7 @@ export function MonoSessionList({
   }, [launchesKey, liveSessionsKey]);
 
   const open = async (id: string) => {
+    if (workOnly) seenWorkSession(id);
     setOpening(id);
     setError(undefined);
     try {
@@ -237,7 +246,16 @@ export function MonoSessionList({
         ].map((row) => row.id)
       : filtered.map((row) => row.id),
   );
-  const matching = launches.filter((launch) => matched.has(launch.sessionId));
+  // A8: what is running, and what finished until it is clicked, unless Ash is searching or filtering.
+  const active = (id: string) => busyIds.has(id) || approvalIds.has(id);
+  const activeKey = JSON.stringify(launches.map((launch) => [launch.sessionId, active(launch.sessionId)]));
+  useEffect(() => {
+    if (!workOnly) return;
+    noteWorkSessions((JSON.parse(activeKey) as [string, boolean][]).map(([id, on]) => ({ id, active: on })));
+  }, [workOnly, activeKey]);
+  const narrowing = !!query.trim() || hasActiveSessionFilters(filters);
+  const workView = (id: string) => (workOnly && !narrowing ? workSessionView(id, active(id)) : undefined);
+  const matching = launches.filter((launch) => matched.has(launch.sessionId) && workView(launch.sessionId) !== "hidden");
   // A page of cards mounts at a time, as in the sidebar; the sentinel below
   // asks for the next one as it nears the panel's bottom. Searching or
   // filtering starts over from the first page.
@@ -266,6 +284,12 @@ export function MonoSessionList({
     return () => observer.disconnect();
   }, [hasMore, shown.length]);
 
+  if (workOnly && !narrowing && launches.length > 0 && matching.length === 0)
+    return (
+      <EmptyState icon={Search}>
+        Nothing running right now. Search or filter to find {agent.name}&apos;s earlier sessions.
+      </EmptyState>
+    );
   if (launches.length > 0 && matching.length === 0)
     return (
       <EmptyState icon={Search}>
@@ -304,7 +328,7 @@ export function MonoSessionList({
                   isActive={false}
                   isSelected={false}
                   busy={!!live?.busy}
-                  done={false}
+                  done={workView(launch.sessionId) === "done"}
                   linkedUpdate={false}
                   needsApproval={
                     !!live &&

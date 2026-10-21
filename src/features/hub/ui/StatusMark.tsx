@@ -23,8 +23,9 @@ export function StatusMark({ state }: { state: StuckState }) {
 }
 
 /**
- * The mark on a Needs row. A job the Lead gave up on (a job's row that Ash OS marks red) reads red "Stuck", whatever
- * word Ash OS sends, and any "Stuck" row is the same red; "Needs you" only behind the `monocode:hub-gaveup-style=needs_you` dev flag.
+ * The mark on a Needs row. A job the Lead gave up on (a job's row that Ash OS marks red) reads "Needs you" (D5, Ash 21
+ * Oct 20:40), whatever word Ash OS sends; the old red "Stuck" only behind the `monocode:hub-gaveup-style=stuck` dev flag.
+ * Any other "Stuck" row (still fixing itself) is the one red.
  */
 export function needMark(need: Pick<Need, "circle" | "word" | "jobId">): { circle: "amber" | "red"; word: string } | null {
   if (!need.circle || !need.word) return null;

@@ -5,8 +5,9 @@
 // Today, and the native notification.
 //
 // Stuck is one of:
-// - asking: the worker asked its Lead (state `question`). Flagged everywhere at once; the Lead answers it when Ash's
-//   words cover it. Once it has sat `ASK_ESCALATE_MS` unanswered it is Ash's too (`escalated`).
+// - asking: the worker asked its Lead (state `question`). It stays the Lead's (D5, Ash 21 Oct 20:40/20:42): the Lead
+//   answers it when Ash's words cover it, otherwise asks Ash in the Lead's own chat and relays his answer with
+//   task_answer (delegationQuestions.ts). It is never escalated past the Lead, so Ash never has to open the worker.
 // - stalled: running, but quiet, looping or idle without a report (workerStall.ts writes it on the row).
 // - failed: the work ended in a failure, with its reason (a usage limit with its reset time, a billing refusal: never
 //   silently). It stays until Ash dismisses it, a later try in the same chat replaces it, or six hours pass.
@@ -31,7 +32,10 @@ export type StuckWorker = {
   key: string;
 };
 
-/** How long a worker's question may wait on its Lead before it is Ash's to answer too. */
+/**
+ * How long a worker's question had waited on its Lead before it used to become Ash's too. Since D5 (Ash, 21 Oct) a
+ * worker's question never leaves the Lead's chat; kept so "not answered yet" can still read on the Lead's own card.
+ */
 export const ASK_ESCALATE_MS = 3 * 60_000;
 const FAILED_RECENT_MS = CHILD_CHATS_RECENT_MS;
 const URGENCY: Record<StuckKind, number> = { failed: 0, stalled: 1, asking: 2 };
@@ -239,7 +243,8 @@ export function stuckOf(row: Delegation, now: number): StuckWorker | undefined {
     kind,
     line,
     since,
-    escalated: kind !== "asking" || now - since >= ASK_ESCALATE_MS,
+    // A worker's question is the Lead's to ask Ash in its own chat (D5), never Ash's directly.
+    escalated: kind !== "asking",
     key,
   };
 }

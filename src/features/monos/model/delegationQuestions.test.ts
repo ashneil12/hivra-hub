@@ -16,6 +16,7 @@ import {
 import { delegationTasksHost } from "./delegationTasks";
 import { DelegationTracker, type Delegation } from "./delegations";
 import { MemoryDelegations } from "./memoryDelegations";
+import { stuckOf } from "./workerStuck";
 
 const LEAD = "lead-chat";
 const OTHER = "plain-chat";
@@ -354,5 +355,51 @@ describe("the pieces", () => {
     expect(waits.settlesAt("a")).toBe(3_000);
     clock.now = 3_001;
     expect(waits.waiting("a")).toBe(false);
+  });
+});
+
+// D5 pass test (Ash, 21 Oct 20:40/20:42): a worker is stuck on a question; its Lead asks Ash in the Lead's own chat,
+// Ash answers there, the Lead relays it, and the worker carries on. Ash never opens the worker's chat, and the question
+// never becomes a separate item of his (it is not escalated past the Lead, however long it waits).
+describe("D5: a stuck worker is asked about through its Lead", () => {
+  it("the Lead asks Ash in its own chat, relays his answer with task_answer, and the worker continues", async () => {
+    const run = new Run();
+    await run.start();
+    run.ask();
+    run.sync();
+    await settle();
+    // 1. The question lands in the Lead's chat only, telling it to ask Ash there and relay his choice.
+    expect(run.queue(LEAD)).toHaveLength(1);
+    expect(run.queue(CHILD)).toHaveLength(0);
+    const wake = run.queue(LEAD)[0].text;
+    expect(wake).toContain("ask him in this chat with your pick");
+    expect(wake).toContain("then answer the worker with his choice");
+    // 2. Half an hour on, it is still the Lead's, never Ash's directly (no Today row, no notification).
+    const asked = stuckOf(run.stored(), run.clock.now + 30 * 60_000);
+    expect(asked).toMatchObject({ kind: "asking", escalated: false });
+    // 3. Ash answers in the Lead's chat; the Lead relays it to the worker, which runs again.
+    const respond = vi.fn((child: Session, requestId: number) => {
+      if (run.chats.get(child.id)?.pendingQuestion?.requestId === requestId) run.ask(child.id, null);
+    });
+    const host = delegationTasksHost({
+      backend: run.store,
+      tracker: () => run.tracker,
+      session: (id) => run.chats.get(id) as Session | undefined,
+      stop: async () => {},
+      dropReport: () => {},
+      respond,
+      questions: run.router,
+    });
+    await host.answer!(LEAD, run.stored(), 7, { kind: "answered", answers: { q1: ["next"] } });
+    run.sync();
+    await settle();
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond.mock.calls[0][0].id).toBe(CHILD);
+    expect(run.stored().state).toBe("running");
+    expect(run.stored().log.filter((entry) => entry.event === "answered")).toEqual([
+      expect.objectContaining({ by: `owner:${LEAD}`, answers: { q1: ["next"] } }),
+    ]);
+    expect(run.queue(LEAD)).toEqual([]);
+    expect(stuckOf(run.stored(), run.clock.now)).toBeUndefined();
   });
 });

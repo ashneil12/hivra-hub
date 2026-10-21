@@ -16,7 +16,10 @@ export { failedMonosFor, monoProject, stuckProject } from "../model/todayCounts"
 export function StuckToday({ projectId }: { projectId: string | undefined }) {
   const { stuck, now } = useStuckWorkers();
   useMonoFailuresVersion();
-  const shown = projectId ? stuck.filter((s) => stuckProject(s)?.id === projectId) : stuck;
+  // A worker's question is not here (D5, Ash 21 Oct 20:42): its Lead asks Ash in the Lead's own chat and relays the
+  // answer, so Ash never goes looking for it or opens the worker. Stalled and failed workers stay.
+  const forAsh = stuck.filter((s) => s.kind !== "asking");
+  const shown = projectId ? forAsh.filter((s) => stuckProject(s)?.id === projectId) : forAsh;
   const failed = failedMonosFor(projectId);
   const workers = (
     <StuckList

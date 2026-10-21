@@ -17,6 +17,7 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
+import { AgentNoteRow } from "../../monos/ui/AgentNoteRow";
 import {
   memo,
   startTransition,
@@ -2608,6 +2609,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
     }
+    // Agent-to-agent notes (monos/model/agentNotes.ts): a small line that opens that agent's chat when there is one.
+    if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded={embedded} />;
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
         <pre className="min-w-0 whitespace-pre-wrap break-words">
@@ -4482,6 +4485,7 @@ function ActivityRow({
     return <ActivityInterjectionRow block={block} />;
   }
   if (block.role === "system") {
+    if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded />;
     return <ActivityStatusRow block={block} />;
   }
   if (isProseBlock(block)) {

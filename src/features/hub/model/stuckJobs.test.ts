@@ -41,13 +41,14 @@ describe("withStuckWorkers", () => {
     expect(w).toMatchObject({ stuck: "stuck", stuckReason: "No output for 8 min" });
   });
 
-  it("a question on its Lead reads Waiting with the question; left unanswered it is Stuck", () => {
+  it("a question on its Lead reads Waiting with the question, however long it sits (D5: the Lead asks Ash in its chat)", () => {
     const asked = (at: number) => row("a", { state: "question", pendingQuestion: "Which format?", log: [{ at, by: "worker", event: "asked" }] });
     const [fresh] = withStuckWorkers([workerOf(job({}), group, NOW)], [top, asked(NOW - MIN)], NOW);
     expect(fresh).toMatchObject({ state: "waiting", stateReason: "Asked: Which format?" });
     expect(fresh.stuck).toBeUndefined();
     const [old] = withStuckWorkers([workerOf(job({}), group, NOW)], [top, asked(NOW - 10 * MIN)], NOW);
-    expect(old).toMatchObject({ stuck: "stuck", stuckReason: "Asked, not answered yet: Which format?" });
+    expect(old).toMatchObject({ state: "waiting", stateReason: "Asked: Which format?" });
+    expect(old.stuck).toBeUndefined();
   });
 
   it("keeps Ash OS's own louder word, and leaves finished, parked and unrelated jobs alone", () => {

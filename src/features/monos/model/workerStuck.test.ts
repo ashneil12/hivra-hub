@@ -80,11 +80,11 @@ describe("stuckWorkers", () => {
     expect(stuck.find((s) => s.kind === "asking")?.line).toBe("Which save format? [JSON | binary]");
   });
 
-  it("a question reaches Ash's attention at once, and is his to answer once the Lead has let it sit a few minutes", () => {
+  it("a worker's question stays its Lead's however long it sits (D5: the Lead asks Ash in its own chat); stalled and failed are escalated", () => {
     const fresh = stuckWorkers([asking("a", NOW - 30_000)], NOW)[0];
     expect(fresh.escalated).toBe(false);
-    const old = stuckWorkers([asking("a", NOW - ASK_ESCALATE_MS)], NOW)[0];
-    expect(old.escalated).toBe(true);
+    const old = stuckWorkers([asking("a", NOW - 10 * ASK_ESCALATE_MS)], NOW)[0];
+    expect(old.escalated).toBe(false);
     const stalled = stuckWorkers([row({ id: "s", stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: NOW - 7 * MIN })], NOW)[0];
     expect(stalled).toMatchObject({ escalated: true, line: "Stopped without reporting back · 7 min ago" });
     const failed = stuckWorkers([row({ id: "f", state: "failed", error: "The build broke. Then more.", settledAt: NOW })], NOW)[0];
