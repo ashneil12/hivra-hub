@@ -344,3 +344,8 @@ test("a grok-sub client runs the bridge launcher with Grok 4.7", async () => {
   assert.match(calls[0].bin, /\/\.local\/bin\/claude-grok$/);
   assert.equal(calls[0].args[calls[0].args.indexOf("--model") + 1], "grok-4.7");
 });
+
+test("S5 runs its coding-team chat in Full access; no other scene changes the mode", () => {
+  const modes = book.scenes.filter((s) => s.runtimeMode).map((s) => [s.id, s.runtimeMode]);
+  assert.deepEqual(modes, [["S5", "full-access"]]);
+});

@@ -28,7 +28,7 @@ import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
 import { openSubChats } from "../../features/monos/model/subChats";
 import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { customModelEfforts, importCustomModels, listCustomModels } from "../../features/sessions/model/customModels";
-import type { Session } from "../../features/sessions/model/session";
+import type { RuntimeMode, Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
 
 /**
@@ -55,8 +55,20 @@ export type DriverHost = {
   /** Open a chat the way a click on it does (a worker's sub-chat under its owner's Mono when `owner` is given). */
   openSession(sessionId: string, owner?: string): void;
   /** A new chat in a project's coding team (App.tsx startCodingTeamChat): its id, or null when it has no code folder. */
-  startCodingTeamChat?(projectId: string): string | null;
+  startCodingTeamChat?(projectId: string, runtimeMode?: RuntimeMode): string | null;
+  /** Ash's Allow on a chat's permission card (the bench's `approve` step; a verify dev copy only). */
+  approve?(sessionId: string, requestId: number): void;
 };
+
+/** Runtime modes a bench send may start a coding-team chat in. Anything else keeps the app's default. */
+const BENCH_MODES: readonly RuntimeMode[] = ["supervised", "auto-accept-edits", "auto", "full-access"];
+
+/** The permission cards a chat is waiting on Ash for: undecided approval blocks, oldest first. */
+export function pendingApprovals(session: Session | undefined): number[] {
+  return (session?.blocks ?? [])
+    .filter((block) => block.approval && !block.approval.decided)
+    .map((block) => block.approval!.requestId);
+}
 
 export function driverEnabled(): boolean {
   const identity = appIdentity();
@@ -327,10 +339,12 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (!text.trim()) throw new Error("send: empty text");
       if ("room" in to) return { ok: true, at: Date.now(), ...sendToRoom(to.room, text, action.fresh === true) };
       if ("codingTeam" in to) {
-        const sessionId = host.startCodingTeamChat?.(to.codingTeam) ?? null;
+        // A bench scene may start its chat in Full access (a coding-team scene that must run tools without a card).
+        const mode = BENCH_MODES.find((m) => m === action.runtimeMode);
+        const sessionId = host.startCodingTeamChat?.(to.codingTeam, mode) ?? null;
         if (!sessionId) throw new Error(`send: no coding team for ${to.codingTeam}`);
         await wait(50);
-        return { ok: host.submit(sessionId, text), at: Date.now(), session: sessionId, codingTeam: to.codingTeam };
+        return { ok: host.submit(sessionId, text), at: Date.now(), session: sessionId, codingTeam: to.codingTeam, ...(mode ? { runtimeMode: mode } : {}) };
       }
       const sessionId = "mono" in to ? await host.openMono(to.mono) : to.session;
       if (!sessionId) throw new Error(`send: no chat for ${JSON.stringify(to)}`);
@@ -388,6 +402,16 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (!failure) return { ok: false, error: "that Mono's last turn didn't fail", at: Date.now() };
       const ok = retryMonoFailure(monoId);
       return { ok, at: Date.now(), reason: failure.reason, tone: failure.tone, ...(ok ? {} : { error: "it couldn't take it right now" }) };
+    }
+    case "approve": {
+      // Ash taps Allow on every permission card the chat is waiting on, as he would in the chat.
+      const sessionId = String(action.session ?? "");
+      const session = host.sessions().find((s) => s.id === sessionId);
+      if (!session) throw new Error("approve: no chat");
+      if (!host.approve) return { ok: false, error: "approve: this window can't approve", session: sessionId };
+      const pending = pendingApprovals(session);
+      for (const requestId of pending) host.approve(sessionId, requestId);
+      return { ok: true, at: Date.now(), session: sessionId, approved: pending.length };
     }
     case "reload":
       // The window reloads the way a vite full reload or View > Reload does (pagehide, then a fresh page), once this

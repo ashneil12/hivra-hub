@@ -175,7 +175,9 @@
       "expect": {
         "filesChanged": true,
         "projectTests": "npm test"
-      }
+      },
+      "runtimeMode": "full-access",
+      "note": "Runs in Full access (dev copy only): the scene is about chatting while work runs, not about permission cards, and Ash said manual approving is \"long and counter intuitive\" [M27]. Never Ash's default."
     },
     {
       "id": "S6",

@@ -203,3 +203,31 @@ test("a coding-team send goes to the test project's hub id, not to the project's
   assert.deepEqual(sent[0], { codingTeam: "tally" });
   fs.rmSync(evidence, { recursive: true, force: true });
 });
+
+test("a coding-team step can start in Full access, and an approve step taps Allow in that chat", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-ap-"));
+  const calls = [];
+  const ctx = {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind, args) => {
+      calls.push({ kind, args: JSON.parse(JSON.stringify(args ?? {})) });
+      if (kind === "send") return { ok: true, at: Date.now(), session: "chat-1" };
+      if (kind === "approve") return { ok: true, approved: 1 };
+      return { sessions: [], rooms: [] };
+    },
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [], claudeTexts: () => [],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  };
+  await runScenario({ id: "ap", title: "ap", minutes: 1, steps: [
+    { send: { codingTeam: "project" }, as: "fix", runtimeMode: "full-access", text: "the stats test is red" },
+    { approve: { chat: "fix" } },
+  ] }, ctx).catch(() => undefined);
+  const send = calls.find((c) => c.kind === "send");
+  assert.equal(send.args.runtimeMode, "full-access");
+  assert.deepEqual(calls.find((c) => c.kind === "approve")?.args, { session: "chat-1" });
+  fs.rmSync(evidence, { recursive: true, force: true });
+});

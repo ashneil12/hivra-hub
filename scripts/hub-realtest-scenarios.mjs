@@ -207,7 +207,8 @@ export async function runScenario(scenario, ctx) {
           }
         }
       }
-      const answer = await act("send", { to: to.room ? { room: to.room } : to.mono ? { mono: to.mono } : to.codingTeam ? { codingTeam: to.codingTeam } : { session: to.session }, owner: to.owner, text }, 60_000).catch((error) => ({ ok: false, error: error.message }));
+      const mode = to.codingTeam && step.runtimeMode ? { runtimeMode: step.runtimeMode } : {};
+      const answer = await act("send", { to: to.room ? { room: to.room } : to.mono ? { mono: to.mono } : to.codingTeam ? { codingTeam: to.codingTeam } : { session: to.session }, owner: to.owner, text, ...mode }, 60_000).catch((error) => ({ ok: false, error: error.message }));
       const t = answer.at ?? Date.now();
       record.sends.push({ t, to, label: step.label ?? null, text, answer: { ok: answer.ok, error: answer.error ?? null, session: answer.session ?? null, conversation: answer.conversation ?? null } });
       if (to.mono) lastSendTo.set(to.mono, t);
@@ -236,6 +237,12 @@ export async function runScenario(scenario, ctx) {
       record.waits.push({ t: Date.now(), wait: step.wait, met, afterSec: Math.round((Date.now() - begun) / 1000) });
       log(`  wait ${JSON.stringify(step.wait).slice(0, 100)}: ${met ? "met" : "NOT met"} after ${Math.round((Date.now() - begun) / 1000)}s`);
       if (!met && step.required) break;
+    } else if (step.approve) {
+      // Ash taps Allow on the chat's permission cards ({approve: {chat: "<as>"}}); none waiting is noted, not an error.
+      const session = step.approve.chat ? chatSession(step.approve.chat) : step.approve.session ?? null;
+      const answer = session ? await act("approve", { session }).catch((error) => ({ ok: false, error: error.message })) : { ok: false, error: "no such chat yet" };
+      record.marks.push({ t: Date.now(), approve: step.approve, answer });
+      log(`  Ash taps Allow in ${step.approve.chat ?? session}: ${answer.ok ? `${answer.approved} card(s)` : answer.error}`);
     } else if (step.sleep) {
       await sleep(Math.min(step.sleep * 1000, Math.max(0, stop - Date.now())));
     } else if (step.stop) {
