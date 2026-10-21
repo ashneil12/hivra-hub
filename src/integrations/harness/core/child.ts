@@ -399,6 +399,20 @@ export function killChild(sessionId: string): Promise<void> {
   return invoke("harness_kill", { sessionId });
 }
 
+/** When each chat process lived and was in a turn, as the app process saw it (src-tauri/src/harness_runs.rs). */
+export type HarnessProcessRun = {
+  sessionId: string;
+  pid: number;
+  cwd?: string;
+  start: number;
+  end?: number;
+  turns: { start: number; end?: number }[];
+};
+
+export function listHarnessRuns(since: number): Promise<HarnessProcessRun[]> {
+  return invoke<HarnessProcessRun[]>("harness_runs", { since });
+}
+
 export function killAllChildren(): Promise<void> {
   lineHandlers.clear();
   exitHandlers.clear();

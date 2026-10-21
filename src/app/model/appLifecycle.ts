@@ -5,7 +5,12 @@ import {
   forgetHarnessSession,
   isLiveHarness,
 } from "../../integrations/harness/core/registry";
-import { killAllChildren } from "../../integrations/harness/core/child";
+import {
+  killAllChildren,
+  killChild,
+  listHarnessRuns,
+  type HarnessProcessRun,
+} from "../../integrations/harness/core/child";
 import {
   hasInFlightSessions,
   inFlightRefs,
@@ -291,12 +296,55 @@ async function historyForCwd(
   return listProjectHistory(cwd);
 }
 
+export type LeftoverTurnDeps = {
+  list(since: number): Promise<HarnessProcessRun[]>;
+  kill(sessionId: string): Promise<void>;
+  sleep(ms: number): Promise<void>;
+};
+
+const leftoverDeps: LeftoverTurnDeps = {
+  // Called through, so a host without the command (or a test's stand-in) is just no leftover.
+  list: async (since) => listHarnessRuns(since),
+  kill: async (sessionId) => killChild(sessionId),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * A reload cuts the turns that were running: the page that went away marks them "Turn interrupted when MonoCode Hub
+ * reloaded" and asks the app to stop their processes, but that last ask is sent while the page is being torn down and
+ * can be lost. On the Mac (round 2, 21 Oct) the chat's Claude process ran on after the note said it had stopped, and
+ * the soul tamper check took its run as over. So a page that boots with cut turns first ends any process of theirs
+ * the app process still has alive, and waits (a few seconds at most) until it has exited: a turn is only shown as
+ * interrupted once its process is gone, and the resume that follows starts clean. The app process's record keeps
+ * when that process really ran (sessionRuns.ts). Returns the chats whose process was still alive.
+ */
+export async function endLeftoverTurns(
+  sessionIds: ReadonlySet<string>,
+  deps: LeftoverTurnDeps = leftoverDeps,
+  waitMs = 3_000,
+): Promise<string[]> {
+  if (!sessionIds.size) return [];
+  const alive = async () => {
+    const runs = await deps.list(Date.now() - 60_000).catch(() => [] as HarnessProcessRun[]);
+    return [...new Set(runs.filter((r) => r.end == null && sessionIds.has(r.sessionId)).map((r) => r.sessionId))];
+  };
+  const leftover = await alive();
+  if (!leftover.length) return [];
+  await Promise.all(leftover.map((id) => deps.kill(id).catch(() => undefined)));
+  for (let waited = 0; waited < waitMs; waited += 100) {
+    if (!(await alive()).length) break;
+    await deps.sleep(100);
+  }
+  return leftover;
+}
+
 async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
   const [snapshotRaw, refs] = await Promise.all([
     loadWorkspaceSnapshot().catch(() => null),
     listInFlightSessions().catch(() => []),
   ]);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
+  await endLeftoverTurns(interrupted);
   const refById = new Map(refs.map((ref) => [ref.sessionId, ref]));
   const snapshot = parseWorkspaceSnapshot(snapshotRaw);
 

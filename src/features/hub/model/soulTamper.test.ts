@@ -10,7 +10,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
-import { noteSessionRuns, resetSessionRuns, runsAt } from "../../monos/model/sessionRuns";
+import {
+  noteSessionRuns,
+  reloadSessionRunsForTest,
+  resetSessionRuns,
+  runsAt,
+  setProcessRunSource,
+  type ProcessRun,
+} from "../../monos/model/sessionRuns";
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
@@ -194,5 +201,76 @@ describe("a python script writing the soul file", () => {
     pyWrite(soul, ASH);
     expect(await checkSoul("hivra-lead", "Hivra lead", f)).toBe("kept-ash");
     expect(readFileSync(soul, "utf8")).toBe(ASH);
+  });
+
+  // Mac round 2 (21 Oct): about 2 s after the send the window reloaded. The page marked the turn interrupted and its
+  // record ended the run at its start, while the chat's Claude process ran on; a python3 write 6-26 s later was kept as
+  // Ash's edit. The app process's record (harness_runs) follows the process itself, so the write is put back.
+  it.skipIf(!python)(
+    "30 s into a turn, after a window reload, a python3 write is put back with Keep that change",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "soul-tamper-reload-"));
+      const f = diskFiles(root);
+      setBotFiles(f);
+      const soul = join(root, "frank", "SOUL.md");
+      await f.write("frank", "SOUL.md", SAVED);
+
+      const turnStart = Date.now() - 30_000;
+      // The page sees frank's chat start its turn, then reloads 2 s in: the fresh page reads the stored runs (open
+      // ones end where the old page last saw them) and the chat comes back idle ("Turn interrupted ... reloaded").
+      noteSessionRuns([{ id: "frank-chat", busy: true, cwd: "/Users/ash" }], turnStart);
+      reloadSessionRunsForTest();
+      noteSessionRuns([{ id: "frank-chat", busy: false }], turnStart + 2_000);
+      // The app process still has frank's Claude process, mid-turn (no result line yet).
+      const alive: ProcessRun = { sessionId: "frank-chat", pid: 4242, cwd: "/Users/ash", start: turnStart - 500, turns: [{ start: turnStart }] };
+      setProcessRunSource(async () => [alive]);
+
+      // 30 s into the turn, a python3 script the turn runs writes frank's soul.
+      pyWrite(soul, OUTSIDE);
+      const changedAt = (await f.read("frank", "SOUL.md")).modifiedMs!;
+      expect(changedAt - turnStart).toBeGreaterThanOrEqual(29_000);
+      // By the page's record alone nothing was running then: that was the bug.
+      expect(runsAt(changedAt).filter((r) => r.pid == null)).toEqual([]);
+
+      expect(await checkSoul("frank", "frank", f)).toBe("put-back");
+      expect(readFileSync(soul, "utf8")).toBe(SAVED);
+      const row = botChangeRows()
+        .flatMap((r) => (r.kind === "one" ? [r.change] : r.items))
+        .find((c) => c.monoId === "frank")!;
+      expect(row.line).toBe(putBackLine("frank"));
+      expect(row.undoLabel).toBe("Keep that change");
+      const note = join(root, "frank", changedSoulNote(changedAt));
+      expect(readFileSync(note, "utf8")).toBe(OUTSIDE);
+    },
+  );
+
+  it.skipIf(!python)(
+    "the same write after the reload ended the process (it exited 2 s in) is Ash's: kept, with Undo",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "soul-tamper-reload-ended-"));
+      const f = diskFiles(root);
+      setBotFiles(f);
+      const soul = join(root, "frank", "SOUL.md");
+      await f.write("frank", "SOUL.md", SAVED);
+      const turnStart = Date.now() - 30_000;
+      noteSessionRuns([{ id: "frank-chat", busy: true }], turnStart);
+      reloadSessionRunsForTest();
+      noteSessionRuns([{ id: "frank-chat", busy: false }], turnStart + 2_000);
+      setProcessRunSource(async () => [
+        { sessionId: "frank-chat", pid: 4242, start: turnStart - 500, end: turnStart + 2_100, turns: [{ start: turnStart, end: turnStart + 2_100 }] },
+      ]);
+      pyWrite(soul, ASH);
+      expect(await checkSoul("frank", "frank", f)).toBe("kept-ash");
+      expect(readFileSync(soul, "utf8")).toBe(ASH);
+    },
+  );
+
+  it("an idle chat process between turns doesn't count as running (Ash's edit is kept)", async () => {
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setProcessRunSource(async () => [{ sessionId: "lead-chat", pid: 7, start: 1_000, turns: [{ start: 2_000, end: 10_000 }] }]);
+    files.set("hivra-lead/SOUL.md", { text: ASH, at: 60_000 });
+    expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 5_000, 90_000), 90_000)).toBe("kept-ash");
   });
 });

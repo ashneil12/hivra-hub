@@ -158,6 +158,8 @@ struct LiveChild {
     pid: u32,
     identity: Option<String>,
     account: Option<HarnessAccount>,
+    /// Its entry in the run ledger (harness_runs.rs): when it lived and was in a turn. Absent in tests only.
+    run: Option<crate::harness_runs::RunHandle>,
 }
 
 struct LiveSse {
@@ -175,6 +177,8 @@ pub struct HarnessHost {
     runtime_binary_paths: Mutex<Option<HashMap<String, String>>>,
     /// Bumped by `kill_all` so a spawn that started before quit cannot reinsert.
     kill_all_gen: AtomicU64,
+    /// When each session child lived and was in a turn; outlives any window reload (harness_runs.rs).
+    runs: crate::harness_runs::RunLedger,
 }
 
 impl HarnessHost {
@@ -204,6 +208,7 @@ impl HarnessHost {
             sse: Mutex::new(HashMap::new()),
             runtime_binary_paths: Mutex::new(None),
             kill_all_gen: AtomicU64::new(0),
+            runs: crate::harness_runs::RunLedger::default(),
         }
     }
 
@@ -1051,14 +1056,21 @@ pub fn harness_spawn(
         .take()
         .ok_or_else(|| "Failed to open harness stderr".to_string())?;
 
+    let run = host
+        .runs
+        .start(&session_id, pid, &workdir.to_string_lossy());
     let live = Arc::new(LiveChild {
         cwd: workdir.clone(),
         stdin: Mutex::new(stdin),
         pid,
         identity: crate::resources::identity(pid),
         account,
+        run: Some(run.clone()),
     });
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
+        run.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .exited(crate::harness_runs::now_ms());
         // A kill, or a newer spawn, won the race while this one was forking.
         // Returning `Ok` here would hand the caller a dead pid to store as the
         // session's live child, and this child's stdout would be parsed as the
@@ -1083,9 +1095,16 @@ pub fn harness_spawn(
     });
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
+    let stdout_run = run.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
+            if crate::harness_runs::ends_turn(&line) {
+                stdout_run
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .output(&line, crate::harness_runs::now_ms());
+            }
             if let Some(store) = &stdout_store {
                 if line.contains("\"turn/completed\"")
                     || line.contains("\"item/started\"")
@@ -1120,6 +1139,9 @@ pub fn harness_spawn(
     let wait_pid = pid;
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
+        run.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .exited(crate::harness_runs::now_ms());
         // Deliver the final batched lines before the exit that follows them.
         let _ = stdout_drained.recv_timeout(OUTPUT_DRAIN_WAIT);
         if let Some(store) = wait_store {
@@ -1277,6 +1299,11 @@ pub async fn harness_write(
     let live = host
         .get(&session_id)
         .ok_or_else(|| "Harness process is not running".to_string())?;
+    if let Some(run) = &live.run {
+        run.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .input(&line, crate::harness_runs::now_ms());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let mut stdin = live.stdin.lock().unwrap_or_else(|e| e.into_inner());
         stdin
@@ -1298,6 +1325,16 @@ pub fn harness_kill(host: State<'_, HarnessHost>, session_id: String) -> Result<
         terminate(live.pid);
     }
     Ok(())
+}
+
+/// When each session child lived and was in a turn, for every run alive at or after `since` (ms since the epoch). The
+/// app process keeps this, so it holds across a window reload (src/features/monos/model/sessionRuns.ts).
+#[tauri::command]
+pub fn harness_runs(
+    host: State<'_, HarnessHost>,
+    since: u64,
+) -> Vec<crate::harness_runs::ProcessRun> {
+    host.runs.since(since)
 }
 
 /// Off the main thread: `kill_all` waits for the children to die before it
@@ -3333,6 +3370,7 @@ mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                run: None,
             }),
             child,
         )
@@ -3495,6 +3533,7 @@ mod tests {
                 pid,
                 identity: crate::resources::identity(pid),
                 account: None,
+                run: None,
             }),
             child,
         )

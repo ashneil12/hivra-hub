@@ -205,7 +205,8 @@ describe("the delegate tool", () => {
   });
 
   it("is taught to a chat only when its Claude Code session really has it", () => {
-    expect(registeredHubMcpArgs("chat-exo")).toEqual([]);
+    // Nothing registered yet: no servers, but the fence round the Monos' home is never left off.
+    expect(registeredHubMcpArgs("chat-exo")).toEqual(["--disallowedTools", monoHomeDeniedTools().join(",")]);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
     setHubMcpServers({ ashOs: null, cli: CLI }, lookups);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(true);

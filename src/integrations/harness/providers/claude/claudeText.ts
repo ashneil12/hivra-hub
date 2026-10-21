@@ -30,6 +30,7 @@ import {
 import type { TurnIntent } from "../../../../features/sessions/model/session";
 import type { HarnessEvent } from "../../core/types";
 import { mergeStream } from "../../core/streamText";
+import { claudeGuardArgs } from "./claudeExtraArgs";
 
 // MonoCode's own small calls to Claude (chat titles, commit and PR text, the room's chime gate, "by the way"
 // questions): one isolated CLI process per call, closed as soon as its answer is in. Measured on 20 Oct (docs/REALTEST.md):
@@ -116,6 +117,15 @@ function pickTextModel(requested?: string): string {
   return versioned[0]?.id ?? TEXT_MODEL;
 }
 
+/**
+ * A call that only wants text back (a title, commit or PR text, a branch name, the room's gate: everything it needs is
+ * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") keeps its tools. Both
+ * carry the hub's fence round the Monos' home, as every Claude process the app starts does.
+ */
+export function textCallToolArgs(streams: boolean): string[] {
+  return [...(streams ? [] : ["--tools", ""]), ...claudeGuardArgs()];
+}
+
 /** Stop every call still running (the app is closing, or the helpers are being reset). */
 export async function stopClaudeTextPrompt(): Promise<void> {
   await Promise.all(
@@ -180,14 +190,17 @@ export async function runClaudeTextPrompt(input: {
     await spawnChild(
       call.id,
       path,
-      buildClaudeSpawnArgs({
-        isolated: true,
-        model: settings.launchModel,
-        effort: settings.effort,
-        settings: settings.settings,
-        permissionMode: settings.permissionMode,
-        maxTurns: settings.maxTurns,
-      }),
+      [
+        ...buildClaudeSpawnArgs({
+          isolated: true,
+          model: settings.launchModel,
+          effort: settings.effort,
+          settings: settings.settings,
+          permissionMode: settings.permissionMode,
+          maxTurns: settings.maxTurns,
+        }),
+        ...textCallToolArgs(!!input.onEvent),
+      ],
       input.cwd,
       { provider: "claude", id: input.providerAccountId ?? "default" },
       "claude",

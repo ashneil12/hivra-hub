@@ -9,7 +9,7 @@
 import { listMonos, monoLook } from "../../monos/model/mono";
 import { readAgentFile, setSoulOpenCheck, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
-import { runsAt, type RunWindow } from "../../monos/model/sessionRuns";
+import { refreshProcessRuns, runsAt, type RunWindow } from "../../monos/model/sessionRuns";
 import { recordBotChange } from "./botChanges";
 
 export type TamperFiles = {
@@ -56,6 +56,8 @@ export async function checkSoul(
     return "unchanged";
   }
   const changedAt = soul.modifiedMs ?? now;
+  // The app process's record of its chats' turns, as it stands now (it holds across a window reload).
+  await refreshProcessRuns(now);
   const runs = running(changedAt);
   if (runs.length) {
     // 1. The changed file, kept beside it in its memory (never lost).
