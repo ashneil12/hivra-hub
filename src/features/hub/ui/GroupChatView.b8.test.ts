@@ -184,3 +184,45 @@ it("a file that can't be kept stops the send with the reason, and nothing is pos
   expect(String(error)).toContain("Couldn't keep ghost.pdf");
   expect(convs()[0].messages).toHaveLength(1);
 });
+
+// Tauri's own rule for which mousedowns drag the window and which double-clicks zoom it (tauri 2.11.5,
+// src/window/scripts/drag.js isDragRegion), walked from the clicked element up, as the app's window runs it.
+function tauriDragRegion(target: Element): boolean {
+  const clickable = (el: Element) =>
+    ["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY"].includes(el.tagName) ||
+    (el.hasAttribute("contenteditable") && el.getAttribute("contenteditable") !== "false") ||
+    (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") ||
+    ["button", "link", "menuitem", "tab", "checkbox", "radio", "switch", "option"].includes(el.getAttribute("role") ?? "");
+  for (let el: Element | null = target; el; el = el.parentElement) {
+    const attr = el.getAttribute("data-tauri-drag-region");
+    if (clickable(el) && attr === null) return false;
+    if (attr === null) continue;
+    if (attr === "false") return false;
+    if (attr === "deep") return true;
+    if (attr === "" || attr === "true") return el === target;
+  }
+  return false;
+}
+
+it("Mac round 4: the header's renameable title and its rename inputs are out of the window drag region; the rest of the header still drags", async () => {
+  const { q } = await render();
+  const title = q("[data-hub-conversation-title]")!;
+  // A double-click on the title renames; it must not also zoom the window.
+  expect(tauriDragRegion(title)).toBe(false);
+  const header = title.closest('[data-tauri-drag-region="deep"]')!;
+  expect(header).toBeTruthy();
+  // The header itself and its icon still drag and zoom like a title bar.
+  expect(tauriDragRegion(header)).toBe(true);
+  expect(tauriDragRegion(header.querySelector("svg")!)).toBe(true);
+  // The header rename still works.
+  dblclick(title);
+  const input = q("[data-hub-conversation-rename]")!;
+  expect(tauriDragRegion(input)).toBe(false);
+  await typeName(input as HTMLInputElement, "QA4 Pages plan v2");
+  expect(q("[data-hub-conversation-title]")!.textContent).toBe("QA4 Pages plan v2");
+  // The room's own name: its rename button and its input aren't drag targets either.
+  const rename = q("[data-hub-rename]")!;
+  expect(tauriDragRegion(rename)).toBe(false);
+  act(() => rename.click());
+  expect(tauriDragRegion(q("[data-hub-rename-input]")!)).toBe(false);
+});
