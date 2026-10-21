@@ -6,5 +6,8 @@
 ## Who I am
 {{who}}
 
+## What I watch for
+{{watchFor}}
+
 ## Skills
 {{skills}}

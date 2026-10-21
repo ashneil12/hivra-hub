@@ -38,7 +38,7 @@ const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: ["/User
 
 it("a drafted Mono is made only after Ash answers, once, with its role and an Undo row", async () => {
   const a = await app();
-  const draft = a.make.draftMono({ name: "Scout", role: "Finds sign-up leads", who: "I'm Scout. I watch for people who signed up and never came back." }, ME, 1000);
+  const draft = a.make.draftMono({ name: "Scout", role: "Finds sign-up leads", who: "I'm Scout. I find people worth a follow-up.", watchFor: "People who signed up and never came back." }, ME, 1000);
   expect(draft.plan).toMatchObject({ name: "Scout", role: "Finds sign-up leads" });
   expect(a.mono.listMonos().some((m) => m.name === "Scout")).toBe(false);
 
@@ -132,13 +132,15 @@ it("Discard takes the preview back out and changes nothing; a refused apply keep
   expect(applied).toBe(1);
 });
 
-it("a drafted soul is the short shape: Role, Who I am, Skills, and no How-I-talk or tone section", async () => {
+it("a drafted soul is the short shape: Role, Who I am, What I watch for, Skills, and no How-I-talk or tone section", async () => {
   const a = await app();
   const host = { ashSpokeSince: () => true, room: () => ({ id: "r", name: "r" }), deps: a.deps as never };
-  const draft = a.make.draftMono({ name: "Postie", role: "X posts", who: "I'm Postie. I watch for threads worth posting.", skills: ["threads"] }, ME, 1000);
+  const draft = a.make.draftMono({ name: "Postie", role: "X posts", who: "I'm Postie. I turn shipped work into X posts.", watchFor: "Threads worth posting, and anything that shouldn't be public yet.", skills: ["threads"] }, ME, 1000);
   const made = await a.make.makeDrafted(draft.draftId, ME, host);
   const soul = a.souls.get(made.monoId)!;
-  expect([...soul.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1])).toEqual(["Role", "Who I am", "Skills"]);
+  expect([...soul.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1])).toEqual(["Role", "Who I am", "What I watch for", "Skills"]);
+  expect(soul).toContain("## What I watch for\nThreads worth posting");
+  expect(draft.plan.watchFor).toBe("Threads worth posting, and anything that shouldn't be public yet.");
   expect(soul).not.toMatch(/how i talk|tone|format|voice/i);
   expect(soul).toContain("## Role\nX posts");
   expect(soul).toContain("- threads");
@@ -146,9 +148,11 @@ it("a drafted soul is the short shape: Role, Who I am, Skills, and no How-I-talk
   // A soul handed in with How I talk or tone rules is turned down in plain words, and nothing is drafted.
   for (const extra of ["## How I talk\nShort and warm.", "## Tone rules\nNo emoji."])
     expect(() =>
-      a.make.draftMono({ name: "Chatty", soul: `# Soul\n\n## Role\nChats\n\n## Who I am\nI'm Chatty.\n\n${extra}\n` }, ME, 2000),
+      a.make.draftMono({ name: "Chatty", soul: `# Soul\n\n## Role\nChats\n\n## Who I am\nI'm Chatty.\n\n## What I watch for\nQuiet rooms.\n\n${extra}\n` }, ME, 2000),
     ).toThrow(/short shape/);
+  // Without what it watches for, it isn't drafted.
+  expect(() => a.make.draftMono({ name: "Vague", role: "Helps", who: "I'm Vague." }, ME, 2500)).toThrow(/watchFor/);
   // A soul in the short shape is kept to it, with the given skills added.
-  const kept = a.make.draftMono({ name: "Tidy", soul: "# Soul\n\n## Role\nTidies\n\n## Who I am\nI'm Tidy.\n\n## Skills\n- sweep\n", skills: ["dust"] }, ME, 3000);
-  expect(kept.plan).toMatchObject({ role: "Tidies", soul: "I'm Tidy.", skills: ["sweep", "dust"] });
+  const kept = a.make.draftMono({ name: "Tidy", soul: "# Soul\n\n## Role\nTidies\n\n## Who I am\nI'm Tidy.\n\n## What I watch for\nMess.\n\n## Skills\n- sweep\n", skills: ["dust"] }, ME, 3000);
+  expect(kept.plan).toMatchObject({ role: "Tidies", soul: "I'm Tidy.", watchFor: "Mess.", skills: ["sweep", "dust"] });
 });

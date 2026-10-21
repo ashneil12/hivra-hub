@@ -43,12 +43,12 @@ async function open(page: Page) {
 
 test("13: the drafted Mono is shown to Ash before his yes, and nothing is made yet", async ({ page }) => {
   await open(page);
-  const draft = await dev<{ draftId: string; plan: { name: string; role: string; soul: string; skills: string[] } }>(
+  const draft = await dev<{ draftId: string; plan: { name: string; role: string; soul: string; watchFor: string; skills: string[] } }>(
     page,
-    "(sb, me) => sb.draftMono({ name: 'Postie', role: 'X posts for Hivra', who: \"I'm Postie. I watch Hivra's shipped work and turn the good bits into short X posts, and I flag anything that shouldn't be public yet.\", skills: ['x-threads', 'hivra-changelog'] }, me)",
+    "(sb, me) => sb.draftMono({ name: 'Postie', role: 'X posts for Hivra', who: \"I'm Postie. I turn Hivra's shipped work into short X posts in Ash's voice.\", watchFor: \"Good bits worth a thread, and anything that shouldn't be public yet.\", skills: ['x-threads', 'hivra-changelog'] }, me)",
     ME,
   );
-  const card = [`Here's the one Mono I'd make:`, ``, `**${draft.plan.name}** · ${draft.plan.role}`, ``, `> ${draft.plan.soul}`, ``, `Skills: ${draft.plan.skills.join(", ")}`, ``, `Say yes and I'll make it.`].join("\n");
+  const card = [`Here's the one Mono I'd make:`, ``, `**${draft.plan.name}** · ${draft.plan.role}`, ``, `> ${draft.plan.soul}`, ``, `Watches for: ${draft.plan.watchFor}`, ``, `Skills: ${draft.plan.skills.join(", ")}`, ``, `Say yes and I'll make it.`].join("\n");
   const rail = page.locator("[data-mono-rail]").first();
   await rail.locator('button[aria-label^="Chief of Staff"]').first().click();
   await page.evaluate((w) => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push(w), `say:${card}`);
