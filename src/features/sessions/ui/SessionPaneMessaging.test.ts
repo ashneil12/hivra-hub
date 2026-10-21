@@ -156,9 +156,15 @@ it("keeps the same input, current draft and attachments when a question appears 
     key.startsWith("__reactProps"),
   )![1];
   act(() => inputProps.onChange({ target: { value: "Fresh draft" } }));
-  await act(async () =>
+  // + opens a menu of kinds (B8); Files picks any file.
+  act(() =>
     container
       .querySelector<HTMLButtonElement>('[aria-label="Attach files"]')!
+      .click(),
+  );
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('[data-attach-pick="file"]')!
       .click(),
   );
   const questioned = {
