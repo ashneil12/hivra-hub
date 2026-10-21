@@ -138,6 +138,20 @@ describe("E7: the bridge's model list also offers the Other models", () => {
     expect(onChange).toHaveBeenCalledWith("claude", "custom:ds");
   });
 
+  it("on the bridge a model (DeepSeek and its key) can be added from the list, even with none saved yet (Ash's Mac, 21 Oct)", () => {
+    bridge.on = true;
+    open("claude:sonnet-4.6");
+    localStorage.setItem("monocode:custom-models", "[]");
+    act(() => root.render(createElement(ModelPicker, { harness: "claude", model: "claude:sonnet-4.6", values: {}, hideSettings: true, onChange: vi.fn(), onSettingsChange: vi.fn() })));
+    const add = container.querySelector<HTMLButtonElement>("[data-bridge-add-model]");
+    expect(add?.textContent).toContain("Add model");
+    act(() => add!.click());
+    expect(container.querySelector("[data-bridge-add-model-form] [data-add-model-form]")).not.toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>("[data-add-model-cancel]")!.click());
+    expect(container.querySelector("[data-add-model-form]")).toBeNull();
+    expect(container.querySelector("[data-bridge-add-model]")).not.toBeNull();
+  });
+
   it("a chat already on DeepSeek is off the bridge: the full list, as before, not the bridge's", () => {
     bridge.on = true;
     open("custom:ds");

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Gauge,
+  Plus,
   Search,
   Star,
   Zap,
@@ -1628,6 +1629,9 @@ function BridgeModelList({
   const others = useCustomModels();
   const onOther = !!otherModels && others.some((m) => otherModels.currentModel === `custom:${m.id}`);
   const row = "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] text-content";
+  // Adding a model (DeepSeek and its key) works on the bridge too (Ash's Mac, 21 Oct: with the bridge on there was no
+  // way in, so the key could only be added after switching the bridge off and restarting).
+  const [adding, setAdding] = useState(false);
   return (
     <Popover
       anchor={anchor}
@@ -1656,7 +1660,12 @@ function BridgeModelList({
         <span className="min-w-0 flex-1 truncate">{GROK_BRIDGE_LABEL}</span>
         {onOther ? null : <Check className="size-3.5 shrink-0 text-content/50" strokeWidth={2} />}
       </button>
-      {otherModels && others.length ? (
+      {otherModels && adding ? (
+        <div className="mt-1 pt-1" data-bridge-add-model-form>
+          <AddModelForm escRef={addModelEscRef} onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); otherModels.onPick(m); }} />
+        </div>
+      ) : null}
+      {otherModels && !adding ? (
         <div role="group" aria-label="Other models" data-bridge-other-models className="mt-1 pt-1">
           <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">Other models</div>
           {others.map((m) => {
@@ -1678,6 +1687,16 @@ function BridgeModelList({
               </button>
             );
           })}
+          <button
+            type="button"
+            data-bridge-add-model
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setAdding(true)}
+            className={`${row} text-content/60 hover:bg-content/5`}
+          >
+            <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate">Add model</span>
+          </button>
         </div>
       ) : null}
     </Popover>
