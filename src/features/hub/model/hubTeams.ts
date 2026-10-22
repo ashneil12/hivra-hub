@@ -72,7 +72,8 @@ function load(): Stored {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<Stored> | null;
     return {
       teams: Array.isArray(raw?.teams) ? raw.teams : [],
-      proposals: Array.isArray(raw?.proposals) ? raw.proposals : [],
+      // A Mono is made in chat with Ash now (mono_create); an old proposal still waiting is closed, not shown.
+      proposals: Array.isArray(raw?.proposals) ? raw.proposals.map((p) => (p?.status === "pending" ? { ...p, status: "declined" as const } : p)) : [],
     };
   } catch {
     return { teams: [], proposals: [] };

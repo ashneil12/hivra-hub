@@ -11,6 +11,7 @@ import {
   openChatPreview,
   useChatPagePreview,
 } from "../model/pagesChat";
+import { openTodayChatPreview, todayPreviewShown, useTodayChatPreview } from "../model/todayChat";
 import {
   dismissDraft,
   draftCard,
@@ -41,11 +42,13 @@ export function ChangeBar() {
   // Already on Pages looking at it: no See it.
   const page =
     waiting && waiting.previewId !== chatPreviewShown() ? waiting : undefined;
+  const todayWaiting = useTodayChatPreview();
+  const today = todayWaiting && todayWaiting.previewId !== todayPreviewShown() ? todayWaiting : undefined;
   useEffect(() => {
     void resumeLivePreview();
   }, []);
   const drafts = useWaitingDrafts();
-  if (!offers.length && !page && !drafts.length) return null;
+  if (!offers.length && !page && !today && !drafts.length) return null;
   return (
     <>
       {drafts.length ? (
@@ -78,6 +81,16 @@ export function ChangeBar() {
               data-change-see
               onClick={() => openChatPreview(page.previewId)}
             >
+              See it
+            </button>
+          </div>
+        ) : null}
+        {today ? (
+          <div className={`${card} flex w-full max-w-xl items-center gap-3 px-4 py-2.5`} data-change-today={today.previewId}>
+            <span className="min-w-0 flex-1 truncate text-[13px] text-content/85">
+              {today.preview.by} made a change to Today: “{today.preview.title}”. Nothing changes until you apply it.
+            </span>
+            <button type="button" className={primaryBtn} data-change-today-see onClick={() => openTodayChatPreview(today.previewId)}>
               See it
             </button>
           </div>

@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 60] = [
+const APP_ACTIONS: [&str; 59] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -122,7 +122,6 @@ const APP_ACTIONS: [&str; 60] = [
     "habits.run",
     "habits.remove",
     "chat.card",
-    "monos.propose",
     "tasks.delegate",
     "tasks.status",
     "tasks.wait",
@@ -334,17 +333,6 @@ Actions:
                    "schedule":{"kind":"daily","time":"09:00"}}
                   choices accepts 1–4 options. A habit card is a suggestion;
                   the user must start it before it is scheduled.
-  monos.propose  Mono only. Older path: files a team proposal that waits on
-                  Settings > Teams. To make a new Mono when Ash asks, use
-                  monos.create below (MCP mono_create): you draft it in chat,
-                  he says yes, and it is made. Fields:
-                  {"name":"Maya","brief":"Writes and schedules our posts",
-                   "team":"Marketing","engine":"claude",
-                   "projects":["hivra"],"connectors":["notion","slack"],
-                   "soul":"(optional) a full SOUL.md you drafted"}
-                  projects are the hub's project names or yours (default:
-                  yours). Workers stay subagents; a Mono is only for a
-                  lasting role the user will talk to.
   tasks.delegate {"brief":"<the whole job, Ash's words quoted>","title":"Fix the save bug",
                   "asks":["a_..."],"goal":"<done when>","isolation":"shared"}
                   Mono only. Hand a job to a worker chat nested under yours, as a

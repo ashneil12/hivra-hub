@@ -93,7 +93,6 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
-import { proposeMonoFromAgent } from "../../hub/model/hubTeams";
 import {
   sendMode,
   type Delivery,
@@ -108,6 +107,9 @@ import {
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
+
+/** What a Mono hears if it reaches for the old proposal path. */
+export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
@@ -1208,7 +1210,7 @@ export async function handleAgentApp(
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
-  if (action === "monos.create" || action === "pages.build" || action === "hub.change")
+  if (action === "monos.create" || action === "pages.build" || action === "hub.change" || action === "today.change")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder) => {
       // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.
       await harnessesProbed();
@@ -1270,23 +1272,9 @@ export async function handleAgentApp(
         : "It goes out with your report, after its text; if you stay quiet, it is dropped.",
     };
   }
-  if (action === "monos.propose") {
-    // A new named Mono needs Ash's okay: this only files a proposal (hub/model/hubTeams.ts). Nothing is made until he
-    // approves it on Settings > Teams.
-    const mono = host.monoOf?.(source.id);
-    if (!mono || !host.isMono(source.id))
-      throw new Error("Only a Mono can propose a new Mono");
-    const proposal = proposeMonoFromAgent(input, {
-      monoId: mono.id,
-      projects: mono.projects,
-    });
-    return {
-      proposed: proposal.spec.name,
-      id: proposal.id,
-      status: "pending",
-      note: forUser("Filed as a proposal on Settings > Teams (it also shows on Today); nothing is created until they approve it there. To make a new Mono with Ash in chat instead, use mono_create: draft it, he says yes, and it is made."),
-    };
-  }
+  if (action === "monos.propose")
+    // One way to make a Mono (Board 22 Oct): with Ash in the Mono's chat. Proposals on Settings > Teams are gone.
+    throw new Error(forUser(MONO_ONE_WAY));
   switch (action) {
     case "app.version": {
       // Which app this is and the build it runs (src-tauri/src/instance.rs).

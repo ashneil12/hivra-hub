@@ -452,7 +452,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   it only gets connectors allowed in all of them or "Every project".) Codex and other engines get no connectors yet.
 - **Teams** (`model/hubTeams.ts`, Settings → Teams): a team has a brief, projects, named Monos and a room (a normal
   group chat in its first project). Ash makes Monos there (name, lane → SOUL, engine, projects, connectors); agents
-  can only `app monos.propose`, which waits on Today's Setup and Settings → Teams until Ash approves.
+  makes one only with mono_create in its chat with Ash (monos.propose is refused since 22 Oct).
 
 ## One "waiting on Ash" list
 - `model/waiting.ts` is the only list of things waiting on Ash. Each page adds

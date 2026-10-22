@@ -193,36 +193,18 @@ describe("a Mono proposed by an agent needs Ash's okay", () => {
     expect(mono.listMonos().some((m) => m.name === "Nope")).toBe(false);
   });
 
-  it("app monos.propose: only a Mono, projects resolved to the hub's or its own, nothing made", async () => {
-    await withHubProjects();
-    localStorage.setItem(
-      "monocode:mono-roster",
-      JSON.stringify([{ id: "alfred", name: "Alfred", mascot: "robot", color: "hsl(0 0% 50%)", projects: [NIBBII], sessionId: "s-alfred" }]),
-    );
-    const { handleAgentApp } = await import("../../agent-app/model/agentApp");
+  it("one way to make a Mono: app monos.propose is refused toward mono_create, nothing filed, and an old waiting proposal is closed", async () => {
+    localStorage.setItem("monocode:hub-teams", JSON.stringify({ teams: [], proposals: [
+      { id: "p-old", spec: { name: "Maya", brief: "", engine: "claude", projects: [], connectors: [] }, proposedBy: { name: "Alfred" }, status: "pending", at: 1 },
+    ] }));
+    vi.resetModules();
+    const { handleAgentApp, MONO_ONE_WAY } = await import("../../agent-app/model/agentApp");
     const teams = await import("./hubTeams");
-    const mono = await import("../../monos/model/mono");
+    expect(teams.pendingMonoProposals()).toEqual([]);
     const source = { id: "s-alfred", cwd: "/Users/ash" } as never;
-    const host = {
-      isMono: (id: string) => id === "s-alfred",
-      monoOf: (id: string) => (id === "s-alfred" ? { id: "alfred", projects: [NIBBII] } : undefined),
-    } as never;
-    const result = (await handleAgentApp(source, "r1", "monos.propose", {
-      name: "Maya", brief: "Social posts", team: "Marketing", projects: ["Hivra"], connectors: ["slack"],
-    }, host)) as { status: string; proposed: string };
-    expect(result).toMatchObject({ status: "pending", proposed: "Maya" });
-    const [p] = teams.pendingMonoProposals();
-    expect(p.proposedBy).toEqual({ monoId: "alfred", name: "Alfred" });
-    expect(p.spec.projects).toEqual([HIVRA]);
-    expect(p.spec.engine).toBe("claude");
-    expect(mono.listMonos().map((m) => m.id)).toEqual(["alfred"]);
-
-    // Default projects: the proposer's own.
-    await handleAgentApp(source, "r2", "monos.propose", { name: "Nora" }, host);
-    expect(teams.pendingMonoProposals().find((x) => x.spec.name === "Nora")!.spec.projects).toEqual([NIBBII]);
-    await expect(handleAgentApp(source, "r3", "monos.propose", { name: "X", projects: ["/etc"] }, host)).rejects.toThrow(/Unknown project/);
-    await expect(handleAgentApp(source, "r4", "monos.propose", { name: "Y", password: "x" }, host)).rejects.toThrow(/Unknown monos.propose fields/);
-    const notMono = { id: "s-other", cwd: "/" } as never;
-    await expect(handleAgentApp(notMono, "r5", "monos.propose", { name: "Z" }, host)).rejects.toThrow(/Only a Mono/);
+    const host = { isMono: (id: string) => id === "s-alfred", monoOf: () => ({ id: "alfred", projects: [] }) } as never;
+    await expect(handleAgentApp(source, "r1", "monos.propose", { name: "Nora" }, host)).rejects.toThrow(/one way to make a Mono: mono_create/);
+    expect(MONO_ONE_WAY).toMatch(/Ash/);
+    expect(teams.pendingMonoProposals()).toEqual([]);
   });
 });

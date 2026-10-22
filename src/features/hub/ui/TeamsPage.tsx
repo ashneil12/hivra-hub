@@ -61,7 +61,7 @@ export function TeamsPage() {
     <div className="flex flex-col gap-7" data-hub-teams>
       <p className="text-[13px] leading-5 text-content/70">
         A team is a few named Monos you talk to, with a room of their own. Their workers stay subagents and never show
-        here. Agents can propose a new Mono; it waits for your okay.
+        here. To make a new Mono, ask any Mono in its chat: it drafts it with you, and it's made when you say yes.
       </p>
 
       {proposals.length ? (

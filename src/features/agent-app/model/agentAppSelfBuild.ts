@@ -8,6 +8,7 @@ import { askedAshAndHeardBack, ashSpokeSince, INTERVIEW_FIRST } from "../../self
 import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../../selfBuild/model/hubCode";
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
+import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayChat";
 import type { AgentAppHost } from "./agentApp";
 import { resolveRoom, teamLeadOf } from "./agentAppRooms";
 import { forUser } from "../../hub/model/userName";
@@ -16,6 +17,7 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
+  ["today.change", ["ask", "previewId", "apply"]],
 ];
 
 /** Hands the change to a Claude Code worker in the preview copy (tasks.delegate, run in that folder). */
@@ -67,6 +69,13 @@ export async function handleSelfBuild(
         return keepFromChat(input.previewId, me, spoke);
       }
       return previewFromChat(input, me);
+    }
+    case "today.change": {
+      if (input.previewId !== undefined || input.apply !== undefined) {
+        if (input.apply !== true) throw new Error("apply must be true, with previewId");
+        return applyTodayFromChat(input.previewId, me, spoke);
+      }
+      return todayFromChat(input, me);
     }
     case "hub.change": {
       if (typeof input.undo === "string") return undoHubPart(input.undo);

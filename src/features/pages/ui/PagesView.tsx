@@ -24,6 +24,7 @@ import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
 import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
+import { OPEN_EDIT_TODAY, todayPreviewWaiting } from "../../selfBuild/model/todayChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
 
@@ -783,8 +784,14 @@ function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
 }
 
 export function PagesView({ onClose, onToggleSidebar, besideRail = true, compactRail = false }: { onClose: () => void; onToggleSidebar?: () => void; besideRail?: boolean; compactRail?: boolean }) {
-  const [tab, setTab] = useState<"pages" | ChangeFlow>("pages");
+  const [tab, setTab] = useState<"pages" | ChangeFlow>(() => (todayPreviewWaiting() ? "today" : "pages"));
   const projectId = useHubSelection().project;
+  // See it on a Today change a Mono built from its chat opens Edit Today.
+  useEffect(() => {
+    const open = (e: Event) => { const d = (e as CustomEvent).detail; if (d === "today" || d === "hub" || d === "connect" || d === "pages") setTab(d); };
+    window.addEventListener(OPEN_EDIT_TODAY, open);
+    return () => window.removeEventListener(OPEN_EDIT_TODAY, open);
+  }, []);
   const tabs: ["pages" | ChangeFlow, string][] = [["pages", "Pages"], ["hub", FLOW_LABEL.hub], ["today", FLOW_LABEL.today], ["connect", FLOW_LABEL.connect]];
   return (
     <div role="region" aria-label="Pages" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">

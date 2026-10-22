@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { setTodayPreviewShown, settleTodayChatPreview, useTodayChatPreview } from "../../selfBuild/model/todayChat";
 import { ArrowUp, Undo2 } from "../../../shared/ui/icons";
 import { hubData, sinceLabel, useHubDataVersion } from "../../hub/model/hubData";
 import type { HubChangeRecord } from "../../hub/model/types";
@@ -107,6 +108,17 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
     void requestChange({ flow, projectId, monoId: askerId, prompt }).then((result) => setState({ prompt, result }));
   };
   const reset = () => { setState(undefined); setText(""); };
+  // A Today change a Mono built from its chat (today_change) shows here, the same Now | Preview, Apply and Discard.
+  const chat = useTodayChatPreview();
+  const fromChat = flow === "today" ? chat : undefined;
+  useEffect(() => {
+    if (fromChat) setState({ prompt: fromChat.prompt, result: { status: "ready", preview: fromChat.preview } });
+  }, [fromChat?.previewId]);
+  const onChat = flow === "today" && state?.result?.status === "ready" && !state.applied && chat?.previewId === state.result.preview.previewId ? chat.previewId : undefined;
+  useEffect(() => {
+    setTodayPreviewShown(onChat);
+    return () => setTodayPreviewShown(undefined);
+  }, [onChat]);
   const r = state?.result;
   return (
     <div className="mx-auto w-full max-w-4xl px-8 py-6" data-hub-change={flow}>
@@ -215,8 +227,8 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
           <div className="mt-5 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3">
             <span className="text-[12px] text-content/70">This is a preview build. Your live hub hasn't changed.</span>
             <span className="ml-auto" />
-            <button type="button" className={quietBtn} onClick={() => { void discardChange(r.preview); setState(undefined); }}>Discard</button>
-            <button type="button" className={primaryBtn} data-hub-change-apply onClick={() => void applyChange(flow, r.preview).then((done) => setState(done.status === "applied" ? { ...state, applied: true } : { ...state, result: done }))}>Apply</button>
+            <button type="button" className={quietBtn} onClick={() => { settleTodayChatPreview(r.preview.previewId); void discardChange(r.preview); setState(undefined); }}>Discard</button>
+            <button type="button" className={primaryBtn} data-hub-change-apply onClick={() => void applyChange(flow, r.preview).then((done) => { if (done.status === "applied") settleTodayChatPreview(r.preview.previewId); setState(done.status === "applied" ? { ...state, applied: true } : { ...state, result: done }); })}>Apply</button>
           </div>
           <div className="mt-2 flex items-center gap-1.5 text-[12px] text-content/60"><Undo2 className="size-3" />After Apply, you can Undo it here, on Today, or in Bot changes.</div>
         </div>
