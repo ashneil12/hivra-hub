@@ -27,6 +27,8 @@ async function app(projects = PROJECTS) {
     models: await import("../../sessions/model/customModels"),
     souls: await import("../../hub/model/setupSouls"),
     templates: await import("../../hub/model/templates"),
+    workers: await import("../../monos/model/workerPool"),
+    monoTeams: await import("../../hub/model/monoTeams"),
     doc: await import("./setupDoc"),
     plan: await import("./importPlan"),
     secrets: await import("./secrets"),
@@ -417,6 +419,52 @@ it("a fresh copy gets the user's name and the stall minutes back with the rest o
   await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan));
   expect(localStorage.getItem("monocode:hub-user-name")).toBe("Sam");
   expect(localStorage.getItem("monocode:stall-minutes")).toBe("12");
+});
+
+// A10 (Ash, 21 Oct, "transferable"): the two settings whose truth isn't this window's storage. A project's worker limits
+// live in the app database (writing the old storage key would be ignored: that one-time import has already run), and a
+// Mono's own team is an absolute folder belonging to this Mac. Both must come back on a fresh copy — the limits as they
+// were, the team at the new Mac's own path — and a Mono Ash doesn't bring in gets no folder.
+it("A10: a project's worker limits and a Mono's own team come back on a fresh copy", async () => {
+  const a = await app();
+  await seed(a);
+  a.mono.addMono({ id: "scout", name: "Scout", mascot: "crab", color: "hsl(4 5% 6%)", projects: [] });
+  const oldFolder = async (monoId: string) => `/Volumes/Old/mono-teams/${monoId}`;
+  a.workers.setWorkerLimits("hivra", { workers: 20, heavy: 5 });
+  await a.monoTeams.ensureMonoTeam("chief-of-staff", oldFolder, 1000);
+  await a.monoTeams.ensureMonoTeam("scout", oldFolder, 1000);
+
+  const doc = a.doc.buildSetupDoc({ monoFiles: {}, workspace: false });
+  expect(JSON.parse(doc.settings["monocode.workerLimits.v1"])).toEqual({ hivra: { workers: 20, heavy: 5 } });
+  expect(JSON.parse(doc.settings["monocode:mono-teams"])).toMatchObject({
+    "chief-of-staff": { folder: "/Volumes/Old/mono-teams/chief-of-staff", createdAt: 1000 },
+  });
+  const files = a.doc.setupDocToFiles(doc);
+  localStorage.clear();
+
+  // The fresh copy, with Ash bringing the Chief of Staff in and leaving the Scout out.
+  const b = await app();
+  const made: string[] = [];
+  const makeTeamFolder = async (monoId: string) => {
+    const folder = `/Volumes/New/mono-teams/${monoId}`;
+    made.push(folder);
+    return folder;
+  };
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  expect(plan.settings.add).toEqual(expect.arrayContaining(["monocode.workerLimits.v1", "monocode:mono-teams"]));
+  const choices = b.plan.defaultChoices(plan);
+  choices.monos.delete("scout");
+  await b.plan.applyImport(pending, plan, choices, { makeTeamFolder });
+
+  // The limits are what the app reads, not just a key in storage.
+  expect(b.workers.workerLimits("hivra")).toEqual({ workers: 20, heavy: 5 });
+  expect(b.workers.workerLimits("vg-game")).toEqual({ workers: 6, heavy: 2 });
+  // The team is this Mac's folder, with the day it was first made.
+  expect(b.monoTeams.monoTeam("chief-of-staff")).toEqual({ monoId: "chief-of-staff", folder: "/Volumes/New/mono-teams/chief-of-staff", createdAt: 1000 });
+  expect(b.monoTeams.monoTeam("scout")).toBeUndefined();
+  expect(made).toEqual(["/Volumes/New/mono-teams/chief-of-staff"]);
+  expect(localStorage.getItem("monocode:mono-teams")).not.toContain("/Volumes/Old");
 });
 
 it("A10: deleted Monos stay deleted, after a restart and after an import", async () => {

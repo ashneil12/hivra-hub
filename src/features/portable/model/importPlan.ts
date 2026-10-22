@@ -15,7 +15,9 @@ import { addMockProject } from "../../hub/model/mockData";
 import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../../hub/model/setupSouls";
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
-import { isPortableSetting, settingLooksSecret, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { isPortableSetting, MONO_TEAMS_KEY, settingLooksSecret, workerLimitsSetting, WORKER_LIMITS_KEY, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { savedWorkerLimits, setWorkerLimits, type WorkerLimits } from "../../monos/model/workerPool";
+import { ensureMonoTeam, monoTeam, type MakeTeamFolder } from "../../hub/model/monoTeams";
 import { forYou } from "../../hub/model/userName";
 import { isKnownSeededSoul } from "../../hub/model/soulRefresh";
 import { teamSpecOf } from "../../hub/model/builtInMonos";
@@ -96,6 +98,8 @@ export function hereNow(): Here {
     pages: allKeptPages(),
     customModels: listCustomModels(),
     setting: (key) => {
+      // The worker limits live in the app database, not storage: what this Mac runs with is the pool's own copy.
+      if (key === WORKER_LIMITS_KEY) return workerLimitsSetting();
       try {
         return localStorage.getItem(key);
       } catch {
@@ -351,6 +355,11 @@ export type ImportDeps = {
   /** A Mono's files (tests pass their own; the app reads and writes its data folder). */
   agentFiles?: Pick<Parameters<typeof mergeIntoSeated>[1] & object, "read" | "write">;
   /**
+   * Makes a Mono's own team folder on this Mac (hub/model/monoTeams.ts ensureMonoTeam). Tests pass their own; the app
+   * asks Rust for `<app data>/mono-teams/<mono id>`, never the exporting Mac's path.
+   */
+  makeTeamFolder?: MakeTeamFolder;
+  /**
    * Records the souls this restore wrote as the app's own saves (hub/model/soulTamper.ts recordRestoredSouls), so the
    * soul tamper check never reads them as outside edits or puts them back.
    */
@@ -439,6 +448,59 @@ function mergePrefs(file: ProjectPrefsFile, projectIds: Set<string>): void {
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/**
+ * A10: the settings whose truth isn't storage. Worker limits live in the app database, so they are put back through the
+ * worker pool (which saves them where the app reads them); a Mono's own team is remembered by Mono id, so the import
+ * makes this Mac's folder and keeps the file's `createdAt`, never the exporting Mac's folder. In "missing" mode a
+ * project or Mono that already has its own here keeps it; "all" (replace) takes the file's. Returns 1 when it applied
+ * anything, so it counts as one setting in the summary.
+ */
+async function applyOwnedSetting(
+  key: string,
+  value: string,
+  replace: boolean,
+  knownMonos: Set<string>,
+  deps: ImportDeps,
+): Promise<number> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return 0;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
+  let applied = false;
+  if (key === WORKER_LIMITS_KEY) {
+    const here = savedWorkerLimits();
+    for (const [project, raw] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!project || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      if (!replace && here[project]) continue;
+      const saved = raw as Partial<WorkerLimits>;
+      const next: Partial<WorkerLimits> = {};
+      if (typeof saved.workers === "number") next.workers = saved.workers;
+      if (typeof saved.heavy === "number") next.heavy = saved.heavy;
+      if (next.workers === undefined && next.heavy === undefined) continue;
+      setWorkerLimits(project, next);
+      applied = true;
+    }
+  } else if (key === MONO_TEAMS_KEY) {
+    for (const [monoId, raw] of Object.entries(parsed as Record<string, unknown>)) {
+      // Only a Mono that is here or coming in: a folder for anyone else would be a team nobody asked for.
+      if (!knownMonos.has(monoId) || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const team = raw as { folder?: unknown; createdAt?: unknown };
+      if (typeof team.folder !== "string" || !team.folder.trim()) continue;
+      if (!replace && monoTeam(monoId)) continue;
+      try {
+        await ensureMonoTeam(monoId, deps.makeTeamFolder, typeof team.createdAt === "number" ? team.createdAt : undefined);
+        applied = true;
+      } catch {
+        /* no folder could be made now: the Mono asks for one on its next delegation */
+      }
+    }
+  }
+  return applied ? 1 : 0;
 }
 
 export async function applyImport(p: PendingImport, plan: Plan, choices: Choices, deps: ImportDeps = {}): Promise<ImportSummary> {
@@ -583,17 +645,29 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
 
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
+    const owned = [WORKER_LIMITS_KEY, MONO_TEAMS_KEY];
     let set = 0;
     for (const key of keys) {
       // Checked again where it is written: only a real preference, and never one that looks like a secret.
       const value = doc.settings[key];
       if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;
+      if (owned.includes(key)) {
+        if (await applyOwnedSetting(key, value, choices.settings === "all", knownMonos, deps)) set++;
+        continue;
+      }
       try {
         localStorage.setItem(key, value);
         set++;
       } catch {
         /* storage full or unavailable */
       }
+    }
+    // A list whose items partly overlap reads as "differs": adding still means the file's items this Mac hasn't got.
+    for (const key of owned) {
+      if (keys.includes(key)) continue;
+      const value = doc.settings[key];
+      if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;
+      if (await applyOwnedSetting(key, value, false, knownMonos, deps)) set++;
     }
     if (set) lines.push(`${plural(set, "setting")} added${choices.settings === "all" && plan.settings.differ.length ? ", yours replaced where you asked" : ""}. Some apply after a restart.`);
   }

@@ -4,6 +4,8 @@
 //   npm run hub:doctor                 # the identity guard (hub:check), then the inventory
 //   npm run hub:doctor -- --json       # the inventory as JSON (no guard)
 //   npm run hub:doctor -- --no-guard   # the inventory only
+//   npm run hub:doctor -- --clean      # what a stale dev slot / finished worktree would free, changing nothing
+//   npm run hub:doctor -- --clean --yes  # reap it (I8: one dev copy and one working copy after every run)
 //
 // It lists, with commit, kind and size:
 // - bundles: the installed app, ~/Applications backups, and every build and dev wrapper under each worktree's target/;
@@ -14,8 +16,13 @@
 // - the ship archive: ~/Archive/monocode/ships, where old ship folders go. Nothing ever deletes them, so it only grows;
 //   the doctor says how many and how big (it never prunes).
 //
-// It only reads. It never opens a database or a lock file (sizes come from du), and never launches anything; a copy's
-// kind comes from its identifier (src-tauri/src/instance.rs, scripts/hub-bundle.mjs). Tests: scripts/hub-doctor.test.cjs.
+// It only reads, except with `--clean --yes`: that removes a dev slot whose worktree is gone (or one no registry knows)
+// and whose copy isn't running, a worktree whose branch its main checkout already has and that has no uncommitted
+// changes and no dev copy running, stale target/hub-dev configs, and git's records of worktrees whose folder is gone.
+// The daily app, its data folder and upstream are never touched (the identifier is re-checked before every removal), and
+// a worktree with uncommitted changes is named in the output and kept. It never opens a database or a lock file (sizes
+// come from du) and never launches anything; a copy's kind comes from its identifier (src-tauri/src/instance.rs,
+// scripts/hub-bundle.mjs). Tests: scripts/hub-doctor.test.cjs.
 
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -33,7 +40,20 @@ import {
   readStamp,
   stampLabel,
 } from "./hub-bundle.mjs";
-import { ROOT, isMain, isRunningRecordAlive, readRegistry, readRunning, registryPath, samePath, supportDir } from "./hub-dev.mjs";
+import {
+  DEV_HOME,
+  ROOT,
+  isMain,
+  isRunningRecordAlive,
+  isValidSlot,
+  readRegistry,
+  readRunning,
+  registryPath,
+  samePath,
+  slotIdentifier,
+  supportDir,
+  updateRegistry,
+} from "./hub-dev.mjs";
 
 const run = promisify(execFile);
 
@@ -295,17 +315,195 @@ export function render(report) {
   return lines.join("\n");
 }
 
+// ---- cleaning up after a run (I8) -------------------------------------------------------------------------------------
+
+function gitResult(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/** The checkout a worktree belongs to: the folder holding its shared `.git`. */
+function mainRepoOf(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const common = gitResult(["rev-parse", "--git-common-dir"], dir).stdout?.trim();
+  if (!common) return null;
+  const resolved = path.resolve(dir, common);
+  return path.basename(resolved) === ".git" ? path.dirname(resolved) : null;
+}
+
+/** The branch its main checkout calls the default ("origin/main" when there is a remote HEAD, else main or master). */
+function defaultBranch(repo) {
+  const head = gitResult(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], repo).stdout?.trim();
+  if (head) return head.replace(/^refs\/remotes\//, "");
+  for (const name of ["main", "master"]) if (gitResult(["rev-parse", "--verify", "--quiet", name], repo).status === 0) return name;
+  return null;
+}
+
+/**
+ * What `npm run hub:doctor -- --clean` would reap, worked out without changing anything:
+ * - a dev slot no copy is running on whose worktree is gone, or which no registry entry knows (its data folder and its
+ *   throwaway token; the registry entry goes too), never the daily app's folder (the identifier is checked);
+ * - a `target/hub-dev/<slot>.conf.json` in a worktree that is no longer that worktree's slot (and not this one's);
+ * - a worktree whose main checkout already has its commit, that has no uncommitted changes and no dev copy running;
+ *   each worktree that is kept instead says why (uncommitted changes, not merged yet, a copy running);
+ * - git's records of worktrees whose folder is already gone (`git worktree prune`).
+ * The current worktree and the main checkout are never reaped.
+ */
+export function cleanPlan(report, { current = process.cwd(), same = samePath } = {}) {
+  const home = report.home;
+  const slots = [];
+  for (const slot of report.slots) {
+    if (slot.running || !isValidSlot(slot.slot)) continue;
+    const why = !slot.registered
+      ? "no registry entry knows it and no copy is running"
+      : !slot.worktreeExists
+        ? `its worktree ${slot.worktree ?? "?"} is gone and no copy is running`
+        : null;
+    if (!why) continue;
+    // Only a dev copy's own data folder, never anything else.
+    if (slot.dataFolder && `${DEV_IDENTIFIER_PREFIX}${slot.slot}` !== path.basename(slot.dataFolder)) continue;
+    slots.push({ slot: slot.slot, why, dataFolder: slot.dataFolder ?? null, registered: slot.registered });
+  }
+
+  const configs = [];
+  for (const tree of report.worktrees) {
+    if (!tree.target || same(tree.path, current)) continue;
+    const dir = path.join(tree.target, "hub-dev");
+    for (const file of list(dir)) {
+      const name = path.basename(file);
+      if (!name.endsWith(".conf.json")) continue;
+      const slot = name.slice(0, -".conf.json".length);
+      if (!isValidSlot(slot) || slot === tree.slot) continue;
+      // A copy still running on that slot may read it at its next relaunch.
+      if (report.slots.some((row) => row.slot === slot && row.running)) continue;
+      configs.push({ path: file, why: tree.slot ? `that worktree's slot is now ${tree.slot}` : "that worktree has no slot now" });
+    }
+  }
+
+  const worktrees = [];
+  const kept = [];
+  for (const tree of report.worktrees) {
+    if (!tree.kind.startsWith("worktree") || same(tree.path, current)) continue;
+    const repo = mainRepoOf(tree.path);
+    if (!repo) continue;
+    if (report.slots.some((slot) => slot.running && same(slot.worktree, tree.path))) {
+      kept.push({ path: tree.path, why: "a dev copy is running on it" });
+      continue;
+    }
+    if ((gitResult(["status", "--porcelain"], tree.path).stdout ?? "").trim()) {
+      kept.push({ path: tree.path, why: "it has uncommitted changes" });
+      continue;
+    }
+    const base = defaultBranch(repo);
+    if (!base || !tree.commit) {
+      kept.push({ path: tree.path, why: "its main checkout's default branch could not be worked out" });
+      continue;
+    }
+    if (gitResult(["merge-base", "--is-ancestor", tree.commit, base], repo).status !== 0) {
+      kept.push({ path: tree.path, why: `${base} does not have ${tree.branch || "its branch"} yet` });
+      continue;
+    }
+    worktrees.push({ path: tree.path, branch: tree.branch, repo, base, why: `${base} already has ${tree.branch || tree.commit}` });
+  }
+
+  // Records git keeps for worktrees whose folder is gone (they don't appear in `git worktree list`, so they block the
+  // branch from being checked out again).
+  const prunes = [];
+  for (const repo of new Set(report.worktrees.map((tree) => mainRepoOf(tree.path)).filter(Boolean))) {
+    const porcelain = gitResult(["worktree", "list", "--porcelain"], repo).stdout ?? "";
+    if (parseWorktrees(porcelain).some((tree) => !fs.existsSync(tree.path))) prunes.push(repo);
+  }
+
+  return { home, slots, configs, worktrees, kept, prunes };
+}
+
+/**
+ * Does what `cleanPlan` listed. Every dev data folder is checked against the slot's own identifier again, so a mix-up
+ * can never reach the daily app or upstream; one failure is reported and the rest carry on.
+ */
+export function applyClean(plan, { home = plan.home } = {}) {
+  const removed = { slots: 0, configs: 0, worktrees: 0, pruned: 0 };
+  const problems = [];
+  const daily = path.join(supportDir(home), HUB_IDENTIFIER);
+  for (const slot of plan.slots) {
+    if (!isValidSlot(slot.slot)) {
+      problems.push(`slot ${slot.slot}: not a dev slot name, so nothing here is its own`);
+      continue;
+    }
+    try {
+      if (slot.dataFolder) {
+        const expected = path.join(supportDir(home), slotIdentifier(slot.slot));
+        if (!samePath(slot.dataFolder, expected) || samePath(slot.dataFolder, daily))
+          throw new Error(`not this Mac's data folder for slot ${slot.slot}: ${slot.dataFolder}`);
+        fs.rmSync(slot.dataFolder, { recursive: true, force: true });
+      }
+      fs.rmSync(path.join(home, DEV_HOME, "slots", slot.slot), { recursive: true, force: true });
+      if (slot.registered) updateRegistry(home, (registry) => void delete registry.slots[slot.slot]);
+      removed.slots += 1;
+    } catch (error) {
+      problems.push(`slot ${slot.slot}: ${error.message}`);
+    }
+  }
+  for (const config of plan.configs) {
+    try {
+      // Only a dev copy's generated config, never anything else.
+      if (!config.path.endsWith(".conf.json") || path.basename(path.dirname(config.path)) !== "hub-dev")
+        throw new Error("not a target/hub-dev config");
+      fs.rmSync(config.path, { force: true });
+      removed.configs += 1;
+    } catch (error) {
+      problems.push(`${config.path}: ${error.message}`);
+    }
+  }
+  for (const tree of plan.worktrees) {
+    // A worktree, never the checkout it belongs to.
+    if (!tree.repo || samePath(tree.path, tree.repo) || !fs.existsSync(tree.repo)) {
+      problems.push(`${tree.path}: not a worktree of a checkout that is still there`);
+      continue;
+    }
+    const result = gitResult(["worktree", "remove", "--force", tree.path], tree.repo);
+    if (result.status === 0) removed.worktrees += 1;
+    else problems.push(`${tree.path}: ${(result.stderr ?? "").trim() || "git refused to remove it"}`);
+  }
+  for (const repo of plan.prunes) if (gitResult(["worktree", "prune"], repo).status === 0) removed.pruned += 1;
+  return { removed, problems };
+}
+
+/** The clean plan as text (before `--yes` it only says what it would do). */
+export function renderClean(plan, { removed = null, problems = [] } = {}) {
+  const t = tilde(plan.home);
+  const lines = [];
+  const total = plan.slots.length + plan.configs.length + plan.worktrees.length + plan.prunes.length;
+  if (removed) lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
+  else lines.push(total ? "Clean (nothing is removed without --yes)" : "Clean: nothing to clean");
+  for (const slot of plan.slots)
+    lines.push(`  slot ${slot.slot}  ${slot.why}${slot.dataFolder ? `; data folder ${t(slot.dataFolder)}` : ""}${slot.registered ? "; its registry entry" : ""}`);
+  for (const config of plan.configs) lines.push(`  config ${t(config.path)}  ${config.why}`);
+  for (const tree of plan.worktrees) lines.push(`  worktree ${t(tree.path)}  ${tree.why}; no uncommitted changes, no dev copy running`);
+  for (const repo of plan.prunes) lines.push(`  git records ${t(repo)}  worktrees whose folders are gone (git worktree prune)`);
+  for (const keep of plan.kept) lines.push(`  kept ${t(keep.path)}  ${keep.why}`);
+  for (const problem of problems) lines.push(`  problem ${problem}`);
+  return lines.join("\n");
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const json = args.includes("--json");
+  const clean = args.includes("--clean");
+  const yes = args.includes("--yes");
   let status = 0;
-  if (!json && !args.includes("--no-guard")) {
+  if (!json && !clean && !args.includes("--no-guard")) {
     const guard = spawnSync("bash", [path.join(ROOT, "scripts/identity-guard.sh")], { cwd: ROOT, stdio: "inherit" });
     status = guard.status ?? 1;
     console.log("");
   }
   const report = await collect({ sizes: !args.includes("--no-sizes") });
-  console.log(json ? JSON.stringify(report, null, 2) : render(report));
+  if (!clean) {
+    console.log(json ? JSON.stringify(report, null, 2) : render(report));
+    return status;
+  }
+  const plan = cleanPlan(report);
+  const result = yes ? applyClean(plan) : null;
+  console.log(renderClean(plan, result ? { removed: result.removed, problems: result.problems } : {}));
   return status;
 }
 

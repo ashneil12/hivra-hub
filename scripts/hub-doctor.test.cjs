@@ -258,3 +258,145 @@ test("SH-8: the doctor reports the ship archive's count and size, and never prun
   assert.equal((await collect({ home, repo, worktreeRoots: roots, sizes: false })).shipArchive.count, 3);
   assert.equal(fs.readdirSync(archive).length, 4);
 });
+
+// I8 (Ash, 21 Oct: "one dev copy + one working copy, clean up after every run"): a supported pass that sees what a run
+// left behind and reaps only what nothing is using. It plans without changing anything, names what it keeps and why, and
+// never reaches the daily app or a checkout.
+const alive = (owner) => owner.pid === process.pid;
+
+test("I8: --clean plans a stale slot, an old config and a finished worktree, then reaps exactly those", { skip }, async (t) => {
+  const { collect, cleanPlan, applyClean, renderClean } = await load();
+  const { home, repo, worktree } = fixture(t);
+  const roots = [path.join(home, "Worktrees")];
+  const report = () => collect({ home, repo, worktreeRoots: roots, sizes: false, isAlive: alive });
+
+  // Three more worktrees: one its main checkout already has, one with work in it, one not merged yet.
+  const merged = path.join(home, "Worktrees/feat-b");
+  git(repo, "worktree", "add", "-q", "-b", "feat/b", merged);
+  const dirty = path.join(home, "Worktrees/feat-c");
+  git(repo, "worktree", "add", "-q", "-b", "feat/c", dirty);
+  fs.writeFileSync(path.join(dirty, "unfinished.txt"), "work in progress");
+  const unmerged = path.join(home, "Worktrees/feat-d");
+  git(repo, "worktree", "add", "-q", "-b", "feat/d", unmerged);
+  fs.writeFileSync(path.join(unmerged, "done.txt"), "a commit main does not have");
+  git(unmerged, "add", ".");
+  git(unmerged, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work");
+  // A worktree folder removed by hand: git keeps a record of it.
+  const vanished = path.join(home, "Worktrees/feat-x");
+  git(repo, "worktree", "add", "-q", "-b", "feat/x", vanished);
+  fs.rmSync(vanished, { recursive: true, force: true });
+  // feat-a's own config, and one left from a slot name it no longer uses.
+  fs.mkdirSync(path.join(worktree, "target/hub-dev"), { recursive: true });
+  fs.writeFileSync(path.join(worktree, "target/hub-dev/feat-a.conf.json"), "{}");
+  fs.writeFileSync(path.join(worktree, "target/hub-dev/old-name.conf.json"), "{}");
+  // The orphan slot's throwaway token folder.
+  fs.mkdirSync(path.join(home, ".monocode-hub-dev/slots/orphan"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".monocode-hub-dev/slots/orphan/token"), "throwaway");
+
+  const plan = cleanPlan(await report(), { current: repo });
+  assert.deepEqual(plan.slots.map((slot) => slot.slot).sort(), ["orphan", "removed"], "only slots no copy runs on and nothing owns");
+  assert.equal(plan.slots.find((slot) => slot.slot === "removed").dataFolder, null);
+  assert.equal(plan.slots.find((slot) => slot.slot === "orphan").dataFolder, path.join(home, "Library/Application Support", `${DEV}orphan`));
+  assert.deepEqual(plan.configs.map((config) => path.basename(config.path)), ["old-name.conf.json"]);
+  assert.deepEqual(plan.worktrees.map((tree) => path.basename(tree.path)), ["feat-b"]);
+  assert.deepEqual(plan.prunes, [repo]);
+  const kept = Object.fromEntries(plan.kept.map((keep) => [path.basename(keep.path), keep.why]));
+  assert.match(kept["feat-a"], /dev copy is running/);
+  assert.match(kept["feat-c"], /uncommitted changes/);
+  assert.match(kept["feat-d"], /main does not have feat\/d yet/);
+
+  const preview = renderClean(plan);
+  assert.match(preview, /Clean \(nothing is removed without --yes\)/);
+  assert.match(preview, /slot orphan/);
+  assert.match(preview, /config .*old-name\.conf\.json/);
+  assert.match(preview, /worktree .*feat-b/);
+  assert.match(preview, /kept .*feat-c {2}it has uncommitted changes/);
+  // Nothing changed yet.
+  assert.ok(fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)));
+  assert.ok(fs.existsSync(path.join(worktree, "target/hub-dev/old-name.conf.json")));
+  assert.ok(fs.existsSync(merged));
+
+  const result = applyClean(plan);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(result.removed, { slots: 2, configs: 1, worktrees: 1, pruned: 1 });
+  assert.match(renderClean(plan, { removed: result.removed }), /^Cleaned: 2 slots, 1 config, 1 worktree, git pruned in 1 checkout/);
+
+  assert.ok(!fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)), "the orphan data folder is gone");
+  assert.ok(!fs.existsSync(path.join(home, ".monocode-hub-dev/slots/orphan")), "its token folder is gone");
+  assert.ok(!fs.existsSync(path.join(worktree, "target/hub-dev/old-name.conf.json")), "the old config is gone");
+  assert.ok(fs.existsSync(path.join(worktree, "target/hub-dev/feat-a.conf.json")), "the running slot's config stays");
+  assert.ok(!fs.existsSync(merged), "the finished worktree is gone");
+  assert.ok(fs.existsSync(path.join(dirty, "unfinished.txt")), "the dirty worktree is untouched");
+  assert.ok(fs.existsSync(path.join(unmerged, "done.txt")), "the unmerged worktree is untouched");
+  assert.equal(git(repo, "rev-parse", "--verify", "feat/b"), git(repo, "rev-parse", "main"), "its branch is kept");
+  assert.ok(!git(repo, "worktree", "list").includes("feat-x"), "git's record of the vanished worktree is pruned");
+
+  const registry = JSON.parse(fs.readFileSync(path.join(home, ".monocode-hub-dev/slots.json"), "utf8"));
+  assert.deepEqual(Object.keys(registry.slots), ["feat-a"], "only the running slot's registry entry is left");
+  for (const folder of [DAILY, "com.monocode.desktop"])
+    assert.ok(fs.existsSync(path.join(home, "Library/Application Support", folder, "monocode.db")), `${folder} is untouched`);
+  for (const app of ["MonoCode Hub.app", "MonoCode-Hub-backup-20261016.app"])
+    assert.ok(fs.existsSync(path.join(home, "Applications", app, "Contents/Info.plist")), `${app} is untouched`);
+
+  const after = await report();
+  assert.ok(!after.slots.some((slot) => slot.slot === "orphan"));
+  assert.ok(!after.slots.some((slot) => slot.slot === "removed"));
+  assert.ok(!after.worktrees.some((row) => path.basename(row.path) === "feat-b"));
+});
+
+test("I8: a plan that names the daily app's data folder, an app file or a checkout changes nothing", { skip }, async (t) => {
+  const { applyClean, cleanPlan, collect } = await load();
+  const { home, repo, worktree } = fixture(t);
+
+  // Even a hand-made plan can't get past the checks: every item is re-checked on the way in.
+  const plan = {
+    home,
+    slots: [{ slot: "feat-a", why: "x", dataFolder: path.join(home, "Library/Application Support", DAILY), registered: true }],
+    configs: [{ path: path.join(home, "Applications/MonoCode Hub.app/Contents/Info.plist"), why: "x" }],
+    worktrees: [{ path: repo, repo, why: "x" }],
+    kept: [],
+    prunes: [],
+  };
+  const result = applyClean(plan);
+  assert.equal(result.removed.slots + result.removed.configs + result.removed.worktrees, 0);
+  assert.equal(result.problems.length, 3, result.problems.join("\n"));
+  for (const file of [
+    path.join(home, "Library/Application Support", DAILY, "monocode.db"),
+    path.join(home, "Applications/MonoCode Hub.app/Contents/Info.plist"),
+    path.join(repo, "src-tauri/tauri.conf.json"),
+  ])
+    assert.ok(fs.existsSync(file), `${file} is still there`);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(home, ".monocode-hub-dev/slots.json"), "utf8")).slots).sort(), ["feat-a", "removed"]);
+
+  // The real plan for this fixture never lists the daily folder, upstream, the main checkout or the running slot.
+  const report = await collect({ home, repo, worktreeRoots: [path.join(home, "Worktrees")], sizes: false, isAlive: alive });
+  const clean = cleanPlan(report, { current: repo });
+  assert.ok(!clean.slots.some((slot) => slot.slot === "feat-a"));
+  assert.ok(!clean.worktrees.some((tree) => tree.path === repo || tree.path === worktree));
+  assert.ok(!clean.slots.some((slot) => slot.dataFolder && path.basename(slot.dataFolder) === DAILY), "never the daily folder");
+  assert.ok(!JSON.stringify(clean).includes("com.monocode.desktop"));
+});
+
+test("hub:doctor --clean without --yes lists what it would reap and leaves the fixture byte for byte the same", { skip }, async (t) => {
+  const { home, repo, worktree } = fixture(t);
+  fs.mkdirSync(path.join(worktree, "target/hub-dev"), { recursive: true });
+  fs.writeFileSync(path.join(worktree, "target/hub-dev/old-name.conf.json"), "{}");
+  const snapshot = () =>
+    execFileSync("find", [home, "-not", "-path", "*/.git/*", "-type", "f", "-exec", "shasum", "{}", "+"], { encoding: "utf8" })
+      .split("\n")
+      .sort()
+      .join("\n");
+  const before = snapshot();
+  const result = spawnSync(process.execPath, [path.join(__dirname, "hub-doctor.mjs"), "--clean", "--no-sizes"], {
+    cwd: repo,
+    env: { ...process.env, HOME: home },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Clean \(nothing is removed without --yes\)/);
+  assert.match(result.stdout, /slot orphan/);
+  assert.match(result.stdout, /slot removed/);
+  assert.match(result.stdout, /config .*old-name\.conf\.json/);
+  assert.equal(snapshot(), before);
+  assert.ok(fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)));
+});
