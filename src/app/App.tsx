@@ -1,4 +1,5 @@
 import { faultedOutcome, faultedReply, takeWorkerFault } from "../features/monos/model/devFault";
+import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
@@ -2614,10 +2615,16 @@ function Workspace({
   useEffect(() => {
     if (loadNotificationsEnabled()) void probeNotificationPermission();
   }, []);
-  const unseenFinishedIds = useUnseenFinishedSessions(
+  const finishedTurnIds = useUnseenFinishedSessions(
     sessions,
     busySessionIds,
     activeSessionId,
+  );
+  // The green Done tick follows the worker's job, not only its chat's last turn (workOutcome.ts: one source).
+  const doneRows = useDelegationRows();
+  const unseenFinishedIds = useMemo(
+    () => doneOnlyWhenDone(finishedTurnIds, doneRows),
+    [finishedTurnIds, doneRows],
   );
   const monoSessionIds = useMemo(
     () =>
