@@ -614,6 +614,7 @@ import {
   ADD_TO_CHAT_EVENT,
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
+import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { homeAfterRemoval } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
@@ -15572,6 +15573,8 @@ function Workspace({
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
 
+  // r30h: which chats run a turn now, so a failed worker whose Lead's turn ended goes red (workerStuck.ts leadTurnOver).
+  useBusyChatsFeed(sessions);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();

@@ -119,9 +119,29 @@ export function stopUnloaded(chat: string): readonly string[] {
   return failures.get(chat)?.unloaded ?? [];
 }
 
+/**
+ * Which chats are running a turn right now, as this window's app sees its sessions (Session.busy; App.tsx keeps it
+ * current). r30h: a failed worker whose Lead has read the failure and whose Lead's turn has since ended goes to Ash
+ * (workerStuck.ts leadTurnOver). Undefined until the app has said (a browse-only page, a unit test): then nobody's turn
+ * is known to be over.
+ */
+let busyChats: ReadonlySet<string> | undefined;
+export function setBusyChats(ids: Iterable<string>): void {
+  const next = new Set(ids);
+  if (busyChats && busyChats.size === next.size && [...next].every((id) => busyChats!.has(id))) return;
+  busyChats = next;
+  changed();
+}
+
+/** True while the chat runs a turn, false when this window's app says it doesn't, undefined when it hasn't said. */
+export function chatBusy(id: string): boolean | undefined {
+  return busyChats ? busyChats.has(id) : undefined;
+}
+
 /** Tests: forget everything. */
 export function resetDelegationStore(): void {
   rows = [];
+  busyChats = undefined;
   actions = undefined;
   jumpedIn.clear();
   failures.clear();

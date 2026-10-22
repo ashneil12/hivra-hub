@@ -25,6 +25,7 @@ import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
 import { openLead, openStuck } from "../../monos/model/stuckActions";
 import { leadNameOf, StuckList, StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
 import { useMonoFailuresVersion } from "../../monos/model/monoFailures";
+import { APP_WORKER_WHERE } from "./appWorkerWhere";
 import { MonoFailureList } from "../../monos/ui/MonoFailureCard";
 import { failedMonosFor } from "../model/todayCounts";
 
@@ -46,12 +47,12 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   useMonoFailuresVersion();
   const failed = failedMonosFor(projectId);
   // Its red Needs you rows come from the one list the rail counts (needsYouRows.ts): its job rows, made by the same
-  // function, and any worker only Ash can sort that no job row carries, listed on its own under its Lead.
+  // function (with r30h's app workers no job stands for), and any worker only Ash can sort that no row carries.
   const needsYou = useNeedsYouRows();
   const loneRed = needsYou.flatMap((r) => (r.worker && r.projectId === projectId ? [r.worker] : []));
   const liveWorkers = live
     ? [
-        ...beingBuiltJobRows(data.listJobs?.(projectId) ?? [], delegations, now, leadFailureOf),
+        ...beingBuiltJobRows(projectId, data.listJobs?.(projectId) ?? [], delegations, now, leadFailureOf, APP_WORKER_WHERE),
         ...prWatchWorkers(prWatches?.all() ?? [], projectId, now),
       ]
     : [];

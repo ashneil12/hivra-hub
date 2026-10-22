@@ -13,6 +13,7 @@ import {
 import { isOpenDelegation, type Delegation } from "../model/delegations";
 import {
   batchRollup,
+  cardView,
   delegationOf,
   launchState,
 } from "../model/delegationView";
@@ -108,7 +109,10 @@ export function DelegationBatchRow({
               view={
                 waiting[index]
                   ? { state: "waiting", title: waiting[index]!.title }
-                  : views?.get(launch.sessionId)
+                  : cardView(
+                      views?.get(launch.sessionId),
+                      delegationOf(launch.sessionId, rows),
+                    )
               }
               open={openSessionId === launch.sessionId}
               onOpen={

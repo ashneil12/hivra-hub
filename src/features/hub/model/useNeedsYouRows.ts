@@ -6,6 +6,7 @@ import { failedMonoName, monoFailure, useMonoFailuresVersion } from "../../monos
 import { hubData, useHubDataVersion } from "./hubData";
 import { beingBuiltJobRows, needsYouRows, type LeadFailureOf, type NeedsYouRow } from "./needsYouRows";
 import { stuckProject } from "./todayCounts";
+import { APP_WORKER_WHERE } from "../ui/appWorkerWhere";
 
 /** A Lead whose last turn failed, as Being built lays it over its jobs. */
 export const leadFailureOf: LeadFailureOf = (monoId) => {
@@ -19,6 +20,6 @@ export function useNeedsYouRows(): NeedsYouRow[] {
   const { stuck, now } = useStuckWorkers();
   const delegations = useDelegationRows();
   const data = hubData();
-  const jobs = data.listJobs ? data.listProjects().flatMap((p) => beingBuiltJobRows(data.listJobs!(p.id), delegations, now, leadFailureOf)) : [];
+  const jobs = data.listJobs ? data.listProjects().flatMap((p) => beingBuiltJobRows(p.id, data.listJobs!(p.id), delegations, now, leadFailureOf, APP_WORKER_WHERE)) : [];
   return needsYouRows(jobs, stuck, (s) => stuckProject(s)?.id);
 }

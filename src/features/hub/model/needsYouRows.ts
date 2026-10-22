@@ -11,13 +11,26 @@ import type { StuckWorker } from "../../monos/model/workerStuck";
 import type { HubJobGroup, Worker } from "./types";
 import { withFailedLeads, workersFromJobs } from "./liveJobs";
 import { workerChip } from "./statusChip";
-import { withStuckWorkers } from "./stuckJobs";
+import { appWorkers, withStuckWorkers, type AppWorkerWhere } from "./stuckJobs";
 
 export type LeadFailureOf = (monoId: string) => { name: string; reason: string; tone: "red" | "grey" } | undefined;
 
 /** Being built's job rows for some job groups: Ash OS's jobs with this app's stuck workers and failed Leads laid over. */
-export function beingBuiltJobRows(groups: HubJobGroup[], delegations: readonly Delegation[], now: number, failureOf: LeadFailureOf): Worker[] {
-  return withFailedLeads(withStuckWorkers(workersFromJobs(groups, now), delegations, now), failureOf);
+/**
+ * r30h: with this app's own workers no job stands for (`where` places them; without it, jobs only), so a red worker
+ * Being built lists as its own row is that row here too.
+ */
+export function beingBuiltJobRows(
+  projectId: string,
+  groups: HubJobGroup[],
+  delegations: readonly Delegation[],
+  now: number,
+  failureOf: LeadFailureOf,
+  where?: AppWorkerWhere,
+): Worker[] {
+  const jobs = workersFromJobs(groups, now);
+  const own = where ? appWorkers(projectId, jobs, delegations, now, where) : [];
+  return withFailedLeads(withStuckWorkers([...jobs, ...own], delegations, now), failureOf);
 }
 
 /** A row that reads the red Needs you. */
