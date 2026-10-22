@@ -109,6 +109,25 @@ export function plainWorkText(text: string): string {
     .trim();
 }
 
+// Developer detail a job or need title can carry from Ash OS (a JS expression, an HTTP status line, an exception, a
+// stack frame, a file path): Ash reads the ask, not the log line.
+const DEV_TEXT =
+  /(?:\bwindow\.|\b__\w|\b[\w$]+\.[\w$]+(?:\.[\w$]+)*\s*\(|\bHTTP(?:\s+Error)?\s*\d{3}|\b[A-Z]\w*(?:Error|Exception)\b|\bTraceback\b|\bat\s+\S+:\d+|[{}<>]|=>|(?:^|\s)(?:~|\/)[\w.-]+\/)/;
+
+/** A job or need title in plain words: the summary of the ask, without the developer detail Ash OS appends. */
+export function plainTitle(text: string): string {
+  const clean = plainWorkText(text).replace(/(?:…|\.\.\.)\s*$/, "").trim();
+  const parts = clean.split(/:\s+/);
+  const cut = parts.findIndex((part) => DEV_TEXT.test(part));
+  const kept = (cut === -1 ? parts : parts.slice(0, cut)).map((part) =>
+    part
+      .replace(/^light surface\s+(\S+)\s+did not boot$/i, "the $1 screen won't open")
+      .replace(/^(?:surface|page)\s+(\S+)\s+did not boot$/i, "the $1 screen won't open"),
+  );
+  const title = kept.join(": ").trim();
+  return title || "A fix in progress";
+}
+
 export function mapNeed(raw: unknown, later = false): Need | undefined {
   const r = obj(raw);
   const id = str(r.id);
@@ -117,7 +136,7 @@ export function mapNeed(raw: unknown, later = false): Need | undefined {
   const need: Need = {
     id,
     projectId: str(r.projectId),
-    title: plainWorkText(str(r.title)),
+    title: plainTitle(str(r.title)),
     why: plainWorkText(str(r.why)),
     actionType,
     actionLabel: str(r.actionLabel, "Open"),
@@ -167,7 +186,7 @@ export function mapJob(raw: unknown): HubJob | undefined {
   const job: HubJob = {
     id,
     projectId: str(r.projectId),
-    title: plainWorkText(str(r.title)),
+    title: plainTitle(str(r.title)),
     lead: optStr(r.lead) ?? null,
     leadName: optStr(r.leadName) ?? null,
     state,
@@ -198,7 +217,7 @@ export function mapJob(raw: unknown): HubJob | undefined {
   if (parentId) {
     job.parentId = parentId;
     const parentTitle = optStr(r.parentTitle);
-    if (parentTitle) job.parentTitle = parentTitle;
+    if (parentTitle) job.parentTitle = plainTitle(parentTitle);
   }
   return job;
 }
