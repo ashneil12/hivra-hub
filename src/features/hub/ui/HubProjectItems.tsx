@@ -34,9 +34,12 @@ function itemHint(item: ProjectItem, project: HubProject): string | undefined {
 export function HubProjectItems({
   selection,
   onPick,
+  monoOpen = false,
 }: {
   selection: HubSelection;
   onPick: (item: ProjectItem) => void;
+  /** A Mono's 1:1 covers the main area: the Monos rail marks that Mono, so no project item is highlighted. */
+  monoOpen?: boolean;
 }) {
   useHubDataVersion();
   useHubChatsVersion();
@@ -70,7 +73,8 @@ export function HubProjectItems({
       <div className="flex flex-col gap-px px-2">
         {items.map((item) => {
           const Icon = iconFor(item);
-          const selected = selection.item === item.id;
+          // Only the open thing is highlighted (PM's r35 check, 22 Oct): not Coding team or Leadership team under a 1:1.
+          const selected = !monoOpen && selection.item === item.id;
           return (
             <button
               key={item.id}
@@ -79,6 +83,7 @@ export function HubProjectItems({
               // leadership team is a group chat (the room).
               title={itemHint(item, project)}
               data-hub-item={item.kind}
+              aria-current={selected ? "page" : undefined}
               onClick={() => {
                 setHubSelection({ project: project.id, item: item.id });
                 onPick(item);

@@ -15886,6 +15886,7 @@ function Workspace({
       hubItems={
         <HubProjectItems
           selection={hubSel}
+          monoOpen={monoCovers}
           onPick={(item) => {
             closeChromeViews();
             if (item.kind === "coding-team" && hubProject?.folder)

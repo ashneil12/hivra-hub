@@ -1919,8 +1919,9 @@ function TranscriptContent({
   }
   return (
     // A Mono's 1:1 fills the window like a room (GroupChatView: px-6, xl:px-8 with the rows' own px-4); only the plain
-    // reply text keeps a reading limit (chat-reading-limit, index.css). Critiquito 22 Oct.
-    <div className="chat-reading-limit flex min-h-full w-full min-w-0 flex-col justify-end overflow-clip px-2 pb-8 xl:px-4">
+    // reply text keeps a reading limit (chat-reading-limit, index.css). Critiquito 22 Oct. pb-14: the last line rests
+    // above the band kept clear for "Jump to latest" (mono-transcript-fades), so the button never covers it.
+    <div className="chat-reading-limit flex min-h-full w-full min-w-0 flex-col justify-end overflow-clip px-2 pb-14 xl:px-4">
       <div
         data-transcript-content
         className="flex min-w-0 shrink-0 flex-col gap-1"

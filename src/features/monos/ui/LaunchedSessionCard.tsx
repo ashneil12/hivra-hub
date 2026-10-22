@@ -87,7 +87,8 @@ const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
  * A session the Mono started, as a line under its reply like an artifact:
  * a spinner while it works, a check once it is done, and the project it runs
  * in. Without `view` (a window that does not track sessions) it shows no
- * status.
+ * status. It takes the replies' reading width (about 640px, the 1:1's 75ch),
+ * not a narrow pill; the title fills it and the project sits at its end.
  */
 export function LaunchedSessionCard({
   launch,
@@ -116,7 +117,7 @@ export function LaunchedSessionCard({
       title={status?.label}
       onClick={onOpen}
       disabled={!onOpen}
-      className={`flex w-fit max-w-[min(24rem,100%)] min-w-0 items-center gap-2.5 rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
+      className={`flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
     >
       {status?.icon ?? (
         <Chatting
@@ -124,7 +125,7 @@ export function LaunchedSessionCard({
           strokeWidth={1.75}
         />
       )}
-      <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] text-content">{title}</span>
       {view?.state === "waiting" ? (
         <span
           data-launched-waiting

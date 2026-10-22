@@ -46,7 +46,7 @@ const WORKERS: Worker[] = examples([
   {
     id: "w6", activeAgo: 55, projectId: "hivra", who: "Projects Manager", kind: "mono", minutes: 50, stuck: "lead_gave_up", waitingId: "s2", stuckReason: "Example: The email sender refused the login",
     doing: "Example: sending the waitlist welcome emails",
-    steps: [{ id: "1", at: "7:55pm", text: "Example: The email sender refused the login; stuck, needs you" }],
+    steps: [{ id: "1", at: "7:55pm", text: "Example: The email sender refused the login; needs you" }],
   },
 ]);
 
