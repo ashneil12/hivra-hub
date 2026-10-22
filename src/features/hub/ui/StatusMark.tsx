@@ -54,6 +54,12 @@ export function needMark(need: Pick<Need, "circle" | "word" | "jobId">): { circl
   return { circle: chip.tone, word: chip.word };
 }
 
+/**
+ * The one look for "Open <Lead>'s chat", red row or grey (Critiquito on r30: the red rows' was a plain underlined link,
+ * the grey rows' a button). Being built's grey rows and StuckWorkerCard use the same class.
+ */
+export const LEAD_CHAT_BUTTON = "shrink-0 cursor-default rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
+
 /** "Open Hivra lead's chat": every red Needs you carries it (r27b), so Ash can act from where he sees it. */
 export function OpenLeadLink({ name, onOpen }: { name?: string | null; onOpen: () => void }) {
   return (
@@ -65,7 +71,7 @@ export function OpenLeadLink({ name, onOpen }: { name?: string | null; onOpen: (
         onOpen();
       }}
       onKeyDown={(e) => e.stopPropagation()}
-      className="shrink-0 cursor-default rounded text-xs text-content/80 underline decoration-content/30 underline-offset-2 hover:text-content"
+      className={LEAD_CHAT_BUTTON}
     >
       Open {name?.trim() || "its Lead"}&apos;s chat
     </button>

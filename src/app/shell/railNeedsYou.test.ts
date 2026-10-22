@@ -15,6 +15,7 @@ import { monoFailures, noteMonoFailures, resetMonoFailures, setMonoFailuresHost 
 import { plainFailure } from "../../features/monos/model/turnFailure";
 import { MonoFailureList } from "../../features/monos/ui/MonoFailureCard";
 import { failureChip } from "../../features/hub/model/statusChip";
+import { LEAD_CHAT_BUTTON } from "../../features/hub/ui/StatusMark";
 import { MonoRailSection } from "./MonoRailSection";
 
 let root: Root;
@@ -133,5 +134,16 @@ it("puts Open <Lead>'s chat on its own line under the reason, on the rail and th
     expect(line.children).toHaveLength(1);
     // Its reason comes before it, not beside it.
     expect(line.previousElementSibling?.textContent).toContain("Out of credits");
+  }
+});
+
+// Critiquito on r30: a red row's "Open <Lead>'s chat" was a plain underlined link while the grey rows' was a button.
+it("gives a red row's Open <Lead>'s chat the same button look as the grey rows'", () => {
+  mount({ status: "failed", activity: "Out of credits", tone: "red" });
+  const links = [...container.querySelectorAll<HTMLElement>("[data-hub-open-lead]")];
+  expect(links.length).toBeGreaterThan(0);
+  for (const link of links) {
+    expect(link.className).toBe(LEAD_CHAT_BUTTON);
+    expect(link.className).not.toMatch(/underline/);
   }
 });

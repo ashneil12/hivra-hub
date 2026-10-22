@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { workerChip } from "../model/statusChip";
-import { ChipMark, NeedsYouLinkLine } from "./StatusMark";
+import { ChipMark, LEAD_CHAT_BUTTON, NeedsYouLinkLine } from "./StatusMark";
 import { openMonoChat } from "../model/hubNav";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -317,7 +317,7 @@ function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: bool
         else openStuck(stuck);
       }}
       title={asking ? undefined : `Open ${w.who}'s chat`}
-      className="min-w-0 truncate rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+      className={`min-w-0 truncate ${LEAD_CHAT_BUTTON}`}
     >
       {asking ? "Answer" : `Open ${w.who}'s chat`}
     </button>
@@ -337,7 +337,7 @@ function WorkerTakeLook({ w: worker }: { w: Worker }) {
           e.stopPropagation();
           openLead(worker.lead);
         }}
-        className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+        className={LEAD_CHAT_BUTTON}
       >
         Open {worker.who}&apos;s chat
       </button>
