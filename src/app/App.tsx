@@ -2662,6 +2662,7 @@ function Workspace({
         monoCovers ? "" : activeTabId,
         tabs,
         composerFocused,
+        (id) => trayDelegationRows.some((row) => row.childSession === id && !!row.ownerMono),
       ),
     [
       promptableSessions,
@@ -2670,6 +2671,7 @@ function Workspace({
       composerFocused,
       monoViewId,
       monoCovers,
+      trayDelegationRows,
     ],
   );
   const [reminderNoticesHeight, setReminderNoticesHeight] = useState(0);

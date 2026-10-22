@@ -58,12 +58,19 @@ export function hiddenApprovalNotices(
   activeTabId: string,
   tabs: WorkspaceTab[],
   composerFocused: boolean,
+  /**
+   * A worker a Mono delegated to: its question goes to that Mono, never to Ash (delegationQuestions.ts), so it never
+   * pops up as a Question. If the Lead can't decide, the Lead asks in its own chat. 22 Oct: a worker's question
+   * popped up here and stayed after the Lead had answered it and the worker had finished.
+   */
+  answersToMono: (sessionId: string) => boolean = () => false,
 ): Array<PendingApprovalNotice & { session: Session }> {
   const notices: Array<PendingApprovalNotice & { session: Session }> = [];
   for (const session of sessions) {
     if (session.inboxAsk) continue;
     // An orchestrated worker answers to its lead, never to the user directly.
     if (session.orchestrationLeadId) continue;
+    if (answersToMono(session.id)) continue;
     const pending = pendingApprovalForSession(session);
     if (!pending) continue;
     if (

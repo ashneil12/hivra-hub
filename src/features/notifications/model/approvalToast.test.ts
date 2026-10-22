@@ -38,6 +38,18 @@ describe("pendingApprovalForSession", () => {
       hiddenApprovalNotices([solo], otherTab.id, tabs, true)[0].sessionId,
     ).toBe("worker");
   });
+  it("never pops up a question from a worker a Mono delegated to: it goes to that Mono, not Ash (22 Oct)", () => {
+    const worker = {
+      ...newSession(),
+      id: "d5b-worker",
+      pendingQuestion: { requestId: 7, title: "Note name", questions: [{ prompt: "Which name?" }] },
+    } as unknown as ReturnType<typeof newSession>;
+    const tab = newTab("lead-chat");
+    const toMono = (id: string) => id === "d5b-worker";
+    expect(hiddenApprovalNotices([worker], tab.id, [tab], false, toMono)).toEqual([]);
+    // Any other chat's question still reaches Ash.
+    expect(hiddenApprovalNotices([{ ...worker, id: "own-chat" }], tab.id, [tab], false, toMono)[0]).toMatchObject({ sessionId: "own-chat", kind: "question", label: "Note name" });
+  });
   it("returns the latest undecided approval", () => {
     const session = newSession();
     session.blocks = [
