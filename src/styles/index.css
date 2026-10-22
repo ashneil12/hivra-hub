@@ -995,12 +995,16 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
   padding-bottom: 2.5rem;
 }
 
+/* The bottom band a Mono's 1:1 keeps clear for "Jump to latest" (TranscriptJumpToBottom: 24px, 8px up): nothing shows
+   under the button, and the transcript's bottom padding (AgentTranscript, pb-14) rests the last line above the band. */
 .mono-transcript-fades {
+  --mono-jump-clear: 2.5rem;
   --mono-transcript-mask: linear-gradient(
     to bottom,
     transparent,
     #000 1.5rem,
-    #000 calc(100% - 2rem),
+    #000 calc(100% - 3.5rem),
+    transparent calc(100% - var(--mono-jump-clear)),
     transparent
   );
   -webkit-mask-image: var(--mono-transcript-mask);
