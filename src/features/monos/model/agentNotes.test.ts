@@ -5,7 +5,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Delegation } from "./delegations";
-import { agentNoteBlock, agentNotesFor, agentNoteText, newAgentNoteBlocks } from "./agentNotes";
+import { agentNoteBlock, agentNotesFor, agentNoteText, defaultNoteNames, newAgentNoteBlocks } from "./agentNotes";
 import { setDelegationActions } from "./delegationStore";
 import { AgentNoteRow } from "../ui/AgentNoteRow";
 
@@ -38,6 +38,17 @@ describe("agent notes from the delegation rows", () => {
     expect(agentNoteText(failed[1])).toBe('Worker "Fix the save bug" got stuck: Failed: the build broke');
     const done = agentNotesFor(row("d", { state: "completed", result: "Fixed it.\nDetails…", settledAt: NOW - MIN }), NOW, all);
     expect(done[1]).toMatchObject({ kind: "reported", line: "Fixed it.", at: NOW - MIN });
+  });
+
+  it("names the owner as the Mono it is, not 'Lead' (Alfred's own team read 'Lead messaged Worker')", () => {
+    const names = { alfred: "Alfred", "hub-lead": "MonoCode Hub lead" } as Record<string, string>;
+    const own = row("o", { ownerMono: "alfred", title: "Write qa-a8 note" });
+    const notes = agentNotesFor(own, NOW, all, defaultNoteNames(own, (id) => names[id]));
+    expect(agentNoteText(notes[0])).toBe('Alfred messaged Worker "Write qa-a8 note": Write qa-a8 note');
+    expect(defaultNoteNames(row("l", { ownerMono: "hub-lead" }), (id) => names[id]).owner).toBe("MonoCode Hub lead");
+    // Unknown Mono: "Lead" as before; no Mono at all: "Chat".
+    expect(defaultNoteNames(row("u", { ownerMono: "gone" }), () => undefined).owner).toBe("Lead");
+    expect(defaultNoteNames(row("c", { ownerMono: null }), (id) => names[id]).owner).toBe("Chat");
   });
 
   it("a worker whose chat is gone gets notes without a link", () => {

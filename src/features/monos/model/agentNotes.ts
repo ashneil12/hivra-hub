@@ -7,6 +7,7 @@
 // typed event per move, carried on a system Block as `agentNote`. Shape documented in docs/hub/README.md.
 import type { Block } from "../../sessions/model/session";
 import type { Delegation } from "./delegations";
+import { findMono } from "./mono";
 import { storedQuestion, stuckOf } from "./workerStuck";
 
 export type AgentNoteKind = "messaged" | "stuck" | "reported";
@@ -37,9 +38,17 @@ const firstLine = (text: string | null | undefined, max = 140): string | undefin
 /** How a note names the two sides of a row: its owner (the Lead, or the chat that delegated) and its worker. */
 export type NoteNames = { owner: string; worker: string };
 
-export function defaultNoteNames(row: Pick<Delegation, "ownerMono" | "title">): NoteNames {
+/**
+ * The owner is named as itself: the Mono's own name ("Alfred", "MonoCode Hub lead"), never "Lead" for a Mono that
+ * isn't one (22 Oct: Alfred's own team read "Lead messaged Worker"). "Lead" only when the Mono can't be found.
+ */
+export function defaultNoteNames(
+  row: Pick<Delegation, "ownerMono" | "title">,
+  monoName: (id: string) => string | undefined = (id) => findMono(id)?.name,
+): NoteNames {
   const title = row.title?.trim();
-  return { owner: row.ownerMono ? "Lead" : "Chat", worker: title ? `Worker "${firstLine(title, 60)}"` : "Worker" };
+  const owner = row.ownerMono ? monoName(row.ownerMono)?.trim() || "Lead" : "Chat";
+  return { owner, worker: title ? `Worker "${firstLine(title, 60)}"` : "Worker" };
 }
 
 /**
