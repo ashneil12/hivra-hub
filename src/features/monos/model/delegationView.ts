@@ -74,7 +74,22 @@ export function launchState(
     (!view || view.state === "working")
   )
     return "stuck";
-  return view?.state ?? (row ? ROW_STATE[row.state] : undefined);
+  return cardView(view, row)?.state ?? (row ? ROW_STATE[row.state] : undefined);
+}
+
+/**
+ * A worker card's view, with its row's ending laid over (r30h, blind D5 on r49: a failed worker's card showed a green
+ * check). A worker can fail without an error notice in its own chat (a provider refusal, a fault, a crash outside the
+ * turn), so its chat reads "done" while its row says failed. A row that settled failed or stopped says so, unless the
+ * chat is at it again (working, or asking).
+ */
+export function cardView(
+  view: LaunchedSessionView | undefined,
+  row: Pick<Delegation, "state"> | undefined,
+): LaunchedSessionView | undefined {
+  if (!view || !row || view.state === "working" || view.state === "input") return view;
+  const ended = row.state === "failed" ? "failed" : row.state === "cancelled" ? "stopped" : undefined;
+  return ended && view.state !== ended ? { ...view, state: ended } : view;
 }
 
 /** The newest row a chat works (or worked) for. */

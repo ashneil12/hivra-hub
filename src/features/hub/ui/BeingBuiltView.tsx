@@ -22,10 +22,23 @@ import { useDelegationRows } from "../../monos/model/delegationStore";
 import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
 import { openLead, openStuck } from "../../monos/model/stuckActions";
 import { StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
-import { withStuckWorkers } from "../model/stuckJobs";
+import { appWorkers, withStuckWorkers } from "../model/stuckJobs";
+import { stuckProject } from "../model/todayCounts";
+import { stuckLeadName } from "./StuckToday";
+import { monoForSession } from "../../monos/model/mono";
+import type { Delegation } from "../../monos/model/delegations";
 import { failedMonoName, monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { MonoFailureList } from "../../monos/ui/MonoFailureCard";
 import { failedMonosFor } from "../model/todayCounts";
+
+/** Where an app worker's row belongs, and under which Mono it lists (as Today's stuck rows say it). */
+const APP_WORKER_WHERE = {
+  project: (row: Delegation) => stuckProject({ row })?.id,
+  lead: (row: Delegation) => ({
+    id: row.ownerMono ?? monoForSession(row.ownerSession)?.id,
+    name: stuckLeadName({ row } as Parameters<typeof stuckLeadName>[0]),
+  }),
+};
 
 /** Running work, one calm line per worker; click for its activity. */
 export function BeingBuiltView({ projectId }: { projectId: string }) {
@@ -48,9 +61,12 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
     const failure = monoFailure(monoId);
     return failure ? { name: failedMonoName(failure), reason: failure.reason, tone: failure.tone } : undefined;
   };
+  const jobWorkers = live ? workersFromJobs(data.listJobs?.(projectId) ?? [], now) : [];
+  // r30h: this app's own workers no job stands for (their rows aren't sent to Ash OS), listed under their Mono.
+  const ownWorkers = live ? appWorkers(projectId, jobWorkers, delegations, now, APP_WORKER_WHERE) : [];
   const liveWorkers = live
     ? [
-        ...withFailedLeads(withStuckWorkers(workersFromJobs(data.listJobs?.(projectId) ?? [], now), delegations, now), leadFailure),
+        ...withFailedLeads(withStuckWorkers([...jobWorkers, ...ownWorkers], delegations, now), leadFailure),
         ...prWatchWorkers(prWatches?.all() ?? [], projectId, now),
       ]
     : [];

@@ -15,6 +15,7 @@
 import { useSyncExternalStore } from "react";
 import { isProviderErrorClass, PROVIDER_ERROR_LABEL } from "../../../integrations/harness/core/providerFailure";
 import { isOpenDelegation, type Delegation } from "./delegations";
+import { chatBusy } from "./delegationStore";
 import { batchRollup, CHILD_CHATS_RECENT_MS, type RollupState } from "./delegationView";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
 import { failureClass } from "./turnFailure";
@@ -214,7 +215,7 @@ function askedAt(row: Delegation): number {
 // ---- reading the rows -----------------------------------------------------------------------------------------------------
 
 /** Each child chat's newest row: a later try in the same chat replaces an earlier one. */
-function newestPerChild(rows: readonly Delegation[]): Delegation[] {
+export function newestPerChild(rows: readonly Delegation[]): Delegation[] {
   const latest = new Map<string, Delegation>();
   for (const row of rows) {
     const known = latest.get(row.childSession);
@@ -282,8 +283,9 @@ export type WorkCounts = {
 
 /**
  * Whose a stalled or failed worker is, under the red rule (r30, r30b): Ash's only when its provider refused it for
- * billing or sign-in ("needs you", red); a retry's while one has it ("retrying", grey); else its Lead's ("with <Lead>",
- * grey). Never "stuck".
+ * billing or sign-in ("needs you", red); a retry's while one has it ("retrying", grey); Ash's again once its Lead has
+ * read the failure and its turn ended without a retry (r30h, leadTurnOver); else its Lead's ("with <Lead>", grey).
+ * Never "stuck".
  */
 export type StuckOwner = "needs-you" | "retrying" | "with-lead";
 export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner {
@@ -293,7 +295,23 @@ export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner
   if (leadRetried(stuck.row)) return "retrying";
   if (why === "out-of-retries") return "needs-you";
   if (repairableFailure(stuck.row)) return "retrying";
+  if (leadTurnOver(stuck.row)) return "needs-you";
   return "with-lead";
+}
+
+/**
+ * r30h (blind D5 on r49, 22 Oct: a failed worker sat grey "With Hivra lead" for good while its Lead answered Ash as if
+ * done): its Lead is done with a failed worker once the failure has reached it (the report was delivered as a turn,
+ * read through task status, or disposed because the Lead's chat went), nothing retries it (no self-repair left, no
+ * redo or split by the Lead in its log), and the Lead's chat is not running a turn now (Session.busy, as the app sees
+ * it: delegationStore.chatBusy). Then only Ash can move it: red "Needs you". While the Lead's turn still runs it stays
+ * its Lead's, grey. No timer: the delivery state and the chat's busy flag are the signals.
+ */
+export function leadTurnOver(row: Pick<Delegation, "state" | "delivery" | "ownerSession" | "log">): boolean {
+  if (row.state !== "failed") return false;
+  if (row.delivery !== "delivered" && row.delivery !== "acknowledged" && row.delivery !== "disposed") return false;
+  if (leadRetried(row)) return false;
+  return chatBusy(row.ownerSession) === false;
 }
 
 function leadRetried(row: Pick<Delegation, "log">): boolean {
@@ -532,15 +550,22 @@ export function delegationLine(row: Delegation, now: number, leadName?: string):
  * job reads Stuck while any worker under it is, whatever its siblings are doing.
  */
 export function stuckForJob(sourceRef: string | undefined, rows: readonly Delegation[], now: number): StuckWorker | undefined {
-  if (!sourceRef) return undefined;
+  const under = rowsUnderJob(sourceRef, rows);
+  if (!under.length) return undefined;
+  return stuckWorkers(under, now).sort((a, b) => URGENCY[a.kind] - URGENCY[b.kind] || a.since - b.since)[0];
+}
+
+/** The rows behind one of Ash OS's jobs (`delegation:<top row>` or `ask:<ask id>`): that row or ask, and all beneath. */
+export function rowsUnderJob(sourceRef: string | undefined, rows: readonly Delegation[]): Delegation[] {
+  if (!sourceRef) return [];
   const byId = new Map(rows.map((row) => [row.id, row]));
   let roots: Set<string>;
   if (sourceRef.startsWith("delegation:")) roots = new Set([sourceRef.slice("delegation:".length)]);
   else if (sourceRef.startsWith("ask:")) {
     const ask = sourceRef.slice("ask:".length);
     roots = new Set(rows.filter((row) => row.askIds.includes(ask)).map((row) => row.id));
-  } else return undefined;
-  if (!roots.size) return undefined;
+  } else return [];
+  if (!roots.size) return [];
   const under = (row: Delegation) => {
     const seen = new Set<string>();
     for (let at: Delegation | undefined = row; at && !seen.has(at.id); at = at.parentId ? byId.get(at.parentId) : undefined) {
@@ -549,7 +574,7 @@ export function stuckForJob(sourceRef: string | undefined, rows: readonly Delega
     }
     return false;
   };
-  return stuckWorkers(rows.filter(under), now).sort((a, b) => URGENCY[a.kind] - URGENCY[b.kind] || a.since - b.since)[0];
+  return rows.filter(under);
 }
 
 /**
