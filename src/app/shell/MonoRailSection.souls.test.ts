@@ -44,9 +44,8 @@ it("OK that couldn't read a file says which and why", async () => {
   act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: () => 0 })));
   await ok();
   expect(souls.seat).toHaveBeenCalledWith("ledger");
-  expect(container.querySelector("[data-souls-waiting] [role=alert]")?.textContent).toBe(
-    "SOUL.md couldn't be read (Permission denied), so it was left as it is.",
-  );
+  // Plain words (Critiquito, r27c): no file name, no error code.
+  expect(container.querySelector("[data-souls-waiting] [role=alert]")?.textContent).toBe("Couldn't read Ledger's setup, so it was left as it was");
   // r27b: a file left as it is, nothing lost: a grey row, no red.
   expect(container.querySelector("[data-mono-soul-problem]")?.getAttribute("data-mono-soul-problem")).toBe("grey");
   expect(container.querySelector("[data-souls-waiting] [data-hub-circle=red], [data-souls-waiting] .text-red-400")).toBeNull();
@@ -63,5 +62,24 @@ it("OK that fails outright says so too, as the red Needs you (only Ash can try a
   const problem = container.querySelector("[data-souls-waiting] [role=alert] [data-mono-soul-problem]")!;
   expect(problem.getAttribute("data-mono-soul-problem")).toBe("needs-you");
   expect(problem.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
-  expect(problem.textContent).toBe("Needs youCouldn't seat Ledger: disk full");
+  expect(problem.textContent).toBe("Needs youCouldn't add Ledger because the disk is full");
+  expect(container.textContent).not.toMatch(/\bseat|::|: disk/i);
+});
+
+it("says every way OK can fail in plain words, never 'seat', a file name or an error code; the card has a solid outline (r27c)", async () => {
+  const { plainAddProblem } = await import("../../features/hub/model/setupSouls");
+  expect(plainAddProblem("Example: Scout", { error: new Error("ENOSPC: no space left on device, write") })).toBe("Couldn't add Example: Scout because the disk is full");
+  expect(plainAddProblem("Example: Scout", { error: "EACCES: permission denied, open '/x/SOUL.md'" })).toBe("Couldn't add Example: Scout because the app isn't allowed to write to its folder");
+  expect(plainAddProblem("Example: Scout", { error: new Error("EROFS: read-only file system") })).toBe("Couldn't add Example: Scout because its folder is read-only");
+  const conflict = new Error("");
+  conflict.name = "MonoFileConflict";
+  expect(plainAddProblem("Example: Scout", { error: conflict })).toBe("Couldn't add Example: Scout because its setup changed while it was being added");
+  expect(plainAddProblem("Example: Scout", { error: new Error("ENOENT: no such file or directory") })).toBe("Couldn't add Example: Scout because its folder isn't there");
+  expect(plainAddProblem("Example: Scout", { error: new Error("mono_save timed out") })).toBe("Couldn't add Example: Scout because it took too long");
+  expect(plainAddProblem("Example: Scout", { error: new Error("weird 0x1f") })).toBe("Couldn't add Example: Scout. Try OK again");
+  expect(plainAddProblem("Example: Scout", { problem: "MEMORY.md couldn't be read (EIO), so it was left as it is." })).toBe("Couldn't read Example: Scout's setup, so it was left as it was");
+  act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: () => 0 })));
+  const card = container.querySelector<HTMLElement>("[data-soul-waiting-card]")!;
+  expect(card.className).toContain("border");
+  expect(card.className).not.toContain("border-dashed");
 });

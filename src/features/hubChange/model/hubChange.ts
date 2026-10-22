@@ -29,7 +29,7 @@ export type ChangeResult =
   | { status: "error"; reason: string };
 
 export const CHANGE_ACTIONS = { preview: "ash-hub-change-preview", apply: "ash-hub-change-apply", discard: "ash-hub-change-discard", undo: "ash-hub-change-undo", redo: "ash-hub-change-redo" } as const;
-export const SEATED_ONLY = "You ask, and one of your seated Monos builds it. Temporary workers can't.";
+export const SEATED_ONLY = "You ask, and one of your own Monos builds it. Temporary workers can't.";
 export const HUB_CANT = "This can't change keys or the Keychain, account sign-ins, delete projects or Monos, or skip the preview.";
 export const FLOW_LABEL: Record<ChangeFlow, string> = { hub: "Change the hub", today: "Edit Today", connect: "Connect data" };
 const NOT_WIRED: Record<ChangeFlow, string> = {

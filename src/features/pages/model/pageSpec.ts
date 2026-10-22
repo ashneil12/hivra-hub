@@ -131,7 +131,7 @@ export function validatePageSpec(raw: unknown): Validated<PageSpec> {
     if (!Array.isArray(x.permissions) || x.permissions.length > 30) return { ok: false, error: "The page's permissions aren't a list." };
     for (const p of x.permissions) {
       if (typeof p !== "string") return { ok: false, error: "A permission isn't text." };
-      if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Pages can never add, seat, rename or delete Monos." : "Pages can never reach the app directly; everything goes through the page bridge." };
+      if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Pages can never add, rename or delete Monos." : "Pages can never reach the app directly; everything goes through the page bridge." };
       if (!isCapability(p)) return { ok: false, error: `“${p}” isn't a permission the hub knows.` };
     }
     return { ok: true, value: { kind: "bespoke", title: x.title, html: x.html, css: x.css as string | undefined, js: x.js as string | undefined, permissions: [...new Set(x.permissions as Capability[])] } };

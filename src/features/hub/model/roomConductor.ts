@@ -478,7 +478,7 @@ function noteLine(wake: Wake): string {
     case "chime":
       return `Added to ${wake.other ?? "the host"}'s answer`;
     case "reply":
-      return `Answered ${wake.other ?? "a seat"}`;
+      return `Answered ${wake.other ?? "someone in the room"}`;
     case "back":
       return `Reported "${wake.back?.title ?? "work"}" back`;
   }

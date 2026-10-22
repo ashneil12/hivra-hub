@@ -69,9 +69,12 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
         </pre>
       ) : null}
       <div className="mt-1 flex flex-wrap items-center gap-2">
-        <button type="button" className={PRIMARY} disabled={sent} data-mono-failure-retry onClick={retry}>
-          {sent ? "Trying again…" : "Try again"}
-        </button>
+        {/* No working mark on a Needs you (r27c): only Ash can fix it first; Try again is in its chat. */}
+        {failure.tone === "red" ? null : (
+          <button type="button" className={PRIMARY} disabled={sent} data-mono-failure-retry onClick={retry}>
+            {sent ? "Trying again…" : "Try again"}
+          </button>
+        )}
         <button type="button" className={BTN} data-mono-failure-open onClick={() => openMonoFailure(failure.monoId)}>
           Open {name}&apos;s chat
         </button>

@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { StuckMark } from "../../features/monos/ui/SubChatList";
-import { dismissWaitingSoul, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
+import { dismissWaitingSoul, plainAddProblem, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
   useEffect,
@@ -156,7 +156,7 @@ export function MonoRailSection({
   useWaitingSoulsVersion();
   const waiting = rank ? waitingSouls() : [];
   // Why OK on a waiting Mono couldn't finish (a file it couldn't read, or a failure), by Mono id: it keeps waiting.
-  // r27b: each row by where it came from (there is no error kind here). OK itself failed ("Couldn't seat …"): only Ash
+  // r27b: each row by where it came from (there is no error kind here). OK itself failed ("Couldn't add …"): only Ash
   // can try again, the red Needs you. A file it couldn't read was left as it is, nothing lost: grey.
   const [soulProblems, setSoulProblems] = useState<ReadonlyMap<string, readonly SoulProblem[]>>(new Map());
   const noteSoulProblems = (monoId: string, problems: readonly SoulProblem[]) =>
@@ -169,9 +169,8 @@ export function MonoRailSection({
   const seatSoul = (monoId: string, name: string) => {
     noteSoulProblems(monoId, []);
     void seatWaitingSoul(monoId).then(
-      (problems) => noteSoulProblems(monoId, problems.map((text) => ({ text, ashFixes: false }))),
-      (error: unknown) =>
-        noteSoulProblems(monoId, [{ text: `Couldn't seat ${name}: ${error instanceof Error ? error.message : String(error)}`, ashFixes: true }]),
+      (problems) => noteSoulProblems(monoId, problems.map((problem) => ({ text: plainAddProblem(name, { problem }), ashFixes: false }))),
+      (error: unknown) => noteSoulProblems(monoId, [{ text: plainAddProblem(name, { error }), ashFixes: true }]),
     );
   };
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
@@ -307,7 +306,8 @@ export function MonoRailSection({
       {!collapsed && waiting.length ? (
         <div className="mx-2 mb-1.5 flex flex-col gap-px" data-souls-waiting>
           {waiting.map((w) => (
-            <div key={w.monoId} className="rounded-md border border-dashed border-content/25 px-2 py-1 text-[13px] leading-tight">
+            // A solid outline, like a session's card (Critiquito, r27c), not a dashed one.
+            <div key={w.monoId} className="rounded-md border border-content/25 px-2 py-1 text-[13px] leading-tight" data-soul-waiting-card>
               <span className="flex items-center gap-1">
                 <span className="min-w-0 flex-1 truncate text-content/80">{w.name}</span>
                 <button type="button" onClick={() => seatSoul(w.monoId, w.name)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
@@ -768,7 +768,9 @@ function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: Mono
           </span>
         </button>
       )}
-      {retryButton}
+      {/* No spinning or working mark on a Needs you (Critiquito, r27c): only Ash can fix it, so Try again waits in
+          its chat. A grey Can't answer keeps it. */}
+      {chip.tone === "red" ? null : retryButton}
     </div>
   );
 }

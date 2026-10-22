@@ -80,6 +80,8 @@ describe("a Lead's failed turn on the rail", () => {
     act(() => link.click());
     expect(onOpen).toHaveBeenCalledWith(lead);
     expect(container.querySelectorAll(".text-amber-400, .bg-amber-400")).toHaveLength(0);
+    // No spinning or working mark on a Needs you (Critiquito, r27c).
+    expect(line.querySelector("[data-mono-failed-retry], .animate-spin, [class*='animate-']")).toBeNull();
   });
 
   it("it should come right by itself: a grey Can't answer with the reason, nothing red or amber", () => {
@@ -88,6 +90,7 @@ describe("a Lead's failed turn on the rail", () => {
     expect(line.dataset.monoFailedChip).toBe("Can't answer");
     expect(line.querySelector("[data-hub-circle=grey]")?.getAttribute("aria-label")).toBe("Can't answer");
     expect(line.querySelector("[data-mono-failed-reason]")?.textContent).toBe("The model is overloaded");
+    expect(line.querySelector("[data-mono-failed-retry]")).not.toBeNull(); // Try again can help here
     expect(container.querySelectorAll("[data-hub-circle=red], .text-red-400, .bg-red-400, .text-amber-400, .bg-amber-400")).toHaveLength(0);
   });
 });

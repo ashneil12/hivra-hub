@@ -52,7 +52,7 @@ export function isStillBuilding(message: string): boolean {
 }
 
 export const BUILD_PAGE_ACTION = "ash-hub-build-page";
-export const SEATED_ONLY_PAGES = "Only a seated Mono can build pages. Temporary workers can't.";
+export const SEATED_ONLY_PAGES = "Only one of your own Monos can build pages. Temporary workers can't.";
 const DEV_STUB_KEY = "monocode:pages-dev-stub";
 
 /** Seated = on the Monos roster (CoS, PM, frank, Alfred, Leads, anything Ash added). Temporary workers never are. */
@@ -124,6 +124,8 @@ async function buildOnce(payload: Record<string, unknown>, stub: () => unknown, 
       if (err.kind === "timeout") return { status: "building", reason: "The page is taking a while. Press Try again in a moment to see it." };
       if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: err.isDown ? "The harness service isn't running, so no Mono can build a page right now." : err.message };
       if (/turned it down/i.test(err.message) || err.message === SEATED_ONLY_PAGES) return { status: "turned-down", reason: err.message };
+      // Ash OS's refusal ("Only a seated Mono…" before, "Only one of your Monos…" now): shown in the app's plain words (r27c).
+      if (/only (?:a seated mono|one of your monos)/i.test(err.message)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
       return { status: "error", reason: plainProviderError(err.message) || "The build didn't go through." };
     }
   }

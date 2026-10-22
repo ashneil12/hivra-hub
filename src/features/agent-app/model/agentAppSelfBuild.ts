@@ -33,7 +33,7 @@ function seated(source: Session, host: AgentAppHost) {
       throw new Error(
         forUser`A coding-team chat can't do this itself; ${lead.name} can. Hand Ash's ask to ${lead.name} with mono_message (to "${lead.id}"), in his words, then tell him in one line that ${lead.name} has it. Don't send him to another chat.`,
       );
-    throw new Error("Only a seated Mono, in its own chat, can do this. Temporary workers can't.");
+    throw new Error("Only one of your own Monos, in its own chat, can do this. Temporary workers can't.");
   }
   return { monoId: mono.id, name: mono.name ?? mono.id, projects: mono.projects };
 }
