@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import { toShape } from "./projectShapes";
 import { mapChecks, type HubCheck } from "./hubChecks";
+import { LEGACY_TODAY_CARDS, NEEDS_YOU_CARD } from "./todayCards";
 
 export type NeedRows = { shown: Need[]; later: Need[] };
 
@@ -225,16 +226,30 @@ export function mapJob(raw: unknown): HubJob | undefined {
   return job;
 }
 
-/** Today's sections as Ash OS sends them; anything it doesn't know is left out, never guessed at. */
+/** Old cards a saved board may still carry: a separate "stuck" card is now part of the one Needs you section. */
+const LEGACY_TODAY_KINDS: Readonly<Record<string, TodaySectionKind>> = { stuck: "needs" };
+
+/**
+ * Today's sections as Ash OS sends them; anything it doesn't know is left out, never guessed at. A board saved with the
+ * old cards ("Stuck: needs you", "Needs (up to 5)", "Decisions (up to 5)", or a "stuck" card) still loads: they are one
+ * Needs you section now, shown once where the first of them was (Critiquito, 22 Oct).
+ */
 export function mapToday(raw: unknown): TodaySection[] {
   const seen = new Set<string>();
-  return arr(raw).flatMap((v) => {
+  let needs = false;
+  return arr(raw).flatMap((v): TodaySection[] => {
     const r = obj(v);
-    const kind = TODAY_KINDS.find((k) => k === r.kind);
+    const kind = TODAY_KINDS.find((k) => k === r.kind) ?? (typeof r.kind === "string" ? LEGACY_TODAY_KINDS[r.kind] : undefined);
     const id = str(r.id);
     if (!kind || !id || seen.has(id) || typeof r.title !== "string") return [];
     if (kind === "page" && !optStr(r.pageId)) return [];
     seen.add(id);
+    if (kind === "needs") {
+      if (needs) return [];
+      needs = true;
+      const title = LEGACY_TODAY_CARDS[r.title] ?? (r.kind === "needs" ? r.title : NEEDS_YOU_CARD);
+      return [{ id, kind, title }];
+    }
     return [{ id, kind, title: r.title, ...(kind === "page" ? { pageId: str(r.pageId) } : {}) }];
   });
 }
