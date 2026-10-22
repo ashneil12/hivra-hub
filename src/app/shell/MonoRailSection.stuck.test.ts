@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 // B6 and A9 on the Monos rail (Ash, 20 Oct: "easy to see when a subagent is stuck ... being able to respond quickly or go
 // into the chat"; 16 Oct: "I can't minimize the monos area"):
-// - "1 stuck" on a Mono's line opens a panel listing each stuck worker with why, a reply box and Open chat; the reply goes
-//   through the same path the Lead's chat and Today use (stuckActions → the waiting-chats host) to that worker's chat.
+// - "1 needs you" on a Mono's line (r30: only what Ash must act on, never "stuck") opens a panel listing each with why
+//   and "Open <Lead>'s chat".
 // - the section folds and stays folded across a restart (the app's preferences), and folded, the header still says
-//   what is out ("1 working · 2 stuck"), its stuck part opening the same panel for every Mono.
+//   what is out ("1 working · 2 needs you"), its needs-you part opening the same panel for every Mono.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,47 +105,76 @@ const typeInto = (input: HTMLInputElement, text: string) =>
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-describe("'1 stuck' on a Mono's line leads somewhere (B6)", () => {
-  it("opens a panel of that Mono's stuck workers: what, why, a reply box and Open chat", () => {
-    const { exo } = setup();
+// r30, the red rule: the rail counts only what Ash must act on ("1 needs you", red), never "stuck"; a worker its Lead is
+// handling (stalled, or failed in a way the Lead or a retry can sort) isn't counted on the rail.
+function needsYouSetup() {
+  const ctx = setup();
+  setDelegationRows([
+    row("t-1", "w1", ctx.exo.id, "exo-chat"),
+    row("t-2", "w2", ctx.exo.id, "exo-chat", {
+      title: "Upload the playtest build",
+      stallKind: "quiet",
+      stallReason: "Waiting on a permission",
+      stalledAt: now - 9 * 60_000,
+    }),
+    row("t-4", "w4", ctx.exo.id, "exo-chat", {
+      title: "Publish the playtest page",
+      state: "failed",
+      errorClass: "billing",
+      error: "Billing refused (402): Insufficient credits",
+      settledAt: now - 2 * 60_000,
+    }),
+    row("t-3", "w3", ctx.cos.id, "cos-chat", {
+      title: "Price the competitors",
+      state: "failed",
+      errorClass: "auth",
+      error: "401 Unauthorized",
+      settledAt: now - 60_000,
+    }),
+  ]);
+  mount();
+  return ctx;
+}
+
+describe("'1 needs you' on a Mono's line leads somewhere (B6, r30)", () => {
+  it("counts only what Ash must act on, in red, never 'stuck'; a stalled worker its Lead has isn't counted", () => {
+    const { exo } = needsYouSetup();
     const line = container.querySelector<HTMLElement>(`[data-mono-work="${exo.id}"]`)!;
-    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working · 1 stuck");
-    expect(panel()).toBeNull();
+    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working · 1 needs you");
+    expect(line.textContent).not.toMatch(/stuck/i);
+    expect(line.dataset.monoWorkKind).toBe("needs-you");
+    expect(line.querySelector("[data-stuck-trigger]")!.className).toContain("text-red-400");
     act(() => line.querySelector<HTMLButtonElement>("[data-stuck-trigger]")!.click());
     const open = panel()!;
-    expect(open).not.toBeNull();
     expect(open.querySelector("[data-stuck-panel-title]")!.textContent).toBe("EXO lead");
+    expect(open.textContent).not.toMatch(/stuck/i);
     const cards = [...open.querySelectorAll<HTMLElement>("[data-stuck-worker]")];
-    // Only this Mono's stuck worker: not its running one, not another Mono's.
-    expect(cards.map((c) => c.dataset.stuckWorker)).toEqual(["w2"]);
-    expect(cards[0].querySelector("[data-stuck-where]")!.textContent).toBe("Upload the playtest build");
-    expect(cards[0].querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · waiting on a permission");
-    expect(cards[0].querySelector("[data-stuck-reply]")).not.toBeNull();
-    expect(cards[0].querySelector("[data-stuck-open]")!.textContent).toBe("Open chat");
+    // Only this Mono's Needs you: not its stalled worker, not its running one, not another Mono's.
+    expect(cards.map((c) => c.dataset.stuckWorker)).toEqual(["w4"]);
+    expect(cards[0].querySelector("[data-stuck-line]")!.textContent).toBe("Out of credits");
+    expect(cards[0].querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("Needs you");
+    expect(cards[0].querySelector("[data-hub-open-lead]")!.textContent).toBe("Open EXO lead's chat");
   });
 
-  it("sends the reply to that worker's chat, through the path the Lead's chat uses", async () => {
-    const { exo, host } = setup();
-    act(() => container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] [data-stuck-trigger]`)!.click());
-    const card = panel()!.querySelector<HTMLElement>('[data-stuck-worker="w2"]')!;
-    typeInto(card.querySelector<HTMLInputElement>("[data-stuck-reply]")!, "Skip the upload, I'll do it");
-    await act(async () => card.querySelector<HTMLButtonElement>("[data-stuck-send]")!.click());
-    expect(host.send).toHaveBeenCalledTimes(1);
-    expect(host.send).toHaveBeenCalledWith("w2", "Skip the upload, I'll do it");
-    expect(panel()!.querySelector('[data-stuck-done="w2"]')?.textContent).toContain("Skip the upload");
+  it("a Mono with only a stalled worker shows no count at all", () => {
+    const { exo } = setup();
+    const line = container.querySelector<HTMLElement>(`[data-mono-work="${exo.id}"]`)!;
+    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working");
+    expect(line.querySelector("[data-stuck-trigger]")).toBeNull();
+    expect(container.textContent).not.toMatch(/\bstuck\b/i);
   });
 
-  it("Open chat jumps into the Lead's chat (Ash answers the Lead, D5) and closes the panel", () => {
-    const { exo, actions } = setup();
+  it("Open <Lead>'s chat jumps into the Lead's chat (Ash answers the Lead, D5) and closes the panel", () => {
+    const { exo, actions } = needsYouSetup();
     act(() => container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] [data-stuck-trigger]`)!.click());
-    act(() => panel()!.querySelector<HTMLButtonElement>('[data-stuck-worker="w2"] [data-stuck-open]')!.click());
+    act(() => panel()!.querySelector<HTMLButtonElement>('[data-stuck-worker="w4"] [data-hub-open-lead]')!.click());
     expect(actions.openOwner).toHaveBeenCalledWith("exo-chat");
     expect(actions.openChild).not.toHaveBeenCalled();
     expect(panel()).toBeNull();
   });
 
   it("the working part still opens the Mono, not the panel", () => {
-    const { exo } = setup();
+    const { exo } = needsYouSetup();
     const first = container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] button`)!;
     expect(first.hasAttribute("data-stuck-trigger")).toBe(false);
     act(() => first.click());
@@ -170,22 +199,25 @@ describe("the Monos section folds (A9)", () => {
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
     // In words, as a Mono's own line reads.
-    expect(summary.textContent).toBe("1 working·2 stuck");
-    expect(summary.getAttribute("title")).toBe("1 working · 2 stuck");
-    expect(summary.dataset.monoWorkKind).toBe("failed");
+    // r30: only what Ash must act on is counted; the stalled and the plain failure are their Leads'.
+    expect(summary.textContent).toBe("1 working");
+    expect(summary.getAttribute("title")).toBe("1 working");
+    expect(summary.dataset.monoWorkKind).toBe("working");
     // Open again, and that sticks too.
     act(() => toggle().click());
     expect(loadMonoRailCollapsed()).toBe(false);
     expect(container.querySelector("[data-mono-rail-summary]")).toBeNull();
   });
 
-  it("folded, '2 stuck' opens every Mono's stuck workers, each named for its Mono", () => {
-    setup();
+  it("folded, '2 needs you' opens every Mono's Needs you, each named for its Mono", () => {
+    needsYouSetup();
     act(() => toggle().click());
-    act(() => container.querySelector<HTMLButtonElement>("[data-mono-rail-summary] [data-stuck-trigger]")!.click());
+    const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
+    expect(summary.textContent).toBe("1 working·2 needs you");
+    act(() => summary.querySelector<HTMLButtonElement>("[data-stuck-trigger]")!.click());
     const cards = [...panel()!.querySelectorAll<HTMLElement>("[data-stuck-worker]")];
-    expect(cards.map((c) => c.dataset.stuckWorker)).toEqual(["w2", "w3"]);
-    expect(cards[0].querySelector("[data-stuck-where]")!.textContent).toBe("EXO lead · Upload the playtest build");
+    expect(cards.map((c) => c.dataset.stuckWorker)).toEqual(["w4", "w3"]);
+    expect(cards[0].querySelector("[data-stuck-where]")!.textContent).toBe("EXO lead · Publish the playtest page");
     expect(cards[1].querySelector("[data-stuck-where]")!.textContent).toBe("Chief of Staff · Price the competitors");
   });
 
@@ -218,8 +250,13 @@ describe("stuck cards read plainly (Critiquito, 21 Oct)", () => {
     ]);
     const host = { liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() };
     setWaitingChatsHost(host);
-    mount();
-    act(() => container.querySelector<HTMLButtonElement>(`[data-mono-work="${exo.id}"] [data-stuck-trigger]`)!.click());
+    // r30: the rail no longer counts these (they are the Lead's), so the panel's cards are rendered here directly.
+    const { StuckPanel } = await import("../../features/monos/ui/StuckPanel");
+    const { stuckWorkers } = await import("../../features/monos/model/workerStuck");
+    const { delegationRows } = await import("../../features/monos/model/delegationStore");
+    const anchor = document.createElement("button");
+    container.append(anchor);
+    act(() => root.render(createElement(StuckPanel, { anchor, title: "EXO lead", stuck: stuckWorkers(delegationRows(), now), now, onClose: () => {} })));
     const card = panel()!.querySelector<HTMLElement>('[data-stuck-worker="w1"]')!;
     expect(card.querySelector("[data-stuck-line]")!.textContent).toBe("How long should the air dodge last?");
     expect(card.textContent).not.toContain("[");

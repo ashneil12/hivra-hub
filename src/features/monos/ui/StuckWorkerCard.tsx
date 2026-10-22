@@ -21,6 +21,8 @@ import {
   type StuckResult,
 } from "../model/stuckActions";
 import { leadActionLine, type StuckWorker } from "../model/workerStuck";
+import { plainStuckLine, stuckWorkerChip } from "../model/stuckChip";
+import { ChipMark, NeedsYouLinkLine } from "../../hub/ui/StatusMark";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
@@ -72,6 +74,7 @@ export function StuckList({
   now,
   variant,
   where,
+  leadName,
   label,
   heading,
   onOpened,
@@ -82,6 +85,8 @@ export function StuckList({
   variant: "chat" | "row";
   /** What goes before the title on the top line (Today: "Hivra · EXO lead"). */
   where?: (stuck: StuckWorker) => string | undefined;
+  /** Who the worker answers to, when the list knows better than its Mono (Today: "Hivra lead" from its project). */
+  leadName?: (stuck: StuckWorker) => string;
   label?: string;
   /** A section heading over the list (Today's "Stuck"); the list and its heading go once nothing is left. */
   heading?: string;
@@ -107,6 +112,7 @@ export function StuckList({
             now={now}
             variant={variant}
             where={where?.(s)}
+            lead={leadName?.(s)}
             onDone={(said) => finished(s, said)}
             onOpened={onOpened}
           />
@@ -122,7 +128,7 @@ export function StuckList({
           onClick={() => setAll(true)}
           className="self-start rounded-lg px-2 py-0.5 font-sans text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
         >
-          {more} more stuck
+          {more} more
         </button>
       ) : null}
     </div>
@@ -141,6 +147,7 @@ export function StuckWorkerCard({
   now,
   variant,
   where,
+  lead: leadGiven,
   onDone,
   onOpened,
 }: {
@@ -148,6 +155,8 @@ export function StuckWorkerCard({
   now: number;
   variant: "chat" | "row";
   where?: string;
+  /** The Lead's name, when the caller knows it better than the worker's Mono (else `leadNameOf`). */
+  lead?: string;
   onDone?: (said: string) => void;
   onOpened?: () => void;
 }) {
@@ -162,7 +171,8 @@ export function StuckWorkerCard({
   const answer = (id: string) => (live.length ? answerWithOption(stuck, id) : answerWithStoredOption(stuck, id));
   const pick = suggestion(prompt, stuck);
   // What its Lead last did about it, so Ash sees someone acted ("Hivra lead retried it at 2h").
-  const acted = stuck.kind === "asking" ? undefined : leadActionLine(stuck.row, leadNameOf(stuck));
+  const lead = leadGiven || leadNameOf(stuck);
+  const acted = stuck.kind === "asking" ? undefined : leadActionLine(stuck.row, lead);
   const run = async (call: () => StuckResult | Promise<StuckResult>) => {
     setBusy(true);
     setProblem(null);
@@ -179,15 +189,24 @@ export function StuckWorkerCard({
       : "flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5";
   const placeholder =
     stuck.kind === "asking" ? "Or answer in your words…" : stuck.kind === "stalled" ? "Tell it what to do…" : "Reply in its chat…";
-  const line = options.length ? questionWithoutOptions(stuck.line) : stuck.line;
+  // r30, the red rule: one chip (Needs you only when Ash must act, else Retrying or With <Lead>), never "stuck" or
+  // "failed", and one plain line, never the raw fault or a file path.
+  const chip = stuckWorkerChip(stuck, lead);
+  const red = chip.tone === "red";
+  const plain = plainStuckLine(stuck);
+  const line = options.length ? questionWithoutOptions(plain) : plain;
+  const open = () => {
+    openStuck(stuck);
+    onOpened?.();
+  };
   return (
     <div className={frame} data-stuck-worker={stuck.row.childSession} data-stuck-kind={stuck.kind} data-stuck-escalated={stuck.escalated || undefined}>
       <div className="flex min-w-0 items-center gap-1.5 text-[12px] text-content/60">
-        <StuckMark kind={stuck.kind} />
+        {stuck.kind === "asking" ? <StuckMark kind={stuck.kind} /> : null}
         <span className="min-w-0 truncate" data-stuck-where>
           {[where, stuckTitle(stuck)].filter(Boolean).join(" · ")}
         </span>
-        <span className="shrink-0">· {stuckWord(stuck)}</span>
+        {stuck.kind === "asking" ? <span className="shrink-0">· {stuckWord(stuck)}</span> : <span className="flex shrink-0 items-center gap-1.5" data-stuck-chip={chip.word}>· <ChipMark chip={chip} /></span>}
         <span className="ml-auto shrink-0 tabular-nums" data-stuck-ago>
           {ago(now - stuck.since)}
         </span>
@@ -195,6 +214,8 @@ export function StuckWorkerCard({
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-stuck-line>
         {line}
       </div>
+      {/* A red Needs you: the reason, then "Open <Lead>'s chat" on its own line (r27b, r28). */}
+      {red ? <NeedsYouLinkLine name={lead} onOpen={open} /> : null}
       {acted ? (
         <div className="whitespace-normal break-words text-[12px] leading-5 text-content/60" data-stuck-lead-action>
           {acted}
@@ -227,18 +248,17 @@ export function StuckWorkerCard({
             Take the pick
           </button>
         ) : null}
-        <button
-          type="button"
-          className={BTN}
-          data-stuck-open
-          title={`Opens ${leadNameOf(stuck)}'s chat: you answer it there, and it passes the answer on`}
-          onClick={() => {
-            openStuck(stuck);
-            onOpened?.();
-          }}
-        >
-          Open chat
-        </button>
+        {red ? null : (
+          <button
+            type="button"
+            className={BTN}
+            data-stuck-open
+            title={`Opens ${lead}'s chat: you answer it there, and it passes the answer on`}
+            onClick={open}
+          >
+            Open {lead}&apos;s chat
+          </button>
+        )}
         {stuck.kind === "failed" ? (
           <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
             Dismiss

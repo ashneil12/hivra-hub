@@ -60,14 +60,14 @@ function stalled(id: string, ownerMono: string, ownerSession: string, project: s
   };
 }
 
-describe("Today's Stuck section", () => {
+describe("Today's stuck workers (no Stuck section since r30)", () => {
   it("names a stuck worker's Lead once when it is named for the project, and the project too when it isn't", () => {
     setDelegationRows([
       stalled("t-1", "vg-game-lead", "exo-chat", "vg-game", "Run the movement tests"),
       stalled("t-2", "hub-lead", "hub-chat", "hub", "Fix the splash"),
       stalled("t-3", "chief-of-staff", "cos-chat", "vg-game", "Plan the playtest"),
     ]);
-    act(() => root.render(createElement(StuckToday, { projectId: undefined })));
+    act(() => root.render(createElement(StuckToday, { projectId: undefined, tone: "grey" })));
     const where = (child: string) => container.querySelector(`[data-stuck-worker="${child}"] [data-stuck-where]`)?.textContent;
     expect(where("w-t-1")).toBe("EXO lead · Run the movement tests");
     expect(where("w-t-2")).toBe("Hub lead · Fix the splash"); // "Hub lead" is named for "MonoCode Hub"'s short name
@@ -87,9 +87,9 @@ describe("Today's Stuck section", () => {
     setDelegationRows([stalled("t-1", "vg-game-lead", "exo-chat", "vg-game", "Run the movement tests")]);
     const host = { liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() };
     setWaitingChatsHost(host);
-    act(() => root.render(createElement(StuckToday, { projectId: undefined })));
+    act(() => root.render(createElement(StuckToday, { projectId: undefined, tone: "grey" })));
     const card = container.querySelector<HTMLElement>('[data-stuck-worker="w-t-1"]')!;
-    expect(card.querySelector("[data-stuck-open]")!.textContent).toBe("Open chat");
+    expect(card.querySelector("[data-stuck-open]")!.textContent).toBe("Open EXO lead's chat");
     const input = card.querySelector<HTMLInputElement>("[data-stuck-reply]")!;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Skip the flaky one");
@@ -97,5 +97,42 @@ describe("Today's Stuck section", () => {
     });
     await act(async () => card.querySelector<HTMLButtonElement>("[data-stuck-send]")!.click());
     expect(host.send).toHaveBeenCalledWith("w-t-1", "Skip the flaky one");
+  });
+
+  // r30 (PM's r45 Mac check, pm-r45-34): a failed worker showed under its own grey "Stuck" heading, "· failed", the raw
+  // fault with its file path, and "Open chat". Under the red rule it is its Lead's: a grey "With <Lead>", one plain line,
+  // "Open <Lead>'s chat" and Dismiss, with Being built; only a refusal Ash must sort is red, with Needs you.
+  it("a failed worker its Lead has reads With <Lead> in plain words, never Stuck, failed, the raw fault or Open chat", () => {
+    const fault: Delegation = {
+      ...stalled("t-9", "vg-game-lead", "exo-chat", "vg-game", "Example: tidy the README setup steps"),
+      state: "failed", stallKind: null, stallReason: null, stalledAt: null, settledAt: now - 9 * 60_000, delivery: "delivered",
+      error: "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)",
+    };
+    setDelegationRows([fault]);
+    act(() => root.render(createElement("div", null, createElement(StuckToday, { projectId: undefined, tone: "red" }), createElement(StuckToday, { projectId: undefined, tone: "grey" }))));
+    expect(container.querySelector('[data-hub-stuck-today="red"]')).toBeNull();
+    const card = container.querySelector<HTMLElement>('[data-hub-stuck-today="grey"] [data-stuck-worker="w-t-9"]')!;
+    expect(card.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With EXO lead");
+    expect(card.querySelector("[data-hub-circle]")?.getAttribute("data-hub-circle")).toBe("grey");
+    expect(card.querySelector("[data-stuck-line]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    expect(card.querySelector("[data-stuck-open]")?.textContent).toBe("Open EXO lead's chat");
+    expect(card.querySelector("[data-stuck-dismiss]")?.textContent).toBe("Dismiss");
+    expect(container.querySelector("h2")).toBeNull(); // no heading of its own
+    expect(container.textContent).not.toMatch(/\bStuck\b|\bfailed\b|dev-faults|Open chat/);
+  });
+
+  it("only a worker refused for credits or sign-in is red Needs you, with its reason and Open <Lead>'s chat on its own line", () => {
+    setDelegationRows([
+      { ...stalled("t-8", "vg-game-lead", "exo-chat", "vg-game", "Example: publish the playtest page"), state: "failed", stallKind: null, stallReason: null, stalledAt: null, settledAt: now - 60_000, errorClass: "billing", error: "Billing refused (402): Insufficient credits at /Users/x/.config/claude.json" },
+    ]);
+    act(() => root.render(createElement("div", null, createElement(StuckToday, { projectId: undefined, tone: "red" }), createElement(StuckToday, { projectId: undefined, tone: "grey" }))));
+    expect(container.querySelector('[data-hub-stuck-today="grey"]')).toBeNull();
+    const card = container.querySelector<HTMLElement>('[data-hub-stuck-today="red"] [data-stuck-worker="w-t-8"]')!;
+    expect(card.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
+    expect(card.querySelector("[data-stuck-line]")?.textContent).toBe("Out of credits");
+    expect(card.querySelector("[data-hub-needs-link] [data-hub-open-lead]")?.textContent).toBe("Open EXO lead's chat");
+    expect(card.querySelector("[data-stuck-open]")).toBeNull();
+    expect(card.querySelector("[data-stuck-dismiss]")).not.toBeNull();
+    expect(container.textContent).not.toMatch(/402|claude\.json|\/Users/);
   });
 });

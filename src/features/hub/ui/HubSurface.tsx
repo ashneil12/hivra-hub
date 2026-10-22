@@ -237,12 +237,15 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   // C9: the Since paragraph is the glance at the top of Today, above the shortcuts and the project cards; the detail
   // (Needs you, Being built, pages) is below to scroll to.
   const sinceSection = sections.find((s) => s.kind === "since");
+  const hasBuilt = sections.some((s) => s.kind === "being-built");
   const block = (s: TodaySection) =>
     s.kind === "since" ? null
     : s.kind === "setup" ? setupBlock(s)
     // Waiting on you sits right above Needs you, wherever the board puts it.
-    : s.kind === "needs" ? <Fragment key={s.id}><StuckToday projectId={projectId} /><WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
-    : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} />
+    // Only what Ash must act on sits with Needs you (r30): there is no "Stuck" section. A worker its Lead is handling
+    // sits with Being built, or here when the board has no Being built.
+    : s.kind === "needs" ? <Fragment key={s.id}><StuckToday projectId={projectId} tone="red" />{hasBuilt ? null : <StuckToday projectId={projectId} tone="grey" />}<WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
+    : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} projectId={projectId} />
     : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
     : null;
   return (
@@ -262,7 +265,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         </div>)}
       </section> : null}
       {/* The board took Needs you off Today: the chats waiting on Ash still lead it. */}
-      {sections.some((s) => s.kind === "needs") ? null : <><StuckToday projectId={projectId} /><WaitingOnYou projectId={projectId} /></>}
+      {sections.some((s) => s.kind === "needs") ? null : <><StuckToday projectId={projectId} tone="red" />{hasBuilt ? null : <StuckToday projectId={projectId} tone="grey" />}<WaitingOnYou projectId={projectId} /></>}
       {sections.map(block)}
       {!query.trim() ? <OlderQuestions projectId={projectId} renderRow={(n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />} /> : null}
       {!projectId ? <LastChange /> : null}
@@ -298,7 +301,7 @@ const jobWord = (j: HubJob, lead: string): string | Chip =>
   : JOB_WORD[j.state] ?? "";
 
 /** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
-function BeingBuiltToday({ title }: { title: string }) {
+function BeingBuiltToday({ title, projectId }: { title: string; projectId?: string }) {
   const data = hubData();
   // This app's own workers under each job: a stuck one makes the job read Stuck, whatever its siblings do.
   const { stuck: stuckNow, now } = useStuckWorkers();
@@ -318,7 +321,10 @@ function BeingBuiltToday({ title }: { title: string }) {
   const rows = data.listProjects().flatMap((p) =>
     (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
   );
-  if (!rows.length) return null;
+  // A worker its Lead is handling (grey With <Lead> or Retrying) is listed here, after the jobs, unless its job's row
+  // above already says so (r30: no "Stuck" section).
+  const covered = new Set(rows.flatMap(({ j }) => (stuckNow.length ? [stuckForJob(j.sourceRef, delegations, now)?.key ?? ""] : [])).filter(Boolean));
+  if (!rows.length) return <StuckToday projectId={projectId} tone="grey" skip={covered} heading={title} />;
   return (
     <section data-hub-today-section="being-built" data-hub-today-being-built>
       <h2 className="mb-1 text-xs text-content/60">{title}</h2>
@@ -351,6 +357,7 @@ function BeingBuiltToday({ title }: { title: string }) {
         })}
         {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}
       </div>
+      <StuckToday projectId={projectId} tone="grey" skip={covered} />
     </section>
   );
 }

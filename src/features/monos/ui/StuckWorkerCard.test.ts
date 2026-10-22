@@ -150,7 +150,10 @@ describe("stuck workers in the Lead's chat", () => {
       ["w2", "asking"],
     ]);
     expect(card("w3")!.querySelector("[data-stuck-line]")!.textContent).toBe("No output for 9 min · still running the tests");
-    expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Failed: billing refused");
+    // r30: one plain line, and the chip says whose it is: a billing refusal only Ash can sort is the red Needs you.
+    expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Out of credits");
+    expect(card("w4")!.querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("Needs you");
+    expect(card("w3")!.querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("With EXO lead");
     expect(card("w2")!.querySelector("[data-stuck-where]")!.textContent).toBe("Job w2");
     expect(card("w2")!.textContent).toContain("· asking");
     // Its stored question reads without the "(Recommended)" marker.
@@ -180,7 +183,8 @@ describe("stuck workers in the Lead's chat", () => {
     await act(async () => card("w3")!.querySelector<HTMLButtonElement>("[data-stuck-send]")!.click());
     expect(host.send).toHaveBeenCalledWith("w3", "Skip the flaky test and carry on");
     expect(container.querySelector('[data-stuck-done="w3"]')?.textContent).toContain("Skip the flaky test");
-    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
+    // A red Needs you opens its Lead's chat from the link under its reason (r30).
+    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-hub-open-lead]")!.click());
     expect(actions.openOwner).toHaveBeenCalledWith("lead-chat"); // the Lead's chat, not the worker's (D5)
     expect(actions.openChild).not.toHaveBeenCalled();
     await act(async () => card("w2")!.querySelector<HTMLButtonElement>("[data-stuck-stop]")!.click());
@@ -203,7 +207,7 @@ describe("many stuck workers in one Lead's chat", () => {
     act(() => root.render(createElement(LeadLine)));
     expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(3);
     const more = container.querySelector<HTMLButtonElement>("[data-stuck-more]")!;
-    expect(more.textContent).toBe("1 more stuck");
+    expect(more.textContent).toBe("1 more"); // no "stuck" word (r30)
     act(() => more.click());
     expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(4);
   });

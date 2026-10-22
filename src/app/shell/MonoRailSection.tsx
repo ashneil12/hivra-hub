@@ -12,7 +12,8 @@ import {
 import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
-import { countWork, shortSplit, useStuckDismissalsVersion, workSplit, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
+import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
+import { stuckNeedsAsh } from "../../features/monos/model/stuckChip";
 import { subChatAttention } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
@@ -114,7 +115,7 @@ export function openTeam(team: TeamTarget): void {
  * their own and the shaded mascot rather than a project's flat one.
  *
  * The hub's rail shows people, not work (Ash, 20 Oct: "monos shouldn't really have sub chats"): a Mono's workers live in
- * its team (monoTeams.ts), so its row says only what it has out ("2 working · 1 stuck", with the red or amber mark) on
+ * its team (monoTeams.ts), so its row says only what it has out ("2 working · 1 needs you", red only for what Ash must act on) on
  * one line under it, and opens its team.
  */
 export function MonoRailSection({
@@ -217,7 +218,7 @@ export function MonoRailSection({
     const children = childChats.get(monoId) ?? [];
     return {
       attention: subChatAttention(children, now),
-      counts: countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now),
+      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now)),
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
@@ -227,10 +228,11 @@ export function MonoRailSection({
     total.asking += counts.asking;
     total.stuck += counts.stuck;
   }
-  const allStuck = [...work.values()].flatMap(({ attention }) => [...attention.stuck.values()]).sort((a, b) => a.since - b.since);
+  // "1 needs you" opens only what Ash must act on (r30); a worker its Lead is handling isn't counted on the rail.
+  const allStuck = [...work.values()].flatMap(({ attention }) => [...attention.stuck.values()].filter(stuckNeedsAsh)).sort((a, b) => a.since - b.since);
   const panelStuck = stuckPanel
     ? stuckPanel.monoId
-      ? [...(work.get(stuckPanel.monoId)?.attention.stuck.values() ?? [])].sort((a, b) => a.since - b.since)
+      ? [...(work.get(stuckPanel.monoId)?.attention.stuck.values() ?? [])].filter(stuckNeedsAsh).sort((a, b) => a.since - b.since)
       : allStuck
     : [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
@@ -303,7 +305,7 @@ export function MonoRailSection({
           </button>
         ) : null}
       </div>
-      {collapsed && workSplit(total) ? (
+      {collapsed && railSplit(total) ? (
         <FoldedWorkSummary counts={total} stuck={allStuck} onOpenStuck={(anchor) => toggleStuckPanel(anchor)} />
       ) : null}
       {!collapsed && rank && roleNamesUndecided() && monos.some((m) => plainName(monoLook(m).name).secondary) ? (
@@ -382,13 +384,13 @@ export function MonoRailSection({
           // What it has out, split (Ash, 20 Oct): "2 working · 1 asking · 1 stuck". Idle shows nothing else, unless it
           // waits on something (a watched pull request's CI); busy, its own status first, then what is stuck.
           const { attention, counts } = work.get(mono.id) ?? workOf(mono.id);
-          const stuckSplit = workSplit({ ...counts, working: 0 });
+          const stuckSplit = railSplit({ ...counts, working: 0 });
           // Open team sits on the row only while the Mono has work out (with its line under it): a Mono with nothing out
           // looks exactly as it always did, on hover too (Ash's shipped rail, 20 Oct); its menu still opens the team.
-          const rowTeam = team && workSplit(counts) ? team : undefined;
+          const rowTeam = team && railSplit(counts) ? team : undefined;
           const status =
             state.status === "idle"
-              ? (state.activity ?? workSplit(counts))
+              ? (state.activity ?? railSplit(counts))
               : state.status === "failed"
                 ? [`${MONO_STATUS_LABEL.failed}: ${state.activity ?? "its last turn failed"}`, stuckSplit].filter(Boolean).join(" · ")
                 : [state.activity ?? MONO_STATUS_LABEL[state.status], stuckSplit].filter(Boolean).join(" · ");
@@ -526,7 +528,7 @@ export function MonoRailSection({
               </button>
             </div>
             {state.status === "failed" ? <MonoFailedLine monoId={mono.id} state={state} onOpen={() => onOpen(mono.id)} /> : null}
-            {workSplit(counts) ? (
+            {railSplit(counts) ? (
               <MonoWorkLine
                 monoId={mono.id}
                 name={look.name}
@@ -589,7 +591,7 @@ export function MonoRailSection({
 /**
  * What a Mono has out, on one line under its row, in place of the sub-chats it used to list (Ash, 20 Oct: the rail shows
  * people, not work): "2 working · 1 stuck" (asking counts as stuck, as on Today; the full split is on hover), the stuck
- * part amber, or red once one failed; the row keeps its own mark. One click opens its team, where the work and its
+ * part red only when Ash must act; the row keeps its own mark. One click opens its team, where the work and its
  * sub-chats are.
  */
 /** One row of the waiting-soul problems list; `ashFixes`: only Ash can sort it (red Needs you), else grey. */
@@ -597,14 +599,30 @@ type SoulProblem = { text: string; ashFixes: boolean; diskFull?: boolean };
 /** How long a greyed-out OK (disk full) waits before it is offered again, if Ash hasn't come back to the app. */
 const DISK_RECHECK_MS = 60_000;
 
-/** A stuck or failed worker's mark on the rail: grey (r27b). Red is only for Needs you; there is no amber. */
-const STUCK_GREY = "text-content/60";
+/** The rail's "needs you": red, the one colour for what only Ash can sort (r30). */
+const NEEDS_YOU_RED = "text-red-400";
+
+/**
+ * The rail's counts under the red rule (r30): what works, what waits on its Lead, and only what Ash must act on in the
+ * third place (`stuck` here is that "needs you" count). A worker its Lead is handling or retrying isn't counted.
+ */
+function railCounts(counts: WorkCounts): WorkCounts {
+  return { working: counts.working, asking: counts.asking, stuck: counts.needsYou ?? 0, needsYou: counts.needsYou ?? 0 };
+}
+/** "2 working · 1 waiting · 1 needs you", never "stuck"; nothing when nothing is out. */
+function railSplit(counts: WorkCounts): string | undefined {
+  const parts = [
+    counts.working ? `${counts.working} working` : "",
+    counts.asking ? `${counts.asking} waiting` : "",
+    counts.stuck ? `${counts.stuck} needs you` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : undefined;
+}
 
 function MonoWorkLine({
   monoId,
   name,
   counts,
-  stuck,
   team,
   onOpen,
   onOpenStuck,
@@ -618,10 +636,9 @@ function MonoWorkLine({
   /** "1 stuck" opens its stuck workers beside the rail, each answerable there (B6). */
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
-  const failed = stuck.some((s) => s.kind === "failed");
   const short = shortSplit(counts);
-  // Red is only for Needs you, and no third colour (r27b): a stalled or failed worker is its Lead's to handle, grey.
-  const stuckColor = STUCK_GREY;
+  // Red is only for Needs you, and no third colour: what is counted here is what only Ash can sort (r30).
+  const stuckColor = NEEDS_YOU_RED;
   // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
   // line's own mark says why it waits.
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
@@ -631,14 +648,14 @@ function MonoWorkLine({
     <div
       className="ml-5 flex h-6 min-w-0 items-center border-l border-content/10 pl-1.5"
       data-mono-work={monoId}
-      data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
+      data-mono-work-kind={counts.stuck ? "needs-you" : counts.asking ? "asking" : "working"}
     >
       {/* The line is two targets: what is working opens its team; "1 stuck" opens the stuck workers to answer them. */}
       <span className="flex min-w-0 flex-1 items-center text-[12px] text-content/45" data-mono-work-split>
         <button
           type="button"
-          title={[workSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
-          aria-label={`${workSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
+          title={[railSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
+          aria-label={`${railSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
           onClick={onOpen}
           className={`flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-content/6 hover:text-content${
             short.stuck ? " shrink" : " flex-1"
@@ -655,7 +672,7 @@ function MonoWorkLine({
           {(short.working || short.waiting) && short.stuck ? <span aria-hidden> · </span> : null}
         </button>
         {short.stuck ? (
-          <StuckButton count={short.stuck} color={stuckColor} label={`See what is stuck for ${name}`} onOpen={onOpenStuck} />
+          <StuckButton count={short.stuck} color={stuckColor} label={`See what needs you for ${name}`} onOpen={onOpenStuck} />
         ) : null}
       </span>
     </div>
@@ -680,7 +697,7 @@ function StuckButton({
       data-no-drag
       data-stuck-trigger
       title={label}
-      aria-label={`${count} stuck. ${label}`}
+      aria-label={`${count} needs you. ${label}`}
       aria-haspopup="dialog"
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
@@ -689,7 +706,7 @@ function StuckButton({
       }}
       className={`shrink-0 cursor-default rounded-md px-1.5 hover:bg-content/6 ${color}`}
     >
-      {count} stuck
+      {count} needs you
     </button>
   );
 }
@@ -701,7 +718,6 @@ function StuckButton({
  */
 function FoldedWorkSummary({
   counts,
-  stuck,
   onOpenStuck,
 }: {
   counts: WorkCounts;
@@ -709,16 +725,15 @@ function FoldedWorkSummary({
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
   const short = shortSplit(counts);
-  const failed = stuck.some((s) => s.kind === "failed");
-  // Red is only for Needs you, and no third colour (r27b): a stalled or failed worker is its Lead's to handle, grey.
-  const stuckColor = STUCK_GREY;
+  // Red is only for Needs you, and no third colour: what is counted here is what only Ash can sort (r30).
+  const stuckColor = NEEDS_YOU_RED;
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
   return (
     <div
       className="mx-3 -mt-1 mb-1.5 flex h-6 min-w-0 items-center px-1 text-[12px] text-content/45"
-      title={workSplit(counts)}
+      title={railSplit(counts)}
       data-mono-rail-summary
-      data-mono-work-kind={failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
+      data-mono-work-kind={counts.stuck ? "needs-you" : counts.asking ? "asking" : "working"}
     >
       <span className="flex min-w-0 items-center gap-1.5 pr-0.5" data-mono-rail-summary-split>
         <Mark
@@ -731,7 +746,7 @@ function FoldedWorkSummary({
         {short.waiting ? <span className="min-w-0 truncate" data-mono-work-waiting>{short.waiting} waiting</span> : null}
         {(short.working || short.waiting) && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
       </span>
-      {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what is stuck" onOpen={onOpenStuck} /> : null}
+      {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what needs you" onOpen={onOpenStuck} /> : null}
     </div>
   );
 }
@@ -767,7 +782,7 @@ function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: Mono
     <div
       className="ml-5 flex min-h-6 min-w-0 items-start gap-1 border-l border-content/10 py-0.5 pl-1.5"
       data-mono-failed={monoId}
-      data-mono-failed-tone={state.tone ?? "amber"}
+      data-mono-failed-tone={state.tone === "red" ? "red" : "grey"}
       data-mono-failed-chip={chip.word}
       title={state.detail ?? state.activity}
     >

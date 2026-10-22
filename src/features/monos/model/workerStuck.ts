@@ -264,7 +264,13 @@ export function stuckOwnedBy(ownerSession: string, rows: readonly Delegation[], 
   );
 }
 
-export type WorkCounts = { working: number; asking: number; stuck: number };
+export type WorkCounts = {
+  working: number;
+  asking: number;
+  stuck: number;
+  /** Of `stuck`, the ones only Ash can sort (a billing or sign-in refusal): the rail's red "needs you" (r30). */
+  needsYou?: number;
+};
 
 /** What a chat has out: working, asking its Lead, and stuck (stalled or failed). */
 export function workCounts(ownerSession: string, rows: readonly Delegation[], now: number): WorkCounts {
@@ -276,11 +282,14 @@ export function workCounts(ownerSession: string, rows: readonly Delegation[], no
 
 /** The same count over any set of rows (a Mono's, across the chats it has had). */
 export function countWork(rows: readonly Delegation[], now: number): WorkCounts {
-  const counts: WorkCounts = { working: 0, asking: 0, stuck: 0 };
+  const counts: WorkCounts = { working: 0, asking: 0, stuck: 0, needsYou: 0 };
   for (const row of newestPerChild(rows)) {
     const stuck = stuckOf(row, now);
     if (stuck?.kind === "asking") counts.asking++;
-    else if (stuck) counts.stuck++;
+    else if (stuck) {
+      counts.stuck++;
+      if (stuck.kind === "failed" && (row.errorClass === "billing" || row.errorClass === "auth")) counts.needsYou = (counts.needsYou ?? 0) + 1;
+    }
     else if (row.state === "running") counts.working++;
   }
   return counts;

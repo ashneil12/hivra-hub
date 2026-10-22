@@ -37,7 +37,7 @@ export function StuckPanel({
       // Its own trigger toggles it; a press there is not "outside".
       ignore="[data-stuck-trigger]"
       role="dialog"
-      aria-label={`${title}: stuck work`}
+      aria-label={`${title}: needs you`}
       data-stuck-panel
       className="flex flex-col p-2"
     >
@@ -45,7 +45,7 @@ export function StuckPanel({
         <span className="min-w-0 truncate font-medium text-content/85" data-stuck-panel-title>
           {title}
         </span>
-        <span className="shrink-0">{count ? `· ${count} stuck` : ""}</span>
+        <span className="shrink-0">{count ? `· ${count} needs you` : ""}</span>
       </div>
       <div className="min-h-0 overflow-y-auto">
         <StuckList
@@ -57,7 +57,7 @@ export function StuckPanel({
         />
         {count ? null : (
           <div className="px-2 py-2 text-[13px] text-content/60" data-stuck-panel-empty>
-            Nothing is stuck now.
+            Nothing needs you now.
           </div>
         )}
       </div>

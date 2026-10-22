@@ -1104,7 +1104,7 @@ function ProjectCard({
             role="img"
             aria-label={muteStatus}
             title={muteStatus}
-            className="grid size-4 shrink-0 place-items-center text-amber-400"
+            className="grid size-4 shrink-0 place-items-center text-content/60"
           >
             <BellOff
               className="size-3.5"

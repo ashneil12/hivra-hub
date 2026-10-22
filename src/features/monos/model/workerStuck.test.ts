@@ -139,7 +139,7 @@ describe("what a Lead's work reads as", () => {
   ];
 
   it("splits what is out into working, asking and stuck (stalled or failed)", () => {
-    expect(workCounts("lead-chat", rows, NOW)).toEqual({ working: 1, asking: 1, stuck: 2 });
+    expect(workCounts("lead-chat", rows, NOW)).toMatchObject({ working: 1, asking: 1, stuck: 2 });
     expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 waiting · 2 stuck");
     expect(workSplit({ working: 2, asking: 0, stuck: 0 })).toBe("2 working");
     expect(workSplit({ working: 0, asking: 0, stuck: 0 })).toBeUndefined();

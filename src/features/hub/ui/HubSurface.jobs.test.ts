@@ -431,21 +431,44 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(card?.querySelector("[data-stuck-reply]")).not.toBeNull();
   });
 
-  it("Today flags every stalled or failed worker under Stuck, with its project, answerable there, but never a worker's question (D5: the Lead asks in its own chat); Being built on Today says it is with its Lead", async () => {
+  // r30 (PM's r45 Mac check, pm-r45-34): no grey "Stuck" section of its own. A worker its Lead has is the Lead's: its job
+  // row reads "With Hivra lead"; one with no job row sits under Being built, grey, in plain words, with "Open Hivra lead's
+  // chat" and Dismiss. Only a refusal Ash must sort is red, in the Needs-you spot.
+  it("Today has no Stuck section: a worker its Lead has reads With <Lead> under Being built, never twice, never a worker's question (D5)", async () => {
+    const fault = delegation("f", { parentId: null, rootId: "f", title: "Example: tidy the README", state: "failed", settledAt: at - 9 * 60_000,
+      delivery: "delivered", error: "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)" });
     setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 }),
-      delegation("q", { state: "question", pendingQuestion: "Which subject line? [Welcome | Hi]", updatedAt: at - 30 * 60_000 })]);
+      delegation("q", { state: "question", pendingQuestion: "Which subject line? [Welcome | Hi]", updatedAt: at - 30 * 60_000 }), fault]);
     mount(surface());
-    await until(() => container.querySelector("[data-hub-stuck] [data-stuck-worker]"), "the Stuck section");
-    const row = container.querySelector('[data-hub-stuck] [data-stuck-worker="w-s"]')!;
-    expect(row.querySelector("[data-stuck-where]")?.textContent).toBe("Hivra · its Lead · Write the welcome email");
-    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped without reporting back · 7 min ago");
+    await until(() => container.querySelector('[data-hub-today-job="j_mail"]') && container.querySelector('[data-stuck-worker="w-f"]'), "Being built on Today");
+    expect(container.querySelector("[data-hub-stuck]")).toBeNull();
+    expect(container.querySelector('[data-hub-stuck-today="red"]')).toBeNull();
+    expect(container.querySelector('[data-hub-today-job="j_mail"] [data-hub-chip]')?.textContent).toBe("With Hivra lead");
+    // The stalled worker is the j_mail row's; it isn't listed again.
+    expect(container.querySelector('[data-stuck-worker="w-s"]')).toBeNull();
+    const row = container.querySelector<HTMLElement>('[data-hub-stuck-today="grey"] [data-stuck-worker="w-f"]')!;
+    expect(row.closest("[data-hub-today-section], [data-hub-today-being-built]") ?? container.querySelector("[data-hub-today-job]")).not.toBeNull();
+    expect(row.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With Hivra lead");
+    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    expect(row.querySelector("[data-stuck-open]")?.textContent).toBe("Open Hivra lead's chat");
+    expect(row.querySelector("[data-stuck-dismiss]")).not.toBeNull();
     act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
     expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat"); // the Lead's chat: Ash answers the Lead (D5)
     expect(actions.openChild).not.toHaveBeenCalled();
-    // Asked half an hour ago and still not on Today: it is the Lead's to ask Ash in the Lead's chat.
     expect(container.querySelector('[data-stuck-worker="w-q"]')).toBeNull();
-    await until(() => container.querySelector('[data-hub-today-job="j_mail"]'), "Being built on Today");
-    expect(container.querySelector('[data-hub-today-job="j_mail"] [data-hub-chip]')?.textContent).toBe("With Hivra lead");
+    expect(text()).not.toMatch(/\bStuck\b|dev-faults|Open chat\b/);
+  });
+
+  it("a worker refused for credits is red in the Needs-you spot, with Open Hivra lead's chat", async () => {
+    setDelegationRows([top, delegation("b", { parentId: null, rootId: "b", title: "Example: send the launch email", state: "failed",
+      settledAt: at - 60_000, errorClass: "billing", error: "Billing refused (402)" })]);
+    mount(surface());
+    await until(() => container.querySelector('[data-hub-stuck-today="red"] [data-stuck-worker="w-b"]'), "the Needs-you row");
+    const row = container.querySelector<HTMLElement>('[data-hub-stuck-today="red"] [data-stuck-worker="w-b"]')!;
+    expect(row.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
+    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Out of credits");
+    expect(row.querySelector("[data-hub-open-lead]")?.textContent).toBe("Open Hivra lead's chat");
+    expect(container.querySelector('[data-hub-stuck-today="grey"] [data-stuck-worker="w-b"]')).toBeNull();
   });
 });
 

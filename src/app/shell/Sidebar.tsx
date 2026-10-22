@@ -4761,7 +4761,7 @@ function FolderRow({
         />
         <span className="relative ml-auto flex shrink-0 items-center gap-1 text-[11px] tabular-nums">
           {!expanded && needsApproval ? (
-            <CircleAlert className="size-3 text-amber-400" strokeWidth={1.75} />
+            <CircleAlert className="size-3 text-red-400" strokeWidth={1.75} data-needs-you-mark />
           ) : !expanded && busy ? (
             <TerminalSpinner className="inline-block w-3 select-none text-center text-[11px] leading-none text-accent" />
           ) : !expanded && done ? (
@@ -4857,7 +4857,7 @@ function FolderRow({
         }`}
       >
         {!expanded && needsApproval ? (
-          <CircleAlert className="size-3 text-amber-400" strokeWidth={1.75} />
+          <CircleAlert className="size-3 text-red-400" strokeWidth={1.75} data-needs-you-mark />
         ) : !expanded && busy ? (
           <TerminalSpinner className="inline-block w-3 select-none text-center text-[11px] leading-none text-accent" />
         ) : !expanded && done ? (
@@ -5208,8 +5208,9 @@ export const SessionCard = memo(function SessionCard({
     !session.linkedWorkItem &&
     !session.automationId &&
     !orchestration;
+  // Waiting on Ash's approval is the one red state (Needs you, r30); no third colour.
   const statusClass = needsApproval
-    ? "text-amber-400"
+    ? "text-red-400"
     : busy
       ? "text-accent"
       : done
@@ -5642,7 +5643,7 @@ export const SessionCard = memo(function SessionCard({
                       role="img"
                       title="Started by an automation"
                       aria-label="Started by an automation"
-                      className="grid size-4 shrink-0 place-items-center text-amber-400"
+                      className="grid size-4 shrink-0 place-items-center text-content/60"
                     >
                       <Zap className="size-3" strokeWidth={1.75} />
                     </span>
@@ -5681,7 +5682,7 @@ export const SessionCard = memo(function SessionCard({
                         aria-label={
                           orchestration ? "Needs input" : "Needs approval"
                         }
-                        className="size-3.5 text-amber-400"
+                        className="size-3.5 text-red-400"
                         strokeWidth={1.75}
                       />
                     ) : draft ? (
@@ -5822,7 +5823,7 @@ export const SessionCard = memo(function SessionCard({
                     role="img"
                     title="Started by an automation"
                     aria-label="Started by an automation"
-                    className="grid size-5 -mr-1 shrink-0 place-items-center text-amber-400"
+                    className="grid size-5 -mr-1 shrink-0 place-items-center text-content/60"
                   >
                     <Zap className="size-3" strokeWidth={1.75} />
                   </span>
@@ -5914,11 +5915,12 @@ export const SessionCard = memo(function SessionCard({
                     </span>
                     <span
                       className={`shrink-0 text-[10px] ${
-                        task.needsInput ||
-                        task.status === "failed" ||
-                        task.status === "blocked" ||
-                        task.status === "interrupted"
-                          ? "text-amber-400"
+                        task.needsInput
+                          ? "text-red-400"
+                          : task.status === "failed" ||
+                              task.status === "blocked" ||
+                              task.status === "interrupted"
+                            ? "text-content/60"
                           : label === "Working"
                             ? "text-accent"
                             : task.status === "completed"
@@ -6016,7 +6018,7 @@ function SessionRenameRow({
     <div
       className={`flex w-full flex-col rounded-md px-2.5 py-2 ${
         needsApproval
-          ? "bg-amber-400/10 text-content"
+          ? "bg-red-400/10 text-content"
           : isActive
             ? "bg-selection text-content"
             : "text-content/80"
