@@ -12,8 +12,9 @@ import {
 import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
+import { needsYouCountFor } from "../../features/hub/model/needsYouRows";
+import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
-import { stuckNeedsAsh } from "../../features/monos/model/stuckChip";
 import { subChatAttention } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
@@ -214,11 +215,14 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
   // What each Mono has out (its workers live in its team, never listed here), read once for its line and the folded summary.
+  // "N needs you" counts the one list Being built draws its red rows from (needsYouRows.ts, Critiquito on r30: Being
+  // built showed Hivra lead two red rows while this said "1 needs you").
+  const needsYou = useNeedsYouRows();
   const workOf = (monoId: string) => {
     const children = childChats.get(monoId) ?? [];
     return {
       attention: subChatAttention(children, now),
-      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now)),
+      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsYouCountFor(needsYou, monoId)),
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
@@ -228,13 +232,14 @@ export function MonoRailSection({
     total.asking += counts.asking;
     total.stuck += counts.stuck;
   }
-  // "1 needs you" opens only what Ash must act on (r30); a worker its Lead is handling isn't counted on the rail.
-  const allStuck = [...work.values()].flatMap(({ attention }) => [...attention.stuck.values()].filter(stuckNeedsAsh)).sort((a, b) => a.since - b.since);
-  const panelStuck = stuckPanel
-    ? stuckPanel.monoId
-      ? [...(work.get(stuckPanel.monoId)?.attention.stuck.values() ?? [])].filter(stuckNeedsAsh).sort((a, b) => a.since - b.since)
-      : allStuck
-    : [];
+  // "1 needs you" opens only what Ash must act on (r30), from the same list: the workers behind its red rows.
+  const redWorkers = (monoId?: string) =>
+    needsYou
+      .filter((r) => !monoId || r.lead === monoId)
+      .flatMap((r) => (r.worker ? [r.worker] : r.job.stuckWorker && r.job.stuckWorker.kind !== "asking" ? [r.job.stuckWorker] : []))
+      .sort((a, b) => a.since - b.since);
+  const allStuck = redWorkers();
+  const panelStuck = stuckPanel ? (stuckPanel.monoId ? redWorkers(stuckPanel.monoId) : allStuck) : [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
@@ -606,8 +611,8 @@ const NEEDS_YOU_RED = "text-red-400";
  * The rail's counts under the red rule (r30): what works, what waits on its Lead, and only what Ash must act on in the
  * third place (`stuck` here is that "needs you" count). A worker its Lead is handling or retrying isn't counted.
  */
-function railCounts(counts: WorkCounts): WorkCounts {
-  return { working: counts.working, asking: counts.asking, stuck: counts.needsYou ?? 0, needsYou: counts.needsYou ?? 0 };
+function railCounts(counts: WorkCounts, needsYou: number): WorkCounts {
+  return { working: counts.working, asking: counts.asking, stuck: needsYou, needsYou };
 }
 /** "2 working · 1 waiting · 1 needs you", never "stuck"; nothing when nothing is out. */
 function railSplit(counts: WorkCounts): string | undefined {

@@ -6,7 +6,9 @@ import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { useNow, withFailedLeads, workersFromJobs } from "../model/liveJobs";
+import { useNow } from "../model/liveJobs";
+import { beingBuiltJobRows } from "../model/needsYouRows";
+import { leadFailureOf, useNeedsYouRows } from "../model/useNeedsYouRows";
 import { openCodingTeam, setHubSelection } from "../model/hubNav";
 import { leadFor } from "../model/hubLeads";
 import { activeWorkers, archiveIfSeen, durationLabel, finishedToday, getWorker, jobState, jobStateWord, markSeen, useWorkVersion } from "../model/hubWork";
@@ -21,9 +23,8 @@ import { prWatchWorkers } from "../../pr-watch/model/prWatchJobs";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
 import { openLead, openStuck } from "../../monos/model/stuckActions";
-import { StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
-import { withStuckWorkers } from "../model/stuckJobs";
-import { failedMonoName, monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
+import { leadNameOf, StuckList, StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
+import { useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { MonoFailureList } from "../../monos/ui/MonoFailureCard";
 import { failedMonosFor } from "../model/todayCounts";
 
@@ -44,13 +45,13 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   // A Lead whose last turn failed: listed on top with Try again, and its jobs read Stuck with why.
   useMonoFailuresVersion();
   const failed = failedMonosFor(projectId);
-  const leadFailure = (monoId: string) => {
-    const failure = monoFailure(monoId);
-    return failure ? { name: failedMonoName(failure), reason: failure.reason, tone: failure.tone } : undefined;
-  };
+  // Its red Needs you rows come from the one list the rail counts (needsYouRows.ts): its job rows, made by the same
+  // function, and any worker only Ash can sort that no job row carries, listed on its own under its Lead.
+  const needsYou = useNeedsYouRows();
+  const loneRed = needsYou.flatMap((r) => (r.worker && r.projectId === projectId ? [r.worker] : []));
   const liveWorkers = live
     ? [
-        ...withFailedLeads(withStuckWorkers(workersFromJobs(data.listJobs?.(projectId) ?? [], now), delegations, now), leadFailure),
+        ...beingBuiltJobRows(data.listJobs?.(projectId) ?? [], delegations, now, leadFailureOf),
         ...prWatchWorkers(prWatches?.all() ?? [], projectId, now),
       ]
     : [];
@@ -102,11 +103,16 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {open ? (
           <Activity worker={open} now={now} />
-        ) : active.length || done.length || failed.length ? (
+        ) : active.length || done.length || failed.length || loneRed.length ? (
           <div className="flex w-full flex-col gap-5 px-6 py-8 xl:px-8">
             {failed.length ? (
               <section aria-label="Can't answer" className="flex flex-col gap-0.5" data-hub-failed-monos>
                 <MonoFailureList failures={failed} now={now} />
+              </section>
+            ) : null}
+            {loneRed.length ? (
+              <section aria-label="Needs you" className="flex flex-col gap-0.5" data-hub-being-built-needs>
+                <StuckList stuck={loneRed} now={now} variant="row" where={(s) => leadNameOf(s)} />
               </section>
             ) : null}
             {active.length ? (
@@ -118,7 +124,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                   </div>
                 ))}
               </div>
-            ) : failed.length ? null : (
+            ) : failed.length || loneRed.length ? null : (
               <p className="px-3 text-[13px] text-content/60">Nobody's working on {projectName} right now.</p>
             )}
             {done.length ? (
