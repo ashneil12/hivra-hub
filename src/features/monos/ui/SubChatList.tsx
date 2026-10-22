@@ -18,7 +18,8 @@ export function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; s
   // Waiting on its Lead, not stuck (Ash, 22 Oct): a grey clock, as on the Mono's line.
   if (state === "question") return <Clock {...props} className={`${props.className} text-content/45`} />;
   if (state === "completed") return <CheckCircle {...props} className={`${props.className} text-emerald-400/90`} />;
-  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-red-400`} />;
+  // Amber like a stalled one (r27): red is only for Needs you, and a failed worker is its Lead's to handle.
+  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-amber-400`} />;
   return <CircleX {...props} className={`${props.className} text-content/40`} />;
 }
 
@@ -38,7 +39,7 @@ export function StuckMark({ stuck, hideOnHover = true }: { stuck: readonly Stuck
       className={`flex shrink-0 items-center${hideOnHover ? " group-hover:hidden group-has-[button:focus-visible]:hidden" : ""}`}
     >
       <Icon
-        className={`size-3.5 ${kind === "failed" ? "text-red-400" : kind === "stalled" ? "text-amber-400" : "text-content/45"}`}
+        className={`size-3.5 ${kind === "asking" ? "text-content/45" : "text-amber-400"}`}
         strokeWidth={1.75}
       />
     </span>

@@ -37,5 +37,6 @@ it("the Being built row shows no exit code or developer text, only plain words",
   const row = host.querySelector('[data-hub-worker="j_d5"]')!;
   expect(row.querySelector("[data-hub-job-reason]")!.textContent).toBe("Failed 3 times. The details are in the Lead's chat.");
   expect(row.textContent).not.toMatch(/exit\s*\d|code \d|Example:/i);
-  expect(row.textContent).toContain("Stuck");
+  // Still fixing itself (r27): a calm grey Retrying, not a red Stuck.
+  expect(row.querySelector("[data-hub-chip]")?.textContent).toBe("Retrying");
 });

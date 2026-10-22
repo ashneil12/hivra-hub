@@ -1,0 +1,45 @@
+// One status chip per state, the same on Today, Being built and the rail (Critiquito on the r26 Today shot, 22 Oct:
+// red "Stuck" rows beside a red "Needs you" row, and Ash couldn't tell them apart). Red means one thing: Ash must act
+// ("Needs you"). Everything else is a calm grey ring and a plain word for what is happening:
+//   - Ash OS "stuck": the job's self-repair is still retrying (after 1, 5 and 15 minutes) → "Retrying"
+//   - Ash OS "sent_to_lead", or one of this app's workers stalled or failed under its Lead → "With <Lead>"
+//   - Ash OS "lead_gave_up" (the Lead gave up; it's Ash's now) → "Needs you", red
+// The job logic is untouched: only what the row says and its colour.
+import { gaveUpAsNeedsYou } from "./hubWork";
+import type { StuckState, Worker } from "./types";
+
+export type ChipTone = "red" | "grey";
+export type Chip = { word: string; tone: ChipTone };
+
+export const NEEDS_YOU: Chip = { word: "Needs you", tone: "red" };
+export const RETRYING: Chip = { word: "Retrying", tone: "grey" };
+/** Its Lead's last turn failed: the words Today has always used for it. */
+export const CANT_ANSWER: Chip = { word: "Can't answer", tone: "grey" };
+/** "With Hivra lead"; a job with no Lead yet reads "With its lead". */
+export function withLead(lead?: string | null): Chip {
+  const name = lead?.trim();
+  return { word: name && name !== "Nobody yet" ? `With ${name}` : "With its lead", tone: "grey" };
+}
+
+/** The chip for an Ash OS stuck state. */
+export function stuckChip(state: StuckState, lead?: string | null): Chip {
+  if (state === "lead_gave_up") return gaveUpAsNeedsYou() ? NEEDS_YOU : { word: "Stuck", tone: "red" }; // old look: dev flag only
+  if (state === "sent_to_lead") return withLead(lead);
+  return RETRYING;
+}
+
+/** The chip for a Being built row, or undefined when it isn't stuck. A stalled app worker is its Lead's to handle. */
+export function workerChip(w: Pick<Worker, "stuck" | "who" | "stuckWorker" | "finishedAt" | "leadCantAnswer">): Chip | undefined {
+  if (w.finishedAt || !w.stuck) return undefined;
+  if (w.leadCantAnswer) return CANT_ANSWER;
+  if (w.stuck !== "lead_gave_up" && w.stuckWorker) return withLead(w.who);
+  return stuckChip(w.stuck, w.who);
+}
+
+/** A word Ash OS put on a Need row, as a chip: only "Needs you" (or a job the Lead gave up on) is red. */
+export function wireChip(word: string, lead?: string | null): Chip {
+  if (word === "Needs you") return NEEDS_YOU;
+  if (word === "Stuck") return RETRYING;
+  if (word === "Sent to lead") return withLead(lead);
+  return { word, tone: "grey" };
+}

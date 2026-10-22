@@ -382,7 +382,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                         if (!w?.state) return null;
                         return (
                           <div className="flex items-center gap-3 pt-1.5">
-                            <StatusMark state={w.state} />
+                            <StatusMark state={w.state} lead={w.lead} />
                             <button
                               type="button"
                               data-hub-take-look={w.id}

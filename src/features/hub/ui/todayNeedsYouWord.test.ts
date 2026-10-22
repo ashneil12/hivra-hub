@@ -78,9 +78,8 @@ async function words() {
     createElement(HubSurface, { selection: { project: "today", item: "inbox" } }),
     createElement("div", { "data-project-being-built": "" }, createElement(BeingBuiltView, { projectId: "hivra" })))));
   await until(() => container.querySelector('[data-hub-today-job="j_sender"]') && container.querySelector('[data-hub-worker="j_sender"]'), "both lists");
-  const today = container.querySelector('[data-hub-today-job="j_sender"] span:last-child')!.textContent!.split(" · ").at(-1);
-  const state = container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state]')!;
-  const built = [...state.querySelectorAll(":scope > span:not([aria-hidden])")].map((s) => s.textContent).find(Boolean);
+  const today = container.querySelector('[data-hub-today-job="j_sender"] [data-hub-chip]')?.textContent;
+  const built = container.querySelector('[data-hub-worker="j_sender"] [data-hub-job-state] [data-hub-chip]')?.textContent;
   return { today, built };
 }
 
@@ -89,8 +88,8 @@ it("a job its Lead gave up on reads 'Needs you' on Today, the same as Being buil
   expect(built).toBe("Needs you");
   expect(today).toBe("Needs you");
   expect(container.querySelector('[data-hub-today-job="j_sender"]')!.textContent).not.toMatch(/Stuck/);
-  // Only the given-up label moved: a job sent to its Lead reads as before.
-  expect(container.querySelector('[data-hub-today-job="j_backup"]')!.textContent).toMatch(/· With the lead$/);
+  // A job sent to its Lead names the Lead (r27).
+  expect(container.querySelector('[data-hub-today-job="j_backup"]')!.textContent).toMatch(/· With Hivra lead$/);
 });
 
 it("with the old-style dev flag both places still agree", async () => {

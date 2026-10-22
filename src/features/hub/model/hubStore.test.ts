@@ -446,15 +446,16 @@ describe("older questions, Looks right and jobs", () => {
     expect(jobsOf("vg-game").map((j) => j.id)).toEqual([...order, "j_new"]);
   });
 
-  it("stuck jobs reach the screens as amber rows with no button, and the given-up one is not among them", async () => {
+  it("stuck jobs reach the screens in their own state with their Lead, no button, and the given-up one is not among them", async () => {
     const data = (await import("./liveHubData")).createLiveHubData(store);
     store.start();
     await waitFor(() => store.getSnapshot().jobs.length, "jobs");
     const stuck = data.listStuck("hivra");
     expect(stuck.map((s) => s.title)).toEqual(["Example: moving the nightly backup"]);
-    expect(stuck[0]).toMatchObject({ state: "stuck", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to coding team lead at .* · Got it$/) });
+    expect(stuck[0]).toMatchObject({ state: "sent_to_lead", lead: "Hivra lead", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to coding team lead at .* · Got it$/) });
     expect(data.listStuck("nibbii").map((s) => s.title)).toEqual(["Example: tidying the sound files"]);
     expect(data.listStuck("nibbii")[0].note).toBeUndefined();
+    expect(data.listStuck("nibbii")[0].state).toBe("stuck");
   });
 
   it("the See options sheet comes from Ash OS and Ash's pick moves the job and ticks the row off", async () => {

@@ -20,6 +20,8 @@ export type WaitingItem = {
   detail: string;
   /** Set for stuck / gave-up items; Needs have none. */
   state?: StuckState;
+  /** The Lead a stuck item is with, for its "With <Lead>" chip. */
+  lead?: string;
   need?: Need;
   /** Set for a connector sign-in Need. */
   connectorId?: string;
@@ -85,7 +87,7 @@ const PROVIDERS: Provider[] = [
   // Inbox stuck items.
   (pid) =>
     hubData().listStuck(pid).map((s): WaitingItem => ({
-      id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state, ...(s.note ? { note: s.note } : {}),
+      id: s.id, projectId: pid, source: "inbox", title: s.title, detail: s.detail, state: s.state, ...(s.note ? { note: s.note } : {}), ...(s.lead ? { lead: s.lead } : {}),
       // Stuck items are talked through with the project's leadership team. A job that is stuck for real went to the
       // Lead by itself: no button.
       ...(s.quiet ? {} : { target: { project: pid, item: "leadership-team", focus: s.id } }),
@@ -101,7 +103,7 @@ const PROVIDERS: Provider[] = [
   // Being built: stuck workers not already covered by another item.
   (pid) =>
     activeWorkers(pid).filter((w) => w.stuck && !w.waitingId).map((w): WaitingItem => ({
-      id: `worker:${w.id}`, projectId: pid, source: "being-built", state: w.stuck,
+      id: `worker:${w.id}`, projectId: pid, source: "being-built", state: w.stuck, lead: w.who,
       title: `${w.who}: ${w.doing}`, detail: w.steps[0]?.text ?? "", target: { project: pid, item: "being-built" },
     })),
 ];

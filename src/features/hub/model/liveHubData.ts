@@ -40,14 +40,16 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     listStuck: (projectId?: string): StuckItem[] =>
       snap()
         .jobs.filter((g) => !projectId || g.projectId === projectId)
-        .flatMap((g) => g.jobs)
-        .filter((j) => j.state === "stuck" || j.state === "sent_to_lead")
-        .map((j) => ({
+        .flatMap((g) => g.jobs.map((j) => ({ j, lead: g.leadName })))
+        .filter(({ j }) => j.state === "stuck" || j.state === "sent_to_lead")
+        // Its real state: "stuck" is still retrying on its own, "sent_to_lead" is with its Lead (statusChip.ts).
+        .map(({ j, lead }) => ({
           id: `job:${j.id}`,
           projectId: j.projectId,
           title: j.title,
           detail: j.reason,
-          state: "stuck" as const,
+          state: j.state as "stuck" | "sent_to_lead",
+          ...(lead ? { lead } : {}),
           quiet: true,
           ...(j.sentText ? { note: j.gotIt ? `${j.sentText} · ${j.gotIt.text}` : j.sentText } : {}),
         })),

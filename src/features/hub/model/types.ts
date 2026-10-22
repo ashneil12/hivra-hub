@@ -143,6 +143,8 @@ export type StuckItem = {
   title: string;
   detail: string;
   state: StuckState;
+  /** The Lead it is with ("Hivra lead"), for its "With <Lead>" chip. */
+  lead?: string;
   sentAt?: string;
   /** A second quiet line: "Sent to coding team lead at 2:20pm", then the Lead's "Got it". */
   note?: string;
@@ -393,6 +395,8 @@ export type Worker = {
   /** Minutes at it so far. */
   minutes: number;
   stuck?: StuckState;
+  /** Its Lead's last turn failed (out of credits, overloaded): reads "Can't answer" on Today and Being built alike. */
+  leadCantAnswer?: boolean;
   steps: ActivityStep[];
   /** Id of the waiting item that already covers this worker being stuck. */
   waitingId?: string;
