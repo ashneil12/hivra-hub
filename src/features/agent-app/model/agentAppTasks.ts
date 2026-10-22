@@ -1,6 +1,6 @@
 // The delegate tool's app side (docs/PHASE-2-DESIGN.md, H3): the `tasks.*` app actions, over the delegation rows that
 // H2 stores (src-tauri/src/delegations.rs, monos/model/delegations.ts). The `monocode` MCP server (src-tauri/src/
-// mcp_server.rs) maps delegate_task / task_status / task_wait / task_cancel / task_answer onto these; `monocode app
+// mcp_server.rs) maps delegate_task / task_status / task_wait / task_cancel / task_cannot / task_answer onto these; `monocode app
 // tasks.*` reaches them too.
 //
 // - Only the chats Ash talks to have tasks: a Mono's own chat and a chat in a project's coding team (hub/model/
@@ -83,6 +83,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
+  ["tasks.cannot", ["taskId", "reason"]],
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
 ];
 
@@ -129,6 +130,13 @@ export type AgentAppTasksHost = {
   ): Promise<{ stopFailed: string[]; stopped?: string[]; cancelled?: string[] }>;
   /** The chat started (true) or finished (false) a tasks.wait call: its workers' questions come back through the wait. */
   waiting?(owner: string, on: boolean): void;
+  /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
+  selfTask?(sessionId: string): Promise<Delegation | undefined>;
+  /**
+   * The agent says it cannot finish this task, with its plain reason (the declared `blocked` stall, delegations.rs). It
+   * is Ash's at once; it stands until the row moves. False: the row moved before it could be recorded.
+   */
+  cannot?(by: string, row: Delegation, reason: string): Promise<boolean>;
   /** Answer the worker's open question (and log it on the row). */
   answer?(
     owner: string,
@@ -364,6 +372,9 @@ function iso(ms: number | null | undefined): string | undefined {
 function activity(row: Delegation, child: TaskChild | undefined): string {
   if (row.state === "question") return "waiting for your answer";
   if (!isOpenDelegation(row)) return "stopped";
+  // Declared (task_cannot): the work itself says it cannot finish, with its reason. It is Ash's, not a silence.
+  if (row.stallKind === "blocked")
+    return row.stallReason ? `cannot finish: ${row.stallReason}` : "cannot finish";
   // It asked Ash itself (a Lead's own AskUserQuestion): that is why it stands still, not its work.
   if (child?.pendingQuestion) return waitingOnAshLine(child.pendingQuestion);
   return child?.busy ? "working" : "idle";
@@ -837,6 +848,48 @@ async function cancel(source: Session, input: Record<string, unknown>, host: Age
   };
 }
 
+/**
+ * tasks.cannot (D5): the agent itself says it cannot finish this work, in plain words. A Lead names one of its own tasks;
+ * with no taskId it is the running task working in the caller's own chat. The row lands in Ash's Needs you at once
+ * (workerStuck.ts), so a Lead that stops without a way forward does not leave its worker looking merely idle, and a done
+ * claim over the row is checked against it (leadFlow.ts, followedBriefs.ts).
+ */
+async function cannot(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
+  const reason = text(input.reason, "reason", 300);
+  let tasks: AgentAppTasksHost | undefined = host.tasks;
+  let row: Delegation;
+  let by: string;
+  if (input.taskId === undefined) {
+    const mine = await tasks?.selfTask?.(source.id);
+    if (!mine)
+      throw new Error(
+        "No running task works in this chat. Name the taskId of one of yours (task_status lists them).",
+      );
+    row = mine;
+    by = `self:${source.id}`;
+  } else {
+    // Named tasks are the caller's own, and only a Mono's chat or a coding-team chat owns any.
+    tasks = taskOwner(source, host).tasks;
+    [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 600)]);
+    by = `owner:${source.id}`;
+  }
+  if (!tasks?.cannot)
+    throw new Error("This build can't record a task as unfinished. Tell Ash in one line what is in the way.");
+  if (row.state !== "running")
+    throw new Error(`Task ${row.id} is ${row.state}: only running work can be declared unfinished.`);
+  const recorded = await tasks.cannot(by, row, reason);
+  if (!recorded)
+    throw new Error(`Task ${row.id} moved before that was recorded. Read it with task_status.`);
+  return {
+    taskId: row.id,
+    ...(row.title ? { title: row.title } : {}),
+    status: row.state,
+    needsYou: true,
+    reason,
+    note: "It is in Ash's Needs you now. Say in one line what would unblock it, and do not report the work as done.",
+  };
+}
+
 function answers(value: unknown): Record<string, string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error('answers must be an object: {"<questionId>":["<optionId>"]}');
@@ -926,6 +979,8 @@ export function handleTasks(
       return wait(source, input, host);
     case "tasks.cancel":
       return cancel(source, input, host);
+    case "tasks.cannot":
+      return cannot(source, input, host);
     case "tasks.answer":
       return answer(source, input, host);
     case "tasks.workers":

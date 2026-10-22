@@ -23,6 +23,10 @@
 //!   watcher (monos/model/workerStall.ts). A stall is not a state: the row stays `running` (Ash OS knows five states), and
 //!   any move of the row (a question, a settle, a resumed turn, a Stop, a take-over) clears it. Activity again clears it
 //!   too. It is copied to Ash OS with the row (`stalled`) and logged (`stalled` / `unstalled`).
+//! - **Blocked** (D5, declared by the agents themselves): a Lead — or the worker on its own row — says it cannot finish,
+//!   with a plain reason (`task_cannot`, `stall_kind` `blocked`). Unlike a judged stall it is not re-judged and activity
+//!   does not clear it: it stands until the row moves (a settle, a Stop, a retried generation). It lands on the row as
+//!   Needs you at once, and a Lead's "done" claim is checked against it.
 //! - **No mirror** (21 Oct): rows live here only. Every change still bumps `version`; the old `mirrored_version` and
 //!   `mirror_error` columns stay for older stores, unused. Reports still arrive after a restart: they are owed rows here.
 //!
@@ -169,7 +173,8 @@ pub struct Delegation {
     pub mirror_error: Option<String>,
     /// `queue`, `steer` or `lead` for a followed brief (see the module docs); none for a launch's own report.
     pub follow: Option<String>,
-    /// A running row's stall (module docs): `quiet`, `loop` or `idle`; none while it moves.
+    /// A running row's stall (module docs): `quiet`, `loop`, `idle` or `blocked` (the agent said it cannot finish); none
+    /// while it moves.
     pub stall_kind: Option<String>,
     pub stall_reason: Option<String>,
     /// Since when it has been stuck this way (its last activity, or the start of the loop), epoch ms.
@@ -824,7 +829,7 @@ pub fn set_question_with(
     })
 }
 
-const STALL_KINDS: [&str; 3] = ["quiet", "loop", "idle"];
+const STALL_KINDS: [&str; 4] = ["quiet", "loop", "idle", "blocked"];
 const STALL_REASON_MAX: usize = 300;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -833,7 +838,7 @@ pub struct StallInput {
     pub id: String,
     /// The turn the watcher judged: a stall never lands on a newer one.
     pub generation: i64,
-    /// `quiet`, `loop` or `idle`; none clears the stall (it moves again).
+    /// `quiet`, `loop`, `idle` or `blocked`; none clears the stall (it moves again).
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -851,7 +856,7 @@ pub fn set_stall(conn: &mut Connection, input: StallInput, now: i64) -> Result<C
     let kind = text(input.kind, 20);
     if let Some(kind) = kind.as_deref() {
         if !STALL_KINDS.contains(&kind) {
-            return Err("a stall is quiet, loop or idle".into());
+            return Err("a stall is quiet, loop, idle or blocked".into());
         }
     }
     let by = actor(input.by);
@@ -2306,6 +2311,45 @@ mod tests {
         let stored = get(&conn, &row.id).unwrap().unwrap();
         assert_eq!(stored.stall_kind.as_deref(), Some("idle"));
         assert_eq!(stored.stalled_at, Some(960));
+    }
+
+    // D5: the agent's own word that it cannot finish (task_cannot) is a stall of a fourth kind, `blocked`. It is not a
+    // state either: the row stays running, and it stands (the watcher never clears it) until the row itself moves.
+    #[test]
+    fn a_declared_block_is_a_stall_until_the_row_moves() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let row = record(&mut conn, launch("lead", "r1", "worker"), 10).unwrap();
+        let block = StallInput {
+            id: row.id.clone(),
+            generation: 1,
+            kind: Some("blocked".into()),
+            reason: Some("The staging deploy key is not on this machine".into()),
+            since: Some(400),
+            by: Some("self:worker".into()),
+        };
+        let applied = set_stall(&mut conn, block.clone(), 700).unwrap();
+        assert!(applied.applied);
+        let blocked = applied.row.unwrap();
+        assert_eq!(blocked.stall_kind.as_deref(), Some("blocked"));
+        assert_eq!(
+            blocked.stall_reason.as_deref(),
+            Some("The staging deploy key is not on this machine")
+        );
+        assert_eq!(blocked.state, RUNNING);
+        assert_eq!(events(&blocked).last().map(String::as_str), Some("stalled"));
+        // Saying it again changes nothing.
+        assert!(!set_stall(&mut conn, block, 760).unwrap().applied);
+        // It survives a read back from the store, and only the row moving clears it.
+        assert_eq!(
+            get(&conn, &row.id).unwrap().unwrap().stall_kind.as_deref(),
+            Some("blocked")
+        );
+        let moved = set_stall(&mut conn, stall(&row.id, 1, None, 0), 900).unwrap();
+        assert_eq!(moved.row.unwrap().stall_kind, None);
+        // Any other word is refused, and the list names the fourth kind.
+        let error = set_stall(&mut conn, stall(&row.id, 1, Some("frozen"), 0), 950).unwrap_err();
+        assert_eq!(error, "a stall is quiet, loop, idle or blocked");
     }
 
     #[test]

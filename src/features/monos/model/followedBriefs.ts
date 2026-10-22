@@ -14,6 +14,7 @@ import { wasTurnInterrupted } from "../../sessions/model/inFlight";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 import { isOwed, type Delegation } from "./delegations";
+import { unfinishedWorker } from "./workerStuck";
 import {
   completionReceipt,
   monoSessionCompletionResult,
@@ -112,6 +113,33 @@ export type FollowStep =
   | { kind: "ask"; request: QueuedMessage }
   | { kind: "cancel"; reason: string };
 
+/** A worker as the brief's failure line names it. */
+function workerName(row: Pick<Delegation, "title">): string {
+  return row.title?.trim().split("\n")[0].slice(0, 60) || "a worker";
+}
+
+/**
+ * The brief's report when one of its workers declared it cannot finish (D5, task_cannot): a failure naming the worker
+ * and its reason, sent back at once, so the sender hears about the block rather than waiting on a job that will not
+ * land. It is the worker's own word, never a judgment (workerStall.ts never clears it).
+ */
+function cannotFinishResult(row: Delegation, chat: Session, worker: Delegation): MonoSessionCompletionResult {
+  const name = workerName(worker);
+  const reason = worker.stallReason?.trim();
+  return monoSessionCompletionResult({
+    requestId: row.requestId,
+    sessionId: chat.id,
+    project: chat.cwd,
+    prompt: row.brief ?? "",
+    outcome: {
+      status: "failed",
+      text: "",
+      error: `${name.charAt(0).toUpperCase()}${name.slice(1)} cannot finish${reason ? `: ${reason}` : ""}.`,
+    },
+    session: chat,
+  });
+}
+
 /**
  * What to do with one open followed brief now. `chat` is the chat it went to (null when that chat is gone), `children`
  * the rows of its tree (a Lead's workers have it as their parent), `now` the clock, `asked` the report requests this
@@ -134,6 +162,18 @@ export function followStep(
   }
   if (chat.busy || wasTurnInterrupted(chat) || chat.queueStatus === "resuming")
     return { kind: "wait", why: "working" };
+  // D5: a worker that said it cannot finish (task_cannot) is not waited on. It is still running — declaring is not
+  // cancelling — but waiting on it would hold the brief open forever, so the brief fails at once, naming it.
+  const declaring = look.children.find(
+    (child) =>
+      child.parentId === row.id &&
+      child.state === "running" &&
+      child.stallKind === "blocked" &&
+      // A block the Lead already worked around (a retried generation) is not held against the brief.
+      unfinishedWorker(child, look.now) !== undefined,
+  );
+  if (row.follow === "lead" && declaring)
+    return { kind: "settle", result: cannotFinishResult(row, chat, declaring) };
   // A Lead reports once every worker it started for this brief has reported to it (and it has had its say on that).
   if (row.follow === "lead" && look.children.some((child) => child.parentId === row.id && isOwed(child)))
     return { kind: "wait", why: "workers" };
@@ -223,18 +263,28 @@ function leadReportStep(
 ): FollowStep {
   const turn = reportTurn(row, chat, children);
   const last = leadTurn(chat, turn.at);
-  const settle = (reply: string, failure?: string, requestId = turn.requestId): FollowStep => ({
-    kind: "settle",
-    result: monoSessionCompletionResult({
-      requestId,
-      sessionId: chat.id,
-      project: chat.cwd,
-      prompt: row.brief ?? "",
-      outcome: failure ? { status: "failed", text: "", error: failure } : { status: "completed", text: "" },
-      session: chat,
-      reply,
-    }),
-  });
+  // D5: a Lead's "done" is checked against what its workers actually did: a worker that failed, or said it cannot
+  // finish, makes the brief a failure naming it. A retried worker (leadRetried) is not held against the Lead.
+  const notDone = children
+    .filter((child) => child.parentId === row.id && unfinishedWorker(child, now) !== undefined)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((child) => `${workerName(child)} — ${unfinishedWorker(child, now)}`);
+  const unfinished = notDone.length ? `Not done: ${notDone.join("; ")}.` : undefined;
+  const settle = (reply: string, failure?: string, requestId = turn.requestId): FollowStep => {
+    const error = failure ?? unfinished;
+    return {
+      kind: "settle",
+      result: monoSessionCompletionResult({
+        requestId,
+        sessionId: chat.id,
+        project: chat.cwd,
+        prompt: row.brief ?? "",
+        outcome: error ? { status: "failed", text: "", error } : { status: "completed", text: "" },
+        session: chat,
+        reply,
+      }),
+    };
+  };
   if (!last.mixed) return settle(last.reply, last.failure);
   const id = reportRequestId(row);
   const sent = briefSentAt({ requestId: id }, chat);

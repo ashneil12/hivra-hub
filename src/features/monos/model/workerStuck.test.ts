@@ -15,7 +15,9 @@ import {
   leadRollup,
   resetStuckDismissals,
   stuckForJob,
+  stuckOwner,
   stuckWorkers,
+  unfinishedWorker,
   workCounts,
   workSplit,
 } from "./workerStuck";
@@ -214,6 +216,55 @@ describe("stuckForJob: a running sibling never hides a stuck worker", () => {
     expect(stuckForJob(undefined, rows, NOW)).toBeUndefined();
     const onlyStalled = rows.filter((r) => r.id !== "t-b").map((r) => (r.id === "t-c" ? { ...r, parentId: "t-a" } : r));
     expect(stuckForJob("delegation:t-top", onlyStalled, NOW)?.row.id).toBe("t-c");
+  });
+});
+
+// D5 (Ash, "stuck job handling when a Lead gives up"): the real "I cannot finish" signal. A Lead or the worker itself
+// says it with task_cannot, and the row carries a declared block (delegations.rs stall_kind `blocked`): not a judged
+// stall, it stands until the row itself moves, and it is Ash's Needs you at once.
+describe("a declared block: the agent's own word that it cannot finish", () => {
+  const blocked = (patch: Partial<Delegation> = {}) =>
+    row({
+      id: "b",
+      state: "running",
+      stallKind: "blocked",
+      stallReason: "The staging deploy key is not on this machine",
+      stalledAt: NOW - 3 * MIN,
+      ...patch,
+    });
+
+  it("reads Cannot finish with its reason, escalated, and is Ash's at once rather than its Lead's", () => {
+    const stuck = stuckWorkers([blocked()], NOW)[0];
+    expect(stuck).toMatchObject({
+      kind: "stalled",
+      escalated: true,
+      line: "Cannot finish: the staging deploy key is not on this machine",
+    });
+    expect(stuckOwner(stuck)).toBe("needs-you");
+    // With no reason it still says what happened.
+    expect(stuckWorkers([blocked({ stallReason: null })], NOW)[0].line).toBe("Cannot finish");
+    // A Lead that already took it on (a redo in its log) is retrying it, not waiting on Ash.
+    const retried = blocked({ log: [{ at: NOW - MIN, by: "owner:lead-chat", event: "lead_redo" }] });
+    expect(stuckOwner(stuckWorkers([retried], NOW)[0])).toBe("retrying");
+    // A judged stall (quiet) still waits on its Lead.
+    const quiet = stuckWorkers([blocked({ stallKind: "quiet", stallReason: "Still running npm test" })], NOW)[0];
+    expect(stuckOwner(quiet)).toBe("with-lead");
+  });
+
+  it("unfinishedWorker is the one reading a done claim and a followed brief check", () => {
+    expect(unfinishedWorker(blocked(), NOW)).toBe("Cannot finish: the staging deploy key is not on this machine");
+    // Retried by its Lead: not held against it.
+    expect(
+      unfinishedWorker(blocked({ log: [{ at: NOW - MIN, by: "owner:lead-chat", event: "lead_redo" }] }), NOW),
+    ).toBeUndefined();
+    // A recent failure is unfinished; an old one and a finished row are not.
+    expect(unfinishedWorker(row({ id: "f", state: "failed", error: "The build broke.", settledAt: NOW - 5 * MIN }), NOW)).toBe(
+      "Failed: the build broke",
+    );
+    expect(unfinishedWorker(row({ id: "old", state: "failed", settledAt: NOW - 7 * 60 * MIN }), NOW)).toBeUndefined();
+    expect(unfinishedWorker(row({ id: "d", state: "completed", settledAt: NOW }), NOW)).toBeUndefined();
+    // A judged stall is still running work, not an unfinished job.
+    expect(unfinishedWorker(blocked({ stallKind: "idle" }), NOW)).toBeUndefined();
   });
 });
 

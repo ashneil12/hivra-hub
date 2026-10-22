@@ -76,8 +76,9 @@ export type Delegation = {
   /** A followed brief (followedBriefs.ts): reported by watching the child chat. Absent on older rows. */
   follow?: FollowMode | null;
   /**
-   * A running row's stall (delegations.rs, workerStall.ts): its worker went quiet, loops, or stopped without reporting.
-   * Not a state: the row stays running, and any move of it clears the stall. Absent on older rows.
+   * A running row's stall (delegations.rs, workerStall.ts): its worker went quiet, loops, stopped without reporting, or
+   * said it cannot finish (`blocked`). Not a state: the row stays running, and any move of it clears the stall. Absent on
+   * older rows.
    */
   stallKind?: StallKind | null;
   stallReason?: string | null;
@@ -85,8 +86,11 @@ export type Delegation = {
   stalledAt?: number | null;
 };
 
-/** How a running worker is stuck: no output (`quiet`), the same step over and over (`loop`), or idle without a report. */
-export type StallKind = "quiet" | "loop" | "idle";
+/**
+ * How a running worker is stuck: no output (`quiet`), the same step over and over (`loop`), idle without a report, or
+ * `blocked` — the Lead or the worker itself declared it cannot finish (task_cannot), with a plain reason.
+ */
+export type StallKind = "quiet" | "loop" | "idle" | "blocked";
 
 export type StallInput = {
   id: string;

@@ -265,6 +265,61 @@ describe("followStep", () => {
     expect(followStep(two, { chat: lead, children: [two, worker], now: 0 })).toMatchObject({ kind: "settle", result: { result: "Brief two: the worker shipped it." } });
   });
 
+  it("a worker that says it cannot finish fails the brief at once, naming it; a block the Lead retried does not", () => {
+    const r = row({ follow: "lead" });
+    const blocks = [user("brief", r.requestId), said("Handed to two workers.")];
+    const blocked = row({
+      id: "t-ui",
+      parentId: "t-1",
+      ownerSession: "lead-chat",
+      childSession: "ui-worker",
+      requestId: "w-ui",
+      follow: null,
+      title: "UI",
+      state: "running",
+      stallKind: "blocked",
+      stallReason: "the staging deploy key is not on this machine",
+      stalledAt: 0,
+    });
+    const step = followStep(r, { chat: chat("lead-chat", blocks), children: [r, blocked], now: 60_000 });
+    expect(step).toMatchObject({
+      kind: "settle",
+      result: { status: "failed", error: "UI cannot finish: the staging deploy key is not on this machine." },
+    });
+    // The Lead took the block on itself (a redo logged in its row): the brief waits on it again, not fails.
+    const retried = { ...blocked, log: [{ at: 1, by: "owner:lead-chat", event: "lead_redo" }] };
+    expect(followStep(r, { chat: chat("lead-chat", blocks), children: [r, retried], now: 60_000 })).toEqual({ kind: "wait", why: "workers" });
+  });
+
+  it("a Lead's done claim is checked against its workers: a failed one fails the brief, a finished one does not", () => {
+    const r = row({ follow: "lead" });
+    const blocks = [user("brief", r.requestId), said("All done: the room ships.")];
+    const failed = row({
+      id: "t-ui",
+      parentId: "t-1",
+      ownerSession: "lead-chat",
+      childSession: "ui-worker",
+      requestId: "w-ui",
+      follow: null,
+      title: "UI",
+      state: "failed",
+      error: "The build broke.",
+      settledAt: 0,
+      // Its failure has already reached the Lead: nothing is still owed to it.
+      delivery: "delivered",
+    });
+    expect(followStep(r, { chat: chat("lead-chat", blocks), children: [r, failed], now: 60_000 })).toMatchObject({
+      kind: "settle",
+      result: { status: "failed", error: "Not done: UI — Failed: the build broke." },
+    });
+    // The same worker finishing is its work landing: the Lead's claim stands.
+    const done = { ...failed, state: "completed" as const, error: null };
+    expect(followStep(r, { chat: chat("lead-chat", blocks), children: [r, done], now: 60_000 })).toMatchObject({
+      kind: "settle",
+      result: { status: "completed", result: "All done: the room ships." },
+    });
+  });
+
   it("a brief queued behind a Mono's work has no bubble until it goes in (so its turn lands after the work)", () => {
     const queued = queueBriefForIdle(chat("lead-chat", [user("Ash: fix the doc")], { busy: true }), { text: "Ship it", attachments: [], requestId: "app-cos-b1" });
     expect(queued.blocks).toHaveLength(1);

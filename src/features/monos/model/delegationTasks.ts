@@ -119,6 +119,23 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
           },
         }
       : {}),
+    // A worker's own word about the task it is doing (task_cannot with no taskId): its newest running row.
+    selfTask: async (session) => {
+      const rows = await deps.backend.listOpen();
+      return rows
+        .filter((row) => row.childSession === session && row.state === "running")
+        .sort((a, b) => b.createdAt - a.createdAt)[0];
+    },
+    // Declared, not judged (workerStall.ts never overwrites it): the row is Ash's until it moves.
+    cannot: async (by, row, reason) => {
+      const change = await tracker().setStall(
+        row,
+        { kind: "blocked", reason, since: (deps.now ?? Date.now)() },
+        by,
+      );
+      const after = change.row ?? row;
+      return after.state === "running" && after.stallKind === "blocked";
+    },
     child: (id) => {
       const session = deps.session(id);
       if (!session) return undefined;

@@ -242,6 +242,9 @@ export class StallWatch {
     const now = this.now();
     const seen = this.presence(row, chat, now);
     const stored = row.stallKind ?? null;
+    // A declared block (task_cannot) is the agent's own word, not a judgment: the watcher never overwrites or clears it.
+    // It stands until the row itself moves (a settle, a Stop, a retried generation), which clears the stall in Rust.
+    if (stored === "blocked") return;
     const moved = (seen.lastChangeAt ?? 0) > (row.stalledAt ?? 0);
     // Between looks only a stalled worker that moved is judged (to clear it at once); the rest wait for the look.
     if (mode === "clear" && !(stored && moved)) return;

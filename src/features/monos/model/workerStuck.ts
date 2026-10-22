@@ -182,6 +182,9 @@ export function stallLine(row: Pick<Delegation, "stallKind" | "stallReason" | "s
       return reason || "Repeating the same step";
     case "idle":
       return `${reason || "Stopped without reporting back"} · ${minutes(now - since)} ago`;
+    // Declared (task_cannot): the Lead or the worker itself says it cannot finish, with its plain reason.
+    case "blocked":
+      return `Cannot finish${reason ? `: ${lowerFirst(reason)}` : ""}`;
     default:
       return reason || "No progress";
   }
@@ -299,7 +302,12 @@ export type WorkCounts = {
  */
 export type StuckOwner = "needs-you" | "retrying" | "with-lead";
 export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner {
-  if (stuck.kind !== "failed") return leadRetried(stuck.row) ? "retrying" : "with-lead";
+  if (stuck.kind !== "failed") {
+    // A declared block (task_cannot) is the agent's own word that it cannot finish: it is Ash's at once, unless its
+    // Lead has already taken it on (a redo or a split). A judged stall still waits on its Lead.
+    if (stuck.row.stallKind !== "blocked") return leadRetried(stuck.row) ? "retrying" : "with-lead";
+    return leadRetried(stuck.row) ? "retrying" : "needs-you";
+  }
   const why = ashMustAct(stuck.row);
   if (why && why !== "out-of-retries") return "needs-you";
   if (leadRetried(stuck.row)) return "retrying";
@@ -327,6 +335,22 @@ export function leadTurnOver(row: Pick<Delegation, "state" | "delivery" | "owner
 function leadRetried(row: Pick<Delegation, "log">): boolean {
   const action = leadAction(row);
   return action?.kind === "retried" || action?.kind === "split";
+}
+
+/**
+ * A worker whose work did not finish and that nothing is retrying, as its line: "Failed: the build broke", or the
+ * reason it declared ("Cannot finish: the deploy key is missing", task_cannot). A done claim over it is not true, so
+ * the Lead's chat says so (leadFlow.ts) and a followed brief never settles completed over it (followedBriefs.ts). A
+ * failure counts while it is recent (the same window as a stuck worker on Today); a block stands while the row runs.
+ */
+export function unfinishedWorker(row: Delegation, now: number): string | undefined {
+  if (leadRetried(row)) return undefined;
+  if (row.state === "failed") {
+    const since = row.settledAt ?? row.updatedAt;
+    return now - since <= FAILED_RECENT_MS ? failureLine(row) : undefined;
+  }
+  if (row.state === "running" && row.stallKind === "blocked") return stallLine(row, now);
+  return undefined;
 }
 
 /**
