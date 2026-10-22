@@ -34,7 +34,7 @@ import {
 import { SessionCard } from "../../../app/shell/Sidebar";
 import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
-import { forgetWorkSession, noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
+import { forgetWorkSession, noteGoneWorkSessions, noteWorkSessions, seenWorkSession, shownWorkSessionIds, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
 import { useDelegationRows } from "../model/delegationStore";
 import { waitingOnLeadLabel } from "../model/workerStuck";
 
@@ -209,6 +209,7 @@ export function MonoSessionList({
   const unavailableKey = [...unavailableIds].join(",");
   useEffect(() => {
     if (!workOnly || !unavailableKey) return;
+    noteGoneWorkSessions(unavailableKey.split(","));
     for (const id of unavailableKey.split(",")) forgetWorkSession(id);
   }, [workOnly, unavailableKey]);
   const busyIds = new Set<string>();
@@ -270,7 +271,9 @@ export function MonoSessionList({
     return latest?.state === "cancelled" ? "stopped" : latest?.state === "failed" ? "failed" : undefined;
   };
   const workView = (id: string) => (workOnly && !narrowing ? workSessionView(id, active(id), endedOf(id)) : undefined);
-  const matching = launches.filter((launch) => matched.has(launch.sessionId) && workView(launch.sessionId) !== "hidden");
+  // Not searching or filtering, the rows are the same function the tab's badge counts (shownWorkSessionIds).
+  const plainRows = workOnly && !narrowing ? new Set(shownWorkSessionIds(launches.map((l) => l.sessionId), active, (id) => unavailableIds.has(id))) : undefined;
+  const matching = launches.filter((launch) => (plainRows ? plainRows.has(launch.sessionId) : matched.has(launch.sessionId) && workView(launch.sessionId) !== "hidden"));
   // A page of cards mounts at a time, as in the sidebar; the sentinel below
   // asks for the next one as it nears the panel's bottom. Searching or
   // filtering starts over from the first page.

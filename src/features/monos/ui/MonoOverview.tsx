@@ -16,7 +16,7 @@ import type { SessionSummary } from "../../sessions/data/sessionStore";
 import type { MonoSpawnedSession, Session } from "../../sessions/model/session";
 import type { MonoLook, MonoState } from "../model/mono";
 import { HABITS_MAX } from "../model/monoHabits";
-import { useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
+import { shownWorkSessionIds, useWorkSessionsVersion } from "../model/monoWorkSessions";
 import { hasPendingApproval } from "../../sessions/model/session";
 import { HabitPage } from "./HabitPage";
 import { NewHabitPage } from "./NewHabitPage";
@@ -227,11 +227,14 @@ export function MonoOverview({
   // A8: the Sessions tab counts what its list shows (running, or finished and not yet clicked), not every session the
   // Mono ever started (live 22 Oct: the badge said 2 with one row left).
   useWorkSessionsVersion();
-  const shownSessions = launches.filter((launch) => {
-    const live = sessions.find((entry) => entry.id === launch.sessionId);
-    const active = !!live && (live.busy || hasPendingApproval(live.blocks) || !!live.pendingQuestion);
-    return workSessionView(launch.sessionId, active) !== "hidden";
-  }).length;
+  // r49: the same function as the list's rows (shownWorkSessionIds), so the badge never counts a row the list hides.
+  const shownSessions = shownWorkSessionIds(
+    launches.map((launch) => launch.sessionId),
+    (id) => {
+      const live = sessions.find((entry) => entry.id === id);
+      return !!live && (live.busy || hasPendingApproval(live.blocks) || !!live.pendingQuestion);
+    },
+  ).length;
   const counts: Record<(typeof TABS)[number]["id"], number | undefined> = {
     sessions: shownSessions,
     habits: habits?.length,

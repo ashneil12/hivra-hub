@@ -103,3 +103,31 @@ export function resetWorkSessions(): void {
   }
   version++;
 }
+
+// r49 (Ash: "Sessions badge shows 1 when the list is empty"): the tab's badge and the list's rows come from one function
+// over the same facts. A launch the list found deleted (its project's sessions are loaded and it is not among them) is
+// remembered here, so the badge leaves it out too, even before its mark is forgotten.
+const gone = new Set<string>();
+
+/** The Sessions list saw these launches deleted. */
+export function noteGoneWorkSessions(ids: Iterable<string>): void {
+  let changed = false;
+  for (const id of ids) if (!gone.has(id)) (gone.add(id), (changed = true));
+  if (changed) {
+    version++;
+    listeners.forEach((listener) => listener());
+  }
+}
+
+/**
+ * The rows the Sessions list shows when Ash isn't searching or filtering, in order: not deleted, and running or
+ * finished-until-clicked. The tab's badge is this list's length.
+ */
+export function shownWorkSessionIds(ids: readonly string[], isActive: (id: string) => boolean, isGone: (id: string) => boolean = (id) => gone.has(id)): string[] {
+  return ids.filter((id) => !isGone(id) && workSessionView(id, isActive(id)) !== "hidden");
+}
+
+/** For tests. */
+export function resetGoneWorkSessions(): void {
+  gone.clear();
+}
