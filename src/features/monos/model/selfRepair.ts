@@ -40,7 +40,7 @@ export type RepairHost = {
 
 type Repair = { episode: string; tries: number; nextAt: number; gaveUp: boolean; okSince?: number; restarting?: boolean; verdict?: Stall };
 
-const NUDGE = "Check-in from the app: there's been no output for a while. If a command is stuck, stop it and carry on, and say where you are.";
+const NUDGE = "Check-in from the app: there's been no output for a while. If a command hangs, stop it and carry on, and say where you are.";
 const titleOf = (row: Delegation) => (row.title || "Delegated work").trim();
 const short = (text: string, max = 100) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 const lowerFirst = (text: string) => (text[0] && text[1] && text[1] === text[1].toLowerCase() ? text[0].toLowerCase() + text.slice(1) : text);

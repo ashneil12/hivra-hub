@@ -218,7 +218,7 @@ fn tools() -> Value {
                     "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
                     "lead": { "type": "string", "description": "Leadership team only: brief a project's Lead instead of starting a worker (its id, or the project's id or name). The brief goes into the Lead's own long-running chat; the Lead delegates to its workers and its final report comes back to you (and to the project's Leadership room) as a new turn." },
                     "whenBusy": { "type": "string", "enum": ["queue", "steer"], "default": "queue", "description": "With lead: if the Lead is mid-turn, queue the brief behind its current work (default) or steer it into that work." },
-                    "redoes": { "type": "string", "description": "The taskId of one of your stuck tasks this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. The stuck task keeps going until you stop it with task_cancel." }
+                    "redoes": { "type": "string", "description": "The taskId of one of your tasks that failed or stopped moving that this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. The old task keeps going until you stop it with task_cancel." }
                 },
                 "required": ["brief"],
                 "additionalProperties": false
