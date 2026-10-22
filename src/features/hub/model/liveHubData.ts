@@ -4,6 +4,7 @@
 import { sentNote } from "./statusChip";
 import { projectItems } from "./mockData";
 import { stripProjects } from "./hubProjects";
+import { withRoleLeadNames } from "./leadRoleName";
 import type { HubStore } from "./hubStore";
 import type { HubAnswer, HubDataSource, HubProject, Need, SinceSummary, StuckItem } from "./types";
 
@@ -19,6 +20,13 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     return memo.out;
   };
   const onStrip = (id: string) => projects().some((p) => p.id === id);
+  // Jobs grouped under their Lead, the Lead named by its role ("Hub lead"), never its id (leadRoleName.ts).
+  let jobsMemo: { from: unknown; out: ReturnType<typeof withRoleLeadNames> } | undefined;
+  const jobGroups = () => {
+    const live = snap().jobs;
+    if (jobsMemo?.from !== live) jobsMemo = { from: live, out: withRoleLeadNames(live, (id) => snap().projects.find((p) => p.id === id)) };
+    return jobsMemo.out;
+  };
   return {
     listProjects: projects,
     listProjectItems: (projectId) => projectItems(projectId, !!projects().find((p) => p.id === projectId)?.folder),
@@ -39,8 +47,8 @@ export function createLiveHubData(store: HubStore): HubDataSource {
     // Stuck work (amber): jobs that failed and cannot fix themselves. No button: they went to the Lead by themselves.
     // A job the Lead gave up on is not here: it is one Needs row (red, See options).
     listStuck: (projectId?: string): StuckItem[] =>
-      snap()
-        .jobs.filter((g) => !projectId || g.projectId === projectId)
+      jobGroups()
+        .filter((g) => !projectId || g.projectId === projectId)
         .flatMap((g) => g.jobs.map((j) => ({ j, lead: g.leadName })))
         .filter(({ j }) => j.state === "stuck" || j.state === "sent_to_lead")
         // Its real state: "stuck" is still retrying on its own, "sent_to_lead" is with its Lead (statusChip.ts).
@@ -67,7 +75,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
       const rows = snap().needs[projectId];
       return rows ? [...rows.shown, ...rows.later].filter((n) => n.state !== "done").length : 0;
     },
-    listJobs: (projectId: string) => snap().jobs.filter((g) => g.projectId === projectId),
+    listJobs: (projectId: string) => jobGroups().filter((g) => g.projectId === projectId),
     jobOptions: (jobId: string) => store.jobOptions(jobId),
     jobAct: (jobId: string, option: string, hint?: string) => store.jobAct(jobId, option, hint),
     markJobsSeen: (jobIds: string[]) => store.markJobsSeen(jobIds),
