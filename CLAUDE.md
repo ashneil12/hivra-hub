@@ -183,6 +183,8 @@ npm run hub:dev -- --hub live     # the same, reading the real Ash OS through th
 npm run hub:dev -- --seed         # first copy a cleaned backup of the daily chats into the slot (opt-in)
 npm run hub:dev -- --print        # which slot, port and config it would use; changes nothing
 npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
+npm run hub:clean                 # what a finished run left behind (stale slots, old configs, merged worktrees); removes nothing
+npm run hub:clean -- --yes        # reap exactly that: no running copy, no uncommitted changes, never the daily app
 ```
 
 **Dev slots (`scripts/hub-dev.mjs`).** Every worktree runs its own dev copy, side by side with the others and with the

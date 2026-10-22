@@ -32,6 +32,7 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
 - `build.rs` embeds `MONOCODE-STAMP:{sha,branch,dirty,builtAt}`, readable from any bundle without launching it.
 - The stamp shows in the Settings footer and the dev window title. `monocode version --json` and an `app.version` command return it.
 - `hub:doctor` runs the identity guard, then lists every bundle, data folder, running copy, slot and worktree with commit, kind and size.
+- `hub:clean` (`hub:doctor --clean`) plans what a finished run left behind: a dev slot whose worktree is gone (or that no registry knows) with no copy running, a `target/hub-dev` config from an old slot name, a worktree whose main checkout already has its commit with no uncommitted changes and no dev copy running, and git's records of worktrees whose folders are gone. It changes nothing; `--yes` reaps exactly that list — each data folder is re-checked against the slot's identifier, the daily app/upstream and the main checkout are never touched, and a dirty worktree is named and kept. The branch survives a worktree removal.
 
 **Ship.** `npm run hub:ship`, the Ship button and a Lead all use the same code.
 1. **Checks before anything changes:**
