@@ -999,7 +999,14 @@ pub fn harness_spawn(
     } else {
         args
     };
-    let mut cmd = Command::new(&command);
+    // macOS: start the CLI as its own responsible process, so a privacy prompt names the CLI and not the Hub
+    // (src/disclaim.rs). Same pid, pipes, cwd and process group; a plain spawn when it can't or is switched off.
+    let disclaim_launcher = crate::disclaim::launcher_for(
+        std::ffi::OsStr::new(&command),
+        app.path().app_data_dir().ok().as_deref(),
+    );
+    let mut cmd =
+        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
             cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
