@@ -5528,7 +5528,8 @@ export const SessionCard = memo(function SessionCard({
               : isSelected
                 ? `bg-accent/15 text-content ${draft ? "border-content/30 border-dashed" : "border-transparent"}`
                 : needsApproval
-                  ? "bg-content/20 text-content border-content/30 border-dashed"
+                  ? // A solid edge (Critiquito, 22 Oct): dashed is for an unsent draft only.
+                    "bg-content/20 text-content border-content/30"
                   : isActive
                     ? `bg-selection text-content ${draft ? "border-content/30 border-dashed" : "border-transparent"}`
                     : draft

@@ -1364,7 +1364,9 @@ describe("sidebar orchestration card", () => {
       ).toBe("true");
       props.approvalSessionIds = new Set([lead.id]);
       act(() => render());
-      expect(card().className).toContain("border-dashed");
+      // Needing input shows on a solid edge (Critiquito, 22 Oct), not dashed.
+      expect(card().className).toContain("border-content/30");
+      expect(card().className).not.toContain("border-dashed");
       expect(card().textContent).toContain("Needs input");
     },
   );

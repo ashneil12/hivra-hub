@@ -224,6 +224,11 @@ it("a worker that asked a question reads Waiting on its Lead, not Need approval;
   ]);
   expect(card()).toContain("Need approval");
   expect(card()).not.toContain("Waiting on");
+  // Its card has a solid edge, never dashed (Critiquito, 22 Oct): dashed is an unsent draft's look only.
+  const edge = container.querySelector("[data-session-card]")!;
+  const classes = [edge, ...edge.querySelectorAll("*")].map((el) => el.getAttribute("class") ?? "").join(" ");
+  expect(classes).toContain("border-content/30");
+  expect(classes).not.toContain("border-dashed");
 });
 
 it("holds a loading card's place invisibly, and shows a known one at once when remounted", async () => {
