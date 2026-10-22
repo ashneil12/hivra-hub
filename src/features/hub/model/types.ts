@@ -179,8 +179,12 @@ export type HubMono = {
   projectIds: string[];
 };
 
-/** One section of the Today board, as Ash OS keeps it (`ash-hub-layout`): the shipped board unless a change moved it. */
-export type TodaySectionKind = "since" | "setup" | "needs" | "being-built" | "page";
+/**
+ * One section of the Today board, as Ash OS keeps it (`ash-hub-layout`): the shipped board unless a change moved it.
+ * `latest-build` and `latest-page` are a project's own cards, drawn from that project's builds and kept pages; Ash
+ * OS's board never sends them.
+ */
+export type TodaySectionKind = "since" | "setup" | "needs" | "being-built" | "page" | "latest-build" | "latest-page";
 export type TodaySection = { id: string; kind: TodaySectionKind; title: string; pageId?: string };
 /** The board Ash OS sends with nothing set (and the app draws while it has no answer). */
 export const TODAY_DEFAULT: readonly TodaySection[] = [

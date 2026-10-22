@@ -2,7 +2,8 @@
 // project's Today card set and its sidebar sections. Each project has one;
 // a new project picks one. Mock store (localStorage); export/restore is file-based.
 import { useSyncExternalStore } from "react";
-import type { ProjectIconShape, ProjectItem } from "./types";
+import { currentTodayCards } from "./todayCards";
+import { TODAY_DEFAULT, type ProjectIconShape, type ProjectItem, type TodaySection } from "./types";
 export { currentTodayCards, LEGACY_TODAY_CARDS, NEEDS_YOU_CARD } from "./todayCards";
 
 export type TemplateId = "game-studio" | "product-saas" | "org-ops";
@@ -32,9 +33,9 @@ export const TEMPLATES: DashboardTemplate[] = [
   },
   {
     id: "product-saas", label: "Product / SaaS", icon: "sparkles",
-    blurb: "Users, sign-ups and emails next to the work on the product.",
-    todayCards: ["Since you were last here", "Needs you", "Sign-ups this week"],
-    sections: [{ id: "users", kind: "section", title: "Users & emails", sectionType: "users-emails" }],
+    blurb: "Dashboards and reports next to the work on the product.",
+    todayCards: ["Since you were last here", "Needs you", "Latest dashboard"],
+    sections: [{ id: "dashboards", kind: "section", title: "Dashboards", sectionType: "project-pages" }],
     leadership: ["Chief of Staff", "Projects Manager", "frank", "Alfred"],
     coding: ["Builder", "Tester"],
   },
@@ -50,9 +51,12 @@ export const TEMPLATES: DashboardTemplate[] = [
 
 const DEFAULTS: Record<string, TemplateId> = {
   "exo-game": "game-studio",
+  // The game project as Ash OS names it.
+  "vg-game": "game-studio",
   hivra: "product-saas",
   nibbii: "product-saas",
-  "harness": "org-ops",
+  harness: "org-ops",
+  hub: "org-ops",
 };
 
 const KEY = "monocode:hub-templates";
@@ -96,12 +100,37 @@ export function templateOf(projectId: string): DashboardTemplate {
   return TEMPLATES.find((t) => t.id === id) ?? TEMPLATES[2];
 }
 
-/** True when the project's dashboard was changed from its template (e.g. an applied proposal). */
-export function isCustomised(projectId: string): boolean {
-  return saved[projectId]?.customised ?? CUSTOMISED_EXAMPLE.has(projectId);
+/**
+ * The Today section each of a template's cards draws. Every card here reads live data: the since paragraph and Needs
+ * you are the app's own, the latest build comes from Builds & playtests, the latest dashboard from the pages kept for
+ * the project. A card Today can't draw draws nothing.
+ */
+const CARD_SECTIONS: Readonly<Record<string, TodaySection>> = {
+  "Since you were last here": { id: "since", kind: "since", title: "Since you were last here" },
+  "Needs you": { id: "needs", kind: "needs", title: "Needs you" },
+  "Latest build to try": { id: "latest-build", kind: "latest-build", title: "Latest build to try" },
+  "Latest dashboard": { id: "latest-dashboard", kind: "latest-page", title: "Latest dashboard" },
+};
+
+/** A template's card names as Today sections, in the template's order, each card once (old card names mapped). */
+export function sectionsForCards(cards: readonly string[]): TodaySection[] {
+  const out = currentTodayCards(cards).flatMap((card) => {
+    const section = CARD_SECTIONS[card];
+    return section ? [{ ...section }] : [];
+  });
+  // A dashboard naming only cards we don't know still opens on Today's usual sections rather than blank.
+  return out.length ? out : TODAY_DEFAULT.filter((s) => s.kind !== "being-built").map((s) => ({ ...s }));
 }
-/** Example: Hivra's dashboard was changed by an applied proposal ('Users & emails'). */
-const CUSTOMISED_EXAMPLE = new Set(["hivra"]);
+
+/** A project's live Today: the cards its template names, in order. No project gets Ash OS's own board. */
+export function projectTodaySections(projectId: string): TodaySection[] {
+  return sectionsForCards(templateOf(projectId).todayCards);
+}
+
+/** True when the project's dashboard was changed from its template (an applied proposal or Ash's own choice). */
+export function isCustomised(projectId: string): boolean {
+  return saved[projectId]?.customised ?? false;
+}
 
 /** True when this Mac has its own template choice for the project (an import then leaves it alone). */
 export function hasSavedTemplate(projectId: string): boolean {
