@@ -66,7 +66,7 @@ describe("deleting a room", () => {
     const item = { id: "chat:hivra:chat-a", kind: "group-chat" as const, title: "Example: hivra:chat-a" };
     let done: Promise<boolean> | undefined;
     await act(async () => void (done = deleteRoom("hivra", item, { project: "hivra", item: item.id } as never)));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Delete Example: hivra:chat-a?");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Delete “Example: hivra:chat-a”?");
     await act(async () => button("Cancel")!.click());
     expect(await done).toBe(false);
     expect(getChat("hivra:chat-a")).toBeDefined();
