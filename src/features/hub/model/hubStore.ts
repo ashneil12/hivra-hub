@@ -118,8 +118,11 @@ const DEV_TEXT =
 export function plainTitle(text: string): string {
   const clean = plainWorkText(text).replace(/(?:…|\.\.\.)\s*$/, "").trim();
   const parts = clean.split(/:\s+/);
-  const cut = parts.findIndex((part) => DEV_TEXT.test(part));
-  const kept = (cut === -1 ? parts : parts.slice(0, cut)).map((part) =>
+  // After "X did not boot" (or failed / crashed) comes the error itself, whatever it looks like.
+  const failed = parts.findIndex((part) => /\b(?:did not boot|failed|crashed)$/i.test(part));
+  const dev = parts.findIndex((part) => DEV_TEXT.test(part));
+  const cut = Math.min(...[failed === -1 ? parts.length : failed + 1, dev === -1 ? parts.length : dev]);
+  const kept = parts.slice(0, cut).map((part) =>
     part
       .replace(/^light surface\s+(\S+)\s+did not boot$/i, "the $1 screen won't open")
       .replace(/^(?:surface|page)\s+(\S+)\s+did not boot$/i, "the $1 screen won't open"),

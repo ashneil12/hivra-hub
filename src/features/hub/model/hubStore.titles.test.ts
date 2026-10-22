@@ -7,6 +7,7 @@ const LIVE = [
   "Fixing a studio health problem: light surface ui-lab did not boot: window.__uiLab.ready…",
   "Fixing a studio health problem: light surface stage did not boot: HTTP Error 500…",
   "Fixing a studio health problem: light surface combo-lab did not boot: HTTP Error 500…",
+  "Fixing a studio health problem: light surface combo-lab did not boot: the class/build…",
 ];
 
 describe("plainTitle", () => {
@@ -14,6 +15,7 @@ describe("plainTitle", () => {
     expect(LIVE.map(plainTitle)).toEqual([
       "Fixing a studio health problem: the ui-lab screen won't open",
       "Fixing a studio health problem: the stage screen won't open",
+      "Fixing a studio health problem: the combo-lab screen won't open",
       "Fixing a studio health problem: the combo-lab screen won't open",
     ]);
   });
@@ -24,6 +26,7 @@ describe("plainTitle", () => {
     expect(plainTitle("Tidy: /Users/ash/Projects/x/notes.md")).toBe("Tidy");
     expect(plainTitle("Wire the dodge input")).toBe("Wire the dodge input");
     expect(plainTitle("Level 3: boss fight pacing")).toBe("Level 3: boss fight pacing");
+    expect(plainTitle("Export failed: the web demo stalled at 80%")).toBe("Export failed");
     expect(plainTitle("window.__uiLab.ready()")).toBe("A fix in progress");
   });
 
