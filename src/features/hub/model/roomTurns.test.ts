@@ -166,7 +166,9 @@ describe("the prompts", () => {
     expect(chime).toContain("Chief of Staff hosts the room and answers Ash first.");
     expect(chime).toContain("Ash wrote to the whole room and Chief of Staff has answered. This is your one turn: Ash wrote to everyone");
     expect(chime).toContain("Ash wrote to everyone, so he expects to hear from you too.");
-    expect(chime).toContain("Reply with exactly NO_REPLY only if his message plainly isn't for you.");
+    expect(chime).toContain("Reply with exactly NO_REPLY only if his message plainly isn't for you or you'd only be repeating.");
+    // "ye go" after the host confirmed: one confirmation, the others only if they found something (run f451 3b).
+    expect(chime).toContain("If he's only giving a go-ahead that Chief of Staff has already confirmed, speak only if you found something new from your lane.");
     expect(chime).toContain("reply with exactly NO_REPLY");
     // Ash's message to the room is for every seat: the rules don't tell a seat that isn't hosting to stay silent
     // (Mac, 21 Oct: "hey" in Leadership got CoS alone, the other three answered NO_REPLY by that rule).
