@@ -5,12 +5,15 @@ description: Find a ready-made UI component (calendar, chart, table, date picker
 
 # Find a component, then make it ours
 
-Draft skill. Agents reuse good open-source components instead of rebuilding them, and every reused component
-follows the active theme so a new scheme restyles it with no extra edits.
+Agents reuse good open-source components instead of rebuilding them, and every reused component follows the
+active theme so a new scheme restyles it with no extra edits. This is how a Mono builds a non-trivial block for a
+Page, or a change to the hub's own screens, without inventing a calendar or a chart from scratch.
 
 ## 1. Look before you build
 - Search, in this order:
-  1. The hub's own blocks: `src/features/pages/ui/PagesView.tsx` (status, list, chart, note, calendar). Reuse these when they fit.
+  1. The hub's own blocks, when the work is inside MonoCode Hub (its repo: `src/features/pages/ui/PagesView.tsx`
+     has status, list, chart, note and calendar; `hub.block(kind, data)` gives a Page the same three). Reuse these
+     when they fit.
   2. The starting repos below.
   3. GitHub search: `<component> react tailwind` with `stars:>500 pushed:>` within the last 12 months.
 - Skip a repo that is archived, has no licence, or has not been touched in over a year.

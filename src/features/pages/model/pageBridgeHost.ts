@@ -5,12 +5,12 @@
 //                                        twice), until {type:"hub:unwatch", id}, the page closes, or Ash's Undo takes the
 //                                        permission back ({type:"hub:watch-ended", watch, error})
 //   {type:"hub:size", height}            how tall its content is; the frame follows it (clamped)
-// The rules: a call runs only when the page asked for it and Ash approved it (bridge.ts); a preview may read the live data
-// it asked for (so Ash sees what he keeps) but nothing else; a tap (pageActions.ts) runs only on a kept page and only while
+// The rules: a call runs only when the page asked for it and Ash approved it (bridge.ts); a preview may read the data it
+// asked for (so Ash sees what he keeps) but nothing else; a tap (pageActions.ts) runs only on a kept page and only while
 // Ash's tap inside the page is fresh, so a page can never act by itself.
-import { capabilityFor, refusal, WALL_REFUSAL, type BridgeCall } from "./bridge";
+import { refusal, WALL_REFUSAL, type BridgeCall, type BridgeHandlers } from "./bridge";
 import { runPageAction, type ActionContext } from "./pageActions";
-import { isLiveRead, isPageAction, isWall, LIVE_READS, type Capability, type LiveRead } from "./pageSpec";
+import { isLiveRead, isPageAction, isRead, isWall, LIVE_READS, type Capability, type LiveRead } from "./pageSpec";
 
 export type PageSource = { read(args: Record<string, unknown>): unknown; subscribe(onChange: () => void): () => void };
 export type PageSources = Record<LiveRead, PageSource>;
@@ -37,6 +37,8 @@ export type PageBridgeOptions = {
   post(message: unknown): void;
   sources: PageSources;
   act?(call: string, args: Record<string, unknown>, ctx: ActionContext): Promise<unknown>;
+  /** What answers a write or a hub read (pageCapabilities.ts). Without it an approved call says it isn't connected. */
+  handlers?: BridgeHandlers;
   /** The longest a change waits before it reaches the page (a burst of changes is one push). */
   throttleMs?: number;
   onSize?(height: number): void;
@@ -50,15 +52,14 @@ export class PageBridgeHost {
   private closed = false;
   constructor(private readonly o: PageBridgeOptions) {}
 
-  /** What this page may use now: what Ash approved, or (a preview) the live data it asked to read. */
+  /** What this page may use now: what Ash approved, or (a preview) the data it asked to read. */
   private allowed(): readonly Capability[] {
-    return this.o.live ? this.o.approved() : this.o.asks.filter((a) => isLiveRead(a));
+    return this.o.live ? this.o.approved() : this.o.asks.filter((a) => isRead(a));
   }
 
   private why(call: Pick<BridgeCall, "call" | "args">): string | undefined {
-    const cap = capabilityFor(call);
-    if (isWall(cap) || isWall(call.call)) return WALL_REFUSAL;
-    if (!this.o.live && this.o.asks.includes(cap as Capability) && !isLiveRead(cap)) return isPageAction(cap) ? PREVIEW_TAP : PREVIEW_OTHER;
+    if (isWall(call.call)) return WALL_REFUSAL;
+    if (!this.o.live && this.o.asks.includes(call.call as Capability) && !isRead(call.call)) return isPageAction(call.call) ? PREVIEW_TAP : PREVIEW_OTHER;
     return refusal(call, this.allowed());
   }
 
@@ -90,6 +91,8 @@ export class PageBridgeHost {
         const ctx = { pageId: this.o.pageId, pageTitle: this.o.title };
         return this.reply(id, { ok: true, result: await (this.o.act ?? runPageAction)(call, args, ctx) });
       }
+      const run = this.o.handlers?.[call];
+      if (run) return this.reply(id, { ok: true, result: await run(args) });
       this.reply(id, { ok: false, error: "Not connected yet: the hub can't do this for pages yet." });
     } catch (e) {
       this.reply(id, { ok: false, error: e instanceof Error && e.message ? e.message : "That didn't work." });

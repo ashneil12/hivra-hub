@@ -1,4 +1,4 @@
-import { isWall, keyName, type Capability } from "./pageSpec";
+import { isWall, type Capability } from "./pageSpec";
 
 /**
  * The only door a bespoke page has to the hub: postMessage to the host, which answers only calls the page declared
@@ -10,22 +10,14 @@ export type BridgeReply = { id: string; ok: true; result: unknown } | { id: stri
 /** What runs an approved call. The backend side lives behind the hub transport; unwired ones say so. */
 export type BridgeHandlers = Partial<Record<string, (args: Record<string, unknown>) => Promise<unknown>>>;
 
-/** The permission a call needs: "keys.read" with {name} needs keys.read:<name>; anything else needs its own name. */
-export function capabilityFor(call: Pick<BridgeCall, "call" | "args">): string {
-  if (call.call === "keys.read") return `keys.read:${String(call.args?.name ?? "")}`;
-  return call.call;
-}
-
 export const WALL_REFUSAL = "Pages can't do that: changing Monos and reaching the app directly are never allowed.";
+export const KEYS_REFUSAL = "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.";
 
 /** Why this call may not run with what is approved, in plain words; undefined when it may. */
-export function refusal(call: Pick<BridgeCall, "call" | "args">, approved: readonly Capability[]): string | undefined {
-  const need = capabilityFor(call);
-  if (isWall(need) || isWall(call.call)) return WALL_REFUSAL;
-  if (!approved.includes(need as Capability)) {
-    const key = keyName(need);
-    return key ? `This page didn't ask to read your ${key} key, so it can't.` : `This page didn't ask for “${call.call}”, so it can't use it.`;
-  }
+export function refusal(call: Pick<BridgeCall, "call">, approved: readonly Capability[]): string | undefined {
+  if (call.call === "keys.read" || call.call.startsWith("keys.")) return KEYS_REFUSAL;
+  if (isWall(call.call)) return WALL_REFUSAL;
+  if (!approved.includes(call.call as Capability)) return `This page didn't ask for “${call.call}”, so it can't use it.`;
   return undefined;
 }
 

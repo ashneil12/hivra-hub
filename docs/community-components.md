@@ -2,7 +2,9 @@
 
 Blocks in Pages (and screens a Mono builds) can reuse open-source components instead of being drawn from scratch.
 Every one of them is restyled to the hub's theme tokens, so a scheme or a theme file restyles it with the rest of the
-app. The how-to for agents is `docs/skills/find-components/SKILL.md`; this page lists what is in use.
+app. The how-to for agents is the skill `find-components` (`.agents/skills/find-components/SKILL.md` in this repo, and
+**Add** on Settings → Skills → Ready-made puts it in `~/.agents/skills` so every project's Monos have it); this page
+lists what is in use.
 
 ## In use
 
@@ -24,6 +26,6 @@ app. The how-to for agents is `docs/skills/find-components/SKILL.md`; this page 
 
 ## Adding another
 
-1. Check the hub's own blocks first, then follow `docs/skills/find-components/SKILL.md`.
+1. Check the hub's own blocks first, then follow the `find-components` skill.
 2. MIT or Apache-2.0 only, maintained in the last year, zero or one extra dependency.
 3. Restyle to tokens, add a test that it draws with the theme classes, and add a row to the table above.

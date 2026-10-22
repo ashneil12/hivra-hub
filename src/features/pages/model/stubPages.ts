@@ -46,7 +46,7 @@ h2{margin:0;font-size:17px;font-weight:500}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .status-pill[data-state=ok]{color:var(--color-status-ok)}`;
 
-/** Example bespoke pages for development: a themed one that reads a key, a colourful one (warning), a faint one (blocked). */
+/** Example bespoke pages for development: a themed one that reads its project, a colourful one (warning), a faint one (blocked). */
 export function stubBespoke(request: string): BespokeSpec | undefined {
   if (/faint/i.test(request))
     return { kind: "bespoke", title: "Example: release notes", permissions: ["project.read"],
@@ -57,7 +57,7 @@ export function stubBespoke(request: string): BespokeSpec | undefined {
       css: `${BESPOKE_BASE}\n.hero{background:linear-gradient(120deg,#ff7a45,#c84bff);color:#ffffff;border-radius:12px;padding:20px;font-size:28px;font-weight:600}\n.tag{background:var(--color-status-ok);color:var(--color-background-base);padding:2px 8px;border-radius:6px;font-size:12px}`,
       html: `<div class="wrap"><div class="hero">Example: 12 days to launch</div><div><span class="tag">Example: on sale soon</span></div></div>` };
   if (/bespoke|custom|own page/i.test(request))
-    return { kind: "bespoke", title: "Example: Hivra growth room", permissions: ["tasks.read", "mono.run", "keys.read:Anthropic"],
+    return { kind: "bespoke", title: "Example: Hivra growth room", permissions: ["tasks.read", "project.read", "mono.run"],
       css: BESPOKE_BASE,
       html: `<div class="wrap"><h2>Example: Hivra growth room</h2><div class="sub">A bespoke page: its own layout, using the hub's blocks and theme.</div><div class="grid" id="g"></div></div>`,
       js: `const g=document.getElementById("g");

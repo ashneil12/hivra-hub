@@ -43,7 +43,7 @@ The answer is one of two kinds. The JSON schema is `PAGE_SPEC_SCHEMA` in `pageSp
 ```
 
 ```json
-{ "kind": "bespoke", "title": "Hivra growth room", "html": "<div>…</div>", "css": "…", "js": "…", "permissions": ["tasks.read", "keys.read:Anthropic"] }
+{ "kind": "bespoke", "title": "Hivra growth room", "html": "<div>…</div>", "css": "…", "js": "…", "permissions": ["tasks.read", "project.read"] }
 ```
 
 **Block kinds and their fields** (state is `ok`, `warn` or `bad`):
@@ -83,7 +83,6 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 | `automation.run` | Run an automation |
 | `settings.read` | Read your settings |
 | `settings.write` | Change your settings |
-| `keys.read:<Name>` | Names one key, e.g. `keys.read:Anthropic` |
 | `agents.read` | See your agents, what each is doing and the work they handed out |
 | `jobs.read` | See what's being built |
 | `needs.read` | See what's waiting on you |
@@ -94,18 +93,19 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 | `agents.stop` | Stop an agent's work when you tap |
 | `chats.open` | Open a chat when you tap |
 
-- **Key asks** sit in their own glass card above the list: **Reads your keys**, followed by each key's name. When a key is asked for, **Keep and allow** stays disabled for about one second after the card appears, so a fast click can't approve keys by accident.
+- **There is no key permission** (Ash, 22 Oct). A page can't reach the network (`connect-src 'none'`), so a key would do nothing inside one, and a key must never be in a page at all. A spec asking for `keys.read` (or any `keys.*`) is turned down, and a bridge call for one is refused however it is framed.
 - **Keep and allow** approves every ask. The approved list is stored with the page.
-- **Bridge rules:** it answers only approved asks. Anything else is refused in plain words, e.g. "This page didn't ask to read your OpenAI key, so it can't."
+- **Bridge rules:** it answers only approved asks. Anything else is refused in plain words, e.g. "This page didn't ask for “rooms.read”, so it can't use it."
 - **Undo** (Settings → Changes → Bot changes) removes the page and revokes its permissions. Redo puts both back.
 - **Two absolute walls** that can never be asked for:
   1. Adding, seating, renaming or deleting Monos.
   2. Anything that leaves the sandbox: direct IPC or Tauri. Everything goes through the bridge.
 
   A spec asking for either is turned down.
-- **Limits line** on the empty, preview and kept screens: "This can't change the app's core screens, the sidebar, settings, keys or Monos." A page reaches settings or keys only through asks Ash approved.
-- **Wired:** the agent capabilities below ("Connected pages"). The older ones (`tasks.*`, `project.*`, `mono.run`,
-  `automation.run`, `settings.*`, `keys.read:*`) still answer "Not connected yet".
+- **Limits line** on the empty, preview and kept screens: "This can't change the app's core screens, the sidebar, settings, keys or Monos." A page reaches settings only through an ask Ash approved, and never reaches a key.
+- **Wired:** the agent capabilities below ("Connected pages"), the live reads, and the hub reads (`tasks.read`,
+  `project.read`, `settings.read`), answered by `pageCapabilities.ts`. The writes (`tasks.write`, `project.write`,
+  `mono.run`, `automation.run`, `settings.write`) have no handler yet and still answer "Not connected yet".
 
 ## 4b. Connected pages (live data and taps)
 
@@ -128,6 +128,14 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
   - `jobs.read` → `{jobs: [{id, projectId, projectName, title, agentId, agentName, state, reason?, startedAt?, lastActiveAt?, finishedAt?}]}`.
   - `needs.read` → `{needs: [{id, projectId, projectName, title, why, action, isQuestion, since?}], waiting: [{chatId, chatName, projectId, projectName, agentId, question, pick?, redLine, askedAt}]}`.
   - `rooms.read {projectId?, limit?}` → `{rooms: [{id, projectId, name, members, typing?, conversation: {id, title, when, messages: [{id, from, text}]}}]}`.
+- **Hub reads** (`hub.call` once, answered on ask by `pageCapabilities.ts`; not watched, since the hub has no change feed
+  for them yet):
+  - `tasks.read {projectId?}` → `{tasks: [{id, projectId, projectName, title, state: waiting|later|building|stuck, why?, action?, since?}]}`,
+    stuck first, newest first within a state. It is the same list Ash sees: what waits on him, what he parked, what is
+    being built (a stuck one is stuck).
+  - `project.read {projectId?}` → `{project: {id, name, shortName, folder, parked, counts: {waiting, later, building, stuck}, monos: [name]}}`,
+    or `{projects: [...]}` with every project when no id is given. The id may be the project's name.
+  - `settings.read` → `{name, appearance: light|dark, scheme}`. The user's name, never a key or a token.
 - **Taps** (`await hub.call(name, args)` inside a click handler) go through the same paths as Ash's own taps:
   - `agents.answer {chatId | needId, text}`: a chat waiting on Ash (Waiting on you's answer), a worker's live question
     (the answer in its own chat), or an Ash OS question (`ash-hub-answer`).
@@ -162,8 +170,8 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
 > Answer with ONE JSON object and nothing else, matching the PageSpec schema:
 > - Prefer `{"kind":"blocks", …}` using the hub's blocks: status, list, chart, barlist, note, calendar. Use a bespoke page (`{"kind":"bespoke","html","css","js","permissions"}`) only when the blocks can't do what Ash asked.
 > - Bespoke pages run in a sandbox with no network. Style them ONLY with the CSS variables --color-content, --color-surface, --color-surface-raised, --color-surface-ring, --color-stroke, --color-theme-accent and --font-sans. Draw small text with var(--color-content) at 60% or more. Red, amber and green (--color-status-ok/warn/bad) mean status only.
-> - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "keys.read:Anthropic"). You may embed hub blocks with `hub.block(kind, data)`.
-> - Never ask to add, seat, rename or delete Monos, and never try to reach the app directly.
+> - Get data only with `await hub.call(name, args)`, and list every capability you call in `permissions` (e.g. "tasks.read", "project.read"). You may embed hub blocks with `hub.block(kind, data)`.
+> - Never ask to add, seat, rename or delete Monos, never ask for a key (a page can't reach the network, so a key would do nothing in one), and never try to reach the app directly.
 > - Plain words for a non-developer. Title at most 80 characters. Use the project's real data only; a block with nothing real yet goes in empty (no rows or bars) and shows "Nothing here yet". The app turns down example or made-up data.
 
 Ash OS also tells the Mono how to connect a page (section 4b: `hub.watch`, the data's shape, taps only inside a click

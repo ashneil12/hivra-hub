@@ -19,9 +19,11 @@ it("a kept page's line reads Allowed: N things", () => {
   expect(pages).toMatch(/data-pages-allowed-list/);
 });
 
-it("an imported page that already says Kept asks with Allow, behind the key delay", () => {
+it("an imported page that already says Kept asks with Allow, and Allow works at once", () => {
   const block = pages.slice(pages.indexOf("function AllowAgain"), pages.indexOf("function AskBox"));
-  expect(block).toMatch(/useKeyDelay\(/);
-  expect(block).toMatch(/disabled=\{!ready\}[\s\S]{0,200}>Allow<\/button>/);
+  expect(block).toMatch(/onClick=\{\(\) => allowPage\(page\.id\)\}>Allow<\/button>/);
+  // Nothing to wait behind now that a page can never ask for a key (pageSpec.ts): no delay, nothing disabled.
+  expect(block).not.toMatch(/useKeyDelay/);
+  expect(block).not.toMatch(/disabled=\{/);
   expect(block).not.toContain("Keep and allow");
 });

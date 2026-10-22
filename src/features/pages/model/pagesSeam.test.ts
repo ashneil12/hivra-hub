@@ -1,17 +1,14 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { HubCallError, type HubTransport } from "../../hub/model/hubTransport";
 import { undoBotChange } from "../../hub/model/botChanges";
 import { buildPage, SEATED_ONLY_PAGES } from "./buildPage";
-import { handleBridgeCall } from "./bridge";
+import { handleBridgeCall, KEYS_REFUSAL } from "./bridge";
 import { checkBespokePage } from "./designCheck";
 import { approvedPermissions, keepPage, pageFromSpec, resetPagesForTest } from "./pages";
 import { validatePageSpec, type BespokeSpec } from "./pageSpec";
 import { CSP, SANDBOX, bespokeSrcdoc } from "./sandbox";
 import { stubPageSpec } from "./stubPages";
-import { KEY_CONFIRM_DELAY_MS, useKeyDelay } from "../ui/PagesView";
 
 const roster = [{ id: "projects-manager" }];
 const answering = (answer: unknown): HubTransport => ({ call: async () => answer as never, openFeed: () => () => undefined });
@@ -56,26 +53,28 @@ it("design check: faint small text blocks; own colours and status colours only w
   expect(colourful.status === "ready" && colourful.warnings.length).toBeTruthy();
 });
 
-it("pages can ask for keys and settings, but never for changing Monos or reaching the app directly", () => {
-  expect(validatePageSpec(bespoke({ permissions: ["keys.read:Anthropic", "settings.write"] as never })).ok).toBe(true);
+it("pages can ask for what waits, a project and settings, but never for keys, changing Monos or reaching the app directly", () => {
+  expect(validatePageSpec(bespoke({ permissions: ["tasks.read", "project.read", "settings.read", "settings.write"] })).ok).toBe(true);
   for (const wall of ["monos.delete", "mono.seat", "monos.rename", "monos.add", "ipc", "tauri.invoke"]) {
     expect(validatePageSpec(bespoke({ permissions: [wall] as never })).ok).toBe(false);
   }
+  // A page can't reach the network, so a key would do nothing inside one; a key must never be in a page at all.
+  const keyAsk = validatePageSpec(bespoke({ permissions: ["keys.read:Anthropic"] as never }));
+  expect(keyAsk.ok).toBe(false);
+  expect(keyAsk.ok ? "" : keyAsk.error).toContain("can't read your keys");
 });
 
 it("the bridge answers only approved asks; Undo revokes them", async () => {
-  const page = pageFromSpec(bespoke({ permissions: ["tasks.read", "keys.read:Anthropic"] }), "p", "Projects Manager", "hivra", [], 5);
-  const handlers = { "tasks.read": async () => ["Example: task"], "keys.read": async (a: Record<string, unknown>) => `key for ${String(a.name)}` };
+  const page = pageFromSpec(bespoke({ permissions: ["tasks.read", "settings.read"] }), "p", "Projects Manager", "hivra", [], 5);
+  const handlers = { "tasks.read": async () => ["Example: task"], "settings.read": async () => ({ name: "Ash" }) };
   // Before Keep and allow: nothing is approved.
   expect((await handleBridgeCall({ id: "1", call: "tasks.read" }, approvedPermissions(page.id), handlers)).ok).toBe(false);
   keepPage(page);
   expect(await handleBridgeCall({ id: "2", call: "tasks.read" }, approvedPermissions(page.id), handlers)).toEqual({ id: "2", ok: true, result: ["Example: task"] });
-  // The key it asked for works; one it didn't ask for is refused.
-  expect((await handleBridgeCall({ id: "3", call: "keys.read", args: { name: "Anthropic" } }, approvedPermissions(page.id), handlers)).ok).toBe(true);
-  const other = await handleBridgeCall({ id: "4", call: "keys.read", args: { name: "OpenAI" } }, approvedPermissions(page.id), handlers);
-  expect(other).toEqual({ id: "4", ok: false, error: "This page didn't ask to read your OpenAI key, so it can't." });
-  // A capability it never asked for, and the walls, are refused.
-  expect((await handleBridgeCall({ id: "5", call: "project.write" }, approvedPermissions(page.id), handlers)).ok).toBe(false);
+  expect(await handleBridgeCall({ id: "3", call: "settings.read" }, approvedPermissions(page.id), handlers)).toEqual({ id: "3", ok: true, result: { name: "Ash" } });
+  // A capability it never asked for, a key (approved or not), and the walls, are refused.
+  expect((await handleBridgeCall({ id: "4", call: "project.write" }, approvedPermissions(page.id), handlers)).ok).toBe(false);
+  expect(await handleBridgeCall({ id: "5", call: "keys.read", args: { name: "Anthropic" } }, [...approvedPermissions(page.id), "keys.read" as never], {})).toEqual({ id: "5", ok: false, error: KEYS_REFUSAL });
   expect((await handleBridgeCall({ id: "6", call: "monos.delete" }, ["monos.delete" as never], handlers)).ok).toBe(false);
   await undoBotChange([`page:${page.id}`]);
   expect(approvedPermissions(page.id)).toEqual([]);
@@ -92,21 +91,6 @@ it("a bespoke page can't reach the host: scripts only, no same-origin, no networ
   expect(doc).toContain(":root{--color-content:hsl(240 0% 92%);color-scheme:dark}");
   expect(doc).not.toContain("</script><script>alert(1)");
   expect(doc).toContain("parent.postMessage");
-});
-
-it("Keep and allow waits about a second after a key ask appears", () => {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  let ready = false;
-  const Probe = () => { ready = useKeyDelay(true); return null; };
-  const root = createRoot(document.createElement("div"));
-  act(() => root.render(createElement(Probe)));
-  expect(ready).toBe(false);
-  act(() => { vi.advanceTimersByTime(KEY_CONFIRM_DELAY_MS - 100); });
-  expect(ready).toBe(false);
-  act(() => { vi.advanceTimersByTime(200); });
-  expect(ready).toBe(true);
-  vi.useRealTimers();
 });
 
 it("bespoke cards use the hub card padding token", async () => {

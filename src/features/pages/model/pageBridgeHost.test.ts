@@ -122,14 +122,15 @@ it("an action runs only on Ash's tap inside the page, and only on a kept page", 
 });
 
 it("a preview shows live data it asked to read, but its buttons and everything else wait until it's kept", async () => {
-  const { h } = host({ live: false, asks: ["agents.read", "agents.stop", "keys.read:Anthropic"], approved: () => [] });
+  const { h } = host({ live: false, asks: ["agents.read", "agents.stop", "mono.run"], approved: () => [] });
   tapped = true;
   h.receive({ type: "hub:call", id: "c1", call: "agents.read" });
   h.receive({ type: "hub:call", id: "c2", call: "agents.stop", args: {} });
-  h.receive({ type: "hub:call", id: "c3", call: "keys.read", args: { name: "Anthropic" } });
+  h.receive({ type: "hub:call", id: "c3", call: "mono.run", args: {} });
   await flush();
   expect(replies().map((r) => r.ok)).toEqual([true, false, false]);
   expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the page.");
+  expect(replies()[2].error).toBe("This is a preview: it can do that once you keep the page.");
   expect(acted).toEqual([]);
 });
 
@@ -139,12 +140,15 @@ it("the walls stay: never Monos, never the app itself; anything unknown is refus
   h.receive({ type: "hub:call", id: "c1", call: "monos.delete" });
   h.receive({ type: "hub:watch", id: "w1", call: "monos.delete" });
   h.receive({ type: "hub:watch", id: "w2", call: "agents.stop" });
+  // A key is refused however the page frames it, even with "keys.read" in what is approved: there is nothing to approve.
+  h.receive({ type: "hub:call", id: "c2", call: "keys.read", args: { name: "Anthropic" } });
   h.receive({ nonsense: true });
   await flush();
   expect(replies().map((r) => r.error)).toEqual([
     "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
     "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
     "Only live data can be watched: agents.read, jobs.read, needs.read or rooms.read.",
+    "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.",
   ]);
 });
 

@@ -19,7 +19,7 @@ async function importV1(file: unknown) {
 }
 
 it("a v1 file's Pages come back without their permissions, and its services as sign-ins to do", async () => {
-  const page = { ...buildPreview("bespoke key page", "Hivra lead", 2, "hivra"), permissions: ["keys.read:Anthropic"] };
+  const page = { ...buildPreview("bespoke key page", "Hivra lead", 2, "hivra"), permissions: ["tasks.read"] };
   const summary = await importV1({ format: "monocode-hub-setup", version: 1, projects: [], connectors: [{ id: "c-linear", name: "Linear", projectId: "hivra" }], pages: [page] });
   expect(keptPages("hivra").map((p) => p.id)).toContain(page.id);
   expect(approvedPermissions(page.id)).toEqual([]);

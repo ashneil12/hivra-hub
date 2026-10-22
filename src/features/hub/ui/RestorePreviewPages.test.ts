@@ -21,7 +21,7 @@ it("the Restore preview lists the Pages it will restore, and says which will ask
     projects: [{ id: "moonrise", name: "Moonrise", shortName: "Moonrise", iconShape: "sparkles", folder: "/x", template: "game-studio" }],
     pages: [
       { id: "p1", projectId: "moonrise", title: "Example: harvest board", request: "r", by: "PM", permissions: [], spec: { kind: "blocks", title: "Example: harvest board", blocks: [] } },
-      { id: "p2", projectId: "moonrise", title: "Example: growth room", request: "r", by: "PM", permissions: [], spec: { kind: "bespoke", title: "Example: growth room", html: "", css: "", js: "", permissions: ["keys.read:Anthropic"] } },
+      { id: "p2", projectId: "moonrise", title: "Example: growth room", request: "r", by: "PM", permissions: [], spec: { kind: "bespoke", title: "Example: growth room", html: "", css: "", js: "", permissions: ["tasks.read"] } },
     ],
   });
   const text = host.querySelector("[data-portable-section=pages]")!.textContent!;

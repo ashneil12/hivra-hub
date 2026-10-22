@@ -17,24 +17,38 @@ export const BLOCK_KINDS: readonly BlockKind[] = ["status", "list", "chart", "ba
 
 // ---- permissions ----------------------------------------------------------------------------------------------------
 /**
- * A page may ask for any of these. `keys.read:<Name>` names one key (e.g. keys.read:Anthropic). Two walls can never be
- * asked for: changing Monos (add, seat, rename, delete) and leaving the sandbox (direct IPC / Tauri).
+ * A page may ask for any of these, and nothing else. Two walls can never be asked for: changing Monos (add, seat,
+ * rename, delete) and leaving the sandbox (direct IPC / Tauri).
  *
- * The agent ones connect a page to the agents (docs/pages-build-contract.md, "Connected pages"): four live reads a page
- * can watch, and five taps that go through the same paths as Ash's own (they run only when he taps inside the page, and
- * what they send says which page it came from).
+ * There is deliberately no way to read a key. A page runs with `connect-src 'none'`, so it could never spend one, and a
+ * key sitting inside one would be a secret in a document anyone can export, copy or screenshot for nothing in return
+ * (Ash, 22 Oct). Model keys stay in the app, where only the app's own code reaches them.
+ *
+ * A page reads in one of two shapes. Live reads are watched: the page gets the data now and again whenever it changes.
+ * Hub reads are answered on ask. Both are the same data the app's own screens read, in the same plain words
+ * (docs/pages-build-contract.md, "Connected pages").
  */
 export const LIVE_READS = ["agents.read", "jobs.read", "needs.read", "rooms.read"] as const;
+/** Read on ask rather than watched (pageCapabilities.ts): what waits or is being built, a project, and Ash's settings. */
+export const HUB_READS = ["tasks.read", "project.read", "settings.read"] as const;
+export const READS = [...LIVE_READS, ...HUB_READS] as const;
 export const PAGE_ACTIONS = ["agents.answer", "agents.pick", "agents.message", "agents.stop", "chats.open"] as const;
-export const CAPABILITIES = [
-  "tasks.read", "tasks.write", "project.read", "project.write", "mono.run", "automation.run", "settings.read", "settings.write",
-  ...LIVE_READS, ...PAGE_ACTIONS,
-] as const;
+export const WRITES = ["tasks.write", "project.write", "mono.run", "automation.run", "settings.write"] as const;
+export const CAPABILITIES = [...READS, ...PAGE_ACTIONS, ...WRITES] as const;
 export type LiveRead = (typeof LIVE_READS)[number];
+export type HubRead = (typeof HUB_READS)[number];
+export type Read = (typeof READS)[number];
 export type PageAction = (typeof PAGE_ACTIONS)[number];
-export type Capability = (typeof CAPABILITIES)[number] | `keys.read:${string}`;
+export type Capability = (typeof CAPABILITIES)[number];
 export function isLiveRead(cap: string): cap is LiveRead {
   return (LIVE_READS as readonly string[]).includes(cap);
+}
+export function isHubRead(cap: string): cap is HubRead {
+  return (HUB_READS as readonly string[]).includes(cap);
+}
+/** Any read: a preview may have these (so Ash sees what he keeps); a tap never runs in a preview. */
+export function isRead(cap: string): cap is Read {
+  return isLiveRead(cap) || isHubRead(cap);
 }
 export function isPageAction(cap: string): cap is PageAction {
   return (PAGE_ACTIONS as readonly string[]).includes(cap);
@@ -44,19 +58,20 @@ export function isWall(cap: string): boolean {
   return WALLS.test(cap);
 }
 export function isCapability(cap: string): cap is Capability {
-  return (CAPABILITIES as readonly string[]).includes(cap) || /^keys\.read:[\w .-]{1,40}$/.test(cap);
+  return (CAPABILITIES as readonly string[]).includes(cap);
 }
-export function keyName(cap: string): string | undefined {
-  return cap.startsWith("keys.read:") ? cap.slice("keys.read:".length) : undefined;
+/** A capability the hub actually answers. The writes are declared (a page may ask) but nothing runs them yet. */
+export function isWired(cap: Capability): boolean {
+  return isRead(cap) || isPageAction(cap);
 }
-const PLAIN: Record<(typeof CAPABILITIES)[number], string> = {
-  "tasks.read": "Read this project's tasks",
+const PLAIN: Record<Capability, string> = {
+  "tasks.read": "Read what's waiting on you, being built or stuck",
   "tasks.write": "Add and change tasks",
-  "project.read": "Read this project's files and status",
-  "project.write": "Write to this project",
+  "project.read": "Read your projects and what each is working on",
+  "project.write": "Write to a project",
   "mono.run": "Ask a Mono to run work",
   "automation.run": "Run an automation",
-  "settings.read": "Read your settings",
+  "settings.read": "Read your name, appearance and theme",
   "settings.write": "Change your settings",
   "agents.read": "See your agents, what each is doing and the work they handed out",
   "jobs.read": "See what's being built",
@@ -68,10 +83,9 @@ const PLAIN: Record<(typeof CAPABILITIES)[number], string> = {
   "agents.stop": "Stop an agent's work when you tap",
   "chats.open": "Open a chat when you tap",
 };
-/** Plain words for the preview. */
+/** Plain words for the preview, saying so when the hub has nothing behind it yet. */
 export function describeCapability(cap: Capability): string {
-  const key = keyName(cap);
-  return key ? `Reads your keys: ${key}` : PLAIN[cap as (typeof CAPABILITIES)[number]];
+  return isWired(cap) ? PLAIN[cap] : `${PLAIN[cap]} (not connected yet)`;
 }
 
 // ---- the spec -------------------------------------------------------------------------------------------------------
@@ -132,6 +146,7 @@ export function validatePageSpec(raw: unknown): Validated<PageSpec> {
     for (const p of x.permissions) {
       if (typeof p !== "string") return { ok: false, error: "A permission isn't text." };
       if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Pages can never add, rename or delete Monos." : "Pages can never reach the app directly; everything goes through the page bridge." };
+      if (p === "keys.read" || p.startsWith("keys.")) return { ok: false, error: "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one, and a key must never be in a page at all." };
       if (!isCapability(p)) return { ok: false, error: `“${p}” isn't a permission the hub knows.` };
     }
     return { ok: true, value: { kind: "bespoke", title: x.title, html: x.html, css: x.css as string | undefined, js: x.js as string | undefined, permissions: [...new Set(x.permissions as Capability[])] } };

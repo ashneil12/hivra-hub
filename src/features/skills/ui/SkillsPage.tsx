@@ -25,6 +25,11 @@ import {
   saveDisabledSkillPaths,
   SKILLS_CHANGE_EVENT,
 } from "../model/skills";
+import {
+  installReadySkill,
+  READY_SKILLS,
+  readySkillInstalled,
+} from "../model/readySkills";
 
 /** Inspect and manage file skills without modifying provider-owned catalogs. */
 export function SkillsPage({
@@ -47,6 +52,7 @@ export function SkillsPage({
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [disabledPaths, setDisabledPaths] = useState<string[]>(() =>
     loadDisabledSkillPaths(),
@@ -205,6 +211,25 @@ export function SkillsPage({
       .finally(() => setBusy(false));
   };
 
+  const onInstallReady = (id: string): void => {
+    setInstalling(id);
+    setActionError(null);
+    void installReadySkill({ cwd, id })
+      .then(() => {
+        invalidateSkills();
+        window.dispatchEvent(new Event(SKILLS_CHANGE_EVENT));
+        setReload((value) => value + 1);
+      })
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setInstalling(null));
+  };
+  const readyToAdd =
+    skills == null
+      ? []
+      : READY_SKILLS.filter((ready) => !readySkillInstalled(skills, ready.id));
+
   return (
     <div className="@container/skills flex min-h-0 min-w-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col @3xl/skills:flex-row">
@@ -285,6 +310,40 @@ export function SkillsPage({
                   }}
                   onCreate={onCreate}
                 />
+              </div>
+            ) : null}
+
+            {readyToAdd.length > 0 ? (
+              <div
+                data-skills-ready
+                className="mb-4 overflow-hidden rounded-lg border border-content/10 bg-content/[0.03]"
+              >
+                <p className="border-b border-content/5 px-3 py-2 text-[12px] text-content/55">
+                  Ready-made
+                </p>
+                {readyToAdd.map((ready) => (
+                  <div
+                    key={ready.id}
+                    className="flex items-start gap-3 border-b border-content/5 px-3 py-2 last:border-b-0"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12px] text-content">{ready.title}</p>
+                      <p className="mt-0.5 text-[12px] text-content/55">
+                        {ready.what}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      data-skills-ready-add={ready.id}
+                      aria-label={`Add the ${ready.title} skill`}
+                      disabled={installing !== null}
+                      onClick={() => onInstallReady(ready.id)}
+                      className="shrink-0 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
+                    >
+                      {installing === ready.id ? "Adding…" : "Add"}
+                    </button>
+                  </div>
+                ))}
               </div>
             ) : null}
 

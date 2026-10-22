@@ -53,13 +53,13 @@ it("pages imported into Ash OS count only once it took them; one it refused is n
 it("an imported page asks again: nothing works until Keep and allow, and Undo revokes it", async () => {
   const { importPages, allowPage, needsAllow, approvedPermissions, keptPages } = await import("./pages");
   const { botChangeRows, undoBotChange } = await import("../../hub/model/botChanges");
-  const spec = { kind: "bespoke", title: "Example: room", html: "<p>x</p>", css: "", js: "", permissions: ["keys.read:Anthropic"] };
-  expect(await importPages([{ id: "imp-1", projectId: "hivra", title: "Example: room", request: "r", by: "Hivra lead", spec, permissions: ["keys.read:Anthropic"], keptAt: 1 } as never])).toEqual({ added: 1, failed: [] });
+  const spec = { kind: "bespoke", title: "Example: room", html: "<p>x</p>", css: "", js: "", permissions: ["tasks.read"] };
+  expect(await importPages([{ id: "imp-1", projectId: "hivra", title: "Example: room", request: "r", by: "Hivra lead", spec, permissions: ["tasks.read"], keptAt: 1 } as never])).toEqual({ added: 1, failed: [] });
   const page = keptPages("hivra").find((p) => p.id === "imp-1")!;
   expect(needsAllow(page)).toBe(true);
   expect(approvedPermissions("imp-1")).toEqual([]);
   allowPage("imp-1");
-  expect(approvedPermissions("imp-1")).toEqual(["keys.read:Anthropic"]);
+  expect(approvedPermissions("imp-1")).toEqual(["tasks.read"]);
   const row = botChangeRows().flatMap((r) => (r.kind === "one" ? [r.change] : r.changes)).find((c) => c.pageId === "imp-1")!;
   await undoBotChange([row.id]);
   expect(approvedPermissions("imp-1")).toEqual([]);

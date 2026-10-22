@@ -13,8 +13,9 @@ import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage
 import type { PageSpec } from "../model/pageSpec";
 import { READY_BY, READY_PAGES, type ReadyPage } from "../model/readyPages";
 import { checkBespokePage } from "../model/designCheck";
-import { describeCapability, keyName, type BespokeSpec, type Capability } from "../model/pageSpec";
+import { describeCapability, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
+import { pageCapabilityHandlers } from "../model/pageCapabilities";
 import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
 import { appPageSources } from "../model/pageSources";
 import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
@@ -237,6 +238,7 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
       tapped: () => tappedInside(ref.current),
       post: (message) => ref.current?.contentWindow?.postMessage(message, "*"),
       sources: appPageSources(sessions),
+      handlers: pageCapabilityHandlers(),
       onSize: setHeight,
     });
     let loads = 0;
@@ -286,44 +288,19 @@ function agoLabel(at: number, now: number): string {
   return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
 }
 
-/** The asks a bespoke page makes, in plain words. Key asks get their own card on top. */
+/** The asks a bespoke page makes, in plain words. A page can never read a key, so there is no key card to draw. */
 function Permissions({ asks }: { asks: Capability[] }) {
-  const keys = asks.map(keyName).filter((k): k is string => !!k);
-  const rest = asks.filter((a) => !keyName(a));
   if (!asks.length) return null;
   return (
     <div className="flex flex-col gap-2" data-page-permissions>
-      {keys.length ? (
-        <div className={`${card} px-4 py-3`} data-page-key-asks>
-          <div className="text-[13px] font-medium text-content">Reads your keys</div>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {keys.map((k) => <span key={k} className="rounded-md bg-surface-raised px-2 py-0.5 text-[12px] text-content">{k}</span>)}
-          </div>
-        </div>
-      ) : null}
-      {rest.length ? (
-        <div className={`${card} px-4 py-3`}>
-          <div className="mb-1 text-[12px] text-content/70">This page asks to:</div>
-          <ul className="flex flex-col gap-0.5 text-[13px] text-content/90">
-            {rest.map((a) => <li key={a}>· {describeCapability(a)}</li>)}
-          </ul>
-        </div>
-      ) : null}
+      <div className={`${card} px-4 py-3`}>
+        <div className="mb-1 text-[12px] text-content/70">This page asks to:</div>
+        <ul className="flex flex-col gap-0.5 text-[13px] text-content/90">
+          {asks.map((a) => <li key={a}>· {describeCapability(a)}</li>)}
+        </ul>
+      </div>
     </div>
   );
-}
-
-/** About a second before Keep and allow works when keys are asked for, so a quick click can't approve them. */
-export const KEY_CONFIRM_DELAY_MS = 1000;
-export function useKeyDelay(hasKeyAsk: boolean): boolean {
-  const [ready, setReady] = useState(!hasKeyAsk);
-  useEffect(() => {
-    if (!hasKeyAsk) return setReady(true);
-    setReady(false);
-    const t = window.setTimeout(() => setReady(true), KEY_CONFIRM_DELAY_MS);
-    return () => window.clearTimeout(t);
-  }, [hasKeyAsk]);
-  return ready;
 }
 
 /** "Allowed: N things" under a kept page's title; the full list opens behind it. */
@@ -346,15 +323,14 @@ function AllowedLine({ asks }: { asks: Capability[] }) {
   );
 }
 
-/** An imported page asks again: the same list and Keep and allow, with the key delay. Until then it can do nothing. */
+/** An imported page asks again: the same list and Allow. Until then it can do nothing. */
 function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
-  const ready = useKeyDelay(asks.some((a) => !!keyName(a)));
   return (
     <div className="mb-4 flex flex-col gap-2" data-pages-allow-again>
       <div className="text-[12px] text-content/70">This page came from a setup file. It can't do anything until you allow what it asks for.</div>
       <Permissions asks={asks} />
       <div className="flex justify-end">
-        <button type="button" data-pages-allow disabled={!ready} className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
+        <button type="button" data-pages-allow className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
       </div>
     </div>
   );
@@ -486,7 +462,6 @@ export function PagesContent() {
     return () => setChatPreviewShown(undefined);
   }, [showingChat]);
   const asks = preview?.spec.kind === "bespoke" ? preview.spec.permissions : [];
-  const keyReady = useKeyDelay(asks.some((a) => !!keyName(a)));
 
   if (build && !preview) {
     return (
@@ -550,7 +525,7 @@ export function PagesContent() {
           <span className="text-[12px] text-content/70" data-pages-preview-note>This is a preview. Nothing is saved until you apply it. Undo later in Bot changes.</span>
           <span className="ml-auto" />
           <button type="button" className={quietBtn} data-pages-discard onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setBuild(undefined); }}>Discard</button>
-          <button type="button" data-pages-keep disabled={!keyReady} className={`${primaryBtn} disabled:opacity-40`} onClick={() => {
+          <button type="button" data-pages-keep className={`${primaryBtn} disabled:opacity-40`} onClick={() => {
             const pin = !!ready?.pin;
             void keepPage(preview).then((ok) => { if (ok && pin) setPinned(preview.id, true, preview.by); });
             if (ready?.chat) settleChatPreview(ready.chat.id);
@@ -687,7 +662,6 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     });
   };
   const close = () => { setViewing(undefined); setRun(undefined); };
-  const fresh = useNewAsksDelay(viewing ? newAsks(page, viewing.spec) : []);
 
   if (viewing) {
     const added = newAsks(page, viewing.spec);
@@ -711,7 +685,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
           <span className="text-[12px] text-content/70">This is the new version. Your page stays as it is until you use it.</span>
           <span className="ml-auto" />
           <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Discard</button>
-          <button type="button" data-pages-use-version disabled={busy || !fresh} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
+          <button type="button" data-pages-use-version disabled={busy} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
             {added.length ? "Use it and allow" : "Use this version"}
           </button>
         </div>
@@ -766,11 +740,6 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     </>
   );
 }
-/** The key delay (useKeyDelay) for a new version that newly asks to read keys. */
-function useNewAsksDelay(added: Capability[]): boolean {
-  return useKeyDelay(added.some((a) => !!keyName(a)));
-}
-
 /** Pin or unpin a page; pinned pages show in the sidebar. */
 /** Unpinned: hidden until the row is hovered (always shown, at 70% content, beside an open page's title). Pinned: solid. */
 function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
