@@ -236,6 +236,8 @@ export function isSilent(reply: string): boolean {
   const text = reply.trim();
   if (!text) return true;
   if (/^\W*NO_REPLY\W*$/i.test(text) || text.toUpperCase().startsWith(NO_REPLY)) return true;
+  // Thinking aloud, then NO_REPLY on its own last line: the seat decided to stay quiet (live run 22 Oct 08:31, frank).
+  if (/\n\W*NO_REPLY\W*$/i.test(text)) return true;
   if (/^<reaction>[^<]*<\/reaction>$/.test(text)) return true;
   return BARE_ACK.test(text) || (text.length <= 90 && FILLER.test(text));
 }

@@ -110,11 +110,11 @@ describe("who else may speak", () => {
 
 describe("what is never posted, and what a post looks like", () => {
   it("NO_REPLY, nothing, bare acknowledgements, filler and a lone reaction", () => {
-    for (const quiet of ["NO_REPLY", " NO_REPLY.", "NO_REPLY - nothing new", "", "Got it.", "+1", "Agreed.", "On it!", "Noted", "Sounds good, thanks!", "Nothing to add.", "<reaction>👍</reaction>", "Checking 07 now.", "Checking the Level 2 retakes of 07 and 10 now."])
+    for (const quiet of ["NO_REPLY", " NO_REPLY.", "NO_REPLY - nothing new", "", "Got it.", "+1", "Agreed.", "On it!", "Noted", "Sounds good, thanks!", "Nothing to add.", "<reaction>👍</reaction>", "Checking 07 now.", "Checking the Level 2 retakes of 07 and 10 now.", "CoS treated \"Ye go\" as not a lock. I'm checking Hub memory so a test doesn't sit there as a decision.\n\nNO_REPLY"])
       expect(isSilent(quiet), quiet).toBe(true);
   });
   it("a real take, even one that starts by agreeing or by saying what it looked at", () => {
-    for (const take of ["Agreed with frank. One gate: Ash has to say yes to a new Mono.", "Got it: three tickets, all on Hivra.", "Fair on all three. Changes: 1) ...", "On Friday we ship.", "Looking at it differently, we should ship Friday."])
+    for (const take of ["Agreed with frank. One gate: Ash has to say yes to a new Mono.", "Got it: three tickets, all on Hivra.", "Fair on all three. Changes: 1) ...", "On Friday we ship.", "Looking at it differently, we should ship Friday.", "Ship it. The NO_REPLY rule stays as it is."])
       expect(isSilent(take), take).toBe(false);
   });
   it("no label of its own name in front, and no em dashes (Ash's rule)", () => {

@@ -603,7 +603,7 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   if (isSilent(text)) {
     // "Got it" is a 👍 on what it answers; the host that has nothing to say to Ash still shows it read him.
     const emoji = /<reaction>\s*(✅|👀)\s*<\/reaction>/.exec(text)?.[1] ?? "👍";
-    const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim());
+    const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim()) && !/\n\W*NO_REPLY\W*$/i.test(text.trim());
     if (wake.trigger && (ack || wake.kind === "answer")) react(chatId, wake.trigger, me.id, ack ? emoji : "👍", true);
     answered();
     if (wake.kind === "answer") {
