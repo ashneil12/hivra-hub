@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { plainTitle } from "../../../shared/text/plainTitle";
 import { createPortal } from "react-dom";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Check, MessageMultiple, Pencil, Plus, Trash2, X } from "../../../shared/ui/icons";
@@ -312,14 +313,14 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                     }`}
                   >
                     <span className="min-w-0 truncate">
-                      {c.when} · {c.title}
+                      {c.when} · {plainTitle(c.title)}
                     </span>
                   </button>
                   <button
                     type="button"
                     data-hub-conversation-delete={c.id}
-                    title={`Delete ${c.title}`}
-                    aria-label={`Delete ${c.title}`}
+                    title={`Delete ${plainTitle(c.title)}`}
+                    aria-label={`Delete ${plainTitle(c.title)}`}
                     onClick={() => void removeConversation(c.id, c.title)}
                     className="absolute right-1 grid size-5 place-items-center rounded-md text-content/45 opacity-0 hover:bg-content/8 hover:text-red-400 focus-visible:opacity-100 group-hover/conv:opacity-100"
                   >
@@ -346,7 +347,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
               title="Double-click to rename"
               onDoubleClick={() => setRenamingConv(drafting ? "draft" : conv!.id)}
             >
-              {drafting ? (draftTitle ?? "New conversation") : conv!.title}
+              {drafting ? (draftTitle ?? "New conversation") : plainTitle(conv!.title)}
             </span>
           ) : null}
           {drafting || conv ? (

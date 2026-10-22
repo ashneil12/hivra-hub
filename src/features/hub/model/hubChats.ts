@@ -4,6 +4,7 @@ import { examplesOn, examples } from "./examples";
 // tests. The room takes turns through roomConductor.ts (re-exported below), on each Mono's own session through the
 // runner the app lends (setGroupChatRunner). Only with the example data on does a scripted reply stand in, and every
 // made-up row is labelled "Example:".
+import { plainTitle } from "../../../shared/text/plainTitle";
 import { useSyncExternalStore } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listMonos } from "../../monos/model/mono";
@@ -479,7 +480,7 @@ export function setRoomLead(chatId: string, monoId: string | undefined): void {
 
 /** A conversation names itself from its first message: the first line, cut at a word near 40 characters. */
 export function autoTitle(text: string): string {
-  const line = text.trim().split("\n")[0];
+  const line = plainTitle(text.trim().split("\n")[0] ?? ""); // r51: plain text, never the message's markdown
   if (line.length <= 40) return line;
   const cut = line.slice(0, 40);
   const space = cut.lastIndexOf(" ");

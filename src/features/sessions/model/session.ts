@@ -1,4 +1,5 @@
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
+import { plainTitle } from "../../../shared/text/plainTitle";
 import type { UserQuestionPrompt } from "./userQuestion";
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import type { HandoffComposerCard } from "./handoff";
@@ -849,7 +850,8 @@ export function titleFromPrompt(
   harness: HarnessId,
   attachments: Attachment[] = [],
 ): string {
-  const line = prompt.trim().split(/\r?\n/)[0]?.trim() ?? "";
+  // r51: a title is plain text, never the prompt's markdown.
+  const line = plainTitle(prompt.trim().split(/\r?\n/)[0]?.trim() ?? "");
   const fromFiles =
     !line && attachments.length > 0
       ? attachments
@@ -866,7 +868,7 @@ export function titleFromPrompt(
 }
 
 export function formatSessionTitle(harness: HarnessId, title: string): string {
-  const trimmed = title.trim();
+  const trimmed = plainTitle(title); // r51: a generated title can carry markdown too
   if (!trimmed) return HARNESS_LABEL[harness];
   return `${HARNESS_LABEL[harness]} · ${trimmed}`;
 }
@@ -931,11 +933,12 @@ export function removeSessionDraft(
 /** Title without the harness prefix stored for the tab strip. */
 export function sessionDisplayTitle(title: string, harness: HarnessId): string {
   const prefix = `${HARNESS_LABEL[harness]} · `;
-  if (title.startsWith(prefix)) return title.slice(prefix.length);
+  // r51: a title saved with markdown before this shows plain.
+  if (title.startsWith(prefix)) return plainTitle(title.slice(prefix.length)) || "New session";
   if (title === HARNESS_LABEL[harness] || title === HARNESS_TITLE[harness]) {
     return "New session";
   }
-  return title;
+  return plainTitle(title) || "New session";
 }
 
 /** Working copy the agent and session git UIs should use. */

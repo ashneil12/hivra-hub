@@ -2,6 +2,7 @@
 // Mono's 1:1, a team's sub-chat) and a room. It names what goes ("Delete Example: tidy the README?"), says it can't be
 // undone, and offers Cancel and a red Delete. Cancel has the focus, so Enter (or Escape, or a click outside) cancels:
 // nothing is deleted by a stray key. Callers that need more (an unused worktree to clear too) put it in `children`.
+import { plainTitle } from "../text/plainTitle";
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { Modal } from "./Modal";
 
@@ -29,15 +30,7 @@ export const DELETE_DANGER =
  * one line, trailing punctuation trimmed before the "?", and cut at a word near 60 characters with an ellipsis.
  */
 export function confirmTitleName(raw: string, max = 60): string {
-  let s = raw
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/`+([^`]*)`+/g, "$1")
-    .replace(/(\*\*|__|~~)(.*?)\1/g, "$2")
-    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,!?:;]|$)/g, "$1$2")
-    .replace(/^\s*(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
-    .replace(/[*`]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  let s = plainTitle(raw);
   let cut = false;
   if (s.length > max) {
     const at = s.lastIndexOf(" ", max);
