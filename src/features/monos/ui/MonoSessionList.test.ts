@@ -204,6 +204,28 @@ it("shows a draft and then an approval without treating either as completed", as
   expect(container.textContent).toContain("Need approval");
 });
 
+it("a worker that asked a question reads Waiting on its Lead, not Need approval; a tool approval is still Ash's", async () => {
+  const child = {
+    ...newSession("codex", "/repo"),
+    id: launch.sessionId,
+    busy: true,
+    pendingQuestion: { requestId: 7, questions: [] },
+  } as unknown as Session;
+  await render([child]);
+  const card = () => container.querySelector("[data-session-card]")!.textContent;
+  expect(card()).toContain("Waiting on MonoInvader");
+  expect(card()).not.toContain("Need approval");
+  expect(card()).not.toContain("Working");
+  await render([
+    {
+      ...child,
+      blocks: [{ id: "approval", role: "tool", text: "Run command", approval: { requestId: 42 } }],
+    } as unknown as Session,
+  ]);
+  expect(card()).toContain("Need approval");
+  expect(card()).not.toContain("Waiting on");
+});
+
 it("holds a loading card's place invisibly, and shows a known one at once when remounted", async () => {
   let resolve!: (rows: SessionSummary[]) => void;
   vi.mocked(listSessionsByProject).mockReturnValue(

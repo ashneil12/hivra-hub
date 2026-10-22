@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
 import {
+  shortSplit,
+  waitingOnLeadLabel,
   ASK_ESCALATE_MS,
   plainReason,
   storedQuestion,
@@ -140,6 +142,20 @@ describe("what a Lead's work reads as", () => {
     expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 asking · 2 stuck");
     expect(workSplit({ working: 2, asking: 0, stuck: 0 })).toBe("2 working");
     expect(workSplit({ working: 0, asking: 0, stuck: 0 })).toBeUndefined();
+  });
+
+  it("the short form counts a worker asking its Lead as waiting, never as stuck (Ash, 22 Oct)", () => {
+    expect(shortSplit(workCounts("lead-chat", rows, NOW))).toEqual({ working: 1, waiting: 1, stuck: 2, text: "1 working · 1 waiting · 2 stuck" });
+    expect(shortSplit({ working: 0, asking: 1, stuck: 0 })).toEqual({ working: 0, waiting: 1, stuck: 0, text: "1 waiting" });
+    expect(shortSplit({ working: 0, asking: 0, stuck: 0 }).text).toBeUndefined();
+  });
+
+  it("a worker with a question waits on its Lead by name; a tool approval or no question is not that", () => {
+    expect(waitingOnLeadLabel({ pendingQuestion: { requestId: 1 }, approvalPending: false }, "Alfred")).toBe("Waiting on Alfred");
+    expect(waitingOnLeadLabel({ pendingQuestion: { requestId: 1 }, approvalPending: false }, " ")).toBe("Waiting on its Lead");
+    expect(waitingOnLeadLabel({ pendingQuestion: { requestId: 1 }, approvalPending: true }, "Alfred")).toBeUndefined();
+    expect(waitingOnLeadLabel({ pendingQuestion: undefined, approvalPending: false }, "Alfred")).toBeUndefined();
+    expect(waitingOnLeadLabel(undefined, "Alfred")).toBeUndefined();
   });
 
   it("counts the Lead's current wave the way its batch line does, never just 'busy'", () => {

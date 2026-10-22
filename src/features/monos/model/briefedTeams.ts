@@ -70,7 +70,7 @@ export function briefedTeams(
 }
 
 /**
- * What the line says after the brief: "2 working · 1 stuck" (asking counts as stuck: workerStuck.ts shortSplit), or the
+ * What the line says after the brief: "2 working · 1 waiting · 1 stuck" (workerStuck.ts shortSplit), or the
  * Lead on it while it has no workers out.
  */
 export function briefedStatus(brief: BriefedTeam): string {

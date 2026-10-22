@@ -46,7 +46,9 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
           {short.text ? (
             <>
               {short.working ? <span>{short.working} working</span> : null}
-              {short.working && short.stuck ? <span aria-hidden> · </span> : null}
+              {short.working && short.waiting ? <span aria-hidden> · </span> : null}
+              {short.waiting ? <span data-briefed-waiting>{short.waiting} waiting</span> : null}
+              {(short.working || short.waiting) && short.stuck ? <span aria-hidden> · </span> : null}
               {short.stuck ? (
                 <span className={brief.failed ? "text-red-400" : "text-amber-400"}>{short.stuck} stuck</span>
               ) : null}

@@ -36,6 +36,7 @@ import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
 import { noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
 import { useDelegationRows } from "../model/delegationStore";
+import { waitingOnLeadLabel } from "../model/workerStuck";
 
 /** A launched session open over the overview, live and fully usable. */
 export type ShownMonoSession = {
@@ -327,6 +328,14 @@ export function MonoSessionList({
                 updatedAt: saved?.updatedAt ?? Date.now(),
               }
             : saved;
+          // A worker that asked a question waits on this Mono, its Lead, not on Ash's approval.
+          const waitingOn = waitingOnLeadLabel(
+            live && {
+              pendingQuestion: live.pendingQuestion,
+              approvalPending: hasPendingApproval(live.blocks),
+            },
+            agent.name,
+          );
           if (summary)
             return (
               <div key={launch.sessionId} data-mono-session={launch.sessionId}>
@@ -335,18 +344,19 @@ export function MonoSessionList({
                   modelInFooter
                   isActive={false}
                   isSelected={false}
-                  busy={!!live?.busy}
+                  busy={!!live?.busy && !waitingOn}
                   done={workView(launch.sessionId) === "done"}
                   statusLabel={
                     workView(launch.sessionId) === "stopped"
                       ? "Stopped"
                       : workView(launch.sessionId) === "failed"
                         ? "Failed"
-                        : undefined
+                        : waitingOn
                   }
                   linkedUpdate={false}
                   needsApproval={
                     !!live &&
+                    !waitingOn &&
                     (hasPendingApproval(live.blocks) || !!live.pendingQuestion)
                   }
                   project={

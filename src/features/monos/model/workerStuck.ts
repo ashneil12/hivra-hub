@@ -297,13 +297,31 @@ export function workSplit(counts: WorkCounts): string | undefined {
 }
 
 /**
- * The short form, where room is tight (a Mono's line on the rail, a brief's line in its chat): what still works and what
- * needs someone, asking counted as stuck as Today's Stuck section does ("2 working · 1 stuck", Ash's words, 20 Oct).
+ * The short form, where room is tight (a Mono's line on the rail, a brief's line in its chat): what still works, what
+ * waits on its Lead, and what is stuck ("2 working · 1 waiting · 1 stuck", Ash's words, 20 Oct). A worker that asked its
+ * Lead a question is waiting, not stuck (Ash, 22 Oct): the Lead answers it or asks Ash in its own chat (D5).
  */
-export function shortSplit(counts: WorkCounts): { working: number; stuck: number; text?: string } {
-  const stuck = counts.asking + counts.stuck;
-  const text = [counts.working ? `${counts.working} working` : "", stuck ? `${stuck} stuck` : ""].filter(Boolean).join(" · ");
-  return { working: counts.working, stuck, ...(text ? { text } : {}) };
+export function shortSplit(counts: WorkCounts): { working: number; waiting: number; stuck: number; text?: string } {
+  const text = [
+    counts.working ? `${counts.working} working` : "",
+    counts.asking ? `${counts.asking} waiting` : "",
+    counts.stuck ? `${counts.stuck} stuck` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return { working: counts.working, waiting: counts.asking, stuck: counts.stuck, ...(text ? { text } : {}) };
+}
+
+/**
+ * A worker's status where its Lead's launches are listed (a Mono's Sessions tab): one that asked a question waits on
+ * that Lead ("Waiting on Alfred"), not on Ash's approval. A tool approval it is waiting for is still Ash's to give.
+ */
+export function waitingOnLeadLabel(
+  live: { pendingQuestion?: unknown; approvalPending: boolean } | undefined,
+  leadName: string,
+): string | undefined {
+  if (!live || !live.pendingQuestion || live.approvalPending) return undefined;
+  return `Waiting on ${leadName.trim() || "its Lead"}`;
 }
 
 /** A row's rollup word: a stalled one is stuck whatever its live chat shows. */

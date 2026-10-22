@@ -583,7 +583,8 @@ function MonoWorkLine({
   // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
   // line's own mark says why it waits.
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
-  const markColor = short.working ? "text-content/45" : stuckColor;
+  // Waiting on its Lead is not stuck: only stuck work colours the mark.
+  const markColor = short.working || !short.stuck ? "text-content/45" : stuckColor;
   return (
     <div
       className="ml-5 flex h-6 min-w-0 items-center border-l border-content/10 pl-1.5"
@@ -607,7 +608,9 @@ function MonoWorkLine({
             strokeWidth={1.75}
           />
           {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
-          {short.working && short.stuck ? <span aria-hidden> · </span> : null}
+          {short.working && short.waiting ? <span aria-hidden> · </span> : null}
+          {short.waiting ? <span className="min-w-0 truncate" data-mono-work-waiting>{short.waiting} waiting</span> : null}
+          {(short.working || short.waiting) && short.stuck ? <span aria-hidden> · </span> : null}
         </button>
         {short.stuck ? (
           <StuckButton count={short.stuck} color={stuckColor} label={`See what is stuck for ${name}`} onOpen={onOpenStuck} />
@@ -677,11 +680,13 @@ function FoldedWorkSummary({
       <span className="flex min-w-0 items-center gap-1.5 pr-0.5" data-mono-rail-summary-split>
         <Mark
           aria-hidden
-          className={`size-3.5 shrink-0 ${short.working ? "text-content/45" : stuckColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
+          className={`size-3.5 shrink-0 ${short.working || !short.stuck ? "text-content/45" : stuckColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
           strokeWidth={1.75}
         />
         {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
-        {short.working && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
+        {short.working && short.waiting ? <span aria-hidden className="shrink-0">·</span> : null}
+        {short.waiting ? <span className="min-w-0 truncate" data-mono-work-waiting>{short.waiting} waiting</span> : null}
+        {(short.working || short.waiting) && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
       </span>
       {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what is stuck" onOpen={onOpenStuck} /> : null}
     </div>

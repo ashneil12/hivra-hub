@@ -89,8 +89,8 @@ describe("briefedTeams", () => {
       counts: { working: 2, asking: 1, stuck: 1 },
       failed: false,
     });
-    // Short, like the rail's line: asking counts as stuck.
-    expect(briefedStatus(briefs[0])).toBe("2 working · 2 stuck");
+    // Short, like the rail's line: asking is waiting on the Lead, not stuck.
+    expect(briefedStatus(briefs[0])).toBe("2 working · 1 waiting · 1 stuck");
   });
 
   it("says the Lead is on it before it has workers, reads red once one failed, and goes once the brief is back", () => {
@@ -121,17 +121,17 @@ describe("the line in a Mono's chat", () => {
     setHubDataSource(undefined);
   });
 
-  it("reads 'Briefed EXO coding team: <task> · 2 working · 2 stuck', the stuck part amber, and opens the team", () => {
+  it("reads 'Briefed EXO coding team: <task> · 2 working · 1 waiting · 1 stuck', only the stuck part amber, and opens the team", () => {
     const [brief] = briefedTeams("cos-chat", tree(), NOW, () => EXO);
     const onOpen = vi.fn();
     act(() => root.render(createElement(BriefedTeamLine, { brief, onOpen })));
     const line = container.querySelector<HTMLButtonElement>("[data-briefed-team='b-1']")!;
-    expect(line.textContent).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 2 stuck");
+    expect(line.textContent).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck");
     expect(line.dataset.briefedProject).toBe("vg-game");
     expect(line.dataset.briefedKind).toBe("stuck");
-    expect(line.querySelector("[data-briefed-status] .text-amber-400")?.textContent).toBe("2 stuck");
+    expect(line.querySelector("[data-briefed-status] .text-amber-400")?.textContent).toBe("1 stuck");
     expect(line.getAttribute("title")).toBe("2 working · 1 asking · 1 stuck\nOpen EXO coding team on EXO lead");
-    expect(line.getAttribute("aria-label")).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 2 stuck. Open EXO coding team");
+    expect(line.getAttribute("aria-label")).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck. Open EXO coding team");
     act(() => line.click());
     expect(onOpen).toHaveBeenCalledWith(brief);
   });
@@ -171,7 +171,7 @@ describe("the line in a Mono's chat", () => {
     };
     act(() => root.render(createElement(Probe)));
     const line = container.querySelector<HTMLButtonElement>("[data-briefed-team='b-1']")!;
-    expect(line.textContent).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 2 stuck");
+    expect(line.textContent).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck");
     // The working line names Chief of Staff's own worker only; the brief isn't named there.
     expect(container.querySelector("[data-delegation-working]")?.textContent).toBe("1 working: Job own-1");
     // The Lead's stuck workers are the Lead's to answer (its chat, Today): no card for them here.
