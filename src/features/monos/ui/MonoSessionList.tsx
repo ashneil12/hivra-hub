@@ -34,7 +34,7 @@ import {
 import { SessionCard } from "../../../app/shell/Sidebar";
 import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
-import { noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
+import { forgetWorkSession, noteWorkSessions, seenWorkSession, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
 import { useDelegationRows } from "../model/delegationStore";
 import { waitingOnLeadLabel } from "../model/workerStuck";
 
@@ -205,6 +205,12 @@ export function MonoSessionList({
       )
       .map((launch) => launch.sessionId),
   );
+  // One deleted before this build forgot its mark on delete: forget it now, so the tab's badge matches the list.
+  const unavailableKey = [...unavailableIds].join(",");
+  useEffect(() => {
+    if (!workOnly || !unavailableKey) return;
+    for (const id of unavailableKey.split(",")) forgetWorkSession(id);
+  }, [workOnly, unavailableKey]);
   const busyIds = new Set<string>();
   const approvalIds = new Set<string>();
   const doneIds = new Set<string>();

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
+import { forgetWorkSession } from "../../monos/model/monoWorkSessions";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -907,6 +908,8 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     monoSavedBlocks.delete(sessionId);
+    // A deleted session is no longer a Mono's running or Done work (the Sessions badge counts those marks).
+    forgetWorkSession(sessionId);
     // What the harness kept for this chat past forgetting it (a goal for a rotation) has nothing left to serve.
     dropHarnessSession(sessionId);
     const tombstone = setTimeout(

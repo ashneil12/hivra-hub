@@ -71,6 +71,17 @@ export function seenWorkSession(id: string): void {
   save(next);
 }
 
+/**
+ * A session that was deleted leaves the list for good: its mark goes too, so the Sessions badge never counts a row the
+ * list can't show (live 22 Oct: badge 1 over an empty list after a Done row was deleted).
+ */
+export function forgetWorkSession(id: string): void {
+  if (!load()[id]) return;
+  const next = { ...load() };
+  delete next[id];
+  save(next);
+}
+
 export function useWorkSessionsVersion(): number {
   return useSyncExternalStore(
     (listener) => {
