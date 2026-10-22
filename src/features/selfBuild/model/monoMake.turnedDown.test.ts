@@ -40,3 +40,12 @@ it("a turned-down card can't be made, and its Mono hears it was turned down, wit
   const host = { ashSpokeSince: () => true, room: () => ({ id: "r", name: "r" }) };
   await expect(make.makeDrafted(draft.draftId, ME, host)).rejects.toThrow(/turned this card down/);
 });
+
+// r50 (A1: CoS told Ash "the X posts Mono is the card at the top" when no card existed): the draft's own note says the
+// card lasts only until Ash answers it, so a Mono never points to it after that.
+it("the draft note says the card is gone once Ash turns it down or it is made", async () => {
+  const make = await import("./monoMake");
+  const draft = make.draftMono(POSTIE, ME, Date.now(), undefined, { room: "hub:leadership", conv: "c" });
+  expect(draft.note).toMatch(/only until (he|the user) answers it/);
+  expect(draft.note).toMatch(/never point (him|them) to it after that/);
+});
