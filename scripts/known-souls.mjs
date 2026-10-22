@@ -38,7 +38,14 @@ function load(source) {
   const { code } = esbuild.transformSync(source, { loader: "ts", format: "cjs", target: "node20" });
   const module = { exports: {} };
   const localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
-  new Function("module", "exports", "require", "localStorage", code)(module, module.exports, () => stub(), localStorage);
+  // forUser / forYou (userName.ts) as on Ash's install, where they keep the text as it is: a stub there turned every
+  // Lead soul written with them into an empty proxy, so today's Lead template was only "known" while its text matched an
+  // older commit's (r48: the Lead soul's new give-up line).
+  const asIs = (text, ...values) =>
+    typeof text === "string" ? text : text.reduce((out, part, i) => out + part + (i < values.length ? String(values[i]) : ""), "");
+  const userName = { forUser: asIs, forYou: asIs, userName: () => "Ash" };
+  const req = (id) => (/(^|\/)userName(\.ts)?$/.test(id) ? new Proxy(userName, { get: (t, k) => (k in t ? t[k] : stub()) }) : stub());
+  new Function("module", "exports", "require", "localStorage", code)(module, module.exports, req, localStorage);
   return module.exports;
 }
 
