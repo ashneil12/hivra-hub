@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
@@ -150,7 +151,7 @@ export function jobTimeLabel(w: Worker): string {
   return `for ${durationLabel(w.minutes)}`;
 }
 
-function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpen: (id: string) => void; showWho: boolean; now?: number }) {
+export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpen: (id: string) => void; showWho: boolean; now?: number }) {
   const [expanded, setExpanded] = useState(false);
   const [answering, setAnswering] = useState(false);
   const parts = w.parts;
@@ -172,7 +173,7 @@ function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpe
           {w.finishedAt && showWho ? <span className="text-content/60"> · {w.who}</span> : null}</span>
         </span>
         {w.stuck && w.stuckReason ? (
-          <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stuckReason.replace(/^Example: /, "")}</span>
+          <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{rowReason(w.stuckReason)}</span>
         ) : null}
         {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
         {!w.stuck && w.stateReason ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stateReason}</span> : null}
@@ -351,7 +352,7 @@ function byMono(jobs: Worker[]): [string, Worker[]][] {
  * dot and plain text, like every other state. Done (not seen) = small dot. */
 function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean }) {
   const st = jobState(w);
-  const reason = w.stuckReason ? w.stuckReason.replace(/^Example: /, "") : "";
+  const reason = rowReason(w.stuckReason);
   if (st === "needs_you")
     return (
       <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
