@@ -37,9 +37,9 @@ export function TranscriptJumpToBottom({
   if (!visible) return null;
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 z-30 flex justify-center"
-      // Above a glass dock floating over the transcript (SessionPane `--dock-clear`), else 8px up as before.
-      style={{ bottom: "calc(var(--dock-clear, 0px) + 0.5rem)" }}
+      // Over a worker's glass dock it rises above the dock (.transcript-glass-dock in index.css).
+      data-jump-to-bottom-wrap
+      className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center"
     >
       <button
         type="button"

@@ -117,6 +117,13 @@ test("a worker chat's bar and the tab strip are glass over the scrolling transcr
     console.log(theme, JSON.stringify(l));
     expect(l.barBackdrop).toContain("blur");
     expect(l.scrollerBottom).toBeGreaterThanOrEqual(l.barBottom - 1);
+    // "Jump to latest" sits above the bar, not on it.
+    const jump = await page.evaluate(() => {
+      const b = document.elementFromPoint(900, 400)!.closest<HTMLElement>(".transcript-glass-dock")!.querySelector("[data-jump-to-bottom]");
+      return b ? b.getBoundingClientRect().bottom : null;
+    });
+    expect(jump).not.toBeNull();
+    expect(jump!).toBeLessThanOrEqual(l.barTop);
     await page.evaluate(() => {
       const sc = document.elementFromPoint(900, 400)!.closest<HTMLElement>(".agent-transcript")!;
       sc.scrollTop = sc.scrollHeight;

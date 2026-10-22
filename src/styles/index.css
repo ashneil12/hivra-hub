@@ -1037,6 +1037,17 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
   scroll-padding-bottom: calc(var(--dock-clear, 0px) + 1rem);
 }
 
+[data-glass-dock] {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 10;
+}
+
+.transcript-glass-dock [data-jump-to-bottom-wrap] {
+  bottom: calc(var(--dock-clear, 0px) + 0.5rem);
+}
+
 .transcript-glass-dock [data-transcript-content] {
   padding-top: 1.25rem;
   padding-bottom: calc(var(--dock-clear, 0px) + 1.5rem);

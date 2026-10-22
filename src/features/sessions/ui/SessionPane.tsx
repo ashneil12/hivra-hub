@@ -1228,13 +1228,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
               data-session-composer
               inert={btw.open}
               // A Mono's composer fills the width with the room's side padding (GroupChatView).
-              className={
-                agent
-                  ? "w-full shrink-0 px-6 xl:px-8"
-                  : glassDock
-                    ? "absolute inset-x-0 bottom-0 z-10 mx-auto w-full max-w-4xl"
-                    : "mx-auto w-full max-w-4xl shrink-0"
-              }
+              // A worker's glass dock floats over the transcript ([data-glass-dock] in index.css).
+              data-glass-dock={glassDock || undefined}
+              className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
             >
               {agent ? (
                 <>
