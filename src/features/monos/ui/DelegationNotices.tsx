@@ -8,6 +8,8 @@
 //   working · 1 with EXO lead"; never "stuck", r30b), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
 import { useState } from "react";
 import { ChevronRight, Square, Terminal } from "../../../shared/ui/icons";
+import type { HarnessId } from "../../sessions/model/session";
+import { MonoModelLine } from "./MonoModelLine";
 import { briefedStatus, type BriefedTeam } from "../model/briefedTeams";
 import { workingLine } from "../model/leadFlow";
 import { shortSplit, stuckOwner, workSplit, type StuckOwner, type StuckWorker } from "../model/workerStuck";
@@ -87,6 +89,11 @@ export function DelegatedChatNotice({
   now = Date.now(),
   onOpenOwner,
   onJumpIn,
+  modelHarness,
+  model,
+  modelValues,
+  onModelChange,
+  onModelSettingsChange,
 }: {
   ownerName: string;
   /** Where its work stands: still running, asking its Lead, or finished. */
@@ -96,7 +103,14 @@ export function DelegatedChatNotice({
   now?: number;
   onOpenOwner?: () => void;
   onJumpIn: () => void;
+  /** E7: which model this worker runs on, pickable here — the line where its chat says it runs on its own. */
+  modelHarness?: HarnessId;
+  model?: string;
+  modelValues?: Record<string, string>;
+  onModelChange?: (harness: HarnessId, model: string) => void;
+  onModelSettingsChange?: (settings: Record<string, string>) => void;
 }) {
+  const showsModel = Boolean(modelHarness && model);
   const lead =
     state === "asking"
       ? `Asked ${ownerName} a question`
@@ -131,6 +145,18 @@ export function DelegatedChatNotice({
             <span>{ownerName} talks to it</span>
           )}
         </span>
+        {showsModel && modelHarness && model ? (
+          <span data-delegated-model className="flex min-w-0 shrink-0 items-center">
+            <MonoModelLine
+              harness={modelHarness}
+              model={model}
+              values={modelValues ?? {}}
+              allowedHarnesses={[modelHarness]}
+              onChange={(harness, next) => onModelChange?.(harness, next)}
+              onSettingsChange={(settings) => onModelSettingsChange?.(settings)}
+            />
+          </span>
+        ) : null}
         <button
           type="button"
           data-jump-in

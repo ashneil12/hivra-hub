@@ -31,4 +31,9 @@ it("a worker's card fills up to the 640px reading width, title first and the pro
   const title = [...card.querySelectorAll("span")].find((s) => s.textContent === launch.title)!;
   expect(title.className.split(/\s+/)).toContain("flex-1");
   expect(card.lastElementChild!.textContent).toBe("monocode-hub");
+  // E7: the card says which model the worker runs on, quietly, just before the project chip.
+  const model = card.querySelector("[data-launched-model]")!;
+  expect(model.textContent).toBe("Opus");
+  expect(model.getAttribute("title")).toBe("Runs on Opus");
+  expect(model.nextElementSibling).toBe(card.lastElementChild);
 });
