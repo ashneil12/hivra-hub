@@ -478,6 +478,28 @@ html.theme-light .solid-panel-glass {
   background: color-mix(in srgb, var(--color-background-base) 94%, transparent);
 }
 
+/* A bar floating over a scrolling page (the tab strip, a worker chat's "Worked for … · Jump in" bar): the panel glass
+   above, thinner, so text scrolling under it shows through blurred rather than stopping at a solid edge (F2, r53). */
+.glass-bar {
+  --glass-bar-tint: color-mix(in srgb, var(--color-background-base) 90%, black);
+  background: color-mix(in srgb, var(--glass-bar-tint) 72%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  backdrop-filter: blur(16px) saturate(1.2);
+}
+
+html.layout-inset .glass-bar {
+  --glass-bar-tint: var(--inset-panel);
+}
+
+html.theme-light .glass-bar {
+  --glass-bar-tint: var(--color-background-base);
+  background: color-mix(in srgb, var(--glass-bar-tint) 78%, transparent);
+}
+
+html.layout-inset.theme-light .glass-bar {
+  --glass-bar-tint: var(--inset-panel);
+}
+
 /* The activity dot sits at (23px, 9px) in a 32px button. Its icon is
    centered at (8px, 8px), so this cuts a 2px gap around the 6px dot. */
 .compact-rail-icon-with-dot {
@@ -973,16 +995,9 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
   );
 }
 
-/* The transcript fades under the top edge too, like the composer's fade at
-   the bottom. */
+/* At the top the tab strip's glass edge (.tab-strip-glass) blurs lines out
+   instead of a fade; the composer's fade stays at the bottom. */
 .transcript-composer-fade .agent-transcript {
-  --scroll-bottom-mask: linear-gradient(
-    to bottom,
-    transparent,
-    #000 1.5rem,
-    #000 calc(100% - 2.5rem),
-    transparent
-  );
   /* A message scrolled to lands where the first one rests, below the fade.
      The prompt outline reads this too. */
   scroll-padding-top: 1.25rem;
@@ -993,6 +1008,38 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
 .transcript-composer-fade [data-transcript-content] {
   padding-top: 1.25rem;
   padding-bottom: 2.5rem;
+}
+
+/* The tab strip's glass edge: a band under the strip, blurred most at the
+   strip and clearing over 1.5rem, tinted like .glass-bar, so a line scrolled up
+   to the strip blurs out there instead of meeting a solid edge (F2, r53). */
+.tab-strip-glass {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  z-index: 10;
+  height: 1.5rem;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-background-base) 55%, transparent),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(6px) saturate(1.2);
+  backdrop-filter: blur(6px) saturate(1.2);
+  -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent);
+  mask-image: linear-gradient(to bottom, #000 30%, transparent);
+}
+
+/* A worker chat's glass dock floats over the transcript: only the top fades, and the last line rests above the dock. */
+.transcript-glass-dock .agent-transcript {
+  scroll-padding-top: 1.25rem;
+  scroll-padding-bottom: calc(var(--dock-clear, 0px) + 1rem);
+}
+
+.transcript-glass-dock [data-transcript-content] {
+  padding-top: 1.25rem;
+  padding-bottom: calc(var(--dock-clear, 0px) + 1.5rem);
 }
 
 /* The bottom band a Mono's 1:1 keeps clear for "Jump to latest" (TranscriptJumpToBottom: 24px, 8px up): nothing shows

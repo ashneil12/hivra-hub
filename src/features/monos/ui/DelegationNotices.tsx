@@ -112,7 +112,7 @@ export function DelegatedChatNotice({
       ) : null}
       <div
         data-delegated-chat
-        className="flex w-full items-center gap-2 rounded-2xl border border-content/10 px-4 py-3 font-sans text-[13px] text-content/60"
+        className="glass-bar flex w-full items-center gap-2 rounded-2xl border border-content/10 px-4 py-3 font-sans text-[13px] text-content/60"
       >
         <span className="min-w-0 truncate">
           {lead}

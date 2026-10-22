@@ -680,6 +680,22 @@ const LocalSessionPane = memo(function LocalSessionPane({
     remoteSessionLoading ||
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk || !!agent));
   const composerDockMotion = useComposerDockMotion(dockComposer);
+  // A worker's chat has no composer, only its "Worked for … · Jump in" bar: that floats over the transcript on glass,
+  // so the last lines scroll on under it, blurred, instead of stopping at a hard edge (F2, r53).
+  const glassDock = dockComposer && !agent && delegationPane?.kind === "worker";
+  const [dockClear, setDockClear] = useState(0);
+  useEffect(() => {
+    const element = composerDockMotion.dockedRef.current;
+    if (!glassDock || !element) {
+      setDockClear(0);
+      return;
+    }
+    const measure = () => setDockClear(Math.ceil(element.getBoundingClientRect().height));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
   const composer = (
     <Composer
@@ -920,13 +936,29 @@ const LocalSessionPane = memo(function LocalSessionPane({
         </div>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          style={
+            glassDock
+              ? ({ "--dock-clear": `${dockClear}px` } as CSSProperties)
+              : undefined
+          }
+        >
           <div
             ref={transcriptScope}
             className={`relative min-h-0 flex-1${
-              dockComposer && !agent ? " transcript-composer-fade" : ""
+              glassDock
+                ? " transcript-glass-dock"
+                : dockComposer && !agent
+                  ? " transcript-composer-fade"
+                  : ""
             }`}
           >
+            {dockComposer && !agent ? (
+              // The tab strip's glass edge: lines scrolled up to the strip blur out under it rather than meeting a solid
+              // edge (F2, r53). The strip is its own row above the pane, so the blur sits just under its border.
+              <div aria-hidden data-tab-strip-glass className="tab-strip-glass" />
+            ) : null}
             {visible && focused && !session.inboxAsk ? (
               <LinkedWorkItemUpdateNotice
                 sessionId={session.id}
@@ -1196,7 +1228,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
               data-session-composer
               inert={btw.open}
               // A Mono's composer fills the width with the room's side padding (GroupChatView).
-              className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
+              className={
+                agent
+                  ? "w-full shrink-0 px-6 xl:px-8"
+                  : glassDock
+                    ? "absolute inset-x-0 bottom-0 z-10 mx-auto w-full max-w-4xl"
+                    : "mx-auto w-full max-w-4xl shrink-0"
+              }
             >
               {agent ? (
                 <>
