@@ -248,17 +248,7 @@ export function StuckWorkerCard({
             Take the pick
           </button>
         ) : null}
-        {red ? null : (
-          <button
-            type="button"
-            className={BTN}
-            data-stuck-open
-            title={`Opens ${lead}'s chat: you answer it there, and it passes the answer on`}
-            onClick={open}
-          >
-            Open {lead}&apos;s chat
-          </button>
-        )}
+        {/* Critiquito, Ash's call (r51): no "Open <Lead>'s chat" on a grey card; a red one has it under its reason. */}
         {stuck.kind === "failed" ? (
           <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
             Dismiss

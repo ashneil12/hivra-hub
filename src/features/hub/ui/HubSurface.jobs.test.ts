@@ -404,8 +404,9 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
   afterEach(() => resetDelegationStore());
 
   // r30b, the red rule on Being built: never "Stuck" or "Open chat". A worker its Lead has reads grey "With Hivra lead"
-  // with "Open Hivra lead's chat"; one refused for credits is the red Needs you with its plain reason and the link.
-  it("a failed worker its Lead has reads grey With <Lead> in plain words, and Open <Lead>'s chat opens its Lead's chat (D5)", async () => {
+  // and, since r51 (Critiquito), has no "Open <Lead>'s chat" at all; one refused for credits is the red Needs you with
+  // its plain reason and the link.
+  it("a failed worker its Lead has reads grey With <Lead> in plain words, with no Open <Lead>'s chat button (D5, r51)", async () => {
     setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", settledAt: at - 60_000,
       error: "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)" })]);
     mount(view());
@@ -414,12 +415,10 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(job()!.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
     expect(job()!.querySelector("[data-hub-circle=red]")).toBeNull();
     expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Stopped with an error.");
-    const open = job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!;
-    expect(open.textContent).toBe("Open Hivra lead's chat");
+    expect(job()!.querySelector('[data-hub-stuck-action="open"]')).toBeNull();
+    expect(job()!.querySelector("[data-hub-open-lead], [data-hub-needs-you-link]")).toBeNull();
+    expect(job()!.textContent).not.toMatch(/Open .*'s chat/);
     expect(text()).not.toMatch(/\bStuck\b|Open chat\b|dev-faults|on purpose|test fault/i);
-    act(() => open.click());
-    expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat");
-    expect(actions.openChild).not.toHaveBeenCalled();
   });
 
   it("a worker refused for credits is the red Needs you with its plain reason and Open <Lead>'s chat, no second button", async () => {
@@ -498,11 +497,9 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(row.closest("[data-hub-today-section], [data-hub-today-being-built]") ?? container.querySelector("[data-hub-today-job]")).not.toBeNull();
     expect(row.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With Hivra lead");
     expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped with an error.");
-    expect(row.querySelector("[data-stuck-open]")?.textContent).toBe("Open Hivra lead's chat");
+    expect(row.querySelector("[data-stuck-open]")).toBeNull(); // r51 (Critiquito): grey has no Open <Lead>'s chat
+    expect(row.textContent).not.toMatch(/Open .*'s chat/);
     expect(row.querySelector("[data-stuck-dismiss]")).not.toBeNull();
-    act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());
-    expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat"); // the Lead's chat: Ash answers the Lead (D5)
-    expect(actions.openChild).not.toHaveBeenCalled();
     expect(container.querySelector('[data-stuck-worker="w-q"]')).toBeNull();
     expect(text()).not.toMatch(/\bStuck\b|dev-faults|Open chat\b/);
   });

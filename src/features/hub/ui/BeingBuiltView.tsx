@@ -312,7 +312,9 @@ function StopWatching({ w: worker }: { w: Worker }) {
 function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: boolean; onAnswer: () => void }) {
   const stuck = w.stuckWorker!;
   const asking = stuck.kind === "asking";
-  if (!asking && w.lead && workerChip(w)?.tone === "red") return null;
+  // Critiquito, Ash's call (r51): only a red row gets "Open <Lead>'s chat" (under its reason); a grey row (With <Lead>,
+  // Retrying) gets none, it is its Lead's to handle. A question keeps Answer.
+  if (!asking) return null;
   return (
     <button
       type="button"
@@ -335,20 +337,8 @@ function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: bool
 function WorkerTakeLook({ w: worker }: { w: Worker }) {
   const w = findWaiting(worker.waitingId ?? `worker:${worker.id}`);
   if (!w)
-    // A red Needs you already carries "Open <Lead>'s chat" under its reason (r27b): no second button for it.
-    return worker.lead && !worker.finishedAt && workerChip(worker)?.tone !== "red" ? (
-      <button
-        type="button"
-        data-hub-open-lead={worker.lead}
-        onClick={(e) => {
-          e.stopPropagation();
-          openLead(worker.lead);
-        }}
-        className={LEAD_CHAT_BUTTON}
-      >
-        Open {worker.who}&apos;s chat
-      </button>
-    ) : null;
+    // A red Needs you carries "Open <Lead>'s chat" under its reason (r27b); a grey row gets none (r51, Critiquito).
+    return null;
   return (
     <button
       type="button"

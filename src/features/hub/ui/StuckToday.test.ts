@@ -89,7 +89,7 @@ describe("Today's stuck workers (no Stuck section since r30)", () => {
     setWaitingChatsHost(host);
     act(() => root.render(createElement(StuckToday, { projectId: undefined, tone: "grey" })));
     const card = container.querySelector<HTMLElement>('[data-stuck-worker="w-t-1"]')!;
-    expect(card.querySelector("[data-stuck-open]")!.textContent).toBe("Open EXO lead's chat");
+    expect(card.querySelector("[data-stuck-open]")).toBeNull(); // r51: grey has no Open <Lead>'s chat
     const input = card.querySelector<HTMLInputElement>("[data-stuck-reply]")!;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Skip the flaky one");
@@ -101,7 +101,7 @@ describe("Today's stuck workers (no Stuck section since r30)", () => {
 
   // r30 (PM's r45 Mac check, pm-r45-34): a failed worker showed under its own grey "Stuck" heading, "· failed", the raw
   // fault with its file path, and "Open chat". Under the red rule it is its Lead's: a grey "With <Lead>", one plain line,
-  // "Open <Lead>'s chat" and Dismiss, with Being built; only a refusal Ash must sort is red, with Needs you.
+  // and Dismiss (no Open <Lead>'s chat since r51), with Being built; only a refusal Ash must sort is red, with Needs you.
   it("a failed worker its Lead has reads With <Lead> in plain words, never Stuck, failed, the raw fault or Open chat", () => {
     const fault: Delegation = {
       ...stalled("t-9", "vg-game-lead", "exo-chat", "vg-game", "Example: tidy the README setup steps"),
@@ -115,7 +115,8 @@ describe("Today's stuck workers (no Stuck section since r30)", () => {
     expect(card.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With EXO lead");
     expect(card.querySelector("[data-hub-circle]")?.getAttribute("data-hub-circle")).toBe("grey");
     expect(card.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped with an error.");
-    expect(card.querySelector("[data-stuck-open]")?.textContent).toBe("Open EXO lead's chat");
+    expect(card.querySelector("[data-stuck-open]")).toBeNull(); // r51 (Critiquito): grey rows get no Open <Lead>'s chat
+    expect(card.textContent).not.toMatch(/Open .*'s chat/);
     expect(card.querySelector("[data-stuck-dismiss]")?.textContent).toBe("Dismiss");
     expect(container.querySelector("h2")).toBeNull(); // no heading of its own
     expect(container.textContent).not.toMatch(/\bStuck\b|\bfailed\b|dev-faults|Open chat/);

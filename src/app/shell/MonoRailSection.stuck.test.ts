@@ -265,7 +265,9 @@ describe("stuck cards read plainly (Critiquito, 21 Oct)", () => {
     expect(options[0].hasAttribute("data-stuck-suggested")).toBe(true);
     expect(card.querySelector("[data-stuck-take-pick]")).toBeNull();
     // Actions on one row, the reply and Send on their own row below.
-    expect(card.querySelector("[data-stuck-actions] [data-stuck-open]")).not.toBeNull();
+    // r51 (Critiquito): a grey card has no "Open <Lead>'s chat"; its options answer it.
+    expect(card.querySelector("[data-stuck-open]")).toBeNull();
+    expect(card.textContent).not.toMatch(/Open .*'s chat/);
     expect(card.querySelector("[data-stuck-reply-row] [data-stuck-reply]")).not.toBeNull();
     expect(card.querySelector("[data-stuck-reply-row] [data-stuck-send]")).not.toBeNull();
     await act(async () => options[1].click());
