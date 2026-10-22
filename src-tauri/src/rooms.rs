@@ -1049,8 +1049,24 @@ mod tests {
         upsert_room(&mut c, &room("hub:leadership", &["chief-of-staff"]), 1).unwrap();
         upsert_conversation(&c, &thread("hub:leadership", "old", 10), 10).unwrap();
         upsert_conversation(&c, &thread("hub:leadership", "new", 20), 20).unwrap();
-        add_message(&c, &say("hub:leadership", "old", "m1", "ash", "Example: make a marketing chat"), 11).unwrap();
-        add_message(&c, &say("hub:leadership", "new", "m2", "ash", "Example: hey"), 21).unwrap();
+        add_message(
+            &c,
+            &say(
+                "hub:leadership",
+                "old",
+                "m1",
+                "ash",
+                "Example: make a marketing chat",
+            ),
+            11,
+        )
+        .unwrap();
+        add_message(
+            &c,
+            &say("hub:leadership", "new", "m2", "ash", "Example: hey"),
+            21,
+        )
+        .unwrap();
         add_origin(
             &c,
             &Origin {
@@ -1068,7 +1084,11 @@ mod tests {
         assert!(delete_conversation(&mut c, "hub:leadership", "old").unwrap());
         assert!(!delete_conversation(&mut c, "hub:leadership", "old").unwrap());
         let snap = load(&c, 50).unwrap();
-        let ids: Vec<_> = snap.rooms[0].conversations.iter().map(|t| t.id.as_str()).collect();
+        let ids: Vec<_> = snap.rooms[0]
+            .conversations
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["new"]);
         let read_all: Vec<_> = read(&c, "hub:leadership", None, None, 30)
             .unwrap()
