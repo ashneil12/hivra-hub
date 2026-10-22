@@ -313,12 +313,29 @@ export function runnerSubmitArgs({ label, node, dir, home }) {
 }
 
 /**
- * Start the runner: a launchd job submitted without a plist (the real path), or a plain detached process (tests).
- * `launchctl submit` keeps the runner alive across the app's quit and restarts it if it crashes, like the old
- * LaunchAgent did, but writes nothing into ~/Library/LaunchAgents, so Background Task Management never sees a new login
- * item and macOS shows no "App Background Activity: node" banner (r50: that banner sat over the app's top-right
- * controls after every ship, and a click on it opened Login Items & Extensions). A submitted job is kept alive even
- * after a clean exit, so the runner removes its own job when it is done (see the runner's main).
+ * The runner's spawn options when it is detached from whoever started it (r53, the default). Its own session
+ * (`setsid`, so no terminal hangup and no process-group kill reaches it), its output appended to runner.log, and HOME and
+ * PATH set the way the launchd job set them. Nothing is inherited that could hold the caller open: `app.ship` reads
+ * hub-ship.mjs's stdout to the end, so a runner holding that pipe would keep the app waiting for the whole ship.
+ */
+export function runnerDetachOptions({ home, logFd, env = process.env }) {
+  return {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: { ...env, HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+  };
+}
+
+/**
+ * Start the runner. The default (r53) is "detach": a plain process in its own session, started by this short-lived
+ * script, so once hub-ship.mjs exits it belongs to launchd as an orphan, outside the app's process tree, and outlives
+ * the app's quit. No launchd job and no plist: Background Task Management never sees anything, so macOS shows no
+ * "node can run in the background" / "App Background Activity: node" notice.
+ *
+ * Why not `launchctl submit` (r50, still here as `--launcher launchd`): a submitted job is a launchd job, and BTM
+ * records every new one by its executable. Each ship's job has its own label, so every ship added another "node"
+ * background item and raised the notice again (three ships, three notices on 22 Oct). If a detached runner dies, the
+ * app's boot (ship.rs `restart_runner`) starts it again the same detached way. "spawn" is the tests' plain child.
  */
 function startRunner(ship, dir, launcher) {
   const node = ship.node;
@@ -330,6 +347,20 @@ function startRunner(ship, dir, launcher) {
     });
     child.unref();
     return { launcher, pid: child.pid };
+  }
+  if (launcher === "detach") {
+    const logFd = fs.openSync(path.join(dir, "runner.log"), "a");
+    try {
+      const child = spawn(
+        node,
+        ["--disable-warning=ExperimentalWarning", path.join(dir, "runner.mjs"), dir],
+        runnerDetachOptions({ home: ship.home, logFd }),
+      );
+      child.unref();
+      return { launcher, pid: child.pid, detached: true };
+    } finally {
+      fs.closeSync(logFd);
+    }
   }
   const { label, domain } = ship.launchd;
   const result = launchctl(runnerSubmitArgs({ label, node, dir, home: ship.home }));
@@ -344,7 +375,7 @@ function launchDomain() {
 }
 
 /** Stage a bundle as a ship and start its runner. Shared by hub:ship and hub:rollback. */
-export function stageShip({ bundle, paths, kind = "ship", to, from, owner, requestedBy, whenBusy = "wait", drill = null, restoreDb = null, restoreDbHashes = null, launcher = "launchd", launchMode, launchEnv = {}, timeouts = {}, labelPrefix, supersedes, idSuffix = "" }) {
+export function stageShip({ bundle, paths, kind = "ship", to, from, owner, requestedBy, whenBusy = "wait", drill = null, restoreDb = null, restoreDbHashes = null, launcher = "detach", launchMode, launchEnv = {}, timeouts = {}, labelPrefix, supersedes, idSuffix = "" }) {
   const id = shipId(to.sha, idSuffix);
   const dir = path.join(paths.ships, id);
   fs.mkdirSync(path.join(dir, STAGED_DIR), { recursive: true });
@@ -383,6 +414,8 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
     restoreDbHashes,
     launch: { mode, env },
     launchd: launcher === "launchd" ? { label, domain: launchDomain(), plist: null, submitted: true } : null,
+    /** How the runner was started: "detach" (r53 default), "launchd" (submitted job) or "spawn" (tests). */
+    launcher,
     node: process.execPath,
     timeouts: { ...DEFAULT_TIMEOUTS, ...timeouts },
     steps: {},
@@ -515,7 +548,7 @@ function parseArgs(argv) {
     } else throw new Error(`unknown argument ${arg}`);
   }
   if (options.whenBusy && !["wait", "restart"].includes(options.whenBusy)) throw new Error("--when-busy is wait or restart");
-  if (options.launcher && !["launchd", "spawn"].includes(options.launcher)) throw new Error("--launcher is launchd or spawn");
+  if (options.launcher && !["detach", "launchd", "spawn"].includes(options.launcher)) throw new Error("--launcher is detach, launchd or spawn");
   if (options.launch && !["open", "direct"].includes(options.launch)) throw new Error("--launch is open or direct");
   if (options.requestedBy && !/^[A-Za-z0-9_-]{1,128}$/.test(options.requestedBy)) throw new Error("--requested-by takes a session id");
   return options;
@@ -583,7 +616,7 @@ export async function main(argv = process.argv.slice(2)) {
       requestedBy: options.requestedBy ? { via: "app.ship", sessionId: options.requestedBy } : { via: "cli", sessionId: null },
       whenBusy: options.whenBusy ?? "wait",
       drill: options.drill ?? null,
-      launcher: options.launcher ?? "launchd",
+      launcher: options.launcher ?? "detach",
       launchMode: options.launch,
       launchEnv: options.launchEnv,
       timeouts: options.timeouts,

@@ -4,7 +4,8 @@
 //! The whole path:
 //! 1. `scripts/hub-ship.mjs` (`npm run hub:ship`, the `app.ship` action, later a button) checks the build, copies it
 //!    to `<data>/ship/<id>/staged/`, writes `state.json` ("staged") and starts `runner.mjs` (a copy of
-//!    `scripts/hub-ship-runner.mjs`) as a one-shot LaunchAgent, outside this app's process group.
+//!    `scripts/hub-ship-runner.mjs`) detached in its own session, outside this app's process tree once hub-ship.mjs
+//!    exits (r53: no launchd job, so no "node can run in the background" notice; `--launcher launchd` still submits one).
 //! 2. This app's watcher ([`init`]) sees the staged build and accepts it only if its signature matches the app's own
 //!    (`accepted.json`, or `refused.json` with why). It then quits for the update once no other turn is running, or
 //!    straight away on "Restart now" (`window::request_update_quit`): the normal quit path without the dialog, cut

@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { isIsolatedHome, runnerPlist, runnerSubmitArgs } from "./hub-ship.mjs";
+import { isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs } from "./hub-ship.mjs";
 import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -862,6 +862,52 @@ test("r50: a submitted runner removes its own launchd job when it ends cleanly, 
     else process.env.MONOCODE_SHIP_LAUNCHCTL = saved;
   }
   assert.deepEqual(launchctl.calls(), [`bootout ${domain}/test.monocode-hub-ship.20261022-000001-aaaaaaa`]);
+});
+
+test("r53: the runner is detached in its own session with its output in runner.log, not inherited", () => {
+  const options = runnerDetachOptions({ home: "/tmp/h", logFd: 7, env: { KEEP: "1", HOME: "/elsewhere", PATH: "/opt/bin" } });
+  assert.equal(options.detached, true, "its own session (setsid): no hangup or process-group kill reaches it");
+  assert.deepEqual(options.stdio, ["ignore", 7, 7], "no pipe of the caller's held open");
+  assert.deepEqual(options.env, { KEEP: "1", HOME: "/tmp/h", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+});
+
+// r53 dry run of the default path: a whole ship under a temporary HOME (the real app is never touched) with no
+// --launcher, so the way a real ship starts its runner. launchd must not be asked for anything (no job, so nothing for
+// Background Task Management to announce), the CLI must return while the runner is still waiting, and the runner,
+// orphaned in its own session, must carry the ship across the fake app's quit and restart to a commit.
+test("r53 drill: the default ship starts a detached runner, asks launchd for nothing, and commits across the restart", async () => {
+  const w = world();
+  const launchctl = fakeLaunchctl(w.root);
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const started = Date.now();
+  const result = spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
+  );
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.equal(result.status, 0, JSON.stringify(answer));
+  assert.ok(Date.now() - started < 15000, "the CLI's pipes close when it exits, not when the runner does");
+  const staged = await until("the runner's start", () => (stateOf(answer.shipDir)?.runner?.pid ? stateOf(answer.shipDir) : null), 10000);
+  remember(answer.shipDir);
+  assert.equal(staged.launchd, null, "no launchd job");
+  assert.equal(staged.launcher, "detach");
+  const pid = staged.runner.pid;
+  const ps = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().split(/\s+/).map(Number);
+  if (ps.length === 3) {
+    assert.equal(ps[2], pid, "the runner leads its own process group");
+    assert.notEqual(ps[1], process.pid, "and is nobody's child here");
+  }
+  const done = await until("the ship's commit", settled(answer.shipDir, "committed"), 60000);
+  assert.equal(done.phase, "committed");
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in place (in the temporary HOME)");
+  assert.ok(fs.existsSync(path.join(answer.shipDir, "accepted.json")), "the old app accepted the update and quit");
+  assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha, "the new app is running");
+  assert.deepEqual(launchctl.calls(), [], "launchd was asked for nothing");
+  const agents = path.join(w.home, "Library/LaunchAgents");
+  assert.deepEqual(fs.existsSync(agents) ? fs.readdirSync(agents) : [], [], "nothing is written into LaunchAgents");
+  assert.match(fs.readFileSync(path.join(answer.shipDir, "runner.log"), "utf8"), /done: committed/);
 });
 
 // r50 drill against the real launchd (opt-in: MONOCODE_SHIP_LIVE_LAUNCHD=1): a whole ship under a temporary HOME with

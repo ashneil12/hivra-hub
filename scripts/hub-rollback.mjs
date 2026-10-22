@@ -52,7 +52,7 @@ export function planRollback({ id, paths }) {
 export async function main(argv = process.argv.slice(2)) {
   const json = argv.includes("--json");
   const confirm = argv.includes("--confirm");
-  const launcher = argv.includes("--launcher") ? argv[argv.indexOf("--launcher") + 1] : "launchd";
+  const launcher = argv.includes("--launcher") ? argv[argv.indexOf("--launcher") + 1] : "detach";
   const id = argv.find((arg, i) => !arg.startsWith("--") && argv[i - 1] !== "--launcher");
   const say = (value) => (json ? console.log(JSON.stringify(value)) : undefined);
   if (!id) {
