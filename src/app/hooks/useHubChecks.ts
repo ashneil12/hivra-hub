@@ -1,7 +1,8 @@
 // The checker's notes reach their chats (hub/model/hubChecks.ts; docs/PHASE-2-DESIGN.md decision 4, H6). In the Hub
 // bundle's main window only: each goes to its owner's chat as one quiet `[MonoCode check]` turn once that chat is idle.
 // Two sources: Ash OS's undelivered checks (at boot and on feed topic `checks`), and the light look after each dump
-// (hub/model/dumpCheck.ts; Ash, 21 Oct: no hourly audit), run here once a chat Ash talks to has answered one.
+// (hub/model/dumpCheck.ts; Ash, 21 Oct: no hourly audit), run here once the chat that sent one is idle. Every dump in
+// any hub chat is written down the moment it arrives (B5: a chat quit before answering is still checkable).
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { SubmissionAcceptance } from "../model/submissionAcceptance";
@@ -9,9 +10,8 @@ import type { Block, Session } from "../../features/sessions/model/session";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
 import { hubCheckFeed } from "../../features/hub/model/hubData";
 import { CHECKER_MONO_ID, ensureChecker } from "../../features/hub/model/hubChecker";
-import { CheckDelivery, checkMeta, checkReceipt, type HubCheck } from "../../features/hub/model/hubChecks";
-import { answeredDump, claimDumpCheck, dumpCheck, dumpCheckPrompt, parseMissed } from "../../features/hub/model/dumpCheck";
-import { isOrchestratorChat } from "../../features/monos/model/orchestrators";
+import { CheckDelivery, checkMeta, checkReceipt } from "../../features/hub/model/hubChecks";
+import { lastUserBlockId, lookAtDumps, noteDumps } from "../../features/hub/model/dumpCheck";
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../integrations/harness";
 import { homeDir } from "../../platform/tauri/fs";
 
@@ -46,21 +46,6 @@ const LOOK_TIMEOUT_MS = 90_000;
 async function isolatedLook(prompt: string): Promise<string> {
   if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the dump check");
   return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: LOOK_TIMEOUT_MS });
-}
-
-/** Look at each answered dump once; offer a check when something looks missed. */
-export async function lookAtDumps(
-  sessions: readonly Session[],
-  look: (prompt: string) => Promise<string>,
-  offer: (checks: HubCheck[]) => unknown,
-): Promise<void> {
-  for (const session of sessions) {
-    if (session.busy || session.queuedMessages?.length || monoForSession(session.id)?.id === CHECKER_MONO_ID || !isOrchestratorChat(session.id)) continue;
-    const dump = answeredDump(session);
-    if (!dump || !claimDumpCheck(dump.ask.id)) continue;
-    const missed = parseMissed(await look(dumpCheckPrompt(dump.ask.text ?? "", dump.reply)).catch(() => ""));
-    if (missed.length) await offer([dumpCheck(session.id, dump.ask, missed)]);
-  }
 }
 
 export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
@@ -112,6 +97,14 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
     };
   }, [on, delivery]);
 
+  // Write down each dump when it arrives, before any answer exists, so quitting or cutting the chat loses nothing.
+  // Keyed on which chat got a new latest message, not on every streamed token.
+  const newest = useMemo(() => host.sessions.map((session) => `${session.id}:${lastUserBlockId(session)}`).join(" "), [host.sessions]);
+  useEffect(() => {
+    if (!on) return;
+    noteDumps(latest.current.sessionsRef.current);
+  }, [on, newest]);
+
   // A chat that went idle may be waiting for a check. Keyed on which chats are idle, not on every streamed token.
   const idle = useMemo(
     () =>
@@ -124,8 +117,12 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
   useEffect(() => {
     if (!on) return;
     void delivery.flush();
-    void lookAtDumps(latest.current.sessionsRef.current, latest.current.look ?? isolatedLook, (checks) => delivery.offer(checks)).catch(
-      (error: unknown) => console.warn("The dump check failed", error),
-    );
+    void lookAtDumps(
+      latest.current.sessionsRef.current,
+      latest.current.look ?? isolatedLook,
+      (checks) => delivery.offer(checks),
+      // The checker's own chat only reads; a check there would be a note about a note.
+      { skip: (id) => monoForSession(id)?.id === CHECKER_MONO_ID },
+    ).catch((error: unknown) => console.warn("The dump check failed", error));
   }, [on, delivery, idle]);
 }
