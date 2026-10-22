@@ -17,6 +17,7 @@ import { isProviderErrorClass, PROVIDER_ERROR_LABEL } from "../../../integration
 import { isOpenDelegation, type Delegation } from "./delegations";
 import { batchRollup, CHILD_CHATS_RECENT_MS, type RollupState } from "./delegationView";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
+import { failureClass } from "./turnFailure";
 
 export type StuckKind = "asking" | "stalled" | "failed";
 
@@ -131,8 +132,12 @@ const REPAIR_TRIES = 3;
  * "Failed: usage limit reached, resets 3:10pm", "Failed: billing refused", "Failed: the build broke"; a crash that came
  * back says so: "Crashed 4 times, retries ran out: Claude exited with code 1".
  */
-export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "resetsAt"> & Partial<Pick<Delegation, "state" | "log">>): string {
+export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "resetsAt"> & Partial<Pick<Delegation, "state" | "log" | "retryable">>): string {
   const times = row.log ? failedTimes({ log: row.log }) : 0;
+  // r30c: a key the provider rejected or a request it refused says so, whatever kind (if any) the provider gave it.
+  const why = ashMustAct({ state: "failed", errorClass: row.errorClass, error: row.error, retryable: row.retryable ?? null, delivery: "pending", log: row.log ?? [] });
+  if (why === "key") return "Failed: key rejected";
+  if (why === "refused") return "Failed: request refused";
   if (times >= 2 && isCrash({ state: row.state ?? "failed", errorClass: row.errorClass })) {
     const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
     const first = (row.error ?? "").trim().split("\n")[0].replace(/[.!?\s]+$/, "");
@@ -269,7 +274,7 @@ export type WorkCounts = {
   working: number;
   asking: number;
   stuck: number;
-  /** Of `stuck`, the ones only Ash can sort (a billing or sign-in refusal): the rail's red "needs you" (r30). */
+  /** Of `stuck`, the ones only Ash can sort (credits, a rejected key, sign-in, a refusal, out of retries): red "needs you" (r30c). */
   needsYou?: number;
   /** Of `stuck`, the ones a retry has (a crash self-repair is retrying, or its Lead retried it): grey "retrying" (r30b). */
   retrying?: number;
@@ -282,11 +287,42 @@ export type WorkCounts = {
  */
 export type StuckOwner = "needs-you" | "retrying" | "with-lead";
 export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner {
-  if (stuck.kind === "failed" && (stuck.row.errorClass === "billing" || stuck.row.errorClass === "auth")) return "needs-you";
-  const action = leadAction(stuck.row);
-  if (action?.kind === "retried" || action?.kind === "split") return "retrying";
-  if (stuck.kind === "failed" && repairableFailure(stuck.row) && failedTimes(stuck.row) <= REPAIR_BACKOFF_MS.length) return "retrying";
+  if (stuck.kind !== "failed") return leadRetried(stuck.row) ? "retrying" : "with-lead";
+  const why = ashMustAct(stuck.row);
+  if (why && why !== "out-of-retries") return "needs-you";
+  if (leadRetried(stuck.row)) return "retrying";
+  if (why === "out-of-retries") return "needs-you";
+  if (repairableFailure(stuck.row)) return "retrying";
   return "with-lead";
+}
+
+function leadRetried(row: Pick<Delegation, "log">): boolean {
+  const action = leadAction(row);
+  return action?.kind === "retried" || action?.kind === "split";
+}
+
+/**
+ * Why only Ash can sort a failed worker (r30c; frank on Ash's D5 words, 22 Oct: "a broken job lands in Needs you with
+ * the reason and Open <Lead>'s chat"): out of credits (`billing`), a key the provider rejected (`auth` with key words,
+ * or a 401/403 or "invalid API key" a provider sent unclassified), signed out (`auth`), a request the provider refused
+ * for good (policy, permission, "not allowed": no retry or Lead can change that), or a failure self-repair's retries
+ * ran out on. A usage limit comes right by itself and an overload or crash is retried: those are never Ash's.
+ */
+export type AshReason = "credits" | "key" | "signed-out" | "refused" | "out-of-retries";
+const KEY_WORDS = /\b(?:api[_ -]?)?key\b|unauthori[sz]ed|credential|x-api-key|bearer token/i;
+const REFUSED_WORDS =
+  /\brefus|\bdeclin|not (?:allowed|permitted)|forbidden|permission|\bpolic(?:y|ies)\b|safety|content (?:filter|management)|moderation|violat|\b451\b/i;
+export function ashMustAct(row: Pick<Delegation, "state" | "errorClass" | "error" | "retryable" | "delivery" | "log">): AshReason | undefined {
+  if (row.state !== "failed") return undefined;
+  const given = isProviderErrorClass(row.errorClass) ? row.errorClass : undefined;
+  const error = row.error ?? "";
+  const errorClass = failureClass(given, error);
+  if (errorClass === "billing") return "credits";
+  if (errorClass === "auth") return given !== "auth" || KEY_WORDS.test(error) ? "key" : "signed-out";
+  if ((errorClass === "provider_error" || errorClass === undefined) && row.retryable === false && REFUSED_WORDS.test(error)) return "refused";
+  if (errorClass === "usage_limit") return undefined;
+  if (failedTimes(row) > REPAIR_BACKOFF_MS.length) return "out-of-retries";
+  return undefined;
 }
 
 /** What a chat has out: working, asking its Lead, and stuck (stalled or failed). */

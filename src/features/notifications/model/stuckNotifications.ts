@@ -10,7 +10,8 @@ import { hasJumpedIn } from "../../monos/model/delegationStore";
 import { isOpenDelegation, type Delegation } from "../../monos/model/delegations";
 import { delegationOf } from "../../monos/model/delegationView";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
-import { isCrash, type StuckWorker } from "../../monos/model/workerStuck";
+import { needsYouLine } from "../../monos/model/stuckChip";
+import { isCrash, stuckOwner, type StuckWorker } from "../../monos/model/workerStuck";
 
 /**
  * A question this chat asks goes to the chat that delegated it (a Lead, or a coding-team chat), not to Ash: its open
@@ -25,6 +26,8 @@ export function questionGoesToLead(sessionId: string, rows: readonly Delegation[
 export function leadHandles(stuck: Pick<StuckWorker, "kind" | "row">): boolean {
   if (stuck.kind === "asking") return false;
   if (!isOrchestratorChat(stuck.row.ownerSession) || hasJumpedIn(stuck.row.childSession)) return false;
+  // Out of retries, a rejected key, a refusal: only Ash can sort it, so it is his banner (r30c).
+  if (stuck.kind === "failed" && stuckOwner(stuck) === "needs-you") return false;
   return stuck.kind === "stalled" || isCrash(stuck.row);
 }
 
@@ -53,7 +56,9 @@ export function stuckNoticeText(stuck: StuckWorker, leadName: string): { title: 
     stuck.kind === "asking"
       ? `${leadName} hasn't answered its question: ${stuck.line}`
       : stuck.kind === "failed"
-        ? stuck.line
-        : `Stuck: ${stuck.line}`;
+        ? stuckOwner(stuck) === "needs-you"
+          ? `Needs you: ${needsYouLine(stuck) ?? stuck.line}`
+          : stuck.line
+        : stuck.line; // a stall says how, in plain words; never "Stuck" (r30c)
   return { title: "MonoCode", subtitle: `${leadName} · ${title}`, body: body.length > 240 ? `${body.slice(0, 239)}…` : body };
 }

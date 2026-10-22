@@ -16,11 +16,12 @@ import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { ChipMark, CircleWord, NeedsYouLinkLine, StatusMark, needMark } from "./StatusMark";
-import { failureChip, stuckChip, withLead, type Chip } from "../model/statusChip";
+import { failureChip, stuckChip, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
 import { StuckToday } from "./StuckToday";
+import { stuckWorkerChip } from "../../monos/model/stuckChip";
 import { attentionCount, failedMonosFor, stuckProject, useAttentionVersion } from "../model/todayCounts";
 import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
@@ -315,8 +316,9 @@ function BeingBuiltToday({ title, projectId }: { title: string; projectId?: stri
     if (failure) return failureChip(failure.tone);
     const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
     if (!stuck || j.state === "lead_gave_up") return jobWord(j, lead);
-    // One of this app's workers stalled or failed under it: its Lead's to handle (Being built says the same).
-    return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : withLead(lead);
+    // One of this app's workers stalled or failed under it: by the red rule, as Being built says it (r30c): red Needs you
+    // when only Ash can sort it (credits, a rejected key, a refusal, out of retries), else grey Retrying or With <Lead>.
+    return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : stuckWorkerChip(stuck, lead);
   };
   const rows = data.listProjects().flatMap((p) =>
     (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
