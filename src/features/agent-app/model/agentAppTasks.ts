@@ -598,7 +598,7 @@ async function delegate(
         harness: launch.harness,
         model: launch.model,
         ...(heavy ? { heavy: true } : {}),
-        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits, then end your turn.`,
+        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path), then end your turn.`,
       };
     }
   }
@@ -640,7 +640,7 @@ async function delegate(
     // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
     ...(ownTeam ? { team: ownTeam.name } : {}),
     note: row
-      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running and end your turn; whenever he writes meanwhile, answer him at once.`
+      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path) and end your turn; whenever he writes meanwhile, answer him at once.`
       : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }

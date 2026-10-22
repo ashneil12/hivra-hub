@@ -8,7 +8,8 @@ import { forUser } from "../../hub/model/userName";
  * Pages > Edit Today builds), Ash sees Now beside Preview with Apply and Discard, and Apply leaves a Bot changes row
  * with Undo. It is data, not code: no worker, no hub_change.
  */
-export type TodayChatPreview = { previewId: string; prompt: string; preview: ChangePreview; monoId: string; at: number };
+/** flow "today" for Today's sections; "hub" for the project order, which the Today cards (and the sidebar) follow. */
+export type TodayChatPreview = { previewId: string; prompt: string; preview: ChangePreview; monoId: string; at: number; flow: "today" | "hub" };
 
 let previews: TodayChatPreview[] = [];
 let version = 0;
@@ -43,8 +44,8 @@ export function todayChatPreview(id: string): TodayChatPreview | undefined {
 export const OPEN_EDIT_TODAY = "monocode:pages-tab";
 /** Opened (See it) and not yet settled: Pages starts on Edit Today. */
 let wanted: string | undefined;
-export function todayPreviewWaiting(): boolean {
-  return !!wanted && !!todayChatPreview(wanted);
+export function todayPreviewWaiting(): "today" | "hub" | undefined {
+  return wanted ? todayChatPreview(wanted)?.flow : undefined;
 }
 export function openTodayChatPreview(id: string): void {
   const p = todayChatPreview(id);
@@ -53,7 +54,7 @@ export function openTodayChatPreview(id: string): void {
   wanted = id;
   changed();
   window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
-  window.dispatchEvent(new CustomEvent(OPEN_EDIT_TODAY, { detail: "today" }));
+  window.dispatchEvent(new CustomEvent(OPEN_EDIT_TODAY, { detail: p.flow }));
 }
 export function settleTodayChatPreview(id: string): void {
   if (wanted === id) wanted = undefined;
@@ -71,23 +72,25 @@ function plain(r: Exclude<ChangeResult, { status: "ready" }>): string {
 export async function todayFromChat(input: Record<string, unknown>, me: { monoId: string; name: string }, deps: TodayDeps = {}) {
   if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error(forUser("ask must be Ash's words for the change to Today"));
   const prompt = input.ask.trim().slice(0, 2000);
+  if (input.projectOrder !== undefined && typeof input.projectOrder !== "boolean") throw new Error("projectOrder must be true or left out");
+  const flow = input.projectOrder === true ? "hub" : "today";
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const end = now() + BUILD_TOTAL_SECONDS * 1000;
-  let result = await requestChange({ flow: "today", projectId: "today", monoId: me.monoId, prompt }, deps);
+  let result = await requestChange({ flow, projectId: "today", monoId: me.monoId, prompt }, deps);
   while (result.status === "building" && now() < end) {
     await sleep(BUILD_RECHECK_MS);
-    result = await requestChange({ flow: "today", projectId: "today", monoId: me.monoId, prompt }, deps);
+    result = await requestChange({ flow, projectId: "today", monoId: me.monoId, prompt }, deps);
   }
   if (result.status === "building") throw new Error(forUser("The preview is still building. Call today_change again with the same ask in a minute; it picks the same build up."));
   if (result.status !== "ready") throw new Error(plain(result));
   const p = result.preview;
-  previews = [...previews.filter((x) => x.previewId !== p.previewId), { previewId: p.previewId, prompt, preview: p, monoId: me.monoId, at: now() }];
+  previews = [...previews.filter((x) => x.previewId !== p.previewId), { previewId: p.previewId, prompt, preview: p, monoId: me.monoId, at: now(), flow }];
   changed();
   return {
     previewId: p.previewId,
     title: p.title,
-    note: forUser("Ash sees it at the bottom of the window (See it opens Now beside Preview on Pages > Edit Today, with Apply and Discard; after Apply, Undo is in Bot changes). Tell him in one line; if he says yes in chat, call today_change with previewId and apply true."),
+    note: forUser((flow === "hub" ? "The project order is the sidebar's too, so the preview shows both. " : "") + "Ash sees it at the bottom of the window (See it opens Now beside Preview on Pages, with Apply and Discard; after Apply, Undo is in Bot changes). Tell him in one line; if he says yes in chat, call today_change with previewId and apply true."),
   };
 }
 
@@ -98,7 +101,7 @@ export async function applyTodayFromChat(previewId: unknown, me: { monoId: strin
   if (!p) throw new Error(forUser("That preview isn't waiting any more: Ash applied it or threw it away. Ask again if he wants it."));
   if (p.monoId !== me.monoId) throw new Error("That preview is another Mono's.");
   if (!ashSpokeSince(p.at)) throw new Error(forUser("Ash hasn't answered since the preview. Wait for his okay."));
-  const done = await applyChange("today", p.preview, deps);
+  const done = await applyChange(p.flow, p.preview, deps);
   if (done.status !== "applied") throw new Error(done.status === "ready" ? "That didn't go through." : plain(done));
   settleTodayChatPreview(previewId);
   return { applied: p.preview.title, note: "It's on Today now, with Undo in Bot changes." };

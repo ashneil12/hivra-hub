@@ -17,7 +17,7 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
-  ["today.change", ["ask", "previewId", "apply"]],
+  ["today.change", ["ask", "projectOrder", "previewId", "apply"]],
 ];
 
 /** Hands the change to a Claude Code worker in the preview copy (tasks.delegate, run in that folder). */

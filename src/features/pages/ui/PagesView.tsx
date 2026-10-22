@@ -784,7 +784,7 @@ function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
 }
 
 export function PagesView({ onClose, onToggleSidebar, besideRail = true, compactRail = false }: { onClose: () => void; onToggleSidebar?: () => void; besideRail?: boolean; compactRail?: boolean }) {
-  const [tab, setTab] = useState<"pages" | ChangeFlow>(() => (todayPreviewWaiting() ? "today" : "pages"));
+  const [tab, setTab] = useState<"pages" | ChangeFlow>(() => todayPreviewWaiting() ?? "pages");
   const projectId = useHubSelection().project;
   // See it on a Today change a Mono built from its chat opens Edit Today.
   useEffect(() => {

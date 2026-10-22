@@ -304,6 +304,8 @@ describe("tasks.delegate", () => {
     // The Mono hears it doesn't wait: the report comes as its own turn, and Ash gets answers meanwhile.
     expect((result as { note: string }).note).toContain("soon after it finishes");
     expect((result as { note: string }).note).toContain("answer him at once");
+    // Hub lead replies quoted raw task ids and folder paths to Ash (22 Oct): the result says plain words only.
+    expect((result as { note: string }).note).toContain("never its task id or a folder path");
   });
 
   it("gives a Lead's worker its project's memory after the brief, on the worker's own engine", async () => {
@@ -943,6 +945,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
       waiting: "Waiting for a free worker: all 20 of vg-game's are busy.",
     });
     expect(extra.note).toContain("starts by itself");
+    expect(extra.note).toContain("never a task id or a folder path");
     // Its card is in the Lead's chat already, under the chat it will be.
     expect(cards).toEqual([{ id: "app-mono-exo-r21", cwd: PROJECT, title: "Part 21" }]);
     // Nothing frees up: it keeps waiting.

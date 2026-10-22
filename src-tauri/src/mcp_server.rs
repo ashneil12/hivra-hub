@@ -403,11 +403,12 @@ fn tools() -> Value {
         {
             "name": "today_change",
             "title": "Change Today",
-            "description": "This is how any Mono edits Ash's Today: which cards and sections show, their order and what they say. No code change is needed, so never use hub_change or a worker for Today. Call with ask (Ash's words, quoted): the hub builds the change as a preview and Ash sees Now beside Preview with Apply and Discard. After Apply, Undo is in Bot changes. If he says yes in chat, call with previewId and apply true.",
+            "description": "This is how any Mono edits Ash's Today: which cards and sections show, their order and what they say. No code change is needed, so never use hub_change or a worker for Today. Call with ask (Ash's words, quoted): the hub builds the change as a preview and Ash sees Now beside Preview with Apply and Discard. After Apply, Undo is in Bot changes. The project cards on Today follow the project order, the same order as the sidebar: to move a project card, add projectOrder true (it moves in the sidebar too, and the preview shows both). If he says yes in chat, call with previewId and apply true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "ask": { "type": "string", "maxLength": 2000, "description": "Ash's words, quoted." },
+                    "projectOrder": { "type": "boolean", "description": "True to move project cards (the project order)." },
                     "previewId": { "type": "string" },
                     "apply": { "type": "boolean" }
                 },
@@ -473,7 +474,7 @@ const SELF_BUILD: [(&str, &str, &[&str]); 5] = [
     (
         "today_change",
         "today.change",
-        &["ask", "previewId", "apply"],
+        &["ask", "projectOrder", "previewId", "apply"],
     ),
 ];
 
@@ -1308,6 +1309,7 @@ mod tests {
         assert!(today.contains("This is how any Mono edits Ash's Today"));
         assert!(today.contains("No code change is needed"));
         assert!(today.contains("Preview") && today.contains("Undo"));
+        assert!(today.contains("to move a project card, add projectOrder true"));
         assert!(desc("hub_change").contains("For Today use today_change"));
     }
 

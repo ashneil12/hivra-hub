@@ -110,11 +110,11 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
   const reset = () => { setState(undefined); setText(""); };
   // A Today change a Mono built from its chat (today_change) shows here, the same Now | Preview, Apply and Discard.
   const chat = useTodayChatPreview();
-  const fromChat = flow === "today" ? chat : undefined;
+  const fromChat = chat?.flow === flow ? chat : undefined;
   useEffect(() => {
     if (fromChat) setState({ prompt: fromChat.prompt, result: { status: "ready", preview: fromChat.preview } });
   }, [fromChat?.previewId]);
-  const onChat = flow === "today" && state?.result?.status === "ready" && !state.applied && chat?.previewId === state.result.preview.previewId ? chat.previewId : undefined;
+  const onChat = chat?.flow === flow && state?.result?.status === "ready" && !state.applied && chat?.previewId === state.result.preview.previewId ? chat.previewId : undefined;
   useEffect(() => {
     setTodayPreviewShown(onChat);
     return () => setTodayPreviewShown(undefined);
