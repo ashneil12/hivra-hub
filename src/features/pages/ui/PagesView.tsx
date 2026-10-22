@@ -395,7 +395,7 @@ function ReadyMade({ offers, onAdd, compact }: { offers: readonly ReadyPage[]; o
   if (!offers.length) return null;
   return (
     <section data-pages-ready className={compact ? "w-full max-w-[560px] text-left" : ""}>
-      <h2 className="px-2 pb-1 text-[11px] uppercase tracking-wide text-content/60">Ready-made</h2>
+      <h2 className="px-2 pb-1 text-xs text-content/60">Ready-made</h2>
       <div className="flex flex-col gap-px">
         {offers.map((r) => (
           <div key={r.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-ready-row={r.id}>
@@ -620,7 +620,7 @@ export function PagesContent() {
         <div className="mt-4 flex flex-col gap-5">
           {groups.map(([id, list]) => (
             <section key={id} data-pages-group={id}>
-              <h2 className="px-2 pb-1 text-[11px] uppercase tracking-wide text-content/60">{nameOf(id)}</h2>
+              <h2 className="px-2 pb-1 text-xs text-content/60">{nameOf(id)}</h2>
               <div className="flex flex-col gap-px">
                 {list.map((p) => (
                   <div key={p.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-row={p.id}>
