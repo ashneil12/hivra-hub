@@ -47,6 +47,7 @@ import {
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 import { forUser, userLabel } from "./userName";
 import { draftStatusLines } from "../../selfBuild/model/monoMake";
+import { withoutNoReply } from "../../../shared/text/noReply";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -603,7 +604,11 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     setAnsweredThrough(chatId, wake.convId, wake.batch[wake.batch.length - 1]);
     setRoomRuntime(chatId, { replyError: undefined });
   };
-  if (isSilent(text)) {
+  // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
+  // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
+  const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
+  if (kept && !isSilent(kept)) text = kept;
+  else if (isSilent(text)) {
     // "Got it" is a 👍 on what it answers; the host that has nothing to say to Ash still shows it read him.
     const emoji = /<reaction>\s*(✅|👀)\s*<\/reaction>/.exec(text)?.[1] ?? "👍";
     const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim()) && !/\n\W*NO_REPLY\W*$/i.test(text.trim());

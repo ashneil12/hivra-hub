@@ -100,7 +100,7 @@ import {
   type PrWatchTracker,
 } from "../features/pr-watch/model/prWatches";
 import { useHubChecks } from "./hooks/useHubChecks";
-import { inCheckTurn, withoutCheckTurns } from "../features/hub/model/hubChecks";
+import { inCheckTurn, withoutQuietTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
@@ -2640,9 +2640,10 @@ function Workspace({
     // The roster is read through its snapshot.
     [monosSnap],
   );
-  // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one.
+  // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one, nor
+  // is a room turn's (its reply is in the room, r52).
   const replyBusyRef = useRef(busySessionIds);
-  const replyBusy = withoutCheckTurns(busySessionIds, sessions);
+  const replyBusy = withoutQuietTurns(busySessionIds, sessions);
   if (!setsEqual(replyBusyRef.current, replyBusy)) replyBusyRef.current = replyBusy;
   const monoReplies = useUnseenReplyCounts(
     monoSessionIds,

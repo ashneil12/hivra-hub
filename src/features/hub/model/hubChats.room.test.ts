@@ -514,3 +514,40 @@ it("NO_REPLY, a reaction and a bare acknowledgement never show as they stream; a
   expect(chat.roomDrafts(id, conv).filter((d) => d.text.includes("more"))).toEqual([]);
   expect(said(conv).filter((m) => m.from !== "ash")).toEqual([]);
 });
+
+it("words Ash watched stream in stay when the turn ends on a NO_REPLY line; unseen, the same turn stays quiet (r52, frank)", async () => {
+  const { chat, id, said } = await room();
+  let write!: (text: string) => void;
+  let end!: (text: string) => void;
+  chat.setGroupChatRunner({
+    run: (request) => {
+      if (request.monoId !== "frank") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
+      write = (text) => request.onText?.(text);
+      return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
+    },
+  });
+  const conv = chat.startConversation(id, "frank, is the Postie card gone?");
+  const done = chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(write).toBeTypeOf("function"));
+  const words = "CoS says the Postie card is gone and the rules still stand. I'm checking Hub memory for anything left.";
+  write(words);
+  expect(chat.roomDrafts(id, conv)).toHaveLength(1);
+  const draftId = chat.roomDrafts(id, conv)[0].id;
+  end(`${words}\n\nNO_REPLY`);
+  await done;
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
+  const post = said(conv).find((m) => m.from === "frank");
+  expect(post).toMatchObject({ id: draftId, text: words });
+  expect(post!.text).not.toMatch(/NO_REPLY/);
+});
+
+it("a turn that thinks aloud and ends on NO_REPLY before anything showed posts nothing", async () => {
+  const { chat, id, said } = await room();
+  chat.setGroupChatRunner({
+    run: (request) =>
+      Promise.resolve({ kind: "reply", text: request.monoId === "frank" ? "Nothing for me here.\nNO_REPLY" : "NO_REPLY" }),
+  });
+  const conv = chat.startConversation(id, "frank, anything?");
+  await chat.requestReply(id, conv);
+  expect(said(conv).filter((m) => m.from === "frank")).toEqual([]);
+});

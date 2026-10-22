@@ -157,6 +157,29 @@ export function withoutCheckTurns(busy: Set<string>, sessions: readonly Session[
   return next;
 }
 
+/**
+ * A Mono's chat answering a room (its last turn came in as a room wake, monoNote kind "room"): the reply is the room's,
+ * not one Ash hasn't read in this chat (r52: frank's badge stayed at 1 after a room turn that posted nothing there).
+ */
+export function inRoomTurn(session: Pick<Session, "blocks">): boolean {
+  for (let i = session.blocks.length - 1; i >= 0; i--) {
+    const block = session.blocks[i];
+    if (block.role !== "user" || block.draft) continue;
+    return block.monoNote?.kind === "room";
+  }
+  return false;
+}
+
+/** The busy chats whose turn is neither a check nor a room's: the same set back when there are none. */
+export function withoutQuietTurns(busy: Set<string>, sessions: readonly Session[]): Set<string> {
+  const checked = withoutCheckTurns(busy, sessions);
+  const quiet = sessions.filter((session) => checked.has(session.id) && inRoomTurn(session)).map((s) => s.id);
+  if (!quiet.length) return checked;
+  const next = new Set(checked);
+  for (const id of quiet) next.delete(id);
+  return next;
+}
+
 /** How the chat answered, for its card: from its ash_record call, else how its reply starts ("Right: ...", "Fixed: ..."). */
 export function checkVerdict(turn: readonly Block[]): "right" | "fixed" | undefined {
   for (const block of turn) {
