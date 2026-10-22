@@ -5,10 +5,10 @@
 // - drops its team from the hub (forgetMonoTeam; the team's folder stays on disk).
 // Its habits stop because the habit runner only walks the roster (useMonoHabits). Nothing touches its folder in the
 // Monos' home: SOUL.md, MEMORY.md, memory/ notes, habits.json and chats.json (with older chats' ids) all stay.
-import { monoHomeShown } from "../../hub/model/hubMcp";
+// r30g (Critiquito): the copy says the soul and memory are kept, without a folder path.
 
-/** The confirm's line before "This can't be undone.": what goes, and where what stays is kept. */
-export function monoDeleteDetail(hasChat: boolean, home = monoHomeShown()): string {
-  const stay = `Its soul and memory stay in ${home}/.`;
-  return hasChat ? `Its current chat will be deleted and its habits stop. ${stay}` : stay;
+/** The confirm's line before "This can't be undone.": what goes, and that the soul and memory are kept. */
+export function monoDeleteDetail(hasChat: boolean): string {
+  const kept = "Its soul and memory are kept.";
+  return hasChat ? `Its current chat will be deleted and its habits stop. ${kept}` : kept;
 }

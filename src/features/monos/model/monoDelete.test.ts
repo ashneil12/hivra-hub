@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // r30f: Delete mono's confirm says only what happens. Deleting a Mono takes its current chat, its roster entry and its
 // hub team, and its habits stop (the runner only walks the roster); its folder (soul, memory, habits.json, chats.json)
-// is never touched, so the copy says the soul and memory stay, and where.
+// is never touched, so the copy says the soul and memory are kept (r30g: no folder path).
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -21,20 +21,12 @@ afterEach(() => vi.unstubAllGlobals());
 
 const src = (path: string) => readFileSync(`${process.cwd()}/${path}`, "utf8");
 
-it("says the chat goes, habits stop, and the soul and memory stay in the Monos' home", async () => {
+it("says the chat goes, habits stop, and the soul and memory are kept, with no folder path", async () => {
   const { monoDeleteDetail } = await import("./monoDelete");
-  expect(monoDeleteDetail(true)).toBe("Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/.");
-  // No chat: none to delete, and no habits run (they need its chat), so only what stays is said.
-  expect(monoDeleteDetail(false)).toBe("Its soul and memory stay in ~/agent-memory/monos/.");
-});
-
-it("names a dev copy's own home when it isn't the daily one", async () => {
-  const { setMonoHomeRoot, monoHomeShown } = await import("../../hub/model/hubMcp");
-  setMonoHomeRoot("/Users/ash/Library/Application Support/dev.monocode/monos");
-  expect(monoHomeShown()).toBe("/Users/ash/Library/Application Support/dev.monocode/monos");
-  setMonoHomeRoot("/Users/ash/agent-memory/monos");
-  expect(monoHomeShown()).toBe("~/agent-memory/monos");
-  setMonoHomeRoot(undefined);
+  expect(monoDeleteDetail(true)).toBe("Its current chat will be deleted and its habits stop. Its soul and memory are kept.");
+  // No chat: none to delete, and no habits run (they need its chat), so only what is kept is said.
+  expect(monoDeleteDetail(false)).toBe("Its soul and memory are kept.");
+  expect(monoDeleteDetail.length).toBe(1);
 });
 
 it("removing a Mono never asks the app to delete, move or archive its folder", async () => {
@@ -63,4 +55,15 @@ it("the App's Delete mono does what the copy says, and no more", () => {
 it("light theme: Cancel's ring is mixed toward the text colour (the plain accent was 2.69:1)", () => {
   expect(src("src/shared/ui/ConfirmDelete.tsx")).toMatch(/"confirm-cancel-ring /);
   expect(src("src/styles/index.css")).toMatch(/html\.theme-light \.confirm-cancel-ring:focus \{\s*--tw-ring-color: color-mix\(in srgb, var\(--color-accent\) 65%, var\(--color-content\)\);/);
+});
+
+it("light theme: the red Delete label is red-700 on a light tint (red-400 was 2.02:1); dark stays red-400 on red-500/20", () => {
+  const confirm = src("src/shared/ui/ConfirmDelete.tsx");
+  const danger = /export const DELETE_DANGER =\s*"([^"]+)"/.exec(confirm)?.[1].split(" ") ?? [];
+  expect(danger).toEqual(expect.arrayContaining(["bg-red-500/10", "text-red-700", "dark:bg-red-500/20", "dark:text-red-400", "dark:hover:bg-red-500/30"]));
+  // No unprefixed red-400 left to paint the light theme.
+  expect(danger).not.toContain("text-red-400");
+  expect(confirm).toMatch(/data-confirm-delete-ok[\s\S]*?\$\{DELETE_DANGER\}/);
+  // `dark:` is "not the light theme".
+  expect(src("src/styles/index.css")).toContain("@custom-variant dark (&:where(html:not(.theme-light), html:not(.theme-light) *));");
 });

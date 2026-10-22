@@ -43,7 +43,7 @@ test("Delete mono… asks in the shared confirm; Cancel keeps the Mono", async (
   await page.getByRole("menuitem", { name: "Delete mono…" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Delete Example: Pip?");
-  await expect(dialog).toContainText("Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/. This can't be undone.");
+  await expect(dialog).toContainText("Its current chat will be deleted and its habits stop. Its soul and memory are kept. This can't be undone.");
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeFocused();
   expect(await cancel.evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");

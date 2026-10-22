@@ -76,10 +76,6 @@ export function setMonoHomeRoot(root: string | undefined): void {
   activeHome = path && path.startsWith("/") ? path : undefined;
   extraHome = path && path.startsWith("/") && !/[,()\r\n]/.test(path) && !path.endsWith("/agent-memory/monos") ? path : undefined;
 }
-/** The Monos' home as Ash would know it: "~/agent-memory/monos" for the daily app, else this copy's own folder. */
-export function monoHomeShown(): string {
-  return activeHome && !activeHome.endsWith("/agent-memory/monos") ? activeHome : MONO_HOME;
-}
 export function monoHomeDeniedTools(): string[] {
   const roots = [MONO_HOME, ...(extraHome ? [`/${extraHome}`] : [])];
   // Claude Code applies an Edit rule to every built-in tool that edits files (Write and NotebookEdit too).
