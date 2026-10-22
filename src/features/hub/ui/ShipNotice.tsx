@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { markShipSeen, restartForUpdate, shipCardView, useShipStatus } from "../../../app/model/ship";
 import { revealPath } from "../../../platform/tauri/fs";
 
@@ -7,7 +7,19 @@ import { revealPath } from "../../../platform/tauri/fs";
  * or the last ship's receipt until it's read. Plain words, no badge. A button the app couldn't carry out says so.
  */
 export function ShipNotice() {
-  const view = shipCardView(useShipStatus());
+  const live = shipCardView(useShipStatus());
+  // A card shown once (a committed update) is marked read the moment it is on screen and stays put until Today goes
+  // away, so it never comes back and never needs a Done (Critiquito/Ash, 22 Oct: "show once").
+  const [held, setHeld] = useState<typeof live>(null);
+  const view = live ?? (held && held.once ? held : null);
+  const onceId = live?.once ? live.id : undefined;
+  useEffect(() => {
+    if (!onceId || !live) return;
+    setHeld(live);
+    void markShipSeen(onceId).catch(() => undefined);
+    // Once per receipt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onceId]);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<{ id: string; text: string } | null>(null);
   if (!view) return null;

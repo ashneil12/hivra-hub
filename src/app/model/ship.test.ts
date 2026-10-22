@@ -45,19 +45,21 @@ describe("what Today says about a ship", () => {
     const view = shipCardView(
       status({ phase: "waiting", accepted: true, deferred: { inFlight: 2 } }, { pending: { id: ID, force: false } }),
     );
-    expect(view).toMatchObject({ text: "Update ready: hub/1b-ship @ bbbbbbb.", restartNow: true });
+    expect(view).toMatchObject({ text: "An update to MonoCode Hub is ready.", restartNow: true });
+    expect(view?.text).not.toMatch(/@|bbbbbbb|hub\//);
     expect(view?.detail).toContain("(2 running now)");
   });
 
-  it("shows each receipt until it's read", () => {
-    expect(shipCardView(status({ phase: "committed" }))).toMatchObject({
-      text: "Updated to hub/1b-ship @ bbbbbbb (was hub/next @ aaaaaaa).",
-      log: "/ship/runner.log",
-      dismiss: true,
-    });
+  it("says each receipt in plain words, with no branch or commit; a committed update is shown once, the rest until read", () => {
+    const committed = shipCardView(status({ phase: "committed" }));
+    expect(committed).toMatchObject({ text: "MonoCode Hub was updated.", log: "/ship/runner.log", once: true });
+    expect(committed?.dismiss).toBeUndefined();
     const rolled = shipCardView(status({ phase: "rolled-back", reason: "The new build didn't commit within 120 s." }));
-    expect(rolled?.text).toBe("The update to hub/1b-ship @ bbbbbbb was rolled back. The new build didn't commit within 120 s.");
-    expect(rolled?.detail).toContain("Back on hub/next @ aaaaaaa");
+    expect(rolled?.text).toBe("An update was rolled back. The new build didn't commit within 120 s.");
+    expect(rolled?.detail).toBe("Back on the build before it, with the database as it was.");
+    expect(rolled?.dismiss).toBe(true);
+    for (const phase of ["committed", "rolled-back", "cancelled", "failed"])
+      expect(JSON.stringify([shipCardView(status({ phase, reason: "r" }))?.text, shipCardView(status({ phase, reason: "r" }))?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
     expect(shipCardView(status({ phase: "cancelled", reason: "Refused." }))?.detail).toBe("Nothing changed.");
     expect(shipCardView(status({ phase: "failed", reason: "x", shipDir: "/ship" }))?.detail).toContain("/ship");
     expect(shipCardView(status({ phase: "committed", seen: true }))).toBeNull();

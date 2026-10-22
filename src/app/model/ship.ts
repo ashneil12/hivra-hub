@@ -179,9 +179,6 @@ export function startShip(input: {
   });
 }
 
-const label = (value?: ShipBuild | null) =>
-  value?.sha ? `${value.branch ?? "?"} @ ${value.sha.slice(0, 7)}` : "an unknown build";
-
 export type ShipCardView = {
   id: string;
   text: string;
@@ -189,6 +186,8 @@ export type ShipCardView = {
   restartNow?: boolean;
   log?: string;
   dismiss?: boolean;
+  /** Shown once: Today marks it read as soon as it is on screen, and it is gone next time (a committed update). */
+  once?: boolean;
 };
 
 /** What Today says about Ship, if anything: the trial, a waiting update, or a receipt not yet read. */
@@ -206,33 +205,34 @@ export function shipCardView(status: ShipStatus): ShipCardView | null {
     const running = current.deferred?.inFlight;
     return {
       id: current.id,
-      text: `Update ready: ${label(current.to)}.`,
+      text: "An update to MonoCode Hub is ready.",
       detail: `MonoCode Hub restarts for it once nothing else is running${running ? ` (${running} running now)` : ""}. Running chats pick up again afterwards.`,
       restartNow: true,
     };
   }
   if (current.seen) return null;
+  // Plain words, no branch or commit (Critiquito/Ash, 22 Oct): which build it is lives in the log.
   const reason = current.reason ? ` ${current.reason}` : "";
   switch (current.phase) {
     case "committed":
       return {
         id: current.id,
-        text: `Updated to ${label(current.to)} (was ${label(current.from)}).`,
+        text: "MonoCode Hub was updated.",
         log: current.log,
-        dismiss: true,
+        once: true,
       };
     case "rolled-back":
       return {
         id: current.id,
-        text: `The update to ${label(current.to)} was rolled back.${reason}`,
-        detail: `Back on ${label(current.from)}, with the database as it was before.`,
+        text: `An update was rolled back.${reason}`,
+        detail: "Back on the build before it, with the database as it was.",
         log: current.log,
         dismiss: true,
       };
     case "cancelled":
       return {
         id: current.id,
-        text: `The update to ${label(current.to)} was called off.${reason}`,
+        text: `An update was called off.${reason}`,
         detail: "Nothing changed.",
         log: current.log,
         dismiss: true,
@@ -240,7 +240,7 @@ export function shipCardView(status: ShipStatus): ShipCardView | null {
     case "failed":
       return {
         id: current.id,
-        text: `The update to ${label(current.to)} failed.${reason}`,
+        text: `An update failed.${reason}`,
         detail: current.shipDir ? `Everything it kept is in ${current.shipDir}.` : undefined,
         log: current.log,
         dismiss: true,
