@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { Delegation } from "../../monos/model/delegations";
 import type { StuckWorker } from "../../monos/model/workerStuck";
-import { appSinceText } from "./appSince";
+import { appSinceText, sinceGlance } from "./appSince";
 
 const SINCE = 1_000_000_000;
 function row(id: string, patch: Partial<Delegation> = {}): Delegation {
@@ -38,9 +38,16 @@ describe("appSinceText", () => {
     });
     expect(text).toBe(
       "EXO lead handed out 3 jobs and Chief of Staff 1. One finished and reported back: Wire the dodge input. " +
-        "1 is stuck or waiting on an answer: Pick the dodge timing. 1 failed: Upload the build. " +
+        "1 got stuck or asked for an answer: Pick the dodge timing. 1 failed: Upload the build. " +
         "Alfred made 1 change to how it works, each with Undo in Bot changes.",
     );
+  });
+
+  it("never repeats what was already stuck before Ash was last active: that is a standing reminder, and it's in Today's lists", () => {
+    const old = row("5", { title: "Example: stuck since yesterday", state: "question", createdAt: SINCE - 9000 });
+    const before: StuckWorker = { ...stuck(old, "asking"), since: SINCE - 5000 };
+    const failedBefore: StuckWorker = { ...stuck(row("6", { createdAt: SINCE - 9000, state: "failed" }), "failed"), since: SINCE - 1 };
+    expect(appSinceText({ sinceMs: SINCE, rows: [old], stuck: [before, failedBefore], changes: [], nameOf })).toBe("");
   });
 
   it("says a finished job hasn't reported back yet plainly, and lists long sets briefly", () => {
@@ -58,5 +65,19 @@ describe("botChangesSince", () => {
     expect(found).toHaveLength(1);
     expect(found[0].at).toBeGreaterThanOrEqual(before);
     expect(botChangesSince(Date.now() + 60_000).some((c) => c.pageId === "p-since")).toBe(false);
+  });
+});
+
+describe("sinceGlance", () => {
+  it("keeps what happened and drops standing reminders and PR lists (C9: Ash, no PR lists, no standing reminders)", () => {
+    const ashOs =
+      "Example: EXO's dodge landed and the playtest build is up. 102 things are waiting on you. " +
+      "Merged PRs: #412, #415 and #418. Hivra's waitlist email went to 40 people. Don't forget the vendor renewal.";
+    expect(sinceGlance(ashOs)).toBe("Example: EXO's dodge landed and the playtest build is up. Hivra's waitlist email went to 40 people.");
+  });
+  it("leaves a plain paragraph as it is, and an all-reminder one empty", () => {
+    expect(sinceGlance("Example: the build finished. Alfred tidied the notes.")).toBe("Example: the build finished. Alfred tidied the notes.");
+    expect(sinceGlance("Nothing finished and nothing new was decided. Nothing is waiting on you.")).toBe("Nothing finished and nothing new was decided.");
+    expect(sinceGlance("3 asks are still open.")).toBe("");
   });
 });

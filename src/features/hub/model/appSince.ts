@@ -64,12 +64,12 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf }: AppSince
     );
   }
 
-  // Stuck now (asking counts, as everywhere), failures said apart.
+  // Got stuck or failed since then: what happened, not a standing reminder (anything older is in Today's lists below).
   const title = (s: StuckWorker) => s.row.title?.trim() || "a job";
-  const waiting = stuck.filter((s) => s.kind !== "failed");
-  const failed = stuck.filter((s) => s.kind === "failed");
-  if (waiting.length)
-    sentences.push(`${waiting.length} ${waiting.length === 1 ? "is" : "are"} stuck or waiting on an answer: ${list(waiting.map(title))}.`);
+  const recent = stuck.filter((s) => s.since >= sinceMs);
+  const waiting = recent.filter((s) => s.kind !== "failed");
+  const failed = recent.filter((s) => s.kind === "failed");
+  if (waiting.length) sentences.push(`${waiting.length} got stuck or asked for an answer: ${list(waiting.map(title))}.`);
   if (failed.length) sentences.push(`${failed.length} failed: ${list(failed.map(title))}.`);
 
   // Bot changes that still stand.
@@ -79,4 +79,19 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf }: AppSince
   }
 
   return sentences.join(" ");
+}
+
+/**
+ * Ash OS's paragraph as a glance (C9; Ash: what happened, "no PR lists, no standing reminders"). Sentences that only
+ * restate what waits on Ash ("102 things are waiting on you") or list pull requests are left out; Today's lists below
+ * hold that detail. Everything else is Ash OS's words, unchanged.
+ */
+const STANDING = /\bwaiting (?:on|for) you\b|\bstill (?:open|pending|waiting)\b|\b(?:don'?t forget|reminder)\b/i;
+const PR_LIST = /\bPRs?\b|\bpull requests?\b|(?:^|[\s(])#\d+\b/i;
+export function sinceGlance(text: string): string {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => sentence.trim() && !STANDING.test(sentence) && !PR_LIST.test(sentence))
+    .join(" ")
+    .trim();
 }
