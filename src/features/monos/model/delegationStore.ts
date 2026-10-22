@@ -126,22 +126,35 @@ export function stopUnloaded(chat: string): readonly string[] {
  * is known to be over.
  */
 let busyChats: ReadonlySet<string> | undefined;
-export function setBusyChats(ids: Iterable<string>): void {
+/**
+ * r51 (PM's gap on r30h): the chats this window has loaded. A Lead chat this window doesn't hold (another window, or not
+ * loaded yet) has no known run state here, so it is never taken as "not busy": its failed worker stays its Lead's
+ * (grey) rather than going red while its turn may still run elsewhere. Undefined: every chat counts as known (old callers).
+ */
+let knownChats: ReadonlySet<string> | undefined;
+export function setBusyChats(ids: Iterable<string>, known?: Iterable<string>): void {
   const next = new Set(ids);
-  if (busyChats && busyChats.size === next.size && [...next].every((id) => busyChats!.has(id))) return;
+  const nextKnown = known ? new Set(known) : undefined;
+  const same = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined) =>
+    a === b || (!!a && !!b && a.size === b.size && [...b].every((id) => a.has(id)));
+  if (busyChats && same(busyChats, next) && same(knownChats, nextKnown)) return;
   busyChats = next;
+  knownChats = nextKnown;
   changed();
 }
 
-/** True while the chat runs a turn, false when this window's app says it doesn't, undefined when it hasn't said. */
+/** True while the chat runs a turn, false when this window's app holds it and says it doesn't, else undefined. */
 export function chatBusy(id: string): boolean | undefined {
-  return busyChats ? busyChats.has(id) : undefined;
+  if (!busyChats) return undefined;
+  if (busyChats.has(id)) return true;
+  return knownChats && !knownChats.has(id) ? undefined : false;
 }
 
 /** Tests: forget everything. */
 export function resetDelegationStore(): void {
   rows = [];
   busyChats = undefined;
+  knownChats = undefined;
   actions = undefined;
   jumpedIn.clear();
   failures.clear();

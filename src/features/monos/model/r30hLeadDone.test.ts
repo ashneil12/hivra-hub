@@ -156,8 +156,29 @@ describe("Being built", () => {
   });
 
   it("the page lists them (BeingBuiltView)", () => {
+    // r51: through the one list's builder (needsYouRows.ts beingBuiltJobRows), which adds the app workers the same way.
     const src = readFileSync(`${process.cwd()}/src/features/hub/ui/BeingBuiltView.tsx`, "utf8");
-    expect(src).toMatch(/withStuckWorkers\(\[\.\.\.jobWorkers, \.\.\.ownWorkers\]/);
+    expect(src).toMatch(/beingBuiltJobRows\(projectId, .*APP_WORKER_WHERE\)/);
+    const lib = readFileSync(`${process.cwd()}/src/features/hub/model/needsYouRows.ts`, "utf8");
+    expect(lib).toMatch(/withStuckWorkers\(\[\.\.\.jobs, \.\.\.own\]/);
     expect(workerStuck.rowsUnderJob("delegation:run", [row("run")]).map((r) => r.id)).toEqual(["run"]);
+  });
+});
+
+// r51, PM's gap: a Lead chat this window doesn't hold (another window, or not loaded) was taken as not busy, so its failed
+// worker could go red while its turn still ran. Now its run state is unknown here and the worker stays its Lead's.
+describe("r51: a Lead chat this window doesn't hold", () => {
+  it("is not known, never 'not busy': its failed worker stays grey With <Lead>", () => {
+    store.setBusyChats([], ["some-other-chat"]);
+    expect(store.chatBusy("lead-chat")).toBeUndefined();
+    expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
+  });
+
+  it("once this window holds it and it isn't running, its failed worker goes red", () => {
+    store.setBusyChats([], ["lead-chat"]);
+    expect(store.chatBusy("lead-chat")).toBe(false);
+    expect(stuckOwner(stuck(row("faq")))).toBe("needs-you");
+    store.setBusyChats(["lead-chat"], ["lead-chat"]);
+    expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
   });
 });

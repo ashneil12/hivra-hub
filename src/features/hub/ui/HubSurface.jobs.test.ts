@@ -434,6 +434,24 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(text()).not.toMatch(/\bStuck\b|Open chat\b|402/);
   });
 
+  // r51 on PM's r30h, keeping r48 (a30a975): a red row's Open <Lead>'s chat is the button (LEAD_CHAT_BUTTON) under its
+  // reason, with no second button; a grey row never carries the red Needs you link.
+  it("r51: a red row has the button-style Open <Lead>'s chat; a grey row has no red link", async () => {
+    const { LEAD_CHAT_BUTTON } = await import("./StatusMark");
+    setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", errorClass: "billing", settledAt: at - 60_000, error: "Billing refused (402)" })]);
+    mount(view());
+    const job = () => container.querySelector('[data-hub-worker="j_mail"]');
+    await until(() => job()?.querySelector("[data-hub-circle=red]"), "the red row");
+    const link = job()!.querySelector<HTMLButtonElement>("[data-hub-job-needs] [data-hub-open-lead]")!;
+    expect(link.tagName).toBe("BUTTON");
+    expect(link.className).toBe(LEAD_CHAT_BUTTON);
+    expect(job()!.querySelectorAll("[data-hub-open-lead], [data-hub-stuck-action]").length).toBe(1);
+    act(() => setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", settledAt: at - 60_000, error: "Stopped with an error." })]));
+    await until(() => job() && !job()!.querySelector("[data-hub-circle=red]") && job()!.querySelector('[data-hub-job-state="stuck"]'), "the grey row");
+    expect(job()!.querySelector("[data-hub-circle=red]")).toBeNull();
+    expect(job()!.querySelector("[data-hub-job-needs]")).toBeNull();
+  });
+
   it("the job's activity names the worker's chip, never Stuck", async () => {
     setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 })]);
     mount(view());
