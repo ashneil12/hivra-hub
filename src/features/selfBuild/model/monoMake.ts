@@ -40,7 +40,26 @@ export type MonoDraft = {
   dismissed?: boolean;
   /** Set once made: the same draft never makes a second Mono. */
   madeId?: string;
+  /**
+   * The chat it was drafted in, where its card sits as a message (r29): a group chat's conversation when the Mono was
+   * taking its turn there, else the Mono's own chat. Drafts from before r29 have none: they show in the Mono's own chat.
+   */
+  where?: DraftPlace;
 };
+export type DraftPlace = { room: string; conv?: string } | { session: string };
+
+/** The waiting drafts whose card belongs in this chat. */
+export function draftsIn(
+  drafts: readonly MonoDraft[],
+  place: { room: string; conv?: string } | { session: string; monoId?: string },
+): MonoDraft[] {
+  return drafts.filter((d) => {
+    const w = d.where;
+    if ("room" in place) return !!w && "room" in w && w.room === place.room && (!w.conv || !place.conv || w.conv === place.conv);
+    if (w) return "session" in w && w.session === place.session;
+    return !!place.monoId && d.by.monoId === place.monoId;
+  });
+}
 
 const KEY = "monocode:mono-drafts";
 function load(): MonoDraft[] {
@@ -195,6 +214,8 @@ export function draftMono(
   now = Date.now(),
   /** The skills that exist here (the app's skill catalog). Every listed skill must be one of them. */
   knownSkills?: ReadonlySet<string>,
+  /** The chat it is drafted in: its card sits there, in the messages. */
+  where?: DraftPlace,
 ): {
   draftId: string;
   plan: {
@@ -260,6 +281,7 @@ export function draftMono(
     connectors,
     rooms: strings(input.rooms, "rooms", 10),
     look: nextMonoLook(),
+    ...(where ? { where } : {}),
   };
   save([...drafts, draft]);
   return {
@@ -272,7 +294,7 @@ export function draftMono(
       watchFor: sections(soul).get("what i watch for") ?? "",
       skills: listed,
     },
-    note: forUser("Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) at the top of the window. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId."),
+    note: forUser("Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) in this chat, under your message. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId."),
   };
 }
 

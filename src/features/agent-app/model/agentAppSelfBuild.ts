@@ -12,6 +12,7 @@ import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayCh
 import type { AgentAppHost } from "./agentApp";
 import { resolveRoom, teamLeadOf } from "./agentAppRooms";
 import { forUser } from "../../hub/model/userName";
+import { roomTurnOf } from "../../hub/model/roomConductor";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
@@ -61,7 +62,10 @@ export async function handleSelfBuild(
         return makeDrafted(input.draftId, me, { ashSpokeSince: spoke, room: (ref) => resolveRoom(ref, me.monoId) });
       }
       if (!askedAshAndHeardBack(source, me.monoId, allChats())) throw new Error(forUser(INTERVIEW_FIRST));
-      return draftMono(input, me, Date.now(), await installedSkills(source, host));
+      // Its card goes in the chat it was drafted in: the group chat the Mono is answering in, else its own chat (r29).
+      const turn = roomTurnOf(me.monoId);
+      const where = turn ? { room: turn.chatId, conv: turn.convId } : { session: source.id };
+      return draftMono(input, me, Date.now(), await installedSkills(source, host), where);
     }
     case "pages.build": {
       if (input.previewId !== undefined || input.keep !== undefined) {

@@ -38,6 +38,8 @@ import type { ChatMessage, GroupChat, RoomAttachment } from "../model/types";
 import type { Attachment } from "../../sessions/model/session";
 import { StatusMark } from "./StatusMark";
 import { RoomMessage, RoomStatusLine, RoomText } from "./RoomMessage";
+import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
+import { useWaitingDrafts } from "../../selfBuild/model/monoMake";
 
 function useMonos(): Mono[] {
   const snap = useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
@@ -135,7 +137,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   // scrolled up to read.
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const count = `${conv?.messages.length ?? 0}:${drafts.map((d) => d.text.length).join(",")}`;
+  // A drafted Mono's card landing in the conversation keeps it at the bottom too, like a message.
+  const monoDrafts = useWaitingDrafts().length;
+  const count = `${conv?.messages.length ?? 0}:${drafts.map((d) => d.text.length).join(",")}:${monoDrafts}`;
   useEffect(() => {
     pinned.current = true;
   }, [conv?.id]);
@@ -402,6 +406,8 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                   No messages yet. Say hello to {members.map((m) => monoLook(m).name).join(", ")}.
                 </p>
               )}
+              {/* A new Mono a seat drafted here: a message in the conversation, after the words that offered it (r29). */}
+              <MonoDraftsInChat room={chat.id} conv={conv?.id} />
             </div>
           </div>
         )}
