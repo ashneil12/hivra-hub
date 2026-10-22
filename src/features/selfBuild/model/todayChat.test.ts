@@ -56,6 +56,20 @@ it("project cards follow the project order: projectOrder true builds it as the h
   await expect(todayFromChat({ ask, projectOrder: "yes" }, me, { roster })).rejects.toThrow(/projectOrder/);
 });
 
+it("a Today change turned down as a section change is tried once as the project order (the cards follow it)", async () => {
+  const preview = { ...stubPreview({ flow: "hub", projectId: "today", monoId: "alfred", prompt: ask }), by: "Alfred" };
+  const call = vi.fn(async (action: string, payload: { flow?: string }) => {
+    if (action !== "ash-hub-change-preview") return {};
+    if (payload.flow === "today") throw new HubCallError("error", "Alfred turned it down: Today only has sections, not project cards.");
+    return preview;
+  });
+  const transport = { call: call as never, openFeed: () => () => undefined };
+  const out = await todayFromChat({ ask }, me, { roster, transport });
+  expect(call.mock.calls.map((c) => (c[1] as { flow: string }).flow)).toEqual(["today", "hub"]);
+  expect(out.previewId).toBe(preview.previewId);
+  expect(todayChatPreview(preview.previewId)?.flow).toBe("hub");
+});
+
 it("a code change or a refusal comes back to the Mono in plain words; an empty ask is refused", async () => {
   await expect(todayFromChat({ ask: " " }, me, { roster })).rejects.toThrow(/ask must be/);
   const transport = { call: (async () => { throw new HubCallError("error", "Alfred says this is a change to the app itself: the card's look is drawn by the app."); }) as never, openFeed: () => () => undefined };

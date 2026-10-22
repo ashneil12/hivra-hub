@@ -73,14 +73,24 @@ export async function todayFromChat(input: Record<string, unknown>, me: { monoId
   if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error(forUser("ask must be Ash's words for the change to Today"));
   const prompt = input.ask.trim().slice(0, 2000);
   if (input.projectOrder !== undefined && typeof input.projectOrder !== "boolean") throw new Error("projectOrder must be true or left out");
-  const flow = input.projectOrder === true ? "hub" : "today";
+  let flow: "today" | "hub" = input.projectOrder === true ? "hub" : "today";
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const end = now() + BUILD_TOTAL_SECONDS * 1000;
-  let result = await requestChange({ flow, projectId: "today", monoId: me.monoId, prompt }, deps);
-  while (result.status === "building" && now() < end) {
-    await sleep(BUILD_RECHECK_MS);
-    result = await requestChange({ flow, projectId: "today", monoId: me.monoId, prompt }, deps);
+  const build = async (f: "today" | "hub") => {
+    let r = await requestChange({ flow: f, projectId: "today", monoId: me.monoId, prompt }, deps);
+    while (r.status === "building" && now() < end) {
+      await sleep(BUILD_RECHECK_MS);
+      r = await requestChange({ flow: f, projectId: "today", monoId: me.monoId, prompt }, deps);
+    }
+    return r;
+  };
+  let result = await build(flow);
+  // Today's sections can't move a project card; the cards follow the project order (C7 live 22 Oct: Alfred left
+  // projectOrder out). A turned-down Today change is tried once as that order change, still only a preview.
+  if (flow === "today" && result.status === "turned-down") {
+    const order = await build("hub");
+    if (order.status === "ready") { result = order; flow = "hub"; }
   }
   if (result.status === "building") throw new Error(forUser("The preview is still building. Call today_change again with the same ask in a minute; it picks the same build up."));
   if (result.status !== "ready") throw new Error(plain(result));
