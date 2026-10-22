@@ -160,3 +160,17 @@ it("the page's height comes back clamped, and closing the page lets go of every 
   h.dispose();
   expect(src.listeners("agents.read")).toBe(0);
 });
+
+it("a read that throws tells the page why (onError) instead of leaving it blank, once, and the watch stays (C3 22 Oct)", async () => {
+  let fail = true;
+  const src = fakeSources();
+  const broken = { ...src.sources["agents.read"], read: () => { if (fail) throw new Error("bad row"); return { agents: [] }; } };
+  const { h } = host({}, { ...src, sources: { ...src.sources, "agents.read": broken } });
+  h.receive({ type: "hub:watch", id: "w1", call: "agents.read", args: {} });
+  await flush();
+  expect(sent.filter((m) => m.type === "hub:watch-error")).toEqual([{ type: "hub:watch-error", watch: "w1", error: "Couldn't read that just now: bad row" }]);
+  fail = false;
+  src.set({ agents: [] });
+  await new Promise((r) => setTimeout(r, 80));
+  expect(data().map((m) => m.watch)).toEqual(["w1"]);
+});

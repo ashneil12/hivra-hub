@@ -48,6 +48,7 @@ mod mono_home;
 mod mono_transcript;
 mod notes;
 mod notifications;
+mod page_frames;
 mod pasteboard;
 mod pi_usage;
 mod portable;
@@ -332,6 +333,7 @@ pub fn run() {
         .register_uri_scheme_protocol(artifacts::HTML_SCHEME, |ctx, request| {
             artifacts::serve_html(ctx.app_handle(), &request)
         })
+        .manage(page_frames::PageFrames::default())
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
         .manage(project_actions::ActionRuns::new())
@@ -734,6 +736,7 @@ pub fn run() {
             artifacts::artifacts_get,
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
+            page_frames::page_frame_put,
             notes::notes_delete,
             notes::notes_save_image,
             notes::notes_image_path,

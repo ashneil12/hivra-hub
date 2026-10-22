@@ -42,7 +42,7 @@ export type PageBridgeOptions = {
   onSize?(height: number): void;
 };
 
-type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string };
+type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string; lastError?: string };
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
 export class PageBridgeHost {
@@ -132,9 +132,16 @@ export class PageBridgeHost {
     let data: unknown;
     try {
       data = this.o.sources[w.call].read(w.args);
-    } catch {
-      return; // the next change tries again
+    } catch (e) {
+      // The page hears why (its onError), so it never sits blank in silence; the watch stays and the next change tries again.
+      const error = e instanceof Error && e.message ? `Couldn't read that just now: ${e.message}` : "Couldn't read that just now.";
+      if (w.lastError !== error) {
+        w.lastError = error;
+        this.o.post({ type: "hub:watch-error", watch: id, error });
+      }
+      return;
     }
+    w.lastError = undefined;
     const text = JSON.stringify(data);
     if (text === w.last) return;
     w.last = text;

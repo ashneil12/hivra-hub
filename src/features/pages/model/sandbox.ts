@@ -27,6 +27,7 @@ const HELPER = `(() => {
     const m = e.data || {};
     if (m.type === "hub:reply" && waiting.has(m.id)) { const w = waiting.get(m.id); waiting.delete(m.id); m.ok ? w.resolve(m.result) : w.reject(new Error(m.error)); }
     if (m.type === "hub:data") { const w = watches.get(m.watch); if (w) w.onData(m.data); dataFns.forEach((f) => f(m.data, m.call)); }
+    if (m.type === "hub:watch-error") { const w = watches.get(m.watch); if (w && w.onError) w.onError(new Error(m.error)); }
     if (m.type === "hub:watch-ended") { const w = watches.get(m.watch); watches.delete(m.watch); if (w && w.onError) w.onError(new Error(m.error)); }
   });
   const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = String(text); return x; };

@@ -220,6 +220,10 @@ pub fn serve_html<R: tauri::Runtime>(
         return not_found();
     }
     let id = request.uri().path().trim_start_matches('/');
+    if let Some(key) = id.strip_prefix(crate::page_frames::PATH_PREFIX) {
+        let frames = app.try_state::<crate::page_frames::PageFrames>();
+        return crate::page_frames::serve(frames.as_deref(), key);
+    }
     if validate_id(id, "artifact").is_err() {
         return not_found();
     }

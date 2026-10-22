@@ -18,6 +18,7 @@ import { PageBridgeHost } from "../model/pageBridgeHost";
 import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
 import { appPageSources } from "../model/pageSources";
 import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
+import { frameKey, pageFrameUrl } from "../model/pageFrame";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
@@ -210,6 +211,20 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
   const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark"));
   const [height, setHeight] = useState(460);
   const [generation, setGeneration] = useState(0);
+  // In the app the document is served from the app's frame scheme with the page's own policy (a srcdoc frame would
+  // inherit the app's script-src 'self' and its scripts would never run: C3 live 22 Oct). "srcdoc" outside the app.
+  const [src, setSrc] = useState<string | "srcdoc" | undefined>(undefined);
+  useEffect(() => {
+    let gone = false;
+    setSrc(undefined);
+    void pageFrameUrl(frameKey(pageId, specKey(spec), generation, scheme), doc).then((url) => {
+      if (!gone) setSrc(url ?? "srcdoc");
+    });
+    return () => {
+      gone = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the document is fixed for a frame
+  }, [pageId, doc, generation, scheme]);
   // The bridge lives as long as the frame: a re-render (the record read again) must not drop the page's watches.
   const named = useRef(title ?? spec.title);
   named.current = title ?? spec.title;
@@ -240,9 +255,13 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
       host.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one bridge per frame: the spec is fixed for a frame (a new spec is a new frame)
-  }, [pageId, live, sessions, generation]);
-  return (
+  }, [pageId, live, sessions, generation, src]);
+  if (!src) return <div style={{ height }} className="w-full rounded-xl" data-bespoke-page-loading />;
+  return src === "srcdoc" ? (
     <iframe ref={ref} key={`${scheme}:${generation}`} title={spec.title} sandbox={SANDBOX} srcDoc={doc} data-bespoke-page
+      style={{ height }} className="w-full rounded-xl border-0 bg-transparent" />
+  ) : (
+    <iframe ref={ref} key={`${scheme}:${generation}:src`} title={spec.title} sandbox={SANDBOX} src={src} data-bespoke-page data-bespoke-page-src
       style={{ height }} className="w-full rounded-xl border-0 bg-transparent" />
   );
 }
