@@ -78,6 +78,33 @@ it("says it is looking while the Lead answers", () => {
   expect(container.querySelector('[data-mono-check="ck_1"]')!.textContent).toContain("Checker's note · looking at it");
 });
 
+it("marks a fixed answer with nothing behind it as not proven, and says what it was worth", () => {
+  const fixed: Block = { id: "a3", role: "assistant", text: "Fixed: the save path retries." };
+  render([prompt, fixed]);
+  const card = container.querySelector('[data-mono-check="ck_1"]')!;
+  expect(card.textContent).toContain("Checker's note · answered: fixed, not proven");
+  act(() => card.querySelector("button")!.click());
+  expect(card.querySelector("[data-claim-confidence]")?.getAttribute("data-claim-confidence")).toBe("guess");
+  expect(card.textContent).toContain("Evidence: Says it's fixed");
+  expect(card.textContent).toContain("nothing the app can see was run to check it");
+});
+
+it("marks a fixed answer with a check it ran and passed as verified", () => {
+  const run: Block = {
+    id: "t1",
+    role: "tool",
+    text: "",
+    tool: { callId: "c1", title: "npx vitest run src/save.test.ts", kind: "execute", status: "completed" },
+  };
+  const fixed: Block = { id: "a3", role: "assistant", text: "Fixed: the save path retries." };
+  render([prompt, run, fixed]);
+  const card = container.querySelector('[data-mono-check="ck_1"]')!;
+  expect(card.textContent).toContain("Checker's note · answered: fixed, verified");
+  act(() => card.querySelector("button")!.click());
+  expect(card.querySelector("[data-claim-confidence]")?.getAttribute("data-claim-confidence")).toBe("verified");
+  expect(card.textContent).toContain("1 check ran in this turn and passed (npx vitest run src/save.test.ts)");
+});
+
 it("keeps an approval the answer waits on in plain sight", () => {
   const approval: Block = { id: "ap", role: "approval", text: "Run ash_record?", approval: { requestId: 7 } };
   render([prompt, approval], true);

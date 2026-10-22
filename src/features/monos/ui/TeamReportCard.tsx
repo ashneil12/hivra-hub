@@ -4,11 +4,15 @@
 // "Show all", then "Fold"; the folded head fades softly above "Show all". Differs on purpose (Critiquito, 21 Oct): a faint hairline frame, no shadow, glow or coloured
 // header, for the Monocode glass look; a native fieldset legend cuts the frame, so no painted patch sits on the glass.
 import { useState } from "react";
+import { claimEvidenceOf } from "../../hub/model/claimEvidence";
 import { reportIsTall, type TeamReport } from "../model/teamReport";
 
 export function TeamReportCard({ report }: { report: TeamReport }) {
   const tall = reportIsTall(report.text);
   const [open, setOpen] = useState(false);
+  // A report that says it is done says what that is worth (claimEvidence.ts, board I5); the app has the words, not the
+  // team's transcript, so a claim with nothing named reads as a guess rather than as a finished job.
+  const claim = claimEvidenceOf(report.text);
   return (
     <fieldset
       data-team-report={report.team}
@@ -31,6 +35,14 @@ export function TeamReportCard({ report }: { report: TeamReport }) {
       >
         {report.text}
       </div>
+      {claim ? (
+        <p
+          data-team-report-claim={claim.confidence}
+          className="mt-1.5 border-t border-content/10 pt-1.5 text-[11.5px] leading-4 text-content/50"
+        >
+          {claim.line}
+        </p>
+      ) : null}
       {tall ? (
         <button
           type="button"
