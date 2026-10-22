@@ -38,6 +38,8 @@ export function confirmTitleName(raw: string, max = 60): string {
     s = s.slice(0, at > max * 0.6 ? at : max);
     cut = true;
   }
+  // A title that arrives already cut ("…from the MonoCode…" or "...") keeps its cut mark, so it doesn't read as a sentence.
+  if (/(\u2026|\.{3})\s*$/u.test(s)) cut = true;
   s = s.replace(/[\s.,;:!?\u2026-]+$/u, "");
   if (!s) return "this";
   return cut ? `${s}\u2026` : s;

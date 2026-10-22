@@ -3,7 +3,11 @@ import { confirmTitleName } from "./ConfirmDelete";
 
 describe("confirm title name (r30i)", () => {
   it("drops markdown and the trailing dots before the question mark", () => {
-    expect(confirmTitleName("The current branch is **pm/pages-live**...")).toBe("The current branch is pm/pages-live");
+    expect(confirmTitleName("The current branch is **pm/pages-live**")).toBe("The current branch is pm/pages-live");
+  });
+  it("keeps the cut mark on a title that arrives already cut", () => {
+    expect(confirmTitleName("I'll read the current branch from the MonoCode\u2026")).toBe("I'll read the current branch from the MonoCode\u2026");
+    expect(confirmTitleName("The current branch is **pm/pages-live**...")).toBe("The current branch is pm/pages-live\u2026");
   });
   it("does not double punctuation", () => {
     expect(`Delete ${confirmTitleName("Nothing has changed.")}?`).toBe("Delete Nothing has changed?");
