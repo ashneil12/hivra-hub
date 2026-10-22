@@ -186,7 +186,11 @@ export function mapJob(raw: unknown): HubJob | undefined {
   // A dropped job is never shown. A state this app doesn't know yet still shows, under its own word: a job never
   // vanishes from Being built because Ash OS learned a new word (it once sent `waiting` and the job disappeared).
   if (!id || !said || said === "dropped") return undefined;
-  const state = JOB_STATES.find((x) => x === said) ?? "unknown";
+  const found = JOB_STATES.find((x) => x === said) ?? "unknown";
+  // A red the switched-off studio left that its project's Lead now has (Ash OS marks it `notAshs`): it is the Lead's,
+  // not Ash's to act on, so it reads like any job with its Lead, a grey "With <Lead>", never a red Needs you.
+  const notAshs = found === "lead_gave_up" && r.notAshs === true;
+  const state: HubJob["state"] = notAshs ? "sent_to_lead" : found;
   const job: HubJob = {
     id,
     projectId: str(r.projectId),
@@ -201,6 +205,7 @@ export function mapJob(raw: unknown): HubJob | undefined {
     seen: r.seen === true,
   };
   if (state === "unknown") job.rawState = said.slice(0, 60);
+  if (notAshs) job.notAshs = true;
   const sourceRef = optStr(r.sourceRef);
   if (sourceRef) job.sourceRef = sourceRef;
   if (r.circle === "amber" || r.circle === "red") job.circle = r.circle;

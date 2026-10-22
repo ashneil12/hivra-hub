@@ -88,6 +88,8 @@ export type HubJob = {
   seen: boolean;
   circle?: "amber" | "red";
   word?: string;
+  /** Ash OS left it red but its Lead has it and nothing waits on Ash: shown as with its Lead (grey), never Needs you. */
+  notAshs?: boolean;
   /** "Sent to coding team lead at 2:20pm" (stuck jobs sent to a Lead) and the Lead's "Got it". */
   sentText?: string;
   gotIt?: { at: string; text: string } | null;

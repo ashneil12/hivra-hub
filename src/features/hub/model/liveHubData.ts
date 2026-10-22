@@ -44,7 +44,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
       return projectId ? of(projectId) : projects().flatMap((p) => of(p.id));
     },
     listSetup: () => snap().setup,
-    // Stuck work (amber): jobs that failed and cannot fix themselves. No button: they went to the Lead by themselves.
+    // Stuck work (grey, no amber): jobs that failed and cannot fix themselves. No button: they went to the Lead by themselves.
     // A job the Lead gave up on is not here: it is one Needs row (red, See options).
     listStuck: (projectId?: string): StuckItem[] =>
       jobGroups()

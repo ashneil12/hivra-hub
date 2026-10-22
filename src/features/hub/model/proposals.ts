@@ -55,7 +55,7 @@ let proposals: Proposal[] = examples([
     title: "Example: give Stuck rows an orange glowing edge",
     why: "Example: so stuck work is harder to miss.",
     checked: [RULES.needs, RULES.example],
-    blocked: { rule: RULES.edges, reason: "Stuck is shown by a 14px amber ring and the word 'Stuck'. Edges and glow are not allowed anywhere." },
+    blocked: { rule: RULES.edges, reason: "Stuck work is shown by a 14px grey ring and a plain word (Retrying, With <Lead>); red only for Needs you. Edges and glow are not allowed anywhere." },
     before: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck" }, { text: "Play Areas 1 and 2" }] },
     after: { heading: "EXO game · Today", rows: [{ text: "Build 0.13.1 · Stuck, with orange glowing edge", isNew: true }, { text: "Play Areas 1 and 2" }] },
   },
