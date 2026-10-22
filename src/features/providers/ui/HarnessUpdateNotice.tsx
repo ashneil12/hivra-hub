@@ -40,7 +40,10 @@ import {
 let launchCheck: Promise<HarnessUpdate[]> | null = null;
 
 function checkForHarnessUpdates(): Promise<HarnessUpdate[]> {
-  launchCheck ??= runLaunchCheck().catch(() => []);
+  // Once per launch, shared by every mount, so a StrictMode remount sees the same releases (notShownBefore, below).
+  launchCheck ??= runLaunchCheck()
+    .then((updates) => notShownBefore(updates))
+    .catch(() => []);
   return launchCheck;
 }
 
@@ -131,6 +134,35 @@ async function runUpdate(update: HarnessUpdate): Promise<RowState> {
     installed: version ?? update.installed,
     latest: update.latest,
   };
+}
+
+// Each release is offered once (Critiquito/Ash, 22 Oct: "show once, no version numbers, never covering screens"): a
+// release the card has shown is not shown again at the next launch, dismissed or not. Settings keeps the versions.
+const SHOWN_KEY = "monocode:agent-updates-shown";
+
+function shownReleases(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SHOWN_KEY) ?? "[]") as unknown;
+    return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const releaseKey = (update: Pick<HarnessUpdate, "harness" | "latest">) => `${update.harness}@${update.latest}`;
+
+/** The updates this Mac hasn't been shown yet; the ones returned count as shown from now on. */
+export function notShownBefore(updates: readonly HarnessUpdate[]): HarnessUpdate[] {
+  const shown = shownReleases();
+  const fresh = updates.filter((update) => !shown.has(releaseKey(update)));
+  if (fresh.length) {
+    try {
+      localStorage.setItem(SHOWN_KEY, JSON.stringify([...shown, ...fresh.map(releaseKey)].slice(-50)));
+    } catch {
+      /* shown for this run only */
+    }
+  }
+  return fresh;
 }
 
 /** Checked once per app launch, in whichever window asks first. */
@@ -313,13 +345,10 @@ function HarnessUpdateRow({
         {state.status === "updated" ? (
           <span className="flex shrink-0 items-center gap-1 text-[11px] text-emerald-400">
             <Check className="size-3.5" />
-            Updated to {state.version}
+            Updated
           </span>
         ) : state.status === "failed" ? null : (
           <>
-            <span className="shrink-0 font-mono text-[11px] text-content/50">
-              {update.installed} → {update.latest}
-            </span>
             <button
               type="button"
               disabled={state.status === "updating"}
@@ -342,9 +371,6 @@ function HarnessUpdateRow({
         <div role="alert" className="mt-1.5">
           <p className="text-[12px] leading-relaxed text-content/90">
             {state.error}
-          </p>
-          <p className="mt-1 font-mono text-[10px] text-content/40">
-            Installed {state.installed ?? update.installed} · Latest {state.latest}
           </p>
           <button
             type="button"

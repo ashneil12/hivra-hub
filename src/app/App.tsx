@@ -16657,8 +16657,8 @@ function Workspace({
             <HarnessUpdateNotice
               topOffset={toastStackTop([reminderNoticesHeight])}
               onHeightChange={setHarnessUpdateHeight}
-              // On the hub's views it sits over the sidebar instead of over Today's content.
-              placement={hubShown ? "bottom-left" : "top-right"}
+              // Always over the sidebar's foot, never over a view's header or content (Ash, 22 Oct: never covering screens).
+              placement="bottom-left"
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does

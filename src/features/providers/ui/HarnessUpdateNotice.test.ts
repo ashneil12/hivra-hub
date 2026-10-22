@@ -56,7 +56,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("../../sessions/ui/HarnessIcon", () => ({ HarnessIcon: () => null }));
 
 describe("HarnessUpdateNotice", () => {
-  beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    localStorage.clear();
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it("survives a StrictMode remount and updates from the card", async () => {
@@ -75,7 +78,8 @@ describe("HarnessUpdateNotice", () => {
       '[aria-label="Agent updates"]',
     );
     expect(notice?.textContent).toContain("Claude Code");
-    expect(notice?.textContent).toContain("2.1.284 → 2.1.285");
+    // No version numbers on the card (Ash, 22 Oct): the tool's name and Update.
+    expect(notice?.textContent).not.toMatch(/\d+\.\d+\.\d+/);
 
     const update = Array.from(notice!.querySelectorAll("button")).find(
       (button) => button.textContent === "Update",
@@ -84,7 +88,8 @@ describe("HarnessUpdateNotice", () => {
       update.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(notice?.textContent).toContain("Updated to 2.1.285");
+    expect(notice?.textContent).toContain("Updated");
+    expect(notice?.textContent).not.toMatch(/\d+\.\d+\.\d+/);
     expect(refreshHarnessCatalogs).toHaveBeenCalledWith(["claude"], {
       force: true,
     });
@@ -134,7 +139,10 @@ describe("HarnessUpdateNotice", () => {
 });
 
 describe("HarnessUpdateNotice fresh checks and failures", () => {
-  beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    localStorage.clear();
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it("stillBehind drops a harness that is now current and refreshes the installed version", async () => {
@@ -184,10 +192,55 @@ describe("HarnessUpdateNotice fresh checks and failures", () => {
     expect(notice.textContent).not.toContain("Updated to");
     const alert = notice.querySelector('[role="alert"]')!;
     expect(alert.textContent).toContain("Couldn't update Claude Code. Try again, or open Terminal for details.");
-    expect(alert.textContent).toContain("Installed 2.1.284 · Latest 2.1.285");
+    expect(alert.textContent).not.toMatch(/\d+\.\d+\.\d+/);
     const buttons = Array.from(notice.querySelectorAll("button")).filter((b) => !b.getAttribute("aria-label"));
     expect(buttons.map((b) => b.textContent)).toEqual(["Try again"]);
     act(() => root.unmount());
+  });
+});
+
+describe("each release is offered once", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    localStorage.clear();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("a release shown at one launch is not shown at the next, dismissed or not; a newer release is", async () => {
+    const { notShownBefore } = await import("./HarnessUpdateNotice");
+    const first = [{ harness: "claude" as const, installed: "2.1.304", latest: "2.1.307" }];
+    expect(notShownBefore(first)).toEqual(first);
+    // Next launch, same release still out: nothing.
+    expect(notShownBefore(first)).toEqual([]);
+    // A newer release is offered (once).
+    const newer = [{ harness: "claude" as const, installed: "2.1.304", latest: "2.1.310" }];
+    expect(notShownBefore(newer)).toEqual(newer);
+    expect(notShownBefore(newer)).toEqual([]);
+  });
+
+  it("the card itself does not come back at the next launch for the release it showed", async () => {
+    vi.resetModules();
+    claimed = false;
+    installed = "2.1.284 (Claude Code)";
+    const first = await import("./HarnessUpdateNotice");
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(createElement(first.HarnessUpdateNotice, { placement: "bottom-left" })));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.body.querySelector('[aria-label="Agent updates"]')).not.toBeNull();
+    act(() => root.unmount());
+    // A fresh launch (new module, new claim), same release still out.
+    vi.resetModules();
+    claimed = false;
+    const second = await import("./HarnessUpdateNotice");
+    const again = createRoot(document.createElement("div"));
+    await act(async () => again.render(createElement(second.HarnessUpdateNotice, { placement: "bottom-left" })));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.body.querySelector('[aria-label="Agent updates"]')).toBeNull();
+    act(() => again.unmount());
   });
 });
 
