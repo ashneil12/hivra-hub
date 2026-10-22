@@ -29,6 +29,7 @@ import {
   setHubMcpServers,
   type HubChatLookups,
   CREDENTIAL_DENIED_TOOLS,
+  OLD_MONO_COPY_DENIED_TOOLS,
 } from "./hubMcp";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
@@ -181,7 +182,7 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
       "--tools",
       "Bash,Read,Grep,Glob",
       "--disallowedTools",
-      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...CREDENTIAL_DENIED_TOOLS].join(","),
+      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS].join(","),
       "--allowedTools",
       "mcp__ash-os__*",
     ]);
@@ -192,7 +193,7 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
     const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
     expect(args).not.toContain("--tools");
     // Its only deny rules are the ones every hub chat has: the Monos' home fence and no reading a saved login by hand.
-    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...CREDENTIAL_DENIED_TOOLS].join(","));
+    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS].join(","));
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
   });
 });

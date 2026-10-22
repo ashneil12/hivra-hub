@@ -18,6 +18,7 @@ import {
   setHubMcpServers,
   type HubChatLookups,
   CREDENTIAL_DENIED_TOOLS,
+  OLD_MONO_COPY_DENIED_TOOLS,
   chatDeniedTools,
   monoHomeFenceArgs,
 } from "./hubMcp";
@@ -218,7 +219,7 @@ describe("the delegate tool", () => {
       "monocode",
     ]);
     // Only the fence round the Monos' home, which every hub chat has.
-    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...CREDENTIAL_DENIED_TOOLS].join(",")];
+    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS].join(",")];
     expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual(fence);
     expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual(fence);
   });
@@ -340,4 +341,13 @@ describe("saved logins", () => {
     for (const rule of ["Bash(git credential:*)", "Bash(security find-internet-password:*)", "Bash(gh auth token:*)"]) expect(chatDeniedTools()).toContain(rule);
     expect(monoHomeFenceArgs()[1].split(",")).toEqual(expect.arrayContaining(["Bash(git credential:*)"]));
   });
+});
+
+it("r48: no hub chat reads the daily app's frozen old Mono copy (ash-lead, no Bark Desk lead)", async () => {
+  const { chatDeniedTools } = await import("./hubMcp");
+  expect(chatDeniedTools()).toContain("Read(~/Library/Application Support/com.ash.monocode-hub/monos/**)");
+  expect(chatDeniedTools()).toContain("Bash(*com.ash.monocode-hub/monos*)");
+  // Edits in the live home are still denied; reading it is not.
+  expect(chatDeniedTools()).toContain("Edit(~/agent-memory/monos/**)");
+  expect(chatDeniedTools().some((r) => r.startsWith("Read(~/agent-memory"))).toBe(false);
 });

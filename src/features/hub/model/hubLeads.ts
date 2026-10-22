@@ -30,7 +30,12 @@ export type LeadSpec = {
   look?: { mascot: string; color: string };
 };
 
-/** The four Leads. Ids are `<project id>-lead` (Ash OS's own convention for a Lead's Mono id). */
+/**
+ * The Leads the hub seeds with a look of their own. Every other project's Lead (Recall Check lead, Bark Desk lead, any
+ * project Ash adds) is `<project id>-lead`, made by `ensureProjectLeads` and remembered in `moreLeads`; each is on
+ * MONOS.json like any Mono. Ids are `<project id>-lead` (Ash OS's convention); `ash-lead` is only the old id that
+ * `hub-lead` replaced.
+ */
 export const LEADS: readonly LeadSpec[] = [
   { projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO", look: { mascot: "invader", color: "hsl(211 92% 62%)" } },
   // Hivra wore an orange ghost before 15 Oct; Ash doesn't like ghost stuff, so it is an orange dino instead.

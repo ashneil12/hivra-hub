@@ -33,7 +33,7 @@ import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
 import { defaultSoul } from "../../monos/model/monoFiles";
 import { completeLeadAdoption, ensureProjectLeads, leadFor, LEADS, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
-import { CREDENTIAL_DENIED_TOOLS, hubMcpArgs } from "./hubMcp";
+import { CREDENTIAL_DENIED_TOOLS, hubMcpArgs, OLD_MONO_COPY_DENIED_TOOLS } from "./hubMcp";
 import type { HubProject } from "./types";
 
 // The four projects (what the live service returned on 15 Oct, with the harness now the project `hub`, 19 Oct).
@@ -122,7 +122,7 @@ describe("the project Leads", () => {
       },
     });
     // Nothing but the fence round the Monos' home, which every hub chat has.
-    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...CREDENTIAL_DENIED_TOOLS].join(",")]);
+    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS].join(",")]);
   });
 
   it("have a soul in Ash's words: orchestrator, full words to workers, sonnet workers, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {

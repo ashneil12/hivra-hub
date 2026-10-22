@@ -97,9 +97,21 @@ export const CREDENTIAL_DENIED_TOOLS = [
   "Bash(gh auth token:*)",
 ];
 
-/** Everything every hub chat is denied: edits in the Monos' home, and reading a saved login by hand. */
+/**
+ * The daily app's Monos moved to ~/agent-memory/monos on 20 Oct (mono_home.rs); the copy they came from stays in its
+ * data folder, untouched, until Ash says it can go. That copy is frozen on the old team (ash-lead, no hub-lead, no
+ * Bark Desk lead), and a worker that found it reported "ash-lead … the five Leads" as the team (Alfred's A8, 22 Oct).
+ * So no hub chat reads it; the live team is in the Monos' home.
+ */
+export const OLD_MONO_COPY = "~/Library/Application Support/com.ash.monocode-hub/monos";
+export const OLD_MONO_COPY_DENIED_TOOLS = [
+  `Read(${OLD_MONO_COPY}/**)`,
+  "Bash(*com.ash.monocode-hub/monos*)",
+];
+
+/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, and reading a saved login by hand. */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...CREDENTIAL_DENIED_TOOLS];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
