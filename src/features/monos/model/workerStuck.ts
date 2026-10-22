@@ -286,11 +286,14 @@ export function countWork(rows: readonly Delegation[], now: number): WorkCounts 
   return counts;
 }
 
-/** "2 working · 1 asking · 1 stuck", or nothing when nothing is out. */
+/**
+ * "2 working · 1 waiting · 1 stuck", or nothing when nothing is out. One word for a worker that asked its Lead a
+ * question everywhere (Ash, 22 Oct): it is waiting on its Lead, never "asking", "stuck" or "Need approval".
+ */
 export function workSplit(counts: WorkCounts): string | undefined {
   const parts = [
     counts.working ? `${counts.working} working` : "",
-    counts.asking ? `${counts.asking} asking` : "",
+    counts.asking ? `${counts.asking} waiting` : "",
     counts.stuck ? `${counts.stuck} stuck` : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : undefined;
@@ -322,6 +325,20 @@ export function waitingOnLeadLabel(
 ): string | undefined {
   if (!live || !live.pendingQuestion || live.approvalPending) return undefined;
   return `Waiting on ${leadName.trim() || "its Lead"}`;
+}
+
+/**
+ * A delegated worker whose only open thing is a question: it waits on its Lead (D5), so it is not Ash's input. Lists
+ * that mark chats "Need approval" / "Needs input" leave it (and its Lead) out; a tool approval it waits for is Ash's.
+ */
+export function waitsOnlyOnItsLead(
+  session: { id: string; pendingQuestion?: unknown; approvalPending: boolean },
+  rows: readonly Pick<Delegation, "childSession" | "createdAt" | "state">[],
+): boolean {
+  if (session.approvalPending || session.pendingQuestion == null) return false;
+  let row: Pick<Delegation, "childSession" | "createdAt" | "state"> | undefined;
+  for (const entry of rows) if (entry.childSession === session.id && (!row || entry.createdAt > row.createdAt)) row = entry;
+  return !!row && (row.state === "question" || row.state === "running");
 }
 
 /** A row's rollup word: a stalled one is stuck whatever its live chat shows. */
@@ -410,13 +427,13 @@ export function leadActionLine(row: Pick<Delegation, "log" | "createdAt">, leadN
 }
 
 /** One row as the rail reads it: how it is stuck, else its state word. */
-export function delegationLine(row: Delegation, now: number): string {
+export function delegationLine(row: Delegation, now: number, leadName?: string): string {
   const stuck = stuckOf(row, now);
   if (stuck?.kind === "stalled") return stuck.line;
   if (stuck?.kind === "failed") return stuck.line;
-  if (stuck?.kind === "asking") return "asking its Lead";
+  if (stuck?.kind === "asking") return `waiting on ${leadName?.trim() || "its Lead"}`;
   if (row.state === "cancelled" && leadAction(row)?.kind === "stopped") return "stopped by its Lead";
-  return { running: "working", question: "asking its Lead", completed: "done", failed: "failed", cancelled: "stopped" }[row.state];
+  return { running: "working", question: `waiting on ${leadName?.trim() || "its Lead"}`, completed: "done", failed: "failed", cancelled: "stopped" }[row.state];
 }
 
 /**

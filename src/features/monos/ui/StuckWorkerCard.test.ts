@@ -156,8 +156,8 @@ describe("stuck workers in the Lead's chat", () => {
     // Its stored question reads without the "(Recommended)" marker.
     expect(card("w2")!.querySelector("[data-stuck-line]")!.textContent).toBe("Which save format?");
     const line = container.querySelector("[data-delegation-working]")!;
-    expect(line.textContent).toBe("1 working: Job w1 · 1 asking: Job w2 · 2 stuck: Job w3, Job w4");
-    expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 asking, 1 stuck, 1 failed");
+    expect(line.textContent).toBe("1 working: Job w1 · 1 waiting: Job w2 · 2 stuck: Job w3, Job w4");
+    expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 waiting, 1 stuck, 1 failed");
   });
 
   it("answers a question with one click on an option, the worker's pick first, and names Ash in the row's log", async () => {

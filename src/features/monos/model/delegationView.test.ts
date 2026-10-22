@@ -54,7 +54,7 @@ describe("batchRollup", () => {
       "Delegated 3: 2 working, 1 failed",
     );
     expect(batchRollup(["done", "input", "stopped", "working"])).toBe(
-      "Delegated 4: 1 working, 1 asking, 1 stopped, 1 done",
+      "Delegated 4: 1 working, 1 waiting, 1 stopped, 1 done",
     );
     expect(batchRollup(["done", "done"])).toBe("Delegated 2: all done");
     expect(batchRollup([undefined, undefined])).toBe("Delegated 2");

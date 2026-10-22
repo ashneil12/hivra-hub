@@ -133,8 +133,8 @@ it("lists no sub-chats under a Mono: one line says what it has out, the row's la
   expect(work(mono.id)?.querySelector("[data-stuck-trigger]")).toBeNull();
   expect(work(mono.id)?.querySelector(".text-amber-400")).toBeNull();
   expect(work(mono.id)?.dataset.monoWorkKind).toBe("asking");
-  expect(work(mono.id)?.querySelector("button")?.getAttribute("title")).toContain("1 working · 1 asking");
-  expect(container.querySelector('button[aria-label*="1 working · 1 asking"]')).not.toBeNull();
+  expect(work(mono.id)?.querySelector("button")?.getAttribute("title")).toContain("1 working · 1 waiting");
+  expect(container.querySelector('button[aria-label*="1 working · 1 waiting"]')).not.toBeNull();
   // A Mono with nothing out has no line.
   expect(work(other.id)).toBeNull();
 });

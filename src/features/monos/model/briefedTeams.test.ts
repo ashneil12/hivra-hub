@@ -130,7 +130,7 @@ describe("the line in a Mono's chat", () => {
     expect(line.dataset.briefedProject).toBe("vg-game");
     expect(line.dataset.briefedKind).toBe("stuck");
     expect(line.querySelector("[data-briefed-status] .text-amber-400")?.textContent).toBe("1 stuck");
-    expect(line.getAttribute("title")).toBe("2 working · 1 asking · 1 stuck\nOpen EXO coding team on EXO lead");
+    expect(line.getAttribute("title")).toBe("2 working · 1 waiting · 1 stuck\nOpen EXO coding team on EXO lead");
     expect(line.getAttribute("aria-label")).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck. Open EXO coding team");
     act(() => line.click());
     expect(onOpen).toHaveBeenCalledWith(brief);

@@ -32,11 +32,11 @@ export function workingOn(
   };
 }
 
-/** "2 working: API, UI · 1 asking: Docs", or nothing when nothing is out. */
+/** "2 working: API, UI · 1 waiting: Docs", or nothing when nothing is out. */
 export function workingLine(out: { working: readonly string[]; asking: readonly string[] }): string | undefined {
   const parts = [
     ...(out.working.length ? [`${out.working.length} working: ${names(out.working)}`] : []),
-    ...(out.asking.length ? [`${out.asking.length} asking: ${names(out.asking)}`] : []),
+    ...(out.asking.length ? [`${out.asking.length} waiting: ${names(out.asking)}`] : []),
   ];
   return parts.length ? parts.join(" · ") : undefined;
 }

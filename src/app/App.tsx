@@ -622,6 +622,7 @@ import {
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { claudeRunsOnGrok, modelInUseLabel } from "../integrations/harness/providers/claude/claudeGrokBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
+import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -629,6 +630,7 @@ import {
   canReplaceSessionTitle,
   formatSessionTitle,
   sessionNeedsInput,
+  hasPendingApproval,
   newDefaultSession,
   newSession,
   retargetSessionToProject,
@@ -2561,16 +2563,28 @@ function Workspace({
     return !!focused && ids.has(focused.id);
   }, [activeTab, currentProjectDock, runningTerminals]);
 
+  const approvalDelegationRows = useDelegationRows();
   const nextApprovalSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (sessionNeedsInput(session)) {
+      // A worker only waiting on its Lead's answer is not Ash's input (D5): no "Need approval" on it or its Lead.
+      if (
+        sessionNeedsInput(session) &&
+        !waitsOnlyOnItsLead(
+          {
+            id: session.id,
+            pendingQuestion: session.pendingQuestion,
+            approvalPending: hasPendingApproval(session.blocks),
+          },
+          approvalDelegationRows,
+        )
+      ) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
     }
     return ids;
-  }, [sessions]);
+  }, [sessions, approvalDelegationRows]);
   const approvalSessionIdsRef = useRef(nextApprovalSessionIds);
   if (!setsEqual(approvalSessionIdsRef.current, nextApprovalSessionIds)) {
     approvalSessionIdsRef.current = nextApprovalSessionIds;

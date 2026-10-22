@@ -342,7 +342,7 @@ describe("the Lead's chat shows what is out while it talks", () => {
     const row = (id: string, title: string, state: Delegation["state"], createdAt: number) =>
       leadBrief({ id, title, state, createdAt, ownerSession: "lead-chat", follow: null });
     const rows = [row("b", "UI", "running", 2), row("a", "API", "running", 1), row("c", "Docs", "question", 3), row("d", "Old", "completed", 0)];
-    expect(workingLine(workingOn("lead-chat", rows))).toBe("2 working: API, UI · 1 asking: Docs");
+    expect(workingLine(workingOn("lead-chat", rows))).toBe("2 working: API, UI · 1 waiting: Docs");
     expect(workingLine(workingOn("other", rows))).toBeUndefined();
     const many = ["A", "B", "C", "D", "E"].map((title, index) => row(title, title, "running", index));
     expect(workingLine(workingOn("lead-chat", many))).toBe("5 working: A, B, C +2");

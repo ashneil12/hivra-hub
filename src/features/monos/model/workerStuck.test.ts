@@ -6,6 +6,7 @@ import type { Delegation } from "./delegations";
 import {
   shortSplit,
   waitingOnLeadLabel,
+  waitsOnlyOnItsLead,
   ASK_ESCALATE_MS,
   plainReason,
   storedQuestion,
@@ -139,7 +140,7 @@ describe("what a Lead's work reads as", () => {
 
   it("splits what is out into working, asking and stuck (stalled or failed)", () => {
     expect(workCounts("lead-chat", rows, NOW)).toEqual({ working: 1, asking: 1, stuck: 2 });
-    expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 asking · 2 stuck");
+    expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 waiting · 2 stuck");
     expect(workSplit({ working: 2, asking: 0, stuck: 0 })).toBe("2 working");
     expect(workSplit({ working: 0, asking: 0, stuck: 0 })).toBeUndefined();
   });
@@ -158,8 +159,24 @@ describe("what a Lead's work reads as", () => {
     expect(waitingOnLeadLabel(undefined, "Alfred")).toBeUndefined();
   });
 
+  it("a delegated worker with only a question is its Lead's, not Ash's input; a tool approval or a plain chat still is", () => {
+    const asked = row({ id: "q", state: "question", pendingQuestion: "Green or yellow? [green | yellow]" });
+    const q = { id: "w-q", pendingQuestion: { requestId: 1 }, approvalPending: false };
+    expect(waitsOnlyOnItsLead(q, [asked])).toBe(true);
+    // Its row still flips to question a beat after the chat asks: running counts too.
+    expect(waitsOnlyOnItsLead(q, [{ ...asked, state: "running" }])).toBe(true);
+    // A tool approval is Ash's to give, whoever started the chat.
+    expect(waitsOnlyOnItsLead({ ...q, approvalPending: true }, [asked])).toBe(false);
+    // A chat nobody delegated (Ash's own) that asks him a question is his.
+    expect(waitsOnlyOnItsLead({ ...q, id: "ash-own-chat" }, [asked])).toBe(false);
+    // Nothing asked: nothing to wait on.
+    expect(waitsOnlyOnItsLead({ ...q, pendingQuestion: undefined }, [asked])).toBe(false);
+    expect(delegationLine(asked, NOW, "Alfred")).toBe("waiting on Alfred");
+    expect(delegationLine(asked, NOW)).toBe("waiting on its Lead");
+  });
+
   it("counts the Lead's current wave the way its batch line does, never just 'busy'", () => {
-    expect(leadRollup("lead-chat", rows, NOW)).toBe("Delegated 5: 1 working, 1 asking, 1 stuck, 1 failed, 1 done");
+    expect(leadRollup("lead-chat", rows, NOW)).toBe("Delegated 5: 1 working, 1 waiting, 1 stuck, 1 failed, 1 done");
     expect(leadRollup("other", rows, NOW)).toBe("Delegated 1: 1 working");
     expect(leadRollup("nobody", rows, NOW)).toBeUndefined();
     // Nothing out and nothing stuck: no line.

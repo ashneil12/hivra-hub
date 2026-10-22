@@ -62,3 +62,45 @@ describe("a sub-chat's running time", () => {
     expect(row("w2").querySelector("[data-sub-chat-ran]")).toBeNull();
   });
 });
+
+describe("a worker only waiting on its Lead's answer (Ash, 22 Oct: one word for it everywhere)", () => {
+  it("is 'waiting', never counted as stuck on the fold, and its mark is a grey clock, not amber", () => {
+    const asked = { ...chat("w1", NOW - 10 * 60_000, { state: "question", pendingQuestion: "Which word? [green | yellow]" }), state: "question" as const };
+    const stalled = chat("w2", NOW - 20 * 60_000, { stallKind: "quiet", stalledAt: NOW - 9 * 60_000, stallReason: "" });
+    const children = [asked, stalled];
+    const attention = subChatAttention(children, NOW);
+    resetSubChatFolds();
+    function List() {
+      useSubChatFolds();
+      return createElement(SubChatList, { foldKey: "chat:lead-chat", owner: "lead-chat", children, attention, now: NOW, onOpen: vi.fn() });
+    }
+    act(() => root.render(createElement(List)));
+    const toggle = container.querySelector<HTMLButtonElement>("[data-sub-chats-toggle]")!;
+    // Open: the waiting one's mark is grey, the stalled one's amber; its row reads waiting on its Lead.
+    if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
+    const row = (id: string) => container.querySelector<HTMLElement>(`[data-sub-chat="${id}"]`)!;
+    expect(row("w1").querySelector("svg")!.getAttribute("class")).toContain("text-content/45");
+    expect(row("w1").querySelector("svg")!.getAttribute("class")).not.toContain("amber");
+    expect(row("w1").getAttribute("title")).toBe("Job w1, waiting on its Lead");
+    expect(row("w2").querySelector("svg")!.getAttribute("class")).toContain("text-amber-400");
+    // Folded: "2 sub-chats · 1 waiting · 1 stuck", never "2 stuck".
+    act(() => toggle.click());
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toBe("2 sub-chats · 1 waiting · 1 stuck");
+  });
+
+  it("alone, the fold says only '1 waiting', with no stuck count at all", () => {
+    const asked = { ...chat("w1", NOW - 10 * 60_000, { state: "question", pendingQuestion: "Which word? [green | yellow]" }), state: "question" as const };
+    const attention = subChatAttention([asked], NOW);
+    resetSubChatFolds();
+    function List() {
+      useSubChatFolds();
+      return createElement(SubChatList, { foldKey: "chat:lead-chat", owner: "lead-chat", children: [asked], attention, now: NOW, onOpen: vi.fn() });
+    }
+    act(() => root.render(createElement(List)));
+    const toggle = container.querySelector<HTMLButtonElement>("[data-sub-chats-toggle]")!;
+    if (toggle.getAttribute("aria-expanded") === "true") act(() => toggle.click());
+    expect(toggle.textContent).toBe("1 sub-chat · 1 waiting");
+    expect(toggle.textContent).not.toContain("stuck");
+  });
+});

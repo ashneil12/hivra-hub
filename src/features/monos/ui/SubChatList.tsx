@@ -15,13 +15,17 @@ export function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; s
   if (state === "running" && stalled) return <CircleAlert {...props} className={`${props.className} text-amber-400`} />;
   if (state === "running")
     return <Loader {...props} className={`${props.className} animate-spin text-content/50 motion-reduce:animate-none`} />;
-  if (state === "question") return <Clock {...props} className={`${props.className} text-amber-400`} />;
+  // Waiting on its Lead, not stuck (Ash, 22 Oct): a grey clock, as on the Mono's line.
+  if (state === "question") return <Clock {...props} className={`${props.className} text-content/45`} />;
   if (state === "completed") return <CheckCircle {...props} className={`${props.className} text-emerald-400/90`} />;
   if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-red-400`} />;
   return <CircleX {...props} className={`${props.className} text-content/40`} />;
 }
 
-/** The owner's own mark when a sub-chat is stuck: the most urgent one's (red failed, amber stalled, amber clock asking). */
+/**
+ * The owner's own mark when a sub-chat is stuck: the most urgent one's (red failed, amber stalled). One only waiting on
+ * its Lead's answer is not stuck (Ash, 22 Oct): a grey clock.
+ */
 export function StuckMark({ stuck, hideOnHover = true }: { stuck: readonly StuckWorker[]; hideOnHover?: boolean }) {
   if (!stuck.length) return null;
   const kind = stuck.some((s) => s.kind === "failed") ? "failed" : stuck.some((s) => s.kind === "stalled") ? "stalled" : "asking";
@@ -33,7 +37,10 @@ export function StuckMark({ stuck, hideOnHover = true }: { stuck: readonly Stuck
       data-mono-stuck-kind={kind}
       className={`flex shrink-0 items-center${hideOnHover ? " group-hover:hidden group-has-[button:focus-visible]:hidden" : ""}`}
     >
-      <Icon className={`size-3.5 ${kind === "failed" ? "text-red-400" : "text-amber-400"}`} strokeWidth={1.75} />
+      <Icon
+        className={`size-3.5 ${kind === "failed" ? "text-red-400" : kind === "stalled" ? "text-amber-400" : "text-content/45"}`}
+        strokeWidth={1.75}
+      />
     </span>
   );
 }
@@ -74,6 +81,9 @@ export function SubChatList({
   const open = subChatsOpen(foldKey, attention.key);
   const { shown, more } = shownSubChats(children, attention.stuck, all);
   const count = `${children.length} ${children.length === 1 ? "sub-chat" : "sub-chats"}`;
+  // Folded, it says what needs a look: stuck (stalled or failed) and, apart, what only waits on its Lead's answer.
+  const stuckCount = [...attention.stuck.values()].filter((s) => s.kind !== "asking").length;
+  const waitingCount = attention.stuck.size - stuckCount;
   const attrs = ATTRS;
   return (
     <div className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">
@@ -91,7 +101,8 @@ export function SubChatList({
         />
         <span className="min-w-0 truncate">
           {count}
-          {!open && attention.stuck.size ? ` · ${attention.stuck.size} stuck` : ""}
+          {!open && waitingCount ? ` · ${waitingCount} waiting` : ""}
+          {!open && stuckCount ? ` · ${stuckCount} stuck` : ""}
         </span>
       </button>
       {open ? (
