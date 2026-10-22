@@ -27,7 +27,7 @@ import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
-import { appSinceText, sinceGlance } from "../model/appSince";
+import { appSinceText, sinceGlance, withoutStuckTalk } from "../model/appSince";
 import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
@@ -138,6 +138,14 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         stuck: projectId ? stuckWorkersNow.filter((s) => stuckProject(s)?.id === projectId) : stuckWorkersNow,
         changes: projectId ? [] : botChangesSince(sinceMs),
         nameOf: (row) => leadNameOf({ row }),
+        // Ash OS's stuck and gave-up jobs join the app's own in one count and one list (appSince.ts).
+        jobs: data
+          .listProjects()
+          .filter((p) => !projectId || p.id === projectId)
+          .flatMap((p) => data.listJobs?.(p.id) ?? [])
+          .flatMap((g) => g.jobs)
+          .filter((j) => j.state === "stuck" || j.state === "sent_to_lead" || j.state === "lead_gave_up")
+          .map((j) => ({ title: j.title, failed: j.state === "lead_gave_up", at: Date.parse(j.lastActiveAt) || 0 })),
       })
     : "";
   const waiting = waitingOnAsh(projectId);
@@ -159,7 +167,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
       ) : (
         (() => {
-          const text = [since.pending ? "" : calmSummary(sinceGlance(since.plainText)), appSince].filter(Boolean).join(" ");
+          const text = [since.pending ? "" : calmSummary(withoutStuckTalk(sinceGlance(since.plainText))), appSince].filter(Boolean).join(" ");
           return (
             <p
               className={`line-clamp-4 text-[13px] leading-5 ${text ? "text-content/85" : "text-content/60"}`}

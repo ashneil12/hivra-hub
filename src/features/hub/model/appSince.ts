@@ -18,6 +18,12 @@ export type AppSinceInput = {
   changes: readonly { bot: string; line: string }[];
   /** The Mono a row's work answers to, by name ("EXO lead"). */
   nameOf: (row: Delegation) => string;
+  /**
+   * Ash OS's jobs that are stuck or with Ash now, with when they last moved (epoch ms). They join the app's own stuck
+   * and failed workers in ONE count and ONE list, so the paragraph never says "0 stuck or failed" next to "1 failed: …"
+   * (PM 22 Oct): Ash OS's own sentences about stuck or failed work are left out of the paragraph (`withoutStuckTalk`).
+   */
+  jobs?: readonly { title: string; failed: boolean; at: number }[];
 };
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -39,7 +45,7 @@ function newest(rows: readonly Delegation[]): Delegation[] {
 }
 
 /** One plain paragraph, or "" when nothing happened in the app since then. */
-export function appSinceText({ sinceMs, rows, stuck, changes, nameOf }: AppSinceInput): string {
+export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] }: AppSinceInput): string {
   const current = newest(rows);
   const sentences: string[] = [];
 
@@ -67,10 +73,20 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf }: AppSince
   // Got stuck or failed since then: what happened, not a standing reminder (anything older is in Today's lists below).
   const title = (s: StuckWorker) => s.row.title?.trim() || "a job";
   const recent = stuck.filter((s) => s.since >= sinceMs);
-  const waiting = recent.filter((s) => s.kind !== "failed");
-  const failed = recent.filter((s) => s.kind === "failed");
-  if (waiting.length) sentences.push(`${waiting.length} got stuck or asked for an answer: ${list(waiting.map(title))}.`);
-  if (failed.length) sentences.push(`${failed.length} failed: ${list(failed.map(title))}.`);
+  const seen = new Set<string>();
+  const once = (items: string[]) =>
+    items.filter((t) => {
+      const key = t.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const recentJobs = jobs.filter((j) => j.at >= sinceMs);
+  // Failed first, so a job both lists know as failed is counted once, as failed.
+  const failed = once([...recent.filter((s) => s.kind === "failed").map(title), ...recentJobs.filter((j) => j.failed).map((j) => j.title.trim() || "a job")]);
+  const waiting = once([...recent.filter((s) => s.kind !== "failed").map(title), ...recentJobs.filter((j) => !j.failed).map((j) => j.title.trim() || "a job")]);
+  if (waiting.length) sentences.push(`${waiting.length} got stuck or asked for an answer: ${list(waiting)}.`);
+  if (failed.length) sentences.push(`${failed.length} failed: ${list(failed)}.`);
 
   // Bot changes that still stand.
   if (changes.length) {
@@ -92,6 +108,22 @@ export function sinceGlance(text: string): string {
   return text
     .split(/(?<=[.!?])\s+/)
     .filter((sentence) => sentence.trim() && !STANDING.test(sentence) && !PR_LIST.test(sentence))
+    .join(" ")
+    .trim();
+}
+
+/**
+ * Ash OS's paragraph without its own sentences on stuck or failed work ("0 stuck or failed", "1 thing got stuck"): the
+ * app says that part once, from one list (appSinceText's `jobs` + its own workers), so the count and the list agree.
+ */
+const STUCK_TALK = /\b(?:stuck|fail(?:ed|s|ing|ure|ures)?|broke|broken|gave up)\b/i;
+const STUCK_CLAUSE = /(?:,\s*|\s+and\s+)\b(?:\d+|no|one|two|three|four|five)\s+(?:things?\s+|jobs?\s+)?(?:got\s+)?(?:stuck(?:\s+or\s+failed)?|failed)\b/gi;
+export function withoutStuckTalk(text: string): string {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    // "3 things finished and 0 got stuck." keeps "3 things finished."; a sentence that is only about stuck work goes.
+    .map((sentence) => sentence.replace(STUCK_CLAUSE, "").replace(/\s+([.,!?])/g, "$1").replace(/^[,\s]+/, ""))
+    .filter((sentence) => /[a-z]{3}/i.test(sentence.replace(/[.!?]/g, "")) && !STUCK_TALK.test(sentence))
     .join(" ")
     .trim();
 }
