@@ -10,14 +10,22 @@ import {
 import type { Session } from "./session";
 import {
   planWorkspaceTabClose,
+  workspaceTabCwd,
   type WorkspaceTabCloseScope,
 } from "../../workspace/model/workspaceTabGroups";
+import { sameProjectPath } from "../../projects/model/recents";
+import type { HubSelection } from "../../hub/model/hubNav";
 
 export type SessionWorkspaceRemoval = {
   tabs: WorkspaceTab[];
   sessions: Session[];
   activeTabId: string;
   closedTabs: WorkspaceTab[];
+  /**
+   * True when the window's very last tab lost its conversation (r30e). The tab keeps a fresh session underneath (a
+   * window always has one), but the caller shows the window's home (Today) instead of an empty "New session".
+   */
+  windowEmptied: boolean;
 };
 
 export function removeSessionFromWorkspace({
@@ -52,6 +60,7 @@ export function removeSessionFromWorkspace({
   );
   let nextActiveTabId = activeTabId;
   const closedTabs: WorkspaceTab[] = [];
+  let windowEmptied = false;
 
   for (const original of tabs) {
     const hadSession = leafIds(original.layout).includes(sessionId);
@@ -82,19 +91,22 @@ export function removeSessionFromWorkspace({
       scope,
     });
     if (closePlan.action === "close") {
+      const at = nextTabs.findIndex((entry) => entry.id === tab.id);
       nextTabs = nextTabs.filter((entry) => entry.id !== tab.id);
+      // r30e: the next tab shown is one of the same project's, even when another project's tab sits beside it.
       if (tab.id === nextActiveTabId && closePlan.nextActiveTabId) {
-        nextActiveTabId = closePlan.nextActiveTabId;
+        nextActiveTabId = neighbourTab(nextTabs, at, tab, sessions).id;
       }
       continue;
     }
     if (!replaceEmptyTab && nextTabs.length > 1) {
       const at = nextTabs.findIndex((entry) => entry.id === tab.id);
       nextTabs = nextTabs.filter((entry) => entry.id !== tab.id);
-      if (tab.id === nextActiveTabId) nextActiveTabId = nextTabs[Math.max(0, at - 1)]!.id;
+      if (tab.id === nextActiveTabId) nextActiveTabId = neighbourTab(nextTabs, at, tab, sessions).id;
       continue;
     }
 
+    if (nextTabs.length === 1) windowEmptied = true;
     const replacement = createReplacement(seed);
     remainingSessionIds.add(replacement.id);
     nextSessions = [...nextSessions, replacement];
@@ -114,7 +126,27 @@ export function removeSessionFromWorkspace({
     sessions: nextSessions,
     activeTabId: nextActiveTabId,
     closedTabs,
+    windowEmptied,
   };
+}
+
+/** The tab to show after `closed` (which sat at `at`) goes: the nearest one of its own project, else its neighbour. */
+function neighbourTab(
+  rest: WorkspaceTab[],
+  at: number,
+  closed: WorkspaceTab,
+  sessions: Session[],
+): WorkspaceTab {
+  const cwd = workspaceTabCwd(closed, sessions);
+  if (cwd) {
+    const same = (tab: WorkspaceTab) => {
+      const other = workspaceTabCwd(tab, sessions);
+      return !!other && sameProjectPath(other, cwd);
+    };
+    for (let index = at - 1; index >= 0; index -= 1) if (same(rest[index]!)) return rest[index]!;
+    for (let index = at; index < rest.length; index += 1) if (same(rest[index]!)) return rest[index]!;
+  }
+  return rest[Math.max(0, at - 1)]!;
 }
 
 function removeSessionDocuments(
@@ -160,4 +192,15 @@ function removeSessionDocuments(
   }
 
   return { ...tab, layout, focusedId, editorPanes };
+}
+
+/** Today, the window's home: where Ash lands when a delete takes the window's last tab (r30e). Null otherwise. */
+export const WINDOW_HOME: HubSelection = { project: "today", item: "inbox" };
+
+export function homeAfterRemoval(
+  mode: "archive" | "delete",
+  origin: "ui" | "cli",
+  removal: Pick<SessionWorkspaceRemoval, "windowEmptied">,
+): HubSelection | null {
+  return mode === "delete" && origin === "ui" && removal.windowEmptied ? WINDOW_HOME : null;
 }

@@ -269,7 +269,7 @@ import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
 } from "../features/sessions/ui/DeleteSessionDialog";
-import { ConfirmDeleteHost, confirmDelete } from "../shared/ui/ConfirmDelete";
+import { ConfirmDeleteHost, MONO_DELETE_DETAIL, confirmDelete } from "../shared/ui/ConfirmDelete";
 import { delegationOf } from "../features/monos/model/delegationView";
 import {
   type WorktreeFocus,
@@ -613,6 +613,7 @@ import {
   ADD_TO_CHAT_EVENT,
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
+import { homeAfterRemoval } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
 import {
@@ -6140,10 +6141,14 @@ function Workspace({
               const activeTab = removal.tabs.find(
                 (tab) => tab.id === removal.activeTabId,
               );
+              // r30e: deleting the window's last tab shows its home (Today), not an empty "New session".
+              const showHome = homeAfterRemoval(change.mode, origin, removal);
+              if (showHome) setHubSelection(showHome);
               setComposerFocused(
-                removal.sessions.some(
-                  (session) => session.id === activeTab?.focusedId,
-                ),
+                !showHome &&
+                  removal.sessions.some(
+                    (session) => session.id === activeTab?.focusedId,
+                  ),
               );
               if (change.mode === "archive") {
                 if (change.session && shouldPersistSession(change.session)) {
@@ -6428,10 +6433,8 @@ function Workspace({
       const mono = findMono(monoId);
       if (!mono) return;
       const { name } = monoLook(mono);
-      const confirmed = await ask(
-        `Delete ${name}? Its conversation will be deleted and its habits stop. This can’t be undone.`,
-        { title: "MonoCode", kind: "warning" },
-      );
+      // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono).
+      const confirmed = await confirmDelete(name, MONO_DELETE_DETAIL);
       if (!confirmed) return;
       if (mono.sessionId) {
         if (monoViewIdRef.current === mono.sessionId) closeMonoView();

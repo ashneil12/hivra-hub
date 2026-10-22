@@ -34,6 +34,8 @@ type Props = {
   className?: string;
   /** Keep taller dialogs inside the viewport, scrolling their content. */
   fitViewport?: boolean;
+  /** Extra classes on the dimmed backdrop, e.g. `confirm-scrim` (a delete confirm's darker overlay, r30e). */
+  scrimClassName?: string;
   children: ReactNode;
 };
 
@@ -151,7 +153,8 @@ export function Modal(props: Props) {
   return createPortal(
     <div className="fixed inset-0" style={{ zIndex: LAYER.dialog }}>
       <div
-        className="modal-backdrop dialog-scrim absolute inset-0 z-0 bg-black/40"
+        className={`modal-backdrop dialog-scrim absolute inset-0 z-0 bg-black/40 ${props.scrimClassName ?? ""}`}
+        data-modal-scrim
         onMouseDown={props.onClose}
       />
       <ModalPanel {...props} />
