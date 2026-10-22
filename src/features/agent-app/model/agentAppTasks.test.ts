@@ -104,6 +104,8 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
   const acknowledged: string[] = [];
   const cancelled: Array<[string, string]> = [];
   const answered: unknown[] = [];
+  /** tasks.cannot, as the row would record it: the caller, the task, the reason. */
+  const declared: Array<[string, string, string]> = [];
   const host: AgentAppTasksHost = {
     owned: vi.fn(async (owner, query) => {
       const mine = rows.filter((entry) => entry.ownerSession === owner);
@@ -139,13 +141,24 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
     answer: vi.fn(async (...args) => {
       answered.push(args.slice(1));
     }),
+    // The running task working in a chat itself (tasks.cannot with no taskId).
+    selfTask: vi.fn(async (session: string) =>
+      rows.find((entry) => entry.childSession === session && entry.state === "running"),
+    ),
+    // The declared block, as delegations.rs records it: only a running row takes it.
+    cannot: vi.fn(async (by: string, entry: Delegation, reason: string) => {
+      if (entry.state !== "running") return false;
+      declared.push([by, entry.id, reason]);
+      Object.assign(entry, { stallKind: "blocked", stallReason: reason, stalledAt: clock.now });
+      return true;
+    }),
     child: (id) =>
       id === "app-mono-exo-t-busy" ? { busy: true, lastActiveAt: 9_000 } : undefined,
     hubProjectId: (folder) => (folder === PROJECT ? "vg-game" : undefined),
     hubProjectFolder: (id) => (id === "vg-game" ? PROJECT : undefined),
     now: () => clock.now,
   };
-  return { api: host, acknowledged, cancelled, answered, clock };
+  return { api: host, acknowledged, cancelled, answered, declared, clock };
 }
 
 function fixture(
@@ -727,6 +740,7 @@ describe("tasks.status", () => {
       ["tasks.status", { taskIds: ["t-mine", "t-theirs"] }],
       ["tasks.wait", { taskIds: ["t-theirs"] }],
       ["tasks.cancel", { taskId: "t-theirs" }],
+      ["tasks.cannot", { taskId: "t-theirs", reason: "Waiting on a key" }],
       ["tasks.answer", { taskId: "t-theirs", requestId: 1, skip: true }],
     ] as const) {
       await expect(handleAgentApp(source, `x-${action}`, action, input, host)).rejects.toThrow(
@@ -829,6 +843,104 @@ describe("tasks.cancel and tasks.answer", () => {
       ),
     ).toEqual({ taskId: "t-q", answered: true });
     expect(answered).toEqual([[rows[0], 3, { kind: "answered", answers: { slot: ["two"] } }]]);
+  });
+});
+
+// D5: the real "I cannot finish" signal. A Lead (or the worker itself) says it with one plain reason; the row carries a
+// declared block, so the job lands in Ash's Needs you at once instead of looking merely idle, and a done claim over it
+// is checked against it (leadFlow.ts, followedBriefs.ts).
+describe("tasks.cannot: the agent's own word that it cannot finish", () => {
+  it("records a block on its own running task, with the reason, and says it is Ash's at once", async () => {
+    const rows = [row({ id: "t-1", title: "Deploy staging" })];
+    const { source, host, declared } = fixture(rows);
+    expect(
+      await handleAgentApp(
+        source,
+        "nc1",
+        "tasks.cannot",
+        { taskId: "t-1", reason: "The staging deploy key is not on this machine." },
+        host,
+      ),
+    ).toEqual({
+      taskId: "t-1",
+      title: "Deploy staging",
+      status: "running",
+      needsYou: true,
+      reason: "The staging deploy key is not on this machine.",
+      note: "It is in Ash's Needs you now. Say in one line what would unblock it, and do not report the work as done.",
+    });
+    expect(declared).toEqual([["owner:mono-exo", "t-1", "The staging deploy key is not on this machine."]]);
+    expect(rows[0]).toMatchObject({
+      stallKind: "blocked",
+      stallReason: "The staging deploy key is not on this machine.",
+    });
+    // Declaring is not cancelling: it keeps running until it settles or is stopped.
+    expect(rows[0].state).toBe("running");
+  });
+
+  it("needs a reason, a running task of the caller's, and says so when the row moved before the write", async () => {
+    const rows = [
+      row({ id: "t-1" }),
+      row({ id: "t-done", state: "completed" }),
+      row({ id: "t-theirs", ownerSession: "mono-hivra" }),
+    ];
+    const { source, host, api, declared } = fixture(rows);
+    await expect(handleAgentApp(source, "nc2", "tasks.cannot", { taskId: "t-1" }, host)).rejects.toThrow("reason");
+    await expect(
+      handleAgentApp(source, "nc3", "tasks.cannot", { taskId: "t-done", reason: "Waiting on a key" }, host),
+    ).rejects.toThrow("Task t-done is completed: only running work can be declared unfinished.");
+    await expect(
+      handleAgentApp(source, "nc4", "tasks.cannot", { taskId: "t-theirs", reason: "Waiting on a key" }, host),
+    ).rejects.toThrow("No task t-theirs of yours");
+    expect(declared).toEqual([]);
+    // The row moved between the read and the write: saying so beats a false "it is in Needs you".
+    api.cannot = vi.fn(async () => false);
+    await expect(
+      handleAgentApp(source, "nc5", "tasks.cannot", { taskId: "t-1", reason: "Waiting on a key" }, host),
+    ).rejects.toThrow("Task t-1 moved before that was recorded. Read it with task_status.");
+  });
+
+  it("a worker leaves the taskId out and declares on the task working in its own chat", async () => {
+    const rows = [
+      row({ id: "t-mine", childSession: "app-mono-exo-r0" }),
+      row({ id: "t-other", childSession: "app-mono-exo-t-other" }),
+    ];
+    const { source, host, declared, api } = fixture(rows, "worker");
+    expect(source.id).toBe("app-mono-exo-r0");
+    const result = await handleAgentApp(
+      source,
+      "nc6",
+      "tasks.cannot",
+      { reason: "Two tests disagree about the cache." },
+      host,
+    );
+    expect(result).toMatchObject({ taskId: "t-mine", status: "running", needsYou: true });
+    expect(declared).toEqual([["self:app-mono-exo-r0", "t-mine", "Two tests disagree about the cache."]]);
+    // No task of its own running: it says so rather than reaching for someone else's.
+    api.selfTask = vi.fn(async () => undefined);
+    await expect(
+      handleAgentApp(source, "nc7", "tasks.cannot", { reason: "Two tests disagree about the cache." }, host),
+    ).rejects.toThrow("No running task works in this chat.");
+  });
+
+  it("reads as Cannot finish in task_status, with its reason", async () => {
+    const rows = [row({ id: "t-1", title: "Deploy staging" })];
+    const { source, host } = fixture(rows);
+    await handleAgentApp(
+      source,
+      "nc8",
+      "tasks.cannot",
+      { taskId: "t-1", reason: "The staging deploy key is not on this machine." },
+      host,
+    );
+    const out = (await handleAgentApp(source, "nc9", "tasks.status", {}, host)) as {
+      tasks: Array<Record<string, unknown>>;
+    };
+    expect(out.tasks[0]).toMatchObject({
+      taskId: "t-1",
+      status: "running",
+      activity: "cannot finish: The staging deploy key is not on this machine.",
+    });
   });
 });
 

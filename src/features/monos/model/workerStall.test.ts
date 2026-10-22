@@ -166,6 +166,28 @@ describe("StallWatch", () => {
     expect(t.backend.get(t.row.id).stallKind).toBe("idle");
   });
 
+  it("never overwrites or clears a block the agent declared (task_cannot): it is the agent's word until the row moves", async () => {
+    const t = await setup();
+    await t.tracker.setStall(t.row, { kind: "blocked", reason: "The staging deploy key is not on this machine", since: 0 }, "self:w1");
+    expect(t.backend.get(t.row.id)).toMatchObject({ stallKind: "blocked" });
+    // Then the chat goes quiet, and later idle: the watcher would judge either, but a block is not a judgment.
+    t.sessions.set("w1", chat([asked(), said("Blocked on the key")]));
+    t.at(0);
+    t.watch.tick();
+    t.at(90 * MIN);
+    t.watch.tick();
+    t.watch.sync();
+    t.sessions.set("w1", chat([asked(), said("Blocked on the key")], { busy: false }));
+    t.at(180 * MIN);
+    t.watch.tick();
+    await t.settle();
+    expect(t.backend.get(t.row.id)).toMatchObject({
+      stallKind: "blocked",
+      stallReason: "The staging deploy key is not on this machine",
+    });
+    expect(t.backend.calls.filter((c) => c.startsWith("stall:"))).toEqual([`stall:${t.row.id}:blocked`]);
+  });
+
   it("leaves a chat that waits on its own workers alone", async () => {
     const t = await setup();
     t.sessions.set("w1", chat([asked(), tool("task_wait", "in_progress", "")]));

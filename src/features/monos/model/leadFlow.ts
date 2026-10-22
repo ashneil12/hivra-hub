@@ -3,10 +3,14 @@
 // - `workingLine`: "2 working: API, UI" above the composer, so Ash sees what is out while he and the Lead talk.
 // - `stillRunningNote`: borrowed from Block's Buzz. A Lead that ends a turn saying the job is done while work it
 //   delegated is still out gets a visible "Still running: N" note in its chat, and the brief it works on stays open
-//   (followedBriefs.ts waits for every worker). It never holds the Lead or starts a turn: once per task, once per brief.
+//   (followedBriefs.ts waits for every worker). D5: the claim is checked against what the workers actually did, not
+//   trusted — a worker that failed, or said it cannot finish, is named in the same note ("Not finished: …"), so a Lead
+//   cannot report done over work that did not come back. It never holds the Lead or starts a turn: once per task, once
+//   per brief.
 import { isPreparingHandoff } from "../../sessions/model/handoff";
 import type { Block, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation } from "./delegations";
+import { unfinishedWorker } from "./workerStuck";
 
 /** A worker as the Lead's chat names it. */
 function taskName(row: Pick<Delegation, "title">): string {
@@ -74,35 +78,56 @@ function lastReply(chat: Session): string | undefined {
 
 /**
  * The note a Lead's chat gets now, if any: its last turn is over and says the job is done, while tasks it delegated
- * (`rows`, any chat's: only this chat's own open ones count) are still out. Once per task and once per `brief` (the
- * leadership brief it works on), so it never repeats and never holds the Lead.
+ * (`rows`, any chat's: only this chat's own open ones count) are still out, or one it delegated did not finish (failed,
+ * or said it cannot finish: workerStuck.ts `unfinishedWorker`). Once per task and once per `brief` (the leadership
+ * brief it works on), so it never repeats and never holds the Lead.
  */
 export function stillRunningNote(
   chat: Session,
   rows: readonly Delegation[],
   brief?: Pick<Delegation, "id" | "title">,
+  now = Date.now(),
 ): Block | undefined {
-  const open = rows
-    .filter((row) => row.ownerSession === chat.id && isOpenDelegation(row))
+  const own = rows.filter((row) => row.ownerSession === chat.id);
+  // A declared block is not "still running": it said it cannot finish, so it reads under Not finished.
+  const open = own
+    .filter((row) => isOpenDelegation(row) && row.stallKind !== "blocked")
     .sort((a, b) => a.createdAt - b.createdAt);
-  if (!open.length) return undefined;
+  // D5: what a worker did is part of whether the job is done, so a done claim is checked against it.
+  const unfinished = own
+    .filter((row) => unfinishedWorker(row, now) !== undefined)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  if (!open.length && !unfinished.length) return undefined;
   const reply = lastReply(chat);
   if (!reply || !claimsDone(reply)) return undefined;
   const noted = chat.blocks.flatMap((block) => (block.stillRunning ? [block.stillRunning] : []));
   if (brief && noted.some((note) => note.briefId === brief.id)) return undefined;
   const covered = new Set(noted.flatMap((note) => note.taskIds));
-  if (open.every((row) => covered.has(row.id))) return undefined;
-  const taskIds = open.map((row) => row.id);
+  if ([...open, ...unfinished].every((row) => covered.has(row.id))) return undefined;
+  const taskIds = [...new Set([...open, ...unfinished].map((row) => row.id))];
   const title = brief?.title?.trim().split("\n")[0].slice(0, 80);
+  const parts = [
+    ...(open.length ? [`Still running: ${open.length} (${names(open.map(taskName))})`] : []),
+    ...(unfinished.length
+      ? [
+          `Not finished: ${unfinished.length} (${names(
+            unfinished.map((row) => `${taskName(row)} — ${unfinishedWorker(row, now)}`),
+          )})`,
+        ]
+      : []),
+  ];
+  const tail = unfinished.length
+    ? brief
+      ? `${title ? `"${title}"` : "The brief"} is not done.`
+      : "The work is not done yet."
+    : brief
+      ? `${title ? `"${title}"` : "The brief"} stays open until they report back.`
+      : "Their reports come back here when they finish.";
   return {
     id: `still-running-${taskIds.join("_")}`.slice(0, 200),
     role: "system",
     notice: "still-running",
-    text: `Still running: ${open.length} (${names(open.map(taskName))}). ${
-      brief
-        ? `${title ? `"${title}"` : "The brief"} stays open until they report back.`
-        : "Their reports come back here when they finish."
-    }`,
+    text: `${parts.join(". ")}. ${tail}`,
     stillRunning: { taskIds, ...(brief ? { briefId: brief.id } : {}) },
   };
 }

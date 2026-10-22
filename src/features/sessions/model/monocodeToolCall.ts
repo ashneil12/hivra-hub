@@ -10,7 +10,12 @@ export type MonoCodeToolCall = {
 
 /** The delegate tool's tools (src-tauri/src/mcp_server.rs), as Claude Code names them: mcp__monocode__<tool>. */
 export type DelegateToolName =
-  "delegate_task" | "task_status" | "task_wait" | "task_cancel" | "task_answer";
+  | "delegate_task"
+  | "task_status"
+  | "task_wait"
+  | "task_cancel"
+  | "task_cannot"
+  | "task_answer";
 
 /**
  * T3's verb table (packages/shared/src/t3McpToolPresentation.ts, MIT): what the tool does, while it runs, once it is
@@ -32,6 +37,10 @@ const DELEGATE_TOOLS: Record<
   task_wait: { labels: ["Wait for", "Waiting for", "Waited for", "tasks"] },
   task_cancel: {
     labels: ["Stop", "Stopping", "Stopped", "a task"],
+    count: { noun: "task", id: (output) => output.taskId },
+  },
+  task_cannot: {
+    labels: ["Say", "Saying", "Said", "a task cannot finish"],
     count: { noun: "task", id: (output) => output.taskId },
   },
   task_answer: {

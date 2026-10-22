@@ -12,6 +12,12 @@ it("the hub docs say Ash can just ask a Mono to make a new Mono (mono_create), w
   expect(readme).not.toMatch(/only (be made )?in Settings/i);
 });
 
+it("the hub docs say a Mono can propose a team (team_create) for an area, made only on Ash's yes (A6)", () => {
+  expect(readme).toMatch(/A new team: `team_create`/);
+  expect(readme).toContain("a team goes in only on Ash's yes");
+  expect(readme).toMatch(/Undo \(the team and its room go; its Monos stay\)/);
+});
+
 it("the hub docs describe the plain group chat and the quiet brake strip", () => {
   expect(readme).toContain("If he names nobody, every other seat then gets one turn to reply in its own voice.");
   expect(readme).toContain("The pause shows in a quiet strip above the composer, not as a message.");

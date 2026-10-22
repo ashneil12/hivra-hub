@@ -23,6 +23,7 @@ import {
   type MonoSpec,
   type Team,
 } from "../model/hubTeams";
+import { dismissTeamDraft, useWaitingTeamDrafts, type TeamDraft } from "../../selfBuild/model/teamMake";
 
 const buttonClass =
   "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -57,12 +58,24 @@ export function TeamsPage() {
   const [creating, setCreating] = useState(false);
   const teams = listTeams();
   const proposals = pendingMonoProposals();
+  const teamDrafts = useWaitingTeamDrafts();
   return (
     <div className="flex flex-col gap-7" data-hub-teams>
       <p className="text-[13px] leading-5 text-content/70">
         A team is a few named Monos you talk to, with a room of their own. Their workers stay subagents and never show
         here. To make a new Mono, ask any Mono in its chat: it drafts it with you, and it's made when you say yes.
       </p>
+
+      {teamDrafts.length ? (
+        <section data-hub-team-drafts>
+          <h3 className="mb-1 px-3 text-xs text-content/60">Waiting for your okay</h3>
+          <div className="flex flex-col gap-2">
+            {teamDrafts.map((d) => (
+              <DraftTeamCard key={d.id} draft={d} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {proposals.length ? (
         <section data-hub-mono-proposals>
@@ -91,6 +104,29 @@ export function TeamsPage() {
           <p className="px-3 text-[13px] text-content/60">No teams yet. Start one for marketing, sales or anything you run.</p>
         ) : null}
       </section>
+    </div>
+  );
+}
+
+/** A team a Mono drafted in chat (A6): the yes is Ash's in that chat; here he can wave it off. */
+function DraftTeamCard({ draft }: { draft: TeamDraft }) {
+  const projects = teamProjects();
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-stroke px-3 py-3" data-hub-team-draft={draft.id}>
+      <div className="text-[13px] text-content">
+        {draft.by.name} drafted <span className="font-medium">{draft.name}</span>
+      </div>
+      <p className="text-[13px] leading-5 text-content/70">{draft.brief}</p>
+      <p className="text-xs text-content/55">
+        {draft.projects.map((id) => projects.find((p) => p.id === id)?.name ?? id).join(", ")} ·{" "}
+        {draft.members.length ? draft.members.map((m) => m.name).join(", ") : "no Monos yet"}
+      </p>
+      <div className="flex gap-2">
+        <span className="flex-1 self-center text-xs text-content/55">Nothing is made yet. Say yes in the chat to make it.</span>
+        <button type="button" className={buttonClass} data-hub-team-draft-dismiss onClick={() => dismissTeamDraft(draft.id)}>
+          Not this one
+        </button>
+      </div>
     </div>
   );
 }

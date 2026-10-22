@@ -8,6 +8,7 @@ import { loadSkills } from "../../skills/model/skills";
 import { askedAshAndHeardBack, ashSpokeSince, INTERVIEW_FIRST } from "../../selfBuild/model/ashSaid";
 import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../../selfBuild/model/hubCode";
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
+import { draftTeam, makeDraftedTeam } from "../../selfBuild/model/teamMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
 import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
 import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayChat";
@@ -18,6 +19,7 @@ import { roomTurnOf } from "../../hub/model/roomConductor";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
+  ["teams.create", ["name", "brief", "projects", "members", "draftId"]],
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
   ["today.change", ["ask", "projectOrder", "previewId", "apply"]],
@@ -69,6 +71,16 @@ export async function handleSelfBuild(
       const turn = roomTurnOf(me.monoId);
       const where = turn ? { room: turn.chatId, conv: turn.convId } : { session: source.id };
       return draftMono(input, me, Date.now(), await installedSkills(source, host), where);
+    }
+    case "teams.create": {
+      if (input.draftId !== undefined) {
+        if (Object.keys(input).length > 1) throw new Error("With draftId, send nothing else: the draft is what gets made.");
+        return makeDraftedTeam(input.draftId, me, { ashSpokeSince: spoke });
+      }
+      // Its card goes in the chat it was drafted in, like a Mono's (the group chat it is answering in, else its own).
+      const turn = roomTurnOf(me.monoId);
+      const where = turn ? { room: turn.chatId, conv: turn.convId } : { session: source.id };
+      return draftTeam(input, me, Date.now(), where);
     }
     case "pages.build": {
       if (input.previewId !== undefined || input.keep !== undefined) {

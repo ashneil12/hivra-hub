@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { examples } from "./examples";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { restoreRetiredMono, retireMono, type RetiredMono } from "../../monos/model/monoArchive";
+import { restoreTeam, retireTeam, type Team } from "./hubTeams";
 
 /**
  * Changes bots made to themselves (skills, how they work). Shown only under
@@ -37,6 +38,8 @@ export type BotChange = {
   flow?: { kind: string; data: unknown; undone?: unknown };
   /** A Mono made from a chat with Ash (step 13): Undo retires it (archived, not deleted), Redo brings it back. */
   made?: { monoId: string; retired?: RetiredMono };
+  /** A team made from a chat with Ash (A6): Undo takes the team and its room away, Redo brings them back. */
+  madeTeam?: { team: Team };
   /**
    * What changes for that Mono, one plain sentence each (soul refresh: one per part of its soul), shown when the row is
    * opened. Never a diff or a file path.
@@ -188,6 +191,16 @@ export function recordMadeMono(monoId: string, by: string, name: string, role?: 
   return id;
 }
 
+/** A Mono made a team from a chat with Ash (A6): a plain row whose Undo takes the team and its room away. */
+export function recordMadeTeam(team: Team, by: string): string {
+  const id = `made-team:${team.id}`;
+  const n = team.memberIds.length;
+  list = [{ id, bot: by, day: "Today", line: `${by} made a new team, ${team.name}${n ? ` (${n} Mono${n === 1 ? "" : "s"})` : ""}`, now: "Not there", after: `${team.name} in your teams, with its room`, undoneText: `Undone: the ${team.name} team and its room are gone. Its Monos stay.`, madeTeam: { team }, at: Date.now() }, ...list.filter((c) => c.id !== id)];
+  saveReal();
+  changed();
+  return id;
+}
+
 /** Pages registers how a page's pin is set, for Undo and Redo of a Mono's pin (resolving to a refusal, if any). */
 type PinHook = (pageId: string, pinned: boolean) => Promise<string | undefined>;
 let pinHook: PinHook | undefined;
@@ -220,14 +233,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId)));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || (c.note && c.monoId)));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || (c.note && c.monoId))));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || (c.note && c.monoId))));
   } catch {
     /* best effort */
   }
@@ -342,6 +355,14 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Undo didn't go through." };
       }
+    } else if (c.madeTeam) {
+      try {
+        const gone = retireTeam(c.madeTeam.team.id);
+        if (!gone) throw new Error("That team is already gone.");
+        next = { ...next, madeTeam: { team: gone } };
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
     } else if (c.hubChangeId) {
       try {
         if (!hubChangeHooks) throw new Error("Not connected yet, so nothing was undone.");
@@ -429,6 +450,12 @@ export async function redoBotChange(ids: string[]): Promise<void> {
         next = { ...next, made: { monoId: c.made.monoId } };
       } catch (e) {
         next = { ...c, problem: typeof e === "string" ? e : e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.madeTeam) {
+      try {
+        next = { ...next, madeTeam: { team: restoreTeam(c.madeTeam.team) } };
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
     } else if (c.hubChangeId) {
       try {

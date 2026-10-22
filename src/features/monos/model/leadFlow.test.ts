@@ -323,6 +323,33 @@ describe("says it's done while delegated work is still out (borrowed from Block'
     expect(stillRunningNote(lead({ blocks: [blocks[0], said("API is done; UI is still running.")] }), rows)).toBeUndefined();
   });
 
+  // D5: a "done" is checked against what the workers actually did, not trusted (workerStuck.ts unfinishedWorker).
+  it("names a worker that failed or said it cannot finish, and the same note covers it once", () => {
+    const blocks = [user("[MonoCode brief from Chief of Staff]", "app-cos-chat-b1"), said("All done: API and UI shipped.")];
+    const at = 10_000 + 60 * 60_000;
+    const failed = open("w-ui", "UI", { state: "failed", error: "The build broke.", settledAt: 10_000, delivery: "delivered" });
+    const note = stillRunningNote(lead({ blocks }), [...rows, failed], undefined, at)!;
+    expect(note.text).toBe(
+      "Still running: 2 (API, UI). Not finished: 1 (UI — Failed: the build broke). The work is not done yet.",
+    );
+    expect(note.stillRunning?.taskIds).toEqual(["w-api", "w-ui"]);
+    expect(stillRunningNote(lead({ blocks: [...blocks, note] }), [...rows, failed], undefined, at)).toBeUndefined();
+    // A declared block reads under Not finished, never as still running; retried by the Lead, it is not held against it.
+    const blocked = open("w-ui", "UI", { stallKind: "blocked", stallReason: "The staging deploy key is not on this machine", stalledAt: 10_000 });
+    const onlyApi = [open("w-api", "API"), blocked];
+    expect(stillRunningNote(lead({ blocks }), onlyApi, undefined, at)?.text).toBe(
+      "Still running: 1 (API). Not finished: 1 (UI — Cannot finish: the staging deploy key is not on this machine). The work is not done yet.",
+    );
+    const retried = { ...blocked, log: [{ at: 10_000, by: "owner:lead-chat", event: "lead_redo" }] };
+    expect(stillRunningNote(lead({ blocks }), [open("w-api", "API"), retried], undefined, at)?.text).toBe(
+      "Still running: 1 (API). Their reports come back here when they finish.",
+    );
+    // On a brief it says the brief itself is not done.
+    expect(stillRunningNote(lead({ blocks }), [...rows, failed], { id: "t-1", title: "Ship the API and UI" }, at)?.text).toBe(
+      'Still running: 2 (API, UI). Not finished: 1 (UI — Failed: the build broke). "Ship the API and UI" is not done.',
+    );
+  });
+
   it("keeps the brief open: a Lead that says it's done waits for its workers before its report goes", () => {
     const brief = leadBrief();
     const api = rows[0];

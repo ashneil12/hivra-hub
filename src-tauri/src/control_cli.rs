@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 61] = [
+const APP_ACTIONS: [&str; 62] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -128,6 +128,7 @@ const APP_ACTIONS: [&str; 61] = [
     "tasks.status",
     "tasks.wait",
     "tasks.cancel",
+    "tasks.cannot",
     "tasks.answer",
     "tasks.workers",
     "autopilot.status",
@@ -355,7 +356,7 @@ Actions:
                   "steer"); its final report comes back once its workers have
                   reported. Reuse
                   --request-id on retries. The monocode MCP tools (delegate_task,
-                  task_status, task_wait, task_cancel, task_answer) call these.
+                  task_status, task_wait, task_cancel, task_cannot, task_answer) call these.
   tasks.status   {"taskIds":["t-..."]}  Your tasks: status, activity, result and
                   any question. Without taskIds, the ones still running or owed.
                   Reading a finished result marks it read: no report follows.
@@ -364,6 +365,11 @@ Actions:
   tasks.cancel   {"taskId":"t-...","reason":"..."}  Stop a task and everything it
                   delegated in turn, and drop their reports. stopFailed lists
                   any worker that would not stop.
+  tasks.cannot   {"taskId":"t-...","reason":"..."}  Say you cannot finish a
+                  running task, in one plain line (what is in the way). It shows
+                  in Needs you at once, so Ash can decide; the task keeps
+                  running until it settles or someone cancels it. taskId may be
+                  left out only by a chat that is itself the worker.
   tasks.answer   {"taskId":"t-...","requestId":7,"answers":{"<questionId>":["<optionId>"]}}
                   Answer your worker's open question, or pass "skip":true.
   tasks.workers  {"workers":20} or {"heavy":3} or {} (project optional)
@@ -935,6 +941,7 @@ mod tests {
             "tasks.status",
             "tasks.wait",
             "tasks.cancel",
+            "tasks.cannot",
             "tasks.answer",
             "tasks.workers",
         ] {
