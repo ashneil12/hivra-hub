@@ -1,5 +1,6 @@
 import { hubData, useHubDataVersion } from "../model/hubData";
 import {
+  currentTodayCards,
   isCustomised,
   resetToTemplate,
   setTemplate,
@@ -37,7 +38,7 @@ export function DashboardsPage() {
                     </>
                   ) : wasReset(p.id) ? "Reset to the template just now" : "Uses the template as is"}
                   {" · Today: "}
-                  {t.todayCards.join(", ")}
+                  {currentTodayCards(t.todayCards).join(", ")}
                 </div>
               </div>
               <select
