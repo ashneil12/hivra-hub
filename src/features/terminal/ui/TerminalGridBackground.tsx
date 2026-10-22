@@ -23,8 +23,11 @@ const BORDER_OPACITY = 0.06;
 const PEAK_OPACITY = 0.72;
 const LOGO_OPACITY = 0.7;
 const BUBBLE_OPACITY = 0.9;
-const PAC_OPACITY = 0.92;
-const GHOST_OPACITY = 0.8;
+/**
+ * Pac-man and the mascots draw at the take-control chip's text strength
+ * (text-content/85), idle or not, so they don't sink into the dimmed maze.
+ */
+const SPRITE_OPACITY = 0.85;
 /** Sprites sit inside their corridor rather than spilling over the walls. */
 const SPRITE_SCALE = 0.8;
 /** How hard the bubble chases its speaker; sprites move cell by cell. */
@@ -326,10 +329,7 @@ export function TerminalGridBackground() {
       }
 
       for (const sprite of arcade.sprites()) {
-        const opacity =
-          sprite.alpha *
-          dim *
-          (sprite.kind === "pacman" ? PAC_OPACITY : GHOST_OPACITY);
+        const opacity = sprite.alpha * SPRITE_OPACITY;
         if (opacity <= 0.02) continue;
         const fill = `rgba(${rgb}, ${opacity})`;
         if (sprite.kind === "pacman") drawPacman(ctx, sprite, fill);
