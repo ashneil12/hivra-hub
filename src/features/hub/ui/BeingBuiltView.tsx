@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { workerChip } from "../model/statusChip";
-import { ChipMark } from "./StatusMark";
+import { ChipMark, OpenLeadLink } from "./StatusMark";
+import { openMonoChat } from "../model/hubNav";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
@@ -45,7 +46,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   const failed = failedMonosFor(projectId);
   const leadFailure = (monoId: string) => {
     const failure = monoFailure(monoId);
-    return failure ? { name: failedMonoName(failure), reason: failure.reason } : undefined;
+    return failure ? { name: failedMonoName(failure), reason: failure.reason, tone: failure.tone } : undefined;
   };
   const liveWorkers = live
     ? [
@@ -176,6 +177,10 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
         </span>
         {w.stuck && w.stuckReason ? (
           <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{rowReason(w.stuckReason)}</span>
+        ) : null}
+        {/* A red Needs you: its reason is the line above, and the Lead's chat is one click away (r27b). */}
+        {workerChip(w)?.tone === "red" && w.lead ? (
+          <span className="flex" data-hub-job-needs><OpenLeadLink name={w.who} onOpen={() => openLead(w.lead) || openMonoChat(w.lead!)} /></span>
         ) : null}
         {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
         {!w.stuck && w.stateReason ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stateReason}</span> : null}
@@ -315,7 +320,8 @@ function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: bool
 function WorkerTakeLook({ w: worker }: { w: Worker }) {
   const w = findWaiting(worker.waitingId ?? `worker:${worker.id}`);
   if (!w)
-    return worker.lead && !worker.finishedAt ? (
+    // A red Needs you already carries "Open <Lead>'s chat" under its reason (r27b): no second button for it.
+    return worker.lead && !worker.finishedAt && workerChip(worker)?.tone !== "red" ? (
       <button
         type="button"
         data-hub-open-lead={worker.lead}

@@ -35,7 +35,7 @@ describe("a job as a row", () => {
     expect(state({ state: "checking" }).state).toBe("checking");
     expect(state({ state: "stuck", reason: "Disk full." })).toMatchObject({ stuck: "stuck", stuckReason: "Disk full." });
     expect(state({ state: "sent_to_lead", reason: "Disk full.", sentText: "Sent to coding team lead at 2:20pm", gotIt: { at: "", text: "Got it" } }))
-      .toMatchObject({ stuck: "sent_to_lead", sentNote: "Sent to coding team lead at 2:20pm · Got it" });
+      .toMatchObject({ stuck: "sent_to_lead", sentNote: "Sent to P lead at 2:20pm · Got it" }); // the Lead's own name (r27b)
     // Lead gave up: Needs you with the reason (D5, Ash 21 Oct 20:40), not a separate red Stuck.
     const gaveUp = state({ state: "lead_gave_up", reason: "The sender refused the login.", why: "Tried two fixes." });
     expect(gaveUp).toMatchObject({ stuck: "lead_gave_up", stuckReason: "The sender refused the login." });
@@ -50,7 +50,7 @@ describe("a job as a row", () => {
 
   it("tells the story of a stuck job from what Ash OS says, newest first", () => {
     const w = workerOf(job({ state: "sent_to_lead", reason: "Disk full.", sentText: "Sent to coding team lead at 2:20pm", gotIt: { at: new Date(T0).toISOString(), text: "Got it" } }), group([]), T0);
-    expect(w.steps.map((s) => s.text)).toEqual(["Coding team lead: Got it", "Sent to coding team lead at 2:20pm", "Disk full.", "Started"]);
+    expect(w.steps.map((s) => s.text)).toEqual(["P lead: Got it", "Sent to P lead at 2:20pm", "Disk full.", "Started"]);
   });
 
   it("clockLabel is a plain 12-hour time and survives junk", () => {

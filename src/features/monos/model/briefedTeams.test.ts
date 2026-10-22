@@ -121,7 +121,7 @@ describe("the line in a Mono's chat", () => {
     setHubDataSource(undefined);
   });
 
-  it("reads 'Briefed EXO coding team: <task> · 2 working · 1 waiting · 1 stuck', only the stuck part amber, and opens the team", () => {
+  it("reads 'Briefed EXO coding team: <task> · 2 working · 1 waiting · 1 stuck', only the stuck part marked (grey, r27b), and opens the team", () => {
     const [brief] = briefedTeams("cos-chat", tree(), NOW, () => EXO);
     const onOpen = vi.fn();
     act(() => root.render(createElement(BriefedTeamLine, { brief, onOpen })));
@@ -129,7 +129,7 @@ describe("the line in a Mono's chat", () => {
     expect(line.textContent).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck");
     expect(line.dataset.briefedProject).toBe("vg-game");
     expect(line.dataset.briefedKind).toBe("stuck");
-    expect(line.querySelector("[data-briefed-status] .text-amber-400")?.textContent).toBe("1 stuck");
+    expect(line.querySelector("[data-briefed-status] .text-content\\/60")?.textContent).toBe("1 stuck");
     expect(line.getAttribute("title")).toBe("2 working · 1 waiting · 1 stuck\nOpen EXO coding team on EXO lead");
     expect(line.getAttribute("aria-label")).toBe("Briefed EXO coding team: Fix the save bug · 2 working · 1 waiting · 1 stuck. Open EXO coding team");
     act(() => line.click());

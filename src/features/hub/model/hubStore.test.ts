@@ -452,7 +452,7 @@ describe("older questions, Looks right and jobs", () => {
     await waitFor(() => store.getSnapshot().jobs.length, "jobs");
     const stuck = data.listStuck("hivra");
     expect(stuck.map((s) => s.title)).toEqual(["Example: moving the nightly backup"]);
-    expect(stuck[0]).toMatchObject({ state: "sent_to_lead", lead: "Hivra lead", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to coding team lead at .* · Got it$/) });
+    expect(stuck[0]).toMatchObject({ state: "sent_to_lead", lead: "Hivra lead", detail: "The disk was full twice.", note: expect.stringMatching(/^Sent to Hivra lead at .* · Got it$/) });
     expect(data.listStuck("nibbii").map((s) => s.title)).toEqual(["Example: tidying the sound files"]);
     expect(data.listStuck("nibbii")[0].note).toBeUndefined();
     expect(data.listStuck("nibbii")[0].state).toBe("stuck");

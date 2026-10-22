@@ -1,6 +1,8 @@
 // A Mono whose last turn failed, where Ash looks (Today, Being built): "Tally lead can't answer: Out of credits", amber
 // or red like a stuck worker (StuckWorkerCard), with Try again, Open and Dismiss; what the provider said stays behind
 // "Details". The Monos rail shows the same state in one line (MonoRailSection).
+import { failureChip } from "../../hub/model/statusChip";
+import { ChipMark } from "../../hub/ui/StatusMark";
 import { useState } from "react";
 import { CircleAlert } from "../../../shared/ui/icons";
 import {
@@ -22,15 +24,9 @@ function ago(ms: number): string {
   return min < 1440 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`;
 }
 
-/** The failure's mark: red when something must be fixed first, amber when trying again can work. */
-export function FailureMark({ tone, className = "size-3.5" }: { tone: MonoFailure["tone"]; className?: string }) {
-  return (
-    <CircleAlert
-      aria-hidden
-      strokeWidth={1.75}
-      className={`${className} shrink-0 ${tone === "red" ? "text-red-400" : "text-amber-400"}`}
-    />
-  );
+/** The failure's mark: grey (r27b; the red Needs you chip says when only Ash can fix it). */
+export function FailureMark({ className = "size-3.5" }: { tone?: MonoFailure["tone"]; className?: string }) {
+  return <CircleAlert aria-hidden strokeWidth={1.75} className={`${className} shrink-0 text-content/60`} />;
 }
 
 export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure; where?: string; now: number }) {
@@ -50,13 +46,15 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
       data-mono-failure-tone={failure.tone}
     >
       <div className="flex min-w-0 items-center gap-1.5 text-[12px] text-content/60">
-        <FailureMark tone={failure.tone} />
+        <FailureMark />
         <span className="min-w-0 truncate" data-mono-failure-where>
           {[where, name].filter(Boolean).join(" · ")}
         </span>
-        {failure.at ? (
-          <span className="ml-auto shrink-0 tabular-nums">{ago(now - failure.at)}</span>
-        ) : null}
+        {/* Only Ash can fix it (credits, sign-in): the red Needs you; it should come right by itself: Can't answer. */}
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          <ChipMark chip={failureChip(failure.tone)} />
+          {failure.at ? <span className="tabular-nums">{ago(now - failure.at)}</span> : null}
+        </span>
       </div>
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-mono-failure-line>
         {name} can't answer: {failure.reason}
@@ -75,7 +73,7 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
           {sent ? "Trying again…" : "Try again"}
         </button>
         <button type="button" className={BTN} data-mono-failure-open onClick={() => openMonoFailure(failure.monoId)}>
-          Open
+          Open {name}&apos;s chat
         </button>
         {failure.detail ? (
           <button

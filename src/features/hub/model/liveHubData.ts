@@ -1,6 +1,7 @@
 // The real data source: what the hub screens read, backed by the live store (projects, Needs, Since and last-active
 // from Ash OS). Parts Ash OS can't supply yet (jobs, chats, builds, sections, connectors) are not here: their stores
 // stay empty unless the examples flag is on (see HANDOFF.md, "Not wired yet").
+import { sentNote } from "./statusChip";
 import { projectItems } from "./mockData";
 import { stripProjects } from "./hubProjects";
 import type { HubStore } from "./hubStore";
@@ -51,7 +52,7 @@ export function createLiveHubData(store: HubStore): HubDataSource {
           state: j.state as "stuck" | "sent_to_lead",
           ...(lead ? { lead } : {}),
           quiet: true,
-          ...(j.sentText ? { note: j.gotIt ? `${j.sentText} · ${j.gotIt.text}` : j.sentText } : {}),
+          ...(j.sentText ? { note: sentNote(j.sentText, j.gotIt?.text, lead) } : {}),
         })),
     listMonos: () => [],
     listOlder: (projectId?: string) => snap().older.filter((n) => (projectId ? n.projectId === projectId : onStrip(n.projectId))),

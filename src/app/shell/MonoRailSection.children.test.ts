@@ -139,7 +139,7 @@ it("lists no sub-chats under a Mono: one line says what it has out, the row's la
   expect(work(other.id)).toBeNull();
 });
 
-it("marks stuck work amber, failed too (red is only for Needs you, r27), on the line as on the row", () => {
+it("marks stuck work grey, failed too (red is only for Needs you, no amber: r27b), on the line as on the row", () => {
   const mono = lead();
   const rows = [
     row("t-1", "w1", mono.id, "lead-chat", "running"),
@@ -149,12 +149,12 @@ it("marks stuck work amber, failed too (red is only for Needs you, r27), on the 
   mount();
   expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
   expect(work(mono.id)?.dataset.monoWorkKind).toBe("stuck");
-  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-amber-400")?.textContent).toBe("1 stuck");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-content\\/60")?.textContent).toBe("1 stuck");
   expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("stalled");
   act(() => setDelegationRows([...rows, row("t-3", "w3", mono.id, "lead-chat", "failed", { settledAt: Date.now(), error: "Disk full." })]));
   expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 2 stuck");
   expect(work(mono.id)?.dataset.monoWorkKind).toBe("failed");
-  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-amber-400")?.textContent).toBe("2 stuck");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-content\\/60")?.textContent).toBe("2 stuck");
   expect(work(mono.id)?.querySelector(".text-red-400")).toBeNull();
   expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("failed");
 });

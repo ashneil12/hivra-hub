@@ -4,6 +4,9 @@
 //   - Ash OS "stuck": the job's self-repair is still retrying (after 1, 5 and 15 minutes) → "Retrying"
 //   - Ash OS "sent_to_lead", or one of this app's workers stalled or failed under its Lead → "With <Lead>"
 //   - Ash OS "lead_gave_up" (the Lead gave up; it's Ash's now) → "Needs you", red
+//   - a Lead's failed turn only Ash can fix (r27b: billing, sign-in, a request the model refuses) → "Needs you", red;
+//     one that comes right by itself (usage limit, overloaded, a dropped connection, unknown) → "Can't answer", grey
+// Every red "Needs you" shows its reason and "Open <Lead>'s chat" (NeedsYouChip in StatusMark.tsx).
 // The job logic is untouched: only what the row says and its colour.
 import { gaveUpAsNeedsYou } from "./hubWork";
 import type { StuckState, Worker } from "./types";
@@ -28,10 +31,27 @@ export function stuckChip(state: StuckState, lead?: string | null): Chip {
   return RETRYING;
 }
 
+/**
+ * A Lead's failed turn, by the error kind the app already has (`plainFailure` in turnFailure.ts turns the provider's
+ * error class into a tone): red = only Ash can fix it, grey = it should come right by itself or with Try again.
+ */
+export function failureChip(tone: "red" | "amber" | undefined): Chip {
+  return tone === "red" ? NEEDS_YOU : CANT_ANSWER;
+}
+
+/** "Sent to Hivra lead at 2:20pm": Ash OS's own time, the Lead's name from the job itself (the chip's one source). */
+export function sentNote(sentText: string | undefined, gotIt: string | undefined, lead: string | null | undefined): string | undefined {
+  if (!sentText) return undefined;
+  const name = lead?.trim();
+  const m = /^Sent to .+? at (.+)$/.exec(sentText);
+  const text = m && name && name !== "Nobody yet" ? `Sent to ${name} at ${m[1]}` : sentText;
+  return gotIt ? `${text} · ${gotIt}` : text;
+}
+
 /** The chip for a Being built row, or undefined when it isn't stuck. A stalled app worker is its Lead's to handle. */
 export function workerChip(w: Pick<Worker, "stuck" | "who" | "stuckWorker" | "finishedAt" | "leadCantAnswer">): Chip | undefined {
   if (w.finishedAt || !w.stuck) return undefined;
-  if (w.leadCantAnswer) return CANT_ANSWER;
+  if (w.leadCantAnswer) return failureChip(w.leadCantAnswer);
   if (w.stuck !== "lead_gave_up" && w.stuckWorker) return withLead(w.who);
   return stuckChip(w.stuck, w.who);
 }

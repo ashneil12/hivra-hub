@@ -12,14 +12,14 @@ import { delegationLine, runningFor, type StuckWorker } from "../model/workerStu
 /** A child chat's state as a small mark: working, asking its Lead, stuck, done, failed or stopped. */
 export function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; stalled?: boolean }) {
   const props = { className: "size-3.5 shrink-0", strokeWidth: 1.75 };
-  if (state === "running" && stalled) return <CircleAlert {...props} className={`${props.className} text-amber-400`} />;
+  if (state === "running" && stalled) return <CircleAlert {...props} className={`${props.className} text-content/60`} />;
   if (state === "running")
     return <Loader {...props} className={`${props.className} animate-spin text-content/50 motion-reduce:animate-none`} />;
   // Waiting on its Lead, not stuck (Ash, 22 Oct): a grey clock, as on the Mono's line.
   if (state === "question") return <Clock {...props} className={`${props.className} text-content/45`} />;
   if (state === "completed") return <CheckCircle {...props} className={`${props.className} text-emerald-400/90`} />;
-  // Amber like a stalled one (r27): red is only for Needs you, and a failed worker is its Lead's to handle.
-  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-amber-400`} />;
+  // Grey like a stalled one (r27b): red is only for Needs you, and a failed worker is its Lead's to handle.
+  if (state === "failed") return <CircleAlert {...props} className={`${props.className} text-content/60`} />;
   return <CircleX {...props} className={`${props.className} text-content/40`} />;
 }
 
@@ -39,7 +39,7 @@ export function StuckMark({ stuck, hideOnHover = true }: { stuck: readonly Stuck
       className={`flex shrink-0 items-center${hideOnHover ? " group-hover:hidden group-has-[button:focus-visible]:hidden" : ""}`}
     >
       <Icon
-        className={`size-3.5 ${kind === "asking" ? "text-content/45" : "text-amber-400"}`}
+        className={`size-3.5 ${kind === "asking" ? "text-content/45" : "text-content/60"}`}
         strokeWidth={1.75}
       />
     </span>

@@ -155,7 +155,10 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(why.className).not.toContain("truncate");
     expect(mark.querySelector("svg")?.getAttribute("width")).toBe("14");
     expect(mark.className).toContain("text-content/60");
-    expect(container.querySelectorAll(`${row} button`).length).toBe(1);
+    // r27b: See options, and the link to its Lead's chat that every red Needs you carries (once the jobs list is in).
+    await until(() => container.querySelector(`${row} [data-hub-open-lead]`), "the Lead's chat link");
+    expect(container.querySelectorAll(`${row} button`).length).toBe(2);
+    expect(container.querySelector(`${row} [data-hub-open-lead]`)?.textContent).toBe("Open Hivra lead's chat");
     expect(button(row, "See options")).toBeTruthy();
   });
 
@@ -206,7 +209,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(stuck.querySelector('[data-hub-circle="grey"]')?.textContent).toBe("With Hivra lead");
     expect(stuck.querySelector('[data-hub-circle="red"]')).toBeNull();
     expect(stuck.textContent).toContain("The disk was full twice.");
-    expect(stuck.querySelector("[data-hub-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
+    expect(stuck.querySelector("[data-hub-sent]")?.textContent).toMatch(/^Sent to Hivra lead at .* · Got it$/);
     expect(stuck.querySelector("button")).toBeNull();
   });
 });
@@ -233,7 +236,7 @@ describe("Being built, live", () => {
     expect(stuck.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
     expect(stuck.querySelector("svg circle")?.getAttribute("stroke")).toBe("currentColor");
     expect(stuck.querySelector("[data-hub-job-reason]")?.textContent).toBe("The disk was full twice.");
-    expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to coding team lead at .* · Got it$/);
+    expect(stuck.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to Hivra lead at .* · Got it$/);
     // D5 (Ash, 21 Oct 20:40): Lead gave up goes to Needs you, not a separate red Stuck.
     expect(state("j_sender")).toBe("needs_you");
     const gaveUp = container.querySelector('[data-hub-worker="j_sender"]')!;

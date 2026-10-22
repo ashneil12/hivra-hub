@@ -18,7 +18,9 @@ import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
-import { retryMonoFailure } from "../../features/monos/model/monoFailures";
+import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
+import { NEEDS_YOU, failureChip } from "../../features/hub/model/statusChip";
+import { ChipMark, NeedsYouChip } from "../../features/hub/ui/StatusMark";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
@@ -154,8 +156,10 @@ export function MonoRailSection({
   useWaitingSoulsVersion();
   const waiting = rank ? waitingSouls() : [];
   // Why OK on a waiting Mono couldn't finish (a file it couldn't read, or a failure), by Mono id: it keeps waiting.
-  const [soulProblems, setSoulProblems] = useState<ReadonlyMap<string, readonly string[]>>(new Map());
-  const noteSoulProblems = (monoId: string, problems: readonly string[]) =>
+  // r27b: each row by where it came from (there is no error kind here). OK itself failed ("Couldn't seat …"): only Ash
+  // can try again, the red Needs you. A file it couldn't read was left as it is, nothing lost: grey.
+  const [soulProblems, setSoulProblems] = useState<ReadonlyMap<string, readonly SoulProblem[]>>(new Map());
+  const noteSoulProblems = (monoId: string, problems: readonly SoulProblem[]) =>
     setSoulProblems((current) => {
       const next = new Map(current);
       if (problems.length) next.set(monoId, problems);
@@ -165,9 +169,9 @@ export function MonoRailSection({
   const seatSoul = (monoId: string, name: string) => {
     noteSoulProblems(monoId, []);
     void seatWaitingSoul(monoId).then(
-      (problems) => noteSoulProblems(monoId, problems),
+      (problems) => noteSoulProblems(monoId, problems.map((text) => ({ text, ashFixes: false }))),
       (error: unknown) =>
-        noteSoulProblems(monoId, [`Couldn't seat ${name}: ${error instanceof Error ? error.message : String(error)}`]),
+        noteSoulProblems(monoId, [{ text: `Couldn't seat ${name}: ${error instanceof Error ? error.message : String(error)}`, ashFixes: true }]),
     );
   };
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
@@ -311,9 +315,20 @@ export function MonoRailSection({
               </span>
               <span className="block text-[11px] text-content/50">Waiting for your OK</span>
               {soulProblems.get(w.monoId)?.length ? (
-                <span role="alert" className="mt-0.5 flex items-start gap-1 text-[11px] leading-4 text-red-400">
-                  <CircleAlert className="mt-px size-3 shrink-0" strokeWidth={1.75} />
-                  <span className="min-w-0">{soulProblems.get(w.monoId)!.join(" ")}</span>
+                <span role="alert" className="mt-0.5 flex flex-col gap-0.5 text-[11px] leading-4" data-mono-soul-problems>
+                  {soulProblems.get(w.monoId)!.map((problem, i) =>
+                    problem.ashFixes ? (
+                      <span key={i} className="flex min-w-0 flex-wrap items-center gap-x-1.5" data-mono-soul-problem="needs-you">
+                        <ChipMark chip={NEEDS_YOU} />
+                        <span className="min-w-0 break-words text-content/60">{problem.text}</span>
+                      </span>
+                    ) : (
+                      <span key={i} className="flex items-start gap-1 text-content/60" data-mono-soul-problem="grey">
+                        <CircleAlert className="mt-px size-3 shrink-0" strokeWidth={1.75} />
+                        <span className="min-w-0">{problem.text}</span>
+                      </span>
+                    ),
+                  )}
                 </span>
               ) : null}
             </div>
@@ -559,6 +574,12 @@ export function MonoRailSection({
  * part amber, or red once one failed; the row keeps its own mark. One click opens its team, where the work and its
  * sub-chats are.
  */
+/** One row of the waiting-soul problems list; `ashFixes`: only Ash can sort it (red Needs you), else grey. */
+type SoulProblem = { text: string; ashFixes: boolean };
+
+/** A stuck or failed worker's mark on the rail: grey (r27b). Red is only for Needs you; there is no amber. */
+const STUCK_GREY = "text-content/60";
+
 function MonoWorkLine({
   monoId,
   name,
@@ -579,8 +600,8 @@ function MonoWorkLine({
 }) {
   const failed = stuck.some((s) => s.kind === "failed");
   const short = shortSplit(counts);
-  // Red is only for Needs you (r27): a stalled or failed worker is its Lead's to handle, amber either way.
-  const stuckColor = "text-amber-400";
+  // Red is only for Needs you, and no third colour (r27b): a stalled or failed worker is its Lead's to handle, grey.
+  const stuckColor = STUCK_GREY;
   // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
   // line's own mark says why it waits.
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
@@ -669,8 +690,8 @@ function FoldedWorkSummary({
 }) {
   const short = shortSplit(counts);
   const failed = stuck.some((s) => s.kind === "failed");
-  // Red is only for Needs you (r27): a stalled or failed worker is its Lead's to handle, amber either way.
-  const stuckColor = "text-amber-400";
+  // Red is only for Needs you, and no third colour (r27b): a stalled or failed worker is its Lead's to handle, grey.
+  const stuckColor = STUCK_GREY;
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
   return (
     <div
@@ -696,44 +717,58 @@ function FoldedWorkSummary({
 }
 
 /**
- * A Mono whose last turn failed, under its row: the plain reason in amber or red ("Out of credits", "Out of usage until
- * 05:00"), which opens its chat, and Try again. The provider's own words are on hover and in the chat.
+ * A Mono whose last turn failed, under its row (r27b). Only Ash can fix it (credits, sign-in, a request the model
+ * refuses: the failure's error kind, turnFailure.ts): the red Needs you chip, the plain reason ("Out of credits") and
+ * "Open <Lead>'s chat". It should come right by itself or with Try again (usage limit, overloaded, a dropped
+ * connection): a grey ring named "Can't answer" and the reason, which opens its chat. Try again either way.
  */
 function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: MonoState; onOpen: () => void }) {
   const [trying, setTrying] = useState(false);
-  const color = state.tone === "red" ? "text-red-400" : "text-amber-400";
+  const chip = failureChip(state.tone);
+  const reason = state.activity ?? "Its last turn failed";
+  const name = failedMonoName({ monoId });
+  const retryButton = (
+    <button
+      type="button"
+      disabled={trying}
+      data-mono-failed-retry
+      title="Try again"
+      aria-label={trying ? "Trying again" : "Try again"}
+      onClick={() => {
+        setTrying(true);
+        if (!retryMonoFailure(monoId)) setTrying(false);
+      }}
+      className="grid size-5 shrink-0 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content disabled:opacity-60"
+    >
+      <RotateCcw className={`size-3.5 ${trying ? "animate-spin motion-reduce:animate-none" : ""}`} strokeWidth={1.75} />
+    </button>
+  );
   return (
     <div
-      className="ml-5 flex h-6 min-w-0 items-center gap-1 border-l border-content/10 pl-1.5"
+      className="ml-5 flex min-h-6 min-w-0 items-start gap-1 border-l border-content/10 py-0.5 pl-1.5"
       data-mono-failed={monoId}
       data-mono-failed-tone={state.tone ?? "amber"}
+      data-mono-failed-chip={chip.word}
+      title={state.detail ?? state.activity}
     >
-      <button
-        type="button"
-        title={state.detail ?? state.activity}
-        aria-label={`Open ${state.activity ?? "the failed turn"}`}
-        onClick={onOpen}
-        className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-content/6"
-      >
-        <CircleAlert aria-hidden className={`size-3.5 shrink-0 ${color}`} strokeWidth={1.75} />
-        <span className={`min-w-0 truncate ${color}`} data-mono-failed-reason>
-          {state.activity ?? "Its last turn failed"}
+      {chip.tone === "red" ? (
+        <span className="min-w-0 flex-1 px-1.5 text-[12px]">
+          <NeedsYouChip reason={reason} lead={name} onOpenLead={onOpen} />
         </span>
-      </button>
-      <button
-        type="button"
-        disabled={trying}
-        data-mono-failed-retry
-        title="Try again"
-        aria-label={trying ? "Trying again" : "Try again"}
-        onClick={() => {
-          setTrying(true);
-          if (!retryMonoFailure(monoId)) setTrying(false);
-        }}
-        className="grid size-5 shrink-0 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content disabled:opacity-60"
-      >
-        <RotateCcw className={`size-3.5 ${trying ? "animate-spin motion-reduce:animate-none" : ""}`} strokeWidth={1.75} />
-      </button>
+      ) : (
+        <button
+          type="button"
+          aria-label={`Open ${reason}`}
+          onClick={onOpen}
+          className="flex min-w-0 flex-1 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-content/60 hover:bg-content/6"
+        >
+          <ChipMark chip={chip} ringOnly />
+          <span className="min-w-0 truncate" data-mono-failed-reason>
+            {reason}
+          </span>
+        </button>
+      )}
+      {retryButton}
     </div>
   );
 }

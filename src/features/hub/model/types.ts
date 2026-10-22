@@ -395,8 +395,8 @@ export type Worker = {
   /** Minutes at it so far. */
   minutes: number;
   stuck?: StuckState;
-  /** Its Lead's last turn failed (out of credits, overloaded): reads "Can't answer" on Today and Being built alike. */
-  leadCantAnswer?: boolean;
+  /** Its Lead's last turn failed, with that failure's tone: red (only Ash can fix it) reads "Needs you", amber "Can't answer". */
+  leadCantAnswer?: "red" | "amber";
   steps: ActivityStep[];
   /** Id of the waiting item that already covers this worker being stuck. */
   waitingId?: string;
