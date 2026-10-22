@@ -83,3 +83,32 @@ it("says every way OK can fail in plain words, never 'seat', a file name or an e
   expect(card.className).toContain("border");
   expect(card.className).not.toContain("border-dashed");
 });
+
+// r28: when OK failed because the disk is full, OK is greyed out until there's space; Not now still works.
+it("greys out OK while the disk is full, keeps Not now, and offers OK again when Ash comes back to the app", async () => {
+  souls.seat.mockRejectedValueOnce(new Error("ENOSPC: no space left on device"));
+  act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: () => 0 })));
+  await ok();
+  const buttons = () => [...container.querySelectorAll<HTMLButtonElement>("[data-soul-waiting-card] button")];
+  const okButton = () => buttons().find((b) => b.textContent === "OK")!;
+  expect(container.querySelector("[data-mono-soul-problems]")?.textContent).toContain("Couldn't add Ledger because the disk is full");
+  expect(okButton().disabled).toBe(true);
+  expect(okButton().className).toContain("text-content/30");
+  act(() => okButton().click());
+  expect(souls.seat).toHaveBeenCalledTimes(1); // a greyed-out OK does nothing
+  const notNow = buttons().find((b) => b.textContent === "Not now")!;
+  expect(notNow.disabled).toBe(false);
+  // Back in the app (space cleared elsewhere): OK can be tried again.
+  act(() => window.dispatchEvent(new Event("focus")));
+  expect(okButton().disabled).toBe(false);
+  souls.seat.mockResolvedValueOnce([]);
+  await ok();
+  expect(souls.seat).toHaveBeenCalledTimes(2);
+});
+
+it("a failure that isn't the disk leaves OK as it is", async () => {
+  souls.seat.mockRejectedValueOnce(new Error("timed out"));
+  act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: () => 0 })));
+  await ok();
+  expect([...container.querySelectorAll<HTMLButtonElement>("[data-soul-waiting-card] button")].find((b) => b.textContent === "OK")!.disabled).toBe(false);
+});
