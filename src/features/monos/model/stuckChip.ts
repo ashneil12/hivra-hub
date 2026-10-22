@@ -4,10 +4,10 @@
 // word, and the line never carries the raw fault text or a file path.
 import { NEEDS_YOU, RETRYING, withLead, type Chip } from "../../hub/model/statusChip";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
-import { failedTimes, stuckOwner, type StuckWorker } from "./workerStuck";
+import { ashMustAct, failedTimes, stuckOwner, type StuckWorker } from "./workerStuck";
 import { withoutTestMarker } from "./devFault";
 
-/** Only Ash can sort it: the worker's provider refused for billing or sign-in. */
+/** Only Ash can sort it (r30c): out of credits, a rejected key, signed out, a refused request, or out of retries. */
 export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean {
   return stuck.kind !== "asking" && stuckOwner(stuck) === "needs-you";
 }
@@ -58,6 +58,8 @@ export function plainStuckLine(stuck: Pick<StuckWorker, "kind" | "row" | "line">
   if (stuck.kind !== "failed") return stuck.line;
   const row = stuck.row;
   const times = failedTimes(row);
+  const ash = stuckOwner(stuck) === "needs-you" ? needsYouLine(stuck) : undefined;
+  if (ash) return ash;
   if (times >= 2 && repairableFailure({ ...row, delivery: "pending" }))
     return `It crashed ${times} times${times > REPAIR_BACKOFF_MS.length ? " and its retries ran out" : ""}`;
   if (row.errorClass === "usage_limit") {
@@ -66,4 +68,31 @@ export function plainStuckLine(stuck: Pick<StuckWorker, "kind" | "row" | "line">
   }
   if (row.errorClass && PLAIN_CLASS[row.errorClass]) return PLAIN_CLASS[row.errorClass];
   return plainFault(row.error);
+}
+
+/**
+ * The reason on a red "Needs you" worker (r30c), one plain line: "Out of credits", "Key rejected", "Signed out of its
+ * provider", "Request refused", "Out of retries: it crashed 4 times". Undefined when Ash need not act.
+ */
+export function needsYouLine(stuck: Pick<StuckWorker, "kind" | "row">): string | undefined {
+  if (stuck.kind !== "failed") return undefined;
+  const row = stuck.row;
+  switch (ashMustAct(row)) {
+    case "credits":
+      return PLAIN_CLASS.billing;
+    case "key":
+      return "Key rejected";
+    case "signed-out":
+      return PLAIN_CLASS.auth;
+    case "refused":
+      return "Request refused";
+    case "out-of-retries": {
+      const times = failedTimes(row);
+      if (repairableFailure({ ...row, delivery: "pending" })) return `Out of retries: it crashed ${times} times`;
+      const fault = plainFault(row.error);
+      return `Out of retries: ${fault[0].toLowerCase()}${fault.slice(1).replace(/[.!?\s]+$/, "")}`;
+    }
+    default:
+      return undefined;
+  }
 }

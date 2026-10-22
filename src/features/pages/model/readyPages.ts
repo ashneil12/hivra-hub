@@ -24,8 +24,9 @@ const AGENTS_CSS = `
 .status{display:flex;align-items:center;gap:6px;font-size:12px;color:color-mix(in srgb,var(--color-content) 70%,transparent);white-space:nowrap}
 .status-dot{width:6px;height:6px;border-radius:9px;flex:none;background:color-mix(in srgb,var(--color-content) 35%,transparent)}
 .status-dot[data-state=working]{background:var(--color-status-ok)}
-.status-dot[data-state=asking],.status-dot[data-state=stuck],.status-dot[data-state=paused]{background:var(--color-status-warn)}
-.status-dot[data-state=failed]{background:var(--color-status-bad)}
+.status-dot[data-state=asking],.status-dot[data-state=paused]{background:var(--color-status-warn)}
+.status-dot[data-tone=red]{background:var(--color-status-bad)}
+.status.red{color:var(--color-status-bad)}
 .acts{display:flex;gap:4px;justify-content:flex-end}
 button{font:inherit;font-size:12px;border:0;border-radius:6px;padding:6px 12px;cursor:pointer;white-space:nowrap;background:transparent;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
 button:hover{background:var(--color-surface-raised);color:var(--color-content)}
@@ -66,7 +67,7 @@ const AGENTS_HTML = `<div class="wrap">
 const AGENTS_JS = `
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = String(text); return x; };
-const WORD = { asking: "Asking", stuck: "Stuck", working: "Working", paused: "Paused", idle: "Idle", failed: "Failed", done: "Done", stopped: "Stopped" };
+const WORD = { asking: "Asking", stuck: "With its lead", working: "Working", paused: "Paused", idle: "Idle", failed: "Failed", done: "Done", stopped: "Stopped" };
 const open = {};      // which answer or message box is open, and what is typed in it
 const notes = {};     // what a tap said, by row
 let data = null;
@@ -77,10 +78,11 @@ function ago(ms) {
   const m = Math.max(0, Math.floor((Date.now() - ms) / 60000));
   return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.floor(m / 60) + "h" : Math.floor(m / 1440) + "d";
 }
-function status(state, since) {
-  const s = el("span", "status");
-  const dot = el("span", "status-dot"); dot.dataset.state = state; s.appendChild(dot);
-  s.appendChild(el("span", "", WORD[state] + (since && state !== "idle" ? " · " + ago(since) : "")));
+// The red rule (r30c): red "Needs you" only when Ash must act; a stall or failure its lead or a retry has is grey.
+function status(state, since, word, red) {
+  const s = el("span", red ? "status red" : "status");
+  const dot = el("span", "status-dot"); dot.dataset.state = state; if (red) dot.dataset.tone = "red"; s.appendChild(dot);
+  s.appendChild(el("span", "", (word || WORD[state]) + (since && state !== "idle" ? " · " + ago(since) : "")));
   return s;
 }
 async function tap(key, button, call, args) {
@@ -125,7 +127,7 @@ function row(item) {
   if (item.under) who.appendChild(el("div", "under", item.under));
   r.appendChild(who);
   if (item.doing) r.appendChild(el("div", "doing", item.doing));
-  r.appendChild(status(item.state, item.since));
+  r.appendChild(status(item.state, item.since, item.word, item.needsYou));
   const acts = el("div", "acts");
   const q = item.question;
   if (q && q.canAnswer && q.pick) acts.appendChild(btn("Take it", (b) => tap(item.key, b, "agents.pick", { chatId: q.chatId }), false));
@@ -156,7 +158,7 @@ function workerLine(w) {
   const doing = w.state === "working" ? w.doing : w.reason || "";
   line.appendChild(el("div", doing ? "name" : "name wide", w.title));
   if (doing) line.appendChild(el("div", "doing", doing));
-  line.appendChild(status(w.state, w.state === "done" || w.state === "failed" || w.state === "stopped" ? 0 : w.since));
+  line.appendChild(status(w.state, w.state === "done" || w.state === "failed" || w.state === "stopped" ? 0 : w.since, w.word, w.needsYou));
   const acts = el("div", "acts");
   acts.appendChild(btn("Open", (b) => tap("w:" + w.id, b, "chats.open", { workerId: w.id })));
   if (w.state === "working") acts.appendChild(btn("Stop", (b) => tap("w:" + w.id, b, "agents.stop", { workerId: w.id })));
@@ -169,22 +171,21 @@ function attention(agents) {
   const out = [];
   const walk = (agent, workers, path) => {
     for (const w of workers) {
-      if (w.state === "asking" || w.state === "stuck")
-        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: "", state: w.state, since: w.since, reason: w.reason,
+      if (w.state === "asking" || w.needsYou)
+        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: "", state: w.state, since: w.since, reason: w.reason, word: w.word, needsYou: w.needsYou,
           question: w.question, openArgs: { workerId: w.id }, stopArgs: { workerId: w.id } });
       walk(agent, w.workers || [], path);
     }
   };
   for (const a of agents) {
-    if (a.state === "asking" || a.state === "stuck")
-      out.push({ key: "a:" + a.id, name: a.name, doing: a.state === "stuck" ? a.doing : "", state: a.state, since: a.since, reason: a.reason, question: a.question,
+    if (a.state === "asking" || a.needsYou)
+      out.push({ key: "a:" + a.id, name: a.name, doing: a.state === "stuck" ? a.doing : "", state: a.state, since: a.since, reason: a.reason, question: a.question, word: a.word, needsYou: a.needsYou,
         agentId: a.id, openArgs: { agentId: a.id }, stopArgs: a.state === "stuck" && a.chatId ? { agentId: a.id } : null });
     walk(a, a.workers || [], a.name);
   }
-  const rank = { asking: 0, stuck: 1 };
-  return out.sort((x, y) => rank[x.state] - rank[y.state] || (x.since || 0) - (y.since || 0));
+  return out.sort((x, y) => (x.state === "asking" ? 0 : 1) - (y.state === "asking" ? 0 : 1) || (x.since || 0) - (y.since || 0));
 }
-const recent = (workers) => workers.filter((w) => w.state === "working" || w.state === "done" || w.state === "failed" || w.state === "stopped").slice(-5);
+const recent = (workers) => workers.filter((w) => !w.needsYou && w.state !== "asking").slice(-5);
 
 function fill(name, items) {
   const list = $('[data-list="' + name + '"]');
@@ -199,10 +200,10 @@ function draw() {
   focusNext = null;
   const agents = data.agents || [];
   const need = attention(agents);
-  const busy = agents.filter((a) => (a.state === "working" || a.state === "paused") && !need.some((n) => n.key === "a:" + a.id));
+  const busy = agents.filter((a) => (a.state === "working" || a.state === "paused" || a.state === "stuck") && !need.some((n) => n.key === "a:" + a.id));
   const idle = agents.filter((a) => a.state === "idle");
   fill("attention", need);
-  fill("working", busy.map((a) => ({ key: "a:" + a.id, name: a.name, doing: a.doing, state: a.state, since: a.since, agentId: a.id, canMessage: !!a.chatId,
+  fill("working", busy.map((a) => ({ key: "a:" + a.id, name: a.name, doing: a.doing, state: a.state, since: a.since, reason: a.reason, word: a.word, agentId: a.id, canMessage: !!a.chatId,
     openArgs: { agentId: a.id }, stopArgs: a.chatId ? { agentId: a.id } : null, workers: recent(a.workers || []) })));
   fill("idle", idle.map((a) => ({ key: "a:" + a.id, name: a.name, doing: "", state: "idle", agentId: a.id, canMessage: !!a.chatId,
     openArgs: { agentId: a.id }, workers: recent(a.workers || []) })));
@@ -232,5 +233,5 @@ export const AGENTS_PAGE: BespokeSpec = {
 
 export type ReadyPage = { id: string; title: string; what: string; request: string; spec: BespokeSpec };
 export const READY_PAGES: readonly ReadyPage[] = [
-  { id: "agents", title: "Agents", what: "Every agent and what it's doing, with the stuck and asking ones on top: answer, open or stop them from one place.", request: AGENTS_READY, spec: AGENTS_PAGE },
+  { id: "agents", title: "Agents", what: "Every agent and what it's doing, with the ones that need you on top: answer, open or stop them from one place.", request: AGENTS_READY, spec: AGENTS_PAGE },
 ];

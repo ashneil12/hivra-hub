@@ -154,9 +154,10 @@ describe("self-repair (H3)", () => {
       '"Fix the save bug": crashed 4 times, retries ran out: Claude exited with code 1. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "t-1"), or stop it (task_cancel t-1), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
     ]);
     expect(t.dropped).toHaveLength(3); // The last failure reaches its Lead.
-    // Its red card says what happened; no banner pushed while it's its Lead's.
+    // Its red card says what happened. Out of retries, it is Ash's too (r30c, Ash's D5 words: a broken job lands in
+    // Needs you with the reason): one banner, until its Lead retries or stops it.
     expect(stuckWorkers(t.tracker.known(), 3 * HOUR)[0]).toMatchObject({ kind: "failed", line: "Crashed 4 times, retries ran out: Claude exited with code 1" });
-    expect(t.ash).toEqual([]);
+    expect(t.ash).toEqual(["Crashed 4 times, retries ran out: Claude exited with code 1"]);
   });
 
   it("says in plain words what it saw before it gave up", () => {

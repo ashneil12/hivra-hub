@@ -120,8 +120,11 @@ Code: `pageData.ts` (what a page reads), `pageSources.ts` (where it comes from, 
     question?, workers, jobs, waitingOn}`. `workers` is the work it handed out, nested:
     `{id, title, state: asking|stuck|working|failed|done|stopped, doing, reason?, chatId, startedAt, since, endedAt?,
     question?, workers}`. A `question` is `{chatId? | needId?, text, pick?, options?, redLine, askedAt?, canAnswer}`.
-    Stuck: a busy chat with no new word for 10 minutes, a worker whose chat ended without reporting (2 minutes), a usage
-    limit, or a stuck Being built job.
+    State `stuck`: a busy chat with no new word for 10 minutes, a worker whose chat ended without reporting (2 minutes), a
+    usage limit, or a stuck Being built job. Agents and workers also carry `needsYou?` and `word?` (r30c, the red rule):
+    `needsYou` only when Ash must act (credits, a rejected key, a refused request, out of retries, a job its Lead gave
+    up on), and `word` is the status every screen shows ("Needs you", "Retrying", "With Hivra lead", "Can't answer").
+    Pages never show the word "Stuck".
   - `jobs.read` → `{jobs: [{id, projectId, projectName, title, agentId, agentName, state, reason?, startedAt?, lastActiveAt?, finishedAt?}]}`.
   - `needs.read` → `{needs: [{id, projectId, projectName, title, why, action, isQuestion, since?}], waiting: [{chatId, chatName, projectId, projectName, agentId, question, pick?, redLine, askedAt}]}`.
   - `rooms.read {projectId?, limit?}` → `{rooms: [{id, projectId, name, members, typing?, conversation: {id, title, when, messages: [{id, from, text}]}}]}`.
@@ -171,8 +174,8 @@ handler, list every read and tap in `permissions`), and, for a Rebuild, the page
 
 `readyPages.ts`. Pages offers them under **Ready-made** (in the list, and on the empty screen) until one is kept. **Add**
 shows its preview with what it asks, and **Keep and allow** keeps it like any page (by "Ready-made", on Today's pages).
-- **Agents**: every agent and what it is doing; the stuck and asking ones (agents and the work they handed out, at any
-  depth) on top with **Take it**, **Answer**, **Open** and **Stop**; then Working (with each agent's recent work) and Idle
+- **Agents**: every agent and what it is doing; the ones that need Ash (`needsYou` or asking; agents and the work they
+  handed out, at any depth) on top with **Take it**, **Answer**, **Open** and **Stop**; then Working (with each agent's recent work) and Idle
   (with **Message**). It watches `agents.read` and uses only the taps, so it is the pattern for a Mono's own connected
   page, and Rebuild changes it from Ash's words like any other.
 

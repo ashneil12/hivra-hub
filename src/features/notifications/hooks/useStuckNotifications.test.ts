@@ -104,7 +104,7 @@ describe("stuck worker banners", () => {
     expect(banners()[1]).toEqual({
       sessionId: "w-d",
       subtitle: "its Lead · Fix the save bug",
-      body: "Stuck: Stopped without reporting back · 1 min ago",
+      body: "Stopped without reporting back · 1 min ago",
     });
   });
 

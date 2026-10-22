@@ -39,7 +39,7 @@ it("Pages offers it ready-made; Add shows its preview and asks; Keep and allow k
   roots.push(root);
   await act(async () => root.render(createElement(PagesContent)));
   const add = host.querySelector('[data-pages-ready-add="agents"]') as HTMLButtonElement;
-  expect(host.querySelector('[data-pages-ready-row="agents"]')!.textContent).toContain("stuck and asking ones on top");
+  expect(host.querySelector('[data-pages-ready-row="agents"]')!.textContent).toContain("ones that need you on top");
   await act(async () => add.click());
   expect(host.querySelector("[data-pages-preview]")!.textContent).toContain("Ready-made page");
   const asks = host.querySelector("[data-page-permissions]")!.textContent!;

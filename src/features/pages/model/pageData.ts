@@ -7,7 +7,8 @@ import { leadFor } from "../../hub/model/hubLeads";
 import type { WaitingChat } from "../../hub/model/waitingChats";
 import type { GroupChat, HubJob, HubJobGroup, HubProject, Need } from "../../hub/model/types";
 import type { Delegation } from "../../monos/model/delegations";
-import { failureLine, stallLine, stuckOf } from "../../monos/model/workerStuck";
+import { failureLine, stallLine, stuckOf, stuckOwner } from "../../monos/model/workerStuck";
+import { needsYouLine } from "../../monos/model/stuckChip";
 import { defaultMonoName, monoState, type Mono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
@@ -26,6 +27,13 @@ export type PageWorker = {
   /** What it is doing now, or why it stopped. */
   doing: string;
   reason?: string;
+  /**
+   * The red rule (r30c): only what Ash must sort (credits, a rejected key, a refusal, out of retries) needs him; a stall
+   * or failure its Lead or a retry has is grey. `word` is its status as every screen says it ("Needs you", "Retrying",
+   * "With Hivra lead"); never "Stuck".
+   */
+  needsYou?: boolean;
+  word?: string;
   chatId: string;
   startedAt: number;
   /** When it got to the state it is in (best known). */
@@ -57,6 +65,9 @@ export type PageAgent = {
   /** What it is doing now, plain words ("" when idle). */
   doing: string;
   reason?: string;
+  /** As on a worker (r30c): red "Needs you" only when Ash must act; else a grey word ("Can't answer", "With …"). */
+  needsYou?: boolean;
+  word?: string;
   /** When it got to the state it is in (best known, ms). */
   since: number;
   /** Its own chat (absent until it was first opened). */
@@ -141,9 +152,20 @@ function failedWords(row: Delegation): string {
 }
 
 /** Where one piece of handed-out work stands, from its row (the one reading of stuck) and, when loaded, its chat. */
-export function workerState(row: Delegation, session: Session | undefined, now: number): Pick<PageWorker, "state" | "doing" | "reason"> {
+export function workerState(
+  row: Delegation,
+  session: Session | undefined,
+  now: number,
+  leadName = "its lead",
+): Pick<PageWorker, "state" | "doing" | "reason" | "needsYou" | "word"> {
   const base = ROW_STATE[row.state];
-  if (base === "failed") return { state: "failed", doing: "Failed", reason: failedWords(row) };
+  const stuck = row.state === "failed" || (row.state === "running" && row.stallKind) ? stuckOf(row, now) : undefined;
+  const owner = stuck && stuck.kind !== "asking" ? stuckOwner(stuck) : undefined;
+  const word = owner === "needs-you" ? "Needs you" : owner === "retrying" ? "Retrying" : owner === "with-lead" ? `With ${leadName}` : undefined;
+  if (base === "failed")
+    return owner === "needs-you"
+      ? { state: "failed", doing: "Failed", reason: needsYouLine(stuck!) ?? failedWords(row), needsYou: true, word: "Needs you" }
+      : { state: "failed", doing: "Failed", reason: failedWords(row), ...(word ? { word } : {}) };
   if (base === "stopped") return { state: "stopped", doing: "Stopped", ...(row.error ? { reason: row.error } : {}) };
   if (base === "done") return { state: "done", doing: "Done" };
   const live = liveQuestion(session);
@@ -153,6 +175,7 @@ export function workerState(row: Delegation, session: Session | undefined, now: 
       state: "stuck",
       doing: row.stallKind === "idle" ? "Stopped" : session ? (monoState(session).activity ?? "Working") : "Working",
       reason: stallLine(row, now),
+      ...(word ? { word } : {}),
     };
   return { state: "working", doing: session ? monoState(session).activity ?? "Working" : "Working" };
 }
@@ -169,7 +192,7 @@ function questionFor(chatId: string, session: Session | undefined, waiting: read
   return undefined;
 }
 
-function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: Set<string>): PageWorker[] {
+function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: Set<string>, leadName?: string): PageWorker[] {
   if (depth > MAX_DEPTH) return [];
   // The newest row per chat: a chat that was briefed again shows once, as it is now.
   const latest = new Map<string, Delegation>();
@@ -182,7 +205,7 @@ function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: S
   return rows.map((row) => {
     seen.add(row.id);
     const session = inputs.session(row.childSession);
-    const st = workerState(row, session, inputs.now);
+    const st = workerState(row, session, inputs.now, leadName);
     const question = st.state === "asking" ? questionFor(row.childSession, session, inputs.waiting, row) : undefined;
     const ended = row.settledAt ?? undefined;
     return {
@@ -209,13 +232,15 @@ export function agentsData(inputs: AgentInputs): AgentsData {
     const chatId = mono.sessionId;
     const session = chatId ? inputs.session(chatId) : undefined;
     const quiet = chatId ? inputs.quietFor(chatId) : undefined;
-    const workers = chatId ? workersUnder(chatId, inputs, 1, new Set()) : [];
+    const workers = chatId ? workersUnder(chatId, inputs, 1, new Set(), agentName(mono)) : [];
     const waitingOn = workers.filter((w) => w.state === "working" || w.state === "asking" || w.state === "stuck").length;
     const jobs = inputs.jobs.filter((g) => g.leadId === mono.id).flatMap((g) => g.jobs.map((j) => jobOf(j, g, inputs.projects)));
     const question = chatId ? questionFor(chatId, session, inputs.waiting) : undefined;
     let state: AgentState = "idle";
     let doing = "";
     let reason: string | undefined;
+    let needsYou = false;
+    let word: string | undefined;
     let since = inputs.now - (quiet ?? 0);
     const look = session ? monoState(session) : undefined;
     if (question) {
@@ -232,11 +257,15 @@ export function agentsData(inputs: AgentInputs): AgentsData {
         return finish({ state, doing, question: q });
       }
       reason = look.activity;
+      needsYou = true;
     } else if (look?.status === "failed") {
-      // Its last turn failed (out of credits, overloaded): it can't answer, with the plain reason.
+      // Its last turn failed (out of credits, overloaded): it can't answer, with the plain reason. Red only when Ash must
+      // fix something first (credits, sign-in, a refusal); grey Can't answer when trying again can work.
       state = "stuck";
       doing = "Can't answer";
       reason = look.activity;
+      needsYou = look.tone === "red";
+      word = needsYou ? "Needs you" : "Can't answer";
     } else if (look?.status === "paused") {
       state = "paused";
       doing = look.activity ?? "Paused";
@@ -249,6 +278,9 @@ export function agentsData(inputs: AgentInputs): AgentsData {
       if (own) {
         reason = stallLine(own, inputs.now);
         since = own.stalledAt ?? since;
+        const stuck = stuckOf(own, inputs.now);
+        const by = inputs.monos.find((m) => m.sessionId === own.ownerSession);
+        word = stuck && stuckOwner(stuck) === "retrying" ? "Retrying" : `With ${by ? agentName(by) : "its lead"}`;
       }
     } else if (waitingOn) {
       state = "working";
@@ -257,7 +289,9 @@ export function agentsData(inputs: AgentInputs): AgentsData {
     const stuckJob = jobs.find((j) => j.state === "stuck" || j.state === "gave_up");
     if (stuckJob && (state === "working" || state === "idle")) {
       state = "stuck";
-      reason = `${stuckJob.title}: ${stuckJob.reason ?? (stuckJob.state === "gave_up" ? "needs you" : "stuck")}`;
+      reason = `${stuckJob.title}: ${stuckJob.reason ?? (stuckJob.state === "gave_up" ? "needs you" : "with its lead")}`;
+      needsYou = stuckJob.state === "gave_up";
+      word = needsYou ? "Needs you" : `With ${agentName(mono)}`;
       doing = doing || stuckJob.title;
       since = stuckJob.lastActiveAt ?? since;
     } else if (state === "idle") {
@@ -267,9 +301,10 @@ export function agentsData(inputs: AgentInputs): AgentsData {
         doing = busyJob.title;
       }
     }
-    return finish({ state, doing, ...(reason ? { reason } : {}) });
+    if (needsYou) word = "Needs you";
+    return finish({ state, doing, ...(reason ? { reason } : {}), ...(needsYou ? { needsYou } : {}), ...(word ? { word } : {}) });
 
-    function finish(st: { state: AgentState; doing: string; reason?: string; question?: PageQuestion }): PageAgent {
+    function finish(st: { state: AgentState; doing: string; reason?: string; question?: PageQuestion; needsYou?: boolean; word?: string }): PageAgent {
       counts[st.state] += 1;
       return {
         id: mono.id,
@@ -279,6 +314,8 @@ export function agentsData(inputs: AgentInputs): AgentsData {
         state: st.state,
         doing: st.doing,
         ...(st.reason ? { reason: st.reason } : {}),
+        ...(st.needsYou ? { needsYou: true } : {}),
+        ...(st.word ? { word: st.word } : {}),
         since,
         ...(chatId ? { chatId } : {}),
         ...(st.question ?? question ? { question: st.question ?? question } : {}),
