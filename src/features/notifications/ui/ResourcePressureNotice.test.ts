@@ -52,13 +52,13 @@ it("monitors silently without a footer and closes its dialog when the footer dis
     expect(onPressureChange).toHaveBeenLastCalledWith(true);
     expect(document.querySelector(".approval-toast")).toBeNull();
     expect(
-      document.querySelector('[aria-label="High resource usage"]'),
+      document.querySelector('[aria-label="Your Mac is busy"]'),
     ).toBeNull();
     expect(container.textContent).toBe("");
     expect(processPolls()).toBe(0);
 
     await render(footer);
-    expect(footer.textContent).toContain("High usage");
+    expect(footer.textContent).toContain("Mac busy");
     await act(async () => footer.querySelector("button")!.click());
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     await render();
@@ -70,7 +70,7 @@ it("monitors silently without a footer and closes its dialog when the footer dis
     expect(document.querySelector(".approval-toast")).toBeNull();
 
     await render(footer);
-    expect(footer.textContent).toContain("High usage");
+    expect(footer.textContent).toContain("Mac busy");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
@@ -132,7 +132,7 @@ it("only lists processes when opened and stops a tool only after its button is c
       ),
     );
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
-    expect(chipHost.textContent).toContain("High usage");
+    expect(chipHost.textContent).toContain("Mac busy");
     expect(
       invoke.mock.calls.some(([command]) => command !== "resource_usage"),
     ).toBe(false);

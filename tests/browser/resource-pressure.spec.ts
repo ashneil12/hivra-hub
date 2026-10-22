@@ -51,11 +51,11 @@ test("keeps many processes compact, with details and stop controls on demand", a
 
   const footer = page.getByRole("contentinfo", { name: "Provider usage" });
   const chip = footer.getByRole("button", {
-    name: "High resource usage",
+    name: "Your Mac is busy",
     exact: true,
   });
   await expect(chip).toBeVisible({ timeout: 15_000 });
-  await expect(chip).toHaveText("High usage");
+  await expect(chip).toHaveText("Mac busy");
   await chip.click();
   const dialog = page.getByRole("dialog", {
     name: "Running work",
@@ -129,7 +129,7 @@ test("keeps many processes compact, with details and stop controls on demand", a
   await page.keyboard.press(`${modifier}+,`);
   await expect(page.locator("[data-app-settings]")).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "High resource usage", exact: true }),
+    page.getByRole("button", { name: "Your Mac is busy", exact: true }),
   ).toHaveCount(0);
   await expect(page.locator(".approval-toast")).toHaveCount(0);
   await page.getByRole("button", { name: "Back", exact: true }).click();

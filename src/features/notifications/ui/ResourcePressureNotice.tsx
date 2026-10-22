@@ -206,7 +206,9 @@ export function ResourcePressureNotice({
         ? createPortal(
             <button
               type="button"
-              aria-label="High resource usage"
+              // Says what it is: the Mac's CPU or memory (anything running on it), never a plan's or a model's usage,
+              // which on the Grok 4.7 bridge has no chip at all ("High usage" read as Grok usage, Critiquito 22 Oct).
+              aria-label="Your Mac is busy"
               aria-haspopup="dialog"
               aria-expanded={open}
               onClick={() => setOpen(true)}
@@ -218,7 +220,7 @@ export function ResourcePressureNotice({
                 strokeWidth={1.75}
                 aria-hidden
               />
-              <span>High usage</span>
+              <span>Mac busy</span>
             </button>,
             chipHost,
           )
