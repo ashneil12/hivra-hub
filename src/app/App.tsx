@@ -1,3 +1,4 @@
+import { faultedOutcome, takeWorkerFault } from "../features/monos/model/devFault";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
@@ -12691,6 +12692,9 @@ function Workspace({
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
+          // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
+          // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
+          const fault = await takeWorkerFault();
           const settle = monoCompletionBatches.current!.watch(
             { monoId, turn: sourceTurn },
             requestId,
@@ -12705,7 +12709,7 @@ function Workspace({
                 sessionId,
                 project,
                 prompt,
-                outcome,
+                outcome: faultedOutcome(outcome, fault),
                 session: sessionsRef.current.find(
                   (session) => session.id === sessionId,
                 ),
