@@ -1193,7 +1193,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
               ref={composerDockMotion.dockedRef}
               data-session-composer
               inert={btw.open}
-              className="mx-auto w-full max-w-4xl shrink-0"
+              // A Mono's composer fills the width with the room's side padding (GroupChatView).
+              className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
             >
               {agent ? (
                 <>

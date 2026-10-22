@@ -2130,6 +2130,12 @@ header[data-tauri-drag-region] button {
   cursor: pointer;
 }
 
+/* A Mono's 1:1 fills the window like a room; only its plain reply text keeps the room's reading limit (75ch,
+   GroupChatView's RoomText). Code blocks, tables, tool cards and the composer use the full width (Critiquito 22 Oct). */
+.chat-reading-limit [data-chat-message-role="assistant"] .agent-markdown :is(p, li, h1, h2, h3, h4, h5, h6, blockquote) {
+  max-width: 75ch;
+}
+
 .agent-markdown [data-streamdown="code-block"],
 .agent-markdown [data-streamdown="table-wrapper"] {
   gap: 0;

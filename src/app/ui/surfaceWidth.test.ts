@@ -39,6 +39,35 @@ describe("main surfaces fill the width", () => {
     expect(src).toMatch(/<RoomText text=\{msg\.text\} className=\{`max-w-\[75ch\]/);
   });
 
+  it("a Mono's 1:1 fills the width like a room: transcript, composer, tool cards and code blocks (Critiquito 22 Oct)", () => {
+    const transcript = read("src/features/sessions/ui/AgentTranscript.tsx");
+    // The Mono (bottom-aligned) column: no centred cap, the room's side padding with the rows' own px-4.
+    const mono = transcript.split("\n").find((line) => line.includes(`className="chat-reading-limit`))!;
+    expect(mono).toBeDefined();
+    expect(mono).not.toMatch(CAPPED);
+    expect(mono).not.toMatch(/\bmax-w-/);
+    expect(mono).toMatch(/\bw-full\b.*\bpx-2\b.*\bxl:px-4\b/);
+    // The composer, in the 1:1 and in a room, is never a centred capped box; the 1:1 dock uses the room's padding.
+    expect(read("src/features/monos/ui/MonoComposer.tsx").split("\n").filter((line) => CAPPED.test(line))).toEqual([]);
+    const pane = read("src/features/sessions/ui/SessionPane.tsx");
+    expect(pane).toContain('className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}');
+    expect(read("src/features/hub/ui/GroupChatView.tsx")).toContain('<div className="w-full shrink-0 px-6 pb-3 xl:px-8">');
+    // A worker's delegated-chat card and its stuck card fill too (they capped at 768px).
+    const notices = read("src/features/monos/ui/DelegationNotices.tsx");
+    expect(notices.split("\n").filter((line) => CAPPED.test(line))).toEqual([]);
+    expect(notices).not.toMatch(/max-w-3xl/);
+  });
+
+  it("in a Mono's 1:1 only the plain reply text keeps the room's 75ch reading limit, never code blocks or tables", () => {
+    const css = read("src/styles/index.css");
+    const rule = css.match(/\.chat-reading-limit[^{]*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toContain("max-width: 75ch");
+    expect(rule).toContain('[data-chat-message-role="assistant"] .agent-markdown :is(p, li,');
+    expect(rule).not.toMatch(/pre|code|table/);
+    // The same limit a room's message body uses, so both kinds of chat read alike.
+    expect(read("src/features/hub/ui/GroupChatView.tsx")).toMatch(/<RoomText text=\{msg\.text\} className=\{`max-w-\[75ch\]/);
+  });
+
   it("side padding is modest: 24px, 32px from xl", () => {
     const today = read("src/features/hub/ui/HubSurface.tsx");
     expect(today).toContain('className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body');

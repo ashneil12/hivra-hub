@@ -460,7 +460,7 @@ export function MonoComposer({
 
   return (
     <form
-      className="mx-auto w-full max-w-4xl shrink-0 p-1.5 pt-0 font-sans"
+      className="w-full shrink-0 p-1.5 pt-0 font-sans"
       onSubmit={(event) => {
         event.preventDefault();
         send();
