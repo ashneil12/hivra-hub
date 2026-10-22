@@ -748,6 +748,8 @@ pub fn run() {
             mono::mono_load,
             mono::mono_read,
             mono::mono_save,
+            mono::mono_tree_load,
+            mono::mono_tree_write,
             mono::mono_archive,
             mono::mono_unarchive,
             mono::mono_team_dir,

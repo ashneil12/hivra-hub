@@ -800,7 +800,27 @@ export async function runBench(options, hooks = {}) {
     };
 
     const memoryCalls = () => readNdjson(path.join(state, "memory-calls.ndjson"));
-    const ctx = { runStarted: started, memoryCalls, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump };
+    // A Mono's memory as the app keeps it: MEMORY.md, topic notes, and its long chat's logs (memory/tree/), for the
+    // memory-guard checks (scripts/realconv/checks.mjs).
+    const monoFiles = (mono) => {
+      const dir = path.join(dataDir, "monos", mono);
+      const text = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+      const list = (folder) => (fs.existsSync(folder) ? fs.readdirSync(folder).sort() : []);
+      const records = (folder) =>
+        list(folder).flatMap((name) => text(path.join(folder, name)).split("\n").filter(Boolean).flatMap((line) => {
+          try {
+            return [JSON.parse(line)];
+          } catch {
+            return [];
+          }
+        }));
+      return {
+        memory: text(path.join(dir, "MEMORY.md")),
+        topics: list(path.join(dir, "memory")).filter((name) => name.endsWith(".md")).map((name) => ({ name, text: text(path.join(dir, "memory", name)) })),
+        tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
+      };
+    };
+    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");

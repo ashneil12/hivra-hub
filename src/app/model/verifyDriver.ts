@@ -22,7 +22,7 @@ import {
   typingIn,
 } from "../../features/hub/model/hubChats";
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
-import { listMonos, monoForSession, monoState } from "../../features/monos/model/mono";
+import { listMonos, monoForSession, monoState, updateMono } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
 import { openSubChats } from "../../features/monos/model/subChats";
@@ -399,6 +399,14 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
       const wrote = await benchAshTeam();
       return { ok: teamPack() === "ash", pack: teamPack(), wrote };
+    }
+    case "monoSetting": {
+      // A bench scene's per-Mono setting before it starts (scripts/realconv: scene.longChat). Only "Keep one long chat".
+      const mono = listMonos().find((m) => m.id === action.mono);
+      if (!mono) throw new Error(`monoSetting: no Mono ${String(action.mono)}`);
+      const on = action.longChat === true;
+      updateMono(mono.id, ({ longChat: _, ...rest }) => (on ? { ...rest, longChat: true } : rest));
+      return { ok: true, mono: mono.id, longChat: on };
     }
     case "defaults":
       host.setDefaults(String(action.model ?? "claude:sonnet-5"), String(action.effort ?? "medium"));

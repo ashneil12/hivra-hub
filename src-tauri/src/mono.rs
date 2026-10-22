@@ -682,6 +682,17 @@ pub async fn mono_team_dir(app: AppHandle, mono: String) -> Result<String, Strin
 }
 
 #[cfg(test)]
+mod tests_support {
+    use std::path::PathBuf;
+
+    pub fn temp_root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("mono-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1222,5 +1233,220 @@ mod tests {
         assert!(info.permanent);
         assert!(info.migration.is_some());
         std::fs::remove_dir_all(data).unwrap();
+    }
+}
+
+// The long-chat tree (monoTree.ts, "Keep one long chat"): `memory/tree/` in the Mono's folder, made by the app the
+// first time it is read. Only day logs (`main/` and `tree/`, `YYYY-MM-DD.jsonl`, appended to and never rewritten) and
+// `view.json` (replaced whole) live there; nothing else can be written through these commands. Workers never get
+// them: they are the app's own calls, not tools.
+
+const TREE_DIR: &str = "tree";
+const TREE_VIEW: &str = "view.json";
+const TREE_OP_MAX: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeFile {
+    /// Relative to `memory/tree/`: `main/<day>.jsonl`, `tree/<day>.jsonl` or `view.json`.
+    pub path: String,
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeOp {
+    pub path: String,
+    pub text: String,
+    /// Add to the end (day logs), else replace whole (view.json).
+    pub append: bool,
+}
+
+/// A day log's name: `main/2026-10-21.jsonl` or `tree/2026-10-21.jsonl`.
+fn tree_log_path(path: &str) -> bool {
+    let Some((stream, file)) = path.split_once('/') else {
+        return false;
+    };
+    let Some(day) = file.strip_suffix(".jsonl") else {
+        return false;
+    };
+    let b = day.as_bytes();
+    (stream == "main" || stream == "tree")
+        && b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(k, c)| k == 4 || k == 7 || c.is_ascii_digit())
+}
+
+fn tree_dir(root: &Path, mono: &str, legacy_project: Option<&str>) -> Result<PathBuf, String> {
+    let dir = agent_dir(root, mono, legacy_project)?
+        .join(MEMORY_DIR)
+        .join(TREE_DIR);
+    for stream in ["main", "tree"] {
+        let folder = dir.join(stream);
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
+    Ok(dir)
+}
+
+fn tree_load(
+    root: &Path,
+    mono: &str,
+    legacy_project: Option<&str>,
+) -> Result<Vec<TreeFile>, String> {
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    let dir = tree_dir(root, mono, legacy_project)?;
+    let mut files = Vec::new();
+    for stream in ["main", "tree"] {
+        let folder = dir.join(stream);
+        let mut names: Vec<String> = std::fs::read_dir(&folder)
+            .map_err(|e| format!("{}: {e}", folder.display()))?
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| tree_log_path(&format!("{stream}/{name}")))
+            .collect();
+        names.sort();
+        for name in names {
+            let path = format!("{stream}/{name}");
+            if let Some(text) = read_optional(&dir.join(&path))? {
+                files.push(TreeFile { path, text });
+            }
+        }
+    }
+    if let Some(text) = read_optional(&dir.join(TREE_VIEW))? {
+        files.push(TreeFile {
+            path: TREE_VIEW.into(),
+            text,
+        });
+    }
+    Ok(files)
+}
+
+fn tree_write(
+    root: &Path,
+    mono: &str,
+    legacy_project: Option<&str>,
+    ops: &[TreeOp],
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
+    let dir = tree_dir(root, mono, legacy_project)?;
+    for op in ops {
+        if op.text.len() > TREE_OP_MAX || op.text.contains('\0') {
+            return Err(format!("{} is too large or has a NUL byte", op.path));
+        }
+        let path = dir.join(&op.path);
+        if op.append && tree_log_path(&op.path) {
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            file.write_all(op.text.as_bytes())
+                .and_then(|_| file.sync_data())
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        } else if !op.append && op.path == TREE_VIEW {
+            serde_json::from_str::<serde_json::Value>(&op.text)
+                .map_err(|e| format!("view.json isn't valid JSON ({e})"))?;
+            write_atomic(&path, &op.text)?;
+        } else {
+            return Err(format!("{} can't be written in a Mono's tree", op.path));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mono_tree_load(
+    app: AppHandle,
+    mono: String,
+    legacy_project: Option<String>,
+) -> Result<Vec<TreeFile>, String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || tree_load(&root, &mono, legacy_project.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn mono_tree_write(
+    app: AppHandle,
+    mono: String,
+    legacy_project: Option<String>,
+    ops: Vec<TreeOp>,
+) -> Result<(), String> {
+    let root = monos_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        tree_write(&root, &mono, legacy_project.as_deref(), &ops)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::tests_support::temp_root;
+    use super::*;
+
+    #[test]
+    fn a_tree_is_made_on_first_read_and_takes_only_day_logs_and_its_view() {
+        let root = temp_root();
+        assert!(tree_load(&root, "mono-a", None).unwrap().is_empty());
+        assert!(root.join("mono-a/memory/tree/main").is_dir());
+        assert!(root.join("mono-a/memory/tree/tree").is_dir());
+        let op = |path: &str, text: &str, append: bool| TreeOp {
+            path: path.into(),
+            text: text.into(),
+            append,
+        };
+        tree_write(
+            &root,
+            "mono-a",
+            None,
+            &[op("main/2026-10-21.jsonl", "{\"a\":1}\n", true)],
+        )
+        .unwrap();
+        tree_write(
+            &root,
+            "mono-a",
+            None,
+            &[op("main/2026-10-21.jsonl", "{\"a\":2}\n", true)],
+        )
+        .unwrap();
+        tree_write(
+            &root,
+            "mono-a",
+            None,
+            &[op("view.json", "{\"parts\":[]}", false)],
+        )
+        .unwrap();
+        let files = tree_load(&root, "mono-a", None).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "main/2026-10-21.jsonl");
+        assert_eq!(files[0].text, "{\"a\":1}\n{\"a\":2}\n");
+        assert_eq!(files[1].path, "view.json");
+        for bad in [
+            op("../MEMORY.md", "x", true),
+            op("main/../../SOUL.md", "x", true),
+            op("main/notes.jsonl", "x", true),
+            op("other/2026-10-21.jsonl", "x", true),
+            op("main/2026-10-21.jsonl", "x", false),
+            op("view.json", "x", true),
+            op("view.json", "not json", false),
+        ] {
+            assert!(tree_write(&root, "mono-a", None, &[bad]).is_err());
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("mono-a/MEMORY.md")).unwrap(),
+            ""
+        );
+        assert!(tree_load(&root, "mono-b", None).unwrap().is_empty());
     }
 }

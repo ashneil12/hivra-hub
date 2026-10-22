@@ -70,6 +70,12 @@ export type Mono = {
   engineModel?: string;
   /** What it does, in a few words, shown after its name ("Design review"). Ash edits it; a project's Lead has none. */
   role?: string;
+  /**
+   * "Keep one long chat" (its settings; off by default): every message of its chat also goes into a summary tree in
+   * `memory/tree/` (monoTree.ts), and each fresh conversation starts on the tree's view. MEMORY.md and memory.add stay
+   * as they are, and New conversation still starts a fresh one.
+   */
+  longChat?: boolean;
 };
 
 /** A built-in Mono's role until Ash writes his own. */
@@ -245,6 +251,7 @@ function parseMono(value: unknown): Mono | undefined {
       ? { showStartedSessionsInSidebar: entry.showStartedSessionsInSidebar }
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
+    ...(entry.longChat === true ? { longChat: true } : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     ...(instructions ? { instructions } : {}),
     ...(engine ? { engine } : {}),
