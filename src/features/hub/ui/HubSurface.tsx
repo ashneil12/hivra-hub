@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { stuckWhere } from "../model/stuckWhere";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
@@ -320,10 +321,11 @@ function BeingBuiltToday({ title }: { title: string }) {
               <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
                 className="flex items-center gap-3 px-2 py-1.5 text-left">
                 <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
+                {/* "EXO lead · Needs you", not "EXO · EXO lead · …": a Lead named for its project already says which (r28). */}
                 {typeof w === "string" ? (
-                  <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {w}</span>
+                  <span className="shrink-0 text-xs text-content/60" data-hub-today-job-where>{stuckWhere(p, lead)} · {w}</span>
                 ) : (
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">{p.name} · {lead} · <ChipMark chip={w} /></span>
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60" data-hub-today-job-where>{stuckWhere(p, lead)} · <ChipMark chip={w} /></span>
                 )}
               </button>
               {/* Every red Needs you says why and opens the Lead's chat (r27b). */}

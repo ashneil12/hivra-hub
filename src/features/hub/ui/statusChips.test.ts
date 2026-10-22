@@ -174,3 +174,14 @@ it("every red Needs you shows why and opens its Lead's chat, and the backup name
   expect(builtBackup.textContent).not.toMatch(/coding team lead/i);
   undo();
 });
+
+// r28 (PM's r44 check): "EXO · EXO lead · Needs you" said the project twice. A Lead named for its project stands alone.
+it("Today's Being built rows don't repeat the project before a Lead named for it", async () => {
+  mountAll();
+  await until(() => container.querySelector('[data-hub-today-job="j_sender"] [data-hub-today-job-where]'), "Today's Being built");
+  for (const id of ["j_sender", "j_backup", "j_mail"]) {
+    const where = container.querySelector(`[data-hub-today-job="${id}"] [data-hub-today-job-where]`)!.textContent!;
+    expect(where.startsWith("Hivra lead · ")).toBe(true);
+    expect(where).not.toMatch(/^Hivra · /);
+  }
+});
