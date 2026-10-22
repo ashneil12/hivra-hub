@@ -38,7 +38,7 @@ describe("appSinceText", () => {
     });
     expect(text).toBe(
       "EXO lead handed out 3 jobs and Chief of Staff 1. One finished and reported back: Wire the dodge input. " +
-        "1 got stuck or asked for an answer: Pick the dodge timing. 1 failed: Upload the build. " +
+        "1 failed and is with its Lead: Upload the build. 1 is with its Lead or waiting on an answer: Pick the dodge timing. " +
         "Alfred made 1 change to how it works, each with Undo in Bot changes.",
     );
   });

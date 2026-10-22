@@ -36,9 +36,29 @@ describe("one count and one list for stuck or failed work", () => {
         { title: "Old one", failed: true, at: SINCE - 1 },
       ],
     });
-    expect(text).toContain("2 failed: Tidy Hivra README setup steps and Fix the waitlist email.");
-    expect(text).toContain("1 got stuck or asked for an answer: Move the nightly backup.");
+    expect(text).toContain("2 failed and are with their Lead: Tidy Hivra README setup steps and Fix the waitlist email.");
+    expect(text).toContain("1 is with its Lead or waiting on an answer: Move the nightly backup.");
+    expect(text).not.toMatch(/\bstuck\b/i);
     expect(text).not.toContain("Old one");
     expect(text).not.toMatch(/\b0 /);
+  });
+
+  // r49: the Since paragraph speaks the states' own words; a red Needs you is told on its own, never as "with its Lead".
+  it("tells the red Needs you on its own, then what failed with its Lead, then what is with its Lead or waiting", () => {
+    const credits = row("c", { title: "Send the launch emails", state: "failed", errorClass: "billing", error: "Credit balance is too low", settledAt: SINCE + 400 });
+    const red: StuckWorker = { row: credits, kind: "failed", line: "", since: SINCE + 400, escalated: true, key: "c" };
+    const text = appSinceText({
+      sinceMs: SINCE, rows: [failedReadme, credits], stuck: [stuck, red], changes: [], nameOf: () => "Hivra lead",
+      jobs: [
+        { title: "Deploy the playtest page", failed: true, needsYou: true, at: SINCE + 650 },
+        { title: "Move the nightly backup", failed: false, at: SINCE + 800 },
+        { title: "Run the signup tests", failed: false, at: SINCE + 900 },
+      ],
+    });
+    expect(text).toBe(
+      "2 need you: Send the launch emails and Deploy the playtest page. " +
+        "1 failed and is with its Lead: Tidy Hivra README setup steps. " +
+        "2 are with their Lead or waiting on an answer: Move the nightly backup and Run the signup tests.",
+    );
   });
 });

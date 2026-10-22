@@ -4,6 +4,7 @@
 // failed, and the Bot changes made. Real events only; nothing here is invented, and with nothing new it says nothing.
 //
 // A pure function over the events, so a future model-written summary can take the same input (see `AppSinceInput`).
+import { stuckNeedsAsh } from "../../monos/model/stuckChip";
 import type { Delegation } from "../../monos/model/delegations";
 import type { StuckWorker } from "../../monos/model/workerStuck";
 
@@ -23,7 +24,7 @@ export type AppSinceInput = {
    * and failed workers in ONE count and ONE list, so the paragraph never says "0 stuck or failed" next to "1 failed: …"
    * (PM 22 Oct): Ash OS's own sentences about stuck or failed work are left out of the paragraph (`withoutStuckTalk`).
    */
-  jobs?: readonly { title: string; failed: boolean; at: number }[];
+  jobs?: readonly { title: string; failed: boolean; at: number; /** The red Needs you: Ash must act (r49). */ needsYou?: boolean }[];
 };
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -82,11 +83,16 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] 
       return true;
     });
   const recentJobs = jobs.filter((j) => j.at >= sinceMs);
-  // Failed first, so a job both lists know as failed is counted once, as failed.
-  const failed = once([...recent.filter((s) => s.kind === "failed").map(title), ...recentJobs.filter((j) => j.failed).map((j) => j.title.trim() || "a job")]);
-  const waiting = once([...recent.filter((s) => s.kind !== "failed").map(title), ...recentJobs.filter((j) => !j.failed).map((j) => j.title.trim() || "a job")]);
-  if (waiting.length) sentences.push(`${waiting.length} got stuck or asked for an answer: ${list(waiting)}.`);
-  if (failed.length) sentences.push(`${failed.length} failed: ${list(failed)}.`);
+  // r49, the states' own words: the red Needs you first (only Ash can sort it), told on its own; then what failed with
+  // its Lead; then what is with its Lead or waiting on an answer. Each is counted once, in the first group it is in.
+  const red = (s: StuckWorker) => s.kind !== "asking" && stuckNeedsAsh(s);
+  const jobTitle = (j: { title: string }) => j.title.trim() || "a job";
+  const needsYou = once([...recent.filter(red).map(title), ...recentJobs.filter((j) => j.needsYou).map(jobTitle)]);
+  const failed = once([...recent.filter((s) => s.kind === "failed" && !red(s)).map(title), ...recentJobs.filter((j) => j.failed && !j.needsYou).map(jobTitle)]);
+  const waiting = once([...recent.filter((s) => s.kind !== "failed").map(title), ...recentJobs.filter((j) => !j.failed && !j.needsYou).map(jobTitle)]);
+  if (needsYou.length) sentences.push(`${needsYou.length} ${needsYou.length === 1 ? "needs" : "need"} you: ${list(needsYou)}.`);
+  if (failed.length) sentences.push(`${failed.length} failed and ${failed.length === 1 ? "is" : "are"} with ${failed.length === 1 ? "its" : "their"} Lead: ${list(failed)}.`);
+  if (waiting.length) sentences.push(`${waiting.length} ${waiting.length === 1 ? "is with its Lead or waiting on an answer" : "are with their Lead or waiting on an answer"}: ${list(waiting)}.`);
 
   // Bot changes that still stand.
   if (changes.length) {

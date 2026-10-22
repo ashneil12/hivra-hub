@@ -146,7 +146,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
           .flatMap((p) => data.listJobs?.(p.id) ?? [])
           .flatMap((g) => g.jobs)
           .filter((j) => j.state === "stuck" || j.state === "sent_to_lead" || j.state === "lead_gave_up")
-          .map((j) => ({ title: j.title, failed: j.state === "lead_gave_up", at: Date.parse(j.lastActiveAt) || 0 })),
+          .map((j) => ({ title: j.title, failed: j.state === "lead_gave_up", needsYou: j.state === "lead_gave_up", at: Date.parse(j.lastActiveAt) || 0 })),
       })
     : "";
   const waiting = waitingOnAsh(projectId);
