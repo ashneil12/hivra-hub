@@ -11,7 +11,7 @@ const AGENTS_CSS = `
 .wrap{display:flex;flex-direction:column;gap:20px;padding:2px 2px 8px}
 .summary{font-size:13px;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
 .problem{font-size:12px;color:color-mix(in srgb,var(--color-content) 80%,transparent)}
-.section-title{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:color-mix(in srgb,var(--color-content) 62%,transparent);padding:0 8px 6px}
+.section-title{font-size:12px;font-weight:500;color:color-mix(in srgb,var(--color-content) 62%,transparent);padding:0 8px 6px}
 .card{background:var(--color-surface);border-radius:12px;box-shadow:inset 0 0 0 1px var(--color-surface-ring);padding:4px}
 .item{border-radius:8px}
 .item:hover{background:color-mix(in srgb,var(--color-content) 4%,transparent)}

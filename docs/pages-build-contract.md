@@ -196,3 +196,14 @@ The answer may carry `pin: true` (next to the spec's own fields). That pins the 
 ## No manual builder
 
 New page is only a prompt box. The bundled blocks (status, list, chart, barlist, note, calendar) are helpers the Mono builds with. Ash never picks them himself.
+
+## The page kit (every built page)
+
+The frame adds a small kit after the page's own code (`sandbox.ts`), so every built page gets it without the Mono
+writing it:
+
+- The app's header already shows the page's title, so the page's own first `h1` is hidden (no title twice).
+- A `section` that has only its heading gets one grey line instead of a bare heading: "Nothing waiting on you" under a
+  Needs you heading, "No one else right now" under Everyone else, "Nothing here right now" otherwise. A section can name
+  its own line with `data-empty="…"`. The line goes as soon as real content arrives.
+- Section headings read in sentence case at a medium weight, never bold caps.

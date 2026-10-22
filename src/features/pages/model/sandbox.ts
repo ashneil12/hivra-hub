@@ -34,6 +34,46 @@ const HELPER = `(() => {
   let lastHeight = 0;
   const size = () => { const h = Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0); if (h && Math.abs(h - lastHeight) > 1) { lastHeight = h; parent.postMessage({ type: "hub:size", height: h }, "*"); } };
   window.addEventListener("load", () => { size(); if (window.ResizeObserver && document.body) new ResizeObserver(size).observe(document.body); });
+  // The page kit, for every built page (Critiquito 22 Oct): the app's header already shows the page's title, so the
+  // page's own first h1 is not shown twice; and a section with only its heading gets one grey line instead of a bare
+  // heading. A section can name its line with data-empty="..."; the line goes once real content arrives.
+  const HEAD = "h2,h3,h4,h5,h6,.section-title,.hub-block-title,[class*=title],[class*=heading]";
+  const emptyLine = (section, head) => {
+    if (section.dataset.empty) return section.dataset.empty;
+    const t = (head ? head.textContent : "").trim().toLowerCase();
+    if (/needs? you|waiting on you|for you|to answer|asking/.test(t)) return "Nothing waiting on you";
+    if (/stuck|failed|blocked/.test(t)) return "Nothing stuck right now";
+    if (/working|busy|running|in progress/.test(t)) return "Nobody working right now";
+    if (/everyone else|everybody else|others|idle|the rest/.test(t)) return "No one else right now";
+    return "Nothing here right now";
+  };
+  const hasContent = (section, head, note) => {
+    for (const child of section.children) {
+      if (child === head || child === note) continue;
+      if ((child.textContent || "").trim() || child.querySelector("img,svg,canvas,button,input,select,textarea,iframe,video")) return true;
+      if (/^(IMG|SVG|CANVAS|BUTTON|INPUT|SELECT|TEXTAREA|VIDEO)$/i.test(child.tagName)) return true;
+    }
+    return false;
+  };
+  let titleHidden = false;
+  const kit = () => {
+    if (!titleHidden) { const h1 = document.querySelector("body h1"); if (h1) { h1.style.display = "none"; h1.dataset.hubTitleShown = "header"; titleHidden = true; } }
+    document.querySelectorAll("section,[data-section]").forEach((section) => {
+      if (section.classList.contains("hub-block") && section.querySelector(".hub-note,.hub-bar-row,.hub-status-row")) return;
+      const head = Array.from(section.children).find((c) => c.matches(HEAD)) || null;
+      if (!head) return;
+      let note = Array.from(section.children).find((c) => c.classList.contains("hub-empty")) || null;
+      const full = hasContent(section, head, note);
+      if (full && note) note.remove();
+      if (!full && !note) { note = el("p", "hub-empty", emptyLine(section, head)); section.appendChild(note); }
+    });
+  };
+  let queued = false;
+  const queueKit = () => { if (queued) return; queued = true; setTimeout(() => { queued = false; kit(); size(); }, 0); };
+  document.addEventListener("DOMContentLoaded", () => {
+    kit();
+    if (window.MutationObserver) new MutationObserver((records) => { if (records.some((r) => !(r.target.classList && r.target.classList.contains("hub-empty")))) queueKit(); }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
   window.hub = {
     call(call, args) { return ask("hub:call", call, args).done; },
     watch(call, args, onData, onError) {
@@ -56,10 +96,19 @@ const HELPER = `(() => {
 const BASE_CSS = `
 html,body{margin:0;background:transparent;color:var(--color-content);font-family:var(--font-sans);font-size:13px;line-height:1.5}
 .hub-block{background:var(--color-surface);border-radius:12px;box-shadow:inset 0 0 0 1px var(--color-surface-ring);padding:var(--space-card,12px)}
-.hub-block-title{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:color-mix(in srgb,var(--color-content) 60%,transparent);margin-bottom:10px}
+.hub-block-title{font-size:12px;font-weight:500;color:color-mix(in srgb,var(--color-content) 60%,transparent);margin-bottom:10px}
+.hub-empty{margin:4px 0 0;font-size:13px;font-weight:400;text-transform:none;letter-spacing:normal;color:color-mix(in srgb,var(--color-content) 60%,transparent)}
 .hub-bar-row{display:flex;align-items:center;gap:12px;margin:6px 0}.hub-bar{flex:1;position:relative;border-radius:6px;background:color-mix(in srgb,var(--color-theme-accent) 22%,transparent);padding:4px 8px;white-space:nowrap}
 .hub-bar-value{min-width:32px;text-align:right;color:color-mix(in srgb,var(--color-content) 75%,transparent)}
 .hub-status-row{display:flex;align-items:center;gap:10px}.hub-dot{width:6px;height:6px;border-radius:9px;background:var(--color-status-ok)}.hub-dot[data-state=warn]{background:var(--color-status-warn)}.hub-dot[data-state=bad]{background:var(--color-status-bad)}
+`;
+/**
+ * After the page's own CSS, so every built page gets it: section headings read in sentence case at a medium weight,
+ * not bold caps (Critiquito 22 Oct). It changes only the case, spacing and weight, never colour or size.
+ */
+const KIT_CSS = `
+:is(h2,h3,h4,h5,h6,.section-title,.hub-block-title,[class*=section-title],[class*=heading]){text-transform:none!important;letter-spacing:normal!important;font-variant-caps:normal!important}
+section > :is(h2,h3,h4,h5,h6,.section-title,[class*=title],[class*=heading]):first-child{font-weight:500!important}
 `;
 /** A short fingerprint of a page's code: a new version of the page is a new frame (and a new bridge). */
 export function specKey(spec: Pick<BespokeSpec, "html" | "css" | "js">): string {
@@ -72,6 +121,6 @@ const escapeClose = (s: string, tag: string) => s.replace(new RegExp(`</${tag}`,
 export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark"): string {
   const vars = Object.entries(tokens).filter(([, v]) => v && !/[;{}<>]/.test(v)).map(([k, v]) => `${k}:${v}`).join(";");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">
-<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style>
+<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
 <script>${HELPER}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
 }
