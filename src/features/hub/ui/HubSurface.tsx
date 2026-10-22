@@ -32,6 +32,7 @@ import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { plainStateWord } from "../model/liveJobs";
+import { gaveUpAsNeedsYou } from "../model/hubWork";
 import { ProposalView } from "./ProposalView";
 import { NewProjectView } from "./NewProjectView";
 import { useTemplatesVersion } from "../model/templates";
@@ -270,8 +271,10 @@ function ProjectNeedsCount({ projectId }: { projectId: string }) {
 }
 
 const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "unknown"]);
-const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Stuck" };
-const jobWord = (j: HubJob) => (j.state === "unknown" ? plainStateWord(j.rawState ?? "") : JOB_WORD[j.state]);
+const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Needs you" };
+// A job the Lead gave up on reads as Being built reads it (jobState): "Needs you", not "Stuck" (PM's r35 check, 22 Oct).
+const jobWord = (j: HubJob) =>
+  j.state === "unknown" ? plainStateWord(j.rawState ?? "") : j.state === "lead_gave_up" && !gaveUpAsNeedsYou() ? "Stuck" : JOB_WORD[j.state];
 
 /** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
 function BeingBuiltToday({ title }: { title: string }) {

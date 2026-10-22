@@ -257,7 +257,7 @@ export function agentsData(inputs: AgentInputs): AgentsData {
     const stuckJob = jobs.find((j) => j.state === "stuck" || j.state === "gave_up");
     if (stuckJob && (state === "working" || state === "idle")) {
       state = "stuck";
-      reason = `${stuckJob.title}: ${stuckJob.reason ?? (stuckJob.state === "gave_up" ? "stuck, needs you" : "stuck")}`;
+      reason = `${stuckJob.title}: ${stuckJob.reason ?? (stuckJob.state === "gave_up" ? "needs you" : "stuck")}`;
       doing = doing || stuckJob.title;
       since = stuckJob.lastActiveAt ?? since;
     } else if (state === "idle") {

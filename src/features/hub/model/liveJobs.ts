@@ -22,7 +22,7 @@ function stepsOf(job: HubJob): Worker["steps"] {
   const steps: Worker["steps"] = [];
   const add = (iso: string | undefined, text: string) => iso && text && steps.push({ id: `${job.id}:${steps.length}`, at: clockLabel(iso), text });
   if (job.state === "done") add(job.finishedAt ?? job.lastActiveAt, "Finished");
-  if (job.state === "lead_gave_up") add(job.lastActiveAt, job.why ?? "Stuck: needs you. Open the coding team lead's chat to see why.");
+  if (job.state === "lead_gave_up") add(job.lastActiveAt, job.why ?? "Needs you. Open the coding team lead's chat to see why.");
   if (job.tried?.length) add(job.lastActiveAt, `Tried: ${job.tried.join("; ")}`);
   if (job.gotIt) add(job.gotIt.at, `Coding team lead: ${job.gotIt.text}`);
   if (job.sentText) add(job.state === "sent_to_lead" || job.state === "lead_gave_up" ? job.lastActiveAt : undefined, job.sentText);
