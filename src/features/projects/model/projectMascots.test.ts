@@ -41,6 +41,13 @@ describe("projectMascots", () => {
     expect(projectMascot("alpha", null).name).toBe(projectMascot("alpha").name);
   });
 
+  it("never hands an unnamed project a mascot that isn't offered", () => {
+    const offline = new Set(["ghost", "skull", "mushroom"]);
+    for (let n = 0; n < 200; n++) {
+      expect(offline.has(projectMascot(`project-${n}`).name)).toBe(false);
+    }
+  });
+
   it("spreads projects across the roster", () => {
     const names = new Set(
       ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"].map(

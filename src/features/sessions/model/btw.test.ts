@@ -51,7 +51,6 @@ describe("supportsBtwHarness", () => {
 
   it("rejects unsupported and missing harnesses", () => {
     expect(supportsBtwHarness("fx")).toBe(false);
-    expect(supportsBtwHarness("hermes")).toBe(false);
     expect(supportsBtwHarness("antigravity")).toBe(false);
     expect(supportsBtwHarness(undefined)).toBe(false);
   });

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { FilePlus, FoldVertical, UnfoldVertical } from "./icons";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -50,16 +49,5 @@ describe("hugeicons imports", () => {
       expect(html, Icon.displayName).not.toMatch(/fill="currentColor"/);
       expect(html, Icon.displayName).toMatch(/stroke="currentColor"/);
     }
-  });
-
-  it("optically insets the detailed Hermes artwork at UI icon sizes", () => {
-    const html = renderToStaticMarkup(
-      createElement(HarnessIcon, {
-        harness: "hermes",
-        className: "size-4 shrink-0",
-      }),
-    );
-    expect(html).toContain("items-center justify-center");
-    expect(html).toContain("size-[72%]");
   });
 });

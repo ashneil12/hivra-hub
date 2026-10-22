@@ -160,7 +160,6 @@ describe("child bridge", () => {
               pi: "/opt/pi/bin/pi",
               omp: "/opt/omp/bin/omp",
               fx: "/opt/fx/bin/fx",
-              hermes: "/opt/hermes/bin/hermes",
               antigravity: "/opt/antigravity/bin/agy_acp_server.par",
             })
           : null,
@@ -181,7 +180,6 @@ describe("child bridge", () => {
       ["pi", "/opt/pi/bin/pi", child.resolvePiBinary],
       ["omp", "/opt/omp/bin/omp", child.resolveOmpBinary],
       ["fx", "/opt/fx/bin/fx", child.resolveFxBinary],
-      ["hermes", "/opt/hermes/bin/hermes", child.resolveHermesBinary],
       [
         "antigravity",
         "/opt/antigravity/bin/agy_acp_server.par",

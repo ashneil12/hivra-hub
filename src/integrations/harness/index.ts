@@ -92,14 +92,6 @@ export {
   bindGrokSession,
 } from "./providers/grok/grok";
 export {
-  sendHermesTurn,
-  cancelHermesTurn,
-  respondHermesApproval,
-  stopHermesSession,
-  forgetHermesSession,
-  bindHermesSession,
-} from "./providers/hermes/hermes";
-export {
   sendAntigravityTurn,
   steerAntigravityTurn,
   cancelAntigravityTurn,
@@ -156,7 +148,6 @@ export { refreshClaudeCatalog } from "./providers/claude/claudeCatalog";
 export { refreshPiCatalog, refreshOmpCatalog } from "./providers/pi/piCatalog";
 export { refreshFxCatalog } from "./providers/fx/fxCatalog";
 export { refreshGrokCatalog } from "./providers/grok/grokCatalog";
-export { refreshHermesCatalog } from "./providers/hermes/hermesCatalog";
 export { refreshAntigravityCatalog } from "./providers/antigravity/antigravityCatalog";
 export { registerBuiltinHarnesses } from "./core/register";
 export {

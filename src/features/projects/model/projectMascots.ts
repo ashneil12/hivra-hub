@@ -256,9 +256,16 @@ export const PROJECT_MASCOTS: readonly ProjectMascot[] = Object.entries(
 
 export const MASCOT_GRID = GRID;
 
+/**
+ * Mascots offered when restyling a Mono, after "Letter" (the default). Nothing ghost-like: the ghost, the skull and the domed mushroom stay
+ * drawable for Monos that already wear them, but aren't offered, and the hash below never lands on one.
+ */
+const NOT_OFFERED = new Set(["ghost", "skull", "mushroom"]);
+export const PICKABLE_MASCOTS: readonly ProjectMascot[] = PROJECT_MASCOTS.filter((m) => !NOT_OFFERED.has(m.name));
+
 /** Stable per-project pick — a different mix than the color hash so a project's
  *  mascot and color vary independently. An explicit `name` wins; an unknown one
- *  falls back to the hash. */
+ *  falls back to the hash over the offered mascots only. */
 export function projectMascot(
   project: string,
   name?: string | null,
@@ -272,12 +279,5 @@ export function projectMascot(
   for (let i = 0; i < project.length; i++) {
     hash = (hash * 131 + project.charCodeAt(i)) >>> 0;
   }
-  return PROJECT_MASCOTS[hash % PROJECT_MASCOTS.length];
+  return PICKABLE_MASCOTS[hash % PICKABLE_MASCOTS.length];
 }
-
-/**
- * Mascots offered when restyling a Mono, after "Letter" (the default). Nothing ghost-like: the ghost, the skull and the domed mushroom stay
- * drawable for Monos that already wear them, but aren't offered.
- */
-const NOT_OFFERED = new Set(["ghost", "skull", "mushroom"]);
-export const PICKABLE_MASCOTS: readonly ProjectMascot[] = PROJECT_MASCOTS.filter((m) => !NOT_OFFERED.has(m.name));

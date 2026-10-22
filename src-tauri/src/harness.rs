@@ -879,19 +879,6 @@ pub fn harness_resolve_grok() -> Result<CursorBinary, String> {
         })
 }
 
-/// Resolve Nous Research Hermes Agent (`hermes`).
-#[tauri::command(async)]
-pub fn harness_resolve_hermes() -> Result<CursorBinary, String> {
-    resolve_hermes()
-        .map(|path| CursorBinary {
-            path: path.to_string_lossy().into_owned(),
-        })
-        .ok_or_else(|| {
-            "Hermes Agent CLI not found. Install it from https://hermes-agent.nousresearch.com, run `hermes model`, then retry."
-                .into()
-        })
-}
-
 /// Resolve Cognition's Devin CLI (`devin`).
 #[tauri::command(async)]
 pub fn harness_resolve_devin() -> Result<CursorBinary, String> {
@@ -1970,7 +1957,6 @@ fn is_harness_argv_token(part: &str) -> bool {
             | "grok"
             | "omp"
             | "fx"
-            | "hermes"
             | "devin"
             | "agy_acp_server.par"
             | "pi"
@@ -2210,7 +2196,6 @@ fn resolve_harness_binary_default(provider: &str) -> Option<PathBuf> {
         "pi" => resolve_pi(),
         "omp" => resolve_omp(),
         "fx" => resolve_fx(),
-        "hermes" => resolve_hermes(),
         "antigravity" => resolve_antigravity(),
         "devin" => resolve_devin(),
         _ => None,
@@ -2293,7 +2278,6 @@ fn resolve_harness_binary_override_with(
         "pi" => &["pi", "pi-coding-agent"],
         "omp" => &["omp"],
         "fx" => &["fx"],
-        "hermes" => &["hermes"],
         "antigravity" => &["agy_acp_server.par"],
         "devin" => &["devin"],
         _ => {
@@ -2390,7 +2374,6 @@ fn validate_harness_binary_version(
     let provider_marker = match provider {
         "claude" => lower.contains("claude"),
         "codex" => lower.contains("codex"),
-        "hermes" => lower.contains("hermes"),
         "devin" => lower.contains("devin"),
         _ => true,
     };
@@ -2653,38 +2636,6 @@ fn resolve_grok() -> Option<PathBuf> {
     }
 
     first_binary_matching(candidates, is_grok_agent)
-}
-
-fn resolve_hermes() -> Option<PathBuf> {
-    let home = dirs_home().map(PathBuf::from);
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if let Some(home) = &home {
-        // Official per-user installer, then its underlying virtualenv in case
-        // the launcher symlink has not been added to PATH yet.
-        candidates.push(home.join(".local/bin/hermes"));
-        candidates.push(home.join(".hermes/hermes-agent/venv/bin/hermes"));
-        candidates.push(home.join(".hermes/hermes-agent/.venv/bin/hermes"));
-        candidates.push(home.join(".npm-global/bin/hermes"));
-        candidates.push(home.join(".cargo/bin/hermes"));
-        candidates.push(home.join("n/bin/hermes"));
-    }
-    #[cfg(windows)]
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
-        // Native Windows installer launchers, then the underlying virtualenv.
-        candidates.push(local_app_data.join("hermes/bin/hermes"));
-        candidates.push(local_app_data.join("hermes/hermes-agent/venv/Scripts/hermes"));
-    }
-    #[cfg(target_os = "macos")]
-    candidates.push(PathBuf::from("/opt/homebrew/bin/hermes"));
-    candidates.push(PathBuf::from("/usr/local/bin/hermes"));
-    candidates.push(PathBuf::from("/usr/bin/hermes"));
-    candidates.push(PathBuf::from("/snap/bin/hermes"));
-    if let Some(from_shell) = which_via_login_shell("hermes") {
-        candidates.push(from_shell);
-    }
-
-    first_binary(candidates)
 }
 
 fn resolve_devin() -> Option<PathBuf> {
@@ -4571,7 +4522,6 @@ mod reap_logic_tests {
             "/opt/homebrew/bin/node /Users/n/.local/share/cursor-agent/versions/x/index.js worker-server"
         ));
         assert!(looks_like_harness_argv("/Users/n/.local/bin/claude --help"));
-        assert!(looks_like_harness_argv("/Users/n/.local/bin/hermes acp"));
         assert!(looks_like_harness_argv("/Users/n/.local/bin/devin acp"));
         assert!(!looks_like_harness_argv("tmux new -s work"));
         assert!(!looks_like_harness_argv("npm start"));

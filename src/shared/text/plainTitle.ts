@@ -19,7 +19,7 @@ export function plainTitle(raw: string): string {
 
 // A stored session title starts with its harness's label (session.ts formatSessionTitle: "claude · ..."), for the tab
 // strip; the labels are session.ts HARNESS_LABEL's, kept here so shared/ needs nothing from features/.
-const HARNESS_PREFIX = /^(?:claude|codex|cursor|grok|opencode|pi|omp|fx|hermes|antigravity|devin) · /i;
+const HARNESS_PREFIX = /^(?:claude|codex|cursor|grok|opencode|pi|omp|fx|antigravity|devin) · /i;
 // A turn the Hub wrote opens with its kind in brackets ("[MonoCode brief from MonoCode Hub lead] ..."), and a title made
 // from that turn kept it, sometimes cut before its "]" ("[MonoCode brief fr…").
 const MONOCODE_TAG = /^\[MonoCode\b[^\]\n]*(?:\]|$)\s*[:\-–—]?\s*/i;
