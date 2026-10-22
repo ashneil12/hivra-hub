@@ -6,8 +6,12 @@
 //! Only a dev copy changes itself: it runs from its worktree under vite, so a file change shows at once. The
 //! installed daily app is a bundle and says so instead.
 //!
-//! The core app stays protected here, not in a prompt: a change that touches anything outside `src/` and `public/`,
-//! or settings, keys, the Monos list, start-up or this flow itself, is refused with the area named in plain words.
+//! Two lanes, one rule (Ash 22 Oct: "it can improve itself n its ui yes but the core code is diff"): the app's own
+//! look is changed here, in the app; the engine is not. The core app stays protected here, not in a prompt: a change
+//! that touches anything outside `src/` and `public/`, the engine (Rust, the provider and platform layer, the chat
+//! engine, the hub's own store, its agent tools), settings, keys, the Monos list, start-up or this flow itself, is
+//! refused with the area named in plain words and goes to the MonoCode Hub lead instead (a worktree, checks, a dev
+//! copy, then Ship).
 //!
 //! Preview puts the change into the running worktree uncommitted (`git apply`) and Now takes it out (`git apply -R`).
 //! A preview that breaks the window can't strand Ash: the window pings every few seconds while it previews, and a
@@ -27,7 +31,7 @@ const LIVE_FILE: &str = "live.json";
 
 /// Where a change may go, and the plain name of each protected area.
 const ALLOWED_ROOTS: [&str; 2] = ["src/", "public/"];
-const PROTECTED: [(&str, &str); 8] = [
+const PROTECTED: [(&str, &str); 13] = [
     ("src/features/settings/", "Settings"),
     ("src/features/providers/", "keys and providers"),
     ("src/features/connections/", "keys and sign-ins"),
@@ -36,6 +40,12 @@ const PROTECTED: [(&str, &str); 8] = [
     ("src/features/selfBuild/", "the way changes are made"),
     ("src/features/hub/model/botChanges.ts", "Bot changes"),
     ("src/main.tsx", "how the app starts"),
+    // The engine: how it works rather than how it looks. These go the Lead's way, where they're built and checked.
+    ("src/integrations/", "the app's engine"),
+    ("src/platform/", "the app's engine"),
+    ("src/features/agent-app/", "the app's own tools"),
+    ("src/features/sessions/model/", "the chat engine"),
+    ("src/features/hub/model/", "the hub's own store"),
 ];
 
 /// Why a path can't be changed, or None when it may.
@@ -252,7 +262,7 @@ fn checked(change: &Change) -> Result<Collected, String> {
     let collected = collect(change)?;
     if let Some(first) = collected.blocked.first() {
         return Err(format!(
-            "This change touches {}, which stays protected, so it can't go in. Nothing changed.",
+            "This change touches {}, which goes the Lead's way rather than in here. Nothing changed: the MonoCode Hub lead makes it in a worktree, checks it, shows you a dev copy and ships it.",
             first.area
         ));
     }
@@ -601,6 +611,56 @@ mod tests {
         );
     }
 
+    /// Ash 22 Oct: the app may change its own look; its engine goes the Lead's way (a worktree, checks, then Ship).
+    #[test]
+    fn the_engine_is_the_leads_way_not_the_in_app_lane() {
+        for (path, area) in [
+            ("src/integrations/harness/core/child.ts", "the app's engine"),
+            ("src/platform/desktop.ts", "the app's engine"),
+            (
+                "src/features/agent-app/model/agentApp.ts",
+                "the app's own tools",
+            ),
+            ("src/features/sessions/model/session.ts", "the chat engine"),
+            ("src/features/hub/model/hubStore.ts", "the hub's own store"),
+            ("src-tauri/src/lib.rs", "the app's engine and build"),
+            ("package.json", "the app's engine and build"),
+        ] {
+            assert_eq!(protected_area(path), Some(area), "{path}");
+        }
+        // The look stays in the app, next to the engine it sits on.
+        assert_eq!(
+            protected_area("src/features/sessions/ui/Composer.tsx"),
+            None
+        );
+        assert_eq!(protected_area("src/features/hub/ui/Today.tsx"), None);
+        assert_eq!(protected_area("src/app/shell/Sidebar.tsx"), None);
+        assert_eq!(protected_area("src/styles/theme.css"), None);
+    }
+
+    #[test]
+    fn an_engine_change_is_turned_away_towards_the_lead() {
+        let (repo, dir) = hub();
+        commit(
+            repo.to_str().unwrap(),
+            "src/integrations/harness/core/child.ts",
+            "export {};\n",
+            "engine",
+        );
+        let change = prepare(&repo, &dir, "c5").unwrap();
+        commit(
+            &change.folder,
+            "src/integrations/harness/core/child.ts",
+            "export const spawn = 'elsewhere';\n",
+            "Spawn chats differently",
+        );
+        let got = collect(&change).unwrap();
+        assert_eq!(got.blocked[0].area, "the app's engine");
+        let err = preview(&change, &dir, true).unwrap_err();
+        assert!(err.contains("goes the Lead's way"), "{err}");
+        assert!(read(&repo, "src/integrations/harness/core/child.ts").contains("export {}"));
+    }
+
     #[test]
     fn preview_shows_the_change_now_takes_it_out_and_discard_leaves_nothing() {
         let (repo, dir) = hub();
@@ -682,7 +742,7 @@ mod tests {
         assert_eq!(got.blocked[0].area, "Settings");
         let err = preview(&change, &dir, true).unwrap_err();
         assert!(
-            err.contains("touches Settings, which stays protected"),
+            err.contains("touches Settings, which goes the Lead's way"),
             "{err}"
         );
         assert!(apply(&change, &dir).is_err());

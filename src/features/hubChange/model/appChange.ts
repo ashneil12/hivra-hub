@@ -13,7 +13,7 @@ export const HUB_PROJECT = "hub";
 export const APP_CHANGE_NOTE =
   "To change how a screen looks or works, ask here too: it goes to the MonoCode Hub lead, who builds it in a copy of the app for you to try, then ships it when you say so.";
 export const APP_CHANGE_WHY =
-  "Change the hub moves what's in your hub: the sidebar's order, names and shapes, and what's on Today. How a screen looks or works is the app's own code, so it goes to the MonoCode Hub lead. It makes the change in its own copy of the app, you try that copy, and it ships when you say so.";
+  "Change the hub moves what's in your hub: the sidebar's order, names and shapes, and what's on Today. How a screen looks or works is the app's own code, so it goes to the MonoCode Hub lead, and so does anything in the engine (the Rust side, providers, the chat engine), because that has to be built and checked before it lands. The lead makes the change in its own copy of the app, you try that copy, and it ships when you say so.";
 /** Ash OS's words for it: "<Mono> says this is a change to the app itself: <why>". */
 export function isAppChange(message: string): boolean {
   return /\bis a change to the app itself\b/i.test(message);
@@ -29,7 +29,7 @@ export function hubLeadMono(): Mono | undefined {
 export function appChangeBrief(prompt: string): string {
   return [
     forUser`Ash asked in Change the hub: “${prompt.trim()}”`,
-    forUser("That changes the app itself (a screen's look or behaviour), so it's yours: make it in a worktree, show Ash a dev copy of the app to try, and Ship it when he says so."),
+    forUser("That changes the app itself (a screen's look or behaviour, or the engine, which has to be built and checked), so it's yours: make it in a worktree, show Ash a dev copy of the app to try, and Ship it when he says so."),
     "",
     "(sent from Change the hub)",
   ].join("\n");

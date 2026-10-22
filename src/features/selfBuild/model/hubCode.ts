@@ -85,7 +85,7 @@ export function hubChangeBrief(ask: string, folder: string): string {
     forUser`Ash asked for a change to MonoCode Hub itself: "${ask}"`,
     forUser`Make it in ${folder}, a preview copy of the hub's own code. The running hub doesn't change until Ash clicks Apply.`,
     forUser("One git commit per separate part of the ask, each subject a few plain words Ash can read (\"New chat button is at the top\")."),
-    "Only src/ and public/ can change, and not Settings, keys, the Monos list or src/main.tsx: the app refuses those. If the ask needs them, say so plainly instead.",
+    "Only how the app looks and works on a screen can change here: src/ and public/, but not the engine (src/integrations, src/platform, src/features/sessions/model, src/features/hub/model, src/features/agent-app), Settings, keys, the Monos list or src/main.tsx. Those need a real build and go to the MonoCode Hub lead; the app refuses them here, so say so plainly if the ask needs one.",
     "Use the theme tokens for colour. Run npx tsc --noEmit and the tests of what you touched, then report each commit in one line.",
   ].join("\n");
 }
@@ -99,7 +99,7 @@ export async function readyHubChange(changeId: string, by: string) {
     await commands.discard(changeId).catch(() => undefined);
     pending.delete(changeId);
     const areas = [...new Set(got.blocked.map((b) => b.area))].join(", ");
-    throw new Error(forUser`That change touches ${areas}, which stays protected, so it can't go in. It was thrown away and nothing changed. Tell Ash in those words.`);
+    throw new Error(forUser`That change touches ${areas}, which has to be built and checked before it lands, so it can't go in here. It was thrown away and nothing changed. Tell Ash in those words: it goes to the MonoCode Hub lead.`);
   }
   if (!got.commits.length) throw new Error("The preview copy has no changes yet: wait for the worker's report.");
   const parts = got.commits.map((c) => c.subject || "Hub change");
