@@ -263,7 +263,9 @@ export function receiptFor(ship, dir, by) {
 
 /**
  * Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. `keepIds` (one id or a
- * list) are never moved: the ship being staged, and the ship a rollback restores from.
+ * list) are never moved: the ship being staged, and the ship a rollback restores from. Nor is any ship that a rollback
+ * still under way restores from, whoever is tidying: a runner finishing an earlier ship can get here after a rollback was
+ * staged, and moving that ship's folder would take the database copy out from under the rollback.
  */
 export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
   const protectedIds = new Set([keepIds].flat().filter(Boolean));
@@ -276,6 +278,10 @@ export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
       .sort();
   } catch {
     return [];
+  }
+  for (const name of names) {
+    const doc = readJson(path.join(shipRoot, name, STATE));
+    if (doc && !FINAL.has(doc.phase) && doc.requestedBy?.rollsBack) protectedIds.add(doc.requestedBy.rollsBack);
   }
   const moved = [];
   for (const name of names.slice(0, Math.max(0, names.length - keep))) {
@@ -796,15 +802,17 @@ async function rollBack(ctx, ship) {
 }
 
 function finish(ctx, ship) {
-  const receiptFile = path.join(ctx.dir, RECEIPT);
-  const existing = readJson(receiptFile);
-  if (!existing || existing.outcome !== ship.phase || ship.reopened) writeJson(receiptFile, receiptFor(ship, ctx.dir, "runner"));
+  // Tidy first: the receipt says the ship is over, and whoever reads it (hub:ship, hub:rollback, a test) may stage the
+  // next one straight away; nothing of this ship's should still be moving folders by then.
   try {
     const moved = retainShips(path.dirname(ctx.dir), path.join(ship.home, "Archive/monocode/ships"), ship.id);
     if (moved.length) ctx.log(`archived ${moved.join(", ")}`);
   } catch (error) {
     ctx.log(`couldn't archive old ships: ${error.message}`);
   }
+  const receiptFile = path.join(ctx.dir, RECEIPT);
+  const existing = readJson(receiptFile);
+  if (!existing || existing.outcome !== ship.phase || ship.reopened) writeJson(receiptFile, receiptFor(ship, ctx.dir, "runner"));
   ctx.log(`done: ${ship.phase}${ship.reason ? ` (${ship.reason})` : ""}`);
   finished = true;
   unloadLaunchAgent(ship);

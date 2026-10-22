@@ -688,6 +688,33 @@ test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed f
   for (const kept of agentsOf.slice(1)) assert.ok(fs.existsSync(kept.plist), "the ships kept keep theirs");
 });
 
+test("SH-1: tidying old ships never archives the ship a rollback under way restores from, whoever tidies", () => {
+  // The race behind 'SH-1: hub:rollback of a ship with two newer ship folders…' timing out: the runner of the ship
+  // before the rollback did its tidy-up after the rollback was staged, archived the committed ship (oldest of four, and
+  // not its own to protect) and the rollback found its database copy gone.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "ship");
+  const archive = path.join(root, "archive");
+  const write = (id, doc) => {
+    fs.mkdirSync(path.join(ships, id, "backup"), { recursive: true });
+    fs.writeFileSync(path.join(ships, id, "state.json"), JSON.stringify({ id, ...doc }));
+  };
+  const committed = "20261022-000001-1111111";
+  write(committed, { phase: "committed" });
+  write("20261022-000002-2222222", { phase: "rolled-back" });
+  write("20261022-000003-3333333", { phase: "rolled-back" });
+  const rollback = "20261022-000004-aaaaaaa-rollback";
+  write(rollback, { phase: "waiting", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } });
+  // The runner of ship 3, finishing late, protects only itself.
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")), "the rollback's database copy stays put");
+  // Once the rollback is over, the committed ship is an old ship like any other.
+  write(rollback, { phase: "committed", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } });
+  write("20261022-000005-5555555", { phase: "committed" });
+  assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
+});
+
 test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", async () => {
   const w = world();
   const ships = path.join(w.data, "ship");
