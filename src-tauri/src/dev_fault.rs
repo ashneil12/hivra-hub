@@ -17,13 +17,21 @@ pub(crate) const FAULT_ERROR: &str =
     "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers).";
 
 fn fault_file(app: &AppHandle) -> Option<PathBuf> {
-    Some(app.path().app_data_dir().ok()?.join("dev-faults").join(MAGIC))
+    Some(
+        app.path()
+            .app_data_dir()
+            .ok()?
+            .join("dev-faults")
+            .join(MAGIC),
+    )
 }
 
 /// Take one armed worker fault from `path`, if there is one: Some(error text) and the count goes down by one.
 pub(crate) fn take_at(path: &Path, now: SystemTime) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
-    let age = now.duration_since(meta.modified().ok()?).unwrap_or(Duration::ZERO);
+    let age = now
+        .duration_since(meta.modified().ok()?)
+        .unwrap_or(Duration::ZERO);
     if age > Duration::from_secs(ARM_TTL_SECS) {
         let _ = std::fs::remove_file(path);
         return None;
@@ -79,7 +87,11 @@ mod tests {
     fn tempdir() -> Dir {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
-        let d = std::env::temp_dir().join(format!("mc-dev-fault-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let d = std::env::temp_dir().join(format!(
+            "mc-dev-fault-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         std::fs::create_dir_all(&d).unwrap();
         Dir(d)
     }
@@ -101,7 +113,10 @@ mod tests {
         let dir = tempdir();
         let path = arm(dir.path(), "fail-next-workers\n3\n");
         for _ in 0..3 {
-            assert_eq!(take_at(&path, SystemTime::now()).as_deref(), Some(FAULT_ERROR));
+            assert_eq!(
+                take_at(&path, SystemTime::now()).as_deref(),
+                Some(FAULT_ERROR)
+            );
         }
         assert!(!path.exists());
         assert_eq!(take_at(&path, SystemTime::now()), None);
@@ -110,7 +125,14 @@ mod tests {
     #[test]
     fn a_file_without_the_exact_first_line_or_a_sane_count_does_nothing() {
         let dir = tempdir();
-        for body in ["3\n", "fail next workers\n3\n", "fail-next-workers\n", "fail-next-workers\nlots\n", "fail-next-workers\n0\n", "fail-next-workers\n99\n"] {
+        for body in [
+            "3\n",
+            "fail next workers\n3\n",
+            "fail-next-workers\n",
+            "fail-next-workers\nlots\n",
+            "fail-next-workers\n0\n",
+            "fail-next-workers\n99\n",
+        ] {
             let path = arm(dir.path(), body);
             assert_eq!(take_at(&path, SystemTime::now()), None, "{body:?}");
         }
