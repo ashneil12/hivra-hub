@@ -1,7 +1,7 @@
 // Tells Ash OS when Ash really used the app, so "Since <time>" means since he last left, not since a window opened.
 //
-// Real use only, as Ash defines it: typing in the app (C9: "active" is when he types), and only while the window is
-// visible. Clicking, scrolling, hovering or focusing the window to read does not move "Since". No
+// Real use only, as Ash defines it (C9): typing or clicking in the app, and only while the window is visible. Scrolling,
+// hovering, focusing the window or reopening the app does not move "Since": the app merely being open is not use. No
 // timer ever reports on its own, so an open window left alone changes nothing. Reports are at most one a minute and
 // carry the time of the latest input. Ash OS decides what counts as leaving (a gap of 30 minutes with no input);
 // the first input after such a gap is reported at once, because the last report is far enough back.
@@ -11,7 +11,8 @@ export const REPORT_GAP_MS = 60_000;
 /** Ash OS treats a gap this long without input as having left (it tells the app too; kept here for the tests). */
 export const IDLE_MS = 30 * 60_000;
 
-const INPUT_EVENTS = ["keydown"] as const;
+/** Typing and a completed click. Not pointermove, wheel, focus or visibilitychange. */
+export const INPUT_EVENTS = ["keydown", "click"] as const;
 
 type Listener = (event?: unknown) => void;
 export type ActivityEnv = {

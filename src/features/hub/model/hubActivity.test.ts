@@ -103,11 +103,11 @@ describe("activity tracking", () => {
     expect(reports[1].getTime()).toBe(back);
   });
 
-  it("counts only typing as use (Ash: active is when he types), and ignores typing while the window is hidden", () => {
+  it("counts only typing or a click as use (C9: the app merely being open is not), and ignores input while hidden", () => {
     const f = fakeEnv();
     const reports: Date[] = [];
     startActivityTracking((at) => reports.push(at), f.env);
-    for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "focus"]) f.input(type);
+    for (const type of ["pointermove", "wheel", "scroll", "touchstart", "focus", "visibilitychange", "mouseover"]) f.input(type);
     f.advance(REPORT_GAP_MS);
     expect(reports).toEqual([]);
     f.hide();
@@ -118,6 +118,10 @@ describe("activity tracking", () => {
     f.input("keydown");
     f.advance(0);
     expect(reports.length).toBe(1);
+    f.advance(REPORT_GAP_MS);
+    f.input("click");
+    f.advance(0);
+    expect(reports.length).toBe(2);
   });
 
   it("stops listening when asked, and a report still waiting is dropped", () => {
