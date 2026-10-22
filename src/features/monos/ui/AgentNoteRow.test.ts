@@ -128,7 +128,7 @@ describe("the fold", () => {
 });
 
 describe("the Stuck ring (rounds 22-23)", () => {
-  it("a stuck note carries Today's red Stuck ring, ring only with the accessible name 'Stuck'; routine notes don't", () => {
+  it("a stuck note carries a grey ring (red is only for Needs you, r27), ring only with the accessible name 'Stuck'; routine notes don't", () => {
     render(createElement("div", null,
       createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, line: "Example: the test save file is missing" }) }),
       createElement(AgentNoteRow, { note: note() }),
@@ -137,10 +137,10 @@ describe("the Stuck ring (rounds 22-23)", () => {
     ));
     const rows = [...container.querySelectorAll<HTMLElement>("[data-agent-note]")];
     const [stuck, ...routine] = rows;
-    // Today's own mark (StatusMark → CircleWord), ring only: the red circle, no visible word, named "Stuck".
-    const ring = stuck.querySelector<HTMLElement>("[data-agent-note-ring] [data-hub-circle=red]")!;
+    // Today's own mark (CircleWord), ring only: the grey circle, no visible word, named "Stuck".
+    const ring = stuck.querySelector<HTMLElement>("[data-agent-note-ring] [data-hub-circle=grey]")!;
     expect(ring).not.toBeNull();
-    expect(ring.querySelector("circle")!.getAttribute("stroke")).toBe("rgb(239 68 68)");
+    expect(ring.querySelector("circle")!.getAttribute("stroke")).toBe("currentColor");
     expect(ring.getAttribute("role")).toBe("img");
     expect(ring.getAttribute("aria-label")).toBe("Stuck");
     expect(ring.textContent).toBe("");

@@ -35,7 +35,7 @@ describe("a job as a row", () => {
     expect(state({ state: "checking" }).state).toBe("checking");
     expect(state({ state: "stuck", reason: "Disk full." })).toMatchObject({ stuck: "stuck", stuckReason: "Disk full." });
     expect(state({ state: "sent_to_lead", reason: "Disk full.", sentText: "Sent to coding team lead at 2:20pm", gotIt: { at: "", text: "Got it" } }))
-      .toMatchObject({ stuck: "stuck", sentNote: "Sent to coding team lead at 2:20pm · Got it" });
+      .toMatchObject({ stuck: "sent_to_lead", sentNote: "Sent to coding team lead at 2:20pm · Got it" });
     // Lead gave up: Needs you with the reason (D5, Ash 21 Oct 20:40), not a separate red Stuck.
     const gaveUp = state({ state: "lead_gave_up", reason: "The sender refused the login.", why: "Tried two fixes." });
     expect(gaveUp).toMatchObject({ stuck: "lead_gave_up", stuckReason: "The sender refused the login." });

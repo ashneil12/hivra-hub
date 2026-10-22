@@ -49,7 +49,7 @@ export function StuckMark({ kind, className = "size-3.5" }: { kind: StuckWorker[
   if (kind === "asking") return <Clock className={`${className} shrink-0 text-amber-400`} strokeWidth={1.75} aria-hidden />;
   return (
     <CircleAlert
-      className={`${className} shrink-0 ${kind === "failed" ? "text-red-400" : "text-amber-400"}`}
+      className={`${className} shrink-0 text-amber-400`}
       strokeWidth={1.75}
       aria-hidden
     />

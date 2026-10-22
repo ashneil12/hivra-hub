@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { workerChip } from "../model/statusChip";
+import { ChipMark } from "./StatusMark";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, ChevronRight, Terminal, Wrench } from "../../../shared/ui/icons";
@@ -348,26 +350,17 @@ function byMono(jobs: Worker[]): [string, Worker[]][] {
   return [...m.entries()];
 }
 
-/** Calm state text. Stuck (still fixing itself, or the Lead gave up) = the one red Stuck circle. Needs you is a
- * dot and plain text, like every other state. Done (not seen) = small dot. */
+/** Calm state text. A stuck job has Today's chip (statusChip.ts): the red Needs you only when Ash must act, else a
+ * grey Retrying (fixing itself) or With <Lead>. Done (not seen) = small dot. */
 function JobStateLabel({ w, compact = false }: { w: Worker; compact?: boolean }) {
   const st = jobState(w);
   const reason = rowReason(w.stuckReason);
-  if (st === "needs_you")
+  const chip = workerChip(w);
+  if (chip)
     return (
       <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
-        <span className="size-1.5 shrink-0 rounded-full bg-content" aria-hidden />
-        <span className="shrink-0 text-content">Needs you</span>
-        {reason && !compact ? <span className="truncate text-content/60">{reason}</span> : null}
-      </span>
-    );
-  if (st === "stuck" || st === "gave_up")
-    return (
-      <span data-hub-job-state={st} className="flex min-w-0 shrink items-center gap-1.5 text-xs text-content/85">
-        <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden className="shrink-0">
-          <circle cx="7" cy="7" r="6" fill="none" strokeWidth="2" stroke="rgb(239 68 68)" />
-        </svg>
-        <span>Stuck</span>
+        <ChipMark chip={chip} />
+        {st === "needs_you" && reason && !compact ? <span className="truncate text-content/60">{reason}</span> : null}
       </span>
     );
   if (st === "done_unseen")

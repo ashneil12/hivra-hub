@@ -579,7 +579,8 @@ function MonoWorkLine({
 }) {
   const failed = stuck.some((s) => s.kind === "failed");
   const short = shortSplit(counts);
-  const stuckColor = failed ? "text-red-400" : "text-amber-400";
+  // Red is only for Needs you (r27): a stalled or failed worker is its Lead's to handle, amber either way.
+  const stuckColor = "text-amber-400";
   // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
   // line's own mark says why it waits.
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
@@ -668,7 +669,8 @@ function FoldedWorkSummary({
 }) {
   const short = shortSplit(counts);
   const failed = stuck.some((s) => s.kind === "failed");
-  const stuckColor = failed ? "text-red-400" : "text-amber-400";
+  // Red is only for Needs you (r27): a stalled or failed worker is its Lead's to handle, amber either way.
+  const stuckColor = "text-amber-400";
   const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
   return (
     <div

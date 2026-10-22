@@ -14,7 +14,8 @@ import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pa
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { CircleWord, StatusMark, needMark } from "./StatusMark";
+import { ChipMark, CircleWord, StatusMark, needMark } from "./StatusMark";
+import { CANT_ANSWER, stuckChip, withLead, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
@@ -32,7 +33,6 @@ import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { plainStateWord } from "../model/liveJobs";
-import { gaveUpAsNeedsYou } from "../model/hubWork";
 import { ProposalView } from "./ProposalView";
 import { NewProjectView } from "./NewProjectView";
 import { useTemplatesVersion } from "../model/templates";
@@ -275,10 +275,12 @@ function ProjectNeedsCount({ projectId }: { projectId: string }) {
 }
 
 const ACTIVE_JOBS: ReadonlySet<HubJob["state"]> = new Set(["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "unknown"]);
-const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting", stuck: "Stuck", sent_to_lead: "With the lead", lead_gave_up: "Needs you" };
-// A job the Lead gave up on reads as Being built reads it (jobState): "Needs you", not "Stuck" (PM's r35 check, 22 Oct).
-const jobWord = (j: HubJob) =>
-  j.state === "unknown" ? plainStateWord(j.rawState ?? "") : j.state === "lead_gave_up" && !gaveUpAsNeedsYou() ? "Stuck" : JOB_WORD[j.state];
+const JOB_WORD: Partial<Record<HubJob["state"], string>> = { working: "Working", checking: "Checking", waiting: "Waiting" };
+// A stuck job reads as Being built reads it, with the same chip (statusChip.ts): Retrying, With <Lead>, or Needs you.
+const jobWord = (j: HubJob, lead: string): string | Chip =>
+  j.state === "unknown" ? plainStateWord(j.rawState ?? "")
+  : j.state === "stuck" || j.state === "sent_to_lead" || j.state === "lead_gave_up" ? stuckChip(j.state, lead)
+  : JOB_WORD[j.state] ?? "";
 
 /** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
 function BeingBuiltToday({ title }: { title: string }) {
@@ -287,12 +289,13 @@ function BeingBuiltToday({ title }: { title: string }) {
   const { stuck: stuckNow, now } = useStuckWorkers();
   const delegations = useDelegationRows();
   useMonoFailuresVersion();
-  const word = (j: HubJob) => {
+  const word = (j: HubJob, lead: string): string | Chip => {
     // Its Lead's last turn failed: the job can't move until that is dealt with.
-    if (j.lead && monoFailure(j.lead) && j.state !== "lead_gave_up") return "Can't answer";
+    if (j.lead && monoFailure(j.lead) && j.state !== "lead_gave_up") return CANT_ANSWER;
     const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
-    if (!stuck || j.state === "lead_gave_up") return jobWord(j);
-    return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : "Stuck";
+    if (!stuck || j.state === "lead_gave_up") return jobWord(j, lead);
+    // One of this app's workers stalled or failed under it: its Lead's to handle (Being built says the same).
+    return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : withLead(lead);
   };
   const rows = data.listProjects().flatMap((p) =>
     (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
@@ -306,7 +309,14 @@ function BeingBuiltToday({ title }: { title: string }) {
           <button key={j.id} type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
             className="flex items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-content/5" data-hub-today-job={j.id}>
             <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
-            <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {word(j)}</span>
+            {(() => {
+              const w = word(j, lead);
+              return typeof w === "string" ? (
+                <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {w}</span>
+              ) : (
+                <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">{p.name} · {lead} · <ChipMark chip={w} /></span>
+              );
+            })()}
           </button>
         ))}
         {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}
@@ -479,7 +489,7 @@ function StuckRow({ item }: { item: WaitingItem }) {
         {item.detail ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-stuck-reason>{item.detail}</div> : null}
         {item.note ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-sent>{item.note}</div> : null}
       </div>
-      {item.state ? <StatusMark state={item.state} /> : null}
+      {item.state ? <StatusMark state={item.state} lead={item.lead} /> : null}
       {item.signIn === "waiting" ? (
         <span className="shrink-0 text-xs text-content/60" data-hub-signin-state="waiting" role="status">Waiting for your Mac…</span>
       ) : item.signIn === "on-this-mac" ? (

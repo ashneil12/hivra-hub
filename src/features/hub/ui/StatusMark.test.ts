@@ -16,9 +16,10 @@ describe("a given-up job's mark", () => {
     expect(needMark({ jobId: "j1", circle: "red", word: "Needs you" })).toEqual({ circle: "red", word: "Stuck" });
   });
 
-  it("draws every Stuck row in the same red, leaves other rows as Ash OS marks them, and unmarked rows unmarked", () => {
-    expect(needMark({ circle: "amber", word: "Stuck" })).toEqual({ circle: "red", word: "Stuck" });
-    expect(needMark({ circle: "amber", word: "Sent to lead" })).toEqual({ circle: "amber", word: "Sent to lead" });
+  it("keeps red for Needs you only: a Stuck row is a grey Retrying, a Sent to lead row a grey With its lead, unmarked rows unmarked", () => {
+    expect(needMark({ circle: "amber", word: "Stuck" })).toEqual({ circle: "grey", word: "Retrying" });
+    expect(needMark({ circle: "amber", word: "Sent to lead" })).toEqual({ circle: "grey", word: "With its lead" });
+    expect(needMark({ circle: "red", word: "Needs you" })).toEqual({ circle: "red", word: "Needs you" });
     expect(needMark({})).toBeNull();
   });
 });

@@ -68,8 +68,9 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
       break;
     case "stuck":
     case "sent_to_lead":
-      // Amber, "Stuck", the reason on the second line, then when it was sent and the Lead's "Got it".
-      w.stuck = "stuck";
+      // Its own state (r27: "stuck" reads a grey Retrying, "sent_to_lead" a grey With <Lead>), the reason on the second
+      // line, then when it was sent and the Lead's "Got it".
+      w.stuck = job.state;
       w.stuckReason = job.reason;
       if (job.sentText) w.sentNote = job.gotIt ? `${job.sentText} · ${job.gotIt.text}` : job.sentText;
       break;
@@ -118,6 +119,6 @@ export function withFailedLeads(
   return rows.map((w) => {
     if (w.finishedAt || w.stuck || w.state === "parked" || !w.lead) return w;
     const failed = failureOf(w.lead);
-    return failed ? { ...w, stuck: "stuck", stuckReason: `${failed.name} can't answer: ${failed.reason}` } : w;
+    return failed ? { ...w, stuck: "stuck", leadCantAnswer: true, stuckReason: `${failed.name} can't answer: ${failed.reason}` } : w;
   });
 }
