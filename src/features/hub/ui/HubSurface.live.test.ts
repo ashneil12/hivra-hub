@@ -140,8 +140,11 @@ describe("Today, live", () => {
     await until(() => rows().length >= 8, "needs");
     stub.addNeed({ id: "q20", projectId: "vg-game", title: "Example: late arrival", rank: 0 });
     await until(() => rows().includes("q20"), "new row");
-    const r = rows();
-    expect(r.indexOf("q20")).toBe(r.indexOf("q2") + 1);
+    // Last of its project's rows of its own kind (Today groups a project's Needs: to decide, to check, to look at).
+    const row = container.querySelector('[data-hub-need="q20"]')!;
+    const group = row.closest("[data-hub-need-group]") ?? row.closest("section")!;
+    const mine = [...group.querySelectorAll("[data-hub-need]")].map((r) => r.getAttribute("data-hub-need"));
+    expect(mine[mine.length - 1]).toBe("q20");
   });
 
   it("with Ash OS down it shows one calm sentence and one button, never example data", async () => {

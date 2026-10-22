@@ -97,6 +97,18 @@ export function mapProject(raw: unknown): HubProject | undefined {
   return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null, ...(r.status === "parked" ? { parked: true } : {}) };
 }
 
+/**
+ * Ash OS's words with its internal tags taken out (Board 22 Oct: "Autofix: health: ..." on Today). A job about a job
+ * keeps the inner job's tags mid-sentence ("Fixing a studio health problem: running 10h: Autofix: health: light
+ * surface…"); the tags go, the words stay. A tag at the very start is Ash OS's to turn into words, so it stays.
+ */
+export function plainWorkText(text: string): string {
+  return text
+    .replace(/([:;])\s*(?:autofix|harness)\s*:\s*(?:health\s*:\s*)?/gi, "$1 ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function mapNeed(raw: unknown, later = false): Need | undefined {
   const r = obj(raw);
   const id = str(r.id);
@@ -105,8 +117,8 @@ export function mapNeed(raw: unknown, later = false): Need | undefined {
   const need: Need = {
     id,
     projectId: str(r.projectId),
-    title: str(r.title),
-    why: str(r.why),
+    title: plainWorkText(str(r.title)),
+    why: plainWorkText(str(r.why)),
     actionType,
     actionLabel: str(r.actionLabel, "Open"),
     state: r.state === "done" ? "done" : "open",
@@ -117,7 +129,7 @@ export function mapNeed(raw: unknown, later = false): Need | undefined {
   const since = optStr(r.since);
   if (since) need.since = since;
   const detail = optStr(r.detail);
-  if (detail) need.detail = detail;
+  if (detail) need.detail = plainWorkText(detail);
   if (r.circle === "amber" || r.circle === "red") need.circle = r.circle;
   const word = optStr(r.word);
   if (word) need.word = word;
@@ -155,11 +167,11 @@ export function mapJob(raw: unknown): HubJob | undefined {
   const job: HubJob = {
     id,
     projectId: str(r.projectId),
-    title: str(r.title),
+    title: plainWorkText(str(r.title)),
     lead: optStr(r.lead) ?? null,
     leadName: optStr(r.leadName) ?? null,
     state,
-    reason: str(r.reason),
+    reason: plainWorkText(str(r.reason)),
     startedAt: str(r.startedAt),
     lastActiveAt: str(r.lastActiveAt, str(r.startedAt)),
     finishedAt: optStr(r.finishedAt) ?? null,

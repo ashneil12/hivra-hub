@@ -211,9 +211,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
               {pStuck.map((st) => (
                 <StuckRow key={st.id} item={st} />
               ))}
-              {pNeeds.map((n) => (
-                <NeedRow key={n.id} need={n} onSheet={setSheet} />
-              ))}
+              <NeedGroups needs={pNeeds} onSheet={setSheet} />
               {pOther.map((w) => (
                 <StuckRow key={w.id} item={w} />
               ))}
@@ -366,6 +364,37 @@ function LaterList({ projectId, onSheet }: { projectId: string; onSheet: (sheet:
       </div>
       {toggle("Hide Later")}
     </div>
+  );
+}
+
+/** What a Need asks of Ash, for grouping a long list (Board 22 Oct: "102 things waiting" read as one unsorted list). */
+export type NeedKind = "decide" | "check" | "read";
+const NEED_KIND_LABEL: Record<NeedKind, string> = { decide: "To decide", check: "To check", read: "To look at" };
+export function needKind(need: Need): NeedKind {
+  if (need.jobId || need.actionTarget?.startsWith("question:")) return "decide";
+  if (need.actionType === "accept" || need.canMarkSeen) return "check";
+  return "read";
+}
+
+/** A project's shown Needs, like with like: what to decide, what to check, what to look at; a heading only when mixed. */
+function NeedGroups({ needs, onSheet }: { needs: readonly Need[]; onSheet: (sheet: SheetFor) => void }) {
+  const groups = (["decide", "check", "read"] as const)
+    .map((kind) => ({ kind, rows: needs.filter((n) => needKind(n) === kind) }))
+    .filter((g) => g.rows.length);
+  if (groups.length < 2) return <>{needs.map((n) => <NeedRow key={n.id} need={n} onSheet={onSheet} />)}</>;
+  return (
+    <>
+      {groups.map((g) => (
+        <div key={g.kind} className="flex flex-col" data-hub-need-group={g.kind}>
+          <h3 className="mt-2 px-2 pb-0.5 text-[11px] font-normal text-content/50">
+            {NEED_KIND_LABEL[g.kind]} · {g.rows.length}
+          </h3>
+          {g.rows.map((n) => (
+            <NeedRow key={n.id} need={n} onSheet={onSheet} />
+          ))}
+        </div>
+      ))}
+    </>
   );
 }
 
