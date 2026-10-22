@@ -11,15 +11,6 @@ import {
   openChatPreview,
   useChatPagePreview,
 } from "../model/pagesChat";
-import {
-  dismissDraft,
-  draftCard,
-  toAsh,
-  useWaitingDrafts,
-  type MonoDraft,
-} from "../model/monoMake";
-import { monoAvatar } from "../../monos/model/mono";
-import { MonoRailMascot } from "../../monos/ui/MonoRailMascot";
 
 /**
  * What a Mono made for Ash and is waiting on him, at the bottom of the window (ash-day steps 14 and 15): a change
@@ -44,21 +35,10 @@ export function ChangeBar() {
   useEffect(() => {
     void resumeLivePreview();
   }, []);
-  const drafts = useWaitingDrafts();
-  if (!offers.length && !page && !drafts.length) return null;
+  if (!offers.length && !page) return null;
   return (
     <>
-      {drafts.length ? (
-        // Up top, so the composer stays free for Ash's yes.
-        <div
-          className="pointer-events-none fixed inset-x-0 top-12 z-50 flex flex-col items-center gap-2 px-4"
-          data-mono-drafts
-        >
-          {drafts.map((d) => (
-            <DraftCard key={d.id} draft={d} />
-          ))}
-        </div>
-      ) : null}
+      {/* A Mono's draft of a new Mono is not here: it sits in the chat it was drafted in, as a message (MonoDraftCard). */}
       <div
         className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4"
         data-change-bar
@@ -171,73 +151,5 @@ export function ChangeBar() {
         ))}
       </div>
     </>
-  );
-}
-
-/** A Mono's draft of a new Mono, before Ash's yes (step 13): its creature as the sidebar will draw it, and its soul. */
-function DraftCard({ draft }: { draft: MonoDraft }) {
-  const { who, watchFor, skills } = draftCard(draft);
-  const look = draft.look ?? { mascot: "robot", color: "hsl(210 8% 58%)" };
-  return (
-    <div
-      className={`${card} w-full max-w-xl px-4 py-3`}
-      data-mono-draft={draft.id}
-    >
-      <div className="flex items-center gap-3">
-        <MonoRailMascot
-          name={monoAvatar({ mascot: look.mascot, name: draft.name })}
-          color={look.color}
-          // A draft isn't running yet: no status dot.
-          dot={false}
-          className="size-9 shrink-0"
-        />
-        <div className="min-w-0 flex-1">
-          <div
-            className="truncate text-[14px] font-medium text-content"
-            data-mono-draft-name
-          >
-            {draft.name}
-          </div>
-          {draft.role ? (
-            <div
-              className="truncate text-[12px] text-content/70"
-              data-mono-draft-role
-            >
-              {toAsh(draft.role)}
-            </div>
-          ) : null}
-        </div>
-        <span className="shrink-0 text-[12px] text-content/60">
-          from {draft.by.name}
-        </span>
-      </div>
-      {who ? (
-        <p className="mt-2 text-[13px] leading-5 text-content/85">{who}</p>
-      ) : null}
-      {watchFor ? (
-        <p className="mt-1 text-[13px] leading-5 text-content/85">
-          <span className="text-content/60">Watches for: </span>
-          {watchFor}
-        </p>
-      ) : null}
-      {skills.length ? (
-        <p className="mt-1 text-[12px] leading-5 text-content/70">
-          Skills: {skills.join(", ")}
-        </p>
-      ) : null}
-      <div className="mt-2 flex items-center gap-2">
-        <span className="flex-1 text-[12px] text-content/60">
-          Nothing is made yet. Say yes in the chat to make it.
-        </span>
-        <button
-          type="button"
-          className={quietBtn}
-          data-mono-draft-dismiss
-          onClick={() => dismissDraft(draft.id)}
-        >
-          Not this one
-        </button>
-      </div>
-    </div>
   );
 }

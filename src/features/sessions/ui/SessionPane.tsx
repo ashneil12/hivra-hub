@@ -1,4 +1,5 @@
 import { GripVertical, X } from "../../../shared/ui/icons";
+import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
 import {
   memo,
@@ -1125,7 +1126,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         : undefined
                     }
                     latestTurnAccessory={
-                      reviewHidden || agent ? undefined : (
+                      // A Mono's chat: a new Mono it drafted sits after its reply, in the messages (r29).
+                      agent ? <MonoDraftsInChat session={session.id} /> : reviewHidden ? undefined : (
                         <SessionReview
                           sessionId={session.id}
                           editedPaths={editedPaths}
