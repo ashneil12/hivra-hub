@@ -127,4 +127,30 @@ describe("Settings → Teams", () => {
     await act(async () => type(container.querySelector("[data-hub-mono-name]") as HTMLInputElement, "Maya"));
     expect(button("Make Maya")).toBeTruthy();
   });
+
+  it("shows a team a Mono drafted in chat as waiting for Ash's okay; Not this one waves it off and makes nothing", async () => {
+    await setup();
+    const teams = await import("../model/hubTeams");
+    const mono = await import("../../monos/model/mono");
+    const make = await import("../../selfBuild/model/teamMake");
+    const { TeamsPage } = await import("./TeamsPage");
+    const postie = mono.createMono([HIVRA]);
+    mono.saveMonoName(postie.id, "Postie");
+    make.draftTeam(
+      { name: "Marketing", brief: "Grow Hivra", projects: ["hivra"], members: ["Postie"] },
+      { monoId: "chief-of-staff", name: "Chief of Staff" },
+      Date.now(),
+    );
+    await act(async () => root.render(createElement(TeamsPage)));
+    const card = container.querySelector("[data-hub-team-draft]")!;
+    expect(card.textContent).toContain("Marketing");
+    expect(card.textContent).toContain("Grow Hivra");
+    expect(card.textContent).toContain("Hivra");
+    expect(card.textContent).toContain("Postie");
+    expect(card.textContent).toContain("Nothing is made yet");
+    expect(teams.listTeams()).toEqual([]);
+    await act(async () => (container.querySelector("[data-hub-team-draft-dismiss]") as HTMLButtonElement).click());
+    expect(container.querySelector("[data-hub-team-draft]")).toBeNull();
+    expect(teams.listTeams()).toEqual([]);
+  });
 });

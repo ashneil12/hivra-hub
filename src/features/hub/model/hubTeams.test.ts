@@ -67,6 +67,33 @@ describe("teams", () => {
     expect(() => teams.createTeam({ name: "", brief: "", projects: ["hivra"] })).toThrow(/name/);
   });
 
+  it("a team made from a draft takes its Monos in at once, and Undo/Redo take and bring back its room (A6)", async () => {
+    await withHubProjects();
+    const teams = await import("./hubTeams");
+    const mono = await import("../../monos/model/mono");
+    const chats = await import("./hubChats");
+    const postie = mono.createMono([HIVRA]);
+    mono.saveMonoName(postie.id, "Postie");
+    // Only Monos that exist belong, once each.
+    const team = teams.createTeam({ name: "Marketing", brief: "Owns the launch", projects: ["hivra"], memberIds: [postie.id, postie.id, "ghost"] });
+    expect(team.memberIds).toEqual([postie.id]);
+    expect(chats.getChat(team.roomChatId!)!.memberIds).toEqual([postie.id]);
+    // Undo: the team and its room go; its Monos stay (they are Ash's, in the sidebar).
+    const gone = teams.retireTeam(team.id)!;
+    expect(gone.id).toBe(team.id);
+    expect(teams.getTeam(team.id)).toBeUndefined();
+    expect(chats.getChat(team.roomChatId!)).toBeUndefined();
+    expect(mono.findMono(postie.id)?.name).toBe("Postie");
+    expect(teams.retireTeam(team.id)).toBeUndefined();
+    // Redo: the same team comes back with a fresh room and its Monos in it; a second Redo changes nothing.
+    const back = teams.restoreTeam(gone);
+    expect(back.id).toBe(team.id);
+    expect(back.roomChatId).not.toBe(team.roomChatId);
+    expect(chats.getChat(back.roomChatId!)!.memberIds).toEqual([postie.id]);
+    expect(teams.restoreTeam(gone)).toBe(back);
+    expect(teams.listTeams()).toHaveLength(1);
+  });
+
   it("making a named Mono gives it its name, a SOUL from its brief, its engine, projects and only its connectors", async () => {
     await withHubProjects();
     const teams = await import("./hubTeams");

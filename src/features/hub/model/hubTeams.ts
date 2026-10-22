@@ -2,14 +2,14 @@
 // I can work with for marketing"). A team is a name, a short brief, its projects, its Monos and a team room. Workers
 // stay subagents inside a Mono's session; only these named Monos are listed.
 //
-// Ash makes a team and its Monos himself on Settings > Teams (making it there is his okay). An agent can only propose
-// a new named Mono (`app monos.propose`): it waits as a proposal until Ash approves it, and nothing is made before
-// (the locked rule "a new named Mono needs Ash's okay").
+// Ash makes a team and its Monos himself on Settings > Teams (making it there is his okay). An agent proposes one in
+// chat instead (mono_create / team_create, draft first) and nothing is made until Ash answers: the locked rule "a new
+// named Mono or team needs Ash's okay". Undo in Bot changes takes a made team and its room away again (its Monos stay).
 //
 // The team room is a normal hub group chat (hubChats.createChat) in the team's first project, so it reuses the
 // group-room code: members, conversations, the picked answerer and its replies.
 import { useSyncExternalStore } from "react";
-import { addMember, createChat } from "./hubChats";
+import { addMember, createChat, deleteChat } from "./hubChats";
 import { catalogEntry, setMonoConnectors } from "./hubConnectors";
 import { createMono, discardNewMono, findMono, listMonos, monoLook, saveMonoName, updateMono, type Mono } from "../../monos/model/mono";
 import { loadMonoFiles, saveMonoFile } from "../../monos/model/monoFiles";
@@ -136,26 +136,54 @@ function cleanName(name: unknown, what: string, max = 40): string {
   return trimmed;
 }
 
-/** Make a team. Ash does this himself; its room is a group chat in its first project. */
-export function createTeam(input: { name: string; brief: string; projects: string[] }): Team {
+/**
+ * Make a team. Ash does this himself, or it is a draft he said yes to (teamMake.ts); its room is a group chat in its
+ * first project. `memberIds` are the named Monos that belong from the start, and sit in the room too.
+ */
+export function createTeam(input: { name: string; brief: string; projects: string[]; memberIds?: string[] }): Team {
   const name = cleanName(input.name, "A team");
   if (state.teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) throw new Error(`There is already a ${name} team.`);
   if (!input.projects.length) throw new Error("Pick at least one project for the team.");
+  const memberIds = [...new Set(input.memberIds ?? [])].filter((id) => listMonos().some((m) => m.id === id));
   const id = `team-${slug(name)}-${crypto.randomUUID().slice(0, 6)}`;
   const roomProjectId = input.projects[0];
-  const room = createChat(roomProjectId, `${name} team`, []);
+  const room = createChat(roomProjectId, `${name} team`, memberIds);
   const team: Team = {
     id,
     name,
     brief: input.brief.trim().slice(0, 2000),
     projects: [...new Set(input.projects)],
-    memberIds: [],
+    memberIds,
     roomChatId: room.id,
     roomProjectId,
     createdAt: new Date().toISOString(),
   };
   save({ ...state, teams: [...state.teams, team] });
   return team;
+}
+
+/**
+ * Undo a made team: the record goes and its room with it. Its Monos stay (they are Ash's, in the sidebar), so undo
+ * never un-makes staff. Returns the team as it was, for Redo.
+ */
+export function retireTeam(teamId: string): Team | undefined {
+  const team = getTeam(teamId);
+  if (!team) return undefined;
+  if (team.roomChatId) deleteChat(team.roomChatId);
+  save({ ...state, teams: state.teams.filter((t) => t.id !== teamId) });
+  return team;
+}
+
+/** Redo a team Undo took away: the same team comes back with a fresh room, and its Monos back in it. */
+export function restoreTeam(team: Team): Team {
+  const have = getTeam(team.id);
+  if (have) return have;
+  const roomProjectId = team.roomProjectId ?? team.projects[0];
+  if (!roomProjectId) throw new Error("That team has no project to put its room in.");
+  const room = createChat(roomProjectId, `${team.name} team`, team.memberIds);
+  const back: Team = { ...team, roomChatId: room.id, roomProjectId };
+  save({ ...state, teams: [...state.teams, back] });
+  return back;
 }
 
 /** A Mono's SOUL.md from its brief: who it is, its lane, and the house rules every named Mono keeps. */
