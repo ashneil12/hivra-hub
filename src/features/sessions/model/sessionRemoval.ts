@@ -61,6 +61,8 @@ type SessionRemovalOptions = {
   /** Keep file and terminal panes open when removing a session through the CLI. */
   preserveOpenFiles?: boolean;
   scope?: WorkspaceTabCloseScope;
+  /** False for a team's sub-chat (r30d): its tab closes, never left as an empty "New session". */
+  replaceEmptyTab?: boolean;
   replacement: ReplacementSeed;
   workspace: {
     snapshot(): Workspace;
@@ -111,6 +113,7 @@ async function removeSession(
     sessionId,
     scope,
     createReplacement,
+    replaceEmptyTab: options.replaceEmptyTab ?? true,
     canCloseTab,
   });
   if (!(await options.confirm(plan.closedTabs, options.mode))) return false;
@@ -181,6 +184,7 @@ async function removeSession(
     sessionId,
     scope,
     createReplacement,
+    replaceEmptyTab: options.replaceEmptyTab ?? true,
     canCloseTab: (tab) => {
       if (!canCloseTab(tab)) return false;
       const before = confirmed.get(tab.id);

@@ -20,6 +20,7 @@ import { subChatAttention, useSubChatFolds } from "../../features/monos/model/su
 import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
+import { confirmDelete } from "../../shared/ui/ConfirmDelete";
 import { subChatsByParent } from "../../features/hub/model/codingTeamList";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -593,12 +594,7 @@ function SidebarComponent({
       window.alert("Connect this project's machine to delete its sessions.");
       return;
     }
-    if (
-      !window.confirm(
-        `Delete ${sessionIds.length === 1 ? "this conversation" : `${sessionIds.length} conversations`}? This can’t be undone.`,
-      )
-    )
-      return;
+    if (!(await confirmDelete(sessionIds.length === 1 ? "this session" : `${sessionIds.length} sessions`))) return;
     try {
       for (const sessionId of sessionIds) {
         await remoteRequest(remote.machine.id, "sessions.delete", {
@@ -1976,6 +1972,7 @@ function SidebarComponent({
           parent={session.id}
           subChats={subChats}
           onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
+          {...(onDeleteSession ? { onDelete: (chat: ChildChat) => cardActions.delete(chat.sessionId) } : {})}
         />
       </>
     );
@@ -2008,6 +2005,7 @@ function SidebarComponent({
             parent={lead.session.id}
             subChats={subChats}
             onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
+            {...(onDeleteSession ? { onDelete: (chat: ChildChat) => cardActions.delete(chat.sessionId) } : {})}
           />
         ) : null}
       </>
@@ -4482,10 +4480,13 @@ function TeamSubChats({
   parent,
   subChats,
   onOpen,
+  onDelete,
 }: {
   parent: string;
   subChats: readonly ChildChat[];
   onOpen: (chat: ChildChat) => void;
+  /** r30d: a sub-chat's delete, through the app's session delete (which asks first). */
+  onDelete?: (chat: ChildChat) => void;
 }) {
   const now = useClock();
   useStuckDismissalsVersion();
@@ -4502,6 +4503,7 @@ function TeamSubChats({
       leadName={teamLeadName(parent)}
       now={now}
       onOpen={onOpen}
+      {...(onDelete ? { onDelete } : {})}
     />
   );
 }

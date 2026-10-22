@@ -101,3 +101,24 @@ it("hub, clean first launch: the default team in normal rows, no intro card, no 
   render({ rank: hubMonoRank });
   expect(container.querySelectorAll("[data-mono-status]")).toHaveLength(0);
 });
+
+it("r30d: a Mono's menu deletes its chat only (the Mono stays), and only once it has one", async () => {
+  const { updateMono, findMono } = await import("../../features/monos/model/mono");
+  const mono = createMono();
+  const onDelete = vi.fn();
+  const onDeleteChat = vi.fn();
+  render({ onDelete, onDeleteChat });
+  const openMenu = () => act(() => document.body.querySelector<HTMLButtonElement>('button[title="Mono options"]')!.click());
+  const deleteChat = () => document.body.querySelector<HTMLButtonElement>("[data-mono-menu-delete-chat]");
+  openMenu();
+  expect(deleteChat()).toBeNull(); // no chat yet: nothing to delete
+  act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+  act(() => void updateMono(mono.id, (m) => ({ ...m, sessionId: "ex-mono-chat" })));
+  render({ onDelete, onDeleteChat });
+  if (!deleteChat()) openMenu();
+  expect(deleteChat()?.textContent).toBe("Delete chat…");
+  act(() => deleteChat()!.click());
+  expect(onDeleteChat).toHaveBeenCalledWith(mono.id);
+  expect(onDelete).not.toHaveBeenCalled();
+  expect(findMono(mono.id)).toBeDefined();
+});

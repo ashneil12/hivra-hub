@@ -1,30 +1,30 @@
 import { useState } from "react";
 import { prettyCwd } from "../../../shared/lib/paths";
-import { Modal } from "../../../shared/ui/Modal";
+import { ConfirmDelete } from "../../../shared/ui/ConfirmDelete";
 
 export type SessionDeleteChoice = {
   confirmed: boolean;
   deleteWorktree: boolean;
 };
 
+/** The shared delete confirm (r30d), with the unused worktree offered too when the session had one of its own. */
 export function DeleteSessionDialog({
   title,
   unusedWorktree,
   onClose,
 }: {
   title: string;
-  unusedWorktree: string;
+  unusedWorktree?: string;
   onClose: (choice: SessionDeleteChoice) => void;
 }) {
   const [deleteWorktree, setDeleteWorktree] = useState(false);
   return (
-    <Modal
-      title="Delete session?"
-      size="sm"
-      onClose={() => onClose({ confirmed: false, deleteWorktree: false })}
+    <ConfirmDelete
+      name={title}
+      onCancel={() => onClose({ confirmed: false, deleteWorktree: false })}
+      onDelete={() => onClose({ confirmed: true, deleteWorktree: !!unusedWorktree && deleteWorktree })}
     >
-      <div className="flex flex-col gap-4 p-4 text-[12px]">
-        <p>“{title}” will be permanently deleted.</p>
+      {unusedWorktree ? (
         <label className="flex items-start gap-2">
           <input
             type="checkbox"
@@ -43,23 +43,7 @@ export function DeleteSessionDialog({
             </span>
           </span>
         </label>
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => onClose({ confirmed: false, deleteWorktree: false })}
-            className="rounded-md px-3 py-1.5 hover:bg-content/8 active:scale-[0.97]"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => onClose({ confirmed: true, deleteWorktree })}
-            className="rounded-md bg-red-500/20 px-3 py-1.5 font-medium text-red-400 hover:bg-red-500/30 active:scale-[0.97]"
-          >
-            Delete session
-          </button>
-        </div>
-      </div>
-    </Modal>
+      ) : null}
+    </ConfirmDelete>
   );
 }

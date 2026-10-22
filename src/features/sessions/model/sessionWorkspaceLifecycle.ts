@@ -28,6 +28,7 @@ export function removeSessionFromWorkspace({
   scope,
   createReplacement,
   canCloseTab = () => true,
+  replaceEmptyTab = true,
 }: {
   tabs: WorkspaceTab[];
   sessions: Session[];
@@ -37,6 +38,11 @@ export function removeSessionFromWorkspace({
   createReplacement: (seed: Session | undefined) => Session;
   /** Preserve file panes changed while an asynchronous close was pending. */
   canCloseTab?: (tab: WorkspaceTab) => boolean;
+  /**
+   * False for a team's sub-chat (r30d): its tab closes rather than turning into an empty "New session", whenever any
+   * other tab is left to show. The very last tab of the window still gets a fresh session (a window always has one).
+   */
+  replaceEmptyTab?: boolean;
 }): SessionWorkspaceRemoval {
   const seed = sessions.find((session) => session.id === sessionId);
   let nextTabs = [...tabs];
@@ -80,6 +86,12 @@ export function removeSessionFromWorkspace({
       if (tab.id === nextActiveTabId && closePlan.nextActiveTabId) {
         nextActiveTabId = closePlan.nextActiveTabId;
       }
+      continue;
+    }
+    if (!replaceEmptyTab && nextTabs.length > 1) {
+      const at = nextTabs.findIndex((entry) => entry.id === tab.id);
+      nextTabs = nextTabs.filter((entry) => entry.id !== tab.id);
+      if (tab.id === nextActiveTabId) nextActiveTabId = nextTabs[Math.max(0, at - 1)]!.id;
       continue;
     }
 

@@ -846,6 +846,36 @@ pub fn origin_done(conn: &Connection, child_session: &str, now: i64) -> Result<b
         > 0)
 }
 
+/// Deletes one room Ash made (r30d): its row, seats, threads, messages and origins, in one transaction. A project's
+/// default room (its Leadership team) is never deleted. Nothing outside these room tables is touched.
+pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let is_default: Option<bool> = tx
+        .query_row("SELECT is_default FROM rooms WHERE id = ?1", params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match is_default {
+        None => return Ok(false),
+        Some(true) => return Err("a project's Leadership team can't be deleted".into()),
+        Some(false) => {}
+    }
+    for table in ["room_messages", "room_conversations", "room_members", "room_origins"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE room_id = ?1"), params![id])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.execute("DELETE FROM rooms WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn rooms_delete(store: State<'_, SessionStore>, id: String) -> Result<(), String> {
+    delete_room(&mut *store.lock_conn()?, &id).map(|_| ())
+}
+
 #[tauri::command(async)]
 pub fn rooms_load(store: State<'_, SessionStore>) -> Result<Snapshot, String> {
     load(&*store.lock_conn()?, LOAD_PER_CONVERSATION)
@@ -964,6 +994,29 @@ mod tests {
             text: text.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn deleting_a_room_takes_only_its_own_rows_and_never_the_leadership_team() {
+        let mut c = conn();
+        upsert_room(&mut c, &room("hub:leadership", &["frank"]), 10).unwrap();
+        let mut made = room("hub:chat-x", &["frank", "alfred"]);
+        made.is_default = false;
+        made.name = "Example: launch room".into();
+        upsert_room(&mut c, &made, 10).unwrap();
+        for r in ["hub:leadership", "hub:chat-x"] {
+            upsert_conversation(&c, &thread(r, "c1", 100), 100).unwrap();
+            add_message(&c, &say(r, "c1", "m1", "ash", "Example: hi"), 200).unwrap();
+        }
+        assert!(delete_room(&mut c, "hub:chat-x").unwrap());
+        let count = |sql: &str| -> i64 { c.query_row(sql, [], |row| row.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM rooms WHERE id = 'hub:chat-x'"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:chat-x'"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:chat-x'"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:leadership'"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:leadership'"), 1);
+        assert!(delete_room(&mut c, "hub:leadership").is_err());
+        assert!(!delete_room(&mut c, "hub:gone").unwrap());
     }
 
     #[test]

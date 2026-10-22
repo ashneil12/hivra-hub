@@ -4,7 +4,7 @@
 // project's coding team or a Mono's own team: hub/model/codingTeamList.ts, monoTeams.ts), never in the Monos rail,
 // which shows people, not work (Ash, 20 Oct).
 import { useState } from "react";
-import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader } from "../../../shared/ui/icons";
+import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader, Trash2 } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
 import { shownSubChats, subChatsOpen, toggleSubChats, type subChatAttention } from "../model/subChats";
 import { delegationLine, runningFor, stuckOwner, type StuckWorker } from "../model/workerStuck";
@@ -67,6 +67,7 @@ export function SubChatList({
   leadName = "its Lead",
   now,
   onOpen,
+  onDelete,
 }: {
   /** Whose fold this is (subChats.ts): `chat:<id>`. */
   foldKey: string;
@@ -80,6 +81,8 @@ export function SubChatList({
   leadName?: string;
   now: number;
   onOpen: (chat: ChildChat) => void;
+  /** Delete a sub-chat (r30d): the caller asks first, in the shared confirm. Absent: no delete offered. */
+  onDelete?: (chat: ChildChat) => void;
 }) {
   const [all, setAll] = useState(false);
   const open = subChatsOpen(foldKey, attention.key);
@@ -127,7 +130,7 @@ export function SubChatList({
             const line = childLine(chat, now);
             // How long it has run: muted, after its title, never a second status.
             const ran = chat.row ? runningFor(chat.row, now) : undefined;
-            return (
+            const open = (
               <button
                 key={chat.sessionId}
                 type="button"
@@ -146,6 +149,22 @@ export function SubChatList({
                   </span>
                 ) : null}
               </button>
+            );
+            if (!onDelete) return open;
+            return (
+              <div key={chat.sessionId} className="group/sub flex min-w-0 items-center" data-sub-chat-row={chat.sessionId}>
+                <div className="min-w-0 flex-1 [&>button]:w-full">{open}</div>
+                <button
+                  type="button"
+                  data-sub-chat-delete={chat.sessionId}
+                  title={`Delete ${chat.title}`}
+                  aria-label={`Delete ${chat.title}`}
+                  onClick={() => onDelete(chat)}
+                  className="grid size-5 shrink-0 place-items-center rounded-md text-content/45 opacity-0 hover:bg-content/8 hover:text-red-400 focus-visible:opacity-100 group-hover/sub:opacity-100"
+                >
+                  <Trash2 className="size-3" strokeWidth={1.75} />
+                </button>
+              </div>
             );
           })}
           {more ? (

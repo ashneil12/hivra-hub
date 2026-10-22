@@ -71,6 +71,8 @@ export type MonoRailProps = {
   /** Creates a Mono, given these projects to start with. */
   onCreate: (projects?: readonly string[]) => void;
   onDelete: (monoId: string) => void;
+  /** Deletes the Mono's 1:1 chat only (r30d): the caller asks first; the Mono, soul and memory stay. */
+  onDeleteChat?: (monoId: string) => void;
   /** Hub mode: list only the Monos that work on this project folder. */
   projectFilter?: string;
   /** Hub mode: one flat list, sorted by this rank (lower first; ties keep their order). No headers. */
@@ -125,6 +127,7 @@ export function MonoRailSection({
   onOpen,
   onCreate,
   onDelete,
+  onDeleteChat,
   projectFilter,
   rank,
   project,
@@ -573,6 +576,14 @@ export function MonoRailSection({
             setMenu(undefined);
             onDelete(menu.id);
           }}
+          {...(onDeleteChat
+            ? {
+                onDeleteChat: () => {
+                  setMenu(undefined);
+                  onDeleteChat(menu.id);
+                },
+              }
+            : {})}
           onClose={() => setMenu(undefined)}
         />
       ) : null}
@@ -821,6 +832,7 @@ function MonoMenu({
   onOpenTeam,
   onBackground,
   onDelete,
+  onDeleteChat,
   onClose,
 }: {
   monoId: string;
@@ -830,6 +842,7 @@ function MonoMenu({
   onOpenTeam: (team: TeamTarget) => void;
   onBackground: () => void;
   onDelete: () => void;
+  onDeleteChat?: () => void;
   onClose: () => void;
 }) {
   useSyncExternalStore(subscribeMonos, monosSnapshot);
@@ -922,6 +935,21 @@ function MonoMenu({
         <ImagePlus className="size-3.5 shrink-0" strokeWidth={1.75} />
         Background image
       </button>
+      {onDeleteChat && mono.sessionId ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-mono-menu-delete-chat
+          onClick={() => {
+            commitName();
+            onDeleteChat();
+          }}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-red-400 hover:bg-content/8"
+        >
+          <Trash2 className="size-3.5 shrink-0" strokeWidth={1.75} />
+          Delete chat…
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
