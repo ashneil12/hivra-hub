@@ -123,12 +123,12 @@ export function failedTimes(row: Pick<Delegation, "log">): number {
   return (row.log ?? []).filter((entry) => entry.event === "settled" && entry.state === "failed").length;
 }
 
-/** Self-repair's tries (workerProgress.ts): more failures than this means its retries gave up. */
+/** Self-repair's tries (workerProgress.ts): more failures than this means its retries ran out. */
 const REPAIR_TRIES = 3;
 
 /**
  * "Failed: usage limit reached, resets 3:10pm", "Failed: billing refused", "Failed: the build broke"; a crash that came
- * back says so: "Crashed 4 times, retries gave up: Claude exited with code 1".
+ * back says so: "Crashed 4 times, retries ran out: Claude exited with code 1".
  */
 export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "resetsAt"> & Partial<Pick<Delegation, "state" | "log">>): string {
   const times = row.log ? failedTimes({ log: row.log }) : 0;
@@ -136,7 +136,7 @@ export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "rese
     const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
     const first = (row.error ?? "").trim().split("\n")[0].replace(/[.!?\s]+$/, "");
     const words = what === "Crashed" && first ? `: ${first.length > 120 ? `${first.slice(0, 120).replace(/\s+\S*$/, "")}…` : first}` : "";
-    return `${what} ${times} times${times > REPAIR_TRIES ? ", retries gave up" : ""}${words}`;
+    return `${what} ${times} times${times > REPAIR_TRIES ? ", retries ran out" : ""}${words}`;
   }
   if (isProviderErrorClass(row.errorClass)) {
     const reset = row.errorClass === "usage_limit" && row.resetsAt ? clock(row.resetsAt) : "";

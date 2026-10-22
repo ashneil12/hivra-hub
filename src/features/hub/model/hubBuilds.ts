@@ -24,7 +24,7 @@ let builds: Build[] = examples([
   },
   {
     id: "b12b", projectId: "exo-game", version: "0.12.1", title: "Example: web demo export", status: "failed", stuck: "lead_gave_up", builtAt: "10 Oct",
-    failReason: "Example: the export tool crashes on the new textures. The lead tried twice and gave up.", notes: [],
+    failReason: "Example: the export tool crashes on the new textures. The lead tried twice. It's stuck and needs you.", notes: [],
   },
   { id: "b12", projectId: "exo-game", version: "0.12", title: "Example: Area 3 Furnace Court", status: "ready", action: "play", builtAt: "9 Oct", notes: [] },
 ]);

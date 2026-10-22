@@ -45,7 +45,7 @@ export type ClaudeFailureContext = {
 
 /** The loop ending on one of these failed the turn, whatever `is_error` says. */
 const FAILED_TERMINALS = new Map<string, string>([
-  ["api_error", "Claude gave up after repeated API errors."],
+  ["api_error", "Claude stopped after repeated API errors."],
   ["blocking_limit", "Claude stopped: the context window is full."],
   [
     "prompt_too_long",
@@ -62,7 +62,7 @@ const FAILED_TERMINALS = new Map<string, string>([
   ["model_error", "Claude stopped: the model returned an error."],
   [
     "malformed_tool_use_exhausted",
-    "Claude gave up after repeated malformed tool calls.",
+    "Claude stopped after repeated malformed tool calls.",
   ],
   ["budget_exhausted", "Claude stopped: the turn's token budget ran out."],
   [

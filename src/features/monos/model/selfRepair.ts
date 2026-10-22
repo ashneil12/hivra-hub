@@ -4,7 +4,7 @@
 // A worker that crashed (a passing provider fault or its process dying, its Lead not yet told) or hung (the stall
 // watcher marked it quiet while busy, or idle without reporting back) is retried with backoff: 1, 5, then 15 minutes
 // after it went wrong. A hung busy worker is nudged first and restarted after; the rest are continued. After three tries
-// it is left stuck ("Crashed 4 times, retries gave up") and its Lead is told to handle it. A fault only starts over once
+// it is left stuck ("Crashed 4 times, retries ran out") and its Lead is told to handle it. A fault only starts over once
 // the worker has run cleanly for half an hour, so a crash loop can't be retried for ever. A question, a usage limit, a
 // billing or sign-in refusal, and anything Ash stopped are never retried. It reads no folders and runs no model.
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
@@ -53,13 +53,13 @@ export function repairableFailure(row: Pick<Delegation, "state" | "errorClass" |
   return /\b(exited|crash(ed)?|killed|signal|broken pipe|ECONNRESET|socket hang up|terminated|timed out)\b/i.test(row.error ?? "");
 }
 
-/** What self-repair saw before it gave up, in plain words: "Crashed 4 times, retries gave up: Claude exited with code 1". */
+/** What self-repair saw before its retries ran out, in plain words: "Crashed 4 times, retries ran out: Claude exited with code 1". */
 export function gaveUpReason(row: Pick<Delegation, "state" | "stallKind" | "errorClass" | "error">, times: number): string {
   if (row.state === "running")
-    return row.stallKind === "idle" ? `Stopped without reporting back ${times} times, retries gave up` : `Went quiet ${times} times, retries gave up`;
+    return row.stallKind === "idle" ? `Stopped without reporting back ${times} times, retries ran out` : `Went quiet ${times} times, retries ran out`;
   const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
   const error = row.error?.trim().split("\n")[0];
-  return `${what} ${times} times, retries gave up${error && what === "Crashed" ? `: ${short(error, 120)}` : ""}`;
+  return `${what} ${times} times, retries ran out${error && what === "Crashed" ? `: ${short(error, 120)}` : ""}`;
 }
 
 /** The Lead's private note: a hidden app turn that shows as one quiet line ("From Self-repair"), never as Ash's words. */

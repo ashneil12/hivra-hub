@@ -24,7 +24,7 @@ export const TEMPLATES: DashboardTemplate[] = [
   {
     id: "game-studio", label: "Game studio", icon: "gamepad",
     blurb: "Builds to play, playtest notes and what the team is building.",
-    todayCards: ["Since you were last here", "Stuck and gave up", "Needs (up to 5)", "Latest build to try"],
+    todayCards: ["Since you were last here", "Stuck: needs you", "Needs (up to 5)", "Latest build to try"],
     sections: [{ id: "builds", kind: "section", title: "Builds & playtests", sectionType: "builds-playtests" }],
     leadership: ["Chief of Staff", "Projects Manager", "frank", "Alfred"],
     coding: ["Builder", "Tester"],
@@ -32,7 +32,7 @@ export const TEMPLATES: DashboardTemplate[] = [
   {
     id: "product-saas", label: "Product / SaaS", icon: "sparkles",
     blurb: "Users, sign-ups and emails next to the work on the product.",
-    todayCards: ["Since you were last here", "Stuck and gave up", "Needs (up to 5)", "Sign-ups this week"],
+    todayCards: ["Since you were last here", "Stuck: needs you", "Needs (up to 5)", "Sign-ups this week"],
     sections: [{ id: "users", kind: "section", title: "Users & emails", sectionType: "users-emails" }],
     leadership: ["Chief of Staff", "Projects Manager", "frank", "Alfred"],
     coding: ["Builder", "Tester"],
@@ -40,7 +40,7 @@ export const TEMPLATES: DashboardTemplate[] = [
   {
     id: "org-ops", label: "Org / ops", icon: "gauge",
     blurb: "Decisions, people and the running of the company.",
-    todayCards: ["Since you were last here", "Stuck and gave up", "Decisions (up to 5)"],
+    todayCards: ["Since you were last here", "Stuck: needs you", "Decisions (up to 5)"],
     sections: [],
     leadership: ["Chief of Staff", "Projects Manager", "frank", "Alfred"],
     coding: ["Builder"],

@@ -73,7 +73,7 @@ let chats: GroupChat[] = examples([
         messages: [
           m("1", "chief-of-staff", "Example: the nightly backup has failed 3 times since 2am. Nobody has picked it up yet.", "stuck", "s1"),
           m("2", "growth-lead", "Example: the waitlist headline test is a tie. That one is your taste call.", undefined, "n3"),
-          m("3", "chief-of-staff", "Example: the lead tried two fixes for the email sender and gave up. It needs a person.", "lead_gave_up", "s2"),
+          m("3", "chief-of-staff", "Example: the lead tried two fixes for the email sender. It's stuck and needs you.", "lead_gave_up", "s2"),
         ],
       },
       { id: "c2", when: "Yesterday", title: "Example: launch timing", messages: [m("1", "growth-lead", "Example: launch looks best in the second week of November.")] },
