@@ -19,7 +19,8 @@ buildPage({ projectId, monoId, prompt }): Promise<BuildPageResult>
   1. Run that Mono with the system instructions in section 5.
   2. Return a `PageSpec` (section 2) as the call's `result`.
 - **Waiting:** the app sends `wait: 30` (seconds Ash OS may wait for the build; hub.rs adds it to the call's 15 s).
-  A build not done by then answers "<Mono> is still building this page. Press Try again…" and the app shows a
+  A build not done by then answers "<Mono> is still building this page. Press Try again…"; the app then asks again by
+  itself (the same request joins the same build) for up to `BUILD_TOTAL_SECONDS` (240 s) before it shows the
   still-building card; Try again sends the same request and collects the finished page. The answer carries
   `pageId` (the record's preview); Keep sends `ash-hub-page-update {pageId, kept: true, permissions}`.
 - **Where kept pages live:** Ash OS's record (`ash-hub-pages`, `-page-update`, `-page-remove`), not localStorage.

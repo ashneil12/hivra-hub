@@ -37,6 +37,14 @@ export type BuildPageResult =
 
 /** How long Ash OS may wait for a build within one call (it allows up to 40 s; hub.rs adds this to its 15 s). */
 export const BUILD_WAIT_SECONDS = 30;
+/**
+ * How long the app keeps collecting one build before it shows "still building" (C3 live 22 Oct: a real page took
+ * longer than one 30 s call and needed Try again). While the Mono is at it the app asks again by itself, the same
+ * request joining the same build, so Ash never has to press Try again for an ordinary build.
+ */
+export const BUILD_TOTAL_SECONDS = 240;
+/** The pause between two collecting calls (each call already waits up to BUILD_WAIT_SECONDS on Ash OS). */
+export const BUILD_RECHECK_MS = 2_000;
 /** Ash OS's "<Mono> is still building this page/preview. Press Try again…": a wait, not a failure. */
 export function isStillBuilding(message: string): boolean {
   return /\bis still building\b/i.test(message);
@@ -59,7 +67,14 @@ export function devStubOn(): boolean {
   }
 }
 
-export type BuildDeps = { transport?: HubTransport; roster?: readonly { id: string }[]; stub?: boolean };
+export type BuildDeps = {
+  transport?: HubTransport;
+  roster?: readonly { id: string }[];
+  stub?: boolean;
+  /** Tests: the clock and the pause between collecting calls. */
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+};
 
 /**
  * No cap on how many pages build at once (H8, Ash 21 Oct 20:40: "if you build a page, you build a page ... Why does it
@@ -83,6 +98,18 @@ export async function rebuildPage(req: RebuildPageRequest, deps: BuildDeps = {})
 }
 
 async function build(payload: Record<string, unknown>, stub: () => unknown, deps: BuildDeps): Promise<BuildPageResult> {
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const end = now() + BUILD_TOTAL_SECONDS * 1000;
+  for (;;) {
+    const result = await buildOnce(payload, stub, deps);
+    // Still building: ask again (the same request collects the same build) until it is ready or the total wait is up.
+    if (result.status !== "building" || now() + BUILD_RECHECK_MS >= end) return result;
+    await sleep(BUILD_RECHECK_MS);
+  }
+}
+
+async function buildOnce(payload: Record<string, unknown>, stub: () => unknown, deps: BuildDeps): Promise<BuildPageResult> {
   let raw: unknown;
   if (deps.stub ?? devStubOn()) raw = stub();
   else {

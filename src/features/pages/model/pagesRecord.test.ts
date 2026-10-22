@@ -9,7 +9,7 @@ import { setGroupChatRunner } from "../../hub/model/hubChats";
 import { HubStore } from "../../hub/model/hubStore";
 import { HubCallError } from "../../hub/model/hubTransport";
 import { botChangeRows, redoBotChange, undoBotChange } from "../../hub/model/botChanges";
-import { BUILD_WAIT_SECONDS, buildPage } from "./buildPage";
+import { BUILD_TOTAL_SECONDS, BUILD_WAIT_SECONDS, buildPage } from "./buildPage";
 import { allPages, approvedPermissions, keepPage, pageFromSpec, pagesProblem, pinnedPages, setPagesBackend, setPinned } from "./pages";
 
 const roster = [{ id: "hivra-lead" }, { id: "projects-manager" }];
@@ -61,18 +61,32 @@ describe("building a page", () => {
     expect(BUILD_WAIT_SECONDS).toBe(30);
   });
 
-  it("a build slower than the wait says 'still building'; Try again collects the same page and nothing is built twice", async () => {
+  it("a build slower than one call is collected by the app itself (C3 22 Oct: no Try again), and nothing is built twice", async () => {
+    await start(400);
+    const t = transport();
+    const calls: number[] = [];
+    const slow = { call: (action: string, payload?: Record<string, unknown>) => (calls.push(1), t.call(action, { ...payload, wait: 0 })), openFeed: t.openFeed };
+    const req = { projectId: "hivra", monoId: "hivra-lead", prompt: "Waitlist" };
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 50)));
+    const first = await buildPage(req, { roster, transport: slow, stub: false, sleep });
+    expect(first.status).toBe("ready");
+    expect(calls.length).toBeGreaterThan(1); // it asked again by itself while the Mono was still at it
+    expect(stub.studio.pages).toHaveLength(1);
+    expect(first.status === "ready" && first.spec.title).toBe("Example: Waitlist");
+  });
+
+  it("past the total wait it says 'still building' plainly, and Try again collects the same page", async () => {
     await start(400);
     const t = transport();
     const slow = { call: (action: string, payload?: Record<string, unknown>) => t.call(action, { ...payload, wait: 0 }), openFeed: t.openFeed };
     const req = { projectId: "hivra", monoId: "hivra-lead", prompt: "Waitlist" };
-    const first = await buildPage(req, { roster, transport: slow, stub: false });
+    let clock = 0;
+    const first = await buildPage(req, { roster, transport: slow, stub: false, now: () => clock, sleep: async () => void (clock += BUILD_TOTAL_SECONDS * 1000) });
     expect(first).toEqual({ status: "building", reason: "Hivra lead is still building this page. Press Try again in a moment to see it." });
     await new Promise((r) => setTimeout(r, 450));
     const again = await buildPage({ ...req, prompt: "  waitlist " }, { roster, transport: slow, stub: false });
     expect(again.status).toBe("ready");
     expect(stub.studio.pages).toHaveLength(1);
-    expect(again.status === "ready" && again.spec.title).toBe("Example: Waitlist");
   });
 
   it("a Mono's turn-down, a worker and a service that isn't running each say so plainly", async () => {
