@@ -18,6 +18,7 @@ import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import type { GroupChat } from "../../hub/model/types";
 import type { AgentAppHost } from "./agentApp";
 import { forUser, userLabel } from "../../hub/model/userName";
+import { leadFor } from "../../hub/model/hubLeads";
 
 /** The FIELDS entries of the room actions (agentApp.ts). */
 export const ROOM_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
@@ -51,6 +52,46 @@ export type AgentAppRoomsHost = {
 };
 
 const sent: { from: string; to: string; at: number }[] = [];
+
+/** A project's Lead, as a Mono on the roster: one of the known Leads, else `<project id>-lead` (hubLeads.ts). */
+export function teamLeadOf(projectId: string): { id: string; name: string } | undefined {
+  const roster = listMonos();
+  const mono = roster.find((m) => leadFor(m.id)?.projectId === projectId) ?? roster.find((m) => m.id === `${projectId}-lead`);
+  return mono ? { id: mono.id, name: monoLook(mono).name } : undefined;
+}
+
+/**
+ * A coding-team chat hands an ask it can't do itself to its own Lead (Ash, 21 Oct: he never has to go find chats; run
+ * d91c AD14: a coding chat told him to go ask the Lead). Only to its own project's Lead, and only as a message the Lead
+ * takes as a turn; the Lead answers Ash in its own chat, which sits at the top of the same coding team.
+ */
+async function handToLead(
+  source: Session,
+  team: { project: string; name: string },
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppRoomsHost | undefined,
+) {
+  if (!host) throw new Error("Messages to the Lead aren't available in this build");
+  const lead = teamLeadOf(team.project);
+  if (!lead) throw new Error(`${team.name} has no Lead to take it yet. Tell Ash plainly what you can't do from here.`);
+  const want = typeof input.to === "string" ? lower(input.to) : "";
+  if (want && want !== lead.id && want !== lower(lead.name))
+    throw new Error(forUser`From a coding-team chat, mono_message goes only to its own Lead: ${lead.name} (to "${lead.id}").`);
+  const body = text(input.text, "text", MESSAGE_MAX);
+  const from = { id: `coding-team:${team.project}`, name: `a chat in ${team.name}`, session: source.id };
+  const now = host.now?.() ?? Date.now();
+  while (sent.length && now - sent[0].at > MESSAGE_WINDOW_MS) sent.shift();
+  if (sent.filter((x) => x.from === from.id && x.to === lead.id).length >= MESSAGES_PER_PAIR)
+    throw new Error(`Slow down: at most ${MESSAGES_PER_PAIR} messages to ${lead.name} in ten minutes. Wait for its answer.`);
+  const out = await host.message({ from, to: lead, text: body, requestId: `app-${source.id}-${requestId}` });
+  sent.push({ from: from.id, to: lead.id, at: now });
+  return {
+    to: lead.name,
+    delivery: out.delivery,
+    note: forUser`${lead.name} has it and answers Ash in its own chat, at the top of ${team.name}. Tell Ash in one line that ${lead.name} has it, and end your turn.`,
+  };
+}
 
 /** Only a Mono's own chat uses the room tools. */
 function caller(source: Session, host: AgentAppHost): { id: string; name: string } {
@@ -257,6 +298,9 @@ export async function handleRooms(
   input: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
+  // A coding-team chat isn't a Mono, but it hands what it can't do to its own Lead (handToLead).
+  const team = action === "monos.message" && !host.isMono(source.id) ? host.codingTeamOf?.(source.id) : undefined;
+  if (team) return handToLead(source, team, requestId, input, host.rooms);
   const mono = caller(source, host);
   if (action === "rooms.create") return create(mono, input);
   switch (action) {

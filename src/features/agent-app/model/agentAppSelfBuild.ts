@@ -9,7 +9,7 @@ import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
 import type { AgentAppHost } from "./agentApp";
-import { resolveRoom } from "./agentAppRooms";
+import { resolveRoom, teamLeadOf } from "./agentAppRooms";
 import { forUser } from "../../hub/model/userName";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
@@ -23,7 +23,16 @@ export type DelegateInFolder = (brief: string, title: string, folder: string) =>
 
 function seated(source: Session, host: AgentAppHost) {
   const mono = host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
-  if (!mono) throw new Error("Only a seated Mono, in its own chat, can do this. Temporary workers can't.");
+  if (!mono) {
+    // A coding-team chat passes it to its Lead itself, never sending Ash to another chat (Board 22 Oct, run d91c AD14).
+    const team = host.codingTeamOf?.(source.id);
+    const lead = team ? teamLeadOf(team.project) : undefined;
+    if (team && lead)
+      throw new Error(
+        forUser`A coding-team chat can't do this itself; ${lead.name} can. Hand Ash's ask to ${lead.name} with mono_message (to "${lead.id}"), in his words, then tell him in one line that ${lead.name} has it. Don't send him to another chat.`,
+      );
+    throw new Error("Only a seated Mono, in its own chat, can do this. Temporary workers can't.");
+  }
   return { monoId: mono.id, name: mono.name ?? mono.id, projects: mono.projects };
 }
 
