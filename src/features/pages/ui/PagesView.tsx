@@ -61,9 +61,9 @@ export function isExampleBlock(block: PageBlock): boolean {
 function BlockFrame({ title, children, wide, example }: { title: string; children: ReactNode; wide?: boolean; example?: boolean }) {
   return (
     <section className={`${card} p-4 ${wide ? "col-span-2" : ""}`} data-page-block>
-      <div className="mb-2.5 flex items-center gap-2 text-[11px] uppercase tracking-wide text-content/60">
+      <div className="mb-2.5 flex items-center gap-2 text-[12px] font-medium text-content/60" data-block-title>
         <span className="flex-1">{title}</span>
-        {example ? <span className="normal-case tracking-normal" data-example-data>Example data</span> : null}
+        {example ? <span className="font-normal" data-example-data>Example data</span> : null}
       </div>
       {children}
     </section>
@@ -552,7 +552,8 @@ export function PagesContent() {
             <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
             <PinToggle page={shown} inHeader />
           </div>
-          <div className="mt-1 text-[12px] text-content/60">Kept · {nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
+          {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
+          <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
           <div className="mb-4 mt-1"><Limits /></div>
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
