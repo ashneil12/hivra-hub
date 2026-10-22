@@ -271,6 +271,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
 function ProjectNeedsCount({ projectId }: { projectId: string }) {
   useAttentionVersion();
   const count = attentionCount(projectId);
+  // r28: a card with nothing waiting says nothing, never "0 needs".
+  if (count <= 0) return null;
   return (
     <button type="button" data-hub-card-needs={count} onClick={() => setHubSelection({ project: projectId, item: "inbox" })} className="hover:text-content">
       {count} {count === 1 ? "need" : "needs"}

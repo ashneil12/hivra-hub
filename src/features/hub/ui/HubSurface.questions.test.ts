@@ -175,6 +175,25 @@ describe("Waiting on you", () => {
     expect(badge("EXO")).toBe("3");
   });
 
+  it("a project card with nothing waiting shows no needs count, never \"0 needs\"", async () => {
+    act(() => root.render(today()));
+    await until(() => needRows().length, "needs");
+    const cards = [...container.querySelectorAll("[data-hub-home-projects] > div")];
+    expect(cards.length).toBeGreaterThan(1);
+    let quiet = 0;
+    for (const c of cards) {
+      const name = c.querySelector("button")?.textContent ?? "";
+      const n = Number(badge(name) ?? 0);
+      const shown = c.querySelector("[data-hub-card-needs]");
+      if (n === 0) {
+        quiet++;
+        expect(shown).toBeNull();
+      } else expect(shown?.textContent).toBe(`${n} ${n === 1 ? "need" : "needs"}`);
+      expect(c.textContent).not.toMatch(/\b0 needs?\b/);
+    }
+    expect(quiet).toBeGreaterThan(0);
+  });
+
   it("Needs you keeps only gates and failures: ordinary questions moved to Older questions", async () => {
     act(() => root.render(today()));
     await until(() => needRows().length, "needs");
