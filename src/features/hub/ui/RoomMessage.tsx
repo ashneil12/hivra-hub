@@ -3,6 +3,7 @@
 // more), the reactions that replace "got it" bubbles, a notice when a Mono couldn't answer (never silence), the app's
 // quiet lines, and the line above the composer that says who is working, with Stop, or that the team paused for Ash,
 // with Keep going.
+import { withoutNoReply } from "../../../shared/text/noReply";
 import { useState, type ReactNode } from "react";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
@@ -21,7 +22,7 @@ import {
 import type { ChatMessage } from "../model/types";
 
 const shorten = (text: string, max = 70) => {
-  const line = text.replace(/\s+/g, " ").trim();
+  const line = withoutNoReply(text).replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
 
@@ -58,8 +59,9 @@ export function foldText(text: string): string | undefined {
 }
 
 /** A Mono's words in the room: whole when short, else the first lines with Show more (and Show less once open). */
-export function RoomText({ text, className }: { text: string; className?: string }) {
+export function RoomText({ text: raw, className }: { text: string; className?: string }) {
   const [open, setOpen] = useState(false);
+  const text = withoutNoReply(raw); // r51: never the raw NO_REPLY, even in a message saved before this
   const head = foldText(text);
   if (!head) return <AgentMarkdown text={text} className={className} />;
   return (

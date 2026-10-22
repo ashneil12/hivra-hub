@@ -7,6 +7,7 @@
 // - Mono-to-Mono follow-ups go only by naming a seat (@name or "PM, ...").
 // - One loop brake: after MONO_POSTS_CEILING Mono posts without Ash, the room pauses for him ("keep going" resumes).
 // roomConductor.ts runs it; everything here is pure, so the rules are tested without a model.
+import { withoutNoReply } from "../../../shared/text/noReply";
 import { isHarnessAuthError } from "../../../integrations/harness/core/authSupport";
 import { APP_CLI_MISSING } from "../../orchestration/model/orchestration";
 import { ROOM_RULES } from "./teamSouls";
@@ -263,7 +264,8 @@ export function cleanPost(text: string, speaker?: string): string {
     const label = new RegExp(`^\\**${escape(speaker)}\\**\\s*:\\s*`, "i");
     out = out.replace(label, "");
   }
-  return out
+  // r51: the raw NO_REPLY never goes into a saved post or a live draft.
+  return withoutNoReply(out)
     .replace(/\s+[—–]\s+/g, ", ")
     .replace(/[—]/g, ", ")
     .trim();

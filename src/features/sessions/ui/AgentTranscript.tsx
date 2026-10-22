@@ -17,6 +17,7 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
+import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
 import { noteRuns } from "../../monos/model/agentNoteView";
@@ -2640,6 +2641,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
   }
 
   if (!block.text && block.streaming) return null;
+  // r51: a Mono's NO_REPLY is a signal, never words in a bubble; a reply that is only that shows nothing.
+  const shown = withoutNoReply(block.text);
+  if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (
     <div
@@ -2649,7 +2653,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       className={`min-w-0 pb-1 text-content ${embedded ? "" : "px-4"} ${underLine ? "pt-1" : "pt-3"}`}
     >
       <AgentMarkdown
-        text={block.text}
+        text={shown}
         measurement={streamMeasurement(block)}
         streaming={block.streaming}
         revealOnMount={revealOnMount}
