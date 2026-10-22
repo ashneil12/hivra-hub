@@ -238,3 +238,20 @@ describe("what the room says when a turn can't run", () => {
     expect(failureNotice("frank", "")).toBe("frank couldn't answer: Its turn did not finish.");
   });
 });
+
+describe("r48: a new conversation and the Mono's own cards", () => {
+  const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", me: COS, seats: TEAM, host: COS, kind: "answer" as const, transcript: "Ash: make a marketing chat" };
+  it("says this conversation is its own, and what happened to each card, only when there is something to say", () => {
+    const plain = turnPrompt(base);
+    expect(plain).not.toMatch(/separate from this room's earlier ones|Your Mono cards/);
+    const told = turnPrompt({
+      ...base,
+      conversation: { title: "Make a marketing chat with cos n pm", startedAt: new Date(2026, 9, 22, 15, 57).getTime() },
+      cards: [`"Postie": turned down by Ash ("Not this one") at 14:16; nothing was made and no card shows.`],
+    });
+    expect(told).toContain(`This is the conversation "Make a marketing chat with cos n pm", started 15:57, separate from this room's earlier ones: what Ash asks here is a new ask`);
+    expect(told).toContain(`Your Mono cards: "Postie": turned down by Ash ("Not this one") at 14:16`);
+    // Before the room's members and rules, so it reads as the turn's own facts.
+    expect(told.indexOf("Your Mono cards")).toBeLessThan(told.indexOf("In the room:"));
+  });
+});

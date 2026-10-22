@@ -46,6 +46,7 @@ import {
 } from "./roomTurns";
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 import { forUser, userLabel } from "./userName";
+import { draftStatusLines } from "../../selfBuild/model/monoMake";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -515,6 +516,8 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     speaker: speakerOf(conv.messages, wake).name,
     back: wake.back,
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
+    ...(chat.conversations.length > 1 ? { conversation: { title: conv.title, startedAt: conv.createdAt } } : {}),
+    cards: draftStatusLines(me.id, { room: chatId, conv: conv.id }),
   };
   const attachments = turnAttachments(conv.messages, wake);
   let outcome: RoomTurnOutcome;

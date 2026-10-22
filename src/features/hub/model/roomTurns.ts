@@ -319,6 +319,10 @@ export type TurnInput = {
   transcript: string;
   /** The Mono is busy in its own chat: this goes into its work, and it answers with room_post. */
   viaTool?: boolean;
+  /** This conversation, when the room has had others: an ask here is new, whatever an earlier one held. */
+  conversation?: { title: string; startedAt?: number };
+  /** The Mono cards this Mono drafted lately, with what happened to each (monoMake.draftStatusLines). */
+  cards?: readonly string[];
 };
 
 function task(input: TurnInput): string {
@@ -354,7 +358,13 @@ export function turnPrompt(input: TurnInput): string {
   const how = input.viaTool
     ? `You are in the middle of your own work. Read anything newer with room_read (room "${input.chatId}"), then answer in the room with room_post (room "${input.chatId}"), once, and carry on with your work. If you have nothing new, don't post.`
     : `Your reply is posted to the room for you, under your name: write only the message, no "${me.name}:" label and no room_post call. To say nothing, reply with exactly ${NO_REPLY}.`;
-  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}
+  const conv = input.conversation;
+  const started = conv?.startedAt ? `, started ${new Date(conv.startedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : "";
+  const fresh = conv
+    ? forUser`\nThis is the conversation ${JSON.stringify(conv.title)}${started}, separate from this room's earlier ones: what Ash asks here is a new ask, even if an earlier conversation had the same one.`
+    : "";
+  const cards = input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : "";
+  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}${fresh}${cards}
 In the room: Ash${others.length ? `, and:\n${others.map((s) => `- ${cardOf(s)}`).join("\n")}` : "."}
 
 Room rules:

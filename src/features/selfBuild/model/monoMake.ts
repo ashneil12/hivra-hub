@@ -38,6 +38,8 @@ export type MonoDraft = {
   look?: { mascot: string; color: string };
   /** Ash waved it off on the card: it isn't shown again (the Mono can still draft another). */
   dismissed?: boolean;
+  /** When he did (r48): the drafting Mono is told, so it never takes the card for one still waiting. */
+  dismissedAt?: number;
   /** Set once made: the same draft never makes a second Mono. */
   madeId?: string;
   /**
@@ -98,8 +100,27 @@ export function useWaitingDrafts(): MonoDraft[] {
   return waitingDrafts();
 }
 /** Not this one: the card goes; nothing was made. */
-export function dismissDraft(id: string): void {
-  save(load().map((d) => (d.id === id ? { ...d, dismissed: true } : d)));
+export function dismissDraft(id: string, now = Date.now()): void {
+  save(load().map((d) => (d.id === id ? { ...d, dismissed: true, dismissedAt: now } : d)));
+}
+
+/** How long a Mono hears about its own cards after drafting them. */
+const CARD_NEWS_MS = 3 * 24 * 60 * 60_000;
+const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * The Mono cards this Mono drafted lately, each with what really happened to it (r48: in a new conversation CoS said
+ * "the card at the top" of one Ash had turned down an hour before, and took his fresh ask as already done). A made one
+ * is a Mono in the sidebar, so it isn't listed. `here` is the chat the turn is in: a waiting card elsewhere says so.
+ */
+export function draftStatusLines(monoId: string, here?: DraftPlace, now = Date.now()): string[] {
+  return load()
+    .filter((d) => d.by.monoId === monoId && !d.madeId && now - d.at < CARD_NEWS_MS)
+    .map((d) => {
+      if (d.dismissed) return `"${d.name}": turned down by Ash ("Not this one")${d.dismissedAt ? ` at ${clock(d.dismissedAt)}` : ""}; nothing was made and no card shows.`;
+      const shownHere = !!here && draftsIn([d], "room" in here ? here : { session: here.session, monoId }).length > 0;
+      return `"${d.name}": waiting on Ash's yes; its card shows ${shownHere ? "in this chat" : "in another chat, not this one"}.`;
+    });
 }
 /** The soul's words as Ash reads them on the card: he's "you" there ("draft each one for your OK"); the soul keeps "Ash". */
 export function toAsh(text: string): string {
@@ -321,6 +342,10 @@ export async function makeDrafted(
   if (!draft)
     throw new Error(
       "No draft with that id from you. Draft it again with name, role and soul.",
+    );
+  if (draft.dismissed && !draft.madeId)
+    throw new Error(
+      forUser`Ash turned this card down ("Not this one"), so nothing was made. Draft a new one only if he asks again.`,
     );
   if (draft.madeId) {
     const made = listMonos().find((m) => m.id === draft.madeId);
