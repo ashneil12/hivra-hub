@@ -150,6 +150,8 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
 /** Under a minute: "just started". Done: the time it finished, like "11:56am". Otherwise how long it has run. */
 export function jobTimeLabel(w: Worker): string {
   if (w.finishedAt) return w.finishedAt;
+  // A paused job: since when it was paused, if Ash OS said; never the time it ran before (r28b).
+  if (jobState(w) === "parked") return w.pausedSince ? `since ${w.pausedSince}` : "";
   if (w.minutes < 1) return "just started";
   return `for ${durationLabel(w.minutes)}`;
 }
@@ -230,7 +232,7 @@ function Activity({ worker, now }: { worker: Worker; now: number }) {
           <div className="text-[15px] text-content">{worker.doing}</div>
           <div className="flex items-center gap-1.5 text-[13px] text-content/60">
             {live ? <span className="size-1.5 animate-pulse rounded-full bg-content/60" /> : null}
-            {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : worker.minutes < 1 ? "just started" : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
+            {worker.who} · {worker.finishedAt ? `finished ${worker.finishedAt}` : jobState(worker) === "parked" ? `Paused by you${worker.pausedSince ? ` · since ${worker.pausedSince}` : ""}` : worker.minutes < 1 ? "just started" : `${live ? "working" : "at it"} for ${durationLabel(worker.minutes)}`}
           </div>
           {worker.stuck && worker.stuckReason ? (
             <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-job-reason>{worker.stuckReason.replace(/^Example: /, "")}</div>
