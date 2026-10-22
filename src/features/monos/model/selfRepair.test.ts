@@ -151,8 +151,10 @@ describe("self-repair (H3)", () => {
     await t.look(3 * HOUR);
     expect(t.worker).toHaveLength(3);
     expect(t.lead).toEqual([
-      '"Fix the save bug": crashed 4 times, retries ran out: Claude exited with code 1. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "t-1"), or stop it (task_cancel t-1), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.',
+      '"Fix the save bug": crashed 4 times, retries ran out: Claude exited with code 1. Ash has been shown this in Needs you, with the reason and a link to this chat. You can still explain it or tidy up here: say in one plain line what went wrong and what you tried, or stop it (task_cancel t-1).',
     ]);
+    // r48: red on every surface, so the Lead is never told to handle it without Ash.
+    expect(t.lead.join(" ")).not.toMatch(/without asking Ash|Handle it yourself/);
     expect(t.dropped).toHaveLength(3); // The last failure reaches its Lead.
     // Its red card says what happened. Out of retries, it is Ash's too (r30c, Ash's D5 words: a broken job lands in
     // Needs you with the reason): one banner, until its Lead retries or stops it.

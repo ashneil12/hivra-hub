@@ -13,6 +13,7 @@ import type { QueuedMessage, Session } from "../../sessions/model/session";
 import type { Delegation, DelegationTracker } from "./delegations";
 import type { Stall } from "./workerStall";
 import { forUser } from "../../hub/model/userName";
+import { stuckOwner } from "./workerStuck";
 
 const MIN = 60_000;
 /** How long a repaired worker must run cleanly before a later fault gets fresh tries. */
@@ -167,6 +168,15 @@ export class SelfRepair {
       const reason = gaveUpReason(row, r.tries + 1);
       // Its stall line now says what happened, over the watcher's minutes-scale one.
       if (row.state === "running") r.verdict = { kind: "loop", reason, since: wentWrongAt, final: true };
+      // r48: a failure its retries ran out on (or any red reason) is Ash's red Needs you on every surface (workerStuck.ts
+      // stuckOwner), so its Lead is told he has been shown it, not to handle it without him.
+      if (row.state === "failed" && stuckOwner({ kind: "failed", row }) === "needs-you") {
+        await this.host.tellLead(
+          row,
+          forUser`"${titleOf(row)}": ${lowerFirst(reason)}. Ash has been shown this in Needs you, with the reason and a link to this chat. You can still explain it or tidy up here: say in one plain line what went wrong and what you tried, or stop it (task_cancel ${row.id}).`,
+        );
+        return;
+      }
       await this.host.tellLead(
         row,
         forUser`"${titleOf(row)}": ${lowerFirst(reason)}. Handle it yourself, without asking Ash: retry it differently or split it (delegate_task with redoes "${row.id}"), or stop it (task_cancel ${row.id}), then say in one line here what you did. Only if the fix needs something only Ash can give (a key or sign-in, a delete, or a money decision), tell him in one plain line here the one thing you need.`,
