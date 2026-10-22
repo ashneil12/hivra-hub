@@ -5,8 +5,17 @@
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { Modal } from "./Modal";
 
+/**
+ * Cancel's focus ring (r30e, Critiquito): shown whenever it has focus, from the moment the dialog opens and after a
+ * mouse click too (`focus:`, not `focus-visible:`), so Ash can see Enter is the safe key. The app's accent ring, set off
+ * by a solid ring of the dialog's own surface so it never sits on bare glass.
+ */
+export const CANCEL_FOCUS_RING =
+  "focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background-base";
+
 export function ConfirmDelete({
   name,
+  detail,
   children,
   deleteLabel = "Delete",
   onCancel,
@@ -14,6 +23,8 @@ export function ConfirmDelete({
 }: {
   /** What is deleted, as Ash knows it: a session's or chat's title, a room's name. */
   name: string;
+  /** Said before "This can't be undone.", e.g. what else goes with a Mono. */
+  detail?: string;
   children?: ReactNode;
   deleteLabel?: string;
   onCancel: () => void;
@@ -24,9 +35,9 @@ export function ConfirmDelete({
     cancel.current?.focus();
   }, []);
   return (
-    <Modal title={`Delete ${name}?`} size="sm" hideClose onClose={onCancel}>
+    <Modal title={`Delete ${name}?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
       <div className="flex flex-col gap-4 px-4 pb-4 pt-2 text-[12px]" data-confirm-delete={name}>
-        <p className="text-content/80">This can't be undone.</p>
+        <p className="text-content/80">{detail ? `${detail} ` : ""}This can't be undone.</p>
         {children}
         <div className="flex justify-end gap-2">
           <button
@@ -34,7 +45,7 @@ export function ConfirmDelete({
             type="button"
             data-confirm-delete-cancel
             onClick={onCancel}
-            className="rounded-md px-3 py-1.5 text-content/85 ring-accent/50 hover:bg-content/8 focus-visible:outline-none focus-visible:ring-2 active:scale-[0.97]"
+            className={`rounded-md px-3 py-1.5 text-content/85 hover:bg-content/8 active:scale-[0.97] ${CANCEL_FOCUS_RING}`}
           >
             Cancel
           </button>
@@ -54,16 +65,16 @@ export function ConfirmDelete({
 
 // ---- asked from anywhere: `await confirmDelete("Example: tidy the README")` -------------------------------------------
 
-type Ask = { name: string; resolve: (ok: boolean) => void };
+type Ask = { name: string; detail?: string; resolve: (ok: boolean) => void };
 let current: Ask | undefined;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 
 /** Ask Ash to confirm deleting `name`; true only when he picked Delete. One question at a time: a second waits as no. */
-export function confirmDelete(name: string): Promise<boolean> {
+export function confirmDelete(name: string, detail?: string): Promise<boolean> {
   if (current) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
-    current = { name: name.trim() || "this", resolve };
+    current = { name: name.trim() || "this", detail, resolve };
     emit();
   });
 }
@@ -91,5 +102,8 @@ export function ConfirmDeleteHost() {
     () => current,
   );
   if (!ask) return null;
-  return <ConfirmDelete key={ask.name} name={ask.name} onCancel={() => answer(false)} onDelete={() => answer(true)} />;
+  return <ConfirmDelete key={ask.name} name={ask.name} detail={ask.detail} onCancel={() => answer(false)} onDelete={() => answer(true)} />;
 }
+
+/** What else goes when a Mono is deleted (its files stay on disk). */
+export const MONO_DELETE_DETAIL = "Its conversation will be deleted and its habits stop.";

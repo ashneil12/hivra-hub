@@ -4240,6 +4240,19 @@ html.layout-inset.theme-light .dialog-scrim {
   background: rgb(0 0 0 / 0.2);
 }
 
+/* A delete confirm (ConfirmDelete, r30e) sits on a darker overlay with a slight blur, so it stands apart from a page
+   that is itself near black. */
+.dialog-scrim.confirm-scrim,
+html.layout-inset .dialog-scrim.confirm-scrim {
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(1.5px);
+}
+
+html.theme-light .dialog-scrim.confirm-scrim,
+html.layout-inset.theme-light .dialog-scrim.confirm-scrim {
+  background: rgb(0 0 0 / 0.3);
+}
+
 @keyframes modal-backdrop-in {
   from {
     opacity: 0;

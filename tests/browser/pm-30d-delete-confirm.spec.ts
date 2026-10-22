@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { ringContrast } from "./contrastProbe";
 
 // Round 30d proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:): the one shared delete
 // confirm. Ash makes a room, then deletes it from the sidebar: "Delete Example: launch room?", "This can't be undone.",
@@ -36,6 +37,15 @@ test("deleting a room asks first in the shared confirm; Cancel (and Enter) keep 
   await expect(dialog).toContainText("This can't be undone.");
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toHaveClass(/text-red-400/);
+  // r30e: Cancel's focus ring shows from the start (it was focused by the dialog, not by a key), the ring passes 3:1
+  // against the dialog's surface, and a darker overlay sits behind the dialog.
+  const ring = await dialog.getByRole("button", { name: "Cancel" }).evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(ring).not.toBe("none");
+  const contrast = await ringContrast(page);
+  console.log("focus ring contrast", JSON.stringify(contrast));
+  expect(contrast.ratio).toBeGreaterThanOrEqual(3);
+  await expect(page.locator("[data-modal-scrim]")).toHaveClass(/confirm-scrim/);
+  expect(await page.locator("[data-modal-scrim]").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0.55)");
   await page.mouse.move(5, 5);
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${SHOTS}/pm-30d-delete-confirm-1512.png` });
