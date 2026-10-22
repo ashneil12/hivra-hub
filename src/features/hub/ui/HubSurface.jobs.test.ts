@@ -413,10 +413,10 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     await until(() => job()?.querySelector('[data-hub-job-state="stuck"]'), "the job");
     expect(job()!.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
     expect(job()!.querySelector("[data-hub-circle=red]")).toBeNull();
-    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Stopped with an error.");
     const open = job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!;
     expect(open.textContent).toBe("Open Hivra lead's chat");
-    expect(text()).not.toMatch(/\bStuck\b|Open chat\b|dev-faults/);
+    expect(text()).not.toMatch(/\bStuck\b|Open chat\b|dev-faults|on purpose|test fault/i);
     act(() => open.click());
     expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat");
     expect(actions.openChild).not.toHaveBeenCalled();
@@ -479,7 +479,7 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     const row = container.querySelector<HTMLElement>('[data-hub-stuck-today="grey"] [data-stuck-worker="w-f"]')!;
     expect(row.closest("[data-hub-today-section], [data-hub-today-being-built]") ?? container.querySelector("[data-hub-today-job]")).not.toBeNull();
     expect(row.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With Hivra lead");
-    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    expect(row.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped with an error.");
     expect(row.querySelector("[data-stuck-open]")?.textContent).toBe("Open Hivra lead's chat");
     expect(row.querySelector("[data-stuck-dismiss]")).not.toBeNull();
     act(() => row.querySelector<HTMLButtonElement>("[data-stuck-open]")!.click());

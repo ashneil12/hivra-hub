@@ -19,10 +19,11 @@ function stuck(kind: StuckWorker["kind"], patch: Partial<Delegation> = {}, line 
 }
 
 describe("plainFault", () => {
-  it("turns r45's test fault into one plain sentence with no path", () => {
+  it("never gives a blind test away: r45's test-fault text reads as a plain failure", () => {
     expect(plainFault("Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)")).toBe(
-      "This worker was set to fail on purpose for a test",
+      "Stopped with an error.",
     );
+    expect(plainFault("Stopped with an error.")).toBe("Stopped with an error.");
   });
   it("drops paths, file names and exit codes, and falls back when nothing plain is left", () => {
     const out = plainFault("Error: cannot read /Users/ash/Projects/x/src/main.ts (exit code 1)");

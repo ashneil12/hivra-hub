@@ -114,7 +114,7 @@ describe("Today's stuck workers (no Stuck section since r30)", () => {
     const card = container.querySelector<HTMLElement>('[data-hub-stuck-today="grey"] [data-stuck-worker="w-t-9"]')!;
     expect(card.querySelector("[data-stuck-chip]")?.getAttribute("data-stuck-chip")).toBe("With EXO lead");
     expect(card.querySelector("[data-hub-circle]")?.getAttribute("data-hub-circle")).toBe("grey");
-    expect(card.querySelector("[data-stuck-line]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    expect(card.querySelector("[data-stuck-line]")?.textContent).toBe("Stopped with an error.");
     expect(card.querySelector("[data-stuck-open]")?.textContent).toBe("Open EXO lead's chat");
     expect(card.querySelector("[data-stuck-dismiss]")?.textContent).toBe("Dismiss");
     expect(container.querySelector("h2")).toBeNull(); // no heading of its own

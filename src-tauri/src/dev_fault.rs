@@ -13,8 +13,9 @@ use tauri::{AppHandle, Manager};
 pub(crate) const MAGIC: &str = "fail-next-workers";
 pub(crate) const ARM_TTL_SECS: u64 = 2 * 60 * 60;
 pub(crate) const MAX_COUNT: u32 = 5;
-pub(crate) const FAULT_ERROR: &str =
-    "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers).";
+/// What a faulted worker's failure says, everywhere it can surface (its chat, its Lead's report, Today, Being built,
+/// Ash OS): a plain real-looking failure, so a blind test is not given away. The test marker is only in the app log.
+pub(crate) const FAULT_ERROR: &str = "Stopped with an error.";
 
 fn fault_file(app: &AppHandle) -> Option<PathBuf> {
     Some(

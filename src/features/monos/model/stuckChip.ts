@@ -5,6 +5,7 @@
 import { NEEDS_YOU, RETRYING, withLead, type Chip } from "../../hub/model/statusChip";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
 import { failedTimes, stuckOwner, type StuckWorker } from "./workerStuck";
+import { withoutTestMarker } from "./devFault";
 
 /** Only Ash can sort it: the worker's provider refused for billing or sign-in. */
 export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean {
@@ -33,9 +34,9 @@ function clock(ms: number): string {
   return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")}${h < 12 ? "am" : "pm"}`;
 }
 
-/** A raw fault as one plain line: no file paths, codes or labels ("Test fault: … (dev-faults/x)" → "This worker …"). */
+/** A raw fault as one plain line: no file paths, codes or labels (an old test-fault text reads "Stopped with an error"). */
 export function plainFault(raw: string | null | undefined): string {
-  let text = (raw ?? "").trim().split("\n")[0] ?? "";
+  let text = String(withoutTestMarker(raw ?? "")).trim().split("\n")[0] ?? "";
   text = text.split(/(?<=[.!?])\s/)[0] ?? text;
   text = text
     .replace(/\s*[([][^)\]]*(?:[/\\]|\.\w{1,4}\b|\d{3})[^)\]]*[)\]]/g, "") // "(dev-faults/fail-next-workers)", "(402)"

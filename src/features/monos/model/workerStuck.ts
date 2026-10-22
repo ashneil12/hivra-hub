@@ -17,6 +17,7 @@ import { isProviderErrorClass, PROVIDER_ERROR_LABEL } from "../../../integration
 import { isOpenDelegation, type Delegation } from "./delegations";
 import { batchRollup, CHILD_CHATS_RECENT_MS, type RollupState } from "./delegationView";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
+import { withoutTestMarker } from "./devFault";
 
 export type StuckKind = "asking" | "stalled" | "failed";
 
@@ -135,7 +136,7 @@ export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "rese
   const times = row.log ? failedTimes({ log: row.log }) : 0;
   if (times >= 2 && isCrash({ state: row.state ?? "failed", errorClass: row.errorClass })) {
     const what = row.errorClass === "overloaded" ? "Provider overloaded" : row.errorClass === "provider_error" ? "Provider failed" : "Crashed";
-    const first = (row.error ?? "").trim().split("\n")[0].replace(/[.!?\s]+$/, "");
+    const first = String(withoutTestMarker(row.error) ?? "").trim().split("\n")[0].replace(/[.!?\s]+$/, "");
     const words = what === "Crashed" && first ? `: ${first.length > 120 ? `${first.slice(0, 120).replace(/\s+\S*$/, "")}…` : first}` : "";
     return `${what} ${times} times${times > REPAIR_TRIES ? ", retries ran out" : ""}${words}`;
   }
@@ -143,7 +144,7 @@ export function failureLine(row: Pick<Delegation, "errorClass" | "error" | "rese
     const reset = row.errorClass === "usage_limit" && row.resetsAt ? clock(row.resetsAt) : "";
     return `Failed: ${PROVIDER_ERROR_LABEL[row.errorClass]}${reset ? `, resets ${reset}` : ""}`;
   }
-  const first = (row.error ?? "").trim().split(/(?<=[.!?])\s/)[0]?.replace(/[.!?\s]+$/, "") ?? "";
+  const first = String(withoutTestMarker(row.error) ?? "").trim().split(/(?<=[.!?])\s/)[0]?.replace(/[.!?\s]+$/, "") ?? "";
   const words = first.length > 140 ? `${first.slice(0, 140).replace(/\s+\S*$/, "")}…` : first;
   return `Failed: ${words ? lowerFirst(words) : "it stopped without saying why"}`;
 }

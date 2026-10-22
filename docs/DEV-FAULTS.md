@@ -5,7 +5,9 @@ Off by default. Nothing in the app arms a fault; only a file a tester writes by 
 ## Make the next delegated workers fail (scorecard D5)
 
 A worker a Mono delegates really starts and runs; when its turn ends it reports a **failure** with the plain error
-"Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)." and **no report**:
+"Stopped with an error." and **no report** (since r48 the error is a plain real-looking failure, so a blind test is
+not given away on Today, Being built, the Lead's report, agent notes or Ash OS; the test marker is only in the app log,
+and an older build's stored "Test fault: …" text also reads "Stopped with an error."):
 whatever the worker wrote in its chat never reaches its Lead (since r47; before, its whole report still went through and
 the Lead could say the job was done). Its Lead sees a real
 failed worker and handles it the way it handles any failure (retry, then report it stuck to Ash OS: one Needs you row
