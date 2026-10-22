@@ -624,6 +624,7 @@ describe("settings navigation", () => {
       "connections",
       "appearance",
       "changes",
+      "decisions",
       "dashboards",
       "portable",
       "connectors",

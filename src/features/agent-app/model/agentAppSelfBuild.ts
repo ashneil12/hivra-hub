@@ -1,6 +1,7 @@
-// The app side of the tools that make things with Ash (`monocode` MCP: mono_create, page_build, hub_change): a new
-// Mono (step 13), a Page (step 14) and a change to the hub itself (step 15). Each shows Ash first and goes in on his
-// yes; the checks live here and in Rust, not in the Mono's prompt.
+// The app side of the tools that make things with Ash (`monocode` MCP: mono_create, page_build, hub_change,
+// skills_learn): a new Mono (step 13), a Page (step 14), a change to the hub itself (step 15) and a lesson a worker's
+// self-review taught a skill (step 16). Each shows Ash first and goes in on his yes, except a lesson, which applies at
+// once with Undo in Bot changes; the checks live here and in Rust, not in the Mono's prompt.
 import type { Session } from "../../sessions/model/session";
 import { allChats } from "../../hub/model/hubChats";
 import { loadSkills } from "../../skills/model/skills";
@@ -8,6 +9,7 @@ import { askedAshAndHeardBack, ashSpokeSince, INTERVIEW_FIRST } from "../../self
 import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../../selfBuild/model/hubCode";
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
+import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
 import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayChat";
 import type { AgentAppHost } from "./agentApp";
 import { resolveRoom, teamLeadOf } from "./agentAppRooms";
@@ -19,6 +21,7 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
   ["today.change", ["ask", "projectOrder", "previewId", "apply"]],
+  ["skills.learn", ["skill", "lesson", "from"]],
 ];
 
 /** Hands the change to a Claude Code worker in the preview copy (tasks.delegate, run in that folder). */
@@ -96,6 +99,18 @@ export async function handleSelfBuild(
         task,
         note: forUser("A Claude Code worker is making it in a preview copy; your live hub is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true."),
       };
+    }
+    case "skills.learn": {
+      if (typeof input.skill !== "string" || !input.skill.trim())
+        throw new Error('skill must be the skill\'s name, like "reviewing-a-diff".');
+      if (typeof input.lesson !== "string" || !input.lesson.trim())
+        throw new Error(forUser("lesson must be the one plain sentence worth keeping from that review."));
+      return learnSkillLesson({
+        skill: input.skill,
+        lesson: input.lesson,
+        from: typeof input.from === "string" ? input.from : undefined,
+        by: me.name,
+      });
     }
     default:
       throw new Error(`Unknown action ${action}`);

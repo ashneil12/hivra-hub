@@ -2,6 +2,7 @@ import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, 
 import { UserNameField } from "../../hub/ui/UserNameField";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
+import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
@@ -683,6 +684,7 @@ export function SettingsView({
                 <AppearancePage appearance={appearance} />
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
+              {section === "decisions" ? <DecisionsPage /> : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}

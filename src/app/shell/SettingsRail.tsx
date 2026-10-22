@@ -13,7 +13,7 @@ import {
   Terminal,
   Zap,
   Chatting,
-  type IconComponent, Undo2, DashboardSquare, CloudUpload } from "../../shared/ui/icons";
+  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -34,6 +34,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   worktrees: FolderTree,
   archive: Archive,
   changes: Undo2,
+  decisions: CheckCheck,
   dashboards: DashboardSquare,
   portable: CloudUpload,
   connectors: Zap,

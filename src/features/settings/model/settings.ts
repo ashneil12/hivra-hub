@@ -32,6 +32,7 @@ export type SettingsSectionId =
   | "worktrees"
   | "archive"
   | "changes"
+  | "decisions"
   | "dashboards"
   | "portable"
   | "connectors";
@@ -87,6 +88,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Changes",
     description: "Changes the app and your Monos made to their own screens, with Undo, and any it turned down for breaking a design rule.",
     keywords: "undo proposal self change dashboard history design rules",
+  },
+  {
+    id: "decisions",
+    group: "app",
+    label: "Decisions",
+    description:
+      "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
+    keywords: "decision ask waiting memory never rule history per project inbox",
   },
   {
     id: "dashboards",
