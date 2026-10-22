@@ -5,7 +5,9 @@ Off by default. Nothing in the app arms a fault; only a file a tester writes by 
 ## Make the next delegated workers fail (scorecard D5)
 
 A worker a Mono delegates really starts and runs; when its turn ends it reports a **failure** with the plain error
-"Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)." Its Lead sees a real
+"Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)." and **no report**:
+whatever the worker wrote in its chat never reaches its Lead (since r47; before, its whole report still went through and
+the Lead could say the job was done). Its Lead sees a real
 failed worker and handles it the way it handles any failure (retry, then report it stuck to Ash OS: one Needs you row
 with the reason and "Open <Lead>'s chat"). No keys, folders or settings are touched.
 

@@ -1,4 +1,4 @@
-import { faultedOutcome, takeWorkerFault } from "../features/monos/model/devFault";
+import { faultedOutcome, faultedReply, takeWorkerFault } from "../features/monos/model/devFault";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
@@ -12710,6 +12710,7 @@ function Workspace({
                 project,
                 prompt,
                 outcome: faultedOutcome(outcome, fault),
+                ...faultedReply(outcome, fault),
                 session: sessionsRef.current.find(
                   (session) => session.id === sessionId,
                 ),
