@@ -31,14 +31,15 @@ function files(initial: Record<string, string> = {}) {
 beforeEach(() => localStorage.clear());
 
 describe("the team's souls", () => {
-  it("each of the five is Alfred's slim soul: its Role line and its Skills, no room or tone rules; none is the retired dr eggbot or mentions Grok's tools", () => {
+  it("each of the five has its Role line and its Skills and its own voice, but no room rules; none is the retired dr eggbot or mentions Grok's tools", () => {
     expect(Object.keys(TEAM_SOULS)).toEqual([...TEAM_IDS, "critiquito"]);
     for (const [id, soul] of Object.entries(TEAM_SOULS)) {
       expect(soul.startsWith("# Soul\n\n## Role\n"), id).toBe(true);
       expect(roleOf(id, soul), id).toBeTruthy();
       expect(skillsOf(soul).length, id).toBeGreaterThan(0);
       expect(soul, id).not.toContain(ROOM_RULES);
-      expect(soul, id).not.toMatch(/em dash|digest|NO_REPLY/i);
+      expect(soul, id).not.toMatch(/NO_REPLY/);
+      expect(soul, id).toMatch(/^## Voice/m); // not bland (22 Oct): the slim souls lost each Mono's voice
       expect(soul, id).not.toMatch(/notion|CreateAgent|SendToAgent|grok bot|eggbot|—/i);
     }
     expect(roleOf("Chief of Staff", TEAM_SOULS["chief-of-staff"])).toMatch(/^Ash's business partner and the Mono he talks to first/);

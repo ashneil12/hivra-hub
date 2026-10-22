@@ -39,7 +39,12 @@ describe("a fresh install", () => {
     for (const id of SHIPPED_IDS) {
       const heads = (t: string) => t.match(/^## .*$/gm)?.length;
       expect(heads(PLAIN_SOULS[id]), id).toBe(heads(TEAM_SOULS[id]));
-      expect(PLAIN_SOULS[id].split("## Skills")[1], id).toBe(TEAM_SOULS[id].split("## Skills")[1]);
+      const skills = (t: string) => t.split("## Skills")[1].split("\n## ")[0];
+      expect(skills(PLAIN_SOULS[id]), id).toBe(skills(TEAM_SOULS[id]));
+      // Not bland (Ash 22 Oct): each keeps its own voice, a few lines of it, and what it never does.
+      expect(PLAIN_SOULS[id], id).toMatch(/^## Voice/m);
+      expect(PLAIN_SOULS[id].split("## Voice")[1].match(/^- ".+"$/gm)?.length ?? 0, id).toBeGreaterThanOrEqual(2);
+      expect(PLAIN_SOULS[id], id).toMatch(/^## What I never do/m);
     }
     const f = files();
     expect(await seedTeamFiles(f.read, f.write)).toEqual(TEAM_IDS);
