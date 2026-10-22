@@ -115,7 +115,7 @@ const USAGE_LIMIT_TEXT = /hit your (?:usage )?limit|usage limit reached/i;
 const BILLING_TEXT =
   /credit balance is too low|insufficient[_ ](?:credits?|funds|balance|quota)|payment required|out of credits|requires more credits/i;
 const AUTH_TEXT =
-  /failed to authenticate|authentication_error|invalid (?:api key|x-api-key|bearer token)|oauth (?:access )?token (?:has been revoked|has expired|expired)|please run \/login|not logged in/i;
+  /failed to authenticate|authentication_error|invalid (?:api key|x-api-key|bearer token)|invalid[_ ]api[_ ]key|incorrect api key|\bunauthori[sz]ed\b|oauth (?:access )?token (?:has been revoked|has expired|expired)|please run \/login|not logged in/i;
 const OVERLOADED_TEXT = /overloaded_error|repeated 529|\boverloaded\b/i;
 const CONNECTION_TEXT =
   /connection to the api was lost|request timed out|no response from api|connection error|econnreset|etimedout|socket hang up|fetch failed/i;

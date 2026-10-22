@@ -26,6 +26,20 @@ export type TurnFailure = {
 const CREDITS = /credit|balance|insufficient|payment required|funds|quota/i;
 const SIGNED_OUT = /log ?in|sign[ -]?in|expired|revoked|not logged/i;
 const CONNECTION = /connection|timed out|timeout|econnreset|etimedout|socket hang up|fetch failed|no response/i;
+/**
+ * A provider turning the key or the sign-in away, in its own words: HTTP 401/403, "invalid (API) key", "incorrect API
+ * key", "unauthorized", "authentication …". Some providers send it with no error kind (or a generic one), and it is
+ * still Ash's to fix in Settings: red Needs you, never grey Can't answer (PM 22 Oct).
+ */
+const REJECTED_KEY =
+  /\b(?:HTTP\s*)?40[13]\b|\binvalid[_ -]?(?:api[_ -]?)?key\b|\bincorrect api key\b|\bapi[_ -]?key\b[^.\n]{0,40}\b(?:invalid|not valid|revoked|expired|disabled|wrong)\b|\bunauthori[sz]ed\b|\bauthentication\b|\bnot authenticated\b/i;
+
+/** The class to show a failure under: a key or sign-in the provider rejected is "auth" even when it gave no kind. */
+export function failureClass(errorClass: ProviderErrorClass | undefined, detail: string): ProviderErrorClass | undefined {
+  if ((errorClass === undefined || errorClass === "provider_error") && REJECTED_KEY.test(detail)) return "auth";
+  return errorClass;
+}
+
 /** The CLI's own assistant line for a failed request ("API Error: 402 …"): part of the failure, not a reply. */
 const API_ERROR_LINE = /^\s*API Error\b/i;
 
@@ -83,15 +97,16 @@ export function lastTurnFailure(
     const block = blocks[i];
     if (isFailureNotice(block)) {
       const failure = block.failure ?? {};
-      const errorClass = failure.errorClass ?? (session.usageLimit ? "usage_limit" : undefined);
-      const resetsAt = failure.resetsAt ?? session.usageLimit?.resetsAt;
       const detail = block.text.trim();
+      const errorClass = failureClass(failure.errorClass ?? (session.usageLimit ? "usage_limit" : undefined), detail);
+      const rejected = errorClass === "auth" && failure.errorClass !== "auth";
+      const resetsAt = failure.resetsAt ?? session.usageLimit?.resetsAt;
       return {
         blockId: block.id,
         ...plainFailure({ ...failure, errorClass, resetsAt }, detail, now),
         detail,
         ...(errorClass ? { errorClass } : {}),
-        retryable: failure.retryable ?? (errorClass !== "billing" && errorClass !== "auth"),
+        retryable: rejected ? false : (failure.retryable ?? (errorClass !== "billing" && errorClass !== "auth")),
         ...(resetsAt != null ? { resetsAt } : {}),
         ...(failure.at != null ? { at: failure.at } : {}),
       };
