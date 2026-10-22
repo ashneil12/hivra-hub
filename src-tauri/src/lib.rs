@@ -510,6 +510,7 @@ pub fn run() {
             rooms::rooms_load,
             rooms::rooms_upsert,
             rooms::rooms_delete,
+            rooms::rooms_conversation_delete,
             rooms::rooms_conversation_upsert,
             rooms::rooms_message_add,
             rooms::rooms_message_update,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowLeft, Check, MessageMultiple, Pencil, Plus, X } from "../../../shared/ui/icons";
+import { ArrowLeft, Check, MessageMultiple, Pencil, Plus, Trash2, X } from "../../../shared/ui/icons";
+import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
 import {
   listMonos,
   monoLook,
@@ -15,6 +16,7 @@ import { hubData } from "../model/hubData";
 import {
   addMember,
   createChat,
+  deleteConversation,
   ensureLeadership,
   chatSaveProblem,
   getChat,
@@ -74,6 +76,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const [draftTitle, setDraftTitle] = useState<string | undefined>();
   /** Which conversation's name is being edited: its id, or "draft" for the one not started yet. */
   const [renamingConv, setRenamingConv] = useState<string | null>(null);
+  const removeConversation = async (id: string, title: string) => {
+    if (!(await confirmDelete(title))) return;
+    if (convId === id) setConvId(undefined);
+    deleteConversation(chat.id, id);
+  };
   /** Back out of the New conversation screen: nothing was made, and the conversation he was in shows again. */
   const leaveDraft = () => {
     setDrafting(false);
@@ -285,21 +292,40 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                   }}
                 />
               ) : (
-                <button
+                // A conversation can be deleted (r49): the trash on hover, or a right-click, then the shared confirm.
+                <div
                   key={c.id}
-                  type="button"
-                  title="Double-click to rename"
-                  data-hub-conversation={c.id}
-                  onClick={() => { leaveDraft(); setConvId(c.id); }}
-                  onDoubleClick={() => { leaveDraft(); setConvId(c.id); setRenamingConv(c.id); }}
-                  className={`flex h-7 shrink-0 items-center rounded-md px-2 text-left text-[13px] ${
-                    c.id === conv?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"
-                  }`}
+                  className="group/conv relative flex shrink-0 items-center"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    void removeConversation(c.id, c.title);
+                  }}
                 >
-                  <span className="min-w-0 truncate">
-                    {c.when} · {c.title}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    title="Double-click to rename"
+                    data-hub-conversation={c.id}
+                    onClick={() => { leaveDraft(); setConvId(c.id); }}
+                    onDoubleClick={() => { leaveDraft(); setConvId(c.id); setRenamingConv(c.id); }}
+                    className={`flex h-7 w-full items-center rounded-md pl-2 pr-7 text-left text-[13px] ${
+                      c.id === conv?.id ? "bg-selection text-content" : "text-content/80 hover:bg-selection-hover"
+                    }`}
+                  >
+                    <span className="min-w-0 truncate">
+                      {c.when} · {c.title}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-hub-conversation-delete={c.id}
+                    title={`Delete ${c.title}`}
+                    aria-label={`Delete ${c.title}`}
+                    onClick={() => void removeConversation(c.id, c.title)}
+                    className="absolute right-1 grid size-5 place-items-center rounded-md text-content/45 opacity-0 hover:bg-content/8 hover:text-red-400 focus-visible:opacity-100 group-hover/conv:opacity-100"
+                  >
+                    <Trash2 className="size-3" strokeWidth={1.75} />
+                  </button>
+                </div>
               ),
             )}
           </div>

@@ -110,7 +110,16 @@ export function HubProjectItems({
           // A room Ash made can be deleted (r30d), after the shared confirm; the Leadership team and the rest can't.
           if (item.kind !== "group-chat") return row;
           return (
-            <div key={item.id} className="group/room relative flex min-w-0 items-center" data-hub-room-row={item.id}>
+            <div
+              key={item.id}
+              className="group/room relative flex min-w-0 items-center"
+              data-hub-room-row={item.id}
+              // Right-click asks the same confirm as the trash button (r49).
+              onContextMenu={(e) => {
+                e.preventDefault();
+                void deleteRoom(project.id, item, selection);
+              }}
+            >
               <div className="min-w-0 flex-1 [&>button]:w-full [&>button]:pr-7">{row}</div>
               <button
                 type="button"

@@ -883,6 +883,41 @@ pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Deletes one conversation of a room (r49), Leadership's too: its thread row, its messages and the origins waiting to
+/// post back into it, in one transaction. The room and its other conversations are not touched.
+pub fn delete_conversation(conn: &mut Connection, room: &str, id: &str) -> Result<bool, String> {
+    id_ok(room, "room id")?;
+    id_ok(id, "conversation id")?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let gone = tx
+        .execute(
+            "DELETE FROM room_conversations WHERE room_id = ?1 AND id = ?2",
+            params![room, id],
+        )
+        .map_err(|e| e.to_string())?
+        > 0;
+    for table in ["room_messages", "room_origins"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE room_id = ?1 AND conversation_id = ?2"),
+            params![room, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(gone)
+}
+
+#[tauri::command(async)]
+pub fn rooms_conversation_delete(
+    store: State<'_, SessionStore>,
+    room: String,
+    id: String,
+) -> Result<(), String> {
+    delete_conversation(&mut *store.lock_conn()?, &room, &id).map(|_| ())
+}
+
 #[tauri::command(async)]
 pub fn rooms_delete(store: State<'_, SessionStore>, id: String) -> Result<(), String> {
     delete_room(&mut *store.lock_conn()?, &id).map(|_| ())
@@ -1006,6 +1041,42 @@ mod tests {
             text: text.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn deleting_a_conversation_takes_only_its_thread_messages_and_origins() {
+        let mut c = conn();
+        upsert_room(&mut c, &room("hub:leadership", &["chief-of-staff"]), 1).unwrap();
+        upsert_conversation(&c, &thread("hub:leadership", "old", 10), 10).unwrap();
+        upsert_conversation(&c, &thread("hub:leadership", "new", 20), 20).unwrap();
+        add_message(&c, &say("hub:leadership", "old", "m1", "ash", "Example: make a marketing chat"), 11).unwrap();
+        add_message(&c, &say("hub:leadership", "new", "m2", "ash", "Example: hey"), 21).unwrap();
+        add_origin(
+            &c,
+            &Origin {
+                child_session: "w1".into(),
+                room_id: "hub:leadership".into(),
+                conversation_id: "old".into(),
+                mono_id: "chief-of-staff".into(),
+                owner_session: "mono-cos".into(),
+                title: "t".into(),
+                created_at: 0,
+            },
+            12,
+        )
+        .unwrap();
+        assert!(delete_conversation(&mut c, "hub:leadership", "old").unwrap());
+        assert!(!delete_conversation(&mut c, "hub:leadership", "old").unwrap());
+        let snap = load(&c, 50).unwrap();
+        let ids: Vec<_> = snap.rooms[0].conversations.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["new"]);
+        let read_all: Vec<_> = read(&c, "hub:leadership", None, None, 30)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(read_all, vec!["m2"]);
+        assert!(open_origins(&c, 13).unwrap().is_empty());
     }
 
     #[test]

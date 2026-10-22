@@ -425,6 +425,19 @@ export function deleteChat(chatId: string): boolean {
   return true;
 }
 
+/**
+ * Deletes one conversation of a room (r49), after the shared confirm: its messages go, the room and its other
+ * conversations stay. The Leadership team's old conversations can go too, so a fresh one starts clean.
+ */
+export function deleteConversation(chatId: string, convId: string): boolean {
+  const chat = getChat(chatId);
+  if (!chat?.conversations.some((c) => c.id === convId)) return false;
+  update(chatId, (c) => ({ ...c, conversations: c.conversations.filter((x) => x.id !== convId) }));
+  write((b) => b.deleteConversation?.(chatId, convId) ?? Promise.reject(new Error("This store can't delete a conversation yet.")));
+  changed();
+  return true;
+}
+
 export function addMember(chatId: string, monoId: string): void {
   whenLoaded(() => {
     const chat = getChat(chatId);
