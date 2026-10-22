@@ -33,12 +33,17 @@ test("Delete mono… asks in the shared confirm; Cancel keeps the Mono", async (
   await nameBox.press("Enter");
   const pip = page.locator("[data-mono-status]", { hasText: "Example: Pip" }).first();
   await expect(pip).toHaveCount(1);
+  // Open its chat once, so it has one to delete (the dev data's Monos start with none).
+  await pip.locator("button[title]").first().click();
+  await expect
+    .poll(() => page.evaluate(() => (JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { name?: string; sessionId?: string }[]).find((m) => m.name === "Example: Pip")?.sessionId ?? null), { timeout: 20_000 })
+    .not.toBeNull();
   await pip.hover();
   await pip.locator('button[title="Mono options"]').click();
   await page.getByRole("menuitem", { name: "Delete mono…" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Delete Example: Pip?");
-  await expect(dialog).toContainText("Its conversation will be deleted and its habits stop. This can't be undone.");
+  await expect(dialog).toContainText("Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/. This can't be undone.");
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeFocused();
   expect(await cancel.evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");

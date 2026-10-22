@@ -4253,6 +4253,12 @@ html.layout-inset.theme-light .dialog-scrim.confirm-scrim {
   background: rgb(0 0 0 / 0.3);
 }
 
+/* Cancel's focus ring (ConfirmDelete, r30f): the plain accent measured 2.69:1 on the light dialog. Mixed toward the
+   text colour it stays the accent's hue and clears 3:1 on any light surface. */
+html.theme-light .confirm-cancel-ring:focus {
+  --tw-ring-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-content));
+}
+
 @keyframes modal-backdrop-in {
   from {
     opacity: 0;
