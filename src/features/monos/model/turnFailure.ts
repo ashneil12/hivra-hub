@@ -1,7 +1,7 @@
 // A Mono whose last turn failed (an API error: out of credits, overloaded, a usage limit, signed out) is in a state of
 // its own, not idle with a line of provider text in its chat (Ash, 20 Oct baseline: a 402 left the Tally lead "idle" with
 // "402 openrouter.ai said: Insufficient credits"). This reads that state from the chat: the plain reason the Monos
-// rail, Today and Being built show ("Out of credits", "Out of usage until 05:00"), amber when it should work again by
+// rail, Today and Being built show ("Out of credits", "Out of usage until 05:00"), grey when it should work again by
 // itself or with Try again, red when something has to be fixed first, and the provider's own words for "details".
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import type { Block, Session } from "../../sessions/model/session";
@@ -12,7 +12,7 @@ export type TurnFailure = {
   /** Plain words: "Out of credits", "The model is overloaded", "Out of usage until 05:00". */
   reason: string;
   /** Red: nothing works until something is fixed (billing, sign-in). Amber: it should work again (Try again, a reset). */
-  tone: "red" | "amber";
+  tone: "red" | "grey";
   /** What the provider said, behind "details". */
   detail: string;
   errorClass?: ProviderErrorClass;
@@ -60,21 +60,21 @@ export function plainFailure(
     case "usage_limit":
       return {
         reason: failure.resetsAt != null && failure.resetsAt > now ? `Out of usage until ${resetClock(failure.resetsAt, now)}` : "Out of usage",
-        tone: "amber",
+        tone: "grey",
       };
     case "billing":
       return { reason: CREDITS.test(detail) ? "Out of credits" : "Billing refused", tone: "red" };
     case "auth":
       return { reason: SIGNED_OUT.test(detail) ? "Signed out of the model" : "Sign-in refused", tone: "red" };
     case "overloaded":
-      return { reason: "The model is overloaded", tone: "amber" };
+      return { reason: "The model is overloaded", tone: "grey" };
     case "provider_error":
-      if (CONNECTION.test(detail)) return { reason: "Lost the connection to the model", tone: "amber" };
+      if (CONNECTION.test(detail)) return { reason: "Lost the connection to the model", tone: "grey" };
       return failure.retryable === false
         ? { reason: "The model refused the request", tone: "red" }
-        : { reason: "The model's API failed", tone: "amber" };
+        : { reason: "The model's API failed", tone: "grey" };
     default:
-      return { reason: "Its last turn failed", tone: "amber" };
+      return { reason: "Its last turn failed", tone: "grey" };
   }
 }
 

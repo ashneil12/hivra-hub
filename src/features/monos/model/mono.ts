@@ -597,8 +597,8 @@ export type MonoState = {
   status: MonoStatus;
   /** Short present-tense note while working or waiting; for "failed", the plain reason ("Out of credits"). */
   activity?: string;
-  /** "failed": red when something has to be fixed first (billing, sign-in), amber when trying again can work. */
-  tone?: "red" | "amber";
+  /** "failed": red when something has to be fixed first (billing, sign-in), grey when trying again can work (r30b: was "amber"). */
+  tone?: "red" | "grey";
   /** "failed": what the provider said, behind "details". */
   detail?: string;
 };

@@ -4,19 +4,18 @@
 // word, and the line never carries the raw fault text or a file path.
 import { NEEDS_YOU, RETRYING, withLead, type Chip } from "../../hub/model/statusChip";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
-import { failedTimes, leadAction, type StuckWorker } from "./workerStuck";
+import { failedTimes, stuckOwner, type StuckWorker } from "./workerStuck";
 
 /** Only Ash can sort it: the worker's provider refused for billing or sign-in. */
 export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean {
-  return stuck.kind === "failed" && (stuck.row.errorClass === "billing" || stuck.row.errorClass === "auth");
+  return stuck.kind !== "asking" && stuckOwner(stuck) === "needs-you";
 }
 
 export function stuckWorkerChip(stuck: Pick<StuckWorker, "kind" | "row">, lead: string): Chip {
   if (stuck.kind === "asking") return { word: "Waiting", tone: "grey" };
-  if (stuckNeedsAsh(stuck)) return NEEDS_YOU;
-  const action = leadAction(stuck.row);
-  if (action?.kind === "retried" || action?.kind === "split") return RETRYING;
-  if (stuck.kind === "failed" && repairableFailure(stuck.row) && failedTimes(stuck.row) <= REPAIR_BACKOFF_MS.length) return RETRYING;
+  const owner = stuckOwner(stuck);
+  if (owner === "needs-you") return NEEDS_YOU;
+  if (owner === "retrying") return RETRYING;
   return withLead(lead);
 }
 

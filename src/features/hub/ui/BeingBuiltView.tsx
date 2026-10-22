@@ -192,7 +192,7 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
         {jobTimeLabel(w)}
       </span>
-      <span className="flex w-24 shrink-0 justify-end">
+      <span className="flex w-44 shrink-0 justify-end">
         {w.finishedAt ? null : w.stuckWorker ? (
           <StuckJobAction w={w} answering={answering} onAnswer={() => setAnswering((v) => !v)} />
         ) : w.stuck ? (
@@ -252,7 +252,10 @@ function Activity({ worker, now }: { worker: Worker; now: number }) {
       </div>
       {worker.stuckWorker && !worker.finishedAt ? (
         <section className="flex flex-col gap-1" data-hub-job-stuck-worker>
-          <h2 className="px-2 text-xs text-content/60">{worker.stuckWorker.kind === "asking" ? "Waiting on an answer" : "Stuck"}</h2>
+          {/* r30b: never "Stuck"; the worker's own chip word (With <Lead>, Retrying, or Needs you). */}
+          <h2 className="px-2 text-xs text-content/60" data-hub-job-stuck-heading>
+            {worker.stuckWorker.kind === "asking" ? "Waiting on an answer" : (workerChip(worker)?.word ?? `With ${worker.who}`)}
+          </h2>
           <StuckWorkerCard stuck={worker.stuckWorker} now={now} variant="row" />
         </section>
       ) : null}
@@ -295,12 +298,14 @@ function StopWatching({ w: worker }: { w: Worker }) {
 }
 
 /**
- * A job with a stuck worker under it: one click from the row. A question opens its answer under the row (Answer); a
- * stalled or failed worker opens its chat (Open chat).
+ * A job with a stopped worker under it: one click from the row. A question opens its answer under the row (Answer); a
+ * stalled or failed worker opens its Lead's chat ("Open Hivra lead's chat", r30b). A red Needs you already carries
+ * that link under its reason, so no second button.
  */
 function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: boolean; onAnswer: () => void }) {
   const stuck = w.stuckWorker!;
   const asking = stuck.kind === "asking";
+  if (!asking && w.lead && workerChip(w)?.tone === "red") return null;
   return (
     <button
       type="button"
@@ -311,14 +316,15 @@ function StuckJobAction({ w, answering, onAnswer }: { w: Worker; answering: bool
         if (asking) onAnswer();
         else openStuck(stuck);
       }}
-      className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+      title={asking ? undefined : `Open ${w.who}'s chat`}
+      className="min-w-0 truncate rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
     >
-      {asking ? "Answer" : "Open chat"}
+      {asking ? "Answer" : `Open ${w.who}'s chat`}
     </button>
   );
 }
 
-/** Reads the shared waiting list; opens the item in the project's Inbox. Without one, a stuck job opens its Lead's chat. */
+/** Reads the shared waiting list; opens the item in the project's Inbox. Without one, a stopped job opens its Lead's chat ("Open Hivra lead's chat"). */
 function WorkerTakeLook({ w: worker }: { w: Worker }) {
   const w = findWaiting(worker.waitingId ?? `worker:${worker.id}`);
   if (!w)
@@ -333,7 +339,7 @@ function WorkerTakeLook({ w: worker }: { w: Worker }) {
         }}
         className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
       >
-        Open chat
+        Open {worker.who}&apos;s chat
       </button>
     ) : null;
   return (

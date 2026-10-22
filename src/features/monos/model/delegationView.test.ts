@@ -73,7 +73,7 @@ describe("batchRollup", () => {
     expect(launchState({ state: "working", title: "x" }, { state: "running", stallKind: "quiet" })).toBe("stuck");
     expect(launchState(undefined, { state: "running", stallKind: "idle" })).toBe("stuck");
     expect(launchState({ state: "input", title: "x" }, { state: "running", stallKind: "quiet" })).toBe("input");
-    expect(batchRollup(["working", "stuck", "failed"])).toBe("Delegated 3: 1 working, 1 stuck, 1 failed");
+    expect(batchRollup(["working", "stuck", "failed"])).toBe("Delegated 3: 1 working, 1 with its Lead, 1 failed");
   });
 });
 

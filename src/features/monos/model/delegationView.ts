@@ -21,7 +21,8 @@ const ROLLUP_ORDER: ReadonlyArray<[RollupState, (n: number) => string]> = [
   ["working", (n) => `${n} working`],
   ["waiting", (n) => `${n} waiting for a free worker`],
   ["input", (n) => `${n} waiting`],
-  ["stuck", (n) => `${n} stuck`],
+  // r30b: a stalled worker is its Lead's, never "stuck".
+  ["stuck", (n) => `${n} with its Lead`],
   ["failed", (n) => `${n} failed`],
   ["stopped", (n) => `${n} stopped`],
   ["done", (n) => `${n} done`],

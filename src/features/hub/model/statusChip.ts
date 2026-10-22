@@ -10,6 +10,7 @@
 // The job logic is untouched: only what the row says and its colour.
 import { gaveUpAsNeedsYou } from "./hubWork";
 import type { StuckState, Worker } from "./types";
+import { stuckOwner } from "../../monos/model/workerStuck";
 
 export type ChipTone = "red" | "grey";
 export type Chip = { word: string; tone: ChipTone };
@@ -35,7 +36,7 @@ export function stuckChip(state: StuckState, lead?: string | null): Chip {
  * A Lead's failed turn, by the error kind the app already has (`plainFailure` in turnFailure.ts turns the provider's
  * error class into a tone): red = only Ash can fix it, grey = it should come right by itself or with Try again.
  */
-export function failureChip(tone: "red" | "amber" | undefined): Chip {
+export function failureChip(tone: "red" | "grey" | undefined): Chip {
   return tone === "red" ? NEEDS_YOU : CANT_ANSWER;
 }
 
@@ -52,7 +53,12 @@ export function sentNote(sentText: string | undefined, gotIt: string | undefined
 export function workerChip(w: Pick<Worker, "stuck" | "who" | "stuckWorker" | "finishedAt" | "leadCantAnswer">): Chip | undefined {
   if (w.finishedAt || !w.stuck) return undefined;
   if (w.leadCantAnswer) return failureChip(w.leadCantAnswer);
-  if (w.stuck !== "lead_gave_up" && w.stuckWorker) return withLead(w.who);
+  // r30b: the app's own worker under the job, by the red rule (workerStuck.ts stuckOwner): red only for a billing or
+  // sign-in refusal, grey Retrying while a retry has it, else grey With <Lead>.
+  if (w.stuck !== "lead_gave_up" && w.stuckWorker) {
+    const owner = w.stuckWorker.kind === "asking" ? "with-lead" : stuckOwner(w.stuckWorker);
+    return owner === "needs-you" ? NEEDS_YOU : owner === "retrying" ? RETRYING : withLead(w.who);
+  }
   return stuckChip(w.stuck, w.who);
 }
 

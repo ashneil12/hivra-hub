@@ -18,8 +18,8 @@ export function MonoRailMascot({
   letter?: string;
   color: string;
   status?: MonoStatus;
-  /** A failed last turn: red (fix something first) or amber (Try again can work). */
-  tone?: "red" | "amber";
+  /** A failed last turn: red (fix something first) or grey (Try again can work). */
+  tone?: "red" | "grey";
   className?: string;
 }) {
   return (
@@ -64,8 +64,8 @@ export function MonoStatusDot({
   /** Unused: a working dot is grey, not the Mono's colour. Kept so callers needn't change. */
   color?: string;
   className: string;
-  /** A failed last turn: red (fix something first) or amber (Try again can work). */
-  tone?: "red" | "amber";
+  /** A failed last turn: red (fix something first) or grey (Try again can work). */
+  tone?: "red" | "grey";
 }) {
   return (
     <span

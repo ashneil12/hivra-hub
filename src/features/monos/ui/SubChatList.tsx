@@ -7,7 +7,7 @@ import { useState } from "react";
 import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
 import { shownSubChats, subChatsOpen, toggleSubChats, type subChatAttention } from "../model/subChats";
-import { delegationLine, runningFor, type StuckWorker } from "../model/workerStuck";
+import { delegationLine, runningFor, stuckOwner, type StuckWorker } from "../model/workerStuck";
 
 /** A child chat's state as a small mark: working, asking its Lead, stuck, done, failed or stopped. */
 export function ChildChatMark({ state, stalled }: { state: ChildChat["state"]; stalled?: boolean }) {
@@ -64,6 +64,7 @@ export function SubChatList({
   children,
   attention,
   stuckSplit,
+  leadName = "its Lead",
   now,
   onOpen,
 }: {
@@ -73,8 +74,10 @@ export function SubChatList({
   owner: string;
   children: readonly ChildChat[];
   attention: ReturnType<typeof subChatAttention>;
-  /** "1 working · 2 stuck", said to a screen reader on the fold. */
+  /** "1 working · 2 with EXO lead", said to a screen reader on the fold. */
   stuckSplit?: string;
+  /** Who its sub-chats answer to ("EXO lead"), for "2 with EXO lead" on the fold (r30b). */
+  leadName?: string;
   now: number;
   onOpen: (chat: ChildChat) => void;
 }) {
@@ -83,8 +86,15 @@ export function SubChatList({
   const { shown, more } = shownSubChats(children, attention.stuck, all);
   const count = `${children.length} ${children.length === 1 ? "sub-chat" : "sub-chats"}`;
   // Folded, it says what needs a look: stuck (stalled or failed) and, apart, what only waits on its Lead's answer.
-  const stuckCount = [...attention.stuck.values()].filter((s) => s.kind !== "asking").length;
+  // r30b, the red rule: never "stuck". A stopped one is a retry's or its Lead's (grey), or Ash's (red) only when its
+  // provider refused it for billing or sign-in.
+  const stopped = [...attention.stuck.values()].filter((s) => s.kind !== "asking");
+  const stuckCount = stopped.length;
   const waitingCount = attention.stuck.size - stuckCount;
+  const owned = (owner: ReturnType<typeof stuckOwner>) => stopped.filter((s) => stuckOwner(s) === owner).length;
+  const retryingCount = owned("retrying");
+  const withLeadCount = owned("with-lead");
+  const needsYouCount = owned("needs-you");
   const attrs = ATTRS;
   return (
     <div className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">
@@ -103,7 +113,11 @@ export function SubChatList({
         <span className="min-w-0 truncate">
           {count}
           {!open && waitingCount ? ` · ${waitingCount} waiting` : ""}
-          {!open && stuckCount ? ` · ${stuckCount} stuck` : ""}
+          {!open && retryingCount ? ` · ${retryingCount} retrying` : ""}
+          {!open && withLeadCount ? ` · ${withLeadCount} with ${leadName}` : ""}
+          {!open && needsYouCount ? (
+            <span className="text-red-400" data-sub-chats-needs-you>{` · ${needsYouCount} needs you`}</span>
+          ) : null}
         </span>
       </button>
       {open ? (

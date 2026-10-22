@@ -31,7 +31,8 @@ describe("withStuckWorkers", () => {
     const rows = [top, row("a"), row("b", { state: "failed", errorClass: "usage_limit", settledAt: NOW - 2 * MIN })];
     const [w] = withStuckWorkers([workerOf(job({}), group, NOW)], rows, NOW);
     expect(jobState(w)).toBe("stuck");
-    expect(w.stuckReason).toBe("Failed: usage limit reached");
+    // r30b: the app's own words, one plain line (stuckChip.ts plainStuckLine).
+    expect(w.stuckReason).toBe("Out of usage");
     expect(w.stuckWorker?.row.childSession).toBe("w-b");
   });
 

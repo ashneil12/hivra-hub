@@ -225,6 +225,7 @@ import { GithubStarPrompt } from "./GithubStarPrompt";
 import {
   isMonoSession,
   listMonos,
+  monoForSession,
   MONO_STATUS_LABEL,
   monoLook,
   monosSnapshot,
@@ -4466,6 +4467,12 @@ export function groupStartedSessions<T extends { id: string }>(
 
 const NO_MODIFIERS = { shiftKey: false, ctrlKey: false, metaKey: false };
 
+/** The Mono a team chat's workers answer to, by name ("EXO lead"), for "2 with EXO lead" (r30b). */
+function teamLeadName(session: string): string {
+  const mono = monoForSession(session);
+  return mono ? monoLook(mono).name : "its Lead";
+}
+
 /**
  * A team chat's sub-chats (hub/model/codingTeamList.ts), folded under a count until Ash opens them or one is stuck,
  * asking or failed (monos/ui/SubChatList.tsx). Its own clock, so "No output for 9 min" counts up without the whole list
@@ -4491,7 +4498,8 @@ function TeamSubChats({
       owner={parent}
       children={subChats}
       attention={attention}
-      stuckSplit={workSplit(counts)}
+      stuckSplit={workSplit(counts, teamLeadName(parent))}
+      leadName={teamLeadName(parent)}
       now={now}
       onOpen={onOpen}
     />

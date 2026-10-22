@@ -35,7 +35,11 @@ describe("agent notes from the delegation rows", () => {
     expect(agentNoteText(asked[1])).toBe('Worker "Fix the save bug" messaged Lead: Which format? [JSON | binary]');
     const failed = agentNotesFor(row("f", { state: "failed", error: "The build broke.", settledAt: NOW - MIN }), NOW, all);
     expect(failed[1]).toMatchObject({ kind: "stuck", line: "Failed: the build broke" });
-    expect(agentNoteText(failed[1])).toBe('Worker "Fix the save bug" got stuck: Failed: the build broke');
+    expect(failed[1].owner).toBe("with-lead");
+    expect(agentNoteText(failed[1])).toBe('Worker "Fix the save bug" is with Lead: Failed: the build broke');
+    const refused = agentNotesFor(row("r", { state: "failed", errorClass: "billing", error: "402", settledAt: NOW - MIN }), NOW, all);
+    expect(refused[1].owner).toBe("needs-you");
+    expect(agentNoteText(refused[1])).toMatch(/^Worker "Fix the save bug" needs you/);
     const done = agentNotesFor(row("d", { state: "completed", result: "Fixed it.\nDetails…", settledAt: NOW - MIN }), NOW, all);
     expect(done[1]).toMatchObject({ kind: "reported", line: "Fixed it.", at: NOW - MIN });
   });

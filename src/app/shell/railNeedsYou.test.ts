@@ -61,7 +61,7 @@ describe("which failures are Ash's to fix", () => {
   });
 });
 
-const mount = (state: { status: "failed"; activity: string; tone: "red" | "amber" }, onOpen = vi.fn()) => {
+const mount = (state: { status: "failed"; activity: string; tone: "red" | "grey" }, onOpen = vi.fn()) => {
   act(() =>
     root.render(createElement(MonoRailSection, { states: new Map([[lead, state]]) as never, onOpen, onCreate: () => {}, onDelete: () => {} })),
   );
@@ -85,7 +85,7 @@ describe("a Lead's failed turn on the rail", () => {
   });
 
   it("it should come right by itself: a grey Can't answer with the reason, nothing red or amber", () => {
-    mount({ status: "failed", activity: "The model is overloaded", tone: "amber" });
+    mount({ status: "failed", activity: "The model is overloaded", tone: "grey" });
     const line = container.querySelector<HTMLElement>(`[data-mono-failed="${lead}"]`)!;
     expect(line.dataset.monoFailedChip).toBe("Can't answer");
     expect(line.querySelector("[data-hub-circle=grey]")?.getAttribute("aria-label")).toBe("Can't answer");

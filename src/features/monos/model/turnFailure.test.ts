@@ -55,9 +55,9 @@ describe("a failed turn is a state of its own", () => {
     expect(lastTurnFailure(saved, NOW)?.reason).toBe("Out of credits");
   });
 
-  it("a 529 reads overloaded, amber: Try again can work", () => {
+  it("a 529 reads overloaded, grey: Try again can work", () => {
     const session = failed({ message: "API overloaded (529): Overloaded", errorClass: "overloaded", retryable: true });
-    expect(lastTurnFailure(session, NOW)).toMatchObject({ reason: "The model is overloaded", tone: "amber", retryable: true });
+    expect(lastTurnFailure(session, NOW)).toMatchObject({ reason: "The model is overloaded", tone: "grey", retryable: true });
   });
 
   it("a usage limit says until when, in the Mac's own time", () => {
@@ -65,7 +65,7 @@ describe("a failed turn is a state of its own", () => {
     const session = { ...failed({ message: "Usage limit reached: You've hit your limit", errorClass: "usage_limit", retryable: true, resetsAt }), usageLimit: { resetsAt } };
     expect(lastTurnFailure(session, NOW)?.reason).toBe("Out of usage until 23:00");
     // Stopped at a limit with no notice in this chat (a refused window): the same state.
-    expect(lastTurnFailure({ blocks: [], busy: false, usageLimit: { resetsAt } }, NOW)).toMatchObject({ reason: "Out of usage until 23:00", tone: "amber", blockId: "usage-limit" });
+    expect(lastTurnFailure({ blocks: [], busy: false, usageLimit: { resetsAt } }, NOW)).toMatchObject({ reason: "Out of usage until 23:00", tone: "grey", blockId: "usage-limit" });
   });
 
   it("plain reasons for each kind, and a clock with its day when the reset is more than a day off", () => {
@@ -73,7 +73,7 @@ describe("a failed turn is a state of its own", () => {
     expect(plainFailure({ errorClass: "billing" }, "account on hold", NOW)).toEqual({ reason: "Billing refused", tone: "red" });
     expect(plainFailure({ errorClass: "provider_error", retryable: true }, "Connection error.", NOW).reason).toBe("Lost the connection to the model");
     expect(plainFailure({ errorClass: "provider_error", retryable: false }, "400 bad request", NOW)).toEqual({ reason: "The model refused the request", tone: "red" });
-    expect(plainFailure({}, "Claude exited", NOW)).toEqual({ reason: "Its last turn failed", tone: "amber" });
+    expect(plainFailure({}, "Claude exited", NOW)).toEqual({ reason: "Its last turn failed", tone: "grey" });
     expect(resetClock(new Date(2026, 9, 22, 5, 0).getTime(), NOW)).toMatch(/^[A-Z][a-z]{2} 05:00$/);
   });
 

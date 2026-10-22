@@ -1,5 +1,5 @@
 // Agent-to-agent notes in a chat (Ash, 21 Oct 20:45): what agents say to each other shows inline, as small notes in the
-// chat that owns the work, not in a log. "Lead messaged Worker X", "Worker X messaged Lead", "Worker X got stuck",
+// chat that owns the work, not in a log. "Lead messaged Worker X", "Worker X messaged Lead", "Worker X is with Hivra lead",
 // "Worker X reported". A note opens that agent's chat when one exists; with none, it is plain text (no dead link).
 //
 // Data side only (CoS); PM owns the look (ui/AgentNoteRow.tsx is a plain default to restyle). Fed by the delegation
@@ -8,7 +8,7 @@
 import type { Block } from "../../sessions/model/session";
 import type { Delegation } from "./delegations";
 import { findMono } from "./mono";
-import { storedQuestion, stuckOf } from "./workerStuck";
+import { storedQuestion, stuckOf, stuckOwner, type StuckOwner } from "./workerStuck";
 
 export type AgentNoteKind = "messaged" | "stuck" | "reported";
 
@@ -27,6 +27,11 @@ export type AgentNote = {
   at: number;
   /** One short line: the brief's first line, the question, why it is stuck, or the report's first line. */
   line?: string;
+  /**
+   * A stopped worker's note (kind `stuck`): whose it is under the red rule (r30b; workerStuck.ts stuckOwner): its Lead's,
+   * a retry's, or Ash's (a billing or sign-in refusal). Missing on notes made before r30b: read as its Lead's.
+   */
+  owner?: StuckOwner;
 };
 
 const firstLine = (text: string | null | undefined, max = 140): string | undefined => {
@@ -72,17 +77,28 @@ export function agentNotesFor(
   const stuck = stuckOf(row, now);
   if (stuck?.kind === "asking")
     notes.push({ ...base, kind: "messaged", from: worker, to: owner, at: stuck.since, line: firstLine(storedQuestion(row.pendingQuestion).text) });
-  else if (stuck) notes.push({ ...base, kind: "stuck", from: worker, to: owner, at: stuck.since, line: firstLine(stuck.line) });
+  else if (stuck)
+    notes.push({ ...base, kind: "stuck", from: worker, to: owner, at: stuck.since, line: firstLine(stuck.line), owner: stuckOwner(stuck) });
   if (row.state === "completed")
     notes.push({ ...base, kind: "reported", from: worker, to: owner, at: row.settledAt ?? row.updatedAt, line: firstLine(row.result) });
   return notes;
+}
+
+/**
+ * What a stopped worker's note says after its name, under the red rule (r30b): " is with Hivra lead" or " is retrying"
+ * in grey, " needs you" only when Ash must act. Never "got stuck".
+ */
+export function stoppedWords(note: Pick<AgentNote, "owner" | "to">): string {
+  if (note.owner === "needs-you") return " needs you";
+  if (note.owner === "retrying") return " is retrying";
+  return ` is with ${note.to.name}`;
 }
 
 /** The note in plain words (the Block's text, and what a screen reader hears). */
 export function agentNoteText(note: AgentNote): string {
   const head =
     note.kind === "stuck"
-      ? `${note.from.name} got stuck`
+      ? `${note.from.name}${stoppedWords(note)}`
       : note.kind === "reported"
         ? `${note.from.name} reported to ${note.to.name}`
         : `${note.from.name} messaged ${note.to.name}`;

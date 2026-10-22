@@ -1,4 +1,4 @@
-// A Mono whose last turn failed, where Ash looks (Today, Being built): "Tally lead can't answer: Out of credits", amber
+// A Mono whose last turn failed, where Ash looks (Today, Being built): "Tally lead can't answer: Out of credits", grey
 // or red like a stuck worker (StuckWorkerCard), with Try again, Open and Dismiss; what the provider said stays behind
 // "Details". The Monos rail shows the same state in one line (MonoRailSection).
 import { failureChip } from "../../hub/model/statusChip";

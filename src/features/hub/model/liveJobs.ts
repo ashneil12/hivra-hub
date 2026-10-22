@@ -119,7 +119,7 @@ export function useNow(ms = 30_000): number {
  */
 export function withFailedLeads(
   rows: readonly Worker[],
-  failureOf: (monoId: string) => { name: string; reason: string; tone: "red" | "amber" } | undefined,
+  failureOf: (monoId: string) => { name: string; reason: string; tone: "red" | "grey" } | undefined,
 ): Worker[] {
   return rows.map((w) => {
     if (w.finishedAt || w.stuck || w.state === "parked" || !w.lead) return w;

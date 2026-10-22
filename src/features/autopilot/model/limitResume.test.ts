@@ -130,7 +130,7 @@ describe("Paused until, instead of Needs you", () => {
     expect(armed.status).toBe("paused");
     expect(armed.activity).toMatch(/^Paused until /);
     const unarmed = monoState(chat({ usageLimit: { resetsAt: Date.now() + 3_600_000 } }));
-    expect(unarmed).toMatchObject({ status: "failed", tone: "amber" });
+    expect(unarmed).toMatchObject({ status: "failed", tone: "grey" });
     expect(unarmed.activity).toMatch(/^Out of usage until \d\d:\d\d$/);
   });
 

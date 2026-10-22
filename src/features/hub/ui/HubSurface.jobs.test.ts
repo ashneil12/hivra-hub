@@ -287,7 +287,7 @@ describe("Being built, live", () => {
     await until(() => container.querySelectorAll("[data-hub-worker]").length === 4, "rows");
     const cols = [...container.querySelectorAll("[data-hub-worker]")].map((r) => [...r.children].slice(1).map((c) => c.className.split(" ").filter((k) => /^w-\d+$/.test(k)).join("")));
     expect(new Set(cols.map((c) => c.join(","))).size).toBe(1);
-    expect(cols[0]).toEqual(["w-28", "w-24", "w-24"]);
+    expect(cols[0]).toEqual(["w-28", "w-24", "w-44"]);
   });
 
   it("a change from the feed lands in place: a job's state changes, a new one joins the end, nothing moves", async () => {
@@ -403,15 +403,45 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
   });
   afterEach(() => resetDelegationStore());
 
-  it("a failed worker beside a running one makes the job Stuck, with its reason, and Open chat opens its Lead's chat (D5: Ash answers the Lead)", async () => {
-    setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", errorClass: "billing", settledAt: at - 60_000 })]);
+  // r30b, the red rule on Being built: never "Stuck" or "Open chat". A worker its Lead has reads grey "With Hivra lead"
+  // with "Open Hivra lead's chat"; one refused for credits is the red Needs you with its plain reason and the link.
+  it("a failed worker its Lead has reads grey With <Lead> in plain words, and Open <Lead>'s chat opens its Lead's chat (D5)", async () => {
+    setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", settledAt: at - 60_000,
+      error: "Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers)" })]);
     mount(view());
     const job = () => container.querySelector('[data-hub-worker="j_mail"]');
-    await until(() => job()?.querySelector('[data-hub-job-state="stuck"]'), "the stuck job");
-    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Failed: billing refused");
-    act(() => job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!.click());
+    await until(() => job()?.querySelector('[data-hub-job-state="stuck"]'), "the job");
+    expect(job()!.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
+    expect(job()!.querySelector("[data-hub-circle=red]")).toBeNull();
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("This worker was set to fail on purpose for a test");
+    const open = job()!.querySelector<HTMLButtonElement>('[data-hub-stuck-action="open"]')!;
+    expect(open.textContent).toBe("Open Hivra lead's chat");
+    expect(text()).not.toMatch(/\bStuck\b|Open chat\b|dev-faults/);
+    act(() => open.click());
     expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat");
     expect(actions.openChild).not.toHaveBeenCalled();
+  });
+
+  it("a worker refused for credits is the red Needs you with its plain reason and Open <Lead>'s chat, no second button", async () => {
+    setDelegationRows([top, delegation("a"), delegation("b", { state: "failed", errorClass: "billing", settledAt: at - 60_000, error: "Billing refused (402)" })]);
+    mount(view());
+    const job = () => container.querySelector('[data-hub-worker="j_mail"]');
+    await until(() => job()?.querySelector("[data-hub-circle=red]"), "the Needs-you job");
+    expect(job()!.querySelector("[data-hub-chip]")?.textContent).toBe("Needs you");
+    expect(job()!.querySelector("[data-hub-job-reason]")?.textContent).toBe("Out of credits");
+    expect(job()!.querySelector("[data-hub-job-needs] [data-hub-open-lead]")?.textContent).toBe("Open Hivra lead's chat");
+    expect(job()!.querySelector('[data-hub-stuck-action="open"]')).toBeNull();
+    expect(text()).not.toMatch(/\bStuck\b|Open chat\b|402/);
+  });
+
+  it("the job's activity names the worker's chip, never Stuck", async () => {
+    setDelegationRows([top, delegation("a"), delegation("s", { stallKind: "idle", stallReason: "Stopped without reporting back", stalledAt: at - 7 * 60_000 })]);
+    mount(view());
+    await until(() => container.querySelector('[data-hub-worker="j_mail"] [data-hub-job-state="stuck"]'), "the job");
+    act(() => container.querySelector<HTMLElement>('[data-hub-worker="j_mail"]')!.click());
+    await until(() => container.querySelector("[data-hub-job-stuck-heading]"), "the activity");
+    expect(container.querySelector("[data-hub-job-stuck-heading]")?.textContent).toBe("With Hivra lead");
+    expect(text()).not.toMatch(/\bStuck\b|Open chat\b/);
   });
 
   it("a question on its Lead reads Waiting with the question, and Answer opens the answer under the row", async () => {

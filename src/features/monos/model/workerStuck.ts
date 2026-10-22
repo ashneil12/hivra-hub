@@ -16,6 +16,7 @@ import { useSyncExternalStore } from "react";
 import { isProviderErrorClass, PROVIDER_ERROR_LABEL } from "../../../integrations/harness/core/providerFailure";
 import { isOpenDelegation, type Delegation } from "./delegations";
 import { batchRollup, CHILD_CHATS_RECENT_MS, type RollupState } from "./delegationView";
+import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
 
 export type StuckKind = "asking" | "stalled" | "failed";
 
@@ -175,7 +176,7 @@ export function stallLine(row: Pick<Delegation, "stallKind" | "stallReason" | "s
     case "idle":
       return `${reason || "Stopped without reporting back"} · ${minutes(now - since)} ago`;
     default:
-      return reason || "Stuck";
+      return reason || "No progress";
   }
 }
 
@@ -270,7 +271,23 @@ export type WorkCounts = {
   stuck: number;
   /** Of `stuck`, the ones only Ash can sort (a billing or sign-in refusal): the rail's red "needs you" (r30). */
   needsYou?: number;
+  /** Of `stuck`, the ones a retry has (a crash self-repair is retrying, or its Lead retried it): grey "retrying" (r30b). */
+  retrying?: number;
 };
+
+/**
+ * Whose a stalled or failed worker is, under the red rule (r30, r30b): Ash's only when its provider refused it for
+ * billing or sign-in ("needs you", red); a retry's while one has it ("retrying", grey); else its Lead's ("with <Lead>",
+ * grey). Never "stuck".
+ */
+export type StuckOwner = "needs-you" | "retrying" | "with-lead";
+export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner {
+  if (stuck.kind === "failed" && (stuck.row.errorClass === "billing" || stuck.row.errorClass === "auth")) return "needs-you";
+  const action = leadAction(stuck.row);
+  if (action?.kind === "retried" || action?.kind === "split") return "retrying";
+  if (stuck.kind === "failed" && repairableFailure(stuck.row) && failedTimes(stuck.row) <= REPAIR_BACKOFF_MS.length) return "retrying";
+  return "with-lead";
+}
 
 /** What a chat has out: working, asking its Lead, and stuck (stalled or failed). */
 export function workCounts(ownerSession: string, rows: readonly Delegation[], now: number): WorkCounts {
@@ -282,28 +299,46 @@ export function workCounts(ownerSession: string, rows: readonly Delegation[], no
 
 /** The same count over any set of rows (a Mono's, across the chats it has had). */
 export function countWork(rows: readonly Delegation[], now: number): WorkCounts {
-  const counts: WorkCounts = { working: 0, asking: 0, stuck: 0, needsYou: 0 };
+  const counts: WorkCounts = { working: 0, asking: 0, stuck: 0, needsYou: 0, retrying: 0 };
   for (const row of newestPerChild(rows)) {
     const stuck = stuckOf(row, now);
     if (stuck?.kind === "asking") counts.asking++;
     else if (stuck) {
       counts.stuck++;
-      if (stuck.kind === "failed" && (row.errorClass === "billing" || row.errorClass === "auth")) counts.needsYou = (counts.needsYou ?? 0) + 1;
+      const owner = stuckOwner(stuck);
+      if (owner === "needs-you") counts.needsYou = (counts.needsYou ?? 0) + 1;
+      else if (owner === "retrying") counts.retrying = (counts.retrying ?? 0) + 1;
     }
     else if (row.state === "running") counts.working++;
   }
   return counts;
 }
 
+/** Of what is out, how many sit with its Lead: stalled or failed, neither retrying nor Ash's (r30b). */
+export function withLeadCount(counts: WorkCounts): number {
+  return Math.max(0, counts.stuck - (counts.needsYou ?? 0) - (counts.retrying ?? 0));
+}
+
+/** The parts after working and waiting, in Ash's words: "1 retrying · 2 with Hivra lead · 1 needs you" (r30b). */
+function stoppedParts(counts: WorkCounts, lead: string): string[] {
+  const withLead = withLeadCount(counts);
+  return [
+    counts.retrying ? `${counts.retrying} retrying` : "",
+    withLead ? `${withLead} with ${lead.trim() || "its Lead"}` : "",
+    counts.needsYou ? `${counts.needsYou} needs you` : "",
+  ];
+}
+
 /**
- * "2 working · 1 waiting · 1 stuck", or nothing when nothing is out. One word for a worker that asked its Lead a
- * question everywhere (Ash, 22 Oct): it is waiting on its Lead, never "asking", "stuck" or "Need approval".
+ * "2 working · 1 waiting · 1 retrying · 1 with Hivra lead · 1 needs you", or nothing when nothing is out. One word for a
+ * worker that asked its Lead a question everywhere (Ash, 22 Oct): it is waiting on its Lead, never "asking", "stuck" or
+ * "Need approval". A stalled or failed worker is its Lead's or a retry's; "needs you" only when Ash must act (r30b).
  */
-export function workSplit(counts: WorkCounts): string | undefined {
+export function workSplit(counts: WorkCounts, lead = "its Lead"): string | undefined {
   const parts = [
     counts.working ? `${counts.working} working` : "",
     counts.asking ? `${counts.asking} waiting` : "",
-    counts.stuck ? `${counts.stuck} stuck` : "",
+    ...stoppedParts(counts, lead),
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : undefined;
 }
@@ -313,15 +348,26 @@ export function workSplit(counts: WorkCounts): string | undefined {
  * waits on its Lead, and what is stuck ("2 working · 1 waiting · 1 stuck", Ash's words, 20 Oct). A worker that asked its
  * Lead a question is waiting, not stuck (Ash, 22 Oct): the Lead answers it or asks Ash in its own chat (D5).
  */
-export function shortSplit(counts: WorkCounts): { working: number; waiting: number; stuck: number; text?: string } {
+export function shortSplit(
+  counts: WorkCounts,
+  lead = "its Lead",
+): { working: number; waiting: number; stuck: number; retrying: number; withLead: number; needsYou: number; text?: string } {
   const text = [
     counts.working ? `${counts.working} working` : "",
     counts.asking ? `${counts.asking} waiting` : "",
-    counts.stuck ? `${counts.stuck} stuck` : "",
+    ...stoppedParts(counts, lead),
   ]
     .filter(Boolean)
     .join(" · ");
-  return { working: counts.working, waiting: counts.asking, stuck: counts.stuck, ...(text ? { text } : {}) };
+  return {
+    working: counts.working,
+    waiting: counts.asking,
+    stuck: counts.stuck,
+    retrying: counts.retrying ?? 0,
+    withLead: withLeadCount(counts),
+    needsYou: counts.needsYou ?? 0,
+    ...(text ? { text } : {}),
+  };
 }
 
 /**

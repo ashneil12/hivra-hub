@@ -39,7 +39,9 @@ describe("the words", () => {
       { kind: "text", text: " messaged " },
       { kind: "name", text: 'Worker "Example: fix the save bug"', opens: "w-1" },
     ]);
-    expect(noteParts(note({ kind: "stuck", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" got stuck');
+    expect(noteParts(note({ kind: "stuck", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" is with Lead');
+    expect(noteParts(note({ kind: "stuck", from: worker, to: lead, owner: "retrying" })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" is retrying');
+    expect(noteParts(note({ kind: "stuck", from: worker, to: lead, owner: "needs-you" })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" needs you');
     expect(noteParts(note({ kind: "reported", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" reported to Lead');
     expect(noteParts(note({ target: null })).head.some((p) => p.kind === "name" && p.opens)).toBe(false);
   });
@@ -104,7 +106,7 @@ describe("the row", () => {
 
   it("with no chat to open, it is plain text: no link at all", () => {
     render(createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, target: null }) }));
-    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('Worker "Example: fix the save bug" got stuck');
+    expect(container.querySelector("[data-agent-note]")?.textContent).toBe('Worker "Example: fix the save bug" is with Lead');
     expect(container.querySelector("button")).toBeNull();
   });
 });
@@ -127,8 +129,8 @@ describe("the fold", () => {
   });
 });
 
-describe("the Stuck ring (rounds 22-23)", () => {
-  it("a stuck note carries a grey ring (red is only for Needs you, r27), ring only with the accessible name 'Stuck'; routine notes don't", () => {
+describe("the stopped worker's ring (rounds 22-23; r30b: never Stuck)", () => {
+  it("a stopped worker's note carries a grey ring named With <Lead> (red is only for Needs you), ring only; routine notes don't", () => {
     render(createElement("div", null,
       createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, line: "Example: the test save file is missing" }) }),
       createElement(AgentNoteRow, { note: note() }),
@@ -137,22 +139,35 @@ describe("the Stuck ring (rounds 22-23)", () => {
     ));
     const rows = [...container.querySelectorAll<HTMLElement>("[data-agent-note]")];
     const [stuck, ...routine] = rows;
-    // Today's own mark (CircleWord), ring only: the grey circle, no visible word, named "Stuck".
+    // Today's own mark (CircleWord), ring only: the grey circle, no visible word, named for whose it is.
     const ring = stuck.querySelector<HTMLElement>("[data-agent-note-ring] [data-hub-circle=grey]")!;
     expect(ring).not.toBeNull();
     expect(ring.querySelector("circle")!.getAttribute("stroke")).toBe("currentColor");
     expect(ring.getAttribute("role")).toBe("img");
-    expect(ring.getAttribute("aria-label")).toBe("Stuck");
+    expect(ring.getAttribute("aria-label")).toBe("With Lead");
     expect(ring.textContent).toBe("");
-    // The line says stuck once.
-    expect(stuck.textContent).toBe('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');
-    expect(stuck.textContent!.match(/stuck/gi)).toHaveLength(1);
+    expect(stuck.textContent).toBe('Worker "Example: fix the save bug" is with Lead: Example: the test save file is missing');
+    expect(stuck.textContent).not.toMatch(/stuck/i);
     expect(stuck.className).toContain("text-content/50");
     expect(stuck.className).not.toMatch(/red|rounded|bg-|border|shadow/);
-    expect(stuck.getAttribute("aria-label")).toBe('Worker "Example: fix the save bug" got stuck: Example: the test save file is missing');
+    expect(stuck.getAttribute("aria-label")).toBe('Worker "Example: fix the save bug" is with Lead: Example: the test save file is missing');
     for (const row of routine) {
       expect(row.querySelector("[data-hub-circle]"), row.getAttribute("data-agent-note")!).toBeNull();
       expect(row.querySelector("svg")).toBeNull();
     }
+  });
+});
+
+describe("the ring under the red rule (r30b)", () => {
+  it("is grey Retrying while a retry has it, and red Needs you only when Ash must act", () => {
+    render(createElement("div", null,
+      createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, owner: "retrying" }) }),
+      createElement(AgentNoteRow, { note: note({ kind: "stuck", from: worker, to: lead, owner: "needs-you", line: "Out of credits" }) }),
+    ));
+    const [retrying, needs] = [...container.querySelectorAll<HTMLElement>("[data-agent-note]")];
+    expect(retrying.querySelector("[data-hub-circle=grey]")?.getAttribute("aria-label")).toBe("Retrying");
+    expect(needs.querySelector("[data-hub-circle=red]")?.getAttribute("aria-label")).toBe("Needs you");
+    expect(needs.textContent).toBe('Worker "Example: fix the save bug" needs you: Out of credits');
+    expect(container.textContent).not.toMatch(/stuck/i);
   });
 });

@@ -1,6 +1,6 @@
 // An agent-to-agent note in a chat (model/agentNotes.ts, CoS's data). Critiquito's look: one quiet line, muted grey,
 // no bubble, no log; the agent with a chat to open is its clickable name (no chat: plain text, never a dead link).
-// Several landing together fold into one line that expands (AgentNoteGroup); a stuck note never folds. Words: model/agentNoteView.ts.
+// Several landing together fold into one line that expands (AgentNoteGroup); a stopped worker's note never folds. Words: model/agentNoteView.ts.
 import { useState } from "react";
 import { ChevronRight } from "../../../shared/ui/icons";
 import { CircleWord } from "../../hub/ui/StatusMark";
@@ -11,6 +11,13 @@ import { foldedLine, noteParts, noteText } from "../model/agentNoteView";
 /** Opens the note's chat under the chat that owns the work. */
 export function openAgentNote(note: AgentNote): void {
   if (note.target) delegationActions()?.openChild(note.from.session === note.target ? note.to.session : note.from.session, note.target);
+}
+
+/** A stopped worker's ring: its chip under the red rule (r30b). */
+function noteRing(note: AgentNote): { circle: "red" | "grey"; word: string } {
+  if (note.owner === "needs-you") return { circle: "red", word: "Needs you" };
+  if (note.owner === "retrying") return { circle: "grey", word: "Retrying" };
+  return { circle: "grey", word: `With ${note.to.name}` };
 }
 
 const LINE = "flex min-w-0 items-baseline gap-1 py-0.5 font-sans text-[12px] leading-5 text-content/50";
@@ -37,10 +44,14 @@ function NoteWords({ note }: { note: AgentNote }) {
 export function AgentNoteRow({ note, embedded = false }: { note: AgentNote; embedded?: boolean }) {
   return (
     <div className={`${embedded ? "" : "px-4"} ${LINE}`} data-agent-note={note.kind} aria-label={noteText(note)} role="note">
-      {/* Critiquito, rounds 22-23: a stuck note carries Today's own red Stuck ring (StatusMark), ring only (the words
-          already say "got stuck"; the ring's accessible name is "Stuck"), on the text's baseline; the words stay muted. */}
-      {/* Grey since r27: red is only for Needs you; a note that a worker got stuck is for reading, not acting on. */}
-      {note.kind === "stuck" ? <span className="shrink-0" data-agent-note-ring><CircleWord circle="grey" word="Stuck" ringOnly /></span> : null}
+      {/* Critiquito, rounds 22-23: a stopped worker's note carries Today's ring, ring only (the words say it), on the
+          text's baseline. r30b, the red rule: never "Stuck". Grey "With <Lead>" or "Retrying"; red "Needs you" only when
+          Ash must act (a billing or sign-in refusal). */}
+      {note.kind === "stuck" ? (
+        <span className="shrink-0" data-agent-note-ring={note.owner ?? "with-lead"}>
+          <CircleWord {...noteRing(note)} ringOnly />
+        </span>
+      ) : null}
       <NoteWords note={note} />
     </div>
   );

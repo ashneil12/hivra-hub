@@ -1,26 +1,27 @@
 // The two lines the delegation tree adds around a chat's composer (H4):
 // - a worker's chat runs on its own, so it shows "Runs on its own · Open <Lead>" instead of the composer; the Lead
 //   does the talking, and Ash can still jump in;
-// - a Lead with delegated work out reads what is out by name ("2 working: API, UI · 1 asking: Docs · 1 stuck: Tests";
+// - a Lead with delegated work out reads what is out by name ("2 working: API, UI · 1 asking: Docs · 1 with Hivra lead: Tests";
 //   "Waiting on N" without names; its count, "Delegated 3: 2 working, 1 failed", on hover), with one Stop for
 //   everything beneath it, and above it a card for each worker that is stuck (StuckWorkerCard.tsx);
 // - a Mono with a brief out to a coding team reads one line for it (Ash, 20 Oct: "Briefed EXO coding team: <task> · 2
-//   working · 1 stuck"), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
+//   working · 1 with EXO lead"; never "stuck", r30b), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
 import { useState } from "react";
 import { ChevronRight, Square, Terminal } from "../../../shared/ui/icons";
 import { briefedStatus, type BriefedTeam } from "../model/briefedTeams";
 import { workingLine } from "../model/leadFlow";
-import { shortSplit, workSplit, type StuckWorker } from "../model/workerStuck";
-import { StuckList, stuckTitle } from "./StuckWorkerCard";
+import { shortSplit, stuckOwner, workSplit, type StuckOwner, type StuckWorker } from "../model/workerStuck";
+import { leadNameOf, StuckList, stuckTitle } from "./StuckWorkerCard";
 
 /**
  * One brief to a coding team, as the briefing Mono's chat shows it: "Briefed EXO coding team: Fix the save bug · 2
- * working · 1 stuck" (asking counts as stuck; the stuck part amber, or red once one failed). Live (it reads the rows),
+ * working · 1 with EXO lead" (grey; red "needs you" only for what Ash must sort, r30b). Live (it reads the rows),
  * and one click opens the coding team on its Lead.
  */
 export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?: (brief: BriefedTeam) => void }) {
   const { counts } = brief;
-  const short = shortSplit(counts);
+  const lead = brief.to?.leadName ?? "its Lead";
+  const short = shortSplit(counts, lead);
   const team = brief.to?.team ?? "its coding team";
   const words = `Briefed ${team}: ${brief.title} · ${briefedStatus(brief)}`;
   return (
@@ -28,9 +29,9 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
       type="button"
       data-briefed-team={brief.row.id}
       data-briefed-project={brief.to?.projectId}
-      data-briefed-kind={brief.failed ? "failed" : counts.stuck ? "stuck" : counts.asking ? "asking" : "working"}
+      data-briefed-kind={short.needsYou ? "needs-you" : short.retrying ? "retrying" : short.withLead ? "with-lead" : counts.asking ? "asking" : "working"}
       disabled={!onOpen || !brief.to}
-      title={[workSplit(counts), brief.to ? `Open ${team} on ${brief.to.leadName}` : undefined].filter(Boolean).join("\n") || words}
+      title={[workSplit(counts, lead), brief.to ? `Open ${team} on ${brief.to.leadName}` : undefined].filter(Boolean).join("\n") || words}
       aria-label={brief.to ? `${words}. Open ${team}` : words}
       onClick={() => onOpen?.(brief)}
       className="group/brief flex w-full min-w-0 cursor-default items-center gap-2 rounded-2xl border border-content/10 px-4 py-2.5 text-left font-sans text-[12px] text-content/55 hover:bg-content/4 disabled:hover:bg-transparent"
@@ -48,10 +49,13 @@ export function BriefedTeamLine({ brief, onOpen }: { brief: BriefedTeam; onOpen?
               {short.working ? <span>{short.working} working</span> : null}
               {short.working && short.waiting ? <span aria-hidden> · </span> : null}
               {short.waiting ? <span data-briefed-waiting>{short.waiting} waiting</span> : null}
-              {(short.working || short.waiting) && short.stuck ? <span aria-hidden> · </span> : null}
-              {short.stuck ? (
-                <span className="text-content/60">{short.stuck} stuck</span>
-              ) : null}
+              {/* r30b: never "stuck". A retry's or its Lead's in grey; red only for what Ash must sort. */}
+              {(short.working || short.waiting) && short.retrying ? <span aria-hidden> · </span> : null}
+              {short.retrying ? <span className="text-content/60" data-briefed-retrying>{short.retrying} retrying</span> : null}
+              {(short.working || short.waiting || short.retrying) && short.withLead ? <span aria-hidden> · </span> : null}
+              {short.withLead ? <span className="text-content/60" data-briefed-with-lead>{short.withLead} with {lead}</span> : null}
+              {(short.working || short.waiting || short.retrying || short.withLead) && short.needsYou ? <span aria-hidden> · </span> : null}
+              {short.needsYou ? <span className="text-red-400" data-briefed-needs-you>{short.needsYou} needs you</span> : null}
             </>
           ) : (
             briefedStatus(brief)
@@ -103,7 +107,7 @@ export function DelegatedChatNotice({
     <>
       {stuck ? (
         <div className="w-full">
-          <StuckList stuck={[stuck]} now={now} variant="chat" label="Stuck" />
+          <StuckList stuck={[stuck]} now={now} variant="chat" label="Its work" />
         </div>
       ) : null}
       <div
@@ -174,24 +178,30 @@ export function DelegationWaitingLine({
   const [stopping, setStopping] = useState(false);
   if (count <= 0 && !failed.length && !unloaded.length && !stuck.length)
     return null;
-  // Stalled and failed workers are named as stuck; their cards above say how.
-  const stuckNames = stuck
-    .filter((s) => s.kind !== "asking")
-    .map((s) => stuckTitle(s));
+  // Stalled and failed workers are named by whose they are (r30b, the red rule): a retry's ("1 retrying: Tests"), its
+  // Lead's ("2 with Hivra lead: API, UI"), or Ash's only when its provider refused it ("1 needs you: Docs", red). Never
+  // "stuck"; their cards above say how.
+  const stopped = stuck.filter((s) => s.kind !== "asking");
+  const lead = stopped.length ? leadNameOf(stopped[0]) : "its Lead";
+  const ownedBy = (owner: StuckOwner) => stopped.filter((s) => stuckOwner(s) === owner).map((s) => stuckTitle(s));
+  const retrying = ownedBy("retrying");
+  const withLead = ownedBy("with-lead");
+  const needsYou = ownedBy("needs-you");
+  const stuckNames = stopped.map((s) => stuckTitle(s));
   const named = [
     workingLine({ working, asking }),
-    stuckNames.length
-      ? `${stuckNames.length} stuck: ${names(stuckNames)}`
-      : undefined,
+    retrying.length ? `${retrying.length} retrying: ${names(retrying)}` : undefined,
+    withLead.length ? `${withLead.length} with ${lead}: ${names(withLead)}` : undefined,
   ]
     .filter(Boolean)
     .join(" · ");
+  const needsYouPart = needsYou.length ? `${needsYou.length} needs you: ${names(needsYou)}` : undefined;
   // Briefs have their own lines: "Waiting on N" counts only the rest.
   const others = count - briefs.length;
-  const line = named || (others > 0 ? `Waiting on ${others}` : undefined);
+  const line = named || (needsYouPart ? "" : others > 0 ? `Waiting on ${others}` : undefined);
   return (
     <>
-      <StuckList stuck={stuck} now={now} variant="chat" label="Stuck workers" />
+      <StuckList stuck={stuck} now={now} variant="chat" label="Workers its Lead has out" />
       {briefs.length ? (
         <div data-briefed-teams className="flex flex-col gap-1.5 pb-1.5">
           {briefs.map((brief) => (
@@ -212,9 +222,15 @@ export function DelegationWaitingLine({
             {line}
           </span>
         ) : null}
+        {needsYouPart ? (
+          <span data-delegation-needs-you className="min-w-0 truncate text-red-400" title={needsYou.join(", ")}>
+            {line ? <span aria-hidden className="text-content/55">· </span> : null}
+            {needsYouPart}
+          </span>
+        ) : null}
         {failed.length ? (
           <span
-            className="min-w-0 truncate text-amber-400"
+            className="min-w-0 truncate text-content/60"
             title={failed.join(", ")}
           >
             Couldn&apos;t stop{" "}
@@ -224,7 +240,7 @@ export function DelegationWaitingLine({
         {unloaded.length ? (
           <span
             data-delegation-unloaded
-            className="min-w-0 truncate text-amber-400"
+            className="min-w-0 truncate text-content/60"
             title={unloaded.join(", ")}
           >
             Couldn&apos;t load the workers under{" "}

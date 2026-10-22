@@ -1,7 +1,7 @@
 // How an agent-to-agent note reads on screen (PM's half of the notes; CoS's agentNotes.ts is the data). Pure, so the
 // look can change without touching the events: the note's words split into parts, the one agent with a chat to open
 // marked as the link, and notes landing together grouped so a burst shows as one line that expands.
-import type { AgentNote } from "./agentNotes";
+import { stoppedWords, type AgentNote } from "./agentNotes";
 
 /** Notes this close together fold into one line (a Lead handing out three jobs at once). */
 export const FOLD_MS = 2 * 60_000;
@@ -11,7 +11,7 @@ export type NotePart =
   | { kind: "name"; text: string; opens: string | null }
   | { kind: "text"; text: string };
 
-/** "Lead messaged Worker", "Worker got stuck", "Worker reported to Lead", then the note's own line, if any. */
+/** "Lead messaged Worker", "Worker is with Hivra lead", "Worker reported to Lead", then the note's own line, if any. */
 export function noteParts(note: AgentNote): { head: NotePart[]; line: string | undefined } {
   const name = (side: AgentNote["from"]): NotePart => ({
     kind: "name",
@@ -20,7 +20,9 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
   });
   const head: NotePart[] =
     note.kind === "stuck"
-      ? [name(note.from), { kind: "text", text: " got stuck" }]
+      ? note.owner === "needs-you" || note.owner === "retrying"
+        ? [name(note.from), { kind: "text", text: stoppedWords(note) }]
+        : [name(note.from), { kind: "text", text: " is with " }, name(note.to)]
       : note.kind === "reported"
         ? [name(note.from), { kind: "text", text: " reported to " }, name(note.to)]
         : [name(note.from), { kind: "text", text: " messaged " }, name(note.to)];

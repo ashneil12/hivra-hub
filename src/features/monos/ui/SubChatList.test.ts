@@ -83,10 +83,10 @@ describe("a worker only waiting on its Lead's answer (Ash, 22 Oct: one word for 
     expect(row("w1").querySelector("svg")!.getAttribute("class")).not.toContain("amber");
     expect(row("w1").getAttribute("title")).toBe("Job w1, waiting on its Lead");
     expect(row("w2").querySelector("svg")!.getAttribute("class")).toContain("text-content/60"); // grey, never amber (r27b)
-    // Folded: "2 sub-chats · 1 waiting · 1 stuck", never "2 stuck".
+    // Folded: "2 sub-chats · 1 waiting · 1 with its Lead", never "2 stuck".
     act(() => toggle.click());
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.textContent).toBe("2 sub-chats · 1 waiting · 1 stuck");
+    expect(toggle.textContent).toBe("2 sub-chats · 1 waiting · 1 with its Lead");
   });
 
   it("alone, the fold says only '1 waiting', with no stuck count at all", () => {

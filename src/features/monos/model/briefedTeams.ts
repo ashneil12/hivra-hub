@@ -70,9 +70,10 @@ export function briefedTeams(
 }
 
 /**
- * What the line says after the brief: "2 working · 1 waiting · 1 stuck" (workerStuck.ts shortSplit), or the
+ * What the line says after the brief: "2 working · 1 waiting · 1 with EXO lead" (workerStuck.ts shortSplit; never
+ * "stuck", r30b), or the
  * Lead on it while it has no workers out.
  */
 export function briefedStatus(brief: BriefedTeam): string {
-  return shortSplit(brief.counts).text ?? `${brief.to?.leadName ?? "its Lead"} on it`;
+  return shortSplit(brief.counts, brief.to?.leadName).text ?? `${brief.to?.leadName ?? "its Lead"} on it`;
 }

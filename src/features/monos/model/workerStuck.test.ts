@@ -138,16 +138,24 @@ describe("what a Lead's work reads as", () => {
     row({ id: "x", ownerSession: "other" }),
   ];
 
-  it("splits what is out into working, asking and stuck (stalled or failed)", () => {
+  it("splits what is out into working, waiting and whose the stopped ones are, never 'stuck' (r30b)", () => {
     expect(workCounts("lead-chat", rows, NOW)).toMatchObject({ working: 1, asking: 1, stuck: 2 });
-    expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 waiting · 2 stuck");
+    expect(workSplit(workCounts("lead-chat", rows, NOW))).toBe("1 working · 1 waiting · 2 with its Lead");
+    expect(workSplit(workCounts("lead-chat", rows, NOW), "Hivra lead")).toBe("1 working · 1 waiting · 2 with Hivra lead");
+    expect(workSplit({ working: 1, asking: 0, stuck: 3, retrying: 1, needsYou: 1 }, "Hivra lead")).toBe(
+      "1 working · 1 retrying · 1 with Hivra lead · 1 needs you",
+    );
+    const refused = [...rows, row({ id: "w6", state: "failed", errorClass: "auth", settledAt: NOW - MIN, createdAt: 20 * MIN })];
+    expect(workSplit(workCounts("lead-chat", refused, NOW), "Hivra lead")).toBe("1 working · 1 waiting · 2 with Hivra lead · 1 needs you");
     expect(workSplit({ working: 2, asking: 0, stuck: 0 })).toBe("2 working");
     expect(workSplit({ working: 0, asking: 0, stuck: 0 })).toBeUndefined();
   });
 
   it("the short form counts a worker asking its Lead as waiting, never as stuck (Ash, 22 Oct)", () => {
-    expect(shortSplit(workCounts("lead-chat", rows, NOW))).toEqual({ working: 1, waiting: 1, stuck: 2, text: "1 working · 1 waiting · 2 stuck" });
-    expect(shortSplit({ working: 0, asking: 1, stuck: 0 })).toEqual({ working: 0, waiting: 1, stuck: 0, text: "1 waiting" });
+    expect(shortSplit(workCounts("lead-chat", rows, NOW), "EXO lead")).toEqual({
+      working: 1, waiting: 1, stuck: 2, retrying: 0, withLead: 2, needsYou: 0, text: "1 working · 1 waiting · 2 with EXO lead",
+    });
+    expect(shortSplit({ working: 0, asking: 1, stuck: 0 })).toMatchObject({ working: 0, waiting: 1, stuck: 0, text: "1 waiting" });
     expect(shortSplit({ working: 0, asking: 0, stuck: 0 }).text).toBeUndefined();
   });
 
@@ -176,7 +184,7 @@ describe("what a Lead's work reads as", () => {
   });
 
   it("counts the Lead's current wave the way its batch line does, never just 'busy'", () => {
-    expect(leadRollup("lead-chat", rows, NOW)).toBe("Delegated 5: 1 working, 1 waiting, 1 stuck, 1 failed, 1 done");
+    expect(leadRollup("lead-chat", rows, NOW)).toBe("Delegated 5: 1 working, 1 waiting, 1 with its Lead, 1 failed, 1 done");
     expect(leadRollup("other", rows, NOW)).toBe("Delegated 1: 1 working");
     expect(leadRollup("nobody", rows, NOW)).toBeUndefined();
     // Nothing out and nothing stuck: no line.
