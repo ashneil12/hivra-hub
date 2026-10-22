@@ -332,7 +332,7 @@ function task(input: TurnInput): string {
     case "chime":
       // A hello or a question to the team gets every seat; a go-ahead the host has already confirmed ("ye go") gets
       // one confirmation, not four (Critiquito, run f451 3b): the others speak only if they found something.
-      return forUser`Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: Ash wrote to everyone, so he expects to hear from you too. Reply to Ash as yourself, in your own voice, briefly, without repeating what's been said. If he's only giving a go-ahead that ${input.other ?? "the host"} has already confirmed, speak only if you found something new from your lane. Reply with exactly ${NO_REPLY} only if his message plainly isn't for you or you'd only be repeating.`;
+      return forUser`Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: Ash wrote to everyone, so he expects to hear from you too. Reply to Ash as yourself, in your own voice, briefly, without repeating what's been said. If he's only giving a go-ahead that ${input.other ?? "the host"} has already confirmed, reply with exactly ${NO_REPLY} unless you found something new from your lane; a "pass" or a restated confirmation counts as repeating. Otherwise reply with exactly ${NO_REPLY} only if his message plainly isn't for you or you'd only be repeating.`;
     case "reply":
       return `${input.other ?? "Another seat"} addressed you in the message marked >> below. Answer it or do it, from your lane. If nothing is needed from you, or it is already settled, reply with exactly ${NO_REPLY}.`;
     case "back":
