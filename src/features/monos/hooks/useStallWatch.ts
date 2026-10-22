@@ -1,17 +1,20 @@
 // Runs the stall watcher (model/workerStall.ts) in the main window, where the workers' turns run: every change to the
 // chats is noted (a stalled worker that moves again is cleared at once), and every half minute the running rows are
 // judged, so a stalled worker shows everywhere within about a minute of crossing its limit. The same look sends the
-// hourly progress check (model/hourlyCheck.ts): one line to the owner of a worker running over an hour, and self-repair
-// (model/selfRepair.ts, board H3): a crashed or hung worker is retried with backoff before its Lead is told. The same window
-// announces stuck workers with a native banner (useStuckNotifications), except a Lead's own stalled or crashed
-// workers: their Lead handles those, and tells Ash in its own chat when only he can help.
+// hourly progress check (model/hourlyCheck.ts, board H2): one line to the owner of a worker running over an hour, with
+// the evidence the app read itself (model/progressCheck.ts) — commits, changed files, passing and failing test runs, or
+// plainly that nothing moved. Self-repair (model/selfRepair.ts, board H3) retries a crashed or hung worker with backoff
+// before its Lead is told. The same window announces stuck workers with a native banner (useStuckNotifications), except a
+// Lead's own stalled or crashed workers: their Lead handles those, and tells Ash in its own chat when only he can help.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type DelegationTracker } from "../model/delegations";
 import { StallWatch } from "../model/workerStall";
 import { HOUR_MS, hourlyCheckMessage, hourlyChecksDue } from "../model/hourlyCheck";
+import { evidenceOf, evidenceSince, tallyTranscript, type FolderLook, type Look } from "../model/progressCheck";
 import { repairNoteMessage, SelfRepair } from "../model/selfRepair";
+import { gitDiffStats, gitHistory } from "../../../platform/tauri/fs";
 import { sendToChat } from "../../hub/model/waitingChats";
 import { dismissQueuedMonoSessionCompletion, type MonoSessionCompletionBatches } from "../model/monoSessionCompletion";
 import type { Delegation } from "../model/delegations";
@@ -50,14 +53,42 @@ export function useStallWatch(options: {
   // When each row's owner was last asked; a fresh window asks again after an hour of its own.
   const asked = useRef(new Map<string, number>());
   const born = useRef(Date.now());
-  const hourly = (every: number) => {
+  // What each worker's last hourly check saw, so the next one reports what moved in between rather than re-reading the lot.
+  const looks = useRef(new Map<string, { at: number; look: Look }>());
+  /** A worker's folder since `sinceMs`, through the app's own git reads. Null when it isn't a repo or can't be read. */
+  const folder = async (cwd: string | undefined, sinceMs: number): Promise<FolderLook | null> => {
+    if (!cwd) return null;
+    try {
+      const [history, diff] = await Promise.all([gitHistory(cwd, 100), gitDiffStats(cwd)]);
+      return {
+        commits: history.commits.filter((commit) => commit.timestamp * 1_000 >= sinceMs).length,
+        files: diff.files,
+        additions: diff.additions,
+        deletions: diff.deletions,
+      };
+    } catch {
+      // Not a repo, or the app couldn't read it: the owner gets the plain ask, with no evidence claimed.
+      return null;
+    }
+  };
+  const hourly = async (every: number) => {
     const rows = latest.current.tracker()?.known() ?? [];
     const now = Date.now();
+    for (const id of looks.current.keys()) if (!rows.some((row) => row.id === id && isOpenDelegation(row))) looks.current.delete(id);
     for (const id of hourlyChecksDue(rows, asked.current, now, every)) {
       const row = rows.find((entry) => entry.id === id)!;
       if (!asked.current.has(id) && now - born.current < every) continue;
       asked.current.set(id, now);
-      void latest.current.queueWake?.(row.ownerSession, hourlyCheckMessage(row, now));
+      const child = session(row.childSession);
+      const before = looks.current.get(id);
+      const since = before?.at ?? row.createdAt;
+      const look: Look = { tally: tallyTranscript(child?.blocks ?? []), folder: await folder(child?.cwd, since) };
+      const evidence = before ? evidenceSince(before.look, look) : evidenceOf(look);
+      looks.current.set(id, { at: now, look });
+      void latest.current.queueWake?.(
+        row.ownerSession,
+        hourlyCheckMessage(row, now, { evidence, windowMinutes: Math.round((now - since) / 60_000) }),
+      );
     }
   };
   const repair = useRef<SelfRepair | null>(null);
@@ -100,7 +131,8 @@ export function useStallWatch(options: {
     const bench = appIdentity()?.verify?.stallMs;
     const every = bench ? Math.max(1_000, Math.min(STALL_LOOK_MS, bench / 2)) : STALL_LOOK_MS;
     const timer = setInterval(() => {
-      hourly(HOUR_MS);
+      // Reading a folder can fail; one bad read must never stop the loop or the stall watcher.
+      void hourly(HOUR_MS).catch(() => undefined);
       // Self-repair reads first (its gave-up line is what the stall watcher writes), then the stall watcher judges.
       void repair.current!.tick().finally(() => watch.current!.tick());
     }, every);
