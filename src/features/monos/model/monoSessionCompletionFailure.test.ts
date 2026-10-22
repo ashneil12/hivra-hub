@@ -136,3 +136,33 @@ describe("a failed worker in its Lead's report", () => {
     expect(remaining!.monoSessionCompletion?.status).toBe("failed");
   });
 });
+
+// r51 (PM's blind D5 run): a worker failed and its Lead told Ash it was done. The result the Lead reads now says, in one
+// plain line where it reads it, that this work failed and to say so, not report it as done.
+describe("r51: a failed worker's result tells its Lead to say it failed", () => {
+  const D5: ControlOutcome = { status: "failed", text: "", error: "Stopped with an error." };
+  const titled = (title: string): Session => ({ ...newSession("claude", "/code/project"), title });
+
+  it("names the failed work and says to tell Ash plainly, not as done", () => {
+    const message = monoSessionCompletionMessage({ ...options, session: titled("Tidy Hivra README"), outcome: D5 });
+    const head = message.text.slice(0, message.text.indexOf("\n\n"));
+    expect(head).toContain("FAILED, not done: Tidy Hivra README.");
+    expect(head).toMatch(/Say so plainly in your reply, with why; don't report it as done\./);
+    expect(payload(message)).toMatchObject({ status: "failed", error: "Stopped with an error." });
+    expect(message.monoSessionCompletion?.status).toBe("failed");
+  });
+
+  it("says nothing of the kind when the work succeeded", () => {
+    const message = monoSessionCompletionMessage({ ...options, session: titled("Tidy Hivra README"), outcome: { status: "completed", text: "Done." } });
+    expect(message.text).not.toContain("FAILED");
+  });
+
+  it("in a batch, names only the ones that failed", async () => {
+    const { completionMessage } = await import("./monoSessionCompletion");
+    const ok = monoSessionCompletionResult({ ...options, sessionId: "w1", session: titled("Fix FAQ"), outcome: { status: "completed", text: "ok" } });
+    const bad = monoSessionCompletionResult({ ...options, sessionId: "w2", session: titled("Tidy README"), outcome: D5 });
+    const text = completionMessage("r", [ok, bad]).text;
+    expect(text).toContain("FAILED, not done: Tidy README.");
+    expect(text).not.toContain("FAILED, not done: Fix FAQ");
+  });
+});
