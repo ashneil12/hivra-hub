@@ -101,7 +101,6 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
         {IS_MAC ? null : <div className="w-[120px]" />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {project ? null : <ShipNotice />}
         {body}
       </div>
     </div>
@@ -119,10 +118,12 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const [shown, setShown] = useState(25);
   const data = hubData();
   const connection = data.connection();
-  if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
+  // The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it).
+  const shipAlone = projectId ? null : <ShipNotice />;
+  if (connection.status === "unreachable") return <>{shipAlone}<AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} /></>;
   // Reading Ash OS for the first time: say nothing rather than flash "No projects yet".
   if (connection.status === "loading" && !data.listProjects().length) return <div data-hub-loading />;
-  if (!data.listProjects().length) return <FirstTodayEmpty />;
+  if (!data.listProjects().length) return <>{shipAlone}<FirstTodayEmpty /></>;
   const since = data.sinceSummary(projectId);
   const sinceAt = data.sinceAt();
   // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the projects' work, then
@@ -237,6 +238,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   return (
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
       {sinceSection ? sinceBlock(sinceSection) : null}
+      {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
+      {!projectId ? <ShipNotice inBody /> : null}
       {!projectId ? <HomeTools /> : null}
       {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
