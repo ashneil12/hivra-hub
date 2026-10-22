@@ -162,7 +162,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
               ) : null}
             </div>
           ))}
-          <p className="px-2 pt-1 text-[12px] text-content/60">No Mono is seated from a file. Each new one waits for your OK in the Monos list.</p>
+          <p className="px-2 pt-1 text-[12px] text-content/60">No Mono is added from a file. Each new one waits for your OK in the Monos list.</p>
         </Section>
       ) : null}
 

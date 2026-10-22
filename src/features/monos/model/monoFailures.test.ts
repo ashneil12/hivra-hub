@@ -89,7 +89,7 @@ describe("the card Today and Being built show", () => {
     container.remove();
   });
 
-  it("says who can't answer and why, keeps the provider's words behind Details, and offers Try again", () => {
+  it("says who can't answer and why, keeps the provider's words behind Details, and offers Try again only when it can help", () => {
     const retry = vi.fn(() => true);
     setMonoFailuresHost({ retry, open: () => undefined });
     noteMonoFailures([leadChat("lead-chat", { message: "Billing refused (402): openrouter.ai said: Insufficient credits", errorClass: "billing" })]);
@@ -101,6 +101,11 @@ describe("the card Today and Being built show", () => {
     expect(container.textContent).not.toContain("openrouter.ai");
     act(() => q("[data-mono-failure-details]")!.click());
     expect(q("[data-mono-failure-detail]")?.textContent).toBe("Billing refused (402): openrouter.ai said: Insufficient credits");
+    // Out of credits is a Needs you: no Try again and no "Trying again…" on it (r27c); it is in the Lead's chat.
+    expect(q("[data-mono-failure-retry]")).toBeNull();
+    // One that can come right by itself keeps Try again.
+    noteMonoFailures([leadChat("lead-chat", { message: "API overloaded (529)", errorClass: "overloaded" })]);
+    act(() => root.render(createElement(MonoFailureList, { failures: monoFailures(), now: Date.now(), where: () => "Tally" })));
     act(() => q("[data-mono-failure-retry]")!.click());
     expect(retry).toHaveBeenCalledWith("lead-chat");
     expect(q("[data-mono-failure-retry]")?.textContent).toBe("Trying again…");

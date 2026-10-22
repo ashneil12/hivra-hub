@@ -208,3 +208,29 @@ export async function mergeIntoSeated(
 export function dismissWaitingSoul(monoId: string): void {
   saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
 }
+
+/**
+ * What went wrong adding a waiting Mono, in Ash's words (Critiquito, r27c): no file names, no error codes, never "seat".
+ * `problem` is one of writeSoulFiles' problems; `error` is what OK threw.
+ */
+export function plainAddProblem(name: string, from: { problem: string } | { error: unknown }): string {
+  if ("problem" in from) {
+    if (/couldn't be read/i.test(from.problem)) return `Couldn't read ${name}'s setup, so it was left as it was`;
+    return `Some of ${name}'s setup couldn't be added, so it was left as it was`;
+  }
+  const raw = from.error instanceof Error ? `${from.error.name} ${from.error.message}` : String(from.error);
+  const cause = plainCause(raw);
+  return cause ? `Couldn't add ${name} because ${cause}` : `Couldn't add ${name}. Try OK again`;
+}
+
+const CAUSES: [RegExp, string][] = [
+  [/disk (is )?full|no space|enospc|quota/i, "the disk is full"],
+  [/permission denied|eacces|eperm|not permitted|access is denied/i, "the app isn't allowed to write to its folder"],
+  [/read-?only|erofs/i, "its folder is read-only"],
+  [/conflict/i, "its setup changed while it was being added"],
+  [/enoent|not found|no such file/i, "its folder isn't there"],
+  [/timed? ?out|etimedout/i, "it took too long"],
+];
+function plainCause(raw: string): string | undefined {
+  return CAUSES.find(([re]) => re.test(raw))?.[1];
+}
