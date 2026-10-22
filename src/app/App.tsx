@@ -1390,6 +1390,9 @@ function Workspace({
     useWorkspaceSessionState(
       () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
     );
+  // The app's Try again, lent to harness self-repair (features/monos/model/harnessRepair.ts): the same path as the
+  // failure card's button, so a retried turn sends Ash's held message, its unsent one, or carries on.
+  const retryFailedTurnRef = useRef<(sessionId: string) => boolean>(() => false);
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
     unusedWorktree?: string;
@@ -11805,6 +11808,7 @@ function Workspace({
     queueWake: (owner, message) =>
       queueMonoSessionCompletionRef.current(owner, message),
     stopSession: (id, managed) => onStop(id, managed),
+    retryTurn: (id) => retryFailedTurnRef.current(id),
     openMono: onOpenMono,
     monoView: () => monoViewIdRef.current,
     showLaunched: showMonoLaunchedSession,
@@ -12019,26 +12023,32 @@ function Workspace({
     // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.
     noteMonoFailures(sessions);
   }, [sessions]);
+  // The one Try again, for the failure card and for harness self-repair: Ash's message held by the failure goes in
+  // again; a turn that failed before the agent did anything sends its message again (a plain "continue" would take up
+  // whatever the agent was on before); else it carries on.
+  const retryFailedTurn = useCallback(
+    (id: string) => {
+      const session = sessionsRef.current.find((entry) => entry.id === id);
+      if (!session || session.busy) return false;
+      if (session.queueStatus === "paused" && session.queuedMessages?.length) onResumeQueue(id);
+      else {
+        const unsent = failedTurnMessage(session);
+        if (unsent) return onSubmit(id, unsent.text);
+        if (session.usageLimit) onUsageLimitResume(id);
+        else return onSubmit(id, CONTINUE_PROMPT);
+      }
+      return true;
+    },
+    [onResumeQueue, onUsageLimitResume, onSubmit],
+  );
+  retryFailedTurnRef.current = retryFailedTurn;
   useEffect(
     () =>
       setMonoFailuresHost({
-        retry: (id) => {
-          const session = sessionsRef.current.find((entry) => entry.id === id);
-          if (!session || session.busy) return false;
-          // Ash's message held by the failure goes in again; a turn that failed before the agent did anything sends its
-          // message again (a plain "continue" would take up whatever the agent was on before); else it carries on.
-          if (session.queueStatus === "paused" && session.queuedMessages?.length) onResumeQueue(id);
-          else {
-            const unsent = failedTurnMessage(session);
-            if (unsent) return onSubmit(id, unsent.text);
-            if (session.usageLimit) onUsageLimitResume(id);
-            else return onSubmit(id, CONTINUE_PROMPT);
-          }
-          return true;
-        },
+        retry: retryFailedTurn,
         open: (monoId) => void onOpenMono(monoId),
       }),
-    [onResumeQueue, onUsageLimitResume, onSubmit, onOpenMono],
+    [retryFailedTurn, onOpenMono],
   );
   // Once a launch: a waiting chat whose conversation was deleted (by any path) leaves Today.
   useEffect(() => {

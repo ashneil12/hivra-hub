@@ -82,6 +82,8 @@ export function useDelegationTree(options: {
     sessionId: string,
     managed?: boolean,
   ) => Promise<unknown> | void;
+  /** The app's Try again for a chat's own failed turn (harnessRepair.ts, passed through to the stall watcher). */
+  retryTurn?: (sessionId: string) => boolean;
   openMono: (monoId: string) => Promise<void>;
   /** The Mono view's chat, once a Mono is open. */
   monoView: () => string | null;

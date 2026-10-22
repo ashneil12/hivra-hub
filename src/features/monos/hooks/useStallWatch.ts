@@ -14,6 +14,7 @@ import { StallWatch } from "../model/workerStall";
 import { HOUR_MS, hourlyCheckMessage, hourlyChecksDue } from "../model/hourlyCheck";
 import { evidenceOf, evidenceSince, tallyTranscript, type FolderLook, type Look } from "../model/progressCheck";
 import { repairNoteMessage, SelfRepair } from "../model/selfRepair";
+import { faultOf, HarnessRepair, type HarnessFault } from "../model/harnessRepair";
 import { gitDiffStats, gitHistory } from "../../../platform/tauri/fs";
 import { sendToChat } from "../../hub/model/waitingChats";
 import { dismissQueuedMonoSessionCompletion, type MonoSessionCompletionBatches } from "../model/monoSessionCompletion";
@@ -41,6 +42,8 @@ export function useStallWatch(options: {
   stopSession?: (sessionId: string, managed?: boolean) => Promise<unknown> | void;
   batches?: () => MonoSessionCompletionBatches | null;
   setSessions?: Dispatch<SetStateAction<Session[]>>;
+  /** The app's Try again, for harness self-repair (harnessRepair.ts): a chat's own failed turn. */
+  retryTurn?: (sessionId: string) => boolean;
 }): void {
   const latest = useRef(options);
   latest.current = options;
@@ -108,6 +111,24 @@ export function useStallWatch(options: {
       );
     },
   });
+  // The general half of self-repair (board H1/H3): a chat's own failed turn, tried again by the app before anyone asks.
+  const harness = useRef<HarnessRepair | null>(null);
+  harness.current ??= new HarnessRepair({
+    retry: (sessionId) => latest.current.retryTurn?.(sessionId) ?? false,
+    note: (sessionId, message) => latest.current.queueWake?.(sessionId, message),
+  });
+  /** The chats the app runs whose own last turn failed; a delegated worker's stays its Lead's (selfRepair.ts). */
+  const harnessFaults = (): HarnessFault[] => {
+    const children = new Set((latest.current.tracker()?.known() ?? []).map((row) => row.childSession));
+    const now = Date.now();
+    const faults: HarnessFault[] = [];
+    for (const entry of latest.current.sessionsRef.current) {
+      if (children.has(entry.id)) continue;
+      const fault = faultOf(entry, now);
+      if (fault) faults.push(fault);
+    }
+    return faults;
+  };
   const watch = useRef<StallWatch | null>(null);
   watch.current ??= new StallWatch({
     hourly: (row) => repair.current!.stallFor(row),
@@ -135,6 +156,8 @@ export function useStallWatch(options: {
       void hourly(HOUR_MS).catch(() => undefined);
       // Self-repair reads first (its gave-up line is what the stall watcher writes), then the stall watcher judges.
       void repair.current!.tick().finally(() => watch.current!.tick());
+      // The chats' own failed turns: two automatic tries, then one plain line and no more.
+      harness.current!.tick(harnessFaults());
     }, every);
     return () => clearInterval(timer);
   }, []);
