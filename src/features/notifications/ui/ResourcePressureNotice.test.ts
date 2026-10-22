@@ -59,8 +59,12 @@ it("monitors silently without a footer and closes its dialog when the footer dis
 
     await render(footer);
     expect(footer.textContent).toContain("Mac busy");
+    // r28: its mark is grey, never amber (no third status colour), in the bar and in its dialog.
+    expect(footer.querySelector("[data-mac-busy-mark]")?.getAttribute("class")).toContain("text-content/60");
+    expect(footer.querySelector("[class*='amber']")).toBeNull();
     await act(async () => footer.querySelector("button")!.click());
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector("[role='dialog'] [class*='amber']")).toBeNull();
     await render();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(footer.querySelector("button")).toBeNull();

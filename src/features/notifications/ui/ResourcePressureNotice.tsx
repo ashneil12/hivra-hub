@@ -215,8 +215,10 @@ export function ResourcePressureNotice({
               title={`${reasons.join(" · ")} · Review running work`}
               className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap ${insetChip ? "rounded-full px-2" : "rounded-md px-1.5"} text-content/55 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-accent ${open ? "bg-content/8 text-content" : ""}`}
             >
+              {/* Grey (r28): no amber in any status mark; red is only for Needs you. */}
               <CircleAlert
-                className="size-3.5 shrink-0 text-amber-500 dark:text-amber-400"
+                className="size-3.5 shrink-0 text-content/60"
+                data-mac-busy-mark
                 strokeWidth={1.75}
                 aria-hidden
               />
@@ -235,7 +237,7 @@ export function ResourcePressureNotice({
           <div className="p-4 text-[13px]">
             <div className="flex items-start gap-2.5 rounded-lg bg-content/[0.04] px-3 py-2.5">
               {pressure.active ? (
-                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500 dark:text-amber-400" />
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-content/60" />
               ) : (
                 <Check className="mt-0.5 size-4 shrink-0 text-emerald-500" />
               )}
