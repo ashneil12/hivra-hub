@@ -137,6 +137,42 @@ describe("Mono session completion notifications", () => {
     });
   });
 
+  it("tells the Lead what a worker's done claim is worth, with the check it saw run", () => {
+    const session = newSession("codex", options.project);
+    session.title = "API fix";
+    session.blocks = [
+      { id: "u", role: "user", text: options.prompt, appRequestId: options.requestId },
+      {
+        id: "run",
+        role: "tool",
+        text: "",
+        tool: { callId: "c1", title: "npx vitest run src/api.test.ts", kind: "execute", status: "completed" },
+      },
+      { id: "reply", role: "assistant", text: "Done: the endpoint returns 204 now." },
+    ];
+    const message = monoSessionCompletionMessage({ ...options, session });
+    expect(message.text).toContain("API fix says it's done — verified");
+    const payload = JSON.parse(message.text.slice(message.text.indexOf("\n\n") + 2));
+    expect(payload.claim).toMatchObject({ confidence: "verified" });
+    expect(payload.claim.line).toContain("1 check ran in this turn and passed (npx vitest run src/api.test.ts)");
+  });
+
+  it("marks a done claim with nothing behind it NOT PROVEN, so a Lead can't pass it on as done", () => {
+    const session = newSession("codex", options.project);
+    session.title = "API fix";
+    session.blocks = [
+      { id: "u", role: "user", text: options.prompt, appRequestId: options.requestId },
+      { id: "reply", role: "assistant", text: "Fixed." },
+    ];
+    const message = monoSessionCompletionMessage({ ...options, session });
+    expect(message.text).toContain("API fix says it's done — guess");
+    expect(message.text).toContain("NOT PROVEN: API fix");
+    expect(message.text).toContain("never report a guess as done");
+    expect(JSON.parse(message.text.slice(message.text.indexOf("\n\n") + 2)).claim).toMatchObject({
+      confidence: "guess",
+    });
+  });
+
   it.each(["failed", "cancelled"] as const)(
     "reports %s with available output and an error",
     (status) => {

@@ -12,6 +12,7 @@
 // A check for a chat outside the hub has nothing to deliver here: Ash OS hands it back on that chat's own next ash-os
 // call. Ash OS lists only checks for chats the app runs; one naming a chat this app doesn't have is left alone too.
 import type { Block, MonoCheck, Session } from "../../sessions/model/session";
+import { claimEvidenceOf, lastReply, type ClaimEvidence } from "./claimEvidence";
 import { CHECKER_MONO_ID } from "./hubMcp";
 import { forUser } from "./userName";
 
@@ -194,6 +195,15 @@ export function checkVerdict(turn: readonly Block[]): "right" | "fixed" | undefi
     return word ? (word[1].toLowerCase() as "right" | "fixed") : undefined;
   }
   return undefined;
+}
+
+/**
+ * What a "fixed" answer is worth, from the turn's own tool runs (claimEvidence.ts, board I5): a test or type check it
+ * ran and that passed is verified; checks it only names are likely; anything else is a guess, which the card shows as
+ * not proven. Undefined when the chat made no done/fixed claim.
+ */
+export function checkClaim(turn: readonly Block[]): ClaimEvidence | undefined {
+  return claimEvidenceOf(lastReply(turn), turn);
 }
 
 /** What delivery needs from the app (app/hooks/useHubChecks.ts). */

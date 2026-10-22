@@ -4,17 +4,9 @@
 import { useState } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Eye, Loader } from "../../../shared/ui/icons";
-import { checkVerdict } from "../model/hubChecks";
+import { lastReply } from "../model/claimEvidence";
+import { checkClaim, checkVerdict } from "../model/hubChecks";
 import { forYou } from "../model/userName";
-
-/** The chat's own answer: the last thing it said in the turn. */
-function finalReply(turn: readonly Block[]): string {
-  for (let i = turn.length - 1; i > 0; i--) {
-    const block = turn[i];
-    if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) return block.text.trim();
-  }
-  return "";
-}
 
 export function CheckTurnCard({
   turn,
@@ -29,9 +21,19 @@ export function CheckTurnCard({
 }) {
   const [open, setOpen] = useState(false);
   const check = turn[0].monoCheck;
-  const reply = finalReply(turn);
+  const reply = lastReply(turn);
   const verdict = checkVerdict(turn);
-  const state = live ? "looking at it" : verdict ? `answered: ${verdict}` : reply ? "answered" : "not answered";
+  // A "fixed" carries its evidence (claimEvidence.ts): verified, likely, or a guess the line says is not proven.
+  const claim = reply ? checkClaim(turn) : undefined;
+  const worth =
+    verdict && claim ? (claim.confidence === "verified" ? "verified" : claim.confidence === "likely" ? "likely" : "not proven") : "";
+  const state = live
+    ? "looking at it"
+    : verdict
+      ? `answered: ${verdict}${worth ? `, ${worth}` : ""}`
+      : reply
+        ? "answered"
+        : "not answered";
   return (
     <div className="transcript-turn flex min-w-0 flex-col px-4 py-1" data-mono-check={check?.id}>
       <button
@@ -62,6 +64,12 @@ export function CheckTurnCard({
             <p className="whitespace-pre-wrap">
               <span className="text-content/45">{agentName ?? "This chat"} answered: </span>
               {reply}
+            </p>
+          ) : null}
+          {claim ? (
+            <p className="whitespace-pre-wrap text-content/55" data-claim-confidence={claim.confidence}>
+              <span className="text-content/45">Evidence: </span>
+              {claim.line}
             </p>
           ) : null}
         </div>
