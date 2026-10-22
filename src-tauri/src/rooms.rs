@@ -853,7 +853,11 @@ pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let is_default: Option<bool> = tx
-        .query_row("SELECT is_default FROM rooms WHERE id = ?1", params![id], |row| row.get(0))
+        .query_row(
+            "SELECT is_default FROM rooms WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(|e| e.to_string())?;
     match is_default {
@@ -861,9 +865,17 @@ pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
         Some(true) => return Err("a project's Leadership team can't be deleted".into()),
         Some(false) => {}
     }
-    for table in ["room_messages", "room_conversations", "room_members", "room_origins"] {
-        tx.execute(&format!("DELETE FROM {table} WHERE room_id = ?1"), params![id])
-            .map_err(|e| e.to_string())?;
+    for table in [
+        "room_messages",
+        "room_conversations",
+        "room_members",
+        "room_origins",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE room_id = ?1"),
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     tx.execute("DELETE FROM rooms WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -1010,11 +1022,26 @@ mod tests {
         }
         assert!(delete_room(&mut c, "hub:chat-x").unwrap());
         let count = |sql: &str| -> i64 { c.query_row(sql, [], |row| row.get(0)).unwrap() };
-        assert_eq!(count("SELECT COUNT(*) FROM rooms WHERE id = 'hub:chat-x'"), 0);
-        assert_eq!(count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:chat-x'"), 0);
-        assert_eq!(count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:chat-x'"), 0);
-        assert_eq!(count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:leadership'"), 1);
-        assert_eq!(count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:leadership'"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM rooms WHERE id = 'hub:chat-x'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:chat-x'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:chat-x'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM room_messages WHERE room_id = 'hub:leadership'"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM room_members WHERE room_id = 'hub:leadership'"),
+            1
+        );
         assert!(delete_room(&mut c, "hub:leadership").is_err());
         assert!(!delete_room(&mut c, "hub:gone").unwrap());
     }
