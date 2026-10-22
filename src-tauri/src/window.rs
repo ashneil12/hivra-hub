@@ -722,6 +722,22 @@ mod tests {
         assert!(!is_workspace_window(QUICK_COMPOSER_GIT_LABEL));
     }
 
+    /// macOS: the first click on a window that is not key does what it says (Overview, a notice's X) instead of only
+    /// bringing the window forward. Every workspace window is built from this "main" config.
+    #[test]
+    fn workspace_windows_take_the_first_click_on_macos() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let main = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == "main"))
+            .expect("main window config");
+        assert_eq!(main["acceptFirstMouse"], serde_json::Value::Bool(true));
+        let parsed: tauri::utils::config::WindowConfig =
+            serde_json::from_value(main.clone()).expect("main window config parses");
+        assert!(parsed.accept_first_mouse);
+    }
+
     #[test]
     fn background_session_creation_overrides_main_windows_visible_and_focus_defaults() {
         let mut config = tauri::utils::config::WindowConfig {
