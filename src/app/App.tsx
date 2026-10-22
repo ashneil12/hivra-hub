@@ -609,7 +609,11 @@ import {
   focusedWorkspaceTabCwd,
 } from "../features/workspace/model/workspaceTabGroups";
 import { applyAddToChatRequest } from "../features/sessions/model/addChatToWorkspace";
-import { newWorkspaceSession } from "./model/newWorkspaceSession";
+import {
+  isBlankWorkspaceTab,
+  newWorkspaceSession,
+  reusableBlankSessionTab,
+} from "./model/newWorkspaceSession";
 import {
   ADD_TO_CHAT_EVENT,
   type AddToChatRequest,
@@ -3313,6 +3317,18 @@ function Workspace({
     setAutomationsViewOpen(false);
     const cwd = sidebarCwd;
     const session = newWorkspaceSession(cwd, sessionDefaults?.runtimeMode);
+    // An untouched New session tab for this project is already open: go to
+    // it rather than stacking another empty one beside it.
+    const blank = reusableBlankSessionTab(
+      tabsRef.current,
+      sessionsRef.current,
+      session,
+    );
+    if (blank) {
+      setActiveTabId(blank.tabId);
+      setComposerFocused(true);
+      return blank.sessionId;
+    }
     const tab = newTab(session.id);
     setSessions((prev) => [...prev, session]);
     appendTab(tab, cwd);
@@ -16848,15 +16864,6 @@ function selectedCommitSha(tab: WorkspaceTab): string | undefined {
   }
 }
 
-function isBlankWorkspaceTab(tab: WorkspaceTab, sessions: Session[]): boolean {
-  if (tab.editorPanes.some((pane) => pane.files.length > 0)) return false;
-  if ((tab.terminalPanes ?? []).some((pane) => pane.files.length > 0))
-    return false;
-  const ids = leafIds(tab.layout);
-  if (ids.length !== 1) return false;
-  if (remoteSessionFor(ids[0]) || remotePendingWorktree(ids[0])) return false;
-  return isBlankSession(sessions.find((entry) => entry.id === ids[0]));
-}
 
 function toTitleTab(
   tab: WorkspaceTab,
