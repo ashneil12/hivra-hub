@@ -850,6 +850,7 @@ import {
 } from "../features/monos/model/monoRotation";
 import {
   detachMonoTabs,
+  ensureMonoRoomSession,
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
@@ -10094,6 +10095,18 @@ function Workspace({
         },
       }),
     stop: (id) => onStopRef.current(id, true),
+    // r52: each room conversation has its own session per Mono; its 1:1 chat keeps only what Ash says there.
+    openRoom: (monoId, chatId, convId) =>
+      ensureMonoRoomSession(monoId, chatId, convId, {
+        home: homeDir,
+        load: (id) => ensureOpenSessionRef.current(id),
+        create: (path) => newDefaultSession(path),
+        add: (created) => {
+          sessionsRef.current = [...sessionsRef.current, created];
+          setSessions(sessionsRef.current);
+        },
+      }),
+    dropSession: (id) => onRemoveHistorySession(id, "delete", true),
   });
   const roomsHostRef = useRef(roomsHost);
   roomsHostRef.current = roomsHost;

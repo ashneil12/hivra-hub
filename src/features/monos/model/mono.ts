@@ -42,6 +42,11 @@ export type Mono = {
   mascotPicked?: boolean;
   /** Its conversation; absent until it is first opened. */
   sessionId?: string;
+  /**
+   * Its sessions for room conversations (r52): one per room conversation, keyed by roomSessionKey, so a room's turns
+   * never sit in its own 1:1 chat and deleting a room conversation drops them. Its 1:1 chat stays `sessionId`.
+   */
+  roomSessions?: Record<string, string>;
   /** Replaces the mascot's own name. */
   name?: string;
   mascot: string;
@@ -219,9 +224,15 @@ function parseMono(value: unknown): Mono | undefined {
   const engineModel = text("engineModel");
   const legacyProject = text("legacyProject");
   const role = text("role");
+  const roomSessions = Object.fromEntries(
+    Object.entries(record(entry.roomSessions)).filter(
+      (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
+    ),
+  );
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
+    ...(Object.keys(roomSessions).length ? { roomSessions } : {}),
     ...(name ? { name } : {}),
     mascot: text("mascot") ?? PROJECT_MASCOTS[0].name,
     color: text("color") ?? TAB_GROUP_COLORS[1],
@@ -280,9 +291,63 @@ export function findMono(id: string): Mono | undefined {
   return listMonos().find((mono) => mono.id === id);
 }
 
-/** The Mono whose conversation this is. */
+/** The Mono whose conversation this is: its own 1:1 chat, or one of its room conversations' sessions (r52). */
 export function monoForSession(sessionId: string): Mono | undefined {
-  return listMonos().find((mono) => mono.sessionId === sessionId);
+  const monos = listMonos();
+  return (
+    monos.find((mono) => mono.sessionId === sessionId) ??
+    monos.find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId))
+  );
+}
+
+/** Where a Mono's session for one room conversation is kept (Mono.roomSessions). */
+export function roomSessionKey(chatId: string, convId: string): string {
+  return JSON.stringify([chatId, convId]);
+}
+
+/** The Mono's session for this room conversation, if it has had a turn there since r52. */
+export function monoRoomSession(monoId: string, chatId: string, convId: string): string | undefined {
+  return findMono(monoId)?.roomSessions?.[roomSessionKey(chatId, convId)];
+}
+
+/** A session that answers a room conversation for a Mono, not its 1:1 chat. */
+export function isMonoRoomSession(sessionId: string): boolean {
+  return listMonos().some((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId));
+}
+
+/** This room conversation's turns for the Mono run in `sessionId` from now on. Another Mono's chat is never taken. */
+export function saveMonoRoomSession(monoId: string, chatId: string, convId: string, sessionId: string): boolean {
+  const owner = monoForSession(sessionId);
+  if (owner && owner.id !== monoId) return false;
+  if (findMono(monoId)?.sessionId === sessionId) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, roomSessions: { ...mono.roomSessions, [roomSessionKey(chatId, convId)]: sessionId } }));
+}
+
+/** Each Mono's session for a room conversation, or with no `convId` for every conversation of a room. */
+export function monoRoomSessionsOf(chatId: string, convId?: string): { monoId: string; sessionId: string }[] {
+  const out: { monoId: string; sessionId: string }[] = [];
+  for (const mono of listMonos())
+    for (const [key, sessionId] of Object.entries(mono.roomSessions ?? {})) {
+      let at: unknown;
+      try {
+        at = JSON.parse(key);
+      } catch {
+        at = undefined;
+      }
+      const [chat, conv] = Array.isArray(at) ? at : [];
+      if (chat === chatId && (convId === undefined || conv === convId)) out.push({ monoId: mono.id, sessionId });
+    }
+  return out;
+}
+
+/** The Mono lets go of a room conversation's session (it was deleted with its conversation). */
+export function forgetMonoRoomSession(sessionId: string): void {
+  const owner = listMonos().find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId));
+  if (!owner) return;
+  updateMono(owner.id, ({ roomSessions = {}, ...rest }) => {
+    const kept = Object.fromEntries(Object.entries(roomSessions).filter(([, id]) => id !== sessionId));
+    return Object.keys(kept).length ? { ...rest, roomSessions: kept } : rest;
+  });
 }
 
 export function isMonoSession(sessionId: string): boolean {

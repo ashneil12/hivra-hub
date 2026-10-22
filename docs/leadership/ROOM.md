@@ -115,7 +115,9 @@ never as a message in the room. Keep going runs the turns that were waiting (or 
 the Mono's own queue is left running) and drops the waiting ones; a stopped turn's late words never land. Stop does the
 same and leaves the conversation quiet until he writes or presses Keep going; room_post is refused meanwhile.
 
-**Each turn** runs in the Mono's own session (its soul, memory, tools and model), with the room rules, every seat's lane,
+**Each turn** runs in the Mono's session for that room conversation (r52: one per conversation per Mono, like separate
+Claude Code chats, with its soul, memory, tools and model; its 1:1 chat stays one session of its own, and deleting the
+conversation deletes these sessions, so its turns reach no later prompt; durable facts live in its memory files), with the room rules, every seat's lane,
 the last 30 messages as data (the message that woke it marked >>) and what this turn is for (answer, one extra reply, a
 reply to a seat that named it, the digest, work coming back). A room belongs to a project, so a seat's turn also carries
 that project's memory primer, the same `<project_memory>` its Lead starts with (Ash OS `ash-hub-memory-primer`,

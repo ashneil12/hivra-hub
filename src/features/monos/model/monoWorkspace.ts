@@ -11,6 +11,8 @@ import {
   findMono,
   isMonoSession,
   monoForSession,
+  monoRoomSession,
+  saveMonoRoomSession,
   saveMonoSessionId,
 } from "./mono";
 import { forgetAgentContext } from "./monoFiles";
@@ -63,6 +65,54 @@ async function loadMonoSession(
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
   const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
+  host.add(session);
+  return session;
+}
+
+const openingRooms = new Map<string, Promise<Session | undefined>>();
+
+/**
+ * The Mono's session for one room conversation (r52), made the first time that conversation gives it a turn: its own
+ * Claude session, like a separate chat, so the room's turns stay out of its 1:1 chat and go when the conversation is
+ * deleted. It starts where its 1:1 chat would (its Lead's project folder, else home) on its engine. Durable facts reach
+ * it through its memory files and the room's memory primer, not through the 1:1 chat's history.
+ */
+export function ensureMonoRoomSession(
+  monoId: string,
+  chatId: string,
+  convId: string,
+  host: Parameters<typeof ensureMonoSession>[1],
+): Promise<Session | undefined> {
+  const key = JSON.stringify([monoId, chatId, convId]);
+  const pending = openingRooms.get(key);
+  if (pending) return pending;
+  const opening = loadMonoRoomSession(monoId, chatId, convId, host).finally(() => {
+    if (openingRooms.get(key) === opening) openingRooms.delete(key);
+  });
+  openingRooms.set(key, opening);
+  return opening;
+}
+
+async function loadMonoRoomSession(
+  monoId: string,
+  chatId: string,
+  convId: string,
+  host: Parameters<typeof ensureMonoSession>[1],
+): Promise<Session | undefined> {
+  const mono = findMono(monoId);
+  if (!mono) return undefined;
+  const known = monoRoomSession(monoId, chatId, convId);
+  if (known) {
+    const existing = await host.load(known);
+    if (existing) return existing;
+  }
+  const home = leadWorkingFolder(monoId) ?? (await host.home());
+  if (!findMono(monoId)) return undefined;
+  const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
+  const created = host.create(home);
+  const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
+  const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
+  if (!saveMonoRoomSession(monoId, chatId, convId, session.id)) return undefined;
   host.add(session);
   return session;
 }

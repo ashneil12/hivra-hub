@@ -417,12 +417,34 @@ export function createChat(projectId: string, name: string, memberIds: string[])
  * Deletes a room Ash made (r30d), after the shared confirm: the room and its own threads and messages, nothing else (no
  * Mono, soul, memory or other hub data). A project's Leadership team is not deleted: every project has one.
  */
+const goneListeners = new Set<(gone: { chatId: string; convId?: string }) => void>();
+
+/**
+ * Told when Ash deletes a room conversation, or a whole room (no `convId`): the app drops each Mono's session for it
+ * (r52), so its turns go with it.
+ */
+export function onConversationGone(listener: (gone: { chatId: string; convId?: string }) => void): () => void {
+  goneListeners.add(listener);
+  return () => void goneListeners.delete(listener);
+}
+
+function gone(chatId: string, convId?: string): void {
+  for (const listener of [...goneListeners]) {
+    try {
+      listener(convId === undefined ? { chatId } : { chatId, convId });
+    } catch (error) {
+      console.warn("A room conversation's sessions could not be let go", error);
+    }
+  }
+}
+
 export function deleteChat(chatId: string): boolean {
   const chat = getChat(chatId);
   if (!chat || chat.isDefault) return false;
   chats = chats.filter((c) => c.id !== chatId);
   write((b) => b.deleteRoom?.(chatId) ?? Promise.reject(new Error("This store can't delete a room yet.")));
   changed();
+  gone(chatId);
   return true;
 }
 
@@ -436,6 +458,7 @@ export function deleteConversation(chatId: string, convId: string): boolean {
   update(chatId, (c) => ({ ...c, conversations: c.conversations.filter((x) => x.id !== convId) }));
   write((b) => b.deleteConversation?.(chatId, convId) ?? Promise.reject(new Error("This store can't delete a conversation yet.")));
   changed();
+  gone(chatId, convId);
   return true;
 }
 

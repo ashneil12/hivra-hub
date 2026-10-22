@@ -1,8 +1,9 @@
 // The app's side of the rooms (hub/model/roomConductor.ts; docs/leadership/ROOM.md), in the main window:
 //
-// - The runner: a room turn runs in the Mono's own session. A free Mono takes it as a managed turn (hidden prompt,
-//   reply back, a quiet "Leadership team · ..." line in its chat). A Mono that is working, has messages waiting or is
-//   out of budget gets the room's wake in its queue instead: steered into its running work when it can take one, sent
+// - The runner: a room turn runs in the Mono's session for that room conversation (r52: one per conversation per Mono,
+//   like separate Claude Code chats; its 1:1 chat keeps only what Ash says there, and deleting the conversation deletes
+//   those sessions). A free session takes it as a managed turn (hidden prompt, reply back). One still working on the
+//   conversation's last turn gets the room's wake in its queue instead: steered into its running work when it can take one, sent
 //   behind it otherwise, and answered with room_post. Never refused, never dropped quietly: the room hears how it ended.
 // - Stop: a running room turn is stopped with the app's Stop (managed, so the Mono's own queue isn't left paused); a
 //   wake still waiting is taken back out of the queue.
@@ -17,7 +18,7 @@ import type { ControlOutcome } from "../../features/orchestration/model/orchestr
 import type { Attachment, Block, Session } from "../../features/sessions/model/session";
 import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/monoMessaging";
-import { monoForSession, monoLook } from "../../features/monos/model/mono";
+import { forgetMonoRoomSession, monoForSession, monoLook, monoRoomSessionsOf } from "../../features/monos/model/mono";
 import {
   postBack,
   roomTurnOf,
@@ -26,7 +27,7 @@ import {
   type RoomTurnOutcome,
   type RoomWakeEnd,
 } from "../../features/hub/model/roomConductor";
-import { getChat, leadershipChatId, requestReply, sendMessage } from "../../features/hub/model/hubChats";
+import { getChat, leadershipChatId, onConversationGone, requestReply, sendMessage } from "../../features/hub/model/hubChats";
 import { roomMemory } from "../../features/hub/model/roomMemory";
 import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
@@ -58,6 +59,13 @@ export type RoomRunnerHost = {
   ): SubmissionAcceptance;
   /** A Mono's own chat, made if it has none yet (ensureMonoSession). */
   openMono(monoId: string): Promise<Session | null | undefined>;
+  /**
+   * The Mono's session for one room conversation, made the first time (ensureMonoRoomSession, r52): room turns run
+   * there, not in its 1:1 chat. Without it (older hosts, tests) they run in its own chat as before.
+   */
+  openRoom?(monoId: string, chatId: string, convId: string): Promise<Session | null | undefined>;
+  /** Deletes a session the room let go of (its conversation was deleted): its turns go with it. */
+  dropSession?(sessionId: string): Promise<unknown>;
   /** The app's Stop for a managed turn. */
   stop(sessionId: string): unknown;
   /** Where the origins of work delegated from rooms are kept (the app database). */
@@ -186,7 +194,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
     const runner: GroupChatRunner = {
       async run(request): Promise<RoomTurnOutcome> {
         const h = latest.current;
-        const session = await h.openMono(request.monoId);
+        const session = h.openRoom ? await h.openRoom(request.monoId, request.chatId, request.convId) : await h.openMono(request.monoId);
         if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
         const current = h.sessionsRef.current.find((s) => s.id === session.id) ?? session;
         const mono = monoForSession(session.id);
@@ -281,7 +289,23 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
       });
       return { kind: "wake", delivery, done };
     };
-    return setGroupChatRunner(runner);
+    const unset = setGroupChatRunner(runner);
+    // A deleted room conversation takes each Mono's session for it along (r52): nothing of it reaches a later turn.
+    const unlisten = onConversationGone(({ chatId, convId }) => {
+      for (const { sessionId } of monoRoomSessionsOf(chatId, convId)) {
+        const drop = latest.current.dropSession;
+        // Deleted while still the Mono's (hidden, stored as its chat), then let go; one that couldn't go stays hidden.
+        if (!drop) forgetMonoRoomSession(sessionId);
+        else
+          void Promise.resolve(drop(sessionId))
+            .then((removed) => removed !== false && forgetMonoRoomSession(sessionId))
+            .catch((error: unknown) => console.warn("Could not delete a room conversation's session", error));
+      }
+    });
+    return () => {
+      unlisten();
+      unset();
+    };
   }, []);
 
   // Work delegated from a room comes back to it, once its owner has had the report turn. Looked at shortly after a change
