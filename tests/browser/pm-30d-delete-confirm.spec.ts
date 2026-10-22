@@ -5,7 +5,7 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 import { ringContrast } from "./contrastProbe";
 
 // Round 30d proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:): the one shared delete
-// confirm. Ash makes a room, then deletes it from the sidebar: "Delete Example: launch room?", "This can't be undone.",
+// confirm. Ash makes a room, then deletes it from the sidebar: "Delete “Example: launch room”?", "This can't be undone.",
 // Cancel focused (Enter cancels) and a red Delete. After Cancel the room is still there.
 //   PM_PROOF_SPEC=pm-30d-delete-confirm.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs/on-r47 npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -33,7 +33,7 @@ test("deleting a room asks first in the shared confirm; Cancel (and Enter) keep 
   await roomRow.hover();
   await roomRow.locator("[data-hub-room-delete]").click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText("Delete Example: launch room?");
+  await expect(dialog).toContainText("Delete “Example: launch room”?");
   await expect(dialog).toContainText("This can't be undone.");
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toHaveClass(/text-red-400/);

@@ -30,7 +30,7 @@ describe("the shared delete confirm", () => {
     act(() => root.render(createElement(ConfirmDeleteHost)));
     let answer: boolean | undefined;
     await act(async () => void confirmDelete("Example: tidy the README").then((ok) => (answer = ok)));
-    expect(dialog()?.textContent).toContain("Delete Example: tidy the README?");
+    expect(dialog()?.textContent).toContain("Delete “Example: tidy the README”?");
     expect(dialog()?.textContent).toContain("This can't be undone.");
     expect(document.activeElement).toBe(button("Cancel"));
     expect(button("Delete")!.className).toContain("text-red-400");
@@ -54,7 +54,7 @@ describe("the shared delete confirm", () => {
   it("is the same confirm for a session with no worktree of its own (session delete is never instant)", async () => {
     const onClose = vi.fn();
     act(() => root.render(createElement(DeleteSessionDialog, { title: "Example: fix the save bug", onClose })));
-    expect(dialog()?.textContent).toContain("Delete Example: fix the save bug?");
+    expect(dialog()?.textContent).toContain("Delete “Example: fix the save bug”?");
     expect(document.querySelector('input[type="checkbox"]')).toBeNull();
     expect(document.activeElement).toBe(button("Cancel"));
     await act(async () => button("Cancel")!.click());

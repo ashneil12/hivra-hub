@@ -26,7 +26,8 @@ export const DELETE_DANGER =
  * The name as the confirm title shows it (Alfred's r50 blind run, 22 Oct): a chat's title is often its first message, so
  * it can hold markdown ("The current branch is **pm/pages-live**...") or end in its own punctuation ("…changed."), which
  * read as "Delete The current branch is **pm/pages-live**...?" and "…changed.?". Plain text only: markdown marks dropped,
- * one line, trailing punctuation trimmed before the "?", and cut at a word near 60 characters with an ellipsis.
+ * one line, trailing punctuation trimmed, and cut at a word near 60 characters with an ellipsis. The title quotes it
+ * (Critiquito), so a cut name reads “build…”? rather than build...?
  */
 export function confirmTitleName(raw: string, max = 60): string {
   let s = raw
@@ -71,7 +72,7 @@ export function ConfirmDelete({
     cancel.current?.focus();
   }, []);
   return (
-    <Modal title={`Delete ${confirmTitleName(name)}?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
+    <Modal title={`Delete “${confirmTitleName(name)}”?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
       <div className="flex flex-col gap-4 px-4 pb-4 pt-2 text-[12px]" data-confirm-delete={name}>
         <p className="text-content/80">{detail ? `${detail} ` : ""}This can't be undone.</p>
         {children}

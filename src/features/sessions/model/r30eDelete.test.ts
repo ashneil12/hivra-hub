@@ -110,7 +110,7 @@ describe("the shared confirm", () => {
     const detail = "Its current chat will be deleted and its habits stop. Its soul and memory are kept.";
     await act(async () => void (done = ask("Example: Pip", detail)));
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("Delete Example: Pip?");
+    expect(dialog.textContent).toContain("Delete “Example: Pip”?");
     expect(dialog.textContent).toContain(`${detail} This can't be undone.`);
     const cancel = button("Cancel")!;
     expect(document.activeElement).toBe(cancel);
