@@ -269,7 +269,8 @@ import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
 } from "../features/sessions/ui/DeleteSessionDialog";
-import { ConfirmDeleteHost, MONO_DELETE_DETAIL, confirmDelete } from "../shared/ui/ConfirmDelete";
+import { ConfirmDeleteHost, confirmDelete } from "../shared/ui/ConfirmDelete";
+import { monoDeleteDetail } from "../features/monos/model/monoDelete";
 import { delegationOf } from "../features/monos/model/delegationView";
 import {
   type WorktreeFocus,
@@ -6427,14 +6428,15 @@ function Workspace({
     [onRemoveHistorySession],
   );
 
-  /** Deletes the Mono's conversation, then the Mono. Its files stay on disk. */
+  /** Deletes the Mono's current conversation, then the Mono. Its folder (soul, memory, habits) stays on disk. */
   const onDeleteMono = useCallback(
     async (monoId: string) => {
       const mono = findMono(monoId);
       if (!mono) return;
       const { name } = monoLook(mono);
-      // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono).
-      const confirmed = await confirmDelete(name, MONO_DELETE_DETAIL);
+      // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono). r30f: it says only what
+      // happens: the chat goes, habits stop, the soul and memory stay in its folder (monoDelete.ts).
+      const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId));
       if (!confirmed) return;
       if (mono.sessionId) {
         if (monoViewIdRef.current === mono.sessionId) closeMonoView();

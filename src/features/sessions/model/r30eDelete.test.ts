@@ -107,12 +107,11 @@ describe("the shared confirm", () => {
     act(() => root.render(createElement(confirm.ConfirmDeleteHost)));
     let done: Promise<boolean> | undefined;
     const ask = confirm.confirmDelete as (name: string, detail?: string) => Promise<boolean>;
-    const detail = (confirm as Record<string, unknown>).MONO_DELETE_DETAIL as string | undefined;
-    expect(detail).toBe("Its conversation will be deleted and its habits stop.");
+    const detail = "Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/.";
     await act(async () => void (done = ask("Example: Pip", detail)));
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Delete Example: Pip?");
-    expect(dialog.textContent).toContain("Its conversation will be deleted and its habits stop. This can't be undone.");
+    expect(dialog.textContent).toContain(`${detail} This can't be undone.`);
     const cancel = button("Cancel")!;
     expect(document.activeElement).toBe(cancel);
     // The ring shows on any focus (the dialog's own, a click), not only keyboard focus-visible.
@@ -128,7 +127,7 @@ describe("the shared confirm", () => {
   it("App's Delete mono… uses it, not the native sheet", () => {
     const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
     const body = app.slice(app.indexOf("const onDeleteMono = useCallback("), app.indexOf("const onDeleteMonoChat = useCallback("));
-    expect(body).toMatch(/confirmDelete\(name, MONO_DELETE_DETAIL\)/);
+    expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\)\)/);
     expect(body).not.toMatch(/\bask\(/);
   });
 

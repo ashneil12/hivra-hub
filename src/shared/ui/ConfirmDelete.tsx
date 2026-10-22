@@ -8,10 +8,11 @@ import { Modal } from "./Modal";
 /**
  * Cancel's focus ring (r30e, Critiquito): shown whenever it has focus, from the moment the dialog opens and after a
  * mouse click too (`focus:`, not `focus-visible:`), so Ash can see Enter is the safe key. The app's accent ring, set off
- * by a solid ring of the dialog's own surface so it never sits on bare glass.
+ * by a solid ring of the dialog's own surface so it never sits on bare glass. In the light theme the accent alone is
+ * under 3:1 (2.69:1), so `confirm-cancel-ring` (index.css) mixes it toward the text colour there (r30f).
  */
 export const CANCEL_FOCUS_RING =
-  "focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background-base";
+  "confirm-cancel-ring focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background-base";
 
 export function ConfirmDelete({
   name,
@@ -104,6 +105,3 @@ export function ConfirmDeleteHost() {
   if (!ask) return null;
   return <ConfirmDelete key={ask.name} name={ask.name} detail={ask.detail} onCancel={() => answer(false)} onDelete={() => answer(true)} />;
 }
-
-/** What else goes when a Mono is deleted (its files stay on disk). */
-export const MONO_DELETE_DETAIL = "Its conversation will be deleted and its habits stop.";
