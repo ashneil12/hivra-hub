@@ -17,6 +17,7 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
+import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
 import { noteRuns } from "../../monos/model/agentNoteView";
 import {
@@ -391,8 +392,10 @@ function AgentTranscriptComponent({
   );
   const blocks = useMemo(() => {
     // A Mono's reaction sits on the message it answers, not in a bubble.
+    // A Mono's 1:1 says a failed turn in plain words, never the provider's status code (r28; turnFailure.ts), and
+    // drops the CLI's own "API Error: 429 …" line that comes with it.
     const chatBlocks = isMonoChat
-      ? monoReactionBlocks(sourceBlocks)
+      ? monoReactionBlocks(plainMonoErrors(sourceBlocks))
       : sourceBlocks;
     if (!harness || !supportsHarnessLogin(harness)) return chatBlocks;
     const visibleBlocks = chatBlocks.filter(
@@ -2657,6 +2660,14 @@ const TranscriptBlock = memo(function TranscriptBlock({
     </div>
   );
 });
+
+/** A Mono's 1:1: its failed turns' notices in plain words, without the CLI's raw API Error line. */
+function plainMonoErrors(blocks: readonly Block[]): Block[] {
+  if (!blocks.some((b) => (b.role === "system" && b.notice === "error") || isApiErrorLine(b))) return blocks as Block[];
+  return blocks
+    .filter((b) => !isApiErrorLine(b))
+    .map((b) => (b.role === "system" && b.notice === "error" ? { ...b, text: plainChatError(b) } : b));
+}
 
 /**
  * A Mono's emoji answer, on the corner of the message it answers. The top
