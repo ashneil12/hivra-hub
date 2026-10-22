@@ -818,17 +818,42 @@ function finish(ctx, ship) {
   unloadLaunchAgent(ship);
 }
 
-/** The LaunchAgent goes once the ship is final: its plist first, then the job itself (which ends this process). */
+/**
+ * The runner's launchd job goes once the ship is final: an old LaunchAgent's plist first, then the job itself (which
+ * ends this process). A submitted job (r50, no plist) is removed the same way.
+ */
 function unloadLaunchAgent(ship) {
   const agent = ship.launchd;
   if (!agent?.label) return;
-  try {
-    fs.rmSync(agent.plist, { force: true });
-  } catch {
-    // already gone
+  if (agent.plist) {
+    try {
+      fs.rmSync(agent.plist, { force: true });
+    } catch {
+      // already gone
+    }
   }
   spawn(launchctlPath(), ["bootout", `${agent.domain}/${agent.label}`], { detached: true, stdio: "ignore" }).unref();
 }
+
+/**
+ * A submitted launchd job is restarted even after a clean exit, so a runner that ends with 0 (its ship final, or
+ * another runner holding it) removes its own job first. Never another ship's job: the label must end with the ship id.
+ */
+export function leaveSubmittedJob(dir) {
+  let doc;
+  try {
+    doc = loadShip(dir);
+  } catch {
+    return false;
+  }
+  const agent = doc?.launchd;
+  if (!agent?.submitted || !agent.label || !agent.domain || !agent.label.endsWith(`.${doc.id}`)) return false;
+  leaving = true;
+  launchctl(["bootout", `${agent.domain}/${agent.label}`]);
+  return true;
+}
+
+let leaving = false;
 
 // Run as a program (launchd, or a test), not when imported by hub-ship.mjs.
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
@@ -837,8 +862,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     console.error("usage: node runner.mjs <absolute ship folder>");
     process.exit(2);
   }
-  // Unloading the finished LaunchAgent ends this process: a clean exit. Any other SIGTERM mid-ship isn't one, so
-  // launchd starts the runner again and it carries on from the last step.
-  process.on("SIGTERM", () => process.exit(finished ? 0 : 143));
-  runShip(dir).then((code) => process.exit(code));
+  // Unloading the finished job ends this process: a clean exit. Any other SIGTERM mid-ship isn't one, so launchd
+  // starts the runner again and it carries on from the last step.
+  process.on("SIGTERM", () => process.exit(finished || leaving ? 0 : 143));
+  runShip(dir).then((code) => {
+    if (code === 0) leaveSubmittedJob(dir);
+    process.exit(code);
+  });
 }

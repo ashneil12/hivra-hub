@@ -299,7 +299,27 @@ ${strings}
 `;
 }
 
-/** Start the runner: a LaunchAgent (the real path), or a plain detached process (tests). */
+/**
+ * The runner's command line under launchd: HOME and PATH set the way the old plist set them, through /usr/bin/env
+ * (`launchctl submit` takes no environment of its own).
+ */
+export function runnerSubmitArgs({ label, node, dir, home }) {
+  const log = path.join(dir, "runner.log");
+  return [
+    "submit", "-l", label, "-o", log, "-e", log, "--",
+    "/usr/bin/env", `HOME=${home}`, "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+    node, "--disable-warning=ExperimentalWarning", path.join(dir, "runner.mjs"), dir,
+  ];
+}
+
+/**
+ * Start the runner: a launchd job submitted without a plist (the real path), or a plain detached process (tests).
+ * `launchctl submit` keeps the runner alive across the app's quit and restarts it if it crashes, like the old
+ * LaunchAgent did, but writes nothing into ~/Library/LaunchAgents, so Background Task Management never sees a new login
+ * item and macOS shows no "App Background Activity: node" banner (r50: that banner sat over the app's top-right
+ * controls after every ship, and a click on it opened Login Items & Extensions). A submitted job is kept alive even
+ * after a clean exit, so the runner removes its own job when it is done (see the runner's main).
+ */
 function startRunner(ship, dir, launcher) {
   const node = ship.node;
   if (launcher === "spawn") {
@@ -311,15 +331,10 @@ function startRunner(ship, dir, launcher) {
     child.unref();
     return { launcher, pid: child.pid };
   }
-  const { label, plist, domain } = ship.launchd;
-  fs.mkdirSync(path.dirname(plist), { recursive: true });
-  fs.writeFileSync(plist, runnerPlist({ label, node, dir, home: ship.home }));
-  const result = launchctl(["bootstrap", domain, plist]);
-  if (result.status !== 0) {
-    fs.rmSync(plist, { force: true });
-    throw new Error(`launchctl bootstrap ${domain} failed: ${result.stderr.trim() || result.status}`);
-  }
-  return { launcher, label, domain, plist };
+  const { label, domain } = ship.launchd;
+  const result = launchctl(runnerSubmitArgs({ label, node, dir, home: ship.home }));
+  if (result.status !== 0) throw new Error(`launchctl submit ${label} failed: ${result.stderr.trim() || result.status}`);
+  return { launcher, label, domain, submitted: true };
 }
 
 /** The GUI session's launchd domain when there is one; over SSH, the user domain (it still outlives the app). */
@@ -367,7 +382,7 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
     restoreDb,
     restoreDbHashes,
     launch: { mode, env },
-    launchd: launcher === "launchd" ? { label, domain: launchDomain(), plist: path.join(paths.agents, `${label}.plist`) } : null,
+    launchd: launcher === "launchd" ? { label, domain: launchDomain(), plist: null, submitted: true } : null,
     node: process.execPath,
     timeouts: { ...DEFAULT_TIMEOUTS, ...timeouts },
     steps: {},

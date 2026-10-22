@@ -17,8 +17,8 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { isIsolatedHome, runnerPlist } from "./hub-ship.mjs";
-import { backupMonoHome, isRunning, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { isIsolatedHome, runnerPlist, runnerSubmitArgs } from "./hub-ship.mjs";
+import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -811,4 +811,82 @@ test("a ship also copies the Monos' permanent home, byte for byte, and never nee
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("r50: the runner is submitted to launchd with no plist, so macOS sees no new login item (no 'App Background Activity' banner)", () => {
+  const args = runnerSubmitArgs({ label: "test.monocode-hub-ship.x", node: NODE, dir: "/tmp/ship dir", home: "/tmp/h" });
+  assert.deepEqual(args.slice(0, 8), ["submit", "-l", "test.monocode-hub-ship.x", "-o", "/tmp/ship dir/runner.log", "-e", "/tmp/ship dir/runner.log", "--"]);
+  assert.deepEqual(args.slice(8), ["/usr/bin/env", "HOME=/tmp/h", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NODE, "--disable-warning=ExperimentalWarning", "/tmp/ship dir/runner.mjs", "/tmp/ship dir"]);
+
+  const w = world();
+  const launchctl = fakeLaunchctl(w.root);
+  const result = spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
+  );
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.equal(result.status, 0, JSON.stringify(answer));
+  const calls = launchctl.calls();
+  assert.ok(calls.some((c) => c.startsWith("submit -l ")), JSON.stringify(calls));
+  assert.ok(!calls.some((c) => c.startsWith("bootstrap")), "no LaunchAgent is bootstrapped");
+  const agents = path.join(w.home, "Library/LaunchAgents");
+  assert.deepEqual(fs.existsSync(agents) ? fs.readdirSync(agents) : [], [], "nothing is written into LaunchAgents");
+  const doc = stateOf(answer.shipDir);
+  assert.equal(doc.launchd.submitted, true);
+  assert.equal(doc.launchd.plist, null);
+  remember(answer.shipDir);
+});
+
+test("r50: a submitted runner removes its own launchd job when it ends cleanly, and never another ship's", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const launchctl = fakeLaunchctl(root);
+  const write = (id, launchd) => {
+    fs.mkdirSync(path.join(root, id), { recursive: true });
+    fs.writeFileSync(path.join(root, id, "state.json"), JSON.stringify({ id, phase: "committed", to: { sha: "c".repeat(40) }, launchd }));
+    return path.join(root, id);
+  };
+  const domain = `gui/${process.getuid()}`;
+  const own = write("20261022-000001-aaaaaaa", { label: "test.monocode-hub-ship.20261022-000001-aaaaaaa", domain, plist: null, submitted: true });
+  const other = write("20261022-000002-bbbbbbb", { label: "test.monocode-hub-ship.someone-else", domain, plist: null, submitted: true });
+  const old = write("20261022-000003-ccccccc", { label: "test.monocode-hub-ship.20261022-000003-ccccccc", domain, plist: "/x.plist" });
+  const saved = process.env.MONOCODE_SHIP_LAUNCHCTL;
+  process.env.MONOCODE_SHIP_LAUNCHCTL = launchctl.bin;
+  try {
+    assert.equal(leaveSubmittedJob(own), true);
+    assert.equal(leaveSubmittedJob(other), false);
+    assert.equal(leaveSubmittedJob(old), false, "an old LaunchAgent ship is left to its plist rules");
+  } finally {
+    if (saved === undefined) delete process.env.MONOCODE_SHIP_LAUNCHCTL;
+    else process.env.MONOCODE_SHIP_LAUNCHCTL = saved;
+  }
+  assert.deepEqual(launchctl.calls(), [`bootout ${domain}/test.monocode-hub-ship.20261022-000001-aaaaaaa`]);
+});
+
+// r50 drill against the real launchd (opt-in: MONOCODE_SHIP_LIVE_LAUNCHD=1): a whole ship under a temporary HOME with
+// the runner submitted for real. It must outlive the old app's quit, open the new one, commit, and leave no job behind.
+test("r50 drill: a submitted runner carries a ship across the app's restart and leaves no launchd job", { skip: process.env.MONOCODE_SHIP_LIVE_LAUNCHD !== "1" }, async () => {
+  const w = world();
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const result = spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    { env: w.env, encoding: "utf8" },
+  );
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.equal(result.status, 0, JSON.stringify(answer));
+  assert.equal(answer.appRunning, true, "the old app is running when the ship is staged");
+  const label = stateOf(answer.shipDir).launchd.label;
+  assert.match(spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { encoding: "utf8" }).stdout, /submitted by/);
+  const done = await until("the ship's commit", settled(answer.shipDir, "committed"), 60000);
+  remember(answer.shipDir);
+  assert.equal(done.phase, "committed");
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in place");
+  assert.ok(fs.existsSync(path.join(answer.shipDir, "accepted.json")), "the old app accepted the update and quit");
+  assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha, "the new app is running");
+  await until("the runner's job gone", () => spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`]).status !== 0, 20000);
+  assert.deepEqual(fs.readdirSync(path.join(w.home, "Library")).includes("LaunchAgents") ? fs.readdirSync(path.join(w.home, "Library/LaunchAgents")) : [], []);
+  console.log(`DRILL label=${label} ship=${answer.shipDir}`);
 });

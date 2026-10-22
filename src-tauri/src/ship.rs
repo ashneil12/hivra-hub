@@ -731,6 +731,28 @@ fn write_receipt(ship: &Ship, by: &str) {
     let _ = write_json(&ship.dir.join(RECEIPT), &receipt(ship, by));
 }
 
+/// `launchctl submit` for a ship's runner, the same command line hub-ship.mjs's `runnerSubmitArgs` builds.
+fn runner_submit_args(label: &str, node: &str, dir: &Path, home: &str) -> Vec<String> {
+    let log = dir.join(RUNNER_LOG).to_string_lossy().into_owned();
+    vec![
+        "submit".into(),
+        "-l".into(),
+        label.into(),
+        "-o".into(),
+        log.clone(),
+        "-e".into(),
+        log,
+        "--".into(),
+        "/usr/bin/env".into(),
+        format!("HOME={home}"),
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin".into(),
+        node.into(),
+        "--disable-warning=ExperimentalWarning".into(),
+        dir.join("runner.mjs").to_string_lossy().into_owned(),
+        dir.to_string_lossy().into_owned(),
+    ]
+}
+
 /// The runner keeps going under launchd (or as a plain detached process when the ship said so).
 fn restart_runner(ship: &Ship) {
     if let (Some(label), Some(domain), Some(plist)) = (
@@ -752,6 +774,40 @@ fn restart_runner(ship: &Ship) {
                 .status();
         }
         log(&ship.dir, &format!("restarted the runner ({label})"));
+        return;
+    }
+    // r50: a runner submitted to launchd with no plist (so no login item and no "App Background Activity" banner).
+    if let (Some(label), Some(domain), true) = (
+        ship.doc.pointer("/launchd/label").and_then(Value::as_str),
+        ship.doc.pointer("/launchd/domain").and_then(Value::as_str),
+        ship.doc
+            .pointer("/launchd/submitted")
+            .and_then(Value::as_bool)
+            == Some(true),
+    ) {
+        let started = Command::new("/bin/launchctl")
+            .args(["kickstart", &format!("{domain}/{label}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        let node = ship.text("/node");
+        if !started && !node.is_empty() {
+            let _ = Command::new("/bin/launchctl")
+                .args(runner_submit_args(
+                    label,
+                    node,
+                    &ship.dir,
+                    ship.text("/home"),
+                ))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        log(
+            &ship.dir,
+            &format!("restarted the runner ({label}, submitted)"),
+        );
         return;
     }
     let node = ship.text("/node");
