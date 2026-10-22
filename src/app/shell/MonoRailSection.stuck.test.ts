@@ -275,4 +275,21 @@ describe("stuck cards read plainly (Critiquito, 21 Oct)", () => {
       "No output for 9 min · still running the tests",
     );
   });
+
+  it("r51: jobs its Lead gave up on are rows in the panel, its header counts them, never 'Nothing needs you now'", async () => {
+    const { StuckPanel } = await import("../../features/monos/ui/StuckPanel");
+    const anchor = document.createElement("button");
+    container.append(anchor);
+    const jobs = [1, 2].map((i) => ({
+      id: `g${i}`, projectId: "vg-game", who: "EXO lead", kind: "worker" as const, doing: `Job ${i}`, minutes: 1, steps: [],
+      lead: "exo-lead", stuck: "lead_gave_up" as const, stuckReason: "It still fails after two tries",
+    }));
+    act(() => root.render(createElement(StuckPanel, { anchor, title: "EXO lead", stuck: [], jobs, now, onClose: () => {} })));
+    const p = panel()!;
+    expect(p.querySelectorAll("[data-stuck-panel-job]").length).toBe(2);
+    expect(p.textContent).toContain("2 needs you");
+    expect(p.querySelector("[data-stuck-panel-empty]")).toBeNull();
+    expect(p.querySelector('[data-stuck-panel-job="g1"]')!.textContent).toContain("It still fails after two tries");
+    expect(p.querySelector('[data-stuck-panel-job="g1"] [data-hub-open-lead]')!.textContent).toBe("Open EXO lead's chat");
+  });
 });

@@ -12,7 +12,7 @@ import {
 import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
-import { needsYouCountFor } from "../../features/hub/model/needsYouRows";
+import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention } from "../../features/monos/model/subChats";
@@ -235,14 +235,14 @@ export function MonoRailSection({
     total.asking += counts.asking;
     total.stuck += counts.stuck;
   }
-  // "1 needs you" opens only what Ash must act on (r30), from the same list: the workers behind its red rows.
-  const redWorkers = (monoId?: string) =>
-    needsYou
-      .filter((r) => !monoId || r.lead === monoId)
-      .flatMap((r) => (r.worker ? [r.worker] : r.job.stuckWorker && r.job.stuckWorker.kind !== "asking" ? [r.job.stuckWorker] : []))
-      .sort((a, b) => a.since - b.since);
-  const allStuck = redWorkers();
-  const panelStuck = stuckPanel ? (stuckPanel.monoId ? redWorkers(stuckPanel.monoId) : allStuck) : [];
+  // "1 needs you" opens only what Ash must act on (r30), from the same list: r51, every row behind the count, workers and
+  // jobs alike, so the panel's rows and header always equal the chip.
+  // The folded header counts the Monos shown here, so its panel lists those Monos' rows, no more.
+  const shownIds = new Set(ids);
+  const shownRows = needsYou.filter((r) => !!r.lead && shownIds.has(r.lead));
+  const allStuck = needsYouPanel(shownRows).workers;
+  const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsYou, stuckPanel.monoId) : shownRows) : undefined;
+  const panelStuck = panel?.workers ?? [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
@@ -558,6 +558,7 @@ export function MonoRailSection({
           anchor={stuckPanel.anchor}
           title={panelMono ? monoLook(panelMono).name : "Monos"}
           stuck={panelStuck}
+          jobs={panel?.jobs}
           now={now}
           showLead={!stuckPanel.monoId}
           onClose={() => setStuckPanel(undefined)}

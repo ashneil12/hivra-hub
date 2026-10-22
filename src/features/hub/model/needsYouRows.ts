@@ -40,8 +40,16 @@ export function needsYouRows(
 ): NeedsYouRow[] {
   const flat = jobRows.flatMap((w) => [w, ...(w.parts ?? [])]);
   const covered = new Set(flat.flatMap((w) => (w.stuckWorker ? [w.stuckWorker.key] : [])));
+  // r51: one worker is one row, even when a big job and its part both carry it.
+  const seen = new Set<string>();
   const out: NeedsYouRow[] = flat
     .filter(isNeedsYouRow)
+    .filter((w) => {
+      const k = w.stuckWorker ? `worker:${w.stuckWorker.key}` : `job:${w.id}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
     .map((w) => ({ key: `job:${w.id}`, lead: w.lead ?? null, projectId: w.projectId ?? null, job: w }));
   for (const s of stuck)
     if (s.kind !== "asking" && !covered.has(s.key) && stuckNeedsAsh(s))
@@ -49,7 +57,36 @@ export function needsYouRows(
   return out;
 }
 
+/**
+ * One Lead's rows in that one list (every Lead's with no `lead`). r51: the rail chip's "N needs you", the panel it opens
+ * (its header and its rows) and Being built's red rows all read this, so the chip can't say "5 needs you" over a panel
+ * that says "Nothing needs you now" (EXO: five jobs its Lead gave up on, which the panel didn't list because they have no
+ * worker), and a grey With <Lead> row never adds to it.
+ */
+export function needsYouFor(rows: readonly NeedsYouRow[], lead?: string): NeedsYouRow[] {
+  return lead ? rows.filter((r) => r.lead === lead) : [...rows];
+}
+
 /** The rail's "N needs you" for one Lead: its rows in that one list. */
 export function needsYouCountFor(rows: readonly NeedsYouRow[], lead: string): number {
-  return rows.filter((r) => r.lead === lead).length;
+  return needsYouFor(rows, lead).length;
+}
+
+/** The worker behind a row, when there is one (a lone worker, or the red worker a job row carries). */
+export function needsYouWorker(r: NeedsYouRow): StuckWorker | undefined {
+  if (r.worker) return r.worker;
+  return r.job.stuckWorker && r.job.stuckWorker.kind !== "asking" && r.job.stuck !== "lead_gave_up" ? r.job.stuckWorker : undefined;
+}
+
+/** What the panel shows for a set of rows: the workers (answerable cards) and the job rows with no worker behind them. */
+export function needsYouPanel(rows: readonly NeedsYouRow[]): { workers: StuckWorker[]; jobs: Worker[]; count: number } {
+  const workers: StuckWorker[] = [];
+  const jobs: Worker[] = [];
+  for (const r of rows) {
+    const w = needsYouWorker(r);
+    if (w) workers.push(w);
+    else if (r.job) jobs.push(r.job);
+  }
+  workers.sort((a, b) => a.since - b.since);
+  return { workers, jobs, count: workers.length + jobs.length };
 }

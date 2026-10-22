@@ -5,7 +5,7 @@ import type { Delegation } from "../../monos/model/delegations";
 import { stuckOf, type StuckWorker } from "../../monos/model/workerStuck";
 import { stuckWorkerChip } from "../../monos/model/stuckChip";
 import { workerChip } from "./statusChip";
-import { isNeedsYouRow, needsYouCountFor, needsYouRows } from "./needsYouRows";
+import { isNeedsYouRow, needsYouCountFor, needsYouFor, needsYouPanel, needsYouRows } from "./needsYouRows";
 import type { Worker } from "./types";
 
 const now = Date.now();
@@ -71,5 +71,59 @@ describe("the r30c red reasons all feed the one list", () => {
     }
     expect(needsYouCountFor(rows, "hivra-lead")).toBe(rows.length);
     expect(needsYouCountFor(rows, "hivra-lead")).toBe(4);
+  });
+});
+
+// r51 (count list): the rail chip, the panel it opens (header and rows) and the red rows are one list. EXO's chip said
+// "5 needs you" over a panel that said "Nothing needs you now": its five jobs the Lead gave up on have no worker behind
+// them, and the panel listed workers only. And a grey With <Lead> row must never raise a Lead's count.
+describe("r51: chip, panel and rows are one list", () => {
+  it("EXO: five jobs its Lead gave up on are five panel rows under '5 needs you'", () => {
+    const jobs = Array.from({ length: 5 }, (_, i) => job(`g${i}`, { lead: "exo-lead", projectId: "vg-game", who: "EXO lead", stuck: "lead_gave_up", stuckReason: "It still fails" }));
+    const rows = needsYouRows(jobs, [], () => "vg-game");
+    const panel = needsYouPanel(needsYouFor(rows, "exo-lead"));
+    expect(needsYouCountFor(rows, "exo-lead")).toBe(5);
+    expect(panel.count).toBe(5);
+    expect(panel.jobs.map((j) => j.id)).toEqual(["g0", "g1", "g2", "g3", "g4"]);
+    expect(panel.workers).toEqual([]);
+  });
+
+  it("a red worker shows as its answerable card, a job with no worker as a job row; the count is both", () => {
+    const credits = stuck("w1", { errorClass: "billing" });
+    const lone = stuck("w2", { errorClass: "auth", error: "Please run /login" });
+    const rows = needsYouRows([job("j1", { stuck: "stuck", stuckWorker: credits }), job("j2", { stuck: "lead_gave_up" })], [credits, lone], () => "hivra");
+    const panel = needsYouPanel(needsYouFor(rows, "hivra-lead"));
+    expect(panel.workers.map((w) => w.key).sort()).toEqual(["k-w1", "k-w2"]);
+    expect(panel.jobs.map((j) => j.id)).toEqual(["j2"]);
+    expect(panel.count).toBe(needsYouCountFor(rows, "hivra-lead"));
+    expect(panel.count).toBe(3);
+  });
+
+  it("a grey row never raises a Lead's count: With <Lead>, Retrying, waiting on an answer, a Lead that can't answer for now", () => {
+    const red = Array.from({ length: 6 }, (_, i) => job(`r${i}`, { stuck: "lead_gave_up" }));
+    const before = needsYouCountFor(needsYouRows(red, [], () => "hivra"), "hivra-lead");
+    expect(before).toBe(6);
+    const firstFail = stuck("g1", { error: "Stopped with an error.", delivery: "delivered" });
+    const asking = { ...stuck("g2", { state: "running" } as Partial<Delegation>), kind: "asking" as const };
+    const greys = [
+      job("with-lead", { stuck: "sent_to_lead" as Worker["stuck"] }),
+      job("retrying", { stuck: "stuck" }),
+      job("failed-once", { stuck: "stuck", stuckWorker: firstFail }),
+      job("asking", { state: "waiting", stuckWorker: asking }),
+      job("cant-answer", { stuck: "stuck", leadCantAnswer: "grey" }),
+    ];
+    for (const g of greys) expect(workerChip(g)?.tone ?? "none").not.toBe("red");
+    const rows = needsYouRows([...red, ...greys], [firstFail, asking], () => "hivra");
+    expect(needsYouCountFor(rows, "hivra-lead")).toBe(6);
+    expect(needsYouPanel(needsYouFor(rows, "hivra-lead")).count).toBe(6);
+  });
+
+  it("a big job and its part carrying the same red worker are one row", () => {
+    const credits = stuck("w1", { errorClass: "billing" });
+    const part = job("p1", { stuck: "stuck", stuckWorker: credits, parentId: "big" });
+    const big = job("big", { stuck: "stuck", stuckWorker: credits, parts: [part] });
+    const rows = needsYouRows([big], [credits], () => "hivra");
+    expect(needsYouCountFor(rows, "hivra-lead")).toBe(1);
+    expect(needsYouPanel(rows).count).toBe(1);
   });
 });
