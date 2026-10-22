@@ -10,6 +10,8 @@ const world = vi.hoisted(() => ({
 vi.mock("../../monos/model/mono", () => ({
   listMonos: () => world.monos,
   monoLook: (mono: { id: string; name?: string }) => ({ id: mono.id, name: mono.name ?? mono.id, mascot: "", color: "", projects: [] }),
+  // Bot changes (a theme's Undo row) pulls in the team code, which names a Mono when it makes one.
+  saveMonoName: () => {},
 }));
 vi.mock("../../monos/model/monoFiles", () => ({
   loadMonoFiles: async (monoId: string) => ({ themes: Object.keys(world.files[monoId] ?? {}) }),
