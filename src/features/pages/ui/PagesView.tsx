@@ -506,7 +506,7 @@ export function PagesContent() {
           ) : (
             <div className="rounded-lg px-3 py-2.5" data-pages-turned-down>
               <div className="text-[13px] text-content">{build.status === "turned-down" ? "Sent back to " + asker : "That didn't work"}</div>
-              <div className="text-[13px] leading-5 text-content/60">Turned down automatically: {"reason" in build ? build.reason : ""}</div>
+              <div className="text-[13px] leading-5 text-content/60">{build.status === "turned-down" ? "Turned down automatically: " : ""}{"reason" in build ? build.reason : ""}</div>
             </div>
           )
         ) : (

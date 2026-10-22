@@ -6,6 +6,7 @@ import { clearLocalProjectOrder } from "../../hub/model/projectPrefs";
 import type { HubChangeRecord } from "../../hub/model/types";
 import { BUILD_WAIT_SECONDS, isSeatedMono, isStillBuilding } from "../../pages/model/buildPage";
 import { isAppChange } from "./appChange";
+import { plainProviderError } from "../../hub/model/providerError";
 
 /**
  * The seam for Level 2 changes (docs/hub-change-contract.md): Change the hub, Edit Today by chat, and Connect data.
@@ -74,7 +75,7 @@ function notConnected(flow: ChangeFlow, e: unknown): ChangeResult {
   // Ash OS says "isn't wired" for Connect data before any Mono runs.
   if (/isn't wired/i.test(err.message)) return { status: "not-connected", reason: err.message };
   if (/turned it down|doesn't fit/i.test(err.message) || err.message === SEATED_ONLY) return { status: "turned-down", reason: err.message };
-  return { status: "error", reason: err.message || "That didn't go through." };
+  return { status: "error", reason: plainProviderError(err.message) || "That didn't go through." };
 }
 
 export async function requestChange(req: ChangeRequest, deps: ChangeDeps = {}): Promise<ChangeResult> {

@@ -4,6 +4,7 @@
 // tall one folds to its head with "Show all" (web/src/Html.ts TALL: `text.length + 80 * lines > 4000`). The hub's report
 // is the hidden turn a Lead's brief settles into the Mono's chat (monoSessionCompletion.ts), so the name is the team the
 // Lead runs, read from the report's own sessionId. Port map: /workspace/research/ui-port-map.md idea 1.
+import { plainForAsh } from "../../hub/model/plainForAsh";
 import type { Block } from "../../sessions/model/session";
 
 /** UniiChat Html.ts TALL: past this weighted length a report shows its head and "Show all". */
@@ -58,7 +59,8 @@ export function readTeamReport(
   const result = typeof payload?.result === "string" ? payload.result : "";
   const error = typeof payload?.error === "string" ? payload.error : "";
   // UniiChat report_read drops the trailing "Full chat: zoom(...)" pointer from what is shown.
-  const text = (result || error).replace(/\s*Full chat: zoom\("[^"\n]*"\)\s*$/, "").trim();
+  // Ash reads it on the card: no raw task ids or absolute paths (plainForAsh); the payload keeps them for the Mono.
+  const text = plainForAsh((result || error).replace(/\s*Full chat: zoom\("[^"\n]*"\)\s*$/, "")).trim();
   if (!text) return undefined;
   return { team: team.trim() || REPORT_FALLBACK_NAME, text, status: done.status };
 }

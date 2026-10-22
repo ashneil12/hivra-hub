@@ -1,3 +1,4 @@
+import { plainProviderError } from "../../hub/model/providerError";
 import { liveHubStore } from "../../hub/model/hubData";
 import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "../../hub/model/hubTransport";
 import { listMonos } from "../../monos/model/mono";
@@ -123,7 +124,7 @@ async function buildOnce(payload: Record<string, unknown>, stub: () => unknown, 
       if (err.kind === "timeout") return { status: "building", reason: "The page is taking a while. Press Try again in a moment to see it." };
       if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: err.isDown ? "The harness service isn't running, so no Mono can build a page right now." : err.message };
       if (/turned it down/i.test(err.message) || err.message === SEATED_ONLY_PAGES) return { status: "turned-down", reason: err.message };
-      return { status: "error", reason: err.message || "The build didn't go through." };
+      return { status: "error", reason: plainProviderError(err.message) || "The build didn't go through." };
     }
   }
   return checkBuiltSpec(raw);

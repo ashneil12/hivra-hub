@@ -20,6 +20,14 @@ const blockOf = (results: MonoSessionCompletionResult[]) => {
 const teams = (id: string) => (id === "lead-chat" ? "EXO coding team" : id === "nameless-lead" ? "" : undefined);
 
 describe("readTeamReport", () => {
+  it("shows Ash the report without raw task ids or absolute paths (Hub lead live 22 Oct)", () => {
+    const report = readTeamReport(blockOf([result({ result: "C7 is ready (t-9bd8c17f). The preview copy is /Users/ash/Worktrees/hub-c7 and tests pass." })]), teams);
+    expect(report?.text).toBe("C7 is ready. The preview copy is hub-c7 and tests pass.");
+  });
+  it("the report-back turn asks the Lead for plain words: no ids, no paths", () => {
+    expect(completionMessage("mono-completion-r1-g1", [result()]).text).toContain("never a session or task id, and no folder or file paths");
+  });
+
   it("names the team the Lead runs and keeps its words as written", () => {
     expect(readTeamReport(blockOf([result()]), teams)).toEqual({
       team: "EXO coding team",

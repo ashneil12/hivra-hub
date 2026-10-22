@@ -1102,6 +1102,7 @@ fn forward(
         request.send_string(&payload.to_string())
     };
     let mut result = send(&upstream_body);
+    let mut retried_without = false;
     // Refused for the effort field alone: say it once more without it, and stop sending that level for this model.
     if let Some(effort) = sent_effort {
         if let Err(ureq::Error::Status(code, r)) = result {
@@ -1112,20 +1113,27 @@ fn forward(
                 if let Some(fields) = upstream_body.as_object_mut() {
                     fields.remove("reasoning_effort");
                 }
+                retried_without = true;
                 result = send(&upstream_body);
             } else {
+                record_receipt(route, sent_effort, false, code);
                 let text = scrub(&text, token);
                 return respond_upstream_error(stream, route, code, &text);
             }
         }
     }
     let resp = match result {
-        Ok(r) => r,
+        Ok(r) => {
+            record_receipt(route, sent_effort, retried_without, r.status());
+            r
+        }
         Err(ureq::Error::Status(code, r)) => {
+            record_receipt(route, sent_effort, retried_without, code);
             let text = scrub(&r.into_string().unwrap_or_default(), token);
             return respond_upstream_error(stream, route, code, &text);
         }
         Err(ureq::Error::Transport(_)) => {
+            record_receipt(route, sent_effort, retried_without, 0);
             return respond(
                 stream,
                 502,
@@ -1137,6 +1145,69 @@ fn forward(
         }
     };
     forward_answer(stream, resp, model, streaming)
+}
+
+/// Where each routed request leaves a one-line receipt (E1, 22 Oct: show that the chosen effort reaches the
+/// provider). Only what was asked of whom and the answer's status: never the key, a header or any message text.
+const RECEIPTS_MAX_BYTES: u64 = 256 * 1024;
+
+fn receipts_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("MONOCODE_ROUTER_RECEIPTS") {
+        return Some(path.into());
+    }
+    if cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::Path::new(&home).join("Library/Logs/MonoCode Hub/model-router.jsonl"))
+}
+
+/// The receipt's line: `sent_effort` is what went out with the request that answered (none after a retry without it).
+fn receipt_line(
+    route: &CustomRoute,
+    sent_effort: Option<&str>,
+    retried_without: bool,
+    status: u16,
+) -> Value {
+    json!({
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "provider": route.provider,
+        "host": host_of(&route.base_url),
+        "model": route.model_id.trim(),
+        "chosenEffort": route.reasoning_effort,
+        "sentEffort": if retried_without { None } else { sent_effort },
+        "retriedWithoutEffort": retried_without,
+        "status": status,
+    })
+}
+
+fn record_receipt(
+    route: &CustomRoute,
+    sent_effort: Option<&str>,
+    retried_without: bool,
+    status: u16,
+) {
+    let Some(path) = receipts_path() else { return };
+    let line = receipt_line(route, sent_effort, retried_without, status).to_string();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Small and recent: past the cap the file starts again.
+    let fresh = std::fs::metadata(&path)
+        .map(|m| m.len() > RECEIPTS_MAX_BYTES)
+        .unwrap_or(false);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(!fresh)
+        .write(true)
+        .truncate(fresh)
+        .open(&path);
+    if let Ok(mut file) = file {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 fn respond_upstream_error(
@@ -1699,6 +1770,28 @@ mod tests {
         assert!(!serde_json::to_string(&heard[0])
             .unwrap()
             .contains("fake-key"));
+    }
+
+    /// E1 (22 Oct): each routed request leaves a receipt of the effort it carried, with no key or message text.
+    #[test]
+    fn a_receipt_says_which_effort_reached_the_provider_and_never_holds_the_key() {
+        let mut r = route("deepseek", "https://api.deepseek.com/v1", "deepseek-chat");
+        r.reasoning_effort = Some("high".into());
+        let sent = receipt_line(&r, Some("high"), false, 200);
+        assert_eq!(sent["provider"], "deepseek");
+        assert_eq!(sent["host"], "api.deepseek.com");
+        assert_eq!(sent["model"], "deepseek-chat");
+        assert_eq!(sent["chosenEffort"], "high");
+        assert_eq!(sent["sentEffort"], "high");
+        assert_eq!(sent["status"], 200);
+        let retried = receipt_line(&r, Some("high"), true, 200);
+        assert_eq!(retried["sentEffort"], Value::Null);
+        assert_eq!(retried["retriedWithoutEffort"], true);
+        assert_eq!(
+            sent.as_object().unwrap().len(),
+            8,
+            "at, provider, host, model, chosenEffort, sentEffort, retriedWithoutEffort, status"
+        );
     }
 
     #[test]
