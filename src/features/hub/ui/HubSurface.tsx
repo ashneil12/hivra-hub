@@ -485,7 +485,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         {/* The reason wraps (never cut mid-word). */}
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-need-why>{need.why}</div>
         {/* A red Needs you opens the Lead's chat from its row (r27b); the reason is the line above. */}
-        {mark?.circle === "red" && lead?.id ? <NeedsYouLinkLine name={lead.name} onOpen={() => openMonoChat(lead.id!)} /> : null}
+        {mark?.circle === "red" && lead?.id ? <NeedsYouLinkLine name={lead.name} onOpen={() => openLead(lead.id) || openMonoChat(lead.id!)} /> : null}
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
         {answering && !answering.sending && (answering.receipt || answering.problem) ? (
           <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>
