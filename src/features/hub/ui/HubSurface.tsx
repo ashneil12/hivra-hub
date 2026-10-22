@@ -25,7 +25,7 @@ import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
-import { appSinceText } from "../model/appSince";
+import { appSinceText, sinceGlance } from "../model/appSince";
 import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
@@ -158,7 +158,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
         <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
       ) : (
         (() => {
-          const text = [since.pending ? "" : calmSummary(since.plainText), appSince].filter(Boolean).join(" ");
+          const text = [since.pending ? "" : calmSummary(sinceGlance(since.plainText)), appSince].filter(Boolean).join(" ");
           return (
             <p
               className={`line-clamp-4 text-[13px] leading-5 ${text ? "text-content/85" : "text-content/60"}`}
@@ -225,8 +225,11 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       })}</div>}
     </div>
   );
+  // C9: the Since paragraph is the glance at the top of Today, above the shortcuts and the project cards; the detail
+  // (Needs you, Being built, pages) is below to scroll to.
+  const sinceSection = sections.find((s) => s.kind === "since");
   const block = (s: TodaySection) =>
-    s.kind === "since" ? sinceBlock(s)
+    s.kind === "since" ? null
     : s.kind === "setup" ? setupBlock(s)
     // Waiting on you sits right above Needs you, wherever the board puts it.
     : s.kind === "needs" ? <Fragment key={s.id}><StuckToday projectId={projectId} /><WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
@@ -235,6 +238,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     : null;
   return (
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
+      {sinceSection ? sinceBlock(sinceSection) : null}
       {!projectId ? <HomeTools /> : null}
       {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">

@@ -893,7 +893,7 @@ export class HubStore {
   }
 
   // ---- Ash's activity --------------------------------------------------------------------------------------------
-  /** Ash really used the app (typing, clicking, focus) at `at`. Tell Ash OS; a failure here is never shown. */
+  /** Ash really used the app (typing or clicking) at `at`. Tell Ash OS; a failure here is never shown. */
   async reportActive(at: Date): Promise<void> {
     if (!this.running) return;
     const gen = this.gen;

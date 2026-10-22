@@ -187,8 +187,8 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
 - `liveHubData.ts`: the `HubDataSource` the screens read. `hubData()` returns it
   unless the examples flag is on. Components that read `hubData()` while
   rendering call `useHubDataVersion()` (it also starts the store).
-- `hubActivity.ts`: real use only (key, pointer, wheel, touch, window focus;
-  ignored while the window is hidden). Reports the time of the latest input to
+- `hubActivity.ts`: real use only (typing or a click; not scrolling, hovering,
+  window focus or reopening the app; ignored while the window is hidden). Reports the time of the latest input to
   `ash-hub-active`, at most once a minute, never from a timer, so an idle open
   window changes nothing. The first input after a 30-minute gap is reported at
   once; Ash OS decides what counts as leaving and sets "Since".
