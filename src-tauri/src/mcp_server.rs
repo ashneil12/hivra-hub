@@ -282,7 +282,7 @@ fn tools() -> Value {
         {
             "name": "room_post",
             "title": "Post in a room",
-            "description": "Post one message in a group room you sit in (a project's Leadership team or a chat Ash made), as yourself. Use it when you speak from your own chat: an answer the room woke you for while you were busy, work that came back (\"X is back\", 2 to 4 lines, where the full result is), or something the room must know now. During a room turn your reply is posted for you; don't call this then. Keep it to a few lines, no em dashes, no filler (\"checking now\", \"got it\"): an acknowledgement is a reaction (reaction with replyTo) instead. Name a seat (\"PM, ...\") to hand it something; that wakes it. Refused while the room is paused for Ash.",
+            "description": "Post one message in a group room you sit in (a project's Leadership team or a chat Ash made), as yourself. Use it when you speak from your own chat: an answer the room woke you for while you were busy, work that came back (\"X is back\", 2 to 4 lines, where the full result is), or something the room must know now. During a room turn your reply is posted for you; don't call this then. Keep it to a few lines, no em dashes, no filler (\"checking now\", \"got it\"): an acknowledgement is a reaction (reaction with replyTo) instead. Name a Mono (\"PM, ...\") to hand it something; that wakes it. Refused while the room is paused for Ash.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -331,7 +331,7 @@ fn tools() -> Value {
         {
             "name": "room_create",
             "title": "Make a group chat",
-            "description": "Make a group chat (room) Ash asked for, with you in it: a name and the seats (Mono names or ids). Ash sees it in the sidebar at once.",
+            "description": "Make a group chat (room) Ash asked for, with you in it: a name and the Monos in it (names or ids). Ash sees it in the sidebar at once.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -353,11 +353,11 @@ fn tools() -> Value {
                 "properties": {
                     "name": { "type": "string", "maxLength": 40 },
                     "role": { "type": "string", "maxLength": 60, "description": "Its role line in the sidebar, like \"X posts\"." },
-                    "who": { "type": "string", "maxLength": 1200, "description": "Who it is, in its own voice (\"I'm Postie. I turn Hivra's shipped work into X posts.\")." },
+                    "who": { "type": "string", "maxLength": 1200, "description": "Who it is, in its own voice (\"I'm Postie. I draft X posts from what shipped.\")." },
                     "watchFor": { "type": "string", "maxLength": 1200, "description": "What it watches for, in its own voice (\"Anything that shouldn't be public yet.\")." },
                     "soul": { "type": "string", "maxLength": 24000, "description": "Optional: its SOUL.md in the short shape (## Role, ## Who I am, ## What I watch for, ## Skills only). Usually leave it out and give role and who." },
                     "skills": { "type": "array", "items": { "type": "string" }, "maxItems": 12, "description": "Names of skills that are installed here (as in the / list), nothing made up; leave out if none fit. Unknown names are refused with the list of real ones." },
-                    "projects": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+                    "projects": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Only the projects Ash named for it, or the one project of the room or team he asked in. Never pick others yourself; if it is unclear, ask him. Left out, it gets every project you work on." },
                     "connectors": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                     "rooms": { "type": "array", "items": { "type": "string" }, "maxItems": 10, "description": "Rooms of yours it joins once made." },
                     "draftId": { "type": "string", "description": "Make the Mono you drafted, after Ash said yes." }

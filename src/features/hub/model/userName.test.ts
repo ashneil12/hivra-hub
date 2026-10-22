@@ -62,7 +62,7 @@ describe("a fresh install", () => {
     expect(now["lead:hub-lead"]).not.toContain("15 Oct"); // Ash's dated quotes are his words, not Sam's
     expect(pronounLeaks(now)).toEqual([]);
     expect(now["lead:hub-lead"]).toContain("answer them at once whenever Sam writes");
-    expect(now.hubNote).toContain("Deletes need Sam to click yes themselves.");
+    expect(now.hubNote).toContain("Deletes need Sam's own yes.");
     expect(now["turn:answer"]).toContain("Sam's messages are their words");
   });
 

@@ -121,7 +121,7 @@ it("tells the Mono it runs in MonoCode Hub, who it is, its soul and memory, and 
   const full = monoContext(look, files(), { soul: true, memory: true }, { cli: "/Apps/monocode app" });
   expect(full.startsWith(`${hubNote()}\n\n- You are Skull.`)).toBe(true);
   expect(full).toContain("running inside MonoCode Hub");
-  expect(full).toContain("- Deletes need Ash to click yes himself.");
+  expect(full).toContain("- Deletes need Ash's own yes.");
   expect(full).not.toMatch(/money/i);
   expect(full).toContain("You are Skull.");
   expect(full).toContain("site (/code/site)");
@@ -152,11 +152,11 @@ const ALFRED_NOTE = `You're running inside MonoCode Hub, Ash's app for running a
 
 - Your soul file says who you are and what you own. Your memory files are yours.
 - Ash talks to you in chats and rooms. Other Monos are in the rooms too.
-- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard. Anything applied can be undone in Bot changes.
-- When you save a memory, keep what Ash actually said, in his words and credited to him. A question he asked stays a question, and nothing gets saved as further along than it was.
-- Deletes need Ash to click yes himself.
+- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- When you save a memory, keep Ash's own words, credited to him. A question he asked stays a question, and nothing gets saved as further along than it was. Unapproved cards aren't decisions.
+- Deletes need Ash's own yes.
 - Name work by what it is, not task ids or paths.
-- If you need to know how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+- For how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
 
 it("is Alfred's shared note word for word, the docs path filled in once known and its line left out before", () => {
   expect(HUB_NOTE_TEMPLATE).toBe(ALFRED_NOTE);

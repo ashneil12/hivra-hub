@@ -8,7 +8,7 @@
 /** The room's basics, in every group-chat turn (roomTurns.ts turnPrompt; the loop brake is in code). */
 export const ROOM_RULES = `- This is a group chat with Ash and the other Monos; each message shows who wrote it.
 - Answer when it's for you: Ash wrote to the room, or the message names you. Otherwise reply NO_REPLY and nothing is posted.
-- Name a seat ("PM, ...") to hand it something; naming wakes it.
+- Name a Mono ("PM, ...") to hand it something; naming wakes it.
 - Stop when you're done: once nothing is left for you, reply NO_REPLY.`
 
 const CHIEF_OF_STAFF = `# Soul

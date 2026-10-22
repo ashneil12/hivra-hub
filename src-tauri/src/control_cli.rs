@@ -394,7 +394,7 @@ Actions:
   rooms.post     {"room":"...","text":"...","replyTo":"<message id>"}
                   Mono only. Post in a room you sit in, as yourself, from your
                   own chat (a room turn's reply is posted for you). A few lines;
-                  name a seat to wake it; {"reaction":"👍","replyTo":"..."} reacts
+                  name a Mono to wake it; {"reaction":"👍","replyTo":"..."} reacts
                   instead. Refused while the room is paused for Ash.
   monos.message  {"to":"<Mono id or name>","text":"..."}
                   Mono only. A private message another Mono gets as a turn in its

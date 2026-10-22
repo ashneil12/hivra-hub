@@ -81,6 +81,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { claudeRetryFromMessage } from "./claudeFailure";
+import { withDevCopiesOff } from "./devCopies";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -1018,7 +1019,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     [
       // Only a chat in Full access starts able to skip permissions; Full
       // access chosen later on any other process restarts it (claudeLaunchDelta).
-      ...buildClaudeSpawnArgs({ ...launch, allowBypass: launchNext.allowBypass, offBridge }),
+      ...buildClaudeSpawnArgs({ ...launch, settings: withDevCopiesOff(launch.settings, input.cwd), allowBypass: launchNext.allowBypass, offBridge }),
       ...(await claudeExtraArgs(input.sessionId)),
       // The hub's additions ride on Claude Code's own system prompt, never in place of it.
       ...claudeAppendArgs(claudeAppend(input.sessionId)),

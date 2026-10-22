@@ -92,6 +92,8 @@ export type ClaudeCliSettings = {
   autoCompactWindow?: number;
   /** Per-skill overrides; a hub chat sets HUB_OFF_SKILLS to user-invocable-only. */
   skillOverrides?: Record<string, ClaudeSkillOverride | string>;
+  /** Claude Code permission rules; deny rules hold even in bypassPermissions (devCopies.ts uses them). */
+  permissions?: { deny?: string[] };
 };
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

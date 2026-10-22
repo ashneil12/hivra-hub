@@ -186,7 +186,7 @@ describe("the prompts", () => {
   });
 
   it("the room rules are the basics: who is speaking, answer when it's for you, stop when done; nothing on formats or review rounds", () => {
-    for (const rule of ["group chat", "shows who wrote it", "answer when it's for you", "name a seat", "stop when you're done"])
+    for (const rule of ["group chat", "shows who wrote it", "answer when it's for you", "name a mono", "stop when you're done"])
       expect(ROOM_RULES.toLowerCase(), rule).toContain(rule.toLowerCase());
     for (const gone of ["pass from me", "a review ends in", "Locked:", "digest", "short lines", "em dash", "400 characters"]) expect(ROOM_RULES.toLowerCase(), gone).not.toContain(gone.toLowerCase());
     const base = { chatName: "Leadership team", chatId: "hub:leadership", projectId: "hub", seats: TEAM, host: COS, transcript: "Ash: go" };

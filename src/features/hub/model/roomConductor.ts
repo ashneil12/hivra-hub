@@ -857,7 +857,7 @@ export function postFromMono(
     notify();
   }
   afterPost(chatId, posted.convId, posted.message, wake);
-  return { posted: posted.message, convId: posted.convId, note: "Posted. Seats you named are woken; carry on with your work." };
+  return { posted: posted.message, convId: posted.convId, note: "Posted. The Monos you named are woken; carry on with your work." };
 }
 
 /**

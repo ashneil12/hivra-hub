@@ -35,6 +35,6 @@ export async function roomMemory(
   if (!primer) return undefined;
   const key = JSON.stringify([session.providerSessionId ?? "", project, primer.text]);
   if (read.get(session.id) === key) return undefined;
-  const block = `This room is the ${project} project's. Its memory, the same its Lead starts with: check what seats say against it before you challenge them.\n${memoryPrimerBlock(project, primer, { tools: hasAshOsTools(session.harness), worker: false })}`;
+  const block = `This room is the ${project} project's. Its memory, the same its Lead starts with: check what the others say against it before you challenge them.\n${memoryPrimerBlock(project, primer, { tools: hasAshOsTools(session.harness), worker: false })}`;
   return { block, delivered: () => void read.set(session.id, key) };
 }
