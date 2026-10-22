@@ -83,6 +83,15 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
   return { workers, heavy };
 }
 
+/**
+ * Every project whose limits Ash changed from the defaults (A10: they travel with an export). Read from this window's
+ * copy, which is what the app itself uses; a project left at the defaults isn't listed, so an import never writes
+ * limits nobody chose.
+ */
+export function savedWorkerLimits(): Record<string, WorkerLimits> {
+  return Object.fromEntries(Object.keys(settingsCopy.limits).sort().map((project) => [project, workerLimits(project)]));
+}
+
 /** "Hivra runs up to 6 workers at once, 2 of them on heavy tests." */
 export function limitsLine(projectName: string, limits: WorkerLimits): string {
   return `${projectName} runs up to ${limits.workers} ${limits.workers === 1 ? "worker" : "workers"} at once, ${limits.heavy} of them on heavy tests.`;

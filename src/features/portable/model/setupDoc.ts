@@ -19,6 +19,7 @@ import type { GroupChat, HubProject } from "../../hub/model/types";
 import type { ProjectIconChoice } from "../../hub/model/projectPrefs";
 import { findSecrets, isSecretKey, redactText, redactValue } from "./secrets";
 import { forYou } from "../../hub/model/userName";
+import { savedWorkerLimits, type WorkerLimits } from "../../monos/model/workerPool";
 
 export const SETUP_FORMAT = "monocode-hub-setup";
 /** The setup part's version: 1 was the single .json file; 2 lives in an export folder or archive. */
@@ -92,6 +93,11 @@ export type SetupDoc = {
  * where things are on this Mac (folders, pictures, binaries), not layout of the moment (open panels, widths), not dev
  * switches, and never a key or login. An export carries only these; an import writes only these.
  */
+/** A project's worker limits (workerPool.ts), as one setting: `{ "hivra": { workers, heavy } }`. */
+export const WORKER_LIMITS_KEY = "monocode.workerLimits.v1";
+/** Each Mono's own team on this Mac, by Mono id (hub/model/monoTeams.ts). */
+export const MONO_TEAMS_KEY = "monocode:mono-teams";
+
 export const PORTABLE_SETTINGS: readonly string[] = [
   // Themes and appearance
   "monocode.themeScheme",
@@ -165,6 +171,12 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.hiddenPickerProviders",
   "monocode.defaultModels",
   "monocode:model-picker-fold-older",
+  // Teams and worker limits (A10). The worker limits live in the app database, so an export writes them from the
+  // worker pool's own copy (workerLimitsSetting) rather than from storage; an import puts them back through the pool
+  // (importPlan.ts), never by writing this key. A Mono's own team travels by Mono id: its folder is this Mac's, and
+  // the import makes the local one instead of taking another Mac's path.
+  WORKER_LIMITS_KEY,
+  MONO_TEAMS_KEY,
 ];
 const PORTABLE = new Set(PORTABLE_SETTINGS);
 const USER_NAME_KEY = "monocode:hub-user-name";
@@ -217,6 +229,22 @@ export function collectSettings(storage: Storage = localStorage): { settings: Re
     if (name) settings[USER_NAME_KEY] = name;
   }
   return { settings: Object.fromEntries(Object.entries(settings).sort(([a], [b]) => a.localeCompare(b))), leftOut: leftOut.sort() };
+}
+
+/**
+ * The worker limits this Mac runs with, as the setting an export carries. They live in the app database
+ * (worker_queue.rs), not storage, so this asks the worker pool for the projects Ash actually changed; a project left
+ * at the defaults isn't listed and an import never writes limits nobody chose.
+ */
+export function workerLimitsSetting(limits: Record<string, WorkerLimits> = savedWorkerLimits()): string | null {
+  const projects = Object.keys(limits).sort();
+  if (!projects.length) return null;
+  return JSON.stringify(Object.fromEntries(projects.map((project) => [project, limits[project]])));
+}
+
+function withWorkerLimits(settings: Record<string, string>): Record<string, string> {
+  const limits = workerLimitsSetting();
+  return limits ? { ...settings, [WORKER_LIMITS_KEY]: limits } : settings;
 }
 
 // ---- building the document from this Mac ------------------------------------------------------------------------------
@@ -344,7 +372,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
     pages: allKeptPages().map((p) => ({ ...p, permissions: [] })),
     // Metadata only, whatever an older build left beside it.
     customModels: listCustomModels().map(({ id, name, provider, baseUrl, modelId, reasoningEfforts }) => ({ id, name, provider, baseUrl, modelId, ...(Array.isArray(reasoningEfforts) ? { reasoningEfforts } : {}) })),
-    settings: collectSettings().settings,
+    settings: withWorkerLimits(collectSettings().settings),
     ...(input.workspace ? { chats } : {}),
   };
 }
