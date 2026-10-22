@@ -1,4 +1,4 @@
-import { faultedOutcome, faultedReply, takeWorkerFault } from "../features/monos/model/devFault";
+import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
@@ -12747,6 +12747,8 @@ function Workspace({
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();
+          // A faulted worker is stopped soon after it starts (FAULT_STOP_MS), and that stop is its failure.
+          const faultStop = faultStopper(fault, () => onStopRef.current(sessionId, true));
           const settle = monoCompletionBatches.current!.watch(
             { monoId, turn: sourceTurn },
             requestId,
@@ -12756,13 +12758,14 @@ function Workspace({
           );
           return Object.assign(
             (outcome: ControlOutcome) => {
+              faultStop.done();
               const result = monoSessionCompletionResult({
                 requestId,
                 sessionId,
                 project,
                 prompt,
-                outcome: faultedOutcome(outcome, fault),
-                ...faultedReply(outcome, fault),
+                outcome: faultedOutcome(outcome, fault, faultStop.stopped()),
+                ...faultedReply(outcome, fault, faultStop.stopped()),
                 session: sessionsRef.current.find(
                   (session) => session.id === sessionId,
                 ),
@@ -12777,8 +12780,12 @@ function Workspace({
               settle(result);
             },
             {
-              accept: settle.accept,
+              accept: () => {
+                settle.accept();
+                faultStop.start();
+              },
               discard: () => {
+                faultStop.done();
                 launch?.refuse();
                 settle.discard();
               },
@@ -15888,6 +15895,8 @@ function Workspace({
                     busy: teamLeadBusy,
                     // In the time's place: what it is to the team.
                     statusLabel: teamProject ? "Lead" : "Owner",
+                    // Its chat's own title, which renames as any chat's does (Sidebar.tsx renderLeadCard).
+                    ...(teamLeadSession ? { chatTitle: teamLeadSession.title } : {}),
                     onOpen: () => void onOpenMono(teamLeadMono.id, { inTeam: true }),
                   },
                 }
@@ -15908,6 +15917,7 @@ function Workspace({
       teamLeadSession?.harness,
       teamLeadSession?.model,
       teamLeadSession?.runtimeMode,
+      teamLeadSession?.title,
       onOpenMono,
     ],
   );

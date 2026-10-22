@@ -21,7 +21,7 @@ import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
 import { confirmDelete } from "../../shared/ui/ConfirmDelete";
-import { subChatsByParent } from "../../features/hub/model/codingTeamList";
+import { leadRenameRow, subChatsByParent } from "../../features/hub/model/codingTeamList";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -456,6 +456,12 @@ export type CodingTeamList = {
     busy: boolean;
     /** Stands in for the time until its chat has loaded ("Lead"). */
     statusLabel?: string;
+    /**
+     * Its chat's own title, once the chat exists: the row keeps the Lead's name, but the chat's title is what tabs,
+     * search and notifications show, so it renames as any chat does (F2, double-click; Ash, 22 Oct: the Hub lead's
+     * chat was stuck as "QA test from the test run (D5, stuck worker)"). codingTeamList.ts leadRenameRow.
+     */
+    chatTitle?: string;
     onOpen: () => void;
   };
 };
@@ -1983,8 +1989,21 @@ function SidebarComponent({
   const renderLeadCard = (lead: NonNullable<CodingTeamList["lead"]>) => {
     const subChats = teamSubChats?.byParent.get(lead.session.id) ?? [];
     const stuck = [...subChatAttention(subChats, now).stuck.values()];
+    const renameRow = onRenameSession ? leadRenameRow(lead) : undefined;
     return (
       <>
+        {renameRow && renamingSessionId === renameRow.id ? (
+          <SessionRenameRow
+            session={renameRow}
+            isActive={lead.active}
+            needsApproval={false}
+            onCommit={(title) => {
+              onRenameSession?.(renameRow.id, title);
+              setRenamingSessionId(null);
+            }}
+            onCancel={() => setRenamingSessionId(null)}
+          />
+        ) : (
         <SessionCard
           session={lead.session}
           isActive={lead.active}
@@ -1999,7 +2018,9 @@ function SidebarComponent({
           statusLabel={lead.statusLabel}
           now={now}
           onSelect={() => lead.onOpen()}
+          {...(renameRow ? { onRename: cardActions.rename, renamable: true } : {})}
         />
+        )}
         {subChats.length ? (
           <TeamSubChats
             parent={lead.session.id}
@@ -5064,6 +5085,7 @@ export const SessionCard = memo(function SessionCard({
   onContextMenu,
   onArchive,
   onRename,
+  renamable,
   onDelete,
 }: {
   session: SessionSummary;
@@ -5118,6 +5140,8 @@ export const SessionCard = memo(function SessionCard({
   ) => void;
   onArchive?: (sessionId: string, archived: boolean) => void;
   onRename?: (sessionId: string) => void;
+  /** Renames by double-click though it is a Mono's chat (a coding team's Lead: its chat's title, not its name). */
+  renamable?: boolean;
   onDelete?: (sessionId: string) => void;
 }) {
   const skipClickUntil = useRef(0);
@@ -5517,7 +5541,7 @@ export const SessionCard = memo(function SessionCard({
           // all"); F2 and the menu's Rename still work. It sits on the whole card, since WebKit aims a double-click at
           // the card, and skips the card's own buttons. A Mono's chat is named for the Mono, so it keeps its name.
           onDoubleClick={
-            onRename && !isMonoSession(session.id)
+            onRename && (renamable || !isMonoSession(session.id))
               ? (event) => {
                   const target = event.target;
                   if (target instanceof Element && target.closest("button, a, input")) return;

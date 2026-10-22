@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { newSession } from "../../sessions/model/session";
-import { FAULT_ERROR, faultedOutcome, faultedReply, takeWorkerFault, withoutTestMarker } from "./devFault";
+import { FAULT_ERROR, FAULT_STOP_MS, faultedOutcome, faultedReply, faultStopper, takeWorkerFault, withoutTestMarker } from "./devFault";
 import { monoSessionCompletionMessage, monoSessionCompletionResult } from "./monoSessionCompletion";
 
 describe("dev fault (D5 scripted worker failure)", () => {
@@ -43,5 +43,57 @@ describe("dev fault (D5 scripted worker failure)", () => {
     expect(withoutTestMarker("Test fault: this worker was set to fail on purpose for a test (dev-faults/fail-next-workers).")).toBe(FAULT_ERROR);
     expect(withoutTestMarker("Claude exited with code 1")).toBe("Claude exited with code 1");
     expect(withoutTestMarker(null)).toBeNull();
+  });
+});
+
+describe("the fault's early stop (PM's D5 run, 22 Oct: armed 17:59, worker still running 18:09)", () => {
+  function fakeTimers() {
+    const pending = new Map<number, () => void>();
+    let next = 0;
+    return {
+      pending,
+      timers: {
+        set: (run: () => void) => (pending.set(++next, run), next),
+        clear: (handle: unknown) => void pending.delete(handle as number),
+      },
+      fire: () => {
+        for (const [id, run] of [...pending]) {
+          pending.delete(id);
+          run();
+        }
+      },
+    };
+  }
+
+  it("stops a faulted worker after it starts, and that cancelled turn reads as the failure", () => {
+    const clock = fakeTimers();
+    const stop = vi.fn();
+    const fault = faultStopper(FAULT_ERROR, stop, clock.timers, FAULT_STOP_MS);
+    fault.start();
+    expect(stop).not.toHaveBeenCalled();
+    clock.fire();
+    expect(stop).toHaveBeenCalledTimes(1);
+    const cancelled = { status: "cancelled", text: "half done" } as const;
+    fault.done();
+    expect(faultedOutcome(cancelled, FAULT_ERROR, fault.stopped())).toEqual({ status: "failed", text: "", error: FAULT_ERROR });
+    expect(faultedReply(cancelled, FAULT_ERROR, fault.stopped())).toEqual({ reply: "" });
+  });
+
+  it("leaves a worker with no fault, an early end and Ash's own stop alone", () => {
+    const clock = fakeTimers();
+    const stop = vi.fn();
+    const none = faultStopper(undefined, stop, clock.timers);
+    none.start();
+    expect(clock.pending.size).toBe(0);
+
+    const ended = faultStopper(FAULT_ERROR, stop, clock.timers);
+    ended.start();
+    ended.done();
+    clock.fire();
+    expect(stop).not.toHaveBeenCalled();
+
+    const cancelled = { status: "cancelled", text: "" } as const;
+    expect(faultedOutcome(cancelled, FAULT_ERROR, ended.stopped())).toEqual(cancelled);
+    expect(faultedReply(cancelled, FAULT_ERROR, ended.stopped())).toEqual({});
   });
 });

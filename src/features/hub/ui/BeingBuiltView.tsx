@@ -21,7 +21,7 @@ import { useWorkflowActivityVersion } from "../../sessions/model/workflowActivit
 import { usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
 import { prWatchWorkers } from "../../pr-watch/model/prWatchJobs";
 import { useDelegationRows } from "../../monos/model/delegationStore";
-import { useStuckDismissalsVersion } from "../../monos/model/workerStuck";
+import { stuckMinutes, useStuckDismissalsVersion } from "../../monos/model/workerStuck";
 import { openLead, openStuck } from "../../monos/model/stuckActions";
 import { leadNameOf, StuckList, StuckWorkerCard } from "../../monos/ui/StuckWorkerCard";
 import { useMonoFailuresVersion } from "../../monos/model/monoFailures";
@@ -154,11 +154,19 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
 }
 
 /** `showWho`: name the Mono after a finished job's title (in the finished-today list; under a Lead's heading it is redundant). */
-/** Under a minute: "just started". Done: the time it finished, like "11:56am". Otherwise how long it has run. */
-export function jobTimeLabel(w: Worker): string {
+/**
+ * Under a minute: "just started". Done: the time it finished, like "11:56am". A job a stuck worker of this app's makes
+ * red or grey: how long that worker has been stuck, by the clock Today's row for it reads (workerStuck.ts stuckMinutes),
+ * so "Needs you" says for how long it has needed Ash. Otherwise how long it has run.
+ */
+export function jobTimeLabel(w: Worker, now = Date.now()): string {
   if (w.finishedAt) return w.finishedAt;
   // A paused job: since when it was paused, if Ash OS said; never the time it ran before (r28b).
   if (jobState(w) === "parked") return w.pausedSince ? `since ${w.pausedSince}` : "";
+  if (w.stuck && w.stuckWorker) {
+    const min = stuckMinutes(w.stuckWorker, now);
+    return min < 1 ? "just now" : `for ${durationLabel(min)}`;
+  }
   if (w.minutes < 1) return "just started";
   return `for ${durationLabel(w.minutes)}`;
 }
@@ -197,7 +205,7 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
       </span>
       <span className="flex w-28 shrink-0 justify-end"><JobStateLabel w={w} compact /></span>
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
-        {jobTimeLabel(w)}
+        {jobTimeLabel(w, now)}
       </span>
       <span className="flex w-44 shrink-0 justify-end">
         {w.finishedAt ? null : w.stuckWorker ? (

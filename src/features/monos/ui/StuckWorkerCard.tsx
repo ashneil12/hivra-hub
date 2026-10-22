@@ -20,7 +20,7 @@ import {
   takeSuggestion,
   type StuckResult,
 } from "../model/stuckActions";
-import { leadActionLine, type StuckWorker } from "../model/workerStuck";
+import { leadActionLine, stuckMinutes, type StuckWorker } from "../model/workerStuck";
 import { plainStuckLine, stuckWorkerChip } from "../model/stuckChip";
 import { ChipMark, NeedsYouLinkLine } from "../../hub/ui/StatusMark";
 
@@ -39,8 +39,8 @@ export function stuckTitle(stuck: Pick<StuckWorker, "row">): string {
   return stuck.row.title?.trim() || "Delegated work";
 }
 
-function ago(ms: number): string {
-  const min = Math.floor(ms / 60_000);
+/** How long it has been stuck, short ("2h"): stuckMinutes, the clock Being built's job row reads too. */
+function ago(min: number): string {
   if (min < 1) return "now";
   if (min < 60) return `${min}m`;
   return min < 1440 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`;
@@ -208,7 +208,7 @@ export function StuckWorkerCard({
         </span>
         {stuck.kind === "asking" ? <span className="shrink-0">· {stuckWord(stuck)}</span> : <span className="flex shrink-0 items-center gap-1.5" data-stuck-chip={chip.word}>· <ChipMark chip={chip} /></span>}
         <span className="ml-auto shrink-0 tabular-nums" data-stuck-ago>
-          {ago(now - stuck.since)}
+          {ago(stuckMinutes(stuck, now))}
         </span>
       </div>
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-stuck-line>

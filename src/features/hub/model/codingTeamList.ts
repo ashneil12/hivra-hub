@@ -4,6 +4,8 @@
 // worker's own workers join the same top-level chat.
 import type { Delegation } from "../../monos/model/delegations";
 import type { ChildChat } from "../../monos/model/delegationView";
+import type { SessionSummary } from "../../sessions/data/sessionStore";
+import { listTitle } from "../../../shared/text/plainTitle";
 
 /** A chat the list has: its id, title and when it began. */
 export type ListedChat = { id: string; title: string; createdAt: number };
@@ -66,7 +68,11 @@ export function subChatsByParent(
     add(parent, {
       sessionId: row.childSession,
       ownerSession: row.ownerSession,
-      title: row.title?.trim() || listed.find((chat) => chat.id === row.childSession)?.title || "Delegated work",
+      // As a list shows a title (plainTitle.ts listTitle): no "claude · " label, no [MonoCode …] tag.
+      title:
+        listTitle(row.title ?? "") ||
+        listTitle(listed.find((chat) => chat.id === row.childSession)?.title ?? "") ||
+        "Delegated work",
       state: row.state,
       createdAt: row.createdAt,
       row,
@@ -79,7 +85,7 @@ export function subChatsByParent(
     add(parent, {
       sessionId: chat.id,
       ownerSession: ownerOf(chat.id) ?? parent,
-      title: chat.title.trim() || "Started chat",
+      title: listTitle(chat.title) || "Started chat",
       state: busy.has(chat.id) ? "running" : "completed",
       createdAt: chat.createdAt,
     });
@@ -112,4 +118,14 @@ export function noteCodingTeamView(projectId: string, view: "lead" | "chat"): vo
   } catch {
     /* it opens on the Lead again, the default */
   }
+}
+
+/**
+ * The row a coding team's Lead renames as (Sidebar.tsx renderLeadCard): its chat, under the chat's own title, so F2 and
+ * double-click rename the chat as any other (Ash, 22 Oct: the Hub lead's chat kept "QA test from the test run (D5, stuck
+ * worker)" and nothing could rename it). None until its chat exists: the row's id is a stand-in then.
+ */
+export function leadRenameRow(lead: { session: SessionSummary; chatTitle?: string }): SessionSummary | undefined {
+  if (lead.chatTitle === undefined || lead.session.id.startsWith("lead:")) return undefined;
+  return { ...lead.session, title: lead.chatTitle };
 }

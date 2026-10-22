@@ -13,6 +13,7 @@ import type {
   LaunchedSessionState,
   LaunchedSessionView,
 } from "./monoSpawnedSessions";
+import { listTitle } from "../../../shared/text/plainTitle";
 
 /** A worker as a batch line counts it: a launched chat's state, or `stuck` for one that stalled (workerStall.ts). */
 export type RollupState = LaunchedSessionState | "stuck";
@@ -187,7 +188,7 @@ export function childChatsByMono(
     list.push({
       sessionId: row.childSession,
       ownerSession: row.ownerSession,
-      title: row.title?.trim() || "Delegated work",
+      title: listTitle(row.title ?? "") || "Delegated work",
       state: row.state,
       createdAt: row.createdAt,
       row,

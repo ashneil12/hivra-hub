@@ -225,6 +225,15 @@ export function newestPerChild(rows: readonly Delegation[]): Delegation[] {
   return [...latest.values()];
 }
 
+/**
+ * How long a worker has been stuck this way, in whole minutes: the one clock its row reads by, on Today and on Being
+ * built alike (PM's r51 run, 22 Oct: the same red row read "2h" on Today and "for 6 min" on Being built, which counted
+ * from when its job started). From `since`: when it failed, stalled or asked.
+ */
+export function stuckMinutes(stuck: Pick<StuckWorker, "since">, now: number): number {
+  return Math.max(0, Math.floor((now - stuck.since) / 60_000));
+}
+
 /** One row as stuck, or not. */
 export function stuckOf(row: Delegation, now: number): StuckWorker | undefined {
   let kind: StuckKind;

@@ -1,5 +1,5 @@
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
-import { plainTitle } from "../../../shared/text/plainTitle";
+import { listTitle } from "../../../shared/text/plainTitle";
 import type { UserQuestionPrompt } from "./userQuestion";
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import type { HandoffComposerCard } from "./handoff";
@@ -851,7 +851,8 @@ export function titleFromPrompt(
   attachments: Attachment[] = [],
 ): string {
   // r51: a title is plain text, never the prompt's markdown.
-  const line = plainTitle(prompt.trim().split(/\r?\n/)[0]?.trim() ?? "");
+  // A Hub turn's tag can be its whole first line ("[MonoCode brief from …]"), so the title is the first line with words.
+  const line = prompt.trim().split(/\r?\n/).map((part) => listTitle(part)).find(Boolean) ?? "";
   const fromFiles =
     !line && attachments.length > 0
       ? attachments
@@ -868,7 +869,8 @@ export function titleFromPrompt(
 }
 
 export function formatSessionTitle(harness: HarnessId, title: string): string {
-  const trimmed = plainTitle(title); // r51: a generated title can carry markdown too
+  // r51: a generated title can carry markdown too; r52: and a Hub turn's [MonoCode …] tag, or a label already.
+  const trimmed = listTitle(title);
   if (!trimmed) return HARNESS_LABEL[harness];
   return `${HARNESS_LABEL[harness]} · ${trimmed}`;
 }
@@ -932,13 +934,11 @@ export function removeSessionDraft(
 
 /** Title without the harness prefix stored for the tab strip. */
 export function sessionDisplayTitle(title: string, harness: HarnessId): string {
-  const prefix = `${HARNESS_LABEL[harness]} · `;
-  // r51: a title saved with markdown before this shows plain.
-  if (title.startsWith(prefix)) return plainTitle(title.slice(prefix.length)) || "New session";
   if (title === HARNESS_LABEL[harness] || title === HARNESS_TITLE[harness]) {
     return "New session";
   }
-  return plainTitle(title) || "New session";
+  // r51: a title saved with markdown before this shows plain; r52: without its label or a [MonoCode …] tag either.
+  return listTitle(title) || "New session";
 }
 
 /** Working copy the agent and session git UIs should use. */

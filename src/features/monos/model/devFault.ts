@@ -1,8 +1,10 @@
 // Dev-only fault injection for scripted tests (scorecard D5). Off by default: the app never arms it. A tester arms it by
 // writing `<app data>/dev-faults/fail-next-workers` by hand (docs/DEV-FAULTS.md); the Rust side checks the exact first
-// line, a count of 1-5 and a 2-hour expiry. Each delegated worker started while it is armed really starts and runs, and
-// its turn then ends as a failure with a plain error ("Stopped with an error.", never a test marker) and no report, so its Lead sees a real failed worker and
-// handles it as usual (retry, or Needs you).
+// line, a count of 1-5 and a 2-hour expiry. Each delegated worker started while it is armed really starts, and FAULT_STOP_MS
+// later the app stops it and its turn ends as a failure with a plain error ("Stopped with an error.", never a test marker)
+// and no report, so its Lead sees a real failed worker and handles it as usual (retry, or Needs you). Before r52 the
+// worker ran its whole job first (PM's D5 run, 22 Oct: armed at 17:59, still running at 18:09, its edits left in the
+// tree), so the failure came late and the Lead reported the leftover edits instead of retrying.
 import { invoke } from "@tauri-apps/api/core";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 
@@ -30,17 +32,61 @@ export async function takeWorkerFault(ask: () => Promise<string | null | undefin
   }
 }
 
+/** How long a faulted worker runs before the app stops it: long enough to be seen starting, short of doing the job. */
+export const FAULT_STOP_MS = 20_000;
+
 /**
  * The outcome a faulted worker reports: failed with the plain FAULT_ERROR (whatever the Rust side said) and NO report. Its work never reaches its Lead (PM's
  * blind D5 run, 22 Oct: the worker was marked failed but its whole report still went to Hivra lead, which told Ash it
- * was done), so the Lead sees only a failed worker and retries or escalates as for a real one. A stop stays a stop.
+ * was done), so the Lead sees only a failed worker and retries or escalates as for a real one. A stop stays a stop,
+ * except the fault's own stop (`faultStopped`): that is the failure.
  */
-export function faultedOutcome(outcome: ControlOutcome, error: string | undefined): ControlOutcome {
-  if (!error || outcome.status === "cancelled") return outcome;
+export function faultedOutcome(outcome: ControlOutcome, error: string | undefined, faultStopped = false): ControlOutcome {
+  if (!error || (outcome.status === "cancelled" && !faultStopped)) return outcome;
   return { status: "failed", text: "", error: FAULT_ERROR };
 }
 
 /** What the completion reads as the worker's reply: nothing for a faulted worker (its transcript is not its report). */
-export function faultedReply(outcome: ControlOutcome, error: string | undefined): { reply?: string } {
-  return error && outcome.status !== "cancelled" ? { reply: "" } : {};
+export function faultedReply(outcome: ControlOutcome, error: string | undefined, faultStopped = false): { reply?: string } {
+  return error && (outcome.status !== "cancelled" || faultStopped) ? { reply: "" } : {};
+}
+
+/**
+ * The fault's stop for one worker: `start` (once its launch is accepted) stops it FAULT_STOP_MS later unless its turn
+ * already ended (`done`). `stopped()` says whether the cancelled outcome that follows is the fault's own stop.
+ * Inert when the worker took no fault.
+ */
+export function faultStopper(
+  error: string | undefined,
+  stop: () => unknown,
+  timers: { set: (run: () => void, ms: number) => unknown; clear: (handle: unknown) => void } = {
+    set: (run, ms) => setTimeout(run, ms),
+    clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  },
+  delayMs = FAULT_STOP_MS,
+) {
+  let handle: unknown;
+  let fired = false;
+  let over = false;
+  return {
+    start() {
+      if (!error || over || handle !== undefined) return;
+      handle = timers.set(() => {
+        handle = undefined;
+        if (over) return;
+        fired = true;
+        try {
+          void Promise.resolve(stop()).catch(() => undefined);
+        } catch {
+          // a worker that cannot be stopped still reports the fault when its turn ends
+        }
+      }, delayMs);
+    },
+    done() {
+      over = true;
+      if (handle !== undefined) timers.clear(handle);
+      handle = undefined;
+    },
+    stopped: () => fired,
+  };
 }
