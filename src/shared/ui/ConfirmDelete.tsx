@@ -22,6 +22,33 @@ export const CANCEL_FOCUS_RING =
 export const DELETE_DANGER =
   "bg-red-500/10 text-red-700 hover:bg-red-500/15 dark:bg-red-500/20 dark:text-red-400 dark:hover:bg-red-500/30";
 
+/**
+ * The name as the confirm title shows it (Alfred's r50 blind run, 22 Oct): a chat's title is often its first message, so
+ * it can hold markdown ("The current branch is **pm/pages-live**...") or end in its own punctuation ("…changed."), which
+ * read as "Delete The current branch is **pm/pages-live**...?" and "…changed.?". Plain text only: markdown marks dropped,
+ * one line, trailing punctuation trimmed before the "?", and cut at a word near 60 characters with an ellipsis.
+ */
+export function confirmTitleName(raw: string, max = 60): string {
+  let s = raw
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`+([^`]*)`+/g, "$1")
+    .replace(/(\*\*|__|~~)(.*?)\1/g, "$2")
+    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,!?:;]|$)/g, "$1$2")
+    .replace(/^\s*(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/[*`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let cut = false;
+  if (s.length > max) {
+    const at = s.lastIndexOf(" ", max);
+    s = s.slice(0, at > max * 0.6 ? at : max);
+    cut = true;
+  }
+  s = s.replace(/[\s.,;:!?\u2026-]+$/u, "");
+  if (!s) return "this";
+  return cut ? `${s}\u2026` : s;
+}
+
 export function ConfirmDelete({
   name,
   detail,
@@ -44,7 +71,7 @@ export function ConfirmDelete({
     cancel.current?.focus();
   }, []);
   return (
-    <Modal title={`Delete ${name}?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
+    <Modal title={`Delete ${confirmTitleName(name)}?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
       <div className="flex flex-col gap-4 px-4 pb-4 pt-2 text-[12px]" data-confirm-delete={name}>
         <p className="text-content/80">{detail ? `${detail} ` : ""}This can't be undone.</p>
         {children}
