@@ -7,15 +7,15 @@ import { IS_MAC } from "../../../platform/tauri/platform";
 import { examplesOn } from "../model/examples";
 import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
-import { setHubSelection } from "../model/hubNav";
+import { openMonoChat, setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import { TODAY_DEFAULT, type HubJob, type Need, type TodaySection } from "../model/types";
 import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { ChipMark, CircleWord, StatusMark, needMark } from "./StatusMark";
-import { CANT_ANSWER, stuckChip, withLead, type Chip } from "../model/statusChip";
+import { ChipMark, CircleWord, OpenLeadLink, StatusMark, needMark } from "./StatusMark";
+import { failureChip, stuckChip, withLead, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
@@ -30,7 +30,6 @@ import { appSinceText, sinceGlance } from "../model/appSince";
 import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
-import { findMono } from "../../monos/model/mono";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
@@ -291,9 +290,12 @@ function BeingBuiltToday({ title }: { title: string }) {
   const { stuck: stuckNow, now } = useStuckWorkers();
   const delegations = useDelegationRows();
   useMonoFailuresVersion();
+  const failureOf = (j: HubJob) => (j.lead && j.state !== "lead_gave_up" ? monoFailure(j.lead) : undefined);
   const word = (j: HubJob, lead: string): string | Chip => {
-    // Its Lead's last turn failed: the job can't move until that is dealt with.
-    if (j.lead && monoFailure(j.lead) && j.state !== "lead_gave_up") return CANT_ANSWER;
+    // Its Lead's last turn failed: the job can't move until that is dealt with. Only Ash can fix it (credits, sign-in):
+    // Needs you; it should come right by itself: Can't answer (r27b).
+    const failure = failureOf(j);
+    if (failure) return failureChip(failure.tone);
     const stuck = stuckNow.length ? stuckForJob(j.sourceRef, delegations, now) : undefined;
     if (!stuck || j.state === "lead_gave_up") return jobWord(j, lead);
     // One of this app's workers stalled or failed under it: its Lead's to handle (Being built says the same).
@@ -307,20 +309,31 @@ function BeingBuiltToday({ title }: { title: string }) {
     <section data-hub-today-section="being-built" data-hub-today-being-built>
       <h2 className="mb-1 text-xs text-content/60">{title}</h2>
       <div className="flex flex-col">
-        {rows.slice(0, 8).map(({ p, j, lead }) => (
-          <button key={j.id} type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
-            className="flex items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-content/5" data-hub-today-job={j.id}>
-            <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
-            {(() => {
-              const w = word(j, lead);
-              return typeof w === "string" ? (
-                <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {w}</span>
-              ) : (
-                <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">{p.name} · {lead} · <ChipMark chip={w} /></span>
-              );
-            })()}
-          </button>
-        ))}
+        {rows.slice(0, 8).map(({ p, j, lead }) => {
+          const w = word(j, lead);
+          const red = typeof w !== "string" && w.tone === "red";
+          const failure = failureOf(j);
+          return (
+            <div key={j.id} className="flex flex-col rounded-md hover:bg-content/5" data-hub-today-job={j.id}>
+              <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
+                className="flex items-center gap-3 px-2 py-1.5 text-left">
+                <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
+                {typeof w === "string" ? (
+                  <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {w}</span>
+                ) : (
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">{p.name} · {lead} · <ChipMark chip={w} /></span>
+                )}
+              </button>
+              {/* Every red Needs you says why and opens the Lead's chat (r27b). */}
+              {red ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 pb-1.5 text-xs" data-hub-today-job-needs>
+                  <span className="min-w-0 break-words text-content/60" data-hub-needs-reason>{failure ? `${lead} can't answer: ${failure.reason}` : j.reason || j.why}</span>
+                  {j.lead ? <OpenLeadLink name={lead} onOpen={() => openMonoChat(j.lead!)} /> : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
         {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}
       </div>
     </section>
@@ -417,15 +430,14 @@ function NeedGroups({ needs, onSheet }: { needs: readonly Need[]; onSheet: (shee
   );
 }
 
-/** The Mono running a job (its Lead), from Being built: the Needs row for that job opens its chat. */
-export function leadOfJob(jobId: string): string | undefined {
+/** The Lead running a job, from Ash OS's job list: its Mono id and name. */
+function jobLead(jobId: string): { id: string | null; name: string } | undefined {
   const data = hubData();
-  for (const p of data.listProjects()) {
+  for (const p of data.listProjects())
     for (const g of data.listJobs?.(p.id) ?? []) {
-      const job = g.jobs.find((j) => j.id === jobId);
-      if (job) return job.lead ?? g.leadId ?? undefined;
+      const j = g.jobs.find((x) => x.id === jobId);
+      if (j) return { id: j.lead ?? g.leadId, name: g.leadName };
     }
-  }
   return undefined;
 }
 
@@ -441,9 +453,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
   const isQuestion = !!need.actionTarget?.startsWith("question:");
   const answering = data.answerState?.(need.id);
   const mark = needMark(need);
-  // A job's row also opens its Lead's chat, where the details are (D5 22 Oct: "a link that opens the Lead's chat").
-  const leadId = !done && need.jobId ? leadOfJob(need.jobId) : undefined;
-  const lead = leadId && findMono(leadId)?.sessionId ? leadId : undefined;
+  const lead = need.jobId ? jobLead(need.jobId) : undefined;
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
     setProblem(null);
@@ -467,6 +477,8 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         {/* The reason wraps (never cut mid-word). */}
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-need-why>{need.why}</div>
+        {/* A red Needs you opens the Lead's chat from its row (r27b); the reason is the line above. */}
+        {mark?.circle === "red" && lead?.id ? <div className="mt-0.5" data-hub-need-lead><OpenLeadLink name={lead.name} onOpen={() => openLead(lead.id) || openMonoChat(lead.id!)} /></div> : null}
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
         {answering && !answering.sending && (answering.receipt || answering.problem) ? (
           <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>
@@ -483,18 +495,6 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
       ) : (
         <>
           {mark ? <CircleWord circle={mark.circle} word={mark.word} /> : null}
-          {lead ? (
-            <button
-              type="button"
-              data-hub-need-open-lead={lead}
-              onClick={() => {
-                if (!openLead(lead)) setProblem("That chat isn't open in this window yet.");
-              }}
-              className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
-            >
-              Open chat
-            </button>
-          ) : null}
           <button
             type="button"
             disabled={busy}

@@ -47,15 +47,21 @@ it("OK that couldn't read a file says which and why", async () => {
   expect(container.querySelector("[data-souls-waiting] [role=alert]")?.textContent).toBe(
     "SOUL.md couldn't be read (Permission denied), so it was left as it is.",
   );
+  // r27b: a file left as it is, nothing lost: a grey row, no red.
+  expect(container.querySelector("[data-mono-soul-problem]")?.getAttribute("data-mono-soul-problem")).toBe("grey");
+  expect(container.querySelector("[data-souls-waiting] [data-hub-circle=red], [data-souls-waiting] .text-red-400")).toBeNull();
   // OK again, and this time it works: the problem goes.
   souls.seat.mockResolvedValueOnce([]);
   await ok();
   expect(container.querySelector("[data-souls-waiting] [role=alert]")).toBeNull();
 });
 
-it("OK that fails outright says so too", async () => {
+it("OK that fails outright says so too, as the red Needs you (only Ash can try again, r27b)", async () => {
   souls.seat.mockRejectedValueOnce(new Error("disk full"));
   act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {}, rank: () => 0 })));
   await ok();
-  expect(container.querySelector("[data-souls-waiting] [role=alert]")?.textContent).toBe("Couldn't seat Ledger: disk full");
+  const problem = container.querySelector("[data-souls-waiting] [role=alert] [data-mono-soul-problem]")!;
+  expect(problem.getAttribute("data-mono-soul-problem")).toBe("needs-you");
+  expect(problem.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
+  expect(problem.textContent).toBe("Needs youCouldn't seat Ledger: disk full");
 });

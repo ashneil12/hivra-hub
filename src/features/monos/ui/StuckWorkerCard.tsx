@@ -44,12 +44,12 @@ function ago(ms: number): string {
   return min < 1440 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`;
 }
 
-/** A stuck worker's mark, the same as its child row in the Monos rail: amber clock asking, amber or red alert. */
+/** A stuck worker's mark, the same as its child row in the Monos rail: a grey clock asking, a grey alert (r27b). */
 export function StuckMark({ kind, className = "size-3.5" }: { kind: StuckWorker["kind"]; className?: string }) {
-  if (kind === "asking") return <Clock className={`${className} shrink-0 text-amber-400`} strokeWidth={1.75} aria-hidden />;
+  if (kind === "asking") return <Clock className={`${className} shrink-0 text-content/45`} strokeWidth={1.75} aria-hidden />;
   return (
     <CircleAlert
-      className={`${className} shrink-0 text-amber-400`}
+      className={`${className} shrink-0 text-content/60`}
       strokeWidth={1.75}
       aria-hidden
     />

@@ -81,7 +81,7 @@ export function MonoStatusDot({
             : status === "failed"
               ? tone === "red"
                 ? "bg-red-400"
-                : "bg-amber-400"
+                : "bg-content/60" // r27b: grey, never amber; red is only for Needs you
               : "bg-content/30"
       }`}
     />

@@ -1,5 +1,6 @@
 // Being built, live: Ash OS's jobs shown with the same rows the example data uses. One row per job under the Mono
 // running it. Nothing about helpers or workers: a job is what is being done, who runs it and how it is going.
+import { sentNote } from "./statusChip";
 import { useEffect, useState } from "react";
 import type { HubJob, HubJobGroup, Worker } from "./types";
 
@@ -18,14 +19,14 @@ const minutesBetween = (fromIso: string, toMs: number): number => {
 };
 
 /** What the sheet of steps under a job says, newest first, from what Ash OS tells about the job. */
-function stepsOf(job: HubJob): Worker["steps"] {
+function stepsOf(job: HubJob, leadName: string): Worker["steps"] {
   const steps: Worker["steps"] = [];
   const add = (iso: string | undefined, text: string) => iso && text && steps.push({ id: `${job.id}:${steps.length}`, at: clockLabel(iso), text });
   if (job.state === "done") add(job.finishedAt ?? job.lastActiveAt, "Finished");
-  if (job.state === "lead_gave_up") add(job.lastActiveAt, job.why ?? "Needs you. Open the coding team lead's chat to see why.");
+  if (job.state === "lead_gave_up") add(job.lastActiveAt, job.why ?? `Needs you. Open ${leadName}'s chat to see why.`);
   if (job.tried?.length) add(job.lastActiveAt, `Tried: ${job.tried.join("; ")}`);
-  if (job.gotIt) add(job.gotIt.at, `Coding team lead: ${job.gotIt.text}`);
-  if (job.sentText) add(job.state === "sent_to_lead" || job.state === "lead_gave_up" ? job.lastActiveAt : undefined, job.sentText);
+  if (job.gotIt) add(job.gotIt.at, `${leadName}: ${job.gotIt.text}`);
+  if (job.sentText) add(job.state === "sent_to_lead" || job.state === "lead_gave_up" ? job.lastActiveAt : undefined, sentNote(job.sentText, undefined, leadName) ?? job.sentText);
   if ((job.state === "stuck" || job.state === "sent_to_lead") && job.reason) add(job.lastActiveAt, job.reason);
   add(job.startedAt, "Started");
   return steps;
@@ -46,7 +47,7 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
     kind: "mono",
     doing: job.title,
     minutes: minutesBetween(job.startedAt, job.finishedAt ? new Date(job.finishedAt).getTime() : now),
-    steps: stepsOf(job),
+    steps: stepsOf(job, group.leadName),
     activeAgo: minutesBetween(job.lastActiveAt, now),
     ...(job.parentId ? { parentId: job.parentId, parentTitle: job.parentTitle ?? job.title } : {}),
     ...(job.sourceRef ? { sourceRef: job.sourceRef } : {}),
@@ -72,7 +73,8 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
       // line, then when it was sent and the Lead's "Got it".
       w.stuck = job.state;
       w.stuckReason = job.reason;
-      if (job.sentText) w.sentNote = job.gotIt ? `${job.sentText} · ${job.gotIt.text}` : job.sentText;
+      // The Lead's name from the same place as the chip's (r27b): "Sent to Hivra lead at 2:20pm", not Ash OS's generic one.
+      if (job.sentText) w.sentNote = sentNote(job.sentText, job.gotIt?.text, w.who);
       break;
     case "lead_gave_up":
       // D5 (Ash, 21 Oct 20:40): "Needs you", the reason on the second line (the same as Today). The old red "Stuck"
@@ -114,11 +116,11 @@ export function useNow(ms = 30_000): number {
  */
 export function withFailedLeads(
   rows: readonly Worker[],
-  failureOf: (monoId: string) => { name: string; reason: string } | undefined,
+  failureOf: (monoId: string) => { name: string; reason: string; tone: "red" | "amber" } | undefined,
 ): Worker[] {
   return rows.map((w) => {
     if (w.finishedAt || w.stuck || w.state === "parked" || !w.lead) return w;
     const failed = failureOf(w.lead);
-    return failed ? { ...w, stuck: "stuck", leadCantAnswer: true, stuckReason: `${failed.name} can't answer: ${failed.reason}` } : w;
+    return failed ? { ...w, stuck: "stuck", leadCantAnswer: failed.tone, stuckReason: `${failed.name} can't answer: ${failed.reason}` } : w;
   });
 }

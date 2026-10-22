@@ -14,6 +14,7 @@ import { setHubDataSource } from "../model/hubData";
 import { createLiveHubData } from "../model/liveHubData";
 import { HubSurface } from "./HubSurface";
 import { BeingBuiltView } from "./BeingBuiltView";
+import { setMonoChatOpener } from "../model/hubNav";
 
 function httpTransport(baseUrl: () => string, token: () => string): HubTransport {
   return {
@@ -124,4 +125,52 @@ it("the backup is With Hivra lead, the sound files Retrying, both grey; only the
   expect(reds.length).toBeGreaterThan(0);
   for (const r of reds) expect(r.textContent || r.getAttribute("aria-label")).toBe("Needs you");
   expect(container.querySelectorAll(".text-red-400, .text-red-500")).toHaveLength(0);
+});
+
+// r27b: every red Needs you carries its reason and "Open <Lead>'s chat"; the backup's chip and the line under it name
+// the same Lead, from the same place (the job's Lead in Ash OS's list), not "With Hivra lead" over "Sent to coding team lead".
+it("every red Needs you shows why and opens its Lead's chat, and the backup names one Lead in its chip and its sent line", async () => {
+  const opened: string[] = [];
+  const undo = setMonoChatOpener((id) => opened.push(id));
+  mountAll();
+  await until(
+    () => container.querySelector('[data-today] [data-hub-need="j:j_sender"] [data-hub-open-lead]')
+      && container.querySelector('[data-hub-today-job="j_sender"] [data-hub-open-lead]')
+      && container.querySelector('[data-built="hivra"] [data-hub-worker="j_sender"] [data-hub-open-lead]'),
+    "the links",
+  );
+  const places = [
+    '[data-today] [data-hub-need="j:j_sender"]',
+    '[data-hub-today-job="j_sender"]',
+    '[data-built="hivra"] [data-hub-worker="j_sender"]',
+  ];
+  for (const at of places) {
+    const row = container.querySelector<HTMLElement>(at)!;
+    expect(row.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
+    // The reason: Ash OS's own words for the row (the Need's why, or the job's reason).
+    const why = row.querySelector("[data-hub-need-why], [data-hub-needs-reason], [data-hub-job-reason]")?.textContent ?? "";
+    expect(why.length).toBeGreaterThan(10);
+    const link = row.querySelector<HTMLButtonElement>("[data-hub-open-lead]")!;
+    expect(link.textContent).toBe("Open Hivra lead's chat");
+    act(() => link.click());
+  }
+  expect(opened).toEqual(["hivra-lead", "hivra-lead", "hivra-lead"]);
+  // Every red chip on screen has its link next to it.
+  const reds = [...container.querySelectorAll<HTMLElement>("[data-hub-circle=red]")];
+  for (const r of reds) {
+    const row = r.closest("[data-hub-need], [data-hub-today-job], [data-hub-worker]")!;
+    expect(row.querySelector("[data-hub-open-lead]")).not.toBeNull();
+  }
+  // One Lead name on the backup row: the chip and the sent line, on Today and Being built.
+  const todayBackup = [...container.querySelectorAll<HTMLElement>("[data-today] div")].filter(
+    (d) => d.textContent?.startsWith("Example: moving the nightly backup") && d.querySelector("[data-hub-sent]") && d.querySelector("[data-hub-chip]"),
+  ).at(-1)!;
+  expect(todayBackup.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
+  expect(todayBackup.querySelector("[data-hub-sent]")?.textContent).toMatch(/^Sent to Hivra lead at \d{1,2}:\d{2}[ap]m · Got it$/);
+  const builtBackup = container.querySelector('[data-built="hivra"] [data-hub-worker="j_backup"]')!;
+  expect(builtBackup.querySelector("[data-hub-chip]")?.textContent).toBe("With Hivra lead");
+  expect(builtBackup.querySelector("[data-hub-job-sent]")?.textContent).toMatch(/^Sent to Hivra lead at .* · Got it$/);
+  expect(todayBackup.textContent).not.toMatch(/coding team lead/i);
+  expect(builtBackup.textContent).not.toMatch(/coding team lead/i);
+  undo();
 });
