@@ -159,6 +159,28 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(button(row, "See options")).toBeTruthy();
   });
 
+  it("a job's Needs row opens its Lead's chat (Open chat) beside See options, when that Lead's chat is here (D5 22 Oct)", async () => {
+    const actions = { openOwner: vi.fn(), openChild: vi.fn(), stopTree: vi.fn(), stopRow: vi.fn() };
+    setDelegationActions(actions);
+    const monoModule = await import("../../monos/model/mono");
+    const spy = vi.spyOn(monoModule, "findMono").mockImplementation((id: string) =>
+      id === "hivra-lead" ? ({ id, name: "Hivra lead", sessionId: "hivra-chat" } as ReturnType<typeof monoModule.findMono>) : undefined,
+    );
+    try {
+      mount(surface());
+      await until(() => container.querySelector('[data-hub-need="j:j_sender"] [data-hub-need-open-lead]'), "Open chat on the job row");
+      const row = '[data-hub-need="j:j_sender"]';
+      expect([...container.querySelectorAll(`${row} button`)].map((b) => b.textContent?.trim())).toEqual(["Open chat", "See options"]);
+      act(() => button(row, "Open chat")!.click());
+      expect(actions.openOwner).toHaveBeenCalledWith("hivra-chat");
+      // a Need that is not a job's has no Open chat
+      expect(container.querySelector('[data-hub-need="s:a_cannon"] [data-hub-need-open-lead]')).toBeNull();
+    } finally {
+      spy.mockRestore();
+      resetDelegationStore();
+    }
+  });
+
   it("See options shows the four choices; Try it a different way asks for a hint; the pick goes to Ash OS and the row ticks off", async () => {
     mount(surface());
     await until(() => container.querySelector('[data-hub-need="j:j_sender"]'), "given-up row");

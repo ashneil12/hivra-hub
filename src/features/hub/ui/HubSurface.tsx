@@ -28,6 +28,8 @@ import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText } from "../model/appSince";
 import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
+import { openLead } from "../../monos/model/stuckActions";
+import { findMono } from "../../monos/model/mono";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
@@ -398,6 +400,18 @@ function NeedGroups({ needs, onSheet }: { needs: readonly Need[]; onSheet: (shee
   );
 }
 
+/** The Mono running a job (its Lead), from Being built: the Needs row for that job opens its chat. */
+export function leadOfJob(jobId: string): string | undefined {
+  const data = hubData();
+  for (const p of data.listProjects()) {
+    for (const g of data.listJobs?.(p.id) ?? []) {
+      const job = g.jobs.find((j) => j.id === jobId);
+      if (job) return job.lead ?? g.leadId ?? undefined;
+    }
+  }
+  return undefined;
+}
+
 function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) => void }) {
   const done = need.state === "done";
   const [busy, setBusy] = useState(false);
@@ -410,6 +424,9 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
   const isQuestion = !!need.actionTarget?.startsWith("question:");
   const answering = data.answerState?.(need.id);
   const mark = needMark(need);
+  // A job's row also opens its Lead's chat, where the details are (D5 22 Oct: "a link that opens the Lead's chat").
+  const leadId = !done && need.jobId ? leadOfJob(need.jobId) : undefined;
+  const lead = leadId && findMono(leadId)?.sessionId ? leadId : undefined;
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
     setProblem(null);
@@ -449,6 +466,18 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
       ) : (
         <>
           {mark ? <CircleWord circle={mark.circle} word={mark.word} /> : null}
+          {lead ? (
+            <button
+              type="button"
+              data-hub-need-open-lead={lead}
+              onClick={() => {
+                if (!openLead(lead)) setProblem("That chat isn't open in this window yet.");
+              }}
+              className="shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
+            >
+              Open chat
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={busy}
