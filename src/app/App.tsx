@@ -222,6 +222,7 @@ import { ApprovalToasts } from "../features/sessions/ui/ApprovalToasts";
 import { ResourcePressureNotice } from "../features/notifications/ui/ResourcePressureNotice";
 import { HarnessUpdateNotice } from "../features/providers/ui/HarnessUpdateNotice";
 import { NewLayoutNotice } from "./shell/NewLayoutNotice";
+import { toastStackTop } from "./shell/toastStack";
 import { WhatsNewDialog } from "./shell/WhatsNewDialog";
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import {
@@ -16640,9 +16641,7 @@ function Workspace({
           {/* A dev copy never offers CLI updates: the Claude/Codex binaries are shared with the daily app. */}
           {appPolicy().dailyClaude ? (
             <HarnessUpdateNotice
-              topOffset={
-                12 + (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0)
-              }
+              topOffset={toastStackTop([reminderNoticesHeight])}
               onHeightChange={setHarnessUpdateHeight}
               // On the hub's views it sits over the sidebar instead of over Today's content.
               placement={hubShown ? "bottom-left" : "top-right"}
@@ -16652,11 +16651,7 @@ function Workspace({
               not prompt for the new one; it stays in Settings → Appearance. */}
           {IS_HUB_BUNDLE ? null : (
             <NewLayoutNotice
-              topOffset={
-                12 +
-                (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0) +
-                (harnessUpdateHeight ? harnessUpdateHeight + 8 : 0)
-              }
+              topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}
             />
           )}
@@ -16670,12 +16665,7 @@ function Workspace({
           />
           <ApprovalToasts
             notices={hiddenApprovalToasts}
-            topOffset={
-              12 +
-              (reminderNoticesHeight ? reminderNoticesHeight + 8 : 0) +
-              (harnessUpdateHeight ? harnessUpdateHeight + 8 : 0) +
-              (newLayoutNoticeHeight ? newLayoutNoticeHeight + 8 : 0)
-            }
+            topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
             onFocusSession={onOpenApprovalSession}
             onApproval={onApproval}
           />
