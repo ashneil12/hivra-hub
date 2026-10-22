@@ -362,6 +362,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "theme scheme graphite dusk colour color palette save named",
   },
   {
+    id: "theme-picker",
+    section: "appearance",
+    label: "Theme",
+    keywords: "theme scheme variant picker several dark light harbour midnight frost ink paper twilight daylight",
+  },
+  {
+    id: "mono-themes",
+    section: "appearance",
+    label: "Themes from your Monos",
+    keywords: "theme mono bot agent offer preview apply discard themes folder json",
+  },
+  {
     id: "theme-files",
     section: "appearance",
     label: "Add a theme",

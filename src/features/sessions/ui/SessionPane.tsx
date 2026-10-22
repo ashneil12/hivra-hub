@@ -1364,6 +1364,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   now={delegationPane.now}
                   onOpenOwner={delegationPane.onOpenOwner}
                   onJumpIn={delegationPane.onJumpIn}
+                  // E7: which model this worker runs on, pickable where its chat says it runs on its own.
+                  modelHarness={session.harness}
+                  model={session.model}
+                  modelValues={session.modelSettings}
+                  onModelChange={(harness, model) => onModelChange(session.id, harness, model)}
+                  onModelSettingsChange={(settings) => onModelSettingsChange(session.id, settings)}
                 />
               ) : (
                 <>

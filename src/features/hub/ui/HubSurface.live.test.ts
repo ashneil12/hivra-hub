@@ -185,15 +185,29 @@ describe("Today, live", () => {
 });
 
 describe("ships clean and calm", () => {
-  it("lists no template section (they lead to example data or a 'built in Unit N' placeholder)", async () => {
+  it("each project lists its template's own section, and opens on its template's cards with live data", async () => {
     await act(async () => store.start());
     await until(() => store.getSnapshot().status === "ready", "ready");
     const data = createLiveHubData(store);
-    for (const id of ["vg-game", "hivra", "nibbii", "hub"]) {
-      const kinds = data.listProjectItems(id).map((i) => i.kind);
-      expect(kinds).not.toContain("section");
-    }
-    expect(data.listProjectItems("hivra").map((i) => i.title)).not.toContain("Users & emails");
+    const section = (id: string) => data.listProjectItems(id).find((i) => i.kind === "section");
+    expect(section("vg-game")).toMatchObject({ title: "Builds & playtests", sectionType: "builds-playtests" });
+    expect(section("hivra")).toMatchObject({ title: "Dashboards", sectionType: "project-pages" });
+    expect(section("nibbii")).toMatchObject({ title: "Dashboards", sectionType: "project-pages" });
+    expect(section("hub")).toBeUndefined();
+
+    // The game's Today: Since, Needs you, then its own latest build (no build kept for it yet).
+    mount(createElement(HubSurface, { selection: { project: "vg-game", item: "inbox" } }));
+    await until(() => container.querySelector('[data-hub-today-section="latest-build"]'), "latest build card");
+    const kinds = [...container.querySelectorAll("[data-hub-today-section]")].map((s) => s.getAttribute("data-hub-today-section"));
+    expect(kinds).toEqual(["since", "needs", "latest-build"]);
+    expect(container.querySelector('[data-hub-today-section="latest-build"]')?.textContent).toContain("No build yet.");
+
+    // The product's Today: Since, Needs you, then its latest kept dashboard (none kept for it yet).
+    mount(createElement(HubSurface, { selection: { project: "hivra", item: "inbox" } }));
+    await until(() => container.querySelector('[data-hub-today-section="latest-page"]'), "latest dashboard card");
+    const productKinds = [...container.querySelectorAll("[data-hub-today-section]")].map((s) => s.getAttribute("data-hub-today-section"));
+    expect(productKinds).toEqual(["since", "needs", "latest-page"]);
+    expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
   });
 
   it("the strip shows Today, Autopilot, then EXO, Hivra, Nibbii, Hub in that order, each its own grey shape (never a ghost)", async () => {

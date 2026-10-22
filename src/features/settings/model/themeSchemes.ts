@@ -17,16 +17,86 @@ export type ThemeScheme = {
   custom?: boolean;
   /** Which colour scheme it is for (a theme file says); absent means dark. */
   scheme?: "dark" | "light";
+  /**
+   * F3: a scheme holds several themes, each the same tokens under its own name. The scheme's own fields are its first
+   * theme; without `themes` the scheme is simply its one theme. Shipped schemes carry a few; a Mono's file can carry up
+   * to seven.
+   */
+  themes?: SchemeTheme[];
+  /** The Mono that made it (a theme file it wrote), by name. */
+  by?: string;
 };
 
+/** One theme inside a scheme: the same tokens as a scheme, with its own name and dark/light mode. */
+export type SchemeTheme = Pick<ThemeScheme, "hue" | "saturation" | "lightness" | "opacity" | "accent"> & {
+  id: string;
+  name: string;
+  /** This theme is for the light colour scheme (absent means dark). */
+  scheme?: "dark" | "light";
+};
+
+/** A scheme's themes: its own list, or the scheme itself as its one theme. */
+export function themesOf(scheme: ThemeScheme): SchemeTheme[] {
+  if (scheme.themes?.length) return scheme.themes;
+  const { id, name, hue, saturation, lightness, opacity, accent, scheme: mode } = scheme;
+  return [{ id, name, hue, saturation, lightness, opacity, accent, ...(mode ? { scheme: mode } : {}) }];
+}
+
+/** The theme a scheme is showing: the one Ash picked, or its first. */
+export function activeThemeOf(scheme: ThemeScheme): SchemeTheme {
+  const themes = themesOf(scheme);
+  const wanted = loadActiveThemeId();
+  return themes.find((t) => t.id === wanted) ?? themes[0];
+}
+
 export const BUILT_IN_SCHEMES: readonly ThemeScheme[] = [
-  { id: "glass", name: "Glass", hue: 240, saturation: 0, lightness: 9, opacity: 0.85, accent: null },
-  { id: "graphite", name: "Graphite", hue: 220, saturation: 6, lightness: 5, opacity: 0.94, accent: null },
-  { id: "dusk", name: "Dusk", hue: 258, saturation: 30, lightness: 11, opacity: 0.8, accent: "hsl(258 85% 72%)" },
+  {
+    id: "glass",
+    name: "Glass",
+    hue: 240,
+    saturation: 0,
+    lightness: 9,
+    opacity: 0.85,
+    accent: null,
+    themes: [
+      { id: "glass", name: "Glass", hue: 240, saturation: 0, lightness: 9, opacity: 0.85, accent: null },
+      { id: "midnight", name: "Midnight", hue: 240, saturation: 35, lightness: 6, opacity: 0.9, accent: "hsl(240 80% 72%)" },
+      { id: "frost", name: "Frost", hue: 240, saturation: 0, lightness: 96, opacity: 0.9, accent: null, scheme: "light" },
+    ],
+  },
+  {
+    id: "graphite",
+    name: "Graphite",
+    hue: 220,
+    saturation: 6,
+    lightness: 5,
+    opacity: 0.94,
+    accent: null,
+    themes: [
+      { id: "graphite", name: "Graphite", hue: 220, saturation: 6, lightness: 5, opacity: 0.94, accent: null },
+      { id: "ink", name: "Ink", hue: 220, saturation: 10, lightness: 3, opacity: 0.9, accent: null },
+      { id: "paper", name: "Paper", hue: 220, saturation: 8, lightness: 97, opacity: 0.92, accent: null, scheme: "light" },
+    ],
+  },
+  {
+    id: "dusk",
+    name: "Dusk",
+    hue: 258,
+    saturation: 30,
+    lightness: 11,
+    opacity: 0.8,
+    accent: "hsl(258 85% 72%)",
+    themes: [
+      { id: "dusk", name: "Dusk", hue: 258, saturation: 30, lightness: 11, opacity: 0.8, accent: "hsl(258 85% 72%)" },
+      { id: "twilight", name: "Twilight", hue: 258, saturation: 45, lightness: 7, opacity: 0.88, accent: "hsl(258 90% 76%)" },
+      { id: "daylight", name: "Daylight", hue: 258, saturation: 30, lightness: 96, opacity: 0.9, accent: "hsl(258 60% 45%)", scheme: "light" },
+    ],
+  },
 ];
 export const DEFAULT_SCHEME_ID = "glass";
 
 const ACTIVE_KEY = "monocode.themeScheme";
+const ACTIVE_THEME_KEY = "monocode.themeSchemeTheme";
 const CUSTOM_KEY = "monocode.themeSchemesCustom";
 
 export function loadCustomSchemes(): ThemeScheme[] {
@@ -50,6 +120,22 @@ export function loadActiveSchemeId(): string {
 export function saveActiveSchemeId(id: string): void {
   try {
     localStorage.setItem(ACTIVE_KEY, id);
+  } catch {
+    /* best effort */
+  }
+}
+/** Which theme of the active scheme is on (absent: its first). */
+export function loadActiveThemeId(): string | undefined {
+  try {
+    return localStorage.getItem(ACTIVE_THEME_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+export function saveActiveThemeId(id: string | undefined): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_THEME_KEY, id);
+    else localStorage.removeItem(ACTIVE_THEME_KEY);
   } catch {
     /* best effort */
   }
@@ -84,7 +170,7 @@ export function applySchemeAccent(accent: string | null, root: HTMLElement = doc
 /** At launch: put the active scheme's accent token back (hue and the rest are restored by the boot script). */
 export function restoreSchemeAccent(): void {
   const scheme = allSchemes().find((s) => s.id === loadActiveSchemeId());
-  applySchemeAccent(scheme?.accent ?? null);
+  applySchemeAccent(scheme ? activeThemeOf(scheme).accent : null);
 }
 
 // ---- checks every scheme must pass (tested in themeSchemes.test.ts) -------------------------------------------------

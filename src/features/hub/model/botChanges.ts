@@ -54,18 +54,39 @@ export type BotChange = {
   at?: number;
 };
 
-/** How the app looks: the active scheme and the tokens it set. */
-export type ThemeLook = { schemeId: string; hue: number; saturation: number; lightness: number; opacity: number; accent: string | null };
+/**
+ * How the app looks: the active scheme and the tokens it set. `themeId` is which of the scheme's themes was on, and
+ * `mode` whether the app was showing its dark or light colours, so Undo can put both back.
+ */
+export type ThemeLook = {
+  schemeId: string;
+  hue: number;
+  saturation: number;
+  lightness: number;
+  opacity: number;
+  accent: string | null;
+  themeId?: string;
+  mode?: "dark" | "light";
+};
+/** A scheme a Mono's theme file added, so Undo can take it off the list again and Redo put it back. */
+export type AddedThemeScheme = { id: string; name: string } & Record<string, unknown>;
 /**
  * A Mono applied a theme: a Bot changes row under that Mono, naming the theme it replaced. It is a "theme" change kind
  * (themeImport.ts registers it with changeFlow.ts), so Undo puts `before` back and Redo puts `after` on again.
  */
-export function recordThemeChange(by: string, name: string, before: ThemeLook, after: ThemeLook, beforeName: string): string {
+export function recordThemeChange(
+  by: string,
+  name: string,
+  before: ThemeLook,
+  after: ThemeLook,
+  beforeName: string,
+  added?: AddedThemeScheme,
+): string {
   return recordFlowChange({
     kind: "theme",
     by,
     title: `“${name}”`,
-    data: { before, after },
+    data: { before, after, ...(added ? { added } : {}) },
     line: `${by} changed the theme from ${beforeName} to “${name}”`,
     now: beforeName,
     undoneText: `Undone: back to ${beforeName}.`,

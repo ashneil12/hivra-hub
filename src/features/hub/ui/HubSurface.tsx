@@ -11,7 +11,7 @@ import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model
 import { openMonoChat, setHubSelection } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import { TODAY_DEFAULT, type HubJob, type Need, type TodaySection } from "../model/types";
-import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
+import { findPage, keptPages, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
@@ -38,10 +38,11 @@ import { BeingBuiltView } from "./BeingBuiltView";
 import { plainStateWord } from "../model/liveJobs";
 import { ProposalView } from "./ProposalView";
 import { NewProjectView } from "./NewProjectView";
-import { useTemplatesVersion } from "../model/templates";
+import { projectTodaySections, templateOf, useTemplatesVersion } from "../model/templates";
 import { leadershipChatId, useHubChatsVersion } from "../model/hubChats";
 import { useProposalsVersion } from "../model/proposals";
-import { useHubBuildsVersion } from "../model/hubBuilds";
+import { listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
+import { ProjectPagesView } from "./ProjectPagesView";
 import { ShipNotice } from "./ShipNotice";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 
@@ -75,6 +76,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
     const section = data.listProjectItems(selection.project).find((i) => i.id === selection.item);
     if (section?.sectionType === "builds-playtests")
       return <BuildsView key={selection.project} projectId={selection.project} title={section.title} />;
+    if (section?.sectionType === "project-pages")
+      return <ProjectPagesView key={selection.project} projectId={selection.project} title={section.title} />;
   }
   const project = data.listProjects().find((p) => p.id === selection.project);
   const item = project ? data.listProjectItems(project.id).find((i) => i.id === selection.item) : undefined;
@@ -158,8 +161,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     stuckWorkersNow.some((s) => !projectId || stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
   // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
-  // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox keeps its own fixed order.
-  const sections: readonly TodaySection[] = projectId ? TODAY_DEFAULT.filter((s) => s.kind !== "being-built") : data.todayLayout?.() ?? TODAY_DEFAULT;
+  // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox draws its own board: the cards
+  // its template names, so a game project opens on builds and a product project on its dashboards.
+  const sections: readonly TodaySection[] = projectId ? projectTodaySections(projectId) : data.todayLayout?.() ?? TODAY_DEFAULT;
   const sinceBlock = (s: TodaySection) => (
     <section key={s.id} data-hub-today-section={s.kind}>
       {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{s.title === "Since you were away" ? sinceLabel(sinceAt) : `${s.title} · ${sinceLabel(sinceAt).toLowerCase()}`}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
@@ -248,6 +252,9 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     : s.kind === "needs" ? <Fragment key={s.id}><StuckToday projectId={projectId} tone="red" />{hasBuilt ? null : <StuckToday projectId={projectId} tone="grey" />}<WaitingOnYou projectId={projectId} />{needsBlock(s)}</Fragment>
     : s.kind === "being-built" ? <BeingBuiltToday key={s.id} title={s.title} projectId={projectId} />
     : s.kind === "page" && s.pageId ? <TodayPage key={s.id} title={s.title} pageId={s.pageId} />
+    // A project's own cards (projectToday.ts): its newest build, its newest kept dashboard.
+    : s.kind === "latest-build" && projectId ? <LatestBuildToday key={s.id} title={s.title} projectId={projectId} />
+    : s.kind === "latest-page" && projectId ? <LatestDashboardToday key={s.id} title={s.title} projectId={projectId} />
     : null;
   return (
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
@@ -379,6 +386,64 @@ function TodayPage({ title, pageId }: { title: string; pageId: string }) {
         </button>
       </div>
       <PageBody page={page} live />
+    </section>
+  );
+}
+
+/**
+ * A project's "Latest build to try" card (a template card): its newest build, from the same store Builds & playtests
+ * reads. Quiet when there is none yet, with the way to the full list either way.
+ */
+function LatestBuildToday({ title, projectId }: { title: string; projectId: string }) {
+  const build = listBuilds(projectId)[0];
+  const builds = templateOf(projectId).sections.find((s) => s.sectionType === "builds-playtests");
+  const openBuilds = builds ? (
+    <button type="button" data-hub-latest-build-open onClick={() => setHubSelection({ project: projectId, item: builds.id })}
+      className="self-start rounded-md px-2 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">
+      Open builds
+    </button>
+  ) : null;
+  return (
+    <section data-hub-today-section="latest-build">
+      <h2 className="mb-2 text-xs text-content/60">{title}</h2>
+      {build ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-[13px] leading-5 text-content/85" data-hub-latest-build>
+            {build.version} · {build.title}
+          </p>
+          <p className="text-[12px] text-content/60" data-hub-latest-build-state>
+            {build.status === "ready" ? `Ready to try · ${build.builtAt}` : build.status === "building" ? `Building · ${build.builtAt}` : `Didn't build · ${build.builtAt}`}
+          </p>
+          {openBuilds}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <p className="text-[13px] text-content/60" data-hub-latest-build-empty>No build yet.</p>
+          {openBuilds}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** A project's "Latest dashboard" card: the page kept for it most recently, opening in Pages. */
+function LatestDashboardToday({ title, projectId }: { title: string; projectId: string }) {
+  usePagesVersion();
+  const page = keptPages(projectId)[0];
+  return (
+    <section data-hub-today-section="latest-page">
+      <h2 className="mb-2 text-xs text-content/60">{title}</h2>
+      {page ? (
+        <div className="flex flex-col gap-1">
+          <button type="button" data-hub-latest-page className="self-start text-left text-[13px] leading-5 text-content/85 hover:underline"
+            onClick={() => { requestOpenPage(page.id); window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" })); }}>
+            {page.title}
+          </button>
+          <p className="text-[12px] text-content/60">Kept by {page.by}</p>
+        </div>
+      ) : (
+        <p className="text-[13px] text-content/60" data-hub-latest-page-empty>No dashboard yet.</p>
+      )}
     </section>
   );
 }

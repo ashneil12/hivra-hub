@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import { projectName } from "../../../shared/lib/paths";
+import { claudePillName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { resolveModel } from "../../sessions/model/models";
 import {
   Chatting,
   CheckCircle,
@@ -18,6 +20,12 @@ import type {
   LaunchedSessionState,
   LaunchedSessionView,
 } from "../model/monoSpawnedSessions";
+
+/** The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). */
+function modelLabel(harness: MonoSpawnedSession["harness"], model: string): string {
+  const name = resolveModel(harness, model).name;
+  return harness === "claude" ? claudePillName(name) : name;
+}
 
 const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
   {
@@ -134,6 +142,14 @@ export function LaunchedSessionCard({
           Waiting for a free worker
         </span>
       ) : null}
+      {/* Which model this worker runs on (E7), quiet, before the project chip. */}
+      <span
+        data-launched-model
+        className="min-w-0 max-w-[30%] shrink-0 truncate text-[12px] text-content/55"
+        title={`Runs on ${modelLabel(launch.harness, launch.model)}`}
+      >
+        {modelLabel(launch.harness, launch.model)}
+      </span>
       {/* Squeezed, the title gives way first and the project after it. */}
       <span
         className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"

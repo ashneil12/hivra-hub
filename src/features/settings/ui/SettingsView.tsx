@@ -1,4 +1,5 @@
-import { allSchemes, applySchemeAccent, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, type ThemeScheme } from "../model/themeSchemes";
+import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
+import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
 import { UserNameField } from "../../hub/ui/UserNameField";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
@@ -2028,13 +2029,15 @@ function useAppearanceSettings(
   const [insetGlass, setInsetGlass] = useState(loadInsetGlass);
   // PM-21: a theme applied, or put back by Undo, shows on the sliders; one being previewed shows there until it stops.
   const themeVersion = useThemeImportVersion();
+  const themeFileVersion = useThemesVersion();
   useEffect(() => {
     setThemeHue(loadThemeHue());
     setThemeSaturation(loadThemeSaturation());
     setThemeDarkLightness(loadThemeDarkLightness());
     setOpacity(loadSidebarOpacity());
-  }, [themeVersion]);
-  const preview = previewLook();
+  }, [themeVersion, themeFileVersion]);
+  // Either kind of preview shows on the sliders: a pasted theme or one a Mono is offering.
+  const preview = previewLook() ?? offeredPreviewLook();
   const insetLayout = useSyncExternalStore(
     subscribeInsetLayout,
     loadInsetLayout,
@@ -2088,6 +2091,7 @@ function useAppearanceSettings(
 
   const onOpacity = useCallback((percent: number) => {
     stopPreview();
+    endPreview();
     const next = applySidebarOpacity(percent / 100);
     saveSidebarOpacity(next);
     setOpacity(next);
@@ -2102,6 +2106,7 @@ function useAppearanceSettings(
   // A real change (a scheme, a preset) ends a theme preview first, so it lands on the saved look.
   const onTint = useCallback((hue: number, saturation: number) => {
     stopPreview();
+    endPreview();
     const next = applyThemeTint(hue, saturation);
     saveThemeHue(next.hue);
     saveThemeSaturation(next.saturation);
@@ -2111,6 +2116,7 @@ function useAppearanceSettings(
 
   const onDarkLightness = useCallback((value: number) => {
     stopPreview();
+    endPreview();
     const next = applyThemeDarkLightness(value);
     saveThemeDarkLightness(next);
     setThemeDarkLightness(next);
@@ -2362,22 +2368,26 @@ function ColorPresetsRow({ appearance }: { appearance: AppearanceSettings }) {
  */
 function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
   const themeVersion = useThemeImportVersion();
+  const themeFileVersion = useThemesVersion();
   const [schemes, setSchemes] = useState(allSchemes);
   const [saved, setActive] = useState(loadActiveSchemeId);
   // While another theme is previewed, none of these shows as the one in use.
-  const active = previewingTheme() ? undefined : saved;
-  // A theme applied or undone elsewhere (ThemesRow, Bot changes) shows here too.
+  const active = previewingTheme() || themePreview() ? undefined : saved;
+  // A theme applied or undone elsewhere (ThemesRow, a Mono's offer, Bot changes) shows here too.
   useEffect(() => {
     setSchemes(allSchemes());
     setActive(loadActiveSchemeId());
-  }, [themeVersion]);
+  }, [themeVersion, themeFileVersion]);
   const [naming, setNaming] = useState<string | null>(null);
+  // A scheme goes on as the theme Ash last chose in it (its first if he never has).
   const apply = (scheme: ThemeScheme) => {
-    appearance.onTint(scheme.hue, scheme.saturation);
-    appearance.onDarkLightness(scheme.lightness);
-    appearance.onOpacity(Math.round(scheme.opacity * 100));
-    applySchemeAccent(scheme.accent);
-    saveActiveSchemeId(scheme.id);
+    const theme = activeThemeOf(scheme);
+    pickTheme(scheme, theme);
+    appearance.onTint(theme.hue, theme.saturation);
+    // A light theme leaves the dark-mode lightness alone, so dark mode comes back as Ash had it.
+    if (theme.scheme !== "light") appearance.onDarkLightness(theme.lightness);
+    appearance.onOpacity(Math.round(theme.opacity * 100));
+    appearance.onThemePreference(theme.scheme ?? "dark");
     setActive(scheme.id);
   };
   return (
@@ -2430,6 +2440,52 @@ function SchemesRow({ appearance }: { appearance: AppearanceSettings }) {
             <button type="submit" className="rounded-md bg-content/12 px-2 py-1 text-[12px] text-content">Save</button>
           </form>
         )}
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * F3: a scheme holds several themes. The schemes above choose the set; this chooses the look inside it (a couple of
+ * dark ones, sometimes a light one). Picking one keeps it, so the scheme comes back the way Ash left it.
+ */
+function ThemesPickerRow() {
+  const themeVersion = useThemeImportVersion();
+  const themeFileVersion = useThemesVersion();
+  const [choice, setChoice] = useState(activeThemeChoice);
+  useEffect(() => setChoice(activeThemeChoice()), [themeVersion, themeFileVersion]);
+  const scheme = allSchemes().find((s) => s.id === choice.schemeId);
+  if (!scheme) return null;
+  const themes = themesOf(scheme);
+  if (themes.length < 2) return null;
+  // While a preview runs, none of them shows as the one in use.
+  const held = previewingTheme() || themePreview();
+  const shown = held ? undefined : (choice.themeId ?? themes[0].id);
+  const pick = (theme: SchemeTheme) => {
+    pickTheme(scheme, theme);
+    setChoice({ schemeId: scheme.id, themeId: theme.id });
+  };
+  return (
+    <Row id="theme-picker" label="Theme" description={`${scheme.name} has ${themes.length} themes. Picking one keeps it.`}>
+      <div className="flex flex-wrap items-center justify-end gap-1.5" data-theme-picker>
+        {themes.map((theme) => (
+          <button
+            key={theme.id}
+            type="button"
+            aria-pressed={theme.id === shown}
+            data-theme-choice={`${scheme.id}:${theme.id}`}
+            onClick={() => pick(theme)}
+            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ${theme.id === shown ? "bg-selection text-content ring-content/30" : "text-content/75 ring-surface-ring hover:bg-selection-hover"}`}
+          >
+            <span
+              aria-hidden
+              className="size-2.5 rounded-full ring-1 ring-content/20"
+              style={{ background: theme.accent ?? `hsl(${theme.hue} ${theme.saturation}% ${theme.scheme === "light" ? 62 : Math.max(theme.lightness, 30)}%)` }}
+            />
+            {theme.name}
+            <span className="text-content/50">{theme.scheme === "light" ? "light" : "dark"}</span>
+          </button>
+        ))}
       </div>
     </Row>
   );
@@ -2531,23 +2587,129 @@ function ThemesRow() {
 }
 
 /**
+ * F3: themes your Monos made. Each Mono's folder can hold `themes/<name>.json`; opening Appearance reads them and offers
+ * the ones Ash hasn't answered yet, each with Preview, Apply (a Bot changes row with Undo) or Discard. Only the Monos on
+ * the roster can offer one; a temporary worker's files don't show up here.
+ */
+function MonoThemesRow() {
+  useThemesVersion();
+  const [scanning, setScanning] = useState(true);
+  const offers = themeOffers();
+  const refusals = themeRefusals();
+  const preview = themePreview();
+  const look = () => {
+    setScanning(true);
+    void scanMonoThemes().finally(() => setScanning(false));
+  };
+  useEffect(() => {
+    let here = true;
+    void scanMonoThemes().finally(() => {
+      if (here) setScanning(false);
+    });
+    return () => {
+      here = false;
+    };
+  }, []);
+  const nothing = !scanning && !offers.length && !refusals.length;
+  const BTN = "rounded-md px-2.5 py-1 text-[12px] ring-1 ring-inset ring-surface-ring text-content/85 hover:bg-selection-hover";
+  return (
+    <Row
+      id="mono-themes"
+      label="Themes from your Monos"
+      description={
+        offers.length
+          ? "A Mono made these. Preview one on the whole app, then apply it or discard it."
+          : nothing
+            ? "A Mono can add a theme file to its folder. Nothing new right now."
+            : "Checking your Monos' folders for theme files."
+      }
+    >
+      <div className="flex w-[300px] flex-col items-end gap-2" data-mono-themes>
+        {offers.map((offer) => {
+          const themes = themesOf(offer.scheme);
+          const here = preview?.offerId === offer.id ? preview.themeId : undefined;
+          return (
+            <div key={offer.id} className="w-full rounded-md bg-surface p-2.5 ring-1 ring-surface-ring" data-mono-offer={offer.id}>
+              <p className="text-[12px] text-content">
+                “{offer.scheme.name}” <span className="text-content/55">· {themes.length} theme{themes.length === 1 ? "" : "s"} from {offer.by}</span>
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {themes.map((theme) => (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    aria-pressed={theme.id === here}
+                    data-mono-theme={theme.id}
+                    onClick={() => previewOffer(offer.id, theme.id)}
+                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-inset ${theme.id === here ? "bg-selection text-content ring-content/30" : "text-content/75 ring-surface-ring hover:bg-selection-hover"}`}
+                  >
+                    <span
+                      aria-hidden
+                      className="size-2 rounded-full ring-1 ring-content/20"
+                      style={{ background: theme.accent ?? `hsl(${theme.hue} ${theme.saturation}% ${theme.scheme === "light" ? 62 : Math.max(theme.lightness, 30)}%)` }}
+                    />
+                    {theme.name}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex justify-end gap-1.5">
+                {here ? (
+                  <button type="button" data-mono-end-preview onClick={endPreview} className={BTN}>Stop preview</button>
+                ) : (
+                  <button type="button" data-mono-preview onClick={() => previewOffer(offer.id)} className={BTN}>Preview</button>
+                )}
+                <button type="button" data-mono-discard onClick={() => discardOffer(offer.id)} className={BTN}>Discard</button>
+                <button type="button" data-mono-apply onClick={() => applyOffer(offer.id)} className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
+              </div>
+            </div>
+          );
+        })}
+        {refusals.map((refusal) => (
+          <div key={refusal.id} className="w-full rounded-md bg-surface p-2.5 ring-1 ring-surface-ring" data-mono-refusal={refusal.id}>
+            <p className="text-[12px] text-content">{refusal.by}'s theme won't work</p>
+            <p className="mt-0.5 text-[11px] leading-4 text-content/70">{refusal.reason}</p>
+            <div className="mt-2 flex justify-end">
+              <button type="button" onClick={() => discardOffer(refusal.id)} className={BTN}>Dismiss</button>
+            </div>
+          </div>
+        ))}
+        <button type="button" data-mono-themes-rescan onClick={look} disabled={scanning} className={BTN}>
+          {scanning ? "Looking…" : "Look for new themes"}
+        </button>
+      </div>
+    </Row>
+  );
+}
+
+/**
  * While a theme is previewed, a slim bar stays at the top of Appearance as Ash scrolls down to the sliders, so Stop
  * preview and Apply are always in reach. It wears the sidebar's glass fill (`sidebar-glass`) with the 24px backdrop
  * blur the peeking sidebar uses, so text scrolling under it doesn't show through.
  */
 function ThemePreviewBar() {
   useThemeImportVersion();
+  useThemesVersion();
   const pending = pendingTheme();
-  if (!pending?.previewing || !pending.check.ok) return null;
+  const filePreview = themePreview();
+  const offer = filePreview ? themeOffers().find((o) => o.id === filePreview.offerId) : undefined;
+  const offerTheme = offer && filePreview ? themesOf(offer.scheme).find((t) => t.id === filePreview.themeId) : undefined;
+  const name = offer && offerTheme
+    ? offerTheme.name
+    : pending?.previewing && pending.check.ok
+      ? pending.check.theme.name
+      : undefined;
+  if (!name) return null;
+  const stop = offer ? endPreview : stopPreview;
+  const apply = offer ? () => applyOffer(offer.id) : () => applyTheme();
   return (
     <div
       data-theme-preview-bar
       className="sidebar-glass hub-fade-in sticky top-0 z-20 -mx-2 mb-4 flex items-center gap-3 rounded-lg px-3 py-2 ring-1 ring-surface-ring backdrop-blur-xl"
     >
-      <p className="min-w-0 flex-1 truncate text-[13px] text-content">Previewing {pending.check.theme.name}</p>
-      <button type="button" data-theme-bar-stop onClick={stopPreview}
+      <p className="min-w-0 flex-1 truncate text-[13px] text-content">Previewing {name}</p>
+      <button type="button" data-theme-bar-stop onClick={stop}
         className="rounded-md px-2.5 py-1 text-[12px] text-content/85 ring-1 ring-inset ring-surface-ring hover:bg-selection-hover">Stop preview</button>
-      <button type="button" data-theme-bar-apply onClick={() => applyTheme()}
+      <button type="button" data-theme-bar-apply onClick={apply}
         className="rounded-md bg-content/12 px-2.5 py-1 text-[12px] text-content hover:bg-content/18">Apply</button>
     </div>
   );
@@ -2591,7 +2753,9 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
         {/* Hub schemes set the classic layout's tint and translucency, which
             the inset workspace's own themes replace. */}
         {inset ? null : <SchemesRow appearance={appearance} />}
+        {inset ? null : <ThemesPickerRow />}
         {inset ? null : <ThemesRow />}
+        {inset ? null : <MonoThemesRow />}
         {inset ? (
           <Row
             id="workspace-theme"

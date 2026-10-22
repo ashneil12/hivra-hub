@@ -51,6 +51,7 @@ import {
 } from "../../monos/model/workerPool";
 import { projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
+import { judgeBrief, routeWorker } from "./taskDifficulty";
 
 /**
  * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
@@ -510,7 +511,14 @@ async function delegate(
       ownTeam = await tasks.monoWork.ownTeam(owner.mono);
     }
   }
-  const model = taskModel(input.model, source);
+  // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
+  // offers one) for a hard one. A model or effort the caller names always wins, and the route never touches another
+  // engine or one of Ash's own models (taskDifficulty.ts).
+  const namedModel = taskModel(input.model, source);
+  const route =
+    namedModel || input.effort !== undefined ? undefined : routeWorker(source, judgeBrief(brief, goal));
+  const model = namedModel ?? (route ? { harness: route.harness, model: route.model } : undefined);
+  const effort = input.effort !== undefined ? input.effort : route?.effort;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
     () => undefined,
@@ -549,7 +557,7 @@ async function delegate(
             ? { project: tasks.hubProjectFolder?.(named) ?? named }
             : {}),
         ...(model ? { harness: model.harness, model: model.model } : {}),
-        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        ...(effort !== undefined ? { effort } : {}),
         // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
         // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
         runtimeMode: WORKER_RUNTIME_MODE,
@@ -597,6 +605,7 @@ async function delegate(
         cwd: launch.cwd,
         harness: launch.harness,
         model: launch.model,
+        ...(route ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
         note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path), then end your turn.`,
       };
@@ -630,6 +639,8 @@ async function delegate(
     cwd: launch.cwd,
     harness: launch.harness,
     model: launch.model,
+    // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
+    ...(route ? { modelWhy: route.why } : {}),
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? { isolationWhy: "Another worker is working in this project, so this one has a checkout of its own." }

@@ -346,9 +346,9 @@ describe("tasks.delegate", () => {
     expect(probe.runs).toBe(1);
   });
 
-  it("names a project by its hub id and defaults to the shared checkout and the Mono's own model", async () => {
+  it("names a project by its hub id and defaults to the shared checkout and Sonnet for a usual job", async () => {
     const { source, host, started } = fixture();
-    await handleAgentApp(
+    const result = await handleAgentApp(
       source,
       "r2",
       "tasks.delegate",
@@ -362,12 +362,57 @@ describe("tasks.delegate", () => {
       string,
       Record<string, unknown>,
     ];
+    // E7: Sonnet is the worker unless the job is hard, and the Lead is told why in one plain sentence.
     expect(launch).toMatchObject({
       cwd: PROJECT,
-      model: "claude:opus-5-5",
+      model: "claude:sonnet-5",
       workspaceMode: "current",
     });
+    expect(result).toMatchObject({ model: "claude:sonnet-5", modelWhy: "A usual job (a short brief), so Sonnet 5." });
     expect(meta).toEqual({ title: "CI", askIds: [], project: "vg-game" });
+  });
+
+  it("gives a hard job the stronger model, and nothing when the job is usual", async () => {
+    const hard = fixture();
+    hard.source.model = "claude:sonnet-5";
+    const result = await handleAgentApp(
+      hard.source,
+      "r-hard",
+      "tasks.delegate",
+      { brief: "Add a migration for the tags table, then backfill it." },
+      hard.host,
+    );
+    expect(hard.started[0][0]).toMatchObject({ model: "claude:opus-5-5" });
+    expect(result).toMatchObject({ model: "claude:opus-5-5" });
+    expect((result as { modelWhy: string }).modelWhy).toContain("A hard job (a migration or schema change");
+
+    const usual = fixture();
+    usual.source.model = "claude:sonnet-5";
+    const plain = await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Tidy the title." }, usual.host);
+    expect(usual.started[0][0]).toMatchObject({ model: "claude:sonnet-5" });
+    expect(plain).not.toHaveProperty("modelWhy");
+  });
+
+  it("keeps a model the caller names, whatever the job is", async () => {
+    const { source, host, started } = fixture();
+    const result = await handleAgentApp(
+      source,
+      "r-named",
+      "tasks.delegate",
+      { brief: "Add a migration for the tags table.", model: "sonnet" },
+      host,
+    );
+    expect(started[0][0]).toMatchObject({ model: "claude:sonnet-5" });
+    expect(result).not.toHaveProperty("modelWhy");
+  });
+
+  it("never swaps one of Ash's own models for a subscription one", async () => {
+    const { source, host, started } = fixture();
+    source.model = "custom:deepseek-test";
+    const result = await handleAgentApp(source, "r-custom", "tasks.delegate", { brief: "Tidy the title." }, host);
+    expect(started[0][0]).toMatchObject({ model: "custom:deepseek-test" });
+    expect(result).toMatchObject({ model: "custom:deepseek-test" });
+    expect(result).not.toHaveProperty("modelWhy");
   });
 
   it("is refused for anything but a Mono's own chat or a coding-team chat, and the checker", async () => {
