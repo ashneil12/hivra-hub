@@ -8,7 +8,9 @@ import { useSyncExternalStore } from "react";
 import {
   applySidebarOpacity,
   applyThemeDarkLightness,
+  applyThemePreference,
   applyThemeTint,
+  isLightScheme,
   loadSidebarOpacity,
   loadThemeDarkLightness,
   loadThemeHue,
@@ -16,6 +18,7 @@ import {
   saveSidebarOpacity,
   saveThemeDarkLightness,
   saveThemeHue,
+  saveThemePreference,
   saveThemeSaturation,
 } from "./appearance";
 import {
@@ -23,8 +26,11 @@ import {
   allSchemes,
   applySchemeAccent,
   loadActiveSchemeId,
+  loadActiveThemeId,
   loadCustomSchemes,
+  removeCustomScheme,
   saveActiveSchemeId,
+  saveActiveThemeId,
   saveCustomScheme,
   schemeTextContrast,
   type ThemeScheme,
@@ -94,17 +100,22 @@ export function checkThemeJson(text: string, existing: readonly ThemeScheme[] = 
 /** How the app looks right now, as Undo and Discard put it back. */
 export function currentLook(): ThemeLook {
   const schemeId = loadActiveSchemeId();
+  const theme = allSchemes().find((s) => s.id === schemeId);
   return {
     schemeId,
+    themeId: loadActiveThemeId() ?? theme?.themes?.[0]?.id,
+    mode: isLightScheme() ? "light" : "dark",
     hue: loadThemeHue(),
     saturation: loadThemeSaturation(),
     lightness: loadThemeDarkLightness(),
     opacity: loadSidebarOpacity(),
-    accent: allSchemes().find((s) => s.id === schemeId)?.accent ?? null,
+    accent: theme?.accent ?? null,
   };
 }
 const lookOf = (t: Omit<ThemeScheme, "custom">): ThemeLook => ({
   schemeId: t.id,
+  themeId: t.id,
+  mode: t.scheme ?? "dark",
   hue: t.hue,
   saturation: t.saturation,
   lightness: t.scheme === "light" ? loadThemeDarkLightness() : t.lightness,
@@ -116,6 +127,11 @@ function show(look: ThemeLook): void {
   applyThemeDarkLightness(look.lightness);
   applySidebarOpacity(look.opacity);
   applySchemeAccent(look.accent);
+  // A light theme switches the app to its light colours (and a dark one back), so previewing it shows it for real.
+  if (look.mode) {
+    saveThemePreference(look.mode);
+    applyThemePreference(look.mode);
+  }
 }
 /** Show a look and keep it. */
 export function putLook(look: ThemeLook): void {
@@ -125,6 +141,7 @@ export function putLook(look: ThemeLook): void {
   saveThemeDarkLightness(look.lightness);
   saveSidebarOpacity(look.opacity);
   saveActiveSchemeId(look.schemeId);
+  saveActiveThemeId(look.themeId);
   emit();
 }
 
@@ -179,15 +196,25 @@ export function discardTheme(): void {
 }
 /** Save the theme, make it the active one, and (from a Mono) leave a Bot changes row with Undo. */
 export function applyTheme(): ThemeScheme | undefined {
-  if (!pending?.check.ok) return undefined;
+  const check = pending?.check;
+  if (!check?.ok) return undefined;
   const before = beforePreview ?? currentLook();
-  const { by } = pending;
-  const saved = saveCustomScheme(pending.check.theme);
+  const { by } = pending!;
+  const existing = allSchemes().some((x) => x.id === check.theme.id);
+  const saved = saveCustomScheme(check.theme);
   const after = lookOf(saved);
   putLook(after);
   beforePreview = undefined;
   pending = undefined;
-  if (by) recordThemeChange(by, saved.name, before, after, allSchemes().find((x) => x.id === before.schemeId)?.name ?? "your last theme");
+  if (by)
+    recordThemeChange(
+      by,
+      saved.name,
+      before,
+      after,
+      allSchemes().find((x) => x.id === before.schemeId)?.name ?? "your last theme",
+      existing ? undefined : saved,
+    );
   emit();
   return saved;
 }
@@ -221,10 +248,16 @@ registerChangeKind("theme", {
     throw new Error("A theme is previewed and applied in Settings → Appearance.");
   },
   undo: async (data) => {
-    putLook((data as { before: ThemeLook }).before);
+    const d = data as { before: ThemeLook; added?: ThemeScheme };
+    if (d.added) removeCustomScheme(d.added.id);
+    putLook(d.before);
     return null;
   },
-  redo: async (data) => putLook((data as { after: ThemeLook }).after),
+  redo: async (data) => {
+    const d = data as { after: ThemeLook; added?: ThemeScheme };
+    if (d.added) saveCustomScheme(d.added);
+    putLook(d.after);
+  },
 });
 
 // The dev page and proofs hand a theme in the way a Mono's tool would.
