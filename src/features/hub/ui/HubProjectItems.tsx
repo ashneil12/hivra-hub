@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu } from "./ProjectMenu";
-import { MoreHorizontal, Plus, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
+import { deleteChat } from "../model/hubChats";
+import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
@@ -28,6 +30,15 @@ function itemHint(item: ProjectItem, project: HubProject): string | undefined {
   if (item.kind === "leadership-team") return "The leadership team's group chat";
   if (item.kind === "group-chat") return "A group chat";
   return undefined;
+}
+
+/** Asks first (the shared confirm), then deletes the room; if it was open, the project's Leadership team opens instead. */
+export async function deleteRoom(projectId: string, item: ProjectItem, selection: HubSelection): Promise<boolean> {
+  if (!(await confirmDelete(item.title))) return false;
+  const chatId = item.id.startsWith("chat:") ? item.id.slice("chat:".length) : item.id;
+  if (!deleteChat(chatId)) return false;
+  if (selection.project === projectId && selection.item === item.id) setHubSelection({ project: projectId, item: "leadership-team" });
+  return true;
 }
 
 /** The project's items, where Monocode's rail lists Projects. */
@@ -75,7 +86,7 @@ export function HubProjectItems({
           const Icon = iconFor(item);
           // Only the open thing is highlighted (PM's r35 check, 22 Oct): not Coding team or Leadership team under a 1:1.
           const selected = !monoOpen && selection.item === item.id;
-          return (
+          const row = (
             <button
               key={item.id}
               type="button"
@@ -95,6 +106,23 @@ export function HubProjectItems({
               <Icon className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
             </button>
+          );
+          // A room Ash made can be deleted (r30d), after the shared confirm; the Leadership team and the rest can't.
+          if (item.kind !== "group-chat") return row;
+          return (
+            <div key={item.id} className="group/room relative flex min-w-0 items-center" data-hub-room-row={item.id}>
+              <div className="min-w-0 flex-1 [&>button]:w-full [&>button]:pr-7">{row}</div>
+              <button
+                type="button"
+                data-hub-room-delete={item.id}
+                title={`Delete ${item.title}`}
+                aria-label={`Delete ${item.title}`}
+                onClick={() => void deleteRoom(project.id, item, selection)}
+                className="absolute right-1 grid size-5 place-items-center rounded-md text-content/45 opacity-0 hover:bg-content/8 hover:text-red-400 focus-visible:opacity-100 group-hover/room:opacity-100"
+              >
+                <Trash2 className="size-3" strokeWidth={1.75} />
+              </button>
+            </div>
           );
         })}
       </div>

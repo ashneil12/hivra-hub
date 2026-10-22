@@ -109,6 +109,8 @@ export type RoomBackend = {
   kind: "app" | "window";
   load(): Promise<RoomSnapshot>;
   upsertRoom(room: RoomInput): Promise<void>;
+  /** Deletes one room with its seats, threads, messages and origins, and nothing else (r30d). */
+  deleteRoom?(id: string): Promise<void>;
   upsertConversation(conversation: ConversationInput): Promise<void>;
   addMessage(message: MessageInput): Promise<unknown>;
   updateMessage(patch: { roomId: string; id: string; meta?: Record<string, unknown>; reactions?: Record<string, string[]> }): Promise<unknown>;
@@ -123,6 +125,7 @@ export const tauriRooms: RoomBackend = {
   kind: "app",
   load: () => invoke("rooms_load"),
   upsertRoom: (room) => invoke("rooms_upsert", { room }),
+  deleteRoom: (id) => invoke("rooms_delete", { id }),
   upsertConversation: (conversation) => invoke("rooms_conversation_upsert", { conversation }),
   addMessage: (message) => invoke("rooms_message_add", { message }),
   updateMessage: (patch) => invoke("rooms_message_update", { patch }),

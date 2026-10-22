@@ -412,6 +412,19 @@ export function createChat(projectId: string, name: string, memberIds: string[])
   return chat;
 }
 
+/**
+ * Deletes a room Ash made (r30d), after the shared confirm: the room and its own threads and messages, nothing else (no
+ * Mono, soul, memory or other hub data). A project's Leadership team is not deleted: every project has one.
+ */
+export function deleteChat(chatId: string): boolean {
+  const chat = getChat(chatId);
+  if (!chat || chat.isDefault) return false;
+  chats = chats.filter((c) => c.id !== chatId);
+  write((b) => b.deleteRoom?.(chatId) ?? Promise.reject(new Error("This store can't delete a room yet.")));
+  changed();
+  return true;
+}
+
 export function addMember(chatId: string, monoId: string): void {
   whenLoaded(() => {
     const chat = getChat(chatId);

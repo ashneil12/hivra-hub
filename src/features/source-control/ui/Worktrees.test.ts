@@ -993,13 +993,13 @@ it("offers to keep or delete the last session's worktree", async () => {
     'input[type="checkbox"]',
   )!;
   expect(checkbox.checked).toBe(false);
-  await act(async () => button("Delete session").click());
+  await act(async () => button("Delete").click());
   expect(onClose).toHaveBeenLastCalledWith({
     confirmed: true,
     deleteWorktree: false,
   });
   await act(async () => checkbox.click());
-  await act(async () => button("Delete session").click());
+  await act(async () => button("Delete").click());
   expect(onClose).toHaveBeenLastCalledWith({
     confirmed: true,
     deleteWorktree: true,

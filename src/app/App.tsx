@@ -269,6 +269,8 @@ import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
 } from "../features/sessions/ui/DeleteSessionDialog";
+import { ConfirmDeleteHost, confirmDelete } from "../shared/ui/ConfirmDelete";
+import { delegationOf } from "../features/monos/model/delegationView";
 import {
   type WorktreeFocus,
   useWorktreeFocus,
@@ -763,6 +765,7 @@ import {
   monosSnapshot,
   monoState,
   removeMono,
+  updateMono,
   saveMonoName,
   saveOpenMono,
   subscribeMonos,
@@ -1379,7 +1382,7 @@ function Workspace({
     );
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
-    unusedWorktree: string;
+    unusedWorktree?: string;
     resolve: (choice: SessionDeleteChoice) => void;
   }>();
   const switchingWorktrees = useRef(new Map<string, string>());
@@ -6035,27 +6038,32 @@ function Workspace({
             // A failed lookup must never offer filesystem cleanup.
           }
         }
-        if (!unusedWorktree) {
-          deleteConfirmationPending.current = false;
-        } else {
+        // r30d: every delete asks first, in the one shared confirm (Cancel focused); a session with an unused
+        // worktree of its own also offers to clear that.
+        {
           const choice = await new Promise<SessionDeleteChoice>((resolve) => {
-            setSessionDeleteDialog({ title: label, unusedWorktree, resolve });
+            setSessionDeleteDialog({ title: label, ...(unusedWorktree ? { unusedWorktree } : {}), resolve });
           });
           deleteConfirmationPending.current = false;
           if (!choice.confirmed) {
             removingSessionIds.current.delete(sessionId);
             return false;
           }
-          if (choice.deleteWorktree) deleteWorktreePath = unusedWorktree;
+          if (choice.deleteWorktree && unusedWorktree) deleteWorktreePath = unusedWorktree;
         }
       }
       invalidateLoadedSession(sessionId);
       pendingPersist.current.delete(sessionId);
       try {
+        // A team's sub-chat (a worker a Lead started, or an orchestration worker) closes its tab rather than leaving an
+        // empty "New session" behind (r30d).
+        const subChat =
+          !!delegationOf(sessionId, delegationRows()) || !!seed?.orchestrationLeadId;
         const remover = createSessionRemover({
           mode,
           preserveOpenFiles: origin === "cli",
           scope: tabCloseScope,
+          replaceEmptyTab: !subChat,
           replacement: {
             harness: seed?.harness ?? "cursor",
             cwd: seed?.cwd ?? sidebarCwd,
@@ -6449,15 +6457,32 @@ function Workspace({
     [closeMonoView, history, onRemoveHistorySession],
   );
 
+  /**
+   * Deletes a Mono's 1:1 chat (r30d), after the shared confirm. Only the conversation goes: the Mono, its soul, its
+   * memory, its habits and its files stay, and its next chat starts fresh when it is opened.
+   */
+  const onDeleteMonoChat = useCallback(
+    async (monoId: string) => {
+      const mono = findMono(monoId);
+      const sessionId = mono?.sessionId;
+      if (!mono || !sessionId) return;
+      if (!(await confirmDelete(`${monoLook(mono).name}'s chat`))) return;
+      if (
+        sessionsRef.current.some((session) => session.id === sessionId) ||
+        history.some((entry) => entry.id === sessionId)
+      ) {
+        if (monoViewIdRef.current === sessionId) closeMonoView();
+        if (!(await onRemoveHistorySession(sessionId, "delete", true))) return;
+      }
+      updateMono(monoId, ({ sessionId: _gone, ...rest }) => rest);
+    },
+    [closeMonoView, history, onRemoveHistorySession],
+  );
+
   const onDeleteHistorySessions = useCallback(
     async (sessionIds: readonly string[]) => {
       if (sessionIds.length === 0) return;
-      if (
-        !window.confirm(
-          `Delete ${sessionIds.length} selected conversations? This can’t be undone.`,
-        )
-      )
-        return;
+      if (!(await confirmDelete(`${sessionIds.length} selected sessions`))) return;
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
       }
@@ -15512,6 +15537,10 @@ function Workspace({
     (monoId: string) => void onDeleteMono(monoId),
     [onDeleteMono],
   );
+  const onDeleteRailMonoChat = useCallback(
+    (monoId: string) => void onDeleteMonoChat(monoId),
+    [onDeleteMonoChat],
+  );
   // The memoized sidebar only skips a streamed batch if this keeps identity.
   const sidebarMonos = useMemo(
     () =>
@@ -15523,6 +15552,7 @@ function Workspace({
             onOpen: onOpenRailMono,
             onCreate: onCreateMono,
             onDelete: onDeleteRailMono,
+            onDeleteChat: onDeleteRailMonoChat,
           }
         : undefined,
     [
@@ -15532,6 +15562,7 @@ function Workspace({
       onOpenRailMono,
       onCreateMono,
       onDeleteRailMono,
+      onDeleteRailMonoChat,
     ],
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
@@ -16655,6 +16686,7 @@ function Workspace({
             />
           ) : null}
 
+          <ConfirmDeleteHost />
           {sessionDeleteDialog && (
             <DeleteSessionDialog
               title={sessionDeleteDialog.title}
