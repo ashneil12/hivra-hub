@@ -6435,7 +6435,7 @@ function Workspace({
       if (!mono) return;
       const { name } = monoLook(mono);
       // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono). r30f: it says only what
-      // happens: the chat goes, habits stop, the soul and memory stay in its folder (monoDelete.ts).
+      // happens: the chat goes, habits stop, the soul and memory are kept (monoDelete.ts).
       const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId));
       if (!confirmed) return;
       if (mono.sessionId) {

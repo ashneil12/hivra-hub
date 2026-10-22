@@ -107,7 +107,7 @@ describe("the shared confirm", () => {
     act(() => root.render(createElement(confirm.ConfirmDeleteHost)));
     let done: Promise<boolean> | undefined;
     const ask = confirm.confirmDelete as (name: string, detail?: string) => Promise<boolean>;
-    const detail = "Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/.";
+    const detail = "Its current chat will be deleted and its habits stop. Its soul and memory are kept.";
     await act(async () => void (done = ask("Example: Pip", detail)));
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Delete Example: Pip?");

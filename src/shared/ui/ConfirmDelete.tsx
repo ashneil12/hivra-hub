@@ -14,6 +14,14 @@ import { Modal } from "./Modal";
 export const CANCEL_FOCUS_RING =
   "confirm-cancel-ring focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background-base";
 
+/**
+ * The red Delete (r30g): the app's danger style, a red tint with red text. Dark is as it was (red-400 on red-500/20).
+ * In the light theme red-400 on that tint measured 2.02:1, so there it is red-700 on a lighter tint (red-500/10),
+ * over 4.5:1 (`dark:` here means "not the light theme", index.css).
+ */
+export const DELETE_DANGER =
+  "bg-red-500/10 text-red-700 hover:bg-red-500/15 dark:bg-red-500/20 dark:text-red-400 dark:hover:bg-red-500/30";
+
 export function ConfirmDelete({
   name,
   detail,
@@ -54,7 +62,7 @@ export function ConfirmDelete({
             type="button"
             data-confirm-delete-ok
             onClick={onDelete}
-            className="rounded-md bg-red-500/20 px-3 py-1.5 font-medium text-red-400 ring-red-400/50 hover:bg-red-500/30 focus-visible:outline-none focus-visible:ring-2 active:scale-[0.97]"
+            className={`rounded-md px-3 py-1.5 font-medium ring-red-400/50 focus-visible:outline-none focus-visible:ring-2 active:scale-[0.97] ${DELETE_DANGER}`}
           >
             {deleteLabel}
           </button>

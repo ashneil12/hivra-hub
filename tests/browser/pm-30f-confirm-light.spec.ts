@@ -44,6 +44,25 @@ async function measuredRing(page: Page, cancel: Locator) {
   return { ring, gap, glass, againstGlass: ratio(ring, glass), againstGap: ratio(ring, gap) };
 }
 
+/** The red Delete label against its own button (r30g): text colour from the page, the button's fill read off the screen
+ * in its left padding (its tint over the dialog, as Ash sees it). Needs 4.5:1 (small text). */
+async function deleteLabel(page: Page, del: Locator) {
+  const box = (await del.boundingBox())!;
+  const shot = PNG.sync.read(await page.screenshot());
+  const scale = shot.width / page.viewportSize()!.width;
+  const i = (Math.round((box.y + box.height / 2) * scale) * shot.width + Math.round((box.x + 4) * scale)) * 4;
+  const fill = [shot.data[i]!, shot.data[i + 1]!, shot.data[i + 2]!];
+  const text = await del.evaluate((el) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = getComputedStyle(el).color;
+    ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+  });
+  return { text, fill, ratio: ratio(text, fill) };
+}
+
 async function dialogClip(page: Page, dialog: Locator): Promise<string> {
   const box = (await dialog.boundingBox())!;
   const pad = 28;
@@ -51,7 +70,7 @@ async function dialogClip(page: Page, dialog: Locator): Promise<string> {
   return buf.toString("base64");
 }
 
-test("light theme: both confirms show Cancel's ring at 3:1 or more", async ({ page }) => {
+test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete label at 4.5:1 or more", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1512, height: 982 });
   await page.addInitScript(() => localStorage.setItem("monocode.colorScheme", "light"));
@@ -78,6 +97,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more", async ({ pa
   await page.mouse.move(5, 5);
   await page.waitForTimeout(400);
   const roomRing = await measuredRing(page, cancel);
+  const roomDelete = await deleteLabel(page, dialog.getByRole("button", { name: "Delete", exact: true }));
   const tokens = await ringContrast(page);
   const roomShot = await dialogClip(page, dialog);
   await page.keyboard.press("Enter");
@@ -106,33 +126,35 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more", async ({ pa
   await page.mouse.move(5, 5);
   await page.waitForTimeout(400);
   const monoRing = await measuredRing(page, cancel);
+  const monoDelete = await deleteLabel(page, dialog.getByRole("button", { name: "Delete", exact: true }));
   const monoShot = await dialogClip(page, dialog);
   const monoText = (await dialog.innerText()).replace(/\s+/g, " ");
   await page.keyboard.press("Enter");
   await expect(pip).toHaveCount(1);
 
-  const report = { tokens, room: roomRing, mono: monoRing };
+  const report = { tokens, room: roomRing, mono: monoRing, roomDelete, monoDelete };
   console.log("light ring", JSON.stringify(report));
   fs.writeFileSync(`${SHOTS}/pm-30f-confirm-light.json`, JSON.stringify(report, null, 2));
 
   const rgb = (c: number[]) => `rgb(${c.join(", ")})`;
-  const caption = (label: string, r: Awaited<ReturnType<typeof measuredRing>>) =>
-    `<p><b>${label}</b> — Cancel focused on open. Ring ${rgb(r.ring)} vs dialog glass ${rgb(r.glass)}: <b>${r.againstGlass}:1</b>; vs gap ${rgb(r.gap)}: <b>${r.againstGap}:1</b></p>`;
+  const caption = (label: string, r: Awaited<ReturnType<typeof measuredRing>>, d: Awaited<ReturnType<typeof deleteLabel>>) =>
+    `<p><b>${label}</b> — Cancel focused on open. Ring ${rgb(r.ring)} vs dialog glass ${rgb(r.glass)}: <b>${r.againstGlass}:1</b>; vs gap ${rgb(r.gap)}: <b>${r.againstGap}:1</b> (needs 3:1).<br>Delete label ${rgb(d.text)} vs its button ${rgb(d.fill)}: <b>${d.ratio}:1</b> (needs 4.5:1).</p>`;
   await page.setContent(`<html><body style="margin:0;width:1512px;background:#f4f4f5;font:14px -apple-system,system-ui,sans-serif;color:#18181b">
     <div style="padding:28px 40px">
-      <h1 style="font-size:18px;margin:0 0 6px">r30f — the shared delete confirm in the light theme (browser, Example: data)</h1>
+      <h1 style="font-size:18px;margin:0 0 6px">r30f + r30g — the shared delete confirm in the light theme (browser, Example: data)</h1>
       <p style="margin:0 0 20px">Needs 3:1. The plain accent ${rgb(tokens.accent)} on the light surface ${rgb(tokens.surface)} would be only ${tokens.ratio}:1, so in the light theme the ring is the accent mixed toward the text colour (measured below from the screen).</p>
       <div style="display:flex;gap:40px;align-items:flex-start">
-        <div>${caption("Room", roomRing)}<img src="data:image/png;base64,${roomShot}" style="border:1px solid #d4d4d8;border-radius:8px"></div>
-        <div>${caption("Mono", monoRing)}<img src="data:image/png;base64,${monoShot}" style="border:1px solid #d4d4d8;border-radius:8px"></div>
+        <div>${caption("Room", roomRing, roomDelete)}<img src="data:image/png;base64,${roomShot}" style="border:1px solid #d4d4d8;border-radius:8px"></div>
+        <div>${caption("Mono", monoRing, monoDelete)}<img src="data:image/png;base64,${monoShot}" style="border:1px solid #d4d4d8;border-radius:8px"></div>
       </div>
       <p style="margin-top:20px">Delete mono's text as shown: “${monoText}”</p>
     </div></body></html>`);
   await page.screenshot({ path: `${SHOTS}/pm-30f-confirm-light-1512.png`, fullPage: true });
 
+  for (const d of [roomDelete, monoDelete]) expect(d.ratio).toBeGreaterThanOrEqual(4.5);
   for (const r of [roomRing, monoRing]) {
     expect(r.againstGlass).toBeGreaterThanOrEqual(3);
     expect(r.againstGap).toBeGreaterThanOrEqual(3);
   }
-  expect(monoText).toContain("Its current chat will be deleted and its habits stop. Its soul and memory stay in ~/agent-memory/monos/. This can't be undone.");
+  expect(monoText).toContain("Its current chat will be deleted and its habits stop. Its soul and memory are kept. This can't be undone.");
 });
