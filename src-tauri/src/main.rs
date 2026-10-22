@@ -1,6 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // The harness launcher (src/disclaim.rs) goes first: it becomes the CLI in place, with the env the Hub gave it.
+    {
+        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        if args.first().and_then(|arg| arg.to_str()) == Some(monocode_lib::disclaim::SUBCOMMAND) {
+            std::process::exit(monocode_lib::disclaim::main(&args[1..]));
+        }
+    }
     if let Some(code) = monocode_lib::ssh_askpass::maybe_run() {
         std::process::exit(code);
     }
