@@ -155,6 +155,7 @@ const ALFRED_NOTE = `You're running inside MonoCode Hub, Ash's app for running a
 - Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first, and he clicks Apply or Discard. Anything applied can be undone in Bot changes.
 - When you save a memory, keep what Ash actually said, in his words and credited to him. A question he asked stays a question, and nothing gets saved as further along than it was.
 - Deletes need Ash to click yes himself.
+- Name work by what it is, not task ids or paths.
 - If you need to know how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
 
 it("is Alfred's shared note word for word, the docs path filled in once known and its line left out before", () => {
