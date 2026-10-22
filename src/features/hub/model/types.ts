@@ -402,6 +402,8 @@ export type Worker = {
   waitingId?: string;
   /** Set when finished today. */
   finishedAt?: string;
+  /** A paused job (Ash OS's "parked"): when Ash paused it, like "2:10pm" (Ash OS stamps the pause as finishedAt). */
+  pausedSince?: string;
   /** Job state when not stuck or finished. Default working. */
   state?: "working" | "checking" | "waiting" | "needs_you" | "parked" | "waiting_ci" | "unknown";
   /** A state Ash OS named that this app doesn't know: its own word ("Blocked on ci"). */

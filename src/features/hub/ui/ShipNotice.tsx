@@ -6,7 +6,7 @@ import { revealPath } from "../../../platform/tauri/fs";
  * Ship on Today (src-tauri/src/ship.rs): the new build's trial, an update waiting for a quiet moment (with Restart now),
  * or the last ship's receipt until it's read. Plain words, no badge. A button the app couldn't carry out says so.
  */
-export function ShipNotice() {
+export function ShipNotice({ inBody = false }: { inBody?: boolean } = {}) {
   const live = shipCardView(useShipStatus());
   // A card shown once (a committed update) is marked read the moment it is on screen and stays put until Today goes
   // away, so it never comes back and never needs a Done (Critiquito/Ash, 22 Oct: "show once").
@@ -33,7 +33,8 @@ export function ShipNotice() {
       .finally(() => setBusy(false));
   };
   return (
-    <div className="mx-auto max-w-[720px] px-8 pt-8" data-hub-ship={view.id}>
+    // In Today's body (r28) it sits below the Since paragraph, in the body's own column; on its own it keeps its margins.
+    <div className={inBody ? "" : "mx-auto max-w-[720px] px-8 pt-8"} data-hub-ship={view.id}>
       <section aria-label="Update" className="rounded-lg border border-stroke px-3 py-2.5 hub-fade-in">
         <p className="text-[13px] leading-5 text-content">{view.text}</p>
         {view.detail ? <p className="mt-0.5 text-[12px] leading-5 text-content/60">{view.detail}</p> : null}
@@ -57,7 +58,7 @@ export function ShipNotice() {
           </div>
         ) : null}
         {problem?.id === view.id ? (
-          <p role="alert" className="mt-1.5 text-[12px] leading-5 text-amber-400">
+          <p role="alert" className="mt-1.5 text-[12px] leading-5 text-content/70">
             {problem.text}
           </p>
         ) : null}

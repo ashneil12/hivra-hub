@@ -151,3 +151,35 @@ export function failedTurnMessage(session: Pick<Session, "blocks">): Block | und
   }
   return undefined;
 }
+
+const NEXT_STEP: Partial<Record<ProviderErrorClass, string>> = {
+  billing: " Add credits, then try again.",
+  auth: " Sign in again, then try again.",
+  overloaded: " Try again in a moment.",
+};
+
+/**
+ * A failed turn's notice in a Mono's 1:1, in plain words (PM's r44 check: "Usage limit reached (429): You've hit your
+ * weekly limit…"). The same error kinds as the rail, Today and Being built (plainFailure); never a status code. The
+ * provider's own words stay on hover.
+ */
+export function plainChatError(block: Pick<Block, "text" | "failure">, now = Date.now()): string {
+  const failure = block.failure ?? {};
+  const detail = block.text.trim();
+  if (failure.errorClass === "usage_limit") {
+    const week = /week/i.test(detail) ? " this week" : "";
+    const reset = failure.resetsAt != null && failure.resetsAt > now ? ` It resets ${resetClock(failure.resetsAt, now)}.` : "";
+    return `Out of usage${week}.${reset}`;
+  }
+  if (failure.errorClass) {
+    const { reason } = plainFailure(failure, detail, now);
+    return `${reason}.${NEXT_STEP[failure.errorClass] ?? ""}`;
+  }
+  // Not classed: the words as they came, without status codes.
+  return detail.replace(/^API Error:?\s*\d{3}\s*/i, "").replace(/\s*\(\d{3}\)/g, "").replace(/\b(HTTP|status)\s*\d{3}\b:?\s*/gi, "").trim() || "Its last turn failed.";
+}
+
+/** The CLI's own "API Error: 429 …" line in a chat: part of the failure notice beside it, not a reply. */
+export function isApiErrorLine(block: Pick<Block, "role" | "text">): boolean {
+  return block.role === "assistant" && API_ERROR_LINE.test(block.text);
+}

@@ -88,7 +88,8 @@ const STATE_WORD: Record<Exclude<JobState, "unknown">, string> = {
   needs_you: "Needs you",
   done_unseen: "Done",
   done: "Done",
-  parked: "Parked",
+  // Ash OS's "parked" is a job Ash paused (r28b).
+  parked: "Paused by you",
   waiting_ci: "Waiting on CI",
 };
 

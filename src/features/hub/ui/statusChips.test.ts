@@ -174,3 +174,35 @@ it("every red Needs you shows why and opens its Lead's chat, and the backup name
   expect(builtBackup.textContent).not.toMatch(/coding team lead/i);
   undo();
 });
+
+// r28 (PM's r44 check): "EXO · EXO lead · Needs you" said the project twice. A Lead named for its project stands alone.
+it("Today's Being built rows don't repeat the project before a Lead named for it", async () => {
+  mountAll();
+  await until(() => container.querySelector('[data-hub-today-job="j_sender"] [data-hub-today-job-where]'), "Today's Being built");
+  for (const id of ["j_sender", "j_backup", "j_mail"]) {
+    const where = container.querySelector(`[data-hub-today-job="${id}"] [data-hub-today-job-where]`)!.textContent!;
+    expect(where.startsWith("Hivra lead · ")).toBe(true);
+    expect(where).not.toMatch(/^Hivra · /);
+  }
+});
+
+// r28: one placement for "Open <Lead>'s chat" on every row: its own line, right under the reason.
+it("every Open <Lead>'s chat on Today and Being built is on its own line under the row's reason", async () => {
+  mountAll();
+  await until(
+    () => container.querySelector('[data-today] [data-hub-need="j:j_sender"] [data-hub-open-lead]')
+      && container.querySelector('[data-hub-today-job="j_sender"] [data-hub-open-lead]')
+      && container.querySelector('[data-built="hivra"] [data-hub-worker="j_sender"] [data-hub-open-lead]'),
+    "the links",
+  );
+  const links = [...container.querySelectorAll<HTMLElement>("[data-hub-open-lead]")].filter((l) => l.getAttribute("data-hub-open-lead") === "true"); // not Being built's "Open chat" button on grey rows
+  expect(links.length).toBeGreaterThanOrEqual(3);
+  for (const link of links) {
+    const line = link.parentElement!;
+    expect(line.hasAttribute("data-hub-needs-link")).toBe(true);
+    expect(line.tagName).toBe("DIV");
+    expect(line.children).toHaveLength(1);
+    const reasonAbove = line.previousElementSibling ?? line.parentElement!.previousElementSibling;
+    expect(reasonAbove?.matches("[data-hub-need-why], [data-hub-needs-reason], [data-hub-job-reason]")).toBe(true);
+  }
+});

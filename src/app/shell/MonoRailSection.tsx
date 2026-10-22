@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { StuckMark } from "../../features/monos/ui/SubChatList";
-import { dismissWaitingSoul, plainAddProblem, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
+import { dismissWaitingSoul, isDiskFullError, plainAddProblem, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
   useEffect,
@@ -170,9 +170,23 @@ export function MonoRailSection({
     noteSoulProblems(monoId, []);
     void seatWaitingSoul(monoId).then(
       (problems) => noteSoulProblems(monoId, problems.map((problem) => ({ text: plainAddProblem(name, { problem }), ashFixes: false }))),
-      (error: unknown) => noteSoulProblems(monoId, [{ text: plainAddProblem(name, { error }), ashFixes: true }]),
+      (error: unknown) => noteSoulProblems(monoId, [{ text: plainAddProblem(name, { error }), ashFixes: true, ...(isDiskFullError(error) ? { diskFull: true } : {}) }]),
     );
   };
+  // r28: while the disk is full, OK can't work, so it is greyed out (Not now still works). The app can't see free space
+  // itself, so OK comes back when Ash returns to the app (after clearing space elsewhere) or after a minute.
+  const waitingForSpace = [...soulProblems.values()].some((ps) => ps.some((p) => p.diskFull));
+  useEffect(() => {
+    if (!waitingForSpace) return;
+    const offerOkAgain = () =>
+      setSoulProblems((current) => new Map([...current].map(([id, ps]) => [id, ps.map(({ diskFull: _, ...p }) => p)])));
+    const timer = window.setTimeout(offerOkAgain, DISK_RECHECK_MS);
+    window.addEventListener("focus", offerOkAgain);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", offerOkAgain);
+    };
+  }, [waitingForSpace]);
   // Role names are a hub thing; plain Monocode keeps the Monos' own names.
   // With role names on, the role leads and the name follows in grey; otherwise the name leads and the role follows.
   const shown = (look: { name: string; role?: string }) => {
@@ -310,7 +324,11 @@ export function MonoRailSection({
             <div key={w.monoId} className="rounded-md border border-content/25 px-2 py-1 text-[13px] leading-tight" data-soul-waiting-card>
               <span className="flex items-center gap-1">
                 <span className="min-w-0 flex-1 truncate text-content/80">{w.name}</span>
-                <button type="button" onClick={() => seatSoul(w.monoId, w.name)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
+                {soulProblems.get(w.monoId)?.some((p) => p.diskFull) ? (
+                  <button type="button" disabled data-soul-ok-waits-for-space title="There isn't space on the disk yet" className="shrink-0 cursor-default rounded px-1 text-[11px] text-content/30">OK</button>
+                ) : (
+                  <button type="button" onClick={() => seatSoul(w.monoId, w.name)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">OK</button>
+                )}
                 <button type="button" onClick={() => dismissWaitingSoul(w.monoId)} className="shrink-0 rounded px-1 text-[11px] text-content/70 hover:bg-content/8 hover:text-content">Not now</button>
               </span>
               <span className="block text-[11px] text-content/50">Waiting for your OK</span>
@@ -575,7 +593,9 @@ export function MonoRailSection({
  * sub-chats are.
  */
 /** One row of the waiting-soul problems list; `ashFixes`: only Ash can sort it (red Needs you), else grey. */
-type SoulProblem = { text: string; ashFixes: boolean };
+type SoulProblem = { text: string; ashFixes: boolean; diskFull?: boolean };
+/** How long a greyed-out OK (disk full) waits before it is offered again, if Ash hasn't come back to the app. */
+const DISK_RECHECK_MS = 60_000;
 
 /** A stuck or failed worker's mark on the rail: grey (r27b). Red is only for Needs you; there is no amber. */
 const STUCK_GREY = "text-content/60";

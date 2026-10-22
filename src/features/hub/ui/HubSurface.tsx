@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { stuckWhere } from "../model/stuckWhere";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
@@ -14,7 +15,7 @@ import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pa
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { ChipMark, CircleWord, OpenLeadLink, StatusMark, needMark } from "./StatusMark";
+import { ChipMark, CircleWord, NeedsYouLinkLine, StatusMark, needMark } from "./StatusMark";
 import { failureChip, stuckChip, withLead, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
@@ -102,7 +103,6 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
         {IS_MAC ? null : <div className="w-[120px]" />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {project ? null : <ShipNotice />}
         {body}
       </div>
     </div>
@@ -120,10 +120,12 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const [shown, setShown] = useState(25);
   const data = hubData();
   const connection = data.connection();
-  if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
+  // The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it).
+  const shipAlone = projectId ? null : <ShipNotice />;
+  if (connection.status === "unreachable") return <>{shipAlone}<AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} /></>;
   // Reading Ash OS for the first time: say nothing rather than flash "No projects yet".
   if (connection.status === "loading" && !data.listProjects().length) return <div data-hub-loading />;
-  if (!data.listProjects().length) return <FirstTodayEmpty />;
+  if (!data.listProjects().length) return <>{shipAlone}<FirstTodayEmpty /></>;
   const since = data.sinceSummary(projectId);
   const sinceAt = data.sinceAt();
   // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the projects' work, then
@@ -238,6 +240,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   return (
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
       {sinceSection ? sinceBlock(sinceSection) : null}
+      {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
+      {!projectId ? <ShipNotice inBody /> : null}
       {!projectId ? <HomeTools /> : null}
       {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
@@ -268,6 +272,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
 function ProjectNeedsCount({ projectId }: { projectId: string }) {
   useAttentionVersion();
   const count = attentionCount(projectId);
+  // r28: a card with nothing waiting says nothing, never "0 needs".
+  if (count <= 0) return null;
   return (
     <button type="button" data-hub-card-needs={count} onClick={() => setHubSelection({ project: projectId, item: "inbox" })} className="hover:text-content">
       {count} {count === 1 ? "need" : "needs"}
@@ -318,17 +324,18 @@ function BeingBuiltToday({ title }: { title: string }) {
               <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })}
                 className="flex items-center gap-3 px-2 py-1.5 text-left">
                 <span className="min-w-0 flex-1 truncate text-[13px] text-content">{j.title}</span>
+                {/* "EXO lead · Needs you", not "EXO · EXO lead · …": a Lead named for its project already says which (r28). */}
                 {typeof w === "string" ? (
-                  <span className="shrink-0 text-xs text-content/60">{p.name} · {lead} · {w}</span>
+                  <span className="shrink-0 text-xs text-content/60" data-hub-today-job-where>{stuckWhere(p, lead)} · {w}</span>
                 ) : (
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60">{p.name} · {lead} · <ChipMark chip={w} /></span>
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-content/60" data-hub-today-job-where>{stuckWhere(p, lead)} · <ChipMark chip={w} /></span>
                 )}
               </button>
               {/* Every red Needs you says why and opens the Lead's chat (r27b). */}
               {red ? (
-                <div className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 pb-1.5 text-xs" data-hub-today-job-needs>
+                <div className="flex min-w-0 flex-col px-2 pb-1.5 text-xs" data-hub-today-job-needs>
                   <span className="min-w-0 break-words text-content/60" data-hub-needs-reason>{failure ? `${lead} can't answer: ${failure.reason}` : j.reason || j.why}</span>
-                  {j.lead ? <OpenLeadLink name={lead} onOpen={() => openMonoChat(j.lead!)} /> : null}
+                  {j.lead ? <NeedsYouLinkLine name={lead} onOpen={() => openMonoChat(j.lead!)} /> : null}
                 </div>
               ) : null}
             </div>
@@ -478,7 +485,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         {/* The reason wraps (never cut mid-word). */}
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-need-why>{need.why}</div>
         {/* A red Needs you opens the Lead's chat from its row (r27b); the reason is the line above. */}
-        {mark?.circle === "red" && lead?.id ? <div className="mt-0.5" data-hub-need-lead><OpenLeadLink name={lead.name} onOpen={() => openLead(lead.id) || openMonoChat(lead.id!)} /></div> : null}
+        {mark?.circle === "red" && lead?.id ? <NeedsYouLinkLine name={lead.name} onOpen={() => openMonoChat(lead.id!)} /> : null}
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
         {answering && !answering.sending && (answering.receipt || answering.problem) ? (
           <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>

@@ -448,3 +448,19 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     expect(container.querySelector('[data-hub-today-job="j_mail"] [data-hub-chip]')?.textContent).toBe("With Hivra lead");
   });
 });
+
+// r28 item 9: Ash OS may name a Lead by its id ("ash-lead") or an older wording ("studio lead"). Ash reads its role.
+describe("a Lead on Being built is named by its role", () => {
+  it("Hub's jobs under ash-lead read \"Hub lead\" in the group heading and the Open chat link, never the id", async () => {
+    stub.addJob({ id: "j_hub1", projectId: "hub", title: "Example: tidy the rail", lead: "ash-lead", leadName: "ash-lead" });
+    stub.addJob({ id: "j_hub2", projectId: "hub", title: "Example: fix the footer", lead: "ash-lead", leadName: "ash-lead", state: "lead_gave_up", reason: "Example: the footer test needs your login" });
+    stub.addJob({ id: "j_exo1", projectId: "vg-game", title: "Example: boss order", lead: "vg-game-lead", leadName: "studio lead" });
+    mount(createElement("div", null, createElement(BeingBuiltView, { projectId: "hub" }), createElement(BeingBuiltView, { projectId: "vg-game" })));
+    await until(() => container.querySelector('[data-hub-worker="j_hub2"] [data-hub-open-lead]') && container.querySelector('[data-hub-worker="j_exo1"]'), "the Hub and EXO rows");
+    const groups = [...container.querySelectorAll("[data-hub-mono-jobs]")].map((g) => g.getAttribute("data-hub-mono-jobs"));
+    expect(groups).toContain("Hub lead");
+    expect(groups).toContain("EXO lead");
+    expect(container.querySelector('[data-hub-worker="j_hub2"] [data-hub-open-lead]')?.textContent).toBe("Open Hub lead's chat");
+    expect(text()).not.toMatch(/ash-lead|studio lead/i);
+  });
+});

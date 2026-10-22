@@ -108,7 +108,7 @@ describe("the same failure on Today and Being built (MonoFailureCard)", () => {
     const card = container.querySelector<HTMLElement>("[data-mono-failure]")!;
     expect(card.querySelector("[data-hub-circle=red]")?.textContent).toBe("Needs you");
     expect(card.querySelector("[data-mono-failure-line]")?.textContent).toContain("Out of credits");
-    const link = card.querySelector<HTMLButtonElement>("[data-mono-failure-open]")!;
+    const link = card.querySelector<HTMLButtonElement>("[data-hub-open-lead]")!;
     expect(link.textContent).toBe("Open Example: Tally lead's chat");
     act(() => link.click());
     expect(open).toHaveBeenCalledWith(lead);
@@ -118,4 +118,20 @@ describe("the same failure on Today and Being built (MonoFailureCard)", () => {
     expect(container.querySelector("[data-mono-failure] [data-hub-chip]")?.textContent).toBe("Can't answer");
     expect(container.querySelectorAll("[data-hub-circle=red], .text-red-400, .text-amber-400")).toHaveLength(0);
   });
+});
+
+// r28: "Open <Lead>'s chat" sat inline on some rows and on its own line on others. Every one is on its own line, under
+// the reason: the rail's line and the failure card, as on Today and Being built (statusChips.test.ts).
+it("puts Open <Lead>'s chat on its own line under the reason, on the rail and the failure card", () => {
+  mount({ status: "failed", activity: "Out of credits", tone: "red" });
+  const links = [...container.querySelectorAll<HTMLElement>("[data-hub-open-lead]")];
+  expect(links.length).toBeGreaterThan(0);
+  for (const link of links) {
+    const line = link.parentElement!;
+    expect(line.hasAttribute("data-hub-needs-link")).toBe(true);
+    expect(line.tagName).toBe("DIV");
+    expect(line.children).toHaveLength(1);
+    // Its reason comes before it, not beside it.
+    expect(line.previousElementSibling?.textContent).toContain("Out of credits");
+  }
 });

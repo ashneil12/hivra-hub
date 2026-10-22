@@ -83,7 +83,10 @@ export function workerOf(job: HubJob, group: HubJobGroup, now: number): Worker {
       w.stuckReason = job.reason || job.why || undefined;
       break;
     case "parked":
+      // Ash paused it ("Pause this job"). Ash OS stamps the pause as finishedAt: that is when it was paused, never how
+      // long it ran (r28b).
       w.state = "parked";
+      if (job.finishedAt) w.pausedSince = clockLabel(job.finishedAt);
       break;
     case "done":
       w.finishedAt = clockLabel(job.finishedAt ?? job.lastActiveAt);

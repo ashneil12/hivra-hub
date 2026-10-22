@@ -223,8 +223,14 @@ export function plainAddProblem(name: string, from: { problem: string } | { erro
   return cause ? `Couldn't add ${name} because ${cause}` : `Couldn't add ${name}. Try OK again`;
 }
 
+const DISK_FULL = /disk (is )?full|no space|enospc|quota/i;
+/** OK failed because the disk is full: OK again can't work until there is space (r28). */
+export function isDiskFullError(error: unknown): boolean {
+  return DISK_FULL.test(error instanceof Error ? `${error.name} ${error.message}` : String(error));
+}
+
 const CAUSES: [RegExp, string][] = [
-  [/disk (is )?full|no space|enospc|quota/i, "the disk is full"],
+  [DISK_FULL, "the disk is full"],
   [/permission denied|eacces|eperm|not permitted|access is denied/i, "the app isn't allowed to write to its folder"],
   [/read-?only|erofs/i, "its folder is read-only"],
   [/conflict/i, "its setup changed while it was being added"],
