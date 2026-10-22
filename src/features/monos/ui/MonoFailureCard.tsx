@@ -2,7 +2,7 @@
 // or red like a stuck worker (StuckWorkerCard), with Try again, Open and Dismiss; what the provider said stays behind
 // "Details". The Monos rail shows the same state in one line (MonoRailSection).
 import { failureChip } from "../../hub/model/statusChip";
-import { ChipMark } from "../../hub/ui/StatusMark";
+import { ChipMark, NeedsYouLinkLine } from "../../hub/ui/StatusMark";
 import { useState } from "react";
 import { CircleAlert } from "../../../shared/ui/icons";
 import {
@@ -60,6 +60,8 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
         {name} can't answer: {failure.reason}
         {failure.retryable ? "" : <span className="text-content/60"> · fix this before trying again</span>}
       </div>
+      {/* A Needs you: "Open <Lead>'s chat" on its own line under the reason, as on every other row (r28). */}
+      {failure.tone === "red" ? <NeedsYouLinkLine name={name} onOpen={() => openMonoFailure(failure.monoId)} /> : null}
       {details && failure.detail ? (
         <pre
           className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-content/5 px-2.5 py-1.5 font-mono text-[11px] leading-4 text-content/70"
@@ -75,9 +77,11 @@ export function MonoFailureCard({ failure, where, now }: { failure: MonoFailure;
             {sent ? "Trying again…" : "Try again"}
           </button>
         )}
-        <button type="button" className={BTN} data-mono-failure-open onClick={() => openMonoFailure(failure.monoId)}>
-          Open {name}&apos;s chat
-        </button>
+        {failure.tone === "red" ? null : (
+          <button type="button" className={BTN} data-mono-failure-open onClick={() => openMonoFailure(failure.monoId)}>
+            Open {name}&apos;s chat
+          </button>
+        )}
         {failure.detail ? (
           <button
             type="button"

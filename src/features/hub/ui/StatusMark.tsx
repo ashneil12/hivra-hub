@@ -72,13 +72,27 @@ export function OpenLeadLink({ name, onOpen }: { name?: string | null; onOpen: (
   );
 }
 
-/** The red Needs you chip with its reason and the link to the Lead's chat (Today, Being built and the rail alike). */
+/**
+ * Where "Open <Lead>'s chat" goes, on every row of Today, Being built and the rail (r28: it sat inline on some rows and
+ * on its own line on others): on its own line, under the reason.
+ */
+export function NeedsYouLinkLine({ name, onOpen }: { name?: string | null; onOpen: () => void }) {
+  return (
+    <div className="mt-0.5 flex" data-hub-needs-link>
+      <OpenLeadLink name={name} onOpen={onOpen} />
+    </div>
+  );
+}
+
+/** The red Needs you chip with its reason, and the link to the Lead's chat on its own line under it (the rail). */
 export function NeedsYouChip({ reason, lead, onOpenLead }: { reason?: string; lead?: string | null; onOpenLead: () => void }) {
   return (
-    <span data-hub-needs-you className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-      <ChipMark chip={NEEDS_YOU} />
-      {reason ? <span data-hub-needs-reason className="min-w-0 break-words text-content/60">{reason}</span> : null}
-      <OpenLeadLink name={lead} onOpen={onOpenLead} />
+    <span data-hub-needs-you className="flex min-w-0 flex-col text-xs">
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <ChipMark chip={NEEDS_YOU} />
+        {reason ? <span data-hub-needs-reason className="min-w-0 break-words text-content/60">{reason}</span> : null}
+      </span>
+      <NeedsYouLinkLine name={lead} onOpen={onOpenLead} />
     </span>
   );
 }

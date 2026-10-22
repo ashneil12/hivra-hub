@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { workerChip } from "../model/statusChip";
-import { ChipMark, OpenLeadLink } from "./StatusMark";
+import { ChipMark, NeedsYouLinkLine } from "./StatusMark";
 import { openMonoChat } from "../model/hubNav";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -180,7 +180,7 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
         ) : null}
         {/* A red Needs you: its reason is the line above, and the Lead's chat is one click away (r27b). */}
         {workerChip(w)?.tone === "red" && w.lead ? (
-          <span className="flex" data-hub-job-needs><OpenLeadLink name={w.who} onOpen={() => openLead(w.lead) || openMonoChat(w.lead!)} /></span>
+          <div data-hub-job-needs><NeedsYouLinkLine name={w.who} onOpen={() => openLead(w.lead) || openMonoChat(w.lead!)} /></div>
         ) : null}
         {w.stuck && w.sentNote ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-sent>{w.sentNote}</span> : null}
         {!w.stuck && w.stateReason ? <span className="whitespace-normal break-words text-xs text-content/60" data-hub-job-reason>{w.stateReason}</span> : null}

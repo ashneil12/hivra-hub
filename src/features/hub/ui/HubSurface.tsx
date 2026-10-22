@@ -15,7 +15,7 @@ import { findPage, requestOpenPage, usePagesVersion } from "../../pages/model/pa
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { ChipMark, CircleWord, OpenLeadLink, StatusMark, needMark } from "./StatusMark";
+import { ChipMark, CircleWord, NeedsYouLinkLine, StatusMark, needMark } from "./StatusMark";
 import { failureChip, stuckChip, withLead, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
@@ -330,9 +330,9 @@ function BeingBuiltToday({ title }: { title: string }) {
               </button>
               {/* Every red Needs you says why and opens the Lead's chat (r27b). */}
               {red ? (
-                <div className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 pb-1.5 text-xs" data-hub-today-job-needs>
+                <div className="flex min-w-0 flex-col px-2 pb-1.5 text-xs" data-hub-today-job-needs>
                   <span className="min-w-0 break-words text-content/60" data-hub-needs-reason>{failure ? `${lead} can't answer: ${failure.reason}` : j.reason || j.why}</span>
-                  {j.lead ? <OpenLeadLink name={lead} onOpen={() => openMonoChat(j.lead!)} /> : null}
+                  {j.lead ? <NeedsYouLinkLine name={lead} onOpen={() => openMonoChat(j.lead!)} /> : null}
                 </div>
               ) : null}
             </div>
@@ -482,7 +482,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
         {/* The reason wraps (never cut mid-word). */}
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-need-why>{need.why}</div>
         {/* A red Needs you opens the Lead's chat from its row (r27b); the reason is the line above. */}
-        {mark?.circle === "red" && lead?.id ? <div className="mt-0.5" data-hub-need-lead><OpenLeadLink name={lead.name} onOpen={() => openMonoChat(lead.id!)} /></div> : null}
+        {mark?.circle === "red" && lead?.id ? <NeedsYouLinkLine name={lead.name} onOpen={() => openMonoChat(lead.id!)} /> : null}
         {problem ? <div className="text-[13px] text-content/60" data-hub-need-problem>{problem}</div> : null}
         {answering && !answering.sending && (answering.receipt || answering.problem) ? (
           <div className="text-[13px] leading-5 text-content/85" data-hub-answer-receipt>{answering.receipt ?? answering.problem}</div>
