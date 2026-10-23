@@ -309,6 +309,54 @@ export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now
   changed();
 }
 
+/**
+ * A Mono wrote one of its own files during a run: its soul, its memory, one of its skills. It is a real change, so it
+ * gets a row like any other, and Undo puts the file back (D1). One row per Mono, file and run: a run that edits the
+ * same file again folds into the row it already has, which therefore holds the file as it was before that run touched
+ * it. A fold needs the file to still read what that row left, so an Undo (or a write from somewhere else) in between
+ * starts a new row rather than swallowing it. A run that leaves a file where it started (a fact added, then removed)
+ * leaves no row: nothing changed in the end, so there is nothing to undo.
+ */
+export function recordSelfWrite(write: {
+  monoId: string;
+  bot: string;
+  file: AgentFilePath;
+  line: string;
+  details?: string[];
+  before: string;
+  after: string;
+  run: string;
+}): void {
+  if (write.before === write.after) return;
+  const id = `self-write:${write.monoId}:${write.file}:${write.run}`;
+  const last = list.find((c) => c.id === id);
+  const fold = !!last && !last.undone && !last.problem && last.afterText === write.before;
+  const beforeText = fold ? (last.beforeText ?? write.before) : write.before;
+  // The run's writes came back to where they started (a fact added and then removed): nothing changed in the end.
+  if (beforeText === write.after) {
+    if (last) {
+      list = list.filter((c) => c.id !== id);
+      saveReal();
+      changed();
+    }
+    return;
+  }
+  recordBotChange({
+    id,
+    bot: write.bot,
+    day: "Today",
+    line: write.line,
+    now: "Its file as it was",
+    after: "Its file as it is now",
+    ...(write.details?.length ? { details: write.details } : {}),
+    undoneText: `Undone: ${write.bot}'s file is back to how it was before it changed it.`,
+    monoId: write.monoId,
+    file: write.file,
+    beforeText,
+    afterText: write.after,
+  });
+}
+
 /** A change kept here, by id (a fix checks whether Ash undid it, so it isn't made again). */
 export function findBotChange(id: string): BotChange | undefined {
   return list.find((c) => c.id === id);
