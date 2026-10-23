@@ -982,6 +982,24 @@ fn usage(error: &str) -> i32 {
     2
 }
 
+/// The app's own database health, for the harness care loop (`monos/model/harnessCare.ts`, board H1/H3): copy the live
+/// database with VACUUM INTO, migrate the copy as this build would and check it, exactly as `monocode healthcheck`
+/// does — the live file is only ever read. It never alerts or exits: the report is the answer, and a failure is
+/// something care tells Ash about.
+#[tauri::command]
+pub async fn db_health() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        let (identity, _, _, _) = compiled();
+        let Some(live) = data_dir(&identity.identifier).map(|dir| dir.join("monocode.db")) else {
+            return json!({ "ok": false, "error": "no home folder" });
+        };
+        let (code, report) = healthcheck(&live, false);
+        json!({ "ok": code == 0, "code": code, "report": report })
+    })
+    .await
+    .unwrap_or_else(|error| json!({ "ok": false, "error": error.to_string() }))
+}
+
 fn healthcheck(live: &Path, keep: bool) -> (i32, Value) {
     use crate::session_store::{self, OpenError};
 

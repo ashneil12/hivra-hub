@@ -43,6 +43,7 @@ import { useProposalsVersion } from "../model/proposals";
 import { listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
 import { ProjectPagesView } from "./ProjectPagesView";
 import { ShipNotice } from "./ShipNotice";
+import { HarnessCareNotice } from "./HarnessCareNotice";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 
 
@@ -162,7 +163,9 @@ function TodayBody({ projectId }: { projectId: string }) {
   const [shown, setShown] = useState(25);
   const data = hubData();
   const connection = data.connection();
-  if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
+  // The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it).
+  // Loading and "no projects yet" are HubHome's (G1): a project's Today only ever draws for a real project.
+  if (connection.status === "unreachable") return <><ShipNotice /><AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} /></>;
   const since = data.sinceSummary(projectId);
   const sinceAt = data.sinceAt();
   // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the project's work, then
@@ -291,6 +294,8 @@ function TodayBody({ projectId }: { projectId: string }) {
       {sinceSection ? sinceBlock(sinceSection) : null}
       {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
       <ShipNotice inBody />
+      {/* A harness fault is the app's own, not a project's (H3): it shows in every project's Today until it clears. */}
+      <HarnessCareNotice inBody />
       {setupBlock}
       {/* The board took Needs you off Today: the chats waiting on Ash still lead it. */}
       {sections.some((s) => s.kind === "needs") ? null : <><StuckToday projectId={projectId} tone="red" />{hasBuilt ? null : <StuckToday projectId={projectId} tone="grey" />}<WaitingOnYou projectId={projectId} /></>}

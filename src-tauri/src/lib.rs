@@ -437,6 +437,7 @@ pub fn run() {
             ship::ship_accept,
             ship::ship_receipt,
             ship::ship_start,
+            instance::db_health,
             control::control_enable,
             control::control_disable,
             control::control_reply,

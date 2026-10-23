@@ -10,6 +10,8 @@ import { MemoryDelegations } from "./memoryDelegations";
 import { StallWatch } from "./workerStall";
 import { failureLine, stuckWorkers } from "./workerStuck";
 import { gaveUpReason, repairableFailure, SelfRepair } from "./selfRepair";
+import { judgeWorkerProgress, type WorkerJudgement } from "./workerProgress";
+import { tallyTranscript } from "./progressCheck";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -25,7 +27,7 @@ beforeEach(() => {
 
 type Chat = Pick<Session, "busy" | "blocks" | "cwd" | "pendingQuestion" | "usageLimit" | "queuedMessages" | "queueStatus">;
 
-async function setup() {
+async function setup(reading?: (row: Delegation) => Promise<WorkerJudgement | undefined>) {
   const backend = new MemoryDelegations();
   const tracker = new DelegationTracker(backend, {
     session: () => undefined,
@@ -54,6 +56,7 @@ async function setup() {
     message: async (_row: Delegation, text: string) => (worker.push(text), true),
     stopTurn: async (r: Delegation) => (stopped.push(r.childSession), true),
     dropReport: (r: Delegation) => void dropped.push(r.id),
+    ...(reading ? { reading } : {}),
     now: () => now,
   });
   const watch = new StallWatch({ tracker: () => tracker, session: (id) => chats.get(id), openOwned, now: () => now, hourly: (r) => repair.stallFor(r) });
@@ -246,5 +249,79 @@ describe("self-repair (H3)", () => {
     expect(t.repair.state(t.row.id)?.tries).toBe(1); // Still counting.
     await t.look(33 * MIN);
     expect(t.repair.state(t.row.id)).toBeUndefined();
+  });
+
+  // The progress judge (H2) hands self-repair a verdict once a worker has run over an hour (workerProgress.ts).
+  const judging = (verdict: "quiet" | "progressing" | "looping" | "done-elsewhere"): WorkerJudgement => {
+    const look = (blocks: Block[], folder: { commits: number; files: number; additions: number; deletions: number } | null) => ({
+      tally: tallyTranscript(blocks),
+      folder,
+    });
+    if (verdict === "progressing") return judgeWorkerProgress({ look: look([edit("save.ts")], null), minutes: 120 });
+    if (verdict === "looping") return judgeWorkerProgress({ look: look([edit("save.ts"), edit("save.ts"), edit("save.ts")], null), minutes: 120 });
+    if (verdict === "done-elsewhere") return judgeWorkerProgress({ look: look([said("Checking the branch")], { commits: 2, files: 4, additions: 40, deletions: 2 }), minutes: 120 });
+    return judgeWorkerProgress({ look: look([said("Working on the save path")], null), minutes: 120 });
+  };
+
+  it("nudges, restarts and then hands over a worker the judge found with nothing moving, on the same 1, 5 and 15 minute backoff", async () => {
+    const t = await setup(async () => judging("quiet"));
+    const base = t.row.createdAt;
+    await t.look(base + 61 * MIN); // First sight: watched, nothing decided yet.
+    await t.look(base + 61.5 * MIN);
+    // An hour in and busy: one nudge that says what the app saw, before its turn is stopped.
+    expect(t.worker).toHaveLength(1);
+    expect(t.worker[0]).toMatch(/^Check-in from the app: an hour in, this work isn't moving/);
+    expect(t.stopped).toEqual([]);
+    expect(t.repair.state(t.row.id)).toMatchObject({ episode: "progress:quiet", tries: 1 });
+    // Five minutes on, still nothing: its turn is stopped, and not continued while the stop is landing.
+    await t.look(base + 66.5 * MIN);
+    expect(t.stopped).toEqual(["w1"]);
+    await t.look(base + 67 * MIN);
+    expect(t.worker).toHaveLength(1);
+    await t.mutate((row) => void (row.state = "cancelled"));
+    t.chats.set("w1", { ...t.chat(), busy: false });
+    await t.look(base + 67.5 * MIN);
+    expect(t.worker[1]).toBe(CONTINUE_PROMPT);
+    // Continued, still nothing moving: the third try, fifteen minutes later, stops it and continues it again.
+    await t.mutate((row) => void (row.state = "running"));
+    t.chats.set("w1", { ...t.chat(), busy: true });
+    await t.look(base + 81.5 * MIN);
+    expect(t.stopped).toHaveLength(2);
+    await t.mutate((row) => void (row.state = "cancelled"));
+    t.chats.set("w1", { ...t.chat(), busy: false });
+    await t.look(base + 82 * MIN);
+    expect(t.worker[2]).toBe(CONTINUE_PROMPT);
+    // No fourth try: its Lead is told, in the judge's own words, and its stall line says what the app saw.
+    await t.mutate((row) => void (row.state = "running"));
+    t.chats.set("w1", { ...t.chat(), busy: true });
+    await t.look(base + 97 * MIN);
+    expect(t.worker).toHaveLength(3);
+    expect(t.lead).toHaveLength(1);
+    expect(t.lead[0]).toContain('"Fix the save bug": still no real progress after 4 tries, retries ran out: nothing moved in the last 2 hours');
+    expect(t.lead[0]).toContain("task_cancel t-1");
+    expect(t.repair.state(t.row.id)).toMatchObject({ gaveUp: true, verdict: { kind: "quiet", final: true } });
+  });
+
+  it("leaves a worker that is moving alone", async () => {
+    const t = await setup(async () => judging("progressing"));
+    const base = t.row.createdAt;
+    await t.look(base + 61 * MIN);
+    await t.look(base + 61.5 * MIN);
+    await t.look(base + 75 * MIN);
+    expect([...t.worker, ...t.lead, ...t.stopped]).toEqual([]);
+    expect(t.repair.state(t.row.id)).toBeUndefined();
+  });
+
+  it("tells the owner once, and never retries, when the work landed in the folder without the worker", async () => {
+    const t = await setup(async () => judging("done-elsewhere"));
+    const base = t.row.createdAt;
+    await t.look(base + 61 * MIN);
+    await t.look(base + 61.5 * MIN);
+    await t.look(base + 75 * MIN);
+    expect(t.lead).toHaveLength(1);
+    expect(t.lead[0]).toContain('"Fix the save bug": done elsewhere — 2 commits landed in its folder since it started');
+    expect(t.lead[0]).toContain("Check whether the work is already done, and stop it if it is.");
+    expect([...t.worker, ...t.stopped]).toEqual([]);
+    expect(t.repair.state(t.row.id)).toMatchObject({ episode: "progress:done-elsewhere", told: true });
   });
 });

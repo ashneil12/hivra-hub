@@ -21,6 +21,10 @@ export type WorkerTally = {
   messages: number;
   /** The newest failing test a run named, and how many runs in a row ended on it. */
   testRun?: { name: string; count: number };
+  /** The newest finished test run and its exit, whatever the run before it did. */
+  lastTest?: { exit: "passed" | "failed"; name?: string };
+  /** The same change made to the same file, this many times in a row. */
+  editRun?: { file: string; count: number };
 };
 
 const TEST_RUN =
@@ -39,6 +43,24 @@ function isTestRun(block: Block): boolean {
   if (!tool) return false;
   const shell = tool.kind === "execute" || tool.preview?.kind === "shell" || /^(Bash|Run|Shell)\b/i.test(tool.title ?? "");
   return shell && TEST_RUN.test(`${tool.title ?? ""} ${block.text}`);
+}
+
+/** The file an edit went to, from what the row shows: its write preview, else its own label. */
+function editTarget(block: Block): string | undefined {
+  const preview = block.tool?.preview;
+  if (preview?.path || preview?.fileName) return preview.path ?? preview.fileName;
+  const label = (block.tool?.title ?? block.text).trim();
+  const m = label.match(/^(?:Edit|Write|MultiEdit|NotebookEdit|apply_patch)\s+(.+)$/);
+  return m?.[1]?.trim();
+}
+
+/** What one edit did, so the same change repeated reads as one: its file, and the lines it wrote. */
+function editFingerprint(block: Block): string | undefined {
+  const target = editTarget(block);
+  if (!target) return undefined;
+  const preview = block.tool?.preview;
+  const body = preview?.lines?.map((line) => `${line.kind}:${line.text}`).join("\n") ?? block.tool?.detail?.trim() ?? "";
+  return `${target}\u0000${body}`;
 }
 
 const short = (text: string, max = 100) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
@@ -68,6 +90,8 @@ export function tallyTranscript(blocks: readonly Block[]): WorkerTally {
   let testsPassed = 0;
   let testsFailed = 0;
   let testRun: WorkerTally["testRun"];
+  let lastTest: WorkerTally["lastTest"];
+  let editRun: { key: string; file: string; count: number } | undefined;
   const said = new Set<string>();
   for (const block of blocks) {
     if (block.role === "assistant" && block.text.trim()) said.add(block.text.trim());
@@ -80,15 +104,38 @@ export function tallyTranscript(blocks: readonly Block[]): WorkerTally {
         testsFailed++;
         const name = failingTestName(block.tool.detail ?? "");
         testRun = testRun?.name === name ? { name, count: testRun.count + 1 } : { name, count: 1 };
+        lastTest = { exit: "failed", name };
       } else {
         testsPassed++;
         testRun = undefined;
+        lastTest = { exit: "passed" };
       }
       continue;
     }
-    if (isEdit(block) && !failed) edits++;
+    if (isEdit(block) && !failed) {
+      edits++;
+      const key = editFingerprint(block);
+      editRun = key && editRun?.key === key ? { key, file: editRun.file, count: editRun.count + 1 } : key ? { key, file: editTarget(block) ?? "file", count: 1 } : undefined;
+    }
   }
-  return { edits, testsPassed, testsFailed, messages: said.size, ...(testRun ? { testRun } : {}) };
+  return {
+    edits,
+    testsPassed,
+    testsFailed,
+    messages: said.size,
+    ...(testRun ? { testRun } : {}),
+    ...(lastTest ? { lastTest } : {}),
+    ...(editRun && editRun.count > 1 ? { editRun: { file: editRun.file, count: editRun.count } } : {}),
+  };
+}
+
+/** The newest thing a worker said: its last report in its own words, whichever chat row it came from. */
+export function newestWord(blocks: readonly Block[]): string | undefined {
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (block.role === "assistant" && block.text.trim()) return short(block.text.trim(), 160);
+  }
+  return undefined;
 }
 
 // ---- reading a worker's folder -------------------------------------------------------------------------------------------

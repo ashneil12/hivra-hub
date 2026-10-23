@@ -3,16 +3,28 @@
 // judged, so a stalled worker shows everywhere within about a minute of crossing its limit. The same look sends the
 // hourly progress check (model/hourlyCheck.ts, board H2): one line to the owner of a worker running over an hour, with
 // the evidence the app read itself (model/progressCheck.ts) — commits, changed files, passing and failing test runs, or
-// plainly that nothing moved. Self-repair (model/selfRepair.ts, board H3) retries a crashed or hung worker with backoff
-// before its Lead is told. The same window announces stuck workers with a native banner (useStuckNotifications), except a
-// Lead's own stalled or crashed workers: their Lead handles those, and tells Ash in its own chat when only he can help.
+// plainly that nothing moved, and since 23 Oct the judge's verdict on it (model/workerProgress.ts). Self-repair
+// (model/selfRepair.ts, board H3) retries a crashed or hung worker, or one the judge found with nothing moving after an
+// hour, with backoff before its Lead is told. Harness care (model/harnessCare.ts, board H1/H3) looks after the app's
+// surroundings on the same look: its database check, a stuck ship trial, a pull request watch whose reads keep failing, a
+// chat the app stopped continuing, delegated work whose chat is gone (model/careFaults.ts reads them in). The same window
+// announces stuck workers with a native banner (useStuckNotifications), except a Lead's own stalled or crashed workers:
+// their Lead handles those, and tells Ash in its own chat when only he can help.
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type DelegationTracker } from "../model/delegations";
 import { StallWatch } from "../model/workerStall";
+import { careFaults, type DatabaseHealth } from "../model/careFaults";
+import { HarnessCare, resumeStoppedNote, SAFE_FIXES } from "../model/harnessCare";
+import { addHarnessIssue, clearHarnessIssue } from "../../hub/model/harnessIssues";
+import { recordBotNote } from "../../hub/model/botChanges";
+import { tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
+import { shipStatus } from "../../../app/model/ship";
 import { HOUR_MS, hourlyCheckMessage, hourlyChecksDue } from "../model/hourlyCheck";
-import { evidenceOf, evidenceSince, tallyTranscript, type FolderLook, type Look } from "../model/progressCheck";
+import { evidenceOf, evidenceSince, newestWord, tallyTranscript, type FolderLook, type Look } from "../model/progressCheck";
+import { judgeWorkerProgress, type WorkerJudgement } from "../model/workerProgress";
 import { repairNoteMessage, SelfRepair } from "../model/selfRepair";
 import { faultOf, HarnessRepair, type HarnessFault } from "../model/harnessRepair";
 import { gitDiffStats, gitHistory } from "../../../platform/tauri/fs";
@@ -58,6 +70,8 @@ export function useStallWatch(options: {
   const born = useRef(Date.now());
   // What each worker's last hourly check saw, so the next one reports what moved in between rather than re-reading the lot.
   const looks = useRef(new Map<string, { at: number; look: Look }>());
+  // What the judge made of a worker for self-repair, kept a few minutes so a half-minute tick doesn't re-read its folder.
+  const readings = useRef(new Map<string, { at: number; judgement: WorkerJudgement }>());
   /** A worker's folder since `sinceMs`, through the app's own git reads. Null when it isn't a repo or can't be read. */
   const folder = async (cwd: string | undefined, sinceMs: number): Promise<FolderLook | null> => {
     if (!cwd) return null;
@@ -74,6 +88,8 @@ export function useStallWatch(options: {
       return null;
     }
   };
+  /** The worker's own last word, for the judge's line: its report to the Lead, else the newest thing it said. */
+  const reportOf = (row: Delegation, child: Session | undefined) => row.result?.trim() || newestWord(child?.blocks ?? []);
   const hourly = async (every: number) => {
     const rows = latest.current.tracker()?.known() ?? [];
     const now = Date.now();
@@ -90,9 +106,33 @@ export function useStallWatch(options: {
       looks.current.set(id, { at: now, look });
       void latest.current.queueWake?.(
         row.ownerSession,
-        hourlyCheckMessage(row, now, { evidence, windowMinutes: Math.round((now - since) / 60_000) }),
+        hourlyCheckMessage(row, now, {
+          evidence,
+          windowMinutes: Math.round((now - since) / 60_000),
+          judgement: judgeWorkerProgress({ look, report: reportOf(row, child), minutes: Math.round((now - row.createdAt) / 60_000) }),
+        }),
       );
     }
+    for (const id of readings.current.keys()) if (!rows.some((row) => row.id === id && isOpenDelegation(row))) readings.current.delete(id);
+  };
+  /** How often self-repair re-reads a worker it is already watching: each try after the first sees fresh facts. */
+  const READING_MS = 5 * 60_000;
+  /**
+   * Self-repair's hand (workerProgress.ts): what the app reads about a worker running over an hour, from its own chat
+   * and folder. Younger rows get nothing: the judge is for work past the hourly mark, not for a slow first minute.
+   */
+  const read = async (row: Delegation): Promise<WorkerJudgement | undefined> => {
+    if (row.state !== "running") return undefined;
+    const now = Date.now();
+    if (now - row.createdAt < HOUR_MS) return undefined;
+    const cached = readings.current.get(row.id);
+    if (cached && now - cached.at < READING_MS) return cached.judgement;
+    const child = session(row.childSession);
+    if (!child) return undefined;
+    const look: Look = { tally: tallyTranscript(child.blocks), folder: await folder(child.cwd, row.createdAt) };
+    const judgement = judgeWorkerProgress({ look, report: reportOf(row, child), minutes: Math.round((now - row.createdAt) / 60_000) });
+    readings.current.set(row.id, { at: now, judgement });
+    return judgement;
   };
   const repair = useRef<SelfRepair | null>(null);
   repair.current ??= new SelfRepair({
@@ -110,6 +150,7 @@ export function useStallWatch(options: {
         previous.map((entry) => (entry.id === row.ownerSession ? dismissQueuedMonoSessionCompletion(entry, row.childSession) : entry)),
       );
     },
+    reading: read,
   });
   // The general half of self-repair (board H1/H3): a chat's own failed turn, tried again by the app before anyone asks.
   const harness = useRef<HarnessRepair | null>(null);
@@ -128,6 +169,100 @@ export function useStallWatch(options: {
       if (fault) faults.push(fault);
     }
     return faults;
+  };
+  // Harness care (harnessCare.ts): the app's own surroundings, from what it already holds and two reads of its own —
+  // the build's database check (hourly; it copies the database, so not on every look) and the PR watches (every few
+  // minutes). Every fix it makes is a Bot changes row; a fault it can't fix is a Needs-you row for the app, or one quiet
+  // note in the chat it concerns.
+  const WATCH_LOOK_MS = 5 * 60_000;
+  const dbLook = useRef<{ at: number; health: DatabaseHealth | null } | null>(null);
+  const watchLook = useRef<{ at: number; rows: readonly PrWatch[] | null } | null>(null);
+  const trialSeen = useRef<number | null>(null);
+  const databaseHealth = async (now: number): Promise<DatabaseHealth | null> => {
+    if (!isTauri()) return null;
+    const cached = dbLook.current;
+    if (cached && now - cached.at < HOUR_MS) return cached.health;
+    let health: DatabaseHealth | null = null;
+    try {
+      const raw = await invoke<DatabaseHealth>("db_health");
+      if (raw && typeof raw.ok === "boolean") health = raw;
+    } catch {
+      // An older build has no such command, or the app is quitting: no finding, and no claim that it passed.
+    }
+    dbLook.current = { at: now, health };
+    return health;
+  };
+  const liveWatches = async (now: number): Promise<readonly PrWatch[] | null> => {
+    if (!isTauri()) return null;
+    const cached = watchLook.current;
+    if (cached && now - cached.at < WATCH_LOOK_MS) return cached.rows;
+    let rows: readonly PrWatch[] | null = null;
+    try {
+      rows = await tauriPrWatches.list();
+    } catch {
+      rows = null;
+    }
+    watchLook.current = { at: now, rows };
+    return rows;
+  };
+  const care = useRef<HarnessCare | null>(null);
+  care.current ??= new HarnessCare({
+    fix: async (fault) => {
+      if (fault.fix === "pause-pr-watch" && fault.about?.watch) {
+        await tauriPrWatches.remove({ ...fault.about.watch, reason: "stopped" });
+        // The cached list still names it: the next look reads a fresh one.
+        watchLook.current = null;
+        return true;
+      }
+      if (fault.fix === "continue-chat" && fault.about?.session)
+        return latest.current.retryTurn?.(fault.about.session) ?? false;
+      if (fault.fix === "cancel-orphan" && fault.about?.delegation) {
+        const tracker = latest.current.tracker();
+        const row = tracker?.row(fault.about.delegation);
+        if (!tracker || !row || row.state !== "running") return false;
+        await tracker.cancelFollowed(row, "The session it was working in is gone.");
+        return true;
+      }
+      return false;
+    },
+    fixed: (fault) => {
+      if (!fault.fix) return;
+      recordBotNote({
+        id: `care-${fault.id}-${Date.now()}`,
+        bot: "Self-repair",
+        line: SAFE_FIXES[fault.fix],
+        now: fault.line,
+        after: SAFE_FIXES[fault.fix],
+        system: true,
+      });
+    },
+    tell: (fault) => {
+      if (fault.kind === "resume" && fault.about?.session) {
+        void latest.current.queueWake?.(fault.about.session, resumeStoppedNote(fault.about.session, Date.now()));
+        return;
+      }
+      addHarnessIssue({ id: fault.id, kind: fault.kind, line: fault.line, ...(fault.path ? { path: fault.path } : {}) });
+    },
+    clear: (fault) => clearHarnessIssue(fault.id),
+  });
+  /** Read what care looks at, then let it act on what is due. */
+  const careLook = async (): Promise<void> => {
+    const now = Date.now();
+    const ship = shipStatus();
+    if (ship.enabled && ship.holding && ship.trial && !ship.trial.committed) trialSeen.current ??= now;
+    else trialSeen.current = null;
+    const [database, watches] = await Promise.all([databaseHealth(now), liveWatches(now)]);
+    await care.current!.tick(
+      careFaults({
+        now,
+        sessions: latest.current.sessionsRef.current,
+        tracker: latest.current.tracker(),
+        database,
+        watches,
+        ship,
+        trialSeenAt: trialSeen.current,
+      }),
+    );
   };
   const watch = useRef<StallWatch | null>(null);
   watch.current ??= new StallWatch({
@@ -158,6 +293,8 @@ export function useStallWatch(options: {
       void repair.current!.tick().finally(() => watch.current!.tick());
       // The chats' own failed turns: two automatic tries, then one plain line and no more.
       harness.current!.tick(harnessFaults());
+      // The app's surroundings: what care can fix, it fixes; what it can't, it tells Ash once.
+      void careLook().catch(() => undefined);
     }, every);
     return () => clearInterval(timer);
   }, []);
