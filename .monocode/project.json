@@ -28,6 +28,22 @@
       "timeoutSeconds": 3600
     },
     {
+      "id": "harsh",
+      "name": "Harsh tests",
+      "description": "The standing harsh suite (verify/harsh): every hard case must fail on its broken state and pass on its solved one, and the run is recorded (node scripts/hub-harsh.mjs).",
+      "command": "node scripts/hub-harsh.mjs",
+      "icon": "check",
+      "timeoutSeconds": 1800
+    },
+    {
+      "id": "benchmark",
+      "name": "Benchmark self-check",
+      "description": "Ash's own asks replayed as a benchmark (verify/benchmark): the recorded good answer to each must pass and every recorded shortcut must fail, so a check that stops biting shows. Recorded; an agent replay is node scripts/hub-bench.mjs --replay --driver claude.",
+      "command": "node scripts/hub-bench.mjs --check",
+      "icon": "check",
+      "timeoutSeconds": 1800
+    },
+    {
       "id": "ship",
       "name": "Ship",
       "description": "Installs this checkout's checked build as the daily app, with a trial and automatic rollback (npm run hub:ship).",
@@ -37,6 +53,22 @@
       "confirm": "Ship replaces the daily MonoCode Hub with this checkout's build and restarts it when it is idle. Continue?"
     }
   ],
+  "verify": {
+    "checks": [
+      {
+        "id": "project",
+        "name": "Project checks",
+        "description": "vitest, tsc, cargo fmt, clippy and cargo test from the checkout root (npm run check).",
+        "command": "npm run check",
+        "timeoutSeconds": 3600
+      }
+    ],
+    "realPath": {
+      "command": "npm run hub:verify-live",
+      "appliesTo": ["src/**", "src-tauri/**"],
+      "timeoutSeconds": 3600
+    }
+  },
   "worktrees": {
     "buildOutput": ["target", "node_modules", "dist"],
     "regenerable": [".identity-baseline.json"]

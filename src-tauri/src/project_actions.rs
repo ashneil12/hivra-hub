@@ -101,9 +101,12 @@ pub struct RunRequest<'a> {
     pub log_dir: &'a Path,
     /// Shell PATH for the child; the app passes the login-shell search path.
     pub path_env: Option<String>,
+    /// Extra variables for this command only (the verify stage hands its real-path recipe the file to write its
+    /// verdict in). Set after the credential scrub, so a caller can never re-add an app endpoint.
+    pub env: Vec<(String, String)>,
 }
 
-type Emit = Arc<dyn Fn(&str, Option<&str>, Option<&RunRecord>) + Send + Sync>;
+pub(crate) type Emit = Arc<dyn Fn(&str, Option<&str>, Option<&RunRecord>) + Send + Sync>;
 
 impl ActionRuns {
     pub fn new() -> Self {
@@ -447,6 +450,9 @@ fn command(request: &RunRequest<'_>) -> Command {
             command.env_remove(&name);
         }
     }
+    for (name, value) in &request.env {
+        command.env(name, value);
+    }
     if let Some(path) = &request.path_env {
         command.env("PATH", path);
     }
@@ -514,7 +520,7 @@ fn log_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(project_file::data_dir(app)?.join("action-runs"))
 }
 
-fn emitter(app: &AppHandle) -> Emit {
+pub(crate) fn emitter(app: &AppHandle) -> Emit {
     let app = app.clone();
     Arc::new(move |run_id, line, run| {
         let _ = app.emit(EVENT, ActionEvent { run_id, line, run });
@@ -537,9 +543,38 @@ pub(crate) fn run_action(
     let action = file.action(action_id).ok_or_else(|| {
         format!("No action {action_id:?} in this project's imported project file")
     })?;
-    if let Some(running) = runs.list(Some(&main)).into_iter().find(|run| {
-        !run.finished() && run.action_id == action.id && Path::new(&run.cwd) == checkout
-    }) {
+    start_command(
+        runs,
+        &main,
+        &checkout,
+        action,
+        trigger,
+        &log_dir(app)?,
+        Some(crate::harness::cached_gui_search_path()),
+        Vec::new(),
+        Some(emitter(app)),
+    )
+}
+
+/// Start a command in a checkout of its project, with the same process group, timeout, log and credential scrub as an
+/// action button. The caller owns trust: the verify stage only builds these from the imported project file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_command(
+    runs: &ActionRuns,
+    project_root: &Path,
+    cwd: &Path,
+    action: &ProjectAction,
+    trigger: &str,
+    log_dir: &Path,
+    path_env: Option<String>,
+    env: Vec<(String, String)>,
+    emit: Option<Emit>,
+) -> Result<RunRecord, String> {
+    if let Some(running) = runs
+        .list(Some(project_root))
+        .into_iter()
+        .find(|run| !run.finished() && run.action_id == action.id && Path::new(&run.cwd) == cwd)
+    {
         return Err(format!(
             "{} is already running in this checkout (run {})",
             action.name, running.id
@@ -547,14 +582,15 @@ pub(crate) fn run_action(
     }
     runs.start(
         RunRequest {
-            project_root: &main,
-            cwd: &checkout,
+            project_root,
+            cwd,
             action,
             trigger,
-            log_dir: &log_dir(app)?,
-            path_env: Some(crate::harness::cached_gui_search_path()),
+            log_dir,
+            path_env,
+            env,
         },
-        Some(emitter(app)),
+        emit,
     )
 }
 
@@ -728,6 +764,7 @@ mod tests {
                     trigger: "app",
                     log_dir: &logs,
                     path_env: None,
+                    env: Vec::new(),
                 },
                 Some(emit),
             )
@@ -758,6 +795,7 @@ mod tests {
             trigger: "app",
             log_dir: &temp.0,
             path_env: None,
+            env: Vec::new(),
         };
         let command = command(&request);
         let removed: Vec<String> = command
@@ -794,6 +832,7 @@ mod tests {
                     trigger: "app",
                     log_dir: &logs,
                     path_env: None,
+                    env: Vec::new(),
                 },
                 None,
             )
@@ -813,6 +852,7 @@ mod tests {
                     trigger: "app",
                     log_dir: &logs,
                     path_env: None,
+                    env: Vec::new(),
                 },
                 None,
             )

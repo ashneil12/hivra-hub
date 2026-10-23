@@ -23,6 +23,8 @@ const PROJECT_DIR: &str = ".monocode";
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const MAX_ACTIONS: usize = 24;
 const MAX_BUILD_OUTPUT: usize = 20;
+const MAX_VERIFY_CHECKS: usize = 8;
+const MAX_GLOBS: usize = 40;
 /// How long an action may run before it is stopped, unless it sets its own `timeoutSeconds`.
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 15 * 60;
 const MAX_TIMEOUT_SECONDS: u64 = 4 * 60 * 60;
@@ -62,6 +64,11 @@ pub struct ProjectFile {
     pub actions: Vec<ProjectAction>,
     #[serde(default)]
     pub worktrees: WorktreeSettings,
+    /// How this project proves a change (src-tauri/src/verify_stage.rs): its own checks for the folder that changed,
+    /// and a real-path recipe for anything Ash would see. Like every action, nothing here runs until Ash imports
+    /// this file, and only the imported text is ever run.
+    #[serde(default)]
+    pub verify: VerifySettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -102,6 +109,78 @@ impl ProjectAction {
     pub fn timeout_seconds(&self) -> Option<u64> {
         (!self.long_running).then(|| self.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS))
     }
+}
+
+/// A project's own answer to "did this change work?" (src-tauri/src/verify_stage.rs). Both parts are optional: a
+/// project with no recipe can be asked to verify, and the honest answer is that nothing was run.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifySettings {
+    /// The project's own checks, run once in every folder a change touched (the nearest folder up from each changed
+    /// file that holds a package.json, Cargo.toml, pyproject.toml or go.mod).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<VerifyCheck>,
+    /// For anything Ash would see: a command that drives the real path and writes its verdict. The stage sets
+    /// MONOCODE_VERIFY_VERDICT to a file the command must write ({"outcome": "passed"|"failed"|
+    /// "couldNotExercise", "detail": "..."}). Exit 0 without that file is not a pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_path: Option<RealPathCheck>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifyCheck {
+    pub id: String,
+    /// Plain-English name, shown with the result ("Web checks").
+    pub name: String,
+    pub command: String,
+    /// The folder it runs in, relative to the checkout. It covers every change under it. Missing: the checkout root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+impl VerifyCheck {
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS)
+    }
+
+    /// The checkout-relative folder this check runs in (`""` for the root, so a plain `starts_with` test works).
+    pub fn dir(&self) -> &str {
+        self.dir.as_deref().unwrap_or("")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RealPathCheck {
+    pub command: String,
+    /// Checkout-relative globs of the files whose change a person would see (`src/**`, `*.html`). Empty: any change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applies_to: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+impl RealPathCheck {
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS)
+    }
+}
+
+/// A checkout-relative glob: no root, no `..`, no empty segment; `*`, `?` and `**` are the wildcards.
+pub fn valid_glob(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && pattern.len() <= 200
+        && !pattern.contains('\\')
+        && !pattern.contains('\0')
+        && !Path::new(pattern).is_absolute()
+        && pattern
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -308,6 +387,77 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
             }
         }
     }
+    validate_verify(&file.verify)?;
+    Ok(())
+}
+
+fn validate_verify(verify: &VerifySettings) -> Result<(), String> {
+    if verify.checks.len() > MAX_VERIFY_CHECKS {
+        return Err(format!(
+            "verify.checks has more than {MAX_VERIFY_CHECKS} entries"
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for check in &verify.checks {
+        if !valid_id(&check.id) {
+            return Err(format!(
+                "verify check id {:?} must be 1-40 lowercase letters, digits or hyphens",
+                check.id
+            ));
+        }
+        if !seen.insert(check.id.as_str()) {
+            return Err(format!("verify check id {:?} is used twice", check.id));
+        }
+        let what = format!("verify check {:?}", check.id);
+        bounded(&check.name, &format!("{what} name"), 60)?;
+        single_line(&check.name, &format!("{what} name"))?;
+        bounded(&check.command, &format!("{what} command"), 4000)?;
+        if check.command.contains('\0') {
+            return Err(format!("{what} command contains a NUL character"));
+        }
+        if let Some(dir) = &check.dir {
+            if !valid_relative_path(dir) {
+                return Err(format!(
+                    "{what} dir {dir:?} must be a plain relative path inside the checkout"
+                ));
+            }
+        }
+        if let Some(description) = &check.description {
+            bounded(description, &format!("{what} description"), 300)?;
+        }
+        if let Some(timeout) = check.timeout_seconds {
+            if timeout == 0 || timeout > MAX_TIMEOUT_SECONDS {
+                return Err(format!(
+                    "{what} timeoutSeconds must be from 1 to {MAX_TIMEOUT_SECONDS}"
+                ));
+            }
+        }
+    }
+    if let Some(real) = &verify.real_path {
+        bounded(&real.command, "verify.realPath command", 4000)?;
+        if real.command.contains('\0') {
+            return Err("verify.realPath command contains a NUL character".into());
+        }
+        if real.applies_to.len() > MAX_GLOBS {
+            return Err(format!(
+                "verify.realPath appliesTo has more than {MAX_GLOBS} entries"
+            ));
+        }
+        for pattern in &real.applies_to {
+            if !valid_glob(pattern) {
+                return Err(format!(
+                    "verify.realPath appliesTo entry {pattern:?} must be a plain relative glob inside the checkout"
+                ));
+            }
+        }
+        if let Some(timeout) = real.timeout_seconds {
+            if timeout == 0 || timeout > MAX_TIMEOUT_SECONDS {
+                return Err(format!(
+                    "verify.realPath timeoutSeconds must be from 1 to {MAX_TIMEOUT_SECONDS}"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -344,7 +494,9 @@ pub enum FileState {
     Valid {
         hash: String,
         text: String,
-        file: ProjectFile,
+        // Boxed: the parsed file (with its verify settings) is much larger than the other two states, and this enum
+        // is passed around by value on every poll.
+        file: Box<ProjectFile>,
     },
 }
 
@@ -400,7 +552,7 @@ pub fn read_main_file(main: &Path) -> FileState {
         Ok(file) => FileState::Valid {
             hash: digest,
             text,
-            file,
+            file: Box::new(file),
         },
         Err(error) => FileState::Invalid {
             error,
@@ -543,7 +695,9 @@ pub fn status(data_dir: &Path, main: &Path) -> ProjectFileStatus {
     let (file_hash, file, error) = match &current {
         FileState::Missing => (None, None, None),
         FileState::Invalid { error, hash } => (hash.clone(), None, Some(error.clone())),
-        FileState::Valid { hash, file, .. } => (Some(hash.clone()), Some(file.clone()), None),
+        FileState::Valid { hash, file, .. } => {
+            (Some(hash.clone()), Some(file.as_ref().clone()), None)
+        }
     };
     let state = match (&current, &imported) {
         (FileState::Missing, None) => "none",
@@ -759,16 +913,32 @@ pub(crate) mod tests {
     fn this_repositorys_project_file_is_valid() {
         let file = parse(include_str!("../../.monocode/project.json")).unwrap();
         let ids: Vec<&str> = file.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["setup", "dev", "check", "ship"]);
+        assert_eq!(ids, ["setup", "dev", "check", "harsh", "benchmark", "ship"]);
         let setup = file.setup_action().unwrap();
         assert_eq!(setup.command, "node scripts/setup-worktree.mjs");
         assert!(setup.hold);
         assert!(file.action("dev").unwrap().long_running);
+        assert_eq!(
+            file.action("harsh").unwrap().command,
+            "node scripts/hub-harsh.mjs"
+        );
+        // The benchmark's action is the self-check, the one that needs no agent: a scheduled agent replay is
+        // `node scripts/hub-bench.mjs --replay --driver claude` and never a button a person presses by accident.
+        assert_eq!(
+            file.action("benchmark").unwrap().command,
+            "node scripts/hub-bench.mjs --check"
+        );
         let ship = file.action("ship").unwrap();
         assert_eq!(ship.command, "npm run hub:ship");
         assert!(ship.confirm.is_some());
         assert_eq!(file.build_output(), vec!["target", "node_modules", "dist"]);
         assert_eq!(file.worktrees.regenerable, vec![".identity-baseline.json"]);
+        // The verify stage's own recipe (verify_stage.rs): the repo's checks, then the live bench for what Ash sees.
+        assert_eq!(file.verify.checks.len(), 1);
+        assert_eq!(file.verify.checks[0].command, "npm run check");
+        let real = file.verify.real_path.as_ref().unwrap();
+        assert_eq!(real.command, "npm run hub:verify-live");
+        assert_eq!(real.applies_to, vec!["src/**", "src-tauri/**"]);
     }
 
     #[test]
@@ -793,6 +963,101 @@ pub(crate) mod tests {
         assert!(valid_relative_path("src-tauri/target"));
         for bad in ["", "..", "a/../b", "/abs", "./a", "a\\b", "a/./b"] {
             assert!(!valid_relative_path(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_verify_block_is_parsed_and_checked() {
+        let file = parse(
+            r#"{"version":1,"verify":{
+              "checks":[{"id":"web","name":"Web checks","command":"npx tsc --noEmit","timeoutSeconds":600}],
+              "realPath":{"command":"node scripts/verify.mjs","appliesTo":["src/**","*.html"],"timeoutSeconds":300}
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(file.verify.checks.len(), 1);
+        assert_eq!(file.verify.checks[0].timeout_seconds(), 600);
+        assert_eq!(file.verify.checks[0].id, "web");
+        let real = file.verify.real_path.unwrap();
+        assert_eq!(real.timeout_seconds(), 300);
+        assert_eq!(real.applies_to, vec!["src/**", "*.html"]);
+        // The defaults: no checks, no real path, and a check without a timeout gets the action default.
+        let bare = parse(r#"{"version":1}"#).unwrap();
+        assert!(bare.verify.checks.is_empty());
+        assert!(bare.verify.real_path.is_none());
+        let check =
+            parse(r#"{"version":1,"verify":{"checks":[{"id":"a","name":"A","command":"x"}]}}"#)
+                .unwrap();
+        assert_eq!(
+            check.verify.checks[0].timeout_seconds(),
+            DEFAULT_TIMEOUT_SECONDS
+        );
+    }
+
+    #[test]
+    fn refuses_verify_blocks_that_would_do_something_unexpected() {
+        let cases = [
+            (
+                r#"{"version":1,"verify":{"checks":[{"id":"Web","name":"A","command":"x"}]}}"#,
+                "lowercase",
+            ),
+            (
+                r#"{"version":1,"verify":{"checks":[{"id":"a","name":"A","command":"x"},{"id":"a","name":"B","command":"y"}]}}"#,
+                "used twice",
+            ),
+            (
+                r#"{"version":1,"verify":{"checks":[{"id":"a","name":"A\nB","command":"x"}]}}"#,
+                "one line",
+            ),
+            (
+                r#"{"version":1,"verify":{"checks":[{"id":"a","name":"A","command":"x","timeoutSeconds":0}]}}"#,
+                "timeoutSeconds",
+            ),
+            (
+                r#"{"version":1,"verify":{"realPath":{"command":"x","appliesTo":["../elsewhere"]}}}"#,
+                "relative glob",
+            ),
+            (
+                r#"{"version":1,"verify":{"realPath":{"command":"x","appliesTo":["/abs/**"]}}}"#,
+                "relative glob",
+            ),
+            (
+                r#"{"version":1,"verify":{"realPath":{"command":"x","appliesTo":["a//b"]}}}"#,
+                "relative glob",
+            ),
+            (
+                r#"{"version":1,"verify":{"realPath":{"command":"x","timeoutSeconds":99999999}}}"#,
+                "timeoutSeconds",
+            ),
+            (
+                r#"{"version":1,"verify":{"realPath":{"command":"x","surprise":true}}}"#,
+                "unknown field",
+            ),
+        ];
+        for (text, expected) in cases {
+            let error = parse(text).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{text}: expected {expected:?} in {error:?}"
+            );
+        }
+        let too_many = format!(
+            r#"{{"version":1,"verify":{{"checks":[{}]}}}}"#,
+            (0..MAX_VERIFY_CHECKS + 1)
+                .map(|n| format!(r#"{{"id":"c{n}","name":"C","command":"x"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse(&too_many).unwrap_err().contains("verify.checks"));
+    }
+
+    #[test]
+    fn verify_globs_stay_inside_the_checkout() {
+        for good in ["src/**", "*.html", "src-tauri/src/*.rs", "a", "**/*.ts"] {
+            assert!(valid_glob(good), "{good}");
+        }
+        for bad in ["", "..", "a/../b", "/abs", "a\\b", "a/./b", "a//b", "./a"] {
+            assert!(!valid_glob(bad), "{bad}");
         }
     }
 
