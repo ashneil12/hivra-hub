@@ -40,6 +40,13 @@ export type OfferedChange = {
   parts?: string[];
   /** Already showing (a reloaded window picking a live preview back up). */
   previewing?: boolean;
+  /** What the bar says with the change out (Now) and in (Preview), when the kind needs its own words. */
+  nowText?: string;
+  previewText?: string;
+  /** The Apply button's words, when a kind needs its own ("Rebuild and ship"). */
+  applyText?: string;
+  /** What the bar says while Apply runs, when it takes minutes rather than a moment. */
+  workingText?: string;
 };
 type Offer = OfferedChange & { previewing: boolean; busy?: boolean; problem?: string };
 
