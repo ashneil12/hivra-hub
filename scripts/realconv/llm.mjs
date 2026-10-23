@@ -8,6 +8,8 @@
 //                           provider's id
 //   grok-sub                Claude Code on Grok 4.7 through Ash's Grok subscription: the same CLI call as `claude`,
 //                           through his bridge launcher ~/.local/bin/claude-grok (it keeps its key to itself)
+//   deepseek-sub            Claude Code on DeepSeek V4.1 Flash through Ash's local gateway: the same CLI call as
+//                           `claude`, through his launcher ~/.local/bin/claude-deepseek (it keeps its key to itself)
 //   fake                    a scripted stand-in for the runner's own tests. Never a real model: anything it touches is
 //                           marked not real, and a scene it played or judged can never PASS.
 //
@@ -27,8 +29,9 @@ export const OPENAI_COMPATIBLE = {
   openai: "https://api.openai.com/v1",
   custom: "",
 };
-export const PROVIDERS = ["claude", "grok-sub", ...Object.keys(OPENAI_COMPATIBLE), "fake"];
+export const PROVIDERS = ["claude", "grok-sub", "deepseek-sub", ...Object.keys(OPENAI_COMPATIBLE), "fake"];
 export const GROK_SUB_BIN = path.join(os.homedir(), ".local/bin/claude-grok");
+export const DEEPSEEK_SUB_BIN = path.join(os.homedir(), ".local/bin/claude-deepseek");
 
 /** True for a provider that is a real model (anything but the scripted fake). */
 export const isReal = (provider) => provider !== "fake";
@@ -42,6 +45,7 @@ export function providerSpec({ provider, model, baseUrl, keyEnv, effort } = {}, 
   if (!PROVIDERS.includes(name)) throw new Error(`unknown provider "${provider}" (one of ${PROVIDERS.join(", ")})`);
   if (name === "claude") return { provider: name, model: model || "sonnet", effort: effort || "medium", real: true };
   if (name === "grok-sub") return { provider: name, model: model || "grok-4.7", effort: effort || "medium", real: true };
+  if (name === "deepseek-sub") return { provider: name, model: model || "deepseek-v4.1-flash", effort: effort || "medium", real: true };
   if (name === "fake") return { provider: name, model: "fake", real: false };
   const url = String(baseUrl || OPENAI_COMPATIBLE[name] || "").replace(/\/+$/, "");
   if (!url) throw new Error(`${name}: give its address with --*-base-url`);
@@ -103,8 +107,14 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
       },
     };
   }
-  if (spec.provider === "claude" || spec.provider === "grok-sub") {
-    const bin = claudeBin ?? (spec.provider === "grok-sub" ? GROK_SUB_BIN : path.join(os.homedir(), ".local/bin/claude"));
+  if (spec.provider === "claude" || spec.provider === "grok-sub" || spec.provider === "deepseek-sub") {
+    const bin =
+      claudeBin ??
+      (spec.provider === "grok-sub"
+        ? GROK_SUB_BIN
+        : spec.provider === "deepseek-sub"
+          ? DEEPSEEK_SUB_BIN
+          : path.join(os.homedir(), ".local/bin/claude"));
     const config = claudeConfig ?? path.join(os.homedir(), ".monocode-hub-dev/claude-config");
     return {
       ...meta,

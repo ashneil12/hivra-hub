@@ -9,7 +9,7 @@ import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-real
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
+import { deepseekBridge, grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -156,6 +156,22 @@ test("--grok-sub refuses in plain words when the bridge launcher isn't there, an
   assert.throws(() => grokBridge(launcher), /needs the Grok bridge launcher/);
   fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
   assert.equal(grokBridge(launcher), launcher);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Ash, 23 Oct: "dont use grok use deepseek sub".
+test("--deepseek-sub: its own switch, its own launcher, and never both bridges at once", () => {
+  assert.equal(benchArgs(["--deepseek-sub"]).deepseekSub, true);
+  assert.equal(benchArgs(["--deepseek-sub"]).grokSub, false);
+  assert.equal(benchArgs([]).deepseekSub, false);
+});
+
+test("--deepseek-sub refuses in plain words when its launcher isn't there, and takes it when it is", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deepseek-bridge-"));
+  const launcher = path.join(dir, "claude-deepseek");
+  assert.throws(() => deepseekBridge(launcher), /needs the DeepSeek launcher/);
+  fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(deepseekBridge(launcher), launcher);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

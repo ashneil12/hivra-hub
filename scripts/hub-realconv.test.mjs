@@ -363,6 +363,34 @@ test("a grok-sub client runs the bridge launcher with Grok 4.7", async () => {
   assert.equal(calls[0].args[calls[0].args.indexOf("--model") + 1], "grok-4.7");
 });
 
+// Ash, 23 Oct: "dont use grok use deepseek sub" — the same shape, on DeepSeek V4.1 Flash through his local gateway.
+test("--agents deepseek-sub puts the agents, the tester and the judge on the DeepSeek launcher", () => {
+  const options = parseArgs(["--agents", "deepseek-sub"]);
+  assert.equal(options.agents, "deepseek-sub");
+  assert.equal(options.tester.provider, "deepseek-sub");
+  assert.equal(options.judge.provider, "deepseek-sub");
+  assert.equal(parseArgs(["--agents", "deepseek-sub", "--judge", "claude"]).judge.provider, "claude");
+  const spec = providerSpec({ provider: "deepseek-sub" });
+  assert.equal(spec.model, "deepseek-v4.1-flash");
+  assert.equal(spec.real, true);
+  // No key variable: the launcher reads the gateway's own key at runtime.
+  assert.equal(spec.keyEnv, undefined);
+  assert.equal(benchSpec(book, [], options).appModel, "claude:sonnet-5");
+});
+
+test("a deepseek-sub client runs the DeepSeek launcher, never the plain claude binary", async () => {
+  const calls = [];
+  const client = makeClient(providerSpec({ provider: "deepseek-sub" }), {
+    spawnImpl: async (bin, args) => {
+      calls.push({ bin, args });
+      return { status: 0, stdout: "ok", stderr: "" };
+    },
+  });
+  const answer = await client.complete({ system: "s", prompt: "p" });
+  assert.equal(answer.text, "ok");
+  assert.match(calls[0].bin, /\/\.local\/bin\/claude-deepseek$/);
+});
+
 test("S5 runs its coding-team chat in Full access; no other scene changes the mode", () => {
   const modes = book.scenes.filter((s) => s.runtimeMode).map((s) => [s.id, s.runtimeMode]);
   assert.deepEqual(modes, [["S5", "full-access"]]);

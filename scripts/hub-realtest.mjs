@@ -79,6 +79,11 @@ export const BENCH_GIT_ENV = {
 export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
 export const GROK_BRIDGE_MODEL = "grok-4.7";
 
+/** Ash's launcher for Claude Code on DeepSeek V4.1 Flash through his local gateway (no hub route needed). */
+export const DEEPSEEK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-deepseek");
+/** The alias Ash's gateway serves DeepSeek V4.1 Flash under; the launcher rewrites every model to it. */
+export const DEEPSEEK_BRIDGE_MODEL = "claude-fable-5";
+
 /** The bridge launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
 export function grokBridge(file = GROK_BRIDGE) {
   try {
@@ -86,6 +91,16 @@ export function grokBridge(file = GROK_BRIDGE) {
     return file;
   } catch {
     throw new Error(`--grok-sub needs the Grok bridge launcher at ${file} (Claude Code on Grok 4.7 through the Grok subscription); it isn't there`);
+  }
+}
+
+/** The DeepSeek launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
+export function deepseekBridge(file = DEEPSEEK_BRIDGE) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return file;
+  } catch {
+    throw new Error(`--deepseek-sub needs the DeepSeek launcher at ${file} (Claude Code on DeepSeek V4.1 Flash through the local gateway); it isn't there`);
   }
 }
 
@@ -133,6 +148,7 @@ export function parseArgs(argv) {
     maxRequests: Number(value("--max-requests", "0")) || null,
     claudeConfigs: claudeConfigArgs(argv),
     grokSub: argv.includes("--grok-sub"),
+    deepseekSub: argv.includes("--deepseek-sub"),
   };
 }
 
@@ -217,8 +233,10 @@ async function main() {
  */
 export async function runBench(options, hooks = {}) {
   const spec = hooks.spec ?? readJson(options.scenarios);
-  // On the Grok bridge no chat spends Claude: limits are logged, not enforced, as for routed agents.
-  const bridge = options.grokSub ? grokBridge() : null;
+  // On a subscription bridge (Grok or DeepSeek) no chat spends Claude: limits are logged, not enforced, as for routed agents.
+  if (options.grokSub && options.deepseekSub) throw new Error("--grok-sub and --deepseek-sub are two different agents' models; pass one");
+  const bridge = options.grokSub ? grokBridge() : options.deepseekSub ? deepseekBridge() : null;
+  const bridgeModel = options.deepseekSub ? DEEPSEEK_BRIDGE_MODEL : GROK_BRIDGE_MODEL;
   const unmetered = !!hooks.routedAgents || !!bridge;
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
@@ -381,7 +399,7 @@ export async function runBench(options, hooks = {}) {
       }
     };
     const readings = accounts.map((account) => {
-      // On the Grok bridge the Claude login isn't used at all: no login check, no Haiku use reading.
+      // On a bridge the Claude login isn't used at all: no login check, no Haiku use reading.
       if (bridge) return { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
       const login = loginOf(account.config);
       if (login.loggedIn) log(`claude account ${account.n} signed in under the temporary HOME (${login.authMethod}, ${login.subscriptionType}): ${account.config}`);
@@ -390,7 +408,12 @@ export async function runBench(options, hooks = {}) {
       return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     });
     const status = { loggedIn: readings.some((r) => r.loggedIn) };
-    if (bridge) log(`every chat and helper call on ${GROK_BRIDGE_MODEL} through the Grok subscription bridge (${bridge}); no Claude login used`);
+    if (bridge)
+      log(
+        options.deepseekSub
+          ? `every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`
+          : `every chat and helper call on ${GROK_BRIDGE_MODEL} through the Grok subscription bridge (${bridge}); no Claude login used`,
+      );
     if (!status.loggedIn && !unmetered) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
     if (!status.loggedIn && !bridge) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
     const use = readings[0];
@@ -423,7 +446,7 @@ export async function runBench(options, hooks = {}) {
     fs.cpSync(memoryDir, path.join(evidence, "memory-before"), { recursive: true });
 
     // -- the claude wrapper -----------------------------------------------------------------------------------------------
-    // The bridge launcher is passed as itself (it maps grok-4.7 to its gateway's alias by its own name), never resolved.
+    // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
     const claude = path.join(bin, "claude");
     const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
@@ -434,8 +457,9 @@ export async function runBench(options, hooks = {}) {
         `export REALTEST_STATE=${quote(state)}`,
         `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
         `export REALTEST_CLAUDE_CONFIG=${quote(DEV_CLAUDE_CONFIG)}`,
-        `export REALTEST_MODEL=${quote(bridge ? GROK_BRIDGE_MODEL : (spec.model ?? "sonnet"))}`,
-        ...(bridge ? ["export REALTEST_GROK_BRIDGE=1"] : []),
+        `export REALTEST_MODEL=${quote(bridge ? bridgeModel : (spec.model ?? "sonnet"))}`,
+        // Only the Grok bridge needs the shim to hold Haiku calls too; the DeepSeek launcher does that itself.
+        ...(options.grokSub ? ["export REALTEST_GROK_BRIDGE=1"] : []),
         `export REALTEST_EFFORT=${quote(spec.effort ?? "medium")}`,
         `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
         `exec ${quote(process.execPath)} ${quote(path.join(ROOT, "scripts/hub-realtest-claude.mjs"))} "$@"`,
@@ -445,7 +469,7 @@ export async function runBench(options, hooks = {}) {
     );
     const planFile = path.join(scratch, "verify-plan.json");
     // On the bridge the window knows it (plan `grok`): Grok 4.7 for every chat, and no Claude account's limit holds workers.
-    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(bridge ? { grok: true } : {}) };
+    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.grokSub ? { grok: true } : {}) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);
 
