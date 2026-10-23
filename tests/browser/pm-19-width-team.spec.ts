@@ -4,7 +4,8 @@ import fs from "node:fs";
 import { startStub } from "../../scripts/hub-stub-server.mjs";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
-// - Ash 21 Oct, width: Pages and Today fill the window at 1280, 1920 and 2560 wide, with modest side padding.
+// - Ash 21 Oct, width: Pages and a project's own Today (G1: its Inbox; a fresh load opens the stub's first project)
+//   fill the window at 1280, 1920 and 2560 wide, with modest side padding.
 // - Ash 21 Oct, team: a fresh install's onboarding shows the default team (names kept, a role line under each) and
 //   no pre-load option; nothing of Ash's. Round 20: the team is the four, Critiquito an unticked add-on (pm-20-review).
 //   PM_PROOF_SPEC=pm-19-width-team.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
@@ -44,7 +45,7 @@ for (const size of SIZES) {
     fs.mkdirSync(SHOTS, { recursive: true });
     await page.setViewportSize({ width: size.width, height: size.height });
     await open(page);
-    await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
+    // G1: a fresh load already selects the stub's first project's Inbox — its own Today fills the main column.
     const today = page.locator("[data-hub-surface-body]").first();
     await expect(today).toBeVisible({ timeout: 30_000 });
     const t = await fill(page, "[data-hub-surface-body]");

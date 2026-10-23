@@ -63,6 +63,13 @@ async function open(page: Page) {
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
 }
 
+const devSelect = (page: Page, selection: { project: string; item: string }) =>
+  page.evaluate((sel) => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect(sel), selection);
+
+// The whole roster on the rail: G1 filters it to the selected project's own Monos, and Autopilot belongs to no
+// project (an app item keeps HubSurface from picking one), so it lists every Mono again, as these proofs need.
+const showAllMonos = (page: Page) => devSelect(page, { project: "", item: "autopilot" });
+
 test("B8: New conversation opens a screen with a pencil to name it; + offers Photo or image, or File", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: /^EXO/ }).first().click();
@@ -83,6 +90,7 @@ test("B8: New conversation opens a screen with a pencil to name it; + offers Pho
 
 test("G4: each Mono's role is a small second line under its name on the rail, at any width, and in the header and tooltip; a Lead's reads Runs the coding team", async ({ page }) => {
   await open(page);
+  await showAllMonos(page);
   const rail = page.locator("[data-mono-rail]").first();
   const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
   await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
@@ -131,6 +139,7 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
 
 test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps his picked green crab; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
   await open(page);
+  await showAllMonos(page);
   const rail = page.locator("[data-mono-rail]").first();
   const tile = (name: string) => rail.locator(`button[aria-label^="${name},"] svg.pixel-mascot`).first();
   // Creatures by default on every rail tile: no tile is letters until Ash picks them.
@@ -175,6 +184,7 @@ test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps h
 
 test("G4 tiles: the Hivra lead appears once, and its tile stays inside its row at 38px and 32px, even mid-bob", async ({ page }) => {
   await open(page);
+  await showAllMonos(page);
   const rail = page.locator("[data-mono-rail]").first();
   await expect(rail.locator('button[aria-label^="Hivra lead,"]')).toHaveCount(1);
   const fits = () =>
@@ -232,20 +242,22 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
   await shot(page, "c6-calendar-block");
 });
 
-test("PM-20: made-up data says Example: on Today (the stub's jobs and asks); Stuck is one red", async ({ page }) => {
+test("PM-20: made-up data says Example: on Today (the stub's jobs and asks); Needs you is the one red", async ({ page }) => {
   await open(page);
   const built = page.locator("[data-hub-today-being-built]").first();
   await expect(built).toContainText("Example: adding the air dodge", { timeout: 30_000 });
   await expect(built).not.toContainText(/(^|[^:] )Adding the air dodge/);
-  // Stuck is one red everywhere on Today: no amber ring next to a Stuck word.
-  await expect(page.getByText("Stuck").first()).toBeVisible();
-  const stuckStrokes = await page.evaluate(() =>
-    [...document.querySelectorAll("svg circle")]
-      .filter((c) => /^\s*Stuck\s*$/.test(c.closest("svg")?.parentElement?.textContent ?? ""))
-      .map((c) => c.getAttribute("stroke")),
+  // The stub's one red row is Hivra's gave-up job: its own Today (G1: a project is the unit of the hub).
+  await devSelect(page, { project: "hivra", item: "inbox" });
+  // Red means one thing (r30/r51): "Needs you" is the only red chip anywhere on Today — no grey or amber ring beside
+  // its word, and nothing on the surface still reads Stuck (self-repair reads Retrying, a Lead's work With <Lead>).
+  await expect(page.locator('[data-hub-chip="Needs you"]').first()).toBeVisible();
+  const needStrokes = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-hub-chip="Needs you"] svg circle')].map((c) => c.getAttribute("stroke")),
   );
-  expect(stuckStrokes.length).toBeGreaterThan(0);
-  expect(new Set(stuckStrokes)).toEqual(new Set(["rgb(239 68 68)"]));
+  expect(needStrokes.length).toBeGreaterThan(0);
+  expect(new Set(needStrokes)).toEqual(new Set(["rgb(239 68 68)"]));
+  await expect(page.locator('[data-hub-chip="Stuck"]')).toHaveCount(0);
   await expect(page.getByText(/Tried before it reached the lead/)).toHaveCount(0);
   await page.mouse.move(5, 450);
   await shot(page, "pm20-today-example-labels");
@@ -262,6 +274,7 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
   await expect(rail).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
+  await showAllMonos(page);
   const hold = () => page.evaluate(() => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push("hold"));
   const status = (name: string) => rail.locator("[data-mono-status]").filter({ has: page.locator(`button[aria-label^="${name},"]`) }).first();
   // Two turns held open: Chief of Staff's and the EXO lead's.
@@ -273,7 +286,8 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
     await field.press("Enter");
     await expect(status(name)).toHaveAttribute("data-mono-status", "working", { timeout: 15_000 });
   }
-  await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
+  // Leave the chats for a hub view that keeps the whole roster (G1 scopes the rail to a project; Autopilot is none).
+  await showAllMonos(page);
   await expect(status("EXO lead").locator(".pixel-hop")).toHaveCount(1);
   // A working dot is grey (no inline colour), not the Mono's own colour.
   const working = status("EXO lead").locator('[data-mono-dot="working"]');

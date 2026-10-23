@@ -294,7 +294,9 @@ test("rail names keep at least 4.5:1 in every state on screen: working, idle, se
     await field.press("Enter");
     await expect(rail.locator("[data-mono-status]").filter({ has: page.locator(`button[aria-label^="${name},"]`) }).first()).toHaveAttribute("data-mono-status", "working", { timeout: 15_000 });
   }
-  await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
+  // Leave the chat for the project's own Today (G1): picking a project item closes the 1:1 cover, then its Inbox.
+  await page.locator('[data-hub-item="being-built"]').first().click();
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "vg-game", item: "inbox" }));
   await park(page);
   const measure = async () => {
     const names = rail.locator("[data-mono-primary-name], [data-mono-own-name]");

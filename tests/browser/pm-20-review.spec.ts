@@ -3,8 +3,10 @@ import fs from "node:fs";
 // @ts-expect-error plain .mjs helper
 import { startStub } from "../../scripts/hub-stub-server.mjs";
 
-// Round 20 review fixes, a browser preview only (not Ash's Mac): Today's project sections side by side above ~1800px,
-// no diagonal "Preview" watermark on a Page preview, and Critiquito offered unticked in onboarding (Ash 14 Oct).
+// Round 20 review fixes, a browser preview only (not Ash's Mac): a project's own Today keeps its ask rows in one
+// column even at 2560 wide (G1 took away the all-projects board and its 1800px two-column grid; the single shrinkable
+// column is what keeps long titles off the right edge), no diagonal "Preview" watermark on a Page preview, and
+// Critiquito offered unticked in onboarding (Ash 14 Oct).
 //   PM_PROOF_SPEC=pm-20-review.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-20";
@@ -22,21 +24,32 @@ async function open(page: Page) {
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
 }
 
-test("Today at 2560 wide: project sections in two columns", async ({ page }) => {
+test("Today at 2560 wide: the ask rows stay in one column", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 2560, height: 1440 });
   await open(page);
-  await page.locator('[data-hub-strip] button[title="Today, all projects"]').click();
-  const sections = page.locator("[data-hub-today-projects] > section");
-  await expect(sections.nth(1)).toBeVisible({ timeout: 30_000 });
-  const xs = await sections.evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
-  expect(new Set(xs).size).toBe(2);
+  // G1: Hivra's own Today (it has the asks); its needs list is one column, no per-project grid.
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
+  const list = page.locator("[data-hub-today-projects]").first();
+  await expect(list).toBeVisible({ timeout: 30_000 });
+  const layout = await list.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return {
+      display: style.display,
+      direction: style.flexDirection,
+      rows: [...el.children].map((e) => ({ left: Math.round(e.getBoundingClientRect().left) })).filter((r) => r.left > 0),
+    };
+  });
+  expect(layout.display).toBe("flex");
+  expect(layout.direction).toBe("column");
+  expect(layout.rows.length).toBeGreaterThan(0);
+  expect(new Set(layout.rows.map((r) => r.left)).size).toBe(1);
   await page.waitForTimeout(600);
   await page.screenshot({ path: `${SHOTS}/pm-20-today-2560.png` });
-  // At 1440 wide, one column.
+  // At 1440 wide, the same single column.
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
-  const narrow = await sections.evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+  const narrow = await list.evaluate((el) => [...el.children].map((e) => Math.round(e.getBoundingClientRect().left)).filter((l) => l > 0));
   expect(new Set(narrow).size).toBe(1);
 });
 
