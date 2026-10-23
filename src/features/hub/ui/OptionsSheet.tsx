@@ -47,7 +47,7 @@ export function OptionsSheet({ jobId, onClose }: { jobId: string; onClose: () =>
 
   return (
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-options-sheet onClick={onClose}>
-      <div role="dialog" aria-label="See options" onClick={(e) => e.stopPropagation()} className="flex w-[520px] max-w-[calc(100vw-48px)] flex-col gap-4 rounded-2xl bg-background-base p-6 shadow-2xl">
+      <div role="dialog" aria-label="See options" onClick={(e) => e.stopPropagation()} className="flex w-[520px] max-w-[calc(100vw-48px)] flex-col gap-4 rounded-2xl border border-content/7 dialog-glass p-6 shadow-2xl">
         {sheet ? (
           <>
             <div className="flex flex-col gap-1">

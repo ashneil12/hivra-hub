@@ -71,7 +71,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
-      <div className="flex w-[520px] flex-col gap-6 rounded-2xl bg-background-base p-8 shadow-2xl ring-0">
+      <div className="flex w-[520px] flex-col gap-6 rounded-2xl border border-content/7 dialog-glass p-8 shadow-2xl ring-0">
         <div className="flex items-center justify-between text-xs text-content/60">
           <span>Step {step + 1} of {steps.length}</span>
           {!last && kind !== "setup" ? (

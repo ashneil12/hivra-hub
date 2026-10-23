@@ -526,7 +526,7 @@ export function MonoProjectCommit({
             <div
               role="menu"
               aria-label="Commit options"
-              className="absolute top-full right-0 z-30 mt-1 min-w-48 rounded-md border border-content/10 bg-background-base py-1 shadow-lg"
+              className="absolute top-full right-0 z-30 mt-1 min-w-48 rounded-md border border-content/10 popover-glass py-1 shadow-lg"
             >
               <button
                 type="button"

@@ -500,6 +500,31 @@ html.layout-inset.theme-light .glass-bar {
   --glass-bar-tint: var(--inset-panel);
 }
 
+/* A menu, sheet or card that draws its own frame instead of going through Popover: the popover glass (2% content over
+   a 24px blur, the opaque base in light mode) as one class, so a hand-drawn surface reads as the same glass every
+   Popover already gets from <GlassBackdrop> (F2, r55). */
+.popover-glass {
+  background: color-mix(in srgb, var(--color-content) 2%, transparent);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+html.theme-light .popover-glass {
+  background: var(--color-background-base);
+}
+
+/* The dialog glass: Modal's surface (base fill at 55% under a 24px blur, opaque in light mode) for a dialog that
+   draws its own frame, so a confirm dialog and a sheet are the same material (F2, r55). */
+.dialog-glass {
+  background: color-mix(in srgb, var(--color-background-base) 55%, transparent);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+html.theme-light .dialog-glass {
+  background: var(--color-background-base);
+}
+
 /* The activity dot sits at (23px, 9px) in a 32px button. Its icon is
    centered at (8px, 8px), so this cuts a 2px gap around the 6px dot. */
 .compact-rail-icon-with-dot {

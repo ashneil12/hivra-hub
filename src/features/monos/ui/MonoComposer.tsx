@@ -393,7 +393,7 @@ export function MonoComposer({
         <div
           role="menu"
           data-attach-menu
-          className="absolute bottom-full left-0 z-30 mb-1.5 w-[220px] rounded-lg border border-stroke bg-background-base p-1 shadow-2xl"
+          className="absolute bottom-full left-0 z-30 mb-1.5 w-[220px] rounded-lg border border-stroke popover-glass p-1 shadow-2xl"
         >
           <button type="button" role="menuitem" data-attach-pick="media" onClick={() => pick("media")} className={ATTACH_ITEM}>
             <ImagePlus className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />

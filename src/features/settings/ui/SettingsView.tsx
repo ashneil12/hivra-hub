@@ -3337,7 +3337,7 @@ function ShortcutEditor({
       {error ? (
         <p
           role="alert"
-          className="absolute top-full left-0 z-40 mt-1.5 w-max max-w-64 rounded-md border border-content/10 bg-background-base/95 px-2 py-1 text-[11px] whitespace-nowrap text-red-400 shadow-lg"
+          className="absolute top-full left-0 z-40 mt-1.5 w-max max-w-64 rounded-md border border-content/10 popover-glass px-2 py-1 text-[11px] whitespace-nowrap text-red-400 shadow-lg"
         >
           {error}
         </p>
