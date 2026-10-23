@@ -9,7 +9,7 @@ import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-real
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { grokBridge, jobsFromDelegations, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
+import { grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -36,27 +36,6 @@ test("the memory stand-in joins a real chat's servers, never a helper's", () => 
   const helper = ["--mcp-config", '{"mcpServers":{}}'];
   assert.deepEqual(withMemory(helper, { memoryDir: "/m" }), helper);
   assert.deepEqual(withMemory(["--mcp-config", config], { memoryDir: undefined }), ["--mcp-config", config]);
-});
-
-test("Being built jobs come from top-level delegations, by project id, with the stuck reasons Ash OS gives", () => {
-  const rows = new Map(
-    [
-      { id: "a", owner_mono: "chief-of-staff", parent_id: null, project: "tally", title: "Board", state: "running", created_at: 1, updated_at: 5 },
-      { id: "b", owner_mono: "tally-lead", parent_id: "a", project: "tally", title: "Worker", state: "question", created_at: 2, updated_at: 9 },
-      { id: "c", owner_mono: "tally-lead", parent_id: null, project: "tally", title: "Changelog", state: "failed", error_class: "billing", created_at: 3, updated_at: 4 },
-      { id: "d", owner_mono: "tally-lead", parent_id: null, project: "elsewhere", title: "Other", state: "running", created_at: 3, updated_at: 4 },
-      { id: "e", owner_mono: "tally-lead", parent_id: null, project: "tally", title: "Done", state: "completed", created_at: 3, updated_at: 4, settled_at: 6 },
-    ].map((row) => [row.id, row]),
-  );
-  const jobs = jobsFromDelegations(rows, [{ id: "tally", folder: "/p/tally" }], { "chief-of-staff": "Chief of Staff" });
-  const byTitle = Object.fromEntries(jobs.map((job) => [job.title, job]));
-  assert.deepEqual(Object.keys(byTitle).sort(), ["Board", "Changelog", "Done"]);
-  assert.equal(byTitle.Board.state, "stuck");
-  assert.equal(byTitle.Board.reason, "Waiting on an answer to a question");
-  assert.equal(byTitle.Board.leadName, "Chief of Staff");
-  assert.equal(byTitle.Board.lastActiveAt, new Date(9).toISOString());
-  assert.equal(byTitle.Changelog.reason, "failed: billing");
-  assert.equal(byTitle.Done.state, "done");
 });
 
 test("room rounds and run-wide checks", () => {

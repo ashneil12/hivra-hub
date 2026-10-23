@@ -179,7 +179,7 @@ every later message to that Lead (see the baseline findings).
 ## Evidence (`evidence/realtest/<run>/`, git-ignored)
 
 - `run.log`, `summary.json` (build, wall time, usage), `results.json`
-- `events.ndjson` (the window's timestamped log), `jobs.ndjson` (Being built jobs made from delegations)
+- `events.ndjson` (the window's timestamped log)
 - `snapshot-ready.json`, `snapshot-final.json`, per-scenario `scenarios/<id>/snapshot-*.json`
 - `scenarios/<id>/evidence.json` (sends, every room message and Claude reply with times, delegation rows, views,
   metrics), `transcript.md` (what a person and the grader read), `grade.json`

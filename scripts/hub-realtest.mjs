@@ -7,9 +7,9 @@
 // (src/app/model/verifyDriver.ts: the room's composer, a chat's composer, the Stop button, the views).
 //
 // Claude is the real CLI behind scripts/hub-realtest-claude.mjs: the dev copies' shared login, every chat held to
-// Sonnet + medium, every line logged, a budget stop, and a recorded outage on demand. Ash OS is the stub, plus two
-// stand-ins for what the real service does and the stub doesn't: memory (scripts/hub-realtest-memory-mcp.mjs) and
-// Being built jobs made from the app's mirrored delegations (Ash OS job_sources.delegation_observations, emulated below).
+// Sonnet + medium, every line logged, a budget stop, and a recorded outage on demand. Ash OS is the stub plus one
+// stand-in for what the real service does and the stub doesn't: memory (scripts/hub-realtest-memory-mcp.mjs). Being
+// built needs no stand-in: since 21 Oct it is the app's own rows, which the app lists itself.
 //
 // Evidence: evidence/realtest/<run>/ (events, snapshots, DOM views, screenshots when capture works, every Claude line,
 // the database, per-scenario transcripts and grades, report.md).
@@ -175,65 +175,6 @@ export function blocksText(blocks, { tools = true, max = 1500 } = {}) {
   return lines;
 }
 
-// ---- Being built from mirrored delegations (Ash OS job_sources.delegation_observations, emulated) ----------------------
-
-const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : null);
-
-/** One job per top-level delegation of a listed project, the way Ash OS's delegation_observations makes them. */
-export function jobsFromDelegations(delegations, projects, names = {}) {
-  const rows = [...delegations.values()];
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const topOf = (row) => {
-    let current = row;
-    for (let i = 0; i < 20 && current?.parent_id && byId.has(current.parent_id); i += 1) current = byId.get(current.parent_id);
-    return current;
-  };
-  const jobs = new Map();
-  for (const row of rows) {
-    const top = topOf(row);
-    // The row's project is the hub project id (older rows: a folder, maybe a worktree beside it).
-    const where = String(top.project ?? "");
-    const project = projects.find((p) => p.id === where || (p.folder && (where === p.folder || where.startsWith(`${p.folder}/`) || where.startsWith(`${p.folder}-worktrees/`))));
-    if (!project) continue;
-    const id = `d_${String(top.id).replace(/[^A-Za-z0-9]/g, "").slice(-24)}`;
-    const group = jobs.get(id) ?? { top, project, rows: [] };
-    group.rows.push(row);
-    jobs.set(id, group);
-  }
-  const out = [];
-  for (const [id, { top, project, rows: group }] of jobs) {
-    const failed = group.find((row) => row.state === "failed");
-    const asking = group.find((row) => row.state === "question");
-    const running = group.filter((row) => row.state === "running");
-    let state = "working";
-    let reason = running.length ? `working toward: ${String(top.goal || top.title || "the brief").slice(0, 80)}` : "";
-    if (failed) {
-      state = "stuck";
-      reason = `failed: ${failed.error_class || failed.error || "unknown"}`.slice(0, 120);
-    } else if (asking) {
-      state = "stuck";
-      reason = "Waiting on an answer to a question";
-    } else if (group.every((row) => row.state === "completed")) state = "done";
-    else if (group.every((row) => row.state === "cancelled" || row.state === "completed")) state = "dropped";
-    const lead = top.owner_mono || null;
-    out.push({
-      id,
-      projectId: project.id,
-      title: String(top.title || "a delegated job").slice(0, 120),
-      lead,
-      leadName: lead ? (names[lead] ?? lead) : null,
-      owner: "in-app-lead",
-      state,
-      reason,
-      startedAt: iso(ms(top.created_at) ?? Date.now()),
-      lastActiveAt: iso(Math.max(...group.map((row) => ms(row.updated_at) ?? 0)) || Date.now()),
-      finishedAt: state === "done" || state === "dropped" ? iso(ms(top.settled_at) ?? Date.now()) : null,
-      sourceRef: `delegation:${top.id}`,
-      seen: false,
-    });
-  }
-  return out;
-}
 
 // ---- Claude usage (scripts/hub-realtest-claude.mjs writes it) ---------------------------------------------------------
 
@@ -315,14 +256,12 @@ export async function runBench(options, hooks = {}) {
   let dataDir = null;
   let db = null;
   let slot = null;
-  let jobsTimer = null;
   let pumpTimer = null;
   let stopReason = null;
   let results = [];
   let accountList = [];
 
   const cleanup = async () => {
-    clearInterval(jobsTimer);
     clearInterval(pumpTimer);
     // No new turns from here on: the wrapper refuses them once this file exists.
     try {
@@ -568,23 +507,8 @@ export async function runBench(options, hooks = {}) {
       stub.addProject({ id: copy.id, name: copy.name, shortName: copy.shortName ?? copy.name, iconShape: copy.iconShape ?? "folder", folder: copy.folder });
     }
 
-    // Being built: jobs from the app's mirrored delegations, as Ash OS makes them.
-    const jobState = new Map();
-    const syncJobs = () => {
-      const names = { "chief-of-staff": "Chief of Staff", "projects-manager": "Projects Manager", frank: "frank", alfred: "Alfred", [`${spec.project.id}-lead`]: `${spec.project.shortName ?? spec.project.name} lead` };
-      for (const job of jobsFromDelegations(stub.delegations, stub.state.projects, names)) {
-        const key = JSON.stringify([job.state, job.reason, job.lastActiveAt, job.title]);
-        if (!jobState.has(job.id)) {
-          stub.addJob(job);
-          fs.appendFileSync(path.join(evidence, "jobs.ndjson"), `${JSON.stringify({ t: Date.now(), op: "add", job })}\n`);
-        } else if (jobState.get(job.id) !== key) {
-          stub.setJob(job.id, job);
-          fs.appendFileSync(path.join(evidence, "jobs.ndjson"), `${JSON.stringify({ t: Date.now(), op: "set", job })}\n`);
-        }
-        jobState.set(job.id, key);
-      }
-    };
-    jobsTimer = setInterval(syncJobs, 3_000);
+    // Being built is the app's own: delegation rows live in the app since 21 Oct (src-tauri/src/delegations.rs, "No
+    // mirror"), and the app lists them under the Mono that started them. Nothing is fed to the stub here.
 
     // -- the app ------------------------------------------------------------------------------------------------------------------
     const appEnv = Object.fromEntries(
