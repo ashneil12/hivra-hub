@@ -6,6 +6,8 @@
 //   npm run hub:doctor -- --no-guard   # the inventory only
 //   npm run hub:doctor -- --clean      # what a stale dev slot / finished worktree would free, changing nothing
 //   npm run hub:doctor -- --clean --yes  # reap it (I8: one dev copy and one working copy after every run)
+//   npm run hub:doctor -- --hygiene    # only the install hygiene rule, non-zero when it is broken (hub:check-all runs it)
+//   npm run hub:doctor -- --daily      # first reap what a day of runs left behind (at most once a day), then the inventory
 //
 // It lists, with commit, kind and size:
 // - bundles: the installed app, ~/Applications backups, and every build and dev wrapper under each worktree's target/;
@@ -23,6 +25,12 @@
 // a worktree with uncommitted changes is named in the output and kept. It never opens a database or a lock file (sizes
 // come from du) and never launches anything; a copy's kind comes from its identifier (src-tauri/src/instance.rs,
 // scripts/hub-bundle.mjs). Tests: scripts/hub-doctor.test.cjs.
+//
+// I8: `hygiene()` is the rule this Mac's installs must keep (one running dev copy per worktree, one copy per data
+// folder, no stale slots, a cap on worktrees with uncommitted changes), and `reapRun()` is what a dev copy calls on its
+// way out: its own generated config, its throwaway token folder, and a target/ whose branch the main checkout already
+// has. The daily pass (`--daily`) reaps the same stale slots and all but the newest app backup, once a day.
+// A test points the whole inventory at a throwaway tree with MONOCODE_HUB_DOCTOR_HOME and MONOCODE_HUB_DOCTOR_REPO.
 
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -421,9 +429,10 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
  * can never reach the daily app or upstream; one failure is reported and the rest carry on.
  */
 export function applyClean(plan, { home = plan.home } = {}) {
-  const removed = { slots: 0, configs: 0, worktrees: 0, pruned: 0 };
+  const removed = { slots: 0, configs: 0, worktrees: 0, bundles: 0, pruned: 0 };
   const problems = [];
   const daily = path.join(supportDir(home), HUB_IDENTIFIER);
+  const installedApp = path.join(home, "Applications/MonoCode Hub.app");
   for (const slot of plan.slots) {
     if (!isValidSlot(slot.slot)) {
       problems.push(`slot ${slot.slot}: not a dev slot name, so nothing here is its own`);
@@ -454,6 +463,20 @@ export function applyClean(plan, { home = plan.home } = {}) {
       problems.push(`${config.path}: ${error.message}`);
     }
   }
+  for (const bundle of plan.bundles ?? []) {
+    try {
+      // An old backup directly in ~/Applications, never the installed app and never a daily build.
+      if (path.dirname(bundle.path) !== path.join(home, "Applications") || !bundle.path.endsWith(".app"))
+        throw new Error("not an app in ~/Applications");
+      if (samePath(bundle.path, installedApp)) throw new Error("the installed app");
+      const identifier = readIdentifier(bundle.path);
+      if (!identifier || identifier === HUB_IDENTIFIER) throw new Error("a build with the daily identifier");
+      fs.rmSync(bundle.path, { recursive: true, force: true });
+      removed.bundles += 1;
+    } catch (error) {
+      problems.push(`${bundle.path}: ${error.message}`);
+    }
+  }
   for (const tree of plan.worktrees) {
     // A worktree, never the checkout it belongs to.
     if (!tree.repo || samePath(tree.path, tree.repo) || !fs.existsSync(tree.repo)) {
@@ -472,12 +495,15 @@ export function applyClean(plan, { home = plan.home } = {}) {
 export function renderClean(plan, { removed = null, problems = [] } = {}) {
   const t = tilde(plan.home);
   const lines = [];
-  const total = plan.slots.length + plan.configs.length + plan.worktrees.length + plan.prunes.length;
-  if (removed) lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
-  else lines.push(total ? "Clean (nothing is removed without --yes)" : "Clean: nothing to clean");
+  const total = plan.slots.length + plan.configs.length + (plan.bundles?.length ?? 0) + plan.worktrees.length + plan.prunes.length;
+  if (removed) {
+    const app = removed.bundles ? `, ${removed.bundles} old app${removed.bundles === 1 ? "" : "s"}` : "";
+    lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}${app}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
+  } else lines.push(total ? "Clean (nothing is removed without --yes)" : "Clean: nothing to clean");
   for (const slot of plan.slots)
     lines.push(`  slot ${slot.slot}  ${slot.why}${slot.dataFolder ? `; data folder ${t(slot.dataFolder)}` : ""}${slot.registered ? "; its registry entry" : ""}`);
   for (const config of plan.configs) lines.push(`  config ${t(config.path)}  ${config.why}`);
+  for (const bundle of plan.bundles ?? []) lines.push(`  old app ${t(bundle.path)}  ${bundle.why}`);
   for (const tree of plan.worktrees) lines.push(`  worktree ${t(tree.path)}  ${tree.why}; no uncommitted changes, no dev copy running`);
   for (const repo of plan.prunes) lines.push(`  git records ${t(repo)}  worktrees whose folders are gone (git worktree prune)`);
   for (const keep of plan.kept) lines.push(`  kept ${t(keep.path)}  ${keep.why}`);
@@ -485,20 +511,223 @@ export function renderClean(plan, { removed = null, problems = [] } = {}) {
   return lines.join("\n");
 }
 
+// ---- what a run leaves behind (I8) ------------------------------------------------------------------------------------
+
+/** More worktrees than this with uncommitted changes is a mess the check names and asks to clear. */
+export const MAX_UNCOMMITTED_WORKTREES = 10;
+export const DAILY_CLEAN_EVERY_MS = 24 * 60 * 60 * 1000;
+
+/** The install rule in one sentence, said the same way whether it holds or not. */
+export const HYGIENE_RULE = `Hygiene: one running dev copy per worktree, one copy per data folder, no stale slots, and no more than ${MAX_UNCOMMITTED_WORKTREES} worktrees with uncommitted changes; npm run hub:clean -- --yes reaps what nothing is using.`;
+
+/**
+ * The install hygiene I8 asks for, as problems each with what to do: a second running dev copy on one worktree, a
+ * stale slot (its worktree is gone, or nothing registered it, and no copy runs), a second copy on the daily data
+ * folder, and too many worktrees holding uncommitted changes. Read-only.
+ */
+export function hygiene(report, { maxUncommitted = MAX_UNCOMMITTED_WORKTREES } = {}) {
+  const problems = [];
+
+  const onWorktree = new Map();
+  for (const slot of report.slots) {
+    if (!slot.running || !slot.worktree) continue;
+    const where = fs.existsSync(slot.worktree) ? fs.realpathSync(slot.worktree) : slot.worktree;
+    onWorktree.set(where, [...(onWorktree.get(where) ?? []), slot.slot]);
+  }
+  for (const [worktree, slots] of onWorktree)
+    if (slots.length > 1)
+      problems.push({
+        what: `${slots.length} dev copies are running on one worktree: ${slots.join(", ")} (${worktree})`,
+        fix: "stop all but one (npm run hub:dev in that worktree runs its one copy), then npm run hub:clean -- --yes",
+      });
+
+  for (const slot of report.slots)
+    if (!slot.running && (!slot.registered || !slot.worktreeExists))
+      problems.push({
+        what: `stale dev slot ${slot.slot}: ${slot.registered ? `its worktree ${slot.worktree ?? "?"} is gone` : "no registry entry knows it"} and no copy is running`,
+        fix: "npm run hub:clean -- --yes (it lists what it would reap first)",
+      });
+
+  const daily = report.running.filter((copy) => copy.kind === "daily");
+  if (daily.length > 1)
+    problems.push({
+      what: `${daily.length} copies claim the daily data folder (${daily.map((copy) => `pid ${copy.pid}`).join(", ")})`,
+      fix: "quit all but one from the app itself; never pkill or killall it, and one copy per data folder is the rule",
+    });
+
+  const dirty = report.worktrees.filter(
+    (tree) => tree.kind.startsWith("worktree") && (gitResult(["status", "--porcelain"], tree.path).stdout ?? "").trim(),
+  );
+  if (dirty.length > maxUncommitted)
+    problems.push({
+      what: `${dirty.length} worktrees have uncommitted changes (the limit is ${maxUncommitted}): ${dirty.map((tree) => path.basename(tree.path)).join(", ")}`,
+      fix: "commit or discard the work in the ones you are done with, then npm run hub:clean -- --yes for the merged ones",
+    });
+
+  return problems;
+}
+
+/** The hygiene rule, then each problem and what to do about it. */
+export function renderHygiene(problems) {
+  if (!problems.length) return HYGIENE_RULE;
+  return [HYGIENE_RULE, ...problems.map((problem) => `  ${problem.what}\n    fix: ${problem.fix}`)].join("\n");
+}
+
+/** Is another dev copy (not `slot`) running on this worktree? */
+function copyRunningOn(home, worktree, slot) {
+  const registry = readRegistry(home);
+  return Object.entries(registry.slots).some(([other, entry]) => {
+    if (other === slot || !entry.worktree || !samePath(entry.worktree, worktree)) return false;
+    const owner = readRunning(path.join(supportDir(home), slotIdentifier(other)));
+    return Boolean(owner) && isRunningRecordAlive(owner);
+  });
+}
+
+/**
+ * What a dev copy cleans up on its way out (`hub:dev` calls it once its process is gone): its own generated config, its
+ * throwaway token folder, and its worktree's target/ when the main checkout already has the branch, nothing is
+ * uncommitted, and no other copy runs there. Only what the next run writes again: never a data folder, a registry
+ * entry, a branch or the worktree. Never throws.
+ */
+export function reapRun(plan, { home = os.homedir() } = {}) {
+  const removed = [];
+  const problems = [];
+  const slot = plan?.slot;
+  const worktree = plan?.worktree;
+  if (!isValidSlot(slot ?? "") || !worktree) return { removed, problems };
+
+  if (plan.configFile) {
+    try {
+      const expected = path.join(worktree, "target", "hub-dev", `${slot}.conf.json`);
+      if (!samePath(plan.configFile, expected)) throw new Error(`not this slot's config: ${plan.configFile}`);
+      if (fs.existsSync(plan.configFile)) fs.rmSync(plan.configFile, { force: true });
+      removed.push("its config");
+    } catch (error) {
+      problems.push(`${plan.configFile}: ${error.message}`);
+    }
+  }
+
+  const tokens = path.join(home, DEV_HOME, "slots", slot);
+  try {
+    // The stand-in's throwaway token: every start writes a new one.
+    if (fs.existsSync(tokens)) {
+      fs.rmSync(tokens, { recursive: true, force: true });
+      removed.push("its throwaway token folder");
+    }
+  } catch (error) {
+    problems.push(`${tokens}: ${error.message}`);
+  }
+
+  const target = path.join(worktree, "target");
+  const repo = mainRepoOf(worktree);
+  if (!fs.existsSync(target) || !repo || samePath(repo, worktree)) return { removed, problems };
+  if ((gitResult(["status", "--porcelain"], worktree).stdout ?? "").trim()) return { removed, problems };
+  const base = defaultBranch(repo);
+  const head = gitResult(["rev-parse", "HEAD"], worktree).stdout?.trim();
+  if (!base || !head || gitResult(["merge-base", "--is-ancestor", head, base], repo).status !== 0) return { removed, problems };
+  if (copyRunningOn(home, worktree, slot)) return { removed, problems };
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    removed.push("its target/ (the main checkout already has the branch)");
+  } catch (error) {
+    problems.push(`${target}: ${error.message}`);
+  }
+  return { removed, problems };
+}
+
+/** Old app backups the daily pass may drop: every one but the newest, never one a copy is running from. */
+function staleBackups(report) {
+  const inUse = report.running.map((copy) => copy.bundlePath).filter(Boolean);
+  const backups = report.bundles
+    .filter((bundle) => bundle.location === "backup" && bundle.kind !== "daily" && /backup/i.test(path.basename(bundle.path)))
+    .filter((bundle) => !inUse.some((where) => samePath(where, bundle.path)))
+    .sort((a, b) => String(b.builtAt ?? "").localeCompare(String(a.builtAt ?? "")) || path.basename(a.path).localeCompare(path.basename(b.path)));
+  return backups.slice(1).map((bundle) => ({ path: bundle.path, why: "an older backup; the newest one is kept" }));
+}
+
+/** What the daily pass reaps: the stale slots and configs the explicit clean lists, and all but the newest backup. */
+export function dailyPlan(report, { current = process.cwd(), same = samePath } = {}) {
+  const base = cleanPlan(report, { current, same });
+  // A worktree is only ever removed with --clean --yes: a daily pass does not decide that a checkout is finished.
+  return { home: report.home, slots: base.slots, configs: base.configs, worktrees: [], kept: base.kept, prunes: base.prunes, bundles: staleBackups(report) };
+}
+
+const dailyMark = (home) => path.join(home, DEV_HOME, "last-clean.json");
+
+/**
+ * The daily cleanup, at most once every 24 hours (a marker in ~/.monocode-hub-dev/last-clean.json): stale slots, old
+ * configs, git's records of gone worktrees and all but the newest app backup. Nothing without a running copy, nothing
+ * the identifier check doesn't pass, never the daily app or a worktree.
+ */
+export function dailyClean(report, { home = report.home, now = Date.now(), force = false, current = process.cwd() } = {}) {
+  const mark = dailyMark(home);
+  let last = NaN;
+  try {
+    last = Date.parse(JSON.parse(fs.readFileSync(mark, "utf8"))?.at ?? "");
+  } catch {
+    last = NaN;
+  }
+  if (!force && Number.isFinite(last) && now - last < DAILY_CLEAN_EVERY_MS) return { ran: false, at: new Date(last).toISOString() };
+  const plan = dailyPlan(report, { current });
+  const { removed, problems } = applyClean(plan, { home });
+  try {
+    fs.mkdirSync(path.dirname(mark), { recursive: true });
+    fs.writeFileSync(mark, `${JSON.stringify({ at: new Date(now).toISOString(), removed }, null, 2)}\n`);
+  } catch (error) {
+    problems.push(`${mark}: ${error.message}`);
+  }
+  return { ran: true, plan, removed, problems };
+}
+
+/** The daily pass in one calm line. */
+export function renderDaily(result) {
+  if (!result?.ran) return "";
+  const parts = [];
+  const count = (n, one) => {
+    if (n) parts.push(`${n} ${one}${n === 1 ? "" : "s"}`);
+  };
+  count(result.removed.slots, "stale slot");
+  count(result.removed.configs, "old config");
+  count(result.removed.bundles, "old app");
+  count(result.removed.pruned, "git-pruned checkout");
+  return parts.length ? `Cleanup: reaped ${parts.join(", ")}.` : "Cleanup: nothing stale to reap.";
+}
+
+/** What a run prints at its start: the daily cleanup's line, or "" when today's pass already ran. */
+export async function dailyCleanupText({ home = os.homedir(), now = Date.now(), force = false } = {}) {
+  const report = await collect({ home, sizes: false });
+  return renderDaily(dailyClean(report, { home, now, force }));
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const json = args.includes("--json");
   const clean = args.includes("--clean");
   const yes = args.includes("--yes");
+  const hygieneOnly = args.includes("--hygiene");
   let status = 0;
-  if (!json && !clean && !args.includes("--no-guard")) {
+  if (!json && !clean && !hygieneOnly && !args.includes("--no-guard")) {
     const guard = spawnSync("bash", [path.join(ROOT, "scripts/identity-guard.sh")], { cwd: ROOT, stdio: "inherit" });
     status = guard.status ?? 1;
     console.log("");
   }
-  const report = await collect({ sizes: !args.includes("--no-sizes") });
+  // A test or an isolated fixture can point the inventory elsewhere; every other run is this Mac's real one.
+  const home = process.env.MONOCODE_HUB_DOCTOR_HOME || os.homedir();
+  const repo = process.env.MONOCODE_HUB_DOCTOR_REPO || ROOT;
+  const report = await collect({ home, repo, sizes: !args.includes("--no-sizes") });
+  if (args.includes("--daily")) {
+    const result = dailyClean(report);
+    if (result.ran) console.log(renderDaily(result));
+  }
+  const problems = hygiene(report);
+  if (hygieneOnly) {
+    console.log(json ? JSON.stringify({ ok: !problems.length, problems }, null, 2) : renderHygiene(problems));
+    return problems.length ? 1 : status;
+  }
   if (!clean) {
-    console.log(json ? JSON.stringify(report, null, 2) : render(report));
+    // The inventory reports the rule either way; `--hygiene` (what hub:check-all runs) is the one that fails on it.
+    if (json) console.log(JSON.stringify({ ...report, hygiene: { ok: !problems.length, problems } }, null, 2));
+    else console.log(`${render(report)}\n\n${renderHygiene(problems)}`);
     return status;
   }
   const plan = cleanPlan(report);

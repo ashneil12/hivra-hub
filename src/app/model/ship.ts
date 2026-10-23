@@ -9,13 +9,18 @@ import type { ShipNote } from "../../features/sessions/model/inFlight";
 
 export type ShipBuild = { sha?: string; branch?: string; builtAt?: string };
 
+/** Ash's own answer to "does the build work?" (I4): pending until he says yes or no, and only he can say it. */
+export type ShipAcceptance = { state: "pending" | "yes" | "no"; note?: string };
+
 export type ShipSummary = ShipNote & {
   kind?: string;
   whenBusy?: string;
   drill?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  /** The build's signature was accepted for install; this is not Ash's answer (that is `acceptance`). */
   accepted: boolean;
+  acceptance: ShipAcceptance;
   refused?: string | null;
   deferred?: { inFlight?: number; at?: string } | null;
   committed: boolean;
@@ -49,6 +54,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 const build = (value: unknown): ShipBuild | null =>
   isRecord(value) ? { sha: text(value.sha), branch: text(value.branch), builtAt: text(value.builtAt) } : null;
+/** No file, or a file this build doesn't understand, is pending: a ship is never accepted by default. */
+const acceptance = (value: unknown): ShipAcceptance =>
+  isRecord(value) && (value.state === "yes" || value.state === "no")
+    ? { state: value.state, note: text(value.note) }
+    : { state: "pending" };
 
 /** One ship's summary, read loosely: another build may write more or fewer fields. */
 export function readShipSummary(value: unknown): ShipSummary | null {
@@ -69,6 +79,7 @@ export function readShipSummary(value: unknown): ShipSummary | null {
     createdAt: text(value.createdAt),
     updatedAt: text(value.updatedAt),
     accepted: value.accepted === true,
+    acceptance: acceptance(value.acceptance),
     refused: text(value.refused) ?? null,
     deferred: isRecord(value.deferred)
       ? { inFlight: typeof value.deferred.inFlight === "number" ? value.deferred.inFlight : undefined, at: text(value.deferred.at) }
@@ -160,6 +171,11 @@ export function markShipSeen(id: string): Promise<void> {
   return invoke<void>("ship_seen", { id });
 }
 
+/** Ash's answer to "does the update work?" (src-tauri/src/ship.rs): kept with the ship, in the app's records too. */
+export function acceptShip(id: string, verdict: "yes" | "no", note?: string): Promise<void> {
+  return invoke<void>("ship_accept", { id, verdict, note: note ?? null });
+}
+
 /** One ship's summary, for the resume note of a turn its restart cut. */
 export async function loadShipNote(id: string): Promise<ShipNote | null> {
   if (!isTauri()) return null;
@@ -186,11 +202,13 @@ export type ShipCardView = {
   restartNow?: boolean;
   log?: string;
   dismiss?: boolean;
+  /** Asks Ash whether the build works: Yes, it works / Something's wrong. It stays until he answers. */
+  accept?: boolean;
   /** Shown once: Today marks it read as soon as it is on screen, and it is gone next time (a committed update). */
   once?: boolean;
 };
 
-/** What Today says about Ship, if anything: the trial, a waiting update, or a receipt not yet read. */
+/** What Today says about Ship, if anything: the trial, a waiting update, Ash's own answer, or a receipt not yet read. */
 export function shipCardView(status: ShipStatus): ShipCardView | null {
   if (!status.enabled) return null;
   const current = status.current;
@@ -210,11 +228,33 @@ export function shipCardView(status: ShipStatus): ShipCardView | null {
       restartNow: true,
     };
   }
+  // Ash's own answer (I4): the update asks whether the build works, and it stays until he says. It shows even if the
+  // receipt was already read: nothing calls a ship accepted until he answers yes, and "pending" is the default.
+  const answer = current.acceptance;
+  if (current.phase === "committed" && answer.state === "pending") {
+    const shipped = [current.to?.sha?.slice(0, 7), current.to?.branch && `from ${current.to.branch}`]
+      .filter(Boolean)
+      .join(" ");
+    return {
+      id: current.id,
+      text: "Does the update work?",
+      detail: `MonoCode Hub shipped ${shipped || "this update"} (ship ${current.id}). Your answer is kept with it.`,
+      accept: true,
+    };
+  }
   if (current.seen) return null;
   // Plain words, no branch or commit (Critiquito/Ash, 22 Oct): which build it is lives in the log.
   const reason = current.reason ? ` ${current.reason}` : "";
   switch (current.phase) {
     case "committed":
+      if (answer.state === "no")
+        return {
+          id: current.id,
+          text: `Noted: something's wrong with this build.${answer.note ? ` ${answer.note}` : ""}`,
+          detail: `The answer is kept with ship ${current.id}.`,
+          log: current.log,
+          dismiss: true,
+        };
       return {
         id: current.id,
         text: "MonoCode Hub was updated.",

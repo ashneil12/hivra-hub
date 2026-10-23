@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { markShipSeen, restartForUpdate, shipCardView, useShipStatus } from "../../../app/model/ship";
+import { acceptShip, markShipSeen, restartForUpdate, shipCardView, useShipStatus } from "../../../app/model/ship";
 import { revealPath } from "../../../platform/tauri/fs";
 
 /**
  * Ship on Today (src-tauri/src/ship.rs): the new build's trial, an update waiting for a quiet moment (with Restart now),
- * or the last ship's receipt until it's read. Plain words, no badge. A button the app couldn't carry out says so.
+ * the last ship's receipt until it's read, or the question Ash answers himself once it has committed (does the build
+ * work?). Plain words, no badge. A button the app couldn't carry out says so.
  */
 export function ShipNotice({ inBody = false }: { inBody?: boolean } = {}) {
   const live = shipCardView(useShipStatus());
@@ -38,8 +39,18 @@ export function ShipNotice({ inBody = false }: { inBody?: boolean } = {}) {
       <section aria-label="Update" className="rounded-lg border border-stroke px-3 py-2.5 hub-fade-in">
         <p className="text-[13px] leading-5 text-content">{view.text}</p>
         {view.detail ? <p className="mt-0.5 text-[12px] leading-5 text-content/60">{view.detail}</p> : null}
-        {view.restartNow || view.log || view.dismiss ? (
+        {view.restartNow || view.log || view.dismiss || view.accept ? (
           <div className="mt-2 flex flex-wrap gap-2 text-[12px]">
+            {view.accept ? (
+              <>
+                <button type="button" disabled={busy} onClick={() => act("record the answer", () => acceptShip(view.id, "yes"))} className="rounded-md bg-content/8 px-2.5 py-1 text-content hover:bg-content/12 disabled:opacity-50">
+                  Yes, it works
+                </button>
+                <button type="button" disabled={busy} onClick={() => act("record the answer", () => acceptShip(view.id, "no"))} className="rounded-md px-2.5 py-1 text-content/70 hover:bg-content/5 hover:text-content">
+                  Something's wrong
+                </button>
+              </>
+            ) : null}
             {view.restartNow ? (
               <button type="button" disabled={busy} onClick={() => act("restart for the update", restartForUpdate)} className="rounded-md bg-content/8 px-2.5 py-1 text-content hover:bg-content/12 disabled:opacity-50">
                 Restart now
