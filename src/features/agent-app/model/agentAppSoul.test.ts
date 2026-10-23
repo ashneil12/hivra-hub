@@ -12,9 +12,9 @@ import {
 } from "../../hub/model/botChanges";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 
-function fixture(kind: "mono" | "habit" | "session" = "mono") {
+function fixture(kind: "mono" | "habit" | "session" = "mono", chat = "chat") {
   const source = newSession("codex", "/Users/me", "codex:test");
-  source.id = "chat";
+  source.id = chat;
   let soul = "# Soul\n\n- Be brief.\n- Check the code before answering.\n";
   let version = 0;
   const hash = () => `soul@${version}`;
@@ -173,11 +173,13 @@ it("passes through storage failures", async () => {
 });
 
 it("records its own soul write as a Bot changes row whose Undo puts the file back (D1)", async () => {
-  const { run, write, soul, hash } = fixture();
+  // A self-write row is keyed by chat, and the store outlives the tests in this file: earlier soul writes here would
+  // leave a row for the same file that this write can't fold into.
+  const { run, write, soul, hash } = fixture("mono", "d1-chat");
   const before = soul();
   const text = "# Soul\n\n- Be brief.\n- Use British English.\n";
   await run("soul.update", { text, expectedHash: "soul@0" });
-  const row = findBotChange("self-write:mono-1:SOUL.md:chat");
+  const row = findBotChange("self-write:mono-1:SOUL.md:d1-chat");
   expect(row).toMatchObject({
     bot: "Hivra lead",
     line: "Hivra lead changed its soul",
