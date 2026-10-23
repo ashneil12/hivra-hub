@@ -12,6 +12,8 @@ import { hubCheckFeed } from "../../features/hub/model/hubData";
 import { CHECKER_MONO_ID, ensureChecker } from "../../features/hub/model/hubChecker";
 import { CheckDelivery, checkMeta, checkReceipt } from "../../features/hub/model/hubChecks";
 import { lastUserBlockId, lookAtDumps, noteDumps } from "../../features/hub/model/dumpCheck";
+import { hubEvidenceSource } from "../../features/hub/model/askEvidence";
+import { settleAsks } from "../../features/hub/model/askSettle";
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../integrations/harness";
 import { homeDir } from "../../platform/tauri/fs";
 
@@ -116,13 +118,18 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
   );
   useEffect(() => {
     if (!on) return;
+    // The checker's own chat only reads; a check there would be a note about a note.
+    const skip = (id: string) => monoForSession(id)?.id === CHECKER_MONO_ID;
     void delivery.flush();
     void lookAtDumps(
       latest.current.sessionsRef.current,
       latest.current.look ?? isolatedLook,
       (checks) => delivery.offer(checks),
-      // The checker's own chat only reads; a check there would be a note about a note.
-      { skip: (id) => monoForSession(id)?.id === CHECKER_MONO_ID },
+      { skip, source: hubEvidenceSource },
+    ).then(() =>
+      // Then every open ask is settled against what was built (I6): a "fixed" or a done claim with nothing behind it
+      // stays open and one private check says what is missing.
+      settleAsks(latest.current.sessionsRef.current, hubEvidenceSource, (checks) => delivery.offer(checks), { skip }),
     ).catch((error: unknown) => console.warn("The dump check failed", error));
   }, [on, delivery, idle]);
 }

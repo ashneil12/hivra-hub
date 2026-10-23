@@ -17,6 +17,7 @@ import {
   readDumpNotes,
   replyAfter,
 } from "./dumpCheck";
+import { openAsks } from "./askLedger";
 import { CHECK_PREFIX } from "./hubChecks";
 
 beforeEach(() => localStorage.clear());
@@ -32,10 +33,14 @@ const edit = (id: string, path: string) => tool(id, { callId: id, kind: "edit", 
 const shell = (id: string, title: string, detail = "", status = "completed") =>
   tool(id, { callId: id, kind: "execute", status, title, detail });
 
-it("is a dump when it is long or over several lines; a short ask or the app's own turn is not", () => {
+it("is a dump when it asks for something, is long or is over several lines; chatter and the app's own turn are not", () => {
   expect(isDump(DUMP + " ".repeat(10) + "x".repeat(150))).toBe(true);
   expect(isDump("one\ntwo\nthree")).toBe(true);
-  expect(isDump("fix the save bug")).toBe(false);
+  // A short ask is enough now (B5): it goes into the ledger and is checked like any dump.
+  expect(isDump("fix the save bug")).toBe(true);
+  expect(isDump("thanks!")).toBe(false);
+  expect(isDump("ok")).toBe(false);
+  expect(isDump("nice, that works")).toBe(false);
   expect(isDump(`[MonoCode report] ${"x".repeat(400)}`)).toBe(false);
 });
 
@@ -103,6 +108,23 @@ it("checks a dump in a plain New-session chat, not only Mono or coding-team chat
   );
   expect(look).toHaveBeenCalledTimes(1);
   expect(offered).toHaveLength(1);
+});
+
+it("checks one short ask in a plain New-session chat, and writes it into the ledger", async () => {
+  const asked = Date.now() - 60_000;
+  const look = vi.fn(async () => '- "fix the save bug"');
+  const offered: unknown[] = [];
+  const chat = session("chat-1", [
+    block("u1", "user", "fix the save bug", { startedAt: asked }),
+    block("a1", "assistant", "Where does it fail?"),
+  ]);
+  await lookAtDumps([chat], look, (checks) => offered.push(...checks));
+  expect(look).toHaveBeenCalledTimes(1);
+  expect(offered).toHaveLength(1);
+  expect((offered[0] as { id: string }).id).toBe("dc-u1");
+  const rows = openAsks("chat-1");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ blockId: "u1", title: "fix the save bug", words: "fix the save bug", at: asked });
 });
 
 it("leaves chats alone while they are busy or queued, and never checks a worker or the checker's own chat", async () => {
