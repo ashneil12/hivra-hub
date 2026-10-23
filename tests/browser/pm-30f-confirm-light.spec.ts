@@ -80,9 +80,9 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
 
   // The room confirm.
-  const card = page.locator("[data-hub-home-projects] > div", { hasText: "Hivra" }).first();
-  await card.scrollIntoViewIfNeeded({ timeout: 60_000 });
-  await card.getByRole("button", { name: "Being built", exact: true }).click();
+  await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
+  await page.locator('[data-hub-item="being-built"]').click();
   await page.locator("[data-hub-new-chat-button]").click();
   await page.getByRole("textbox").first().fill("Example: launch room");
   await page.locator("[data-hub-create-chat]").click();
@@ -91,7 +91,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   await roomRow.hover();
   await roomRow.locator("[data-hub-room-delete]").click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText("Delete Example: launch room?");
+  await expect(dialog).toContainText("Delete “Example: launch room”?");
   let cancel = dialog.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeFocused();
   await page.mouse.move(5, 5);
@@ -120,7 +120,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   await pip.hover();
   await pip.locator('button[title="Mono options"]').click();
   await page.getByRole("menuitem", { name: "Delete mono…" }).click();
-  await expect(dialog).toContainText("Delete Example: Pip?");
+  await expect(dialog).toContainText("Delete “Example: Pip”?");
   cancel = dialog.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeFocused();
   await page.mouse.move(5, 5);

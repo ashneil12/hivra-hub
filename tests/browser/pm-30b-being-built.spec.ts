@@ -5,7 +5,7 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 
 // Round 30b proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:): Being built under the red
 // rule. Three Example jobs, each with this app's worker under it: a test fault with a file path (its Lead's: grey "With
-// Hivra lead", one plain line, "Open Hivra lead's chat"), a stalled one (also its Lead's), and one refused for credits
+// Hivra lead", one plain line, no Open button — r51), a stalled one (also its Lead's), and one refused for credits
 // (the red Needs you, "Out of credits", the link on its own line). Never "Stuck" or "Open chat".
 //   PM_PROOF_SPEC=pm-30b-being-built.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -50,14 +50,14 @@ test("Being built follows the red rule: grey With <Lead>, red Needs you only for
   await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
-  const card = page.locator("[data-hub-home-projects] > div", { hasText: "Hivra" }).first();
-  await card.scrollIntoViewIfNeeded({ timeout: 60_000 });
-  await card.getByRole("button", { name: "Being built", exact: true }).click();
+  await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
+  await page.locator('[data-hub-item="being-built"]').click();
   await page.evaluate(() => (window as unknown as { __devDelegationsChanged?: () => void }).__devDelegationsChanged?.());
   const readme = page.locator('[data-hub-worker="j_ex_readme"]');
   await expect(readme.locator("[data-hub-chip]")).toHaveText("With Hivra lead", { timeout: 30_000 });
-  await expect(readme.locator("[data-hub-job-reason]")).toHaveText("This worker was set to fail on purpose for a test");
-  await expect(readme.locator('[data-hub-stuck-action="open"]')).toHaveText("Open Hivra lead's chat");
+  await expect(readme.locator("[data-hub-job-reason]")).toHaveText("Stopped with an error.");
+  await expect(readme.locator('[data-hub-stuck-action]')).toHaveCount(0);
   const tests = page.locator('[data-hub-worker="j_ex_tests"]');
   await expect(tests.locator("[data-hub-chip]")).toHaveText("With Hivra lead");
   const publish = page.locator('[data-hub-worker="j_ex_publish"]');
@@ -67,12 +67,10 @@ test("Being built follows the red rule: grey With <Lead>, red Needs you only for
   await expect(publish.locator("[data-hub-job-needs] [data-hub-open-lead]")).toHaveText("Open Hivra lead's chat");
   const body = await page.locator("[data-hub-worker]").allInnerTexts();
   expect(body.join("\n")).not.toMatch(/\bStuck\b|Open chat\b|dev-faults|402/);
-  // The longer "Open <Lead>'s chat" never runs into the time beside it.
+  // r51 (Critiquito, Ash's call): a grey row carries no "Open <Lead>'s chat" at all — only a red Needs you has it,
+  // under its reason (asserted above on j_ex_publish).
   for (const id of ["j_ex_readme", "j_ex_tests"]) {
-    const row = page.locator(`[data-hub-worker="${id}"]`);
-    const open = await row.locator('[data-hub-stuck-action="open"]').boundingBox();
-    const time = await row.locator("[data-hub-last-active]").boundingBox();
-    expect(open!.x).toBeGreaterThanOrEqual(time!.x + time!.width - 1);
+    await expect(page.locator(`[data-hub-worker="${id}"] [data-hub-stuck-action]`)).toHaveCount(0);
   }
   await readme.scrollIntoViewIfNeeded();
   await page.mouse.move(5, 5);

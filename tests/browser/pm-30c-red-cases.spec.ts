@@ -50,9 +50,9 @@ test("Being built: out of retries and a rejected key are red Needs you; a stall 
   await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
-  const card = page.locator("[data-hub-home-projects] > div", { hasText: "Hivra" }).first();
-  await card.scrollIntoViewIfNeeded({ timeout: 60_000 });
-  await card.getByRole("button", { name: "Being built", exact: true }).click();
+  await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
+  await page.locator('[data-hub-item="being-built"]').click();
   await page.evaluate(() => (window as unknown as { __devDelegationsChanged?: () => void }).__devDelegationsChanged?.());
   const exportRow = page.locator('[data-hub-worker="j_ex_export"]');
   await expect(exportRow.locator("[data-hub-chip]")).toHaveText("Needs you", { timeout: 30_000 });

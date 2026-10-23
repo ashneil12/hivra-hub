@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 
 // Round 30 proof (the real Today rows and Monos rail in a browser, not Ash's Mac; made-up data labelled Example:): no
-// "Stuck" section or word; a failed worker its Lead has reads grey "With <Lead>" in plain words with "Open <Lead>'s chat"
-// and Dismiss; only a credits refusal is red Needs you, and the rail counts only that ("1 needs you").
+// "Stuck" section or word; a failed worker its Lead has reads grey "With <Lead>" in plain words with Dismiss (r51: a grey
+// card carries no "Open <Lead>'s chat"); only a credits refusal is red Needs you, and the rail counts only that ("1 needs you").
 //   PM_PROOF_SPEC=pm-30-today.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-30";
@@ -14,8 +14,8 @@ test("Today and the rail follow the red rule: With <Lead> in grey, Needs you onl
   await page.goto("/tests/browser/r30-today.html");
   const grey = page.locator('[data-hub-stuck-today="grey"] [data-stuck-worker="w-t-2"]');
   await expect(grey).toHaveCount(1, { timeout: 60_000 });
-  await expect(grey.locator("[data-stuck-line]")).toHaveText("This worker was set to fail on purpose for a test");
-  await expect(grey.locator("[data-stuck-open]")).toHaveText("Open Example: Hivra lead's chat");
+  await expect(grey.locator("[data-stuck-line]")).toHaveText("Stopped with an error.");
+  await expect(grey.locator("[data-stuck-open]")).toHaveCount(0);
   await expect(grey.locator("[data-stuck-dismiss]")).toHaveText("Dismiss");
   const red = page.locator('[data-hub-stuck-today="red"] [data-stuck-worker="w-t-4"]');
   await expect(red.locator("[data-stuck-line]")).toHaveText("Out of credits");
