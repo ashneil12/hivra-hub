@@ -72,7 +72,7 @@ mod rooms;
 mod search;
 mod self_build;
 mod session_store;
-mod ship;
+pub mod ship;
 mod skills;
 pub mod ssh_askpass;
 mod tool_detail;
@@ -434,6 +434,7 @@ pub fn run() {
             ship::ship_ready,
             ship::ship_restart_now,
             ship::ship_seen,
+            ship::ship_accept,
             ship::ship_receipt,
             ship::ship_start,
             control::control_enable,

@@ -318,7 +318,7 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
 
   const result = applyClean(plan);
   assert.deepEqual(result.problems, []);
-  assert.deepEqual(result.removed, { slots: 2, configs: 1, worktrees: 1, pruned: 1 });
+  assert.deepEqual(result.removed, { slots: 2, configs: 1, worktrees: 1, bundles: 0, pruned: 1 });
   assert.match(renderClean(plan, { removed: result.removed }), /^Cleaned: 2 slots, 1 config, 1 worktree, git pruned in 1 checkout/);
 
   assert.ok(!fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)), "the orphan data folder is gone");

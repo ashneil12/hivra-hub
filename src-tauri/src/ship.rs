@@ -45,6 +45,8 @@ pub const REFUSED: &str = "refused.json";
 pub const COMMITTED: &str = "committed.json";
 pub const TRIAL_CHECKS: &str = "trial-checks.json";
 pub const RECEIPT: &str = "receipt.json";
+/// Ash's own answer to "does the build work?" (I4). No file means pending; only he writes a yes or a no.
+pub const ACCEPTANCE: &str = "acceptance.json";
 pub const SEEN: &str = "seen.json";
 pub const RUNNER_LOG: &str = "runner.log";
 pub const STAGED_DIR: &str = "staged";
@@ -1282,6 +1284,7 @@ fn summary(dir: &Path) -> Value {
         "createdAt": field("createdAt"),
         "updatedAt": field("updatedAt"),
         "accepted": dir.join(ACCEPTED).is_file(),
+        "acceptance": acceptance(dir),
         "refused": read_json(&dir.join(REFUSED)).and_then(|r| r.get("reason").cloned()),
         "deferred": read_json(&dir.join("deferred.json")),
         "committed": dir.join(COMMITTED).is_file(),
@@ -1322,6 +1325,309 @@ pub fn ship_seen(app: AppHandle, id: String) -> Result<(), String> {
     write_json(&dir.join(SEEN), &json!({ "at": now_iso() }))?;
     let _ = app.emit(EVENT_CHANGED, status());
     Ok(())
+}
+
+// ---- Ash's acceptance (I4) ---------------------------------------------------------------------------------------
+
+/// One ship's answer. A fresh ship is pending: the trial commit says the app opened, not that Ash used it and found
+/// it working, so nothing here treats the two as the same.
+pub fn acceptance(dir: &Path) -> Value {
+    match read_json(&dir.join(ACCEPTANCE)) {
+        Some(doc) if matches!(doc.get("state").and_then(Value::as_str), Some("yes" | "no")) => doc,
+        _ => json!({ "state": "pending" }),
+    }
+}
+
+/// Ash's answer about a committed ship. Kept in the ship's own folder, beside the receipt it answers; a refused or
+/// uncommitted ship has nothing to answer, and "pending" is what no answer means, never a state to write.
+pub fn record_acceptance(
+    dir: &Path,
+    verdict: &str,
+    note: Option<&str>,
+    by: &str,
+) -> Result<Value, String> {
+    if !matches!(verdict, "yes" | "no") {
+        return Err("The answer is either yes or no.".into());
+    }
+    let ship = Ship::load(dir)?;
+    if ship.phase() != Some(Phase::Committed) || !dir.join(COMMITTED).is_file() {
+        return Err("This ship didn't commit, so there's no update to answer for.".into());
+    }
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    if note.is_some_and(|note| note.chars().count() > 2000) {
+        return Err("The note is too long (2000 characters at most).".into());
+    }
+    let value = json!({
+        "ship": ship.id(),
+        "state": verdict,
+        "note": note,
+        "sha": ship.new_sha(),
+        "branch": ship.doc.pointer("/to/branch").cloned().unwrap_or(Value::Null),
+        "at": now_iso(),
+        "by": by,
+    });
+    write_json(&dir.join(ACCEPTANCE), &value)?;
+    Ok(value)
+}
+
+/// The row in the app's database. Added in place rather than as a numbered migration, so an older build (a ship
+/// rollback) still opens this database; the ship folder stays the record that decides what Today shows.
+pub(crate) fn ensure_acceptance_table(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ship_acceptance (
+           ship_id TEXT PRIMARY KEY,
+           verdict TEXT NOT NULL,
+           note TEXT,
+           sha TEXT,
+           branch TEXT,
+           answered_by TEXT,
+           at TEXT NOT NULL
+         );",
+    )
+}
+
+fn upsert_acceptance(conn: &rusqlite::Connection, value: &Value) -> rusqlite::Result<usize> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    conn.execute(
+        "INSERT INTO ship_acceptance (ship_id, verdict, note, sha, branch, answered_by, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(ship_id) DO UPDATE SET
+           verdict = excluded.verdict, note = excluded.note, sha = excluded.sha,
+           branch = excluded.branch, answered_by = excluded.answered_by, at = excluded.at",
+        rusqlite::params![
+            text("ship"),
+            text("state"),
+            text("note"),
+            text("sha"),
+            text("branch"),
+            text("by"),
+            text("at")
+        ],
+    )
+}
+
+fn save_acceptance(
+    store: &crate::session_store::SessionStore,
+    value: &Value,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    upsert_acceptance(&conn, value)
+        .map(|_| ())
+        .map_err(|error| format!("Couldn't keep the answer in the app's records: {error}"))
+}
+
+/// The command line writes the app's database directly (no window), waiting on the running app rather than failing.
+fn keep_acceptance(data: &Path, value: &Value) -> Result<(), String> {
+    let path = data.join("monocode.db");
+    let conn = rusqlite::Connection::open(&path).map_err(|error| error.to_string())?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    ensure_acceptance_table(&conn).map_err(|error| error.to_string())?;
+    upsert_acceptance(&conn, value)
+        .map(|_| ())
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Today: Ash answered the question the card asks once a ship commits.
+#[tauri::command]
+pub fn ship_accept(
+    app: AppHandle,
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    id: String,
+    verdict: String,
+    note: Option<String>,
+) -> Result<Value, String> {
+    if instance::kind() != Kind::Daily {
+        return Err(
+            "Only the daily app keeps a ship's answer; a dev copy runs from its worktree (npm run hub:dev)."
+                .into(),
+        );
+    }
+    if !valid_id(&id) {
+        return Err("Not a ship id.".into());
+    }
+    let data = DATA_DIR.get().ok_or("Ship isn't on in this copy.")?;
+    let dir = ship_dir(data, &id);
+    if !dir.is_dir() {
+        return Err("No such ship.".into());
+    }
+    let value = record_acceptance(&dir, &verdict, note.as_deref(), "ash")?;
+    save_acceptance(&store, &value)?;
+    let _ = app.emit(EVENT_CHANGED, status());
+    Ok(summary(&dir))
+}
+
+const ACCEPT_USAGE: &str = "usage: monocode accept [SHIP-ID] [--yes | --no] [--note TEXT] [--json]";
+
+fn accept_usage(error: &str) -> i32 {
+    eprintln!("monocode accept: {error}\n{ACCEPT_USAGE}");
+    2
+}
+
+fn acceptance_label(value: &Value) -> String {
+    match value
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("pending")
+    {
+        "yes" => "accepted: it works".into(),
+        "no" => match value.get("note").and_then(Value::as_str) {
+            Some(note) => format!("not accepted: something's wrong ({note})"),
+            None => "not accepted: something's wrong".into(),
+        },
+        _ => "waiting for Ash's answer".into(),
+    }
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+/// `monocode accept [SHIP-ID] [--yes | --no] [--note TEXT] [--json]`: the same answer Today's card takes, from a
+/// terminal. No id lists the ships and what Ash said about each; an id alone shows one. Writing a "yes" here is still
+/// Ash's own answer, so it is always explicit: nothing answers for him.
+pub fn accept_main(args: &[String]) -> i32 {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{ACCEPT_USAGE}");
+        return 0;
+    }
+    if instance::kind() != Kind::Daily {
+        eprintln!(
+            "monocode accept: only the daily app keeps a ship's answer; a dev copy runs from its worktree (npm run hub:dev)."
+        );
+        return 1;
+    }
+    let mut id: Option<String> = None;
+    let mut verdict: Option<&'static str> = None;
+    let mut note: Option<String> = None;
+    let mut json_out = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--yes" => verdict = Some("yes"),
+            "--no" => verdict = Some("no"),
+            "--note" => match iter.next() {
+                Some(text) => note = Some(text.clone()),
+                None => return accept_usage("--note needs the words"),
+            },
+            "--json" => json_out = true,
+            other if other.starts_with('-') => {
+                return accept_usage(&format!("unknown argument {other}"));
+            }
+            other if id.is_none() && valid_id(other) => id = Some(other.into()),
+            other => return accept_usage(&format!("not a ship id: {other}")),
+        }
+    }
+    if note.is_some() && verdict.is_none() {
+        return accept_usage("--note goes with --yes or --no");
+    }
+    let Some(data) = instance::data_dir(instance::DAILY_IDENTIFIER) else {
+        return accept_usage("no home folder");
+    };
+    let Some(id) = id else {
+        if verdict.is_some() {
+            return accept_usage("name the ship this answer is about");
+        }
+        return list_ships(&data, json_out);
+    };
+    let dir = ship_dir(&data, &id);
+    if !dir.is_dir() {
+        eprintln!(
+            "monocode accept: no ship {id} in {}",
+            data.join(SHIP_DIR).display()
+        );
+        return 1;
+    }
+    let Some(verdict) = verdict else {
+        let answer = acceptance(&dir);
+        if json_out {
+            println!("{answer}");
+        } else {
+            println!("Ship {id}: {}.", acceptance_label(&answer));
+        }
+        return 0;
+    };
+    let value = match record_acceptance(&dir, verdict, note.as_deref(), "ash") {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("monocode accept: {error}");
+            return 1;
+        }
+    };
+    if let Err(error) = keep_acceptance(&data, &value) {
+        eprintln!(
+            "monocode accept: kept the answer in {}; it couldn't go in the app's records: {error}",
+            dir.join(ACCEPTANCE).display()
+        );
+    }
+    if json_out {
+        println!("{value}");
+    } else {
+        println!("Ship {id}: {}.", acceptance_label(&value));
+    }
+    0
+}
+
+fn list_ships(data: &Path, json_out: bool) -> i32 {
+    let ships = data.join(SHIP_DIR);
+    let mut ids: Vec<String> = match std::fs::read_dir(&ships) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .filter(|name| valid_id(name))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    ids.sort_by(|a, b| b.cmp(a));
+    if json_out {
+        let rows: Vec<Value> = ids
+            .iter()
+            .map(|id| {
+                let dir = ship_dir(data, id);
+                let ship = Ship::load(&dir).ok();
+                json!({
+                    "id": id,
+                    "phase": ship.as_ref().and_then(|ship| ship.phase().map(Phase::name)),
+                    "sha": ship.as_ref().map(Ship::new_sha),
+                    "branch": ship.as_ref().and_then(|ship| ship.doc.pointer("/to/branch")),
+                    "acceptance": acceptance(&dir),
+                })
+            })
+            .collect();
+        println!("{}", Value::Array(rows));
+        return 0;
+    }
+    if ids.is_empty() {
+        println!("No ships yet.");
+        return 0;
+    }
+    let lines: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            let dir = ship_dir(data, id);
+            let ship = Ship::load(&dir).ok();
+            let phase = ship
+                .as_ref()
+                .and_then(Ship::phase)
+                .map(Phase::name)
+                .unwrap_or("unreadable");
+            let sha = ship
+                .as_ref()
+                .map(|ship| short_sha(ship.new_sha()))
+                .unwrap_or("");
+            let branch = ship
+                .as_ref()
+                .and_then(|ship| ship.doc.pointer("/to/branch").and_then(Value::as_str))
+                .unwrap_or("");
+            format!(
+                "{id}  {phase:<8} {sha} {branch}  {}",
+                acceptance_label(&acceptance(&dir))
+            )
+        })
+        .collect();
+    println!("{}", lines.join("\n"));
+    0
 }
 
 /// `app.ship`: run `scripts/hub-ship.mjs` from the asking session's checkout, on its behalf. It checks, stages and
@@ -2033,6 +2339,97 @@ mod tests {
         let at = UNIX_EPOCH + Duration::from_millis(1_792_443_845_123);
         assert_eq!(iso(at), "2026-10-19T21:04:05.123Z");
         assert_eq!(iso(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
+    }
+
+    /// A ship folder the way the runner leaves a committed one: state.json and committed.json.
+    fn committed_ship(dir: &Path, id: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": id,
+                "phase": "committed",
+                "from": { "sha": "a".repeat(40), "branch": "hub/from" },
+                "to": { "sha": "b".repeat(40), "branch": "hub/to" },
+            }),
+        )
+        .unwrap();
+        write_json(&dir.join(COMMITTED), &json!({ "at": now_iso() })).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_ship_waits_for_ash_and_only_a_yes_or_a_no_is_an_answer() {
+        let dir = TempDir::new("acceptance");
+        committed_ship(&dir.0, "20261023-120000-abc1234");
+        // The trial committed: the app opened. That is not Ash saying it works.
+        assert_eq!(acceptance(&dir.0), json!({ "state": "pending" }));
+
+        let yes = record_acceptance(&dir.0, "yes", None, "ash").unwrap();
+        assert_eq!(yes["state"], "yes");
+        assert_eq!(yes["ship"], "20261023-120000-abc1234");
+        assert_eq!(yes["sha"], "b".repeat(40));
+        assert_eq!(yes["branch"], "hub/to");
+        assert_eq!(acceptance(&dir.0)["state"], "yes");
+
+        // His answer can change, and the note with it.
+        let no = record_acceptance(&dir.0, "no", Some("  the sidebar is blank  "), "ash").unwrap();
+        assert_eq!(no["state"], "no");
+        assert_eq!(no["note"], "the sidebar is blank");
+        assert_eq!(acceptance(&dir.0), no);
+
+        assert!(record_acceptance(&dir.0, "maybe", None, "ash").is_err());
+        assert!(record_acceptance(&dir.0, "pending", None, "ash").is_err());
+    }
+
+    #[test]
+    fn a_ship_that_did_not_commit_has_nothing_to_answer() {
+        let dir = TempDir::new("acceptance-uncommitted");
+        std::fs::create_dir_all(&dir.0).unwrap();
+        write_json(
+            &dir.0.join(STATE),
+            &json!({ "id": "20261023-120000-abc1234", "phase": "rolled-back" }),
+        )
+        .unwrap();
+        assert!(record_acceptance(&dir.0, "yes", None, "ash").is_err());
+        assert!(!dir.0.join(ACCEPTANCE).is_file());
+        assert_eq!(acceptance(&dir.0), json!({ "state": "pending" }));
+    }
+
+    #[test]
+    fn the_database_row_follows_the_answer() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_acceptance_table(&conn).unwrap();
+        let ship = json!({
+            "ship": "20261023-120000-abc1234", "state": "yes", "note": null,
+            "sha": "b".repeat(40), "branch": "hub/to", "at": now_iso(), "by": "ash",
+        });
+        upsert_acceptance(&conn, &ship).unwrap();
+        let (verdict, note): (String, Option<String>) = conn
+            .query_row(
+                "SELECT verdict, note FROM ship_acceptance WHERE ship_id = ?1",
+                ["20261023-120000-abc1234"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(verdict, "yes");
+        assert_eq!(note, None);
+        let mut no = ship.clone();
+        no["state"] = json!("no");
+        no["note"] = json!("crashes on launch");
+        upsert_acceptance(&conn, &no).unwrap();
+        let (verdict, note): (String, Option<String>) = conn
+            .query_row(
+                "SELECT verdict, note FROM ship_acceptance WHERE ship_id = ?1",
+                ["20261023-120000-abc1234"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(verdict, "no");
+        assert_eq!(note.as_deref(), Some("crashes on launch"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ship_acceptance", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

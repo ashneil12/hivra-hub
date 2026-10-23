@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const ship = vi.hoisted(() => ({
   restartForUpdate: vi.fn(),
   markShipSeen: vi.fn(),
+  acceptShip: vi.fn(),
   revealPath: vi.fn(),
   status: null as unknown,
 }));
@@ -15,6 +16,7 @@ vi.mock("../../../app/model/ship", async (importOriginal) => ({
   useShipStatus: () => ship.status,
   restartForUpdate: ship.restartForUpdate,
   markShipSeen: ship.markShipSeen,
+  acceptShip: ship.acceptShip,
 }));
 vi.mock("../../../platform/tauri/fs", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -80,10 +82,44 @@ it("says when Done or Show the log failed (a rolled-back update keeps Done until
   expect(container.querySelector("[role=alert]")?.textContent).toBe("Couldn't show the log: no such file");
 });
 
-it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until Today goes", async () => {
+it("asks Ash whether the new build works, and records the answer he gives", async () => {
   ship.status = readShipStatus({
     enabled: true,
     current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
+  });
+  ship.acceptShip.mockResolvedValue(undefined);
+  await act(async () => root.render(createElement(ShipNotice)));
+  expect(container.textContent).toContain("Does the update work?");
+  expect(container.textContent).toContain(ID);
+  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
+  // Showing the question accepts nothing and reads nothing: only Ash's answer moves it on.
+  expect(ship.markShipSeen).not.toHaveBeenCalled();
+  expect(ship.acceptShip).not.toHaveBeenCalled();
+  await click("Yes, it works");
+  expect(ship.acceptShip).toHaveBeenCalledWith(ID, "yes");
+  await click("Something's wrong");
+  expect(ship.acceptShip).toHaveBeenCalledWith(ID, "no");
+});
+
+it("says when the answer couldn't be recorded, instead of doing nothing", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
+  });
+  ship.acceptShip.mockRejectedValueOnce("This ship didn't commit, so there's no update to answer for.");
+  await act(async () => root.render(createElement(ShipNotice)));
+  await click("Yes, it works");
+  expect(container.querySelector("[role=alert]")?.textContent).toBe(
+    "Couldn't record the answer: This ship didn't commit, so there's no update to answer for.",
+  );
+  // Still there to answer: a failed answer is not an answer.
+  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
+});
+
+it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until Today goes", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: false, log: "/ship/runner.log", ...builds },
   });
   ship.markShipSeen.mockResolvedValue(undefined);
   await act(async () => root.render(createElement(ShipNotice)));
@@ -95,7 +131,7 @@ it("a committed update shows once: plain words, marked read as soon as it shows,
   // The app now says it's read: the card stays while Today is open...
   ship.status = readShipStatus({
     enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: true, log: "/ship/runner.log", ...builds },
+    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: true, log: "/ship/runner.log", ...builds },
   });
   await act(async () => root.render(createElement(ShipNotice)));
   expect(container.textContent).toContain("MonoCode Hub was updated.");

@@ -88,7 +88,7 @@ it("the update card sits below the Since paragraph, which stays first on Today",
   const ID = "20261022-131313-ccccccc";
   ship.status = readShipStatus({
     enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log",
+    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: false, log: "/ship/runner.log",
       from: { sha: "a".repeat(40), branch: "hub/next" }, to: { sha: "b".repeat(40), branch: "hub/next" } },
   });
   act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));

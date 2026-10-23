@@ -572,6 +572,15 @@ async function main() {
     console.log(JSON.stringify({ ...plan, hub: options.hub }, null, 2));
     return 0;
   }
+  // I8: at most once a day, reap what earlier runs left behind (scripts/hub-doctor.mjs). Imported here because the
+  // doctor itself imports this file; a static import would be a cycle.
+  try {
+    const { dailyCleanupText } = await import("./hub-doctor.mjs");
+    const line = await dailyCleanupText();
+    if (line) console.log(`hub:dev: ${line}`);
+  } catch (error) {
+    console.error(`hub:dev: cleanup skipped: ${error.message}`);
+  }
   const owner = readRunning(plan.dataDir);
   if (owner && isRunningRecordAlive(owner)) {
     console.error(
@@ -621,6 +630,16 @@ async function main() {
     if (left.length) console.error(`hub:dev: stopped what was still running: ${left.map(({ pid }) => pid).join(", ")}`);
   }
   await bridge?.close();
+  // I8: this run's own scratch goes now: its generated config, its throwaway token and, when the main checkout already
+  // has the branch, its target/. Never its data folder, its registry entry or the worktree.
+  try {
+    const { reapRun } = await import("./hub-doctor.mjs");
+    const { removed, problems } = reapRun(plan);
+    if (removed.length) console.log(`hub:dev: cleaned up ${removed.join(", ")}.`);
+    for (const problem of problems) console.error(`hub:dev: cleanup left ${problem}`);
+  } catch (error) {
+    console.error(`hub:dev: cleanup skipped: ${error.message}`);
+  }
   return code;
 }
 

@@ -26,6 +26,17 @@ describe("ship status from the app", () => {
     expect(read.current).toMatchObject({ id: ID, phase: "trial", requestedBy: { sessionId: "lead" }, to: { branch: "hub/1b-ship" } });
     expect(readShipStatus({ enabled: true, current: { id: 3 } }).current).toBeNull();
   });
+
+  it("keeps Ash's answer, and a missing or unknown one is pending", () => {
+    expect(status({ phase: "committed" }).current?.acceptance).toEqual({ state: "pending" });
+    expect(status({ phase: "committed", acceptance: { state: "yes" } }).current?.acceptance).toEqual({ state: "yes" });
+    expect(status({ phase: "committed", acceptance: { state: "no", note: "Crashes on launch." } }).current?.acceptance).toEqual({
+      state: "no",
+      note: "Crashes on launch.",
+    });
+    for (const value of [null, "yes", { state: "maybe" }, { state: true }])
+      expect(status({ phase: "committed", acceptance: value }).current?.acceptance).toEqual({ state: "pending" });
+  });
 });
 
 describe("what Today says about a ship", () => {
@@ -50,19 +61,43 @@ describe("what Today says about a ship", () => {
     expect(view?.detail).toContain("(2 running now)");
   });
 
-  it("says each receipt in plain words, with no branch or commit; a committed update is shown once, the rest until read", () => {
-    const committed = shipCardView(status({ phase: "committed" }));
-    expect(committed).toMatchObject({ text: "MonoCode Hub was updated.", log: "/ship/runner.log", once: true });
-    expect(committed?.dismiss).toBeUndefined();
+  it("asks Ash whether the update works, naming the build; nothing calls it accepted before he answers", () => {
+    const view = shipCardView(status({ phase: "committed" }));
+    expect(view).toMatchObject({ text: "Does the update work?", accept: true });
+    expect(view?.detail).toContain("bbbbbbb");
+    expect(view?.detail).toContain("hub/1b-ship");
+    expect(view?.detail).toContain(ID);
+    expect(view?.once).toBeUndefined();
+    expect(view?.dismiss).toBeUndefined();
+    // A receipt already read doesn't answer it: the question stays until he does.
+    expect(shipCardView(status({ phase: "committed", seen: true }))?.accept).toBe(true);
+  });
+
+  it("shows the update once he says it works, and notes a no until it's read", () => {
+    const yes = shipCardView(status({ phase: "committed", acceptance: { state: "yes" } }));
+    expect(yes).toMatchObject({ text: "MonoCode Hub was updated.", log: "/ship/runner.log", once: true });
+    expect(yes?.accept).toBeUndefined();
+    expect(yes?.dismiss).toBeUndefined();
+    expect(JSON.stringify([yes?.text, yes?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
+    expect(shipCardView(status({ phase: "committed", acceptance: { state: "yes" }, seen: true }))).toBeNull();
+    const no = shipCardView(status({ phase: "committed", acceptance: { state: "no", note: "Crashes on launch." } }));
+    expect(no).toMatchObject({ text: "Noted: something's wrong with this build. Crashes on launch.", dismiss: true });
+    expect(no?.accept).toBeUndefined();
+    expect(no?.log).toBe("/ship/runner.log");
+    expect(no?.detail).toBe(`The answer is kept with ship ${ID}.`);
+    expect(shipCardView(status({ phase: "committed", acceptance: { state: "no" }, seen: true }))).toBeNull();
+  });
+
+  it("says each receipt in plain words, with no branch or commit; the rest until read", () => {
     const rolled = shipCardView(status({ phase: "rolled-back", reason: "The new build didn't commit within 120 s." }));
     expect(rolled?.text).toBe("An update was rolled back. The new build didn't commit within 120 s.");
     expect(rolled?.detail).toBe("Back on the build before it, with the database as it was.");
     expect(rolled?.dismiss).toBe(true);
-    for (const phase of ["committed", "rolled-back", "cancelled", "failed"])
+    for (const phase of ["rolled-back", "cancelled", "failed"])
       expect(JSON.stringify([shipCardView(status({ phase, reason: "r" }))?.text, shipCardView(status({ phase, reason: "r" }))?.detail])).not.toMatch(/ @ |aaaaaaa|bbbbbbb|hub\/next|hub\/1b-ship/);
     expect(shipCardView(status({ phase: "cancelled", reason: "Refused." }))?.detail).toBe("Nothing changed.");
     expect(shipCardView(status({ phase: "failed", reason: "x", shipDir: "/ship" }))?.detail).toContain("/ship");
-    expect(shipCardView(status({ phase: "committed", seen: true }))).toBeNull();
+    expect(shipCardView(status({ phase: "rolled-back", seen: true }))).toBeNull();
     // Mid-swap there is nothing to say yet (and nothing to press).
     expect(shipCardView(status({ phase: "swapping" }))).toBeNull();
   });
