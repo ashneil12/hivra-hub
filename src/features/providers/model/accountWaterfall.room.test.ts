@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { markAccountLimited, orderedAccounts, providerRoom, workerRoom } from "./accountWaterfall";
 import type { ProviderAccount } from "./providerAccounts";
+import type { ProviderRateLimits } from "./rateLimits";
 
 const account = (id: string) => ({ id, provider: "claude", label: id }) as unknown as ProviderAccount;
 const order = [account("default"), account("work")];
@@ -16,12 +17,35 @@ describe("providerRoom", () => {
 
   it("has none when every account is out, until the first one resets", () => {
     const marks = { "claude:default": { at: 0, until: 9_000 }, "claude:work": { at: 0, until: 4_000 } };
-    expect(providerRoom("claude", { order, enabled: true, now: 1_000, usageFor, marks })).toEqual({ room: false, provider: "Claude", until: 4_000 });
+    expect(providerRoom("claude", { order, enabled: true, now: 1_000, usageFor, marks })).toEqual({ room: false, provider: "Claude", until: 4_000, why: "limited" });
   });
 
   it("with the waterfall off, only the first account counts", () => {
     const marks = { "claude:default": { at: 0, until: 9_000 } };
-    expect(providerRoom("claude", { order, enabled: false, now: 1_000, usageFor, marks })).toEqual({ room: false, provider: "Claude", until: 9_000 });
+    expect(providerRoom("claude", { order, enabled: false, now: 1_000, usageFor, marks })).toEqual({ room: false, provider: "Claude", until: 9_000, why: "limited" });
+  });
+
+  // Found by the restart bench: a provider nobody signed in was reported as a limit, so the delegate waited for a
+  // reset that was never coming.
+  it("says not-signed-in when every account it may use isn't, with no reset to wait for", () => {
+    const notSignedIn = () => ({ status: "unavailable" }) as unknown as ProviderRateLimits;
+    expect(providerRoom("claude", { order, enabled: true, now: 1_000, usageFor: notSignedIn, marks: {} })).toEqual({
+      room: false,
+      provider: "Claude",
+      why: "not-signed-in",
+    });
+  });
+
+  it("one account at its limit makes it a limit, even when another isn't signed in", () => {
+    const half = (a: ProviderAccount) =>
+      (a.id === "work" ? { status: "unavailable" } : undefined) as unknown as ProviderRateLimits;
+    const marks = { "claude:default": { at: 0, until: 9_000 } };
+    expect(providerRoom("claude", { order, enabled: true, now: 1_000, usageFor: half, marks })).toEqual({
+      room: false,
+      provider: "Claude",
+      why: "limited",
+      until: 9_000,
+    });
   });
 
   it("an account back from its reset has room again", () => {

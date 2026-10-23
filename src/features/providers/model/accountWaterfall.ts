@@ -239,17 +239,22 @@ export function firstTurnAccount(provider: ProviderAccountProvider, picked: stri
  * Whether a new worker on this provider can start now (board H8): yes while any account it may use has room (all of
  * them in Ash's order with the waterfall on, the first one with it off); otherwise when the first one rejoins, if
  * known. Accounts with no reading count as in, as above: the provider decides.
+ *
+ * `why` says which of the two ways it is out, because they need different words: a provider that is at its limit
+ * comes back by itself at `until`, while one that is not signed in never will until someone signs in. Reporting the
+ * second as the first left a delegate waiting on a reset that was never coming (found by the restart bench).
  */
 export function providerRoom(
   provider: ProviderAccountProvider,
   { order, enabled, now, usageFor, marks }: { order: ProviderAccount[]; enabled: boolean; now: number; usageFor: UsageFor; marks: LimitMarks },
-): { room: true } | { room: false; provider: string; until?: number } {
+): { room: true } | { room: false; provider: string; until?: number; why?: "limited" | "not-signed-in" } {
   const usable = enabled ? order : order.slice(0, 1);
   if (!usable.length) return { room: true };
   const seen = usable.map((a) => accountAvailability(a, { now, usageFor, marks }));
   if (seen.some((a) => a.available)) return { room: true };
   const until = seen.flatMap((a) => (a.until != null && a.until > now ? [a.until] : []));
-  return { room: false, provider: PROVIDER_NAMES[provider], ...(until.length ? { until: Math.min(...until) } : {}) };
+  const why = seen.every((a) => a.why === "not-signed-in") ? "not-signed-in" : "limited";
+  return { room: false, provider: PROVIDER_NAMES[provider], why, ...(until.length ? { until: Math.min(...until) } : {}) };
 }
 
 /**
@@ -260,7 +265,7 @@ export function providerRoom(
 export function workerRoom(
   harness: string,
   { now, usageFor, elsewhere = false }: { now: number; usageFor: UsageFor; elsewhere?: boolean },
-): { room: true } | { room: false; provider: string; until?: number } {
+): { room: true } | { room: false; provider: string; until?: number; why?: "limited" | "not-signed-in" } {
   if (elsewhere || !Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, harness)) return { room: true };
   const provider = harness as ProviderAccountProvider;
   return providerRoom(provider, { order: orderedAccounts(provider), enabled: waterfallEnabled(provider), now, usageFor, marks: limitMarks() });

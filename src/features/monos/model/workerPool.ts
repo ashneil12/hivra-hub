@@ -171,7 +171,7 @@ export function projectLoad(
 // ---- provider room (E5) ------------------------------------------------------------------------------------------
 
 /** Whether the worker's provider has an account with room now; if not, when the first one comes back (if known). */
-export type ProviderRoom = { room: true } | { room: false; provider: string; until?: number };
+export type ProviderRoom = { room: true } | { room: false; provider: string; until?: number; why?: "limited" | "not-signed-in" };
 
 // ---- the queue ---------------------------------------------------------------------------------------------------
 
@@ -487,8 +487,12 @@ export type Admission = { start: true } | { start: false; reason: WaitReason; li
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 export function waitLine(reason: WaitReason, projectName: string, limits: WorkerLimits, room?: ProviderRoom): string {
-  if (reason === "limit" && room && !room.room)
+  if (reason === "limit" && room && !room.room) {
+    // Not signed in is not a limit: no reset is coming, so waiting would never end. Say what actually unblocks it.
+    if (room.why === "not-signed-in")
+      return `${room.provider} isn't signed in, so no worker can start. Sign it in from Settings, then it goes.`;
     return `Waiting for ${room.provider}'s limit to reset${room.until ? ` at ${clock(room.until)}` : ""}; it starts by itself then.`;
+  }
   if (reason === "heavy")
     return `Waiting for a free worker: ${projectName} runs ${limits.heavy} heavy test ${limits.heavy === 1 ? "job" : "jobs"} at once.`;
   return limits.workers === 1

@@ -113,6 +113,19 @@ describe("admitting a worker", () => {
     expect(!out.start && out.line).toMatch(/^Waiting for Claude's limit to reset at 3:40\s?PM; it starts by itself then\.$/i);
   });
 
+  // A provider nobody signed in never comes back by itself, so waiting on it would never end (found by the restart
+  // bench: a delegate sat on "Waiting for Claude's limit to reset" for a limit that did not exist).
+  it("a provider that isn't signed in says so, and names no reset that will never come", () => {
+    const notSignedIn = (): ProviderRoom => ({ room: false, provider: "Claude", why: "not-signed-in" });
+    const out = admitWorker(
+      { id: "w1", project: "hivra", projectName: "Hivra", heavy: false, harness: "claude" },
+      { rows: [], room: notSignedIn },
+    );
+    expect(out).toMatchObject({ start: false, reason: "limit" });
+    expect(!out.start && out.line).toBe("Claude isn't signed in, so no worker can start. Sign it in from Settings, then it goes.");
+    expect(nextWake(notSignedIn, 1_000)).toBeUndefined();
+  });
+
   it("sets no cost ceiling: nothing but the counts and the provider's own limit holds a worker back", () => {
     setWorkerLimits("hivra", { workers: 30, heavy: 30 });
     const rows = Array.from({ length: 29 }, (_, i) => open(`w${i}`));
