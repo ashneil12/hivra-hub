@@ -62,6 +62,8 @@ export type MonoSpawnedSession = {
   title: string;
   harness: HarnessId;
   model: string;
+  /** The reasoning effort it runs at, as the picker words it, when its model offers one. */
+  effort?: string;
 };
 
 export type TaskListItemStatus =

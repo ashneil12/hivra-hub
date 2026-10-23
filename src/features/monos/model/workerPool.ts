@@ -23,7 +23,14 @@ import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
 
-export type WorkerLimits = { workers: number; heavy: number };
+export type WorkerLimits = {
+  workers: number;
+  heavy: number;
+  /** The project's own worker model (E7), when Ash chose one in the Workers dialog; else the usual Sonnet. */
+  model?: string;
+  /** The effort saved with that model (its own setting's value). */
+  effort?: string;
+};
 /** A sensible start; Ash raises it per project when he wants more at once. */
 export const DEFAULT_LIMITS: WorkerLimits = { workers: 6, heavy: 2 };
 export const MAX_WORKERS = 30;
@@ -67,7 +74,12 @@ const clampCount = (n: unknown, fallback: number) =>
 export function workerLimits(project: string): WorkerLimits {
   const saved = settingsCopy.limits[project];
   const workers = clampCount(saved?.workers, DEFAULT_LIMITS.workers);
-  return { workers, heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))) };
+  return {
+    workers,
+    heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
+    ...(saved?.model ? { model: saved.model } : {}),
+    ...(saved?.model && saved?.effort ? { effort: saved.effort } : {}),
+  };
 }
 
 /** Saves one project's limits (either part); heavy never exceeds workers. Returns what is now in force. */
@@ -75,12 +87,44 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
   const now = workerLimits(project);
   const workers = next.workers === undefined ? now.workers : clampCount(next.workers, now.workers);
   const heavy = Math.min(workers, next.heavy === undefined ? now.heavy : clampCount(next.heavy, now.heavy));
-  settingsCopy = { ...settingsCopy, limits: { ...settingsCopy.limits, [project]: { workers, heavy } } };
+  settingsCopy = {
+    ...settingsCopy,
+    limits: { ...settingsCopy.limits, [project]: { ...settingsCopy.limits[project], workers, heavy } },
+  };
   changed();
   void backend
     .setLimits(project, { workers, heavy })
     .catch((error: unknown) => console.warn("Could not save the project's worker limits", error));
-  return { workers, heavy };
+  return { workers, heavy, ...(now.model ? { model: now.model } : {}), ...(now.model && now.effort ? { effort: now.effort } : {}) };
+}
+
+/**
+ * The model a project's workers run on (E7): Ash's choice for the project, or undefined for the usual Sonnet. Read
+ * synchronously while delegating, so a worker starts on it without waiting for the store.
+ */
+export function projectWorkerModel(project: string): { model: string; effort?: string } | undefined {
+  const saved = settingsCopy.limits[project];
+  if (!saved?.model) return undefined;
+  return { model: saved.model, ...(saved.effort ? { effort: saved.effort } : {}) };
+}
+
+/** Saves (or clears, with undefined) one project's own worker model; its limits are left as they are. */
+export function setProjectWorkerModel(
+  project: string,
+  choice: { model: string; effort?: string } | undefined,
+): void {
+  const saved = settingsCopy.limits[project] ?? {};
+  settingsCopy = {
+    ...settingsCopy,
+    limits: {
+      ...settingsCopy.limits,
+      [project]: { ...saved, model: choice?.model, effort: choice?.effort },
+    },
+  };
+  changed();
+  void backend
+    .setModel(project, choice)
+    .catch((error: unknown) => console.warn("Could not save the project's worker model", error));
 }
 
 /**
@@ -168,6 +212,8 @@ export type WorkerQueueBackend = {
   /** Each project's limits, and the workers marked heavy. */
   settings(): Promise<{ limits: Record<string, Partial<WorkerLimits>>; heavy: string[] }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
+  /** The project's own worker model (E7); undefined clears it. */
+  setModel(project: string, choice: { model: string; effort?: string } | undefined): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -184,7 +230,10 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
   claim: (id, by) => invoke<boolean>("worker_queue_claim", { id, by }),
   finish: (id, by) => invoke<boolean>("worker_queue_finish", { id, by }),
   settings: () => invoke("worker_settings"),
-  setLimits: (project, limits) => invoke<WorkerLimits>("worker_limits_set", { project, ...limits }),
+  setLimits: (project, limits) =>
+    invoke<WorkerLimits>("worker_limits_set", { project, workers: limits.workers, heavy: limits.heavy }),
+  setModel: (project, choice) =>
+    invoke("worker_model_set", { project, model: choice?.model ?? null, effort: choice?.effort ?? null }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -279,7 +328,16 @@ export function memoryWorkerQueue(
     settings: async () => ({ limits: { ...store.limits }, heavy: [...store.heavy] }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
-      store.limits[project] = { workers, heavy: Math.min(workers, clampCount(limits.heavy, DEFAULT_LIMITS.heavy)) };
+      store.limits[project] = {
+        ...store.limits[project],
+        workers,
+        heavy: Math.min(workers, clampCount(limits.heavy, DEFAULT_LIMITS.heavy)),
+      };
+      notify();
+      return store.limits[project];
+    },
+    setModel: async (project: string, choice: { model: string; effort?: string } | undefined) => {
+      store.limits[project] = { ...store.limits[project], model: choice?.model, effort: choice?.effort };
       notify();
       return store.limits[project];
     },
@@ -614,6 +672,7 @@ export function workerPoolHost(deps: {
     },
     limits: workerLimits,
     setLimits: setWorkerLimits,
+    model: projectWorkerModel,
   };
 }
 

@@ -142,13 +142,16 @@ export function LaunchedSessionCard({
           Waiting for a free worker
         </span>
       ) : null}
-      {/* Which model this worker runs on (E7), quiet, before the project chip. */}
+      {/* Which model (and effort) this worker runs on (E7), quiet, before the project chip. */}
       <span
         data-launched-model
         className="min-w-0 max-w-[30%] shrink-0 truncate text-[12px] text-content/55"
-        title={`Runs on ${modelLabel(launch.harness, launch.model)}`}
+        title={`Runs on ${modelLabel(launch.harness, launch.model)}${
+          launch.effort ? `, ${launch.effort} effort` : ""
+        }`}
       >
         {modelLabel(launch.harness, launch.model)}
+        {launch.effort ? ` · ${launch.effort}` : ""}
       </span>
       {/* Squeezed, the title gives way first and the project after it. */}
       <span

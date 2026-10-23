@@ -25,12 +25,14 @@ import {
   queuedWorkers,
   setWorkerQueueBackend,
   resetWorkerPool,
+  setProjectWorkerModel,
   setWorkerLimits,
   workerLimits,
   workerPoolHost,
   type ProviderRoom,
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
+import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 vi.mock("../../../integrations/harness/core/availability", () => ({
@@ -381,29 +383,132 @@ describe("tasks.delegate", () => {
       model: "claude:sonnet-5",
       workspaceMode: "current",
     });
-    expect(result).toMatchObject({ model: "claude:sonnet-5", modelWhy: "A usual job (a short brief), so Sonnet 5." });
+    expect(result).toMatchObject({ model: "claude:sonnet-5", modelWhy: "A usual job (a usual job), so Sonnet 5." });
     expect(meta).toEqual({ title: "CI", askIds: [], project: "vg-game" });
   });
 
-  it("gives a hard job the stronger model, and nothing when the job is usual", async () => {
+  it("gives a hard job the stronger model, and leaves a usual one on the model it already runs", async () => {
     const hard = fixture();
     hard.source.model = "claude:sonnet-5";
     const result = await handleAgentApp(
       hard.source,
       "r-hard",
       "tasks.delegate",
-      { brief: "Add a migration for the tags table, then backfill it." },
+      // The Lead's own mark: the brief's prose is never read for a difficulty guess.
+      { brief: "Add the tags migration.", hard: true },
       hard.host,
     );
     expect(hard.started[0][0]).toMatchObject({ model: "claude:opus-5-5" });
     expect(result).toMatchObject({ model: "claude:opus-5-5" });
-    expect((result as { modelWhy: string }).modelWhy).toContain("A hard job (a migration or schema change");
+    expect((result as { modelWhy: string }).modelWhy).toBe("A hard job (marked hard), so Opus 5.5.");
+
+    // A brief that would once have read as a migration is a usual job without a signal.
+    expect(
+      await handleAgentApp(hard.source, "r-prose", "tasks.delegate", { brief: "Add a migration for the tags table." }, hard.host),
+    ).not.toHaveProperty("modelWhy");
 
     const usual = fixture();
     usual.source.model = "claude:sonnet-5";
     const plain = await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Tidy the title." }, usual.host);
     expect(usual.started[0][0]).toMatchObject({ model: "claude:sonnet-5" });
     expect(plain).not.toHaveProperty("modelWhy");
+  });
+
+  it("escalates each signal the Lead declares: heavy, a retry, a wide scope", async () => {
+    for (const [name, input, why] of [
+      ["heavy", { heavy: true }, "A hard job (a heavy job)"],
+      ["scope", { scope: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts", "src/f.ts", "src/g.ts", "src/h.ts"] }, "A hard job (a declared scope of 8 files or areas)"],
+    ] as const) {
+      const { source, host, started } = fixture();
+      source.model = "claude:sonnet-5";
+      const result = await handleAgentApp(source, `r-${name}`, "tasks.delegate", { brief: "Do it.", ...input }, host);
+      expect(started[0][0]).toMatchObject({ model: "claude:opus-5-5" });
+      expect((result as { modelWhy: string }).modelWhy).toContain(why);
+    }
+    // A retry is a second go at a task that failed: the row it redoes is the signal.
+    const rows = [row({ id: "t-stuck", stallKind: "loop" })];
+    const retry = fixture(rows);
+    retry.source.model = "claude:sonnet-5";
+    const result = await handleAgentApp(
+      retry.source,
+      "r-retry",
+      "tasks.delegate",
+      { brief: "Fix the save bug, smaller: only the slot file.", redoes: "t-stuck" },
+      retry.host,
+    );
+    expect(retry.started[0][0]).toMatchObject({ model: "claude:opus-5-5" });
+    expect((result as { modelWhy: string }).modelWhy).toContain("A hard job (a retry of a task that failed)");
+  });
+
+  it("lets a model or effort the Lead names win over every rule, and passes the effort to the spawn", async () => {
+    setHarnessModels("claude", [
+      {
+        id: "claude:opus-5-5",
+        harness: "claude",
+        name: "Opus 5.5",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "medium",
+            options: [
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+      { id: "claude:sonnet-5", harness: "claude", name: "Sonnet 5", settings: [] },
+    ]);
+    const { source, host, started } = fixture();
+    source.model = "claude:sonnet-5";
+    // Named: a hard job still runs the model the Lead chose.
+    const named = await handleAgentApp(
+      source,
+      "r-named-hard",
+      "tasks.delegate",
+      { brief: "Do it.", hard: true, model: "sonnet" },
+      host,
+    );
+    expect(started[0][0]).toMatchObject({ model: "claude:sonnet-5" });
+    expect(named).not.toHaveProperty("modelWhy");
+    // Its own effort: the spawn carries it, and the result says the same value the picker words.
+    const effort = await handleAgentApp(
+      source,
+      "r-effort",
+      "tasks.delegate",
+      { brief: "Do it.", model: "opus-5-5", effort: "high" },
+      host,
+    );
+    expect((started[1] as [Record<string, unknown>])[0]).toMatchObject({
+      model: "claude:opus-5-5",
+      modelSettings: { effort: "high" },
+    });
+    expect(effort).toMatchObject({ model: "claude:opus-5-5", effort: "High" });
+  });
+
+  it("runs a project's jobs on its own worker model, and an explicit one per task still wins", async () => {
+    resetWorkerPool();
+    const { source, host, started } = fixture();
+    const f = started;
+    // As Ash saved it in the project's Workers dialog (H8's store, model column).
+    setProjectWorkerModel("vg-game", { model: "claude:opus-5-5" });
+    const pool = workerPoolHost({ openRows: () => [], room: () => ({ room: true }), card: () => {} });
+    const pooledHost = { ...host, tasks: { ...(host.tasks as object), pool } } as AgentAppHost;
+    source.model = "claude:sonnet-5";
+    const usual = await handleAgentApp(source, "r-proj", "tasks.delegate", { brief: "Tidy the title." }, pooledHost);
+    expect(f[0][0]).toMatchObject({ model: "claude:opus-5-5" });
+    expect((usual as { modelWhy: string }).modelWhy).toBe("This project's workers run on Opus 5.5.");
+    const named = await handleAgentApp(
+      source,
+      "r-proj-named",
+      "tasks.delegate",
+      { brief: "Tidy the title.", model: "sonnet" },
+      pooledHost,
+    );
+    expect(f[1][0]).toMatchObject({ model: "claude:sonnet-5" });
+    expect(named).not.toHaveProperty("modelWhy");
   });
 
   it("keeps a model the caller names, whatever the job is", async () => {
@@ -426,6 +531,25 @@ describe("tasks.delegate", () => {
     expect(started[0][0]).toMatchObject({ model: "custom:deepseek-test" });
     expect(result).toMatchObject({ model: "custom:deepseek-test" });
     expect(result).not.toHaveProperty("modelWhy");
+  });
+
+  // E7: a worker on one of Ash's own models keeps the reasoning effort the Lead named, all the way to the router's route.
+  it("carries a custom model's reasoning effort through to the provider route", async () => {
+    importCustomModels([
+      { id: "deepseek-test", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-chat" },
+    ]);
+    const { source, host, started } = fixture();
+    const result = await handleAgentApp(
+      source,
+      "r-custom-effort",
+      "tasks.delegate",
+      { brief: "Tidy the title.", model: "custom:deepseek-test", effort: "high" },
+      host,
+    );
+    const launch = started[0][0];
+    expect(launch).toMatchObject({ model: "custom:deepseek-test", modelSettings: { effort: "high" } });
+    expect(result).toMatchObject({ model: "custom:deepseek-test", effort: "High" });
+    expect(customModelRoute(launch)?.reasoningEffort).toBe("high");
   });
 
   it("is refused for anything but a Mono's own chat or a coding-team chat, and the checker", async () => {

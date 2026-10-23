@@ -15,11 +15,13 @@ async function harnessesProbed(): Promise<void> {
 import { looksLikeProject } from "../../projects/model/recents";
 import {
   mergeModelSettings,
+  modelEffortLabel,
   modelEffortSetting,
   modelsFor,
   preferredModelId,
   resolveModel,
 } from "../../sessions/model/models";
+import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
   RUNTIME_MODE_HINT,
@@ -681,7 +683,10 @@ function startLaunch(
     throw new Error(`${chosenHarness} is not available in MonoCode`);
   const requestedModel = optionalString(input.model, "model");
   const model = requestedModel
-    ? modelsFor(chosenHarness).find((entry) => entry.id === requestedModel)
+    ? // One of Ash's own models ("Other models") keeps its own id; the router reads its route (customModels.ts).
+      isCustomModelId(requestedModel) && chosenHarness === "claude"
+      ? resolveModel(chosenHarness, requestedModel)
+      : modelsFor(chosenHarness).find((entry) => entry.id === requestedModel)
     : resolveModel(
         chosenHarness,
         chosenHarness === source.harness
@@ -1726,11 +1731,16 @@ export async function handleAgentApp(
       else if (notifyMonoId) await host.start(launch, id, undefined, notifyMonoId);
       else await host.start(launch, id);
       fileStarted(source, launch, id, host);
+      const effort =
+        launch.model && launch.modelSettings
+          ? modelEffortLabel(resolveModel(launch.harness, launch.model), launch.modelSettings)
+          : undefined;
       return {
         id,
         cwd: launch.cwd,
         harness: launch.harness,
         model: launch.model,
+        ...(effort ? { effort } : {}),
         submitted: !launch.draft,
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),

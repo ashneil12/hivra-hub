@@ -37,3 +37,14 @@ it("a worker's card fills up to the 640px reading width, title first and the pro
   expect(model.getAttribute("title")).toBe("Runs on Opus");
   expect(model.nextElementSibling).toBe(card.lastElementChild);
 });
+
+it("says the effort a hard job's worker runs at, in the same words the composer uses", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  r = createRoot(host);
+  const launch = { sessionId: "w2", cwd: "/repo/monocode-hub", title: "Migration", harness: "claude" as const, model: "claude:opus-5-5", effort: "High" };
+  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
+  const model = host.querySelector("[data-launched-model]")!;
+  expect(model.textContent).toMatch(/ · High$/);
+  expect(model.getAttribute("title")).toMatch(/^Runs on .+, High effort$/);
+});

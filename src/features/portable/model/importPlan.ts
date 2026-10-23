@@ -16,7 +16,12 @@ import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../.
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
 import { isPortableSetting, MONO_TEAMS_KEY, settingLooksSecret, workerLimitsSetting, WORKER_LIMITS_KEY, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
-import { savedWorkerLimits, setWorkerLimits, type WorkerLimits } from "../../monos/model/workerPool";
+import {
+  savedWorkerLimits,
+  setProjectWorkerModel,
+  setWorkerLimits,
+  type WorkerLimits,
+} from "../../monos/model/workerPool";
 import { ensureMonoTeam, monoTeam, type MakeTeamFolder } from "../../hub/model/monoTeams";
 import { forYou } from "../../hub/model/userName";
 import { isKnownSeededSoul } from "../../hub/model/soulRefresh";
@@ -481,8 +486,15 @@ async function applyOwnedSetting(
       const next: Partial<WorkerLimits> = {};
       if (typeof saved.workers === "number") next.workers = saved.workers;
       if (typeof saved.heavy === "number") next.heavy = saved.heavy;
-      if (next.workers === undefined && next.heavy === undefined) continue;
-      setWorkerLimits(project, next);
+      const model = typeof saved.model === "string" && saved.model.trim() ? saved.model : undefined;
+      if (next.workers === undefined && next.heavy === undefined && !model) continue;
+      if (next.workers !== undefined || next.heavy !== undefined) setWorkerLimits(project, next);
+      // The project's own worker model (E7) travels with its limits.
+      if (model)
+        setProjectWorkerModel(project, {
+          model,
+          ...(typeof saved.effort === "string" && saved.effort ? { effort: saved.effort } : {}),
+        });
       applied = true;
     }
   } else if (key === MONO_TEAMS_KEY) {

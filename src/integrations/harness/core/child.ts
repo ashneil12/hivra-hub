@@ -357,8 +357,15 @@ export async function spawnChild(
   codexStore?: "mono",
   /** `devin acp` only: start with an approval rule for every edit. */
   devinAskEdits?: boolean,
-  /** Claude Code on an "Other models" entry: the hub routes it through its local router with the model key. */
-  customRoute?: { provider: string; baseUrl: string; modelId: string; customModelId: string },
+  /** Claude Code on an "Other models" entry: the hub routes it through its local router with the model key, at the
+   * reasoning effort the chat picked (customModelRoute's `reasoningEffort`). */
+  customRoute?: {
+    provider: string;
+    baseUrl: string;
+    modelId: string;
+    customModelId: string;
+    reasoningEffort?: string;
+  },
   /** The provider's default CLI, not the configured one (a Claude chat routed off the Grok bridge launcher). */
   defaultBinary?: boolean,
 ): Promise<void> {

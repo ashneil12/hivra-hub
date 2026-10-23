@@ -5,7 +5,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubProject } from "../model/types";
-import { resetWorkerPool, workerLimits } from "../../monos/model/workerPool";
+import { projectWorkerModel, resetWorkerPool, workerLimits } from "../../monos/model/workerPool";
+import { resetHarnessModelOverlays, setHarnessModels } from "../../sessions/model/models";
 import { ProjectWorkers } from "./ProjectMenu";
 
 let root: Root;
@@ -23,6 +24,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  resetHarnessModelOverlays();
   vi.unstubAllGlobals();
 });
 
@@ -48,6 +50,61 @@ describe("Workers at once", () => {
     act(() => type(document.querySelector<HTMLInputElement>('[data-project-workers="heavy"]')!, "4"));
     expect(workerLimits("hivra")).toEqual({ workers: 20, heavy: 4 });
     expect(workerLimits("vg-game")).toEqual({ workers: 6, heavy: 2 });
+    anchor.remove();
+  });
+});
+
+// E7: the project's own worker model, shown and changed here, saved for its jobs and read by every delegation.
+describe("The model its workers run on", () => {
+  const effort = (value: string, label: string) => ({ value, label });
+
+  beforeEach(() => {
+    setHarnessModels("claude", [
+      { id: "claude:sonnet-5", harness: "claude", name: "Claude Sonnet 5", settings: [] },
+      {
+        id: "claude:opus-5-5",
+        harness: "claude",
+        name: "Claude Opus 5.5",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "medium",
+            options: [effort("medium", "Medium"), effort("high", "High")],
+          },
+        ],
+      },
+    ]);
+  });
+
+  function pick(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  it("says the usual rule until Ash picks a model, then saves the model and its effort", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    act(() => root.render(createElement(ProjectWorkers, { project: hivra, anchor, onClose: vi.fn() })));
+    const line = () => document.querySelector("[data-project-worker-model-line]")?.textContent ?? "";
+    expect(projectWorkerModel("hivra")).toBeUndefined();
+    expect(line()).toBe(
+      "Each job here runs on Sonnet; one marked hard, a heavy job, a retry, or a job covering 8 or more files gets a stronger model.",
+    );
+    expect(document.querySelector("[data-project-worker-effort]")).toBeNull();
+    // Choosing a model keeps its own default effort, and the line says the value the workers start at.
+    act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-model]")!, "claude:opus-5-5"));
+    expect(projectWorkerModel("hivra")).toEqual({ model: "claude:opus-5-5", effort: "medium" });
+    expect(line()).toBe("Each job here runs on Opus 5.5 at medium effort, unless the job names its own model.");
+    act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-effort]")!, "high"));
+    expect(projectWorkerModel("hivra")).toEqual({ model: "claude:opus-5-5", effort: "high" });
+    expect(line()).toContain("Opus 5.5 at high effort");
+    // Back to the usual rule: nothing saved, so a hard job steps up again.
+    act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-model]")!, ""));
+    expect(projectWorkerModel("hivra")).toBeUndefined();
+    expect(line()).toContain("Each job here runs on Sonnet");
     anchor.remove();
   });
 });
