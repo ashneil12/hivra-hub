@@ -140,6 +140,7 @@ describe("1. the lane: the app gives the checker only models.list, memory and so
       isMono: () => true,
       monoOf: () => ({ id: "vg-game-lead", name: "EXO lead", projects: ["/Users/ash/Projects/vg-game"] }),
       agentFiles: vi.fn(async () => ({ ...FILES, id: "vg-game-lead" })),
+      readAgentFile: vi.fn(async () => ({ text: FILES.soul, hash: "soul@0" })),
       writeAgentFile: vi.fn(async () => "soul@1"),
     } as unknown as AgentAppHost;
     expect(await handleAgentApp(source, "r", "soul.update", { text: "y", expectedHash: "soul@0" }, host)).toMatchObject({ updated: true });

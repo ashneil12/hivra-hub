@@ -9,6 +9,11 @@ import {
   setHabitRunning,
   type Habit,
 } from "../../monos/model/monoHabits";
+import {
+  findBotChange,
+  setBotFiles,
+  undoBotChange,
+} from "../../hub/model/botChanges";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 
 /** The agent's folder as a map, with a hash that changes on every write. */
@@ -30,6 +35,7 @@ function fixture(agent = true) {
     isMono: (id: string) => agent && id === "agent",
     monoOf: (id: string) =>
       agent && id === "agent" ? { id: "mono-1", projects: [] } : undefined,
+    monoNameOf: () => "Hivra lead",
     readAgentFile: async (_monoId: string, path: AgentFilePath) => ({
       text: files.get(path) ?? null,
       hash: hash(path),
@@ -51,7 +57,16 @@ function fixture(agent = true) {
   } as unknown as AgentAppHost;
   const run = (action: string, input: Record<string, unknown> = {}) =>
     handleAgentApp(source, `req-${Math.random()}`, action, input, host);
-  return { files, write, versions, run };
+  // The door Bot changes' Undo reads and writes through, over the same folder.
+  const botFiles = {
+    read: async (_monoId: string, path: AgentFilePath) => ({
+      text: files.get(path) ?? null,
+      hash: hash(path),
+    }),
+    write: (monoId: string, path: AgentFilePath, text: string, expected: string) =>
+      write(monoId, path, text, expected),
+  };
+  return { files, write, versions, botFiles, run };
 }
 
 it("adds, supersedes and removes dated entries in MEMORY.md", async () => {
@@ -67,6 +82,70 @@ it("adds, supersedes and removes dated entries in MEMORY.md", async () => {
     "- ~~2026-10-04 · CI runs on Travis~~ · superseded 2026-10-04\n- 2026-10-04 · CI runs on Actions\n",
   );
   expect(await run("memory.read")).toMatchObject({ lines: 2, notLoaded: 0 });
+});
+
+it("records what it remembers as one Bot changes row per file and run, whose Undo puts it back (D1)", async () => {
+  const { files, botFiles, run } = fixture();
+  await run("memory.add", { fact: "CI runs on Travis" });
+  await run("memory.add", { fact: "uses pnpm" });
+  const id = "self-write:mono-1:MEMORY.md:agent";
+  const row = findBotChange(id);
+  expect(row).toMatchObject({
+    bot: "Hivra lead",
+    line: "Hivra lead remembered: uses pnpm",
+    monoId: "mono-1",
+    file: "MEMORY.md",
+    beforeText: "",
+  });
+  // One row holds the whole run's writes, so Undo goes back to the memory as it was before the run touched it.
+  expect(row!.afterText).toContain("CI runs on Travis");
+  expect(row!.afterText).toContain("uses pnpm");
+  expect(`${row!.now}${row!.after}`).not.toMatch(/CI runs|MEMORY\.md/);
+
+  setBotFiles(botFiles);
+  await undoBotChange([id]);
+  expect(files.get("MEMORY.md")).toBe("");
+});
+
+it("says what it corrected or dropped and names the note it wrote, without printing the file (D1)", async () => {
+  const { files, botFiles, run } = fixture();
+  await run("memory.add", { fact: "v2.1 shipped", topic: "Releases" });
+  const topicRow = findBotChange("self-write:mono-1:memory/Releases.md:agent");
+  expect(topicRow).toMatchObject({
+    line: "Hivra lead added to its “Releases” note: v2.1 shipped",
+    file: "memory/Releases.md",
+    beforeText: "# Releases\n\n",
+  });
+  expect(topicRow!.afterText).toContain("v2.1 shipped");
+  expect(`${topicRow!.now}${topicRow!.after}`).not.toContain("v2.1");
+
+  await run("memory.add", { fact: "CI runs on Travis" });
+  await run("memory.replace", { find: "Travis", fact: "CI runs on Actions" });
+  expect(findBotChange("self-write:mono-1:MEMORY.md:agent")).toMatchObject({
+    line: "Hivra lead corrected its memory",
+    details: [
+      "It now reads: - 2026-10-04 · CI runs on Actions",
+      "It used to read: Travis",
+    ],
+  });
+
+  await run("memory.remove", { find: "Actions" });
+  expect(findBotChange("self-write:mono-1:MEMORY.md:agent")).toMatchObject({
+    beforeText: "",
+    details: ["It no longer remembers: Actions"],
+  });
+  expect(files.get("MEMORY.md")).toContain("~~2026-10-04 · CI runs on Travis~~");
+
+  setBotFiles(botFiles);
+  await undoBotChange(["self-write:mono-1:MEMORY.md:agent"]);
+  expect(files.get("MEMORY.md")).toBe("");
+});
+
+it("leaves no row when a run puts its memory back where it found it (D1)", async () => {
+  const { run } = fixture();
+  await run("memory.add", { fact: "wrong fact" });
+  await run("memory.remove", { find: "wrong fact" });
+  expect(findBotChange("self-write:mono-1:MEMORY.md:agent")).toBeUndefined();
 });
 
 it("keeps topic notes in their own file and lists them", async () => {

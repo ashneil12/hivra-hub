@@ -111,6 +111,7 @@ import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 /** What a Mono hears if it reaches for the old proposal path. */
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { recordSelfWrite } from "../../hub/model/botChanges";
 import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
 import { mergeSoul, readForMerge, type SoulMergeCaller } from "../../hub/model/soulMerge";
@@ -233,6 +234,14 @@ export type AgentAppHost = {
      */
     team?: string;
   } | undefined;
+  /**
+   * The Mono a session belongs to, workers included (hub/model/hubMcp.ts chatMonoOwner): a worker works as the Mono
+   * that started it, so the skills it improves are that Mono's. `monoOf` answers only a Mono's own chat and habit
+   * runs; this is not widened to them because a worker may not write a soul or memory.
+   */
+  ownerMonoOf?(sessionId: string): string | undefined;
+  /** A Mono's name by id, for the Bot changes rows its own writes leave (D1). */
+  monoNameOf?(monoId: string): string | undefined;
   /** A hidden run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
   /** A Mono's long chat (monoTreeStore.ts), when it has "Keep one long chat" on. */
@@ -348,6 +357,9 @@ const FIELDS = new Map<string, readonly string[]>([
   ["memory.add", ["fact", "topic", "until"]],
   ["memory.replace", ["find", "fact", "topic", "until"]],
   ["memory.remove", ["find", "topic"]],
+  ["skills.list", []],
+  ["skills.read", ["name"]],
+  ["skills.write", ["name", "text", "expectedHash"]],
   ["tree.zoom", ["id", "n", "at"]],
   ["tree.date", ["id"]],
   ["habits.list", []],
@@ -760,6 +772,24 @@ function memoryPath(topic: unknown): AgentFilePath {
     : `memory/${topicName(requiredString(topic, "topic", 80))}.md`;
 }
 
+/** The name a Mono's own writes show under: its name, or its id when the app can't match one. */
+function selfWriter(host: AgentAppHost, monoId: string): string {
+  return host.monoNameOf?.(monoId) ?? monoId;
+}
+
+/** A memory file in plain words: "its memory", or "its “deploy” note". */
+function memoryAbout(path: AgentFilePath): string {
+  return path === "MEMORY.md"
+    ? "its memory"
+    : `its “${path.slice("memory/".length, -".md".length)}” note`;
+}
+
+/** A line of the Mono's own writing, short enough to read in a Bot changes row. */
+function briefly(text: string, max = 90): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
+}
+
 async function handleSoul(
   source: Session,
   action: string,
@@ -778,6 +808,8 @@ async function handleSoul(
   if (typeof input.text !== "string" || input.text.length > 240_000)
     throw new Error("text must be a string under 240000 characters");
   const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
+  // The file as this write found it, so its Bot changes row can put it back (D1).
+  const before = await host.readAgentFile(monoId, "SOUL.md");
   try {
     const hash = await host.writeAgentFile(
       monoId,
@@ -785,6 +817,16 @@ async function handleSoul(
       input.text,
       expectedHash,
     );
+    const bot = selfWriter(host, monoId);
+    recordSelfWrite({
+      monoId,
+      bot,
+      file: "SOUL.md",
+      line: `${bot} changed its soul`,
+      before: before.text ?? "",
+      after: input.text,
+      run: source.id,
+    });
     return { file: "SOUL.md", updated: true, hash };
   } catch (error) {
     if (error instanceof MonoFileConflict)
@@ -797,25 +839,28 @@ async function handleSoul(
 
 /**
  * Read, change and write one memory file over the version it read, again
- * from the top when the user saved the same file in between.
+ * from the top when the user saved the same file in between. `before` is the
+ * text the edit was applied to and `after` the text left, for the Bot changes
+ * row the caller records (D1); both are equal when nothing was written.
  */
 async function editAgentFile<T>(
   host: AgentAppHost,
   monoId: string,
   path: AgentFilePath,
   edit: (text: string) => { text: string; result: T },
-): Promise<T> {
+): Promise<{ result: T; before: string; after: string }> {
   for (let attempt = 0; ; attempt++) {
     const current = await host.readAgentFile(monoId, path);
     const fallback =
       current.text == null && path !== "MEMORY.md"
         ? `# ${path.slice("memory/".length, -".md".length)}\n\n`
         : "";
-    const next = edit(current.text ?? fallback);
+    const before = current.text ?? fallback;
+    const next = edit(before);
     try {
       if (next.text !== (current.text ?? ""))
         await host.writeAgentFile(monoId, path, next.text, current.hash);
-      return next.result;
+      return { result: next.result, before, after: next.text };
     } catch (error) {
       if (!(error instanceof MonoFileConflict) || attempt >= 2)
         throw error;
@@ -826,27 +871,47 @@ async function editAgentFile<T>(
 /**
  * Keeps MEMORY.md within what loads. The archive is written first, so a line
  * is never out of one file without already being in the other. If the user
- * saved MEMORY.md in between, the trim waits for the next write.
+ * saved MEMORY.md in between, the trim waits for the next write. Both writes
+ * leave a Bot changes row: they are the Mono rewriting its own memory.
  */
 async function keepMemoryInBudget(
   host: AgentAppHost,
   monoId: string,
   keep: string,
   date: string,
+  by: { bot: string; run: string },
 ): Promise<string[]> {
   const memory = await host.readAgentFile(monoId, "MEMORY.md");
   const fitted = fitMemoryBudget(memory.text ?? "", keep, date);
   if (!fitted.moved.length) return [];
-  await editAgentFile(host, monoId, "memory/archive.md", (archive) => ({
+  const archived = await editAgentFile(host, monoId, "memory/archive.md", (archive) => ({
     text: archiveMemoryEntries(archive, fitted.moved, date),
     result: undefined,
   }));
+  recordSelfWrite({
+    monoId,
+    bot: by.bot,
+    file: "memory/archive.md",
+    line: `${by.bot} moved ${fitted.moved.length} older line${fitted.moved.length === 1 ? "" : "s"} to its memory archive`,
+    before: archived.before,
+    after: archived.after,
+    run: by.run,
+  });
   try {
     await host.writeAgentFile(monoId, "MEMORY.md", fitted.text, memory.hash);
   } catch (error) {
     if (!(error instanceof MonoFileConflict)) throw error;
     return [];
   }
+  recordSelfWrite({
+    monoId,
+    bot: by.bot,
+    file: "MEMORY.md",
+    line: `${by.bot} moved older lines out of its memory to keep it short`,
+    before: memory.text ?? "",
+    after: fitted.text,
+    run: by.run,
+  });
   return fitted.moved;
 }
 
@@ -887,10 +952,14 @@ async function handleMemory(
   const path = memoryPath(input.topic);
   const date = memoryDate(host.now?.() ?? new Date());
   const until = optionalString(input.until, "until", 10);
+  const bot = selfWriter(host, monoId);
+  // What the Mono wrote is its own change, so each write leaves a row whose Undo puts the line back (D1).
+  const record = (write: { line: string; details?: string[]; before: string; after: string }) =>
+    recordSelfWrite({ monoId, bot, file: path, run: source.id, ...write });
   const report = async (result: Record<string, unknown>, keep?: string) => {
     const moved =
       path === "MEMORY.md" && keep
-        ? await keepMemoryInBudget(host, monoId, keep, date)
+        ? await keepMemoryInBudget(host, monoId, keep, date, { bot, run: source.id })
         : [];
     return {
       file: path,
@@ -950,34 +1019,127 @@ async function handleMemory(
       };
     }
     case "memory.add": {
-      const entry = memoryEntry(requiredString(input.fact, "fact"), date, until);
-      const added = await editAgentFile(host, monoId, path, (text) => {
+      const fact = requiredString(input.fact, "fact");
+      const entry = memoryEntry(fact, date, until);
+      const write = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
         return { text: next.text, result: next.added };
       });
-      return added
-        ? report({ added: entry }, entry)
-        : { file: path, alreadyRemembered: true };
+      if (!write.result) return { file: path, alreadyRemembered: true };
+      record({
+        line:
+          path === "MEMORY.md"
+            ? `${bot} remembered: ${briefly(fact)}`
+            : `${bot} added to ${memoryAbout(path)}: ${briefly(fact)}`,
+        before: write.before,
+        after: write.after,
+      });
+      return report({ added: entry }, entry);
     }
     case "memory.replace": {
       const find = requiredString(input.find, "find", 2000);
-      const entry = memoryEntry(requiredString(input.fact, "fact"), date, until);
-      await editAgentFile(host, monoId, path, (text) => ({
+      const fact = requiredString(input.fact, "fact");
+      const entry = memoryEntry(fact, date, until);
+      const write = await editAgentFile(host, monoId, path, (text) => ({
         text: supersedeMemoryEntry(text, find, entry, date),
         result: undefined,
       }));
+      record({
+        line: `${bot} corrected ${memoryAbout(path)}`,
+        details: [`It now reads: ${briefly(entry, 160)}`, `It used to read: ${briefly(find, 160)}`],
+        before: write.before,
+        after: write.after,
+      });
       return report({ superseded: find, added: entry }, entry);
     }
     case "memory.remove": {
       const find = requiredString(input.find, "find", 2000);
-      const removed = await editAgentFile(host, monoId, path, (text) => {
+      const write = await editAgentFile(host, monoId, path, (text) => {
         const next = removeMemoryEntry(text, find);
         return { text: next.text, result: next.removed };
       });
-      return { file: path, removed };
+      if (write.result)
+        record({
+          line: `${bot} removed a line from ${memoryAbout(path)}`,
+          details: [`It no longer remembers: ${briefly(find, 160)}`],
+          before: write.before,
+          after: write.after,
+        });
+      return { file: path, removed: write.result };
     }
   }
   throw new Error(`Unknown app action: ${action}`);
+}
+
+/**
+ * A skill's name: the same jail the backend applies to a file in a Mono's folder (src-tauri/src/mono.rs valid_name), said
+ * here first so the agent gets a reason it can act on rather than an error from deeper in.
+ */
+function skillName(value: unknown): string {
+  const name = requiredString(value, "name", 80).replace(/\.md$/i, "");
+  if (!name || name.startsWith(".") || !/^[A-Za-z0-9 ._-]+$/.test(name))
+    throw new Error(
+      "name must be a short skill name: letters, numbers, spaces, dots, dashes and underscores, not starting with a dot",
+    );
+  return name;
+}
+
+/**
+ * The skills a Mono keeps for itself (skills/<name>.md). A Mono reads and improves its own; a worker improves the ones
+ * of the Mono it works as (A7), which is how what a worker learns reaches the next run. Every write is the Mono's own
+ * change, so it leaves a Bot changes row whose Undo puts the file back (D1).
+ */
+async function handleSkills(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  // A worker works as the Mono that started it (hubMcp.ts chatMonoOwner); its own chat and habit runs are covered too.
+  const monoId =
+    host.ownerMonoOf?.(source.id) ??
+    (host.isMono(source.id) ? host.monoOf?.(source.id)?.id : undefined);
+  if (!monoId)
+    throw new Error(
+      "A skill belongs to a Mono. This chat isn't one, and no Mono started it.",
+    );
+  if (action === "skills.list") {
+    const files = await host.agentFiles(monoId);
+    return { skills: files.skills ?? [] };
+  }
+  const name = skillName(input.name);
+  const path: AgentFilePath = `skills/${name}.md`;
+  if (action === "skills.read") {
+    const file = await host.readAgentFile(monoId, path);
+    return { file: path, text: file.text ?? "", exists: file.text != null, hash: file.hash };
+  }
+  if (typeof input.text !== "string" || input.text.length > 240_000)
+    throw new Error("text must be a string under 240000 characters");
+  const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
+  const before = await host.readAgentFile(monoId, path);
+  try {
+    const hash = await host.writeAgentFile(monoId, path, input.text, expectedHash);
+    const bot = selfWriter(host, monoId);
+    recordSelfWrite({
+      monoId,
+      bot,
+      file: path,
+      line:
+        before.text == null
+          ? `${bot} wrote a new skill, “${name}”`
+          : `${bot} changed the “${name}” skill`,
+      before: before.text ?? "",
+      after: input.text,
+      run: source.id,
+    });
+    return { file: path, updated: true, hash };
+  } catch (error) {
+    if (error instanceof MonoFileConflict)
+      throw new Error(
+        `${path} changed since you read it. Run skills.read and reapply your improvements to the current text before writing again.`,
+      );
+    throw error;
+  }
 }
 
 function habitView(habit: Habit) {
@@ -1287,6 +1449,8 @@ export async function handleAgentApp(
   }
   if (action.startsWith("memory."))
     return handleMemory(source, action, input, host);
+  if (action.startsWith("skills."))
+    return handleSkills(source, action, input, host);
   if (action.startsWith("tree."))
     return handleTree(source, action, input, host);
   if (action.startsWith("habits."))

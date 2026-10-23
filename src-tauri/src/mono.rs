@@ -14,7 +14,9 @@
 //!     ├── habits.json       what it does on its own, on a schedule
 //!     ├── chats.json        its chat id, and the ones it had before
 //!     ├── soul-template.md  the app's soul template as it last took it (soul refresh, soulRefresh.ts)
-//!     └── memory/           topic notes read on demand, and archive.md
+//!     ├── memory/           topic notes read on demand, and archive.md
+//!     └── skills/           how-to notes it wrote for itself, one `<name>.md` each (A7: a worker can read and improve
+//!                           the skill it works as; the same path jail as memory/)
 //! ```
 //!
 //! A Mono is not tied to a project, so its folder is named by its own id. One
@@ -52,6 +54,8 @@ const TEAMS_DIR: &str = "mono-teams";
 const SOUL_FILE: &str = "SOUL.md";
 const MEMORY_FILE: &str = "MEMORY.md";
 const MEMORY_DIR: &str = "memory";
+/// Skill files a Mono keeps for itself, one `<name>.md` each, beside its memory.
+const SKILLS_DIR: &str = "skills";
 const HABITS_FILE: &str = "habits.json";
 /// Colour themes a Mono made, one `<name>.json` each (themeFiles.ts checks them before any is shown).
 const THEMES_DIR: &str = "themes";
@@ -109,10 +113,12 @@ pub struct AgentFiles {
     pub topics: Vec<String>,
     /// Theme files under themes/, by name without `.json`.
     pub themes: Vec<String>,
+    /// Skill files under skills/, by name without `.md`.
+    pub skills: Vec<String>,
 }
 
 /// The files the app reads and writes for an agent, relative to its folder: SOUL.md, MEMORY.md, habits.json,
-/// chats.json, soul-template.md, one `memory/<name>.md`, or one `themes/<name>.json`.
+/// chats.json, soul-template.md, one `memory/<name>.md`, one `themes/<name>.json`, or one `skills/<name>.md`.
 /// Nothing nested, nothing hidden, so a path from the agent's CLI can never leave the folder.
 fn resolve_file(dir: &Path, relative: &str) -> Result<PathBuf, String> {
     if [
@@ -130,6 +136,8 @@ fn resolve_file(dir: &Path, relative: &str) -> Result<PathBuf, String> {
         (MEMORY_DIR, rest.strip_suffix(".md"), "md")
     } else if let Some(rest) = relative.strip_prefix("themes/") {
         (THEMES_DIR, rest.strip_suffix(".json"), "json")
+    } else if let Some(rest) = relative.strip_prefix("skills/") {
+        (SKILLS_DIR, rest.strip_suffix(".md"), "md")
     } else {
         return Err(format!("Not an agent file: {relative}"));
     };
@@ -175,6 +183,10 @@ fn topics(dir: &Path) -> Vec<String> {
 
 fn themes(dir: &Path) -> Vec<String> {
     list_names(dir, THEMES_DIR, "json", "")
+}
+
+fn skills(dir: &Path) -> Vec<String> {
+    list_names(dir, SKILLS_DIR, "md", "")
 }
 
 /// This copy's `<app data>/monos`, after moving an older `agents/` folder to it.
@@ -366,6 +378,7 @@ fn load(root: &Path, mono: &str, legacy_project: Option<&str>) -> Result<AgentFi
         memory_path: memory_path.to_string_lossy().into_owned(),
         topics: topics(&dir),
         themes: themes(&dir),
+        skills: skills(&dir),
         dir: dir.to_string_lossy().into_owned(),
     })
 }
@@ -404,8 +417,15 @@ fn save(
     let _guard = FILES_LOCK.lock().map_err(|e| e.to_string())?;
     let dir = agent_dir(root, mono, legacy_project)?;
     let path = resolve_file(&dir, relative)?;
-    if relative.starts_with("themes/") {
-        let folder = dir.join(THEMES_DIR);
+    let made = if relative.starts_with("themes/") {
+        Some(THEMES_DIR)
+    } else if relative.starts_with("skills/") {
+        Some(SKILLS_DIR)
+    } else {
+        None
+    };
+    if let Some(folder) = made {
+        let folder = dir.join(folder);
         std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     }
     if let Some(expected) = expected_hash {
@@ -1153,6 +1173,39 @@ mod tests {
             "themes/.json",
         ] {
             assert!(save(&root, "m", None, path, "{}", None).is_err(), "{path}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_writes_and_lists_skill_files_inside_the_folder_only() {
+        let root = temp_root();
+        assert!(load(&root, "m", None).unwrap().skills.is_empty());
+        save(
+            &root,
+            "m",
+            None,
+            "skills/release.md",
+            "# Release\n\nHow to ship.",
+            None,
+        )
+        .unwrap();
+        let loaded = load(&root, "m", None).unwrap();
+        assert_eq!(loaded.skills, vec!["release".to_string()]);
+        let skill = read(&root, "m", None, "skills/release.md").unwrap();
+        assert_eq!(skill.text.as_deref(), Some("# Release\n\nHow to ship."));
+        assert!(read(&root, "m", None, "skills/none.md")
+            .unwrap()
+            .text
+            .is_none());
+        for path in [
+            "skills/../SOUL.md",
+            "skills/a/b.md",
+            "skills/.hidden.md",
+            "skills/release.json",
+            "skills/.md",
+        ] {
+            assert!(save(&root, "m", None, path, "x", None).is_err(), "{path}");
         }
         std::fs::remove_dir_all(root).unwrap();
     }

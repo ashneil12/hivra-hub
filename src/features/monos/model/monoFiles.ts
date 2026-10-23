@@ -27,13 +27,18 @@ export type MonoFiles = {
   topics: string[];
   /** Theme files under themes/, by name without `.json` (older backends leave it out). */
   themes?: string[];
+  /** Skill files under skills/, by name without `.md` (older backends leave it out). */
+  skills?: string[];
 };
 
 type LoadedFiles = Omit<MonoFiles, "soul"> & { soul: string | null };
 
 export type MonoFile = "soul" | "memory";
 
-/** An agent file by its path in the agent's folder. */
+/**
+ * An agent file by its path in the agent's folder. A skill is how-to knowledge a Mono keeps for itself; a worker may
+ * read and improve the one it works as (A7), so it is reachable where its soul and memory are, under the same jail.
+ */
 export type AgentFilePath =
   | "SOUL.md"
   | "MEMORY.md"
@@ -41,7 +46,8 @@ export type AgentFilePath =
   | "chats.json"
   | "soul-template.md"
   | `memory/${string}.md`
-  | `themes/${string}.json`;
+  | `themes/${string}.json`
+  | `skills/${string}.md`;
 
 const FILE_PATH: Record<MonoFile, AgentFilePath> = {
   soul: "SOUL.md",

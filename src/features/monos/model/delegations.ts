@@ -25,8 +25,10 @@ import {
   completionMessage,
   completionReceipt,
   monoSessionCompletionResult,
+  withReviewBackstop,
   type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
+import { storedReview } from "./workerReview";
 
 export type DelegationState =
   | "running"
@@ -84,6 +86,10 @@ export type Delegation = {
   stallReason?: string | null;
   /** Since when it has been stuck this way (its last activity, or when the loop was seen), epoch ms. */
   stalledAt?: number | null;
+  /** This worker's report owes a self-review (workerReview.ts); absent on older rows and followed briefs. */
+  reviewRequired?: boolean;
+  /** The accepted self-review, as JSON (workerReview.ts), once the row is settled. */
+  selfReview?: string | null;
 };
 
 /**
@@ -124,6 +130,8 @@ export type RecordInput = {
   follow?: FollowMode;
   /** The open row the owner works for (a Lead's current brief), when the app knows it. */
   parentId?: string;
+  /** A delegated worker's report must carry a self-review; its settle is refused without one (workerReview.ts). */
+  reviewRequired?: boolean;
 };
 
 export type SettleInput = {
@@ -136,6 +144,8 @@ export type SettleInput = {
   retryable?: boolean;
   resetsAt?: number;
   by?: string;
+  /** The accepted self-review, as JSON: what the worker checked, how, and what is still open. */
+  selfReview?: string;
 };
 
 export type DeliveryInput = {
@@ -261,24 +271,41 @@ export function isOwed(row: Pick<Delegation, "state" | "delivery">): boolean {
 
 /** What the row's settle stores: the report's status, text and the provider's reason for a failure. */
 export function settleInput(
-  row: Pick<Delegation, "id" | "generation">,
+  row: Pick<Delegation, "id" | "generation"> & { reviewRequired?: boolean },
   result: MonoSessionCompletionResult,
   by?: string,
 ): SettleInput {
-  const resetsAt = result.resetsAt ? Date.parse(result.resetsAt) : NaN;
+  // The row is the durable truth about whether this report owes a self-review; a result built without that (an older
+  // caller) is judged by it too, so no path settles a delegated report as done unchecked.
+  const judged = withReviewBackstop(
+    row.reviewRequired && !result.reviewRequired
+      ? { ...result, reviewRequired: true }
+      : result,
+  );
+  const resetsAt = judged.resetsAt ? Date.parse(judged.resetsAt) : NaN;
   return {
     id: row.id,
     generation: row.generation,
-    state: result.status,
-    result: result.result,
-    ...(result.reason || result.error
-      ? { error: result.reason ?? result.error }
+    state: judged.status,
+    result: judged.result,
+    ...(judged.reason || judged.error
+      ? { error: judged.reason ?? judged.error }
       : {}),
-    ...(result.errorClass ? { errorClass: result.errorClass } : {}),
-    ...(result.retryable !== undefined ? { retryable: result.retryable } : {}),
+    ...(judged.errorClass ? { errorClass: judged.errorClass } : {}),
+    ...(judged.retryable !== undefined ? { retryable: judged.retryable } : {}),
     ...(Number.isFinite(resetsAt) ? { resetsAt } : {}),
+    ...(judged.review ? { selfReview: JSON.stringify(judged.review) } : {}),
     ...(by ? { by } : {}),
   };
+}
+
+/** The self-review part of a stored row's result: the accepted one, or the fact that one was owed and is missing. */
+function reviewFields(
+  row: Delegation,
+): Pick<MonoSessionCompletionResult, "review" | "reviewRequired"> {
+  const review = storedReview(row.selfReview);
+  if (review) return { review, reviewRequired: true };
+  return row.reviewRequired ? { reviewRequired: true } : {};
 }
 
 /** A finished row's report, rebuilt from what the row stored (its in-memory batch is gone). */
@@ -307,6 +334,7 @@ export function storedResult(
     originalPrompt: prompt.slice(0, 12_000),
     result: result.slice(0, 12_000),
     truncated: result.length >= 12_000,
+    ...reviewFields(row),
     ...(row.error ? { error: row.error } : {}),
     ...(status === "failed" && errorClass
       ? {
@@ -337,6 +365,7 @@ export function transcriptResult(
     outcome,
     session: child,
     latestTurn: row.generation > 1,
+    reviewRequired: row.reviewRequired,
   });
 }
 
@@ -844,9 +873,11 @@ export class DelegationTracker {
 
   /** Queue one row's report under its receipt. Only inside a serial job. */
   private async report(row: Delegation, result: MonoSessionCompletionResult) {
+    // Settling and reporting both judge the self-review here, so a report settled as failed for a missing one never
+    // reaches the Lead as a done result (the settle already carries the same downgrade).
     const message = completionMessage(
       completionReceipt(row.requestId, row.generation),
-      [result],
+      [withReviewBackstop(result)],
     );
     const already =
       row.delivery === "queued" && row.deliveryMessage === message.id;

@@ -39,6 +39,7 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import type { AgentAppHost } from "./agentApp";
@@ -242,10 +243,11 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
 
 /**
  * What every worker works by, in its brief (baseline, 20 Oct: two workers shared a port and one killed the other's dev
- * server): its own port, never another's process, its own checkout.
+ * server): its own port, never another's process, its own checkout, and the self-review its report has to end with
+ * (A7: the app refuses a report without one, so "I checked it" is a recorded fact, not a claim).
  */
 export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- End your report with a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
 }
 
 /**
@@ -426,9 +428,14 @@ function taskView(
       ? row.errorClass
       : undefined;
   const resetsAt = iso(row.resetsAt);
+  // A7: the worker's own answer about its work, beside its result, so a Lead reviewing a done task reads what was
+  // checked and what is still open without going to the worker's chat for it.
+  const review = storedReview(row.selfReview);
   return {
     ...statusView(row, child),
     childSessionId: row.childSession,
+    ...(row.reviewRequired ? { selfReviewRequired: true } : {}),
+    ...(review ? { selfReview: review } : {}),
     ...(row.result ? { result: row.result } : {}),
     ...(row.error ? { error: row.error } : {}),
     ...(errorClass

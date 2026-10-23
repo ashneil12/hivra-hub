@@ -202,7 +202,7 @@ fn tools() -> Value {
         {
             "name": "delegate_task",
             "title": "Delegate a task",
-            "description": "Hand one job to a worker: a new chat nested under yours, started with only this brief (it does not see your conversation). The task is stored, survives app restarts, and reports back to you as a new turn once you are idle. Use mode async (the default) for real work: say in one line what you started, then end your turn; do not poll or do the work yourself. Use mode wait only for a short job whose result you need in this turn: it blocks until the task finishes, asks a question, or timeoutMinutes pass (waitTimedOut; the task keeps running and still reports). isolation worktree gives the worker its own git worktree from your project's current commit (uncommitted edits are not copied). Keep the same clientRequestId when retrying the same delegation so it never starts twice. Over the project's worker limit a task waits (status waiting) and starts by itself.",
+            "description": "Hand one job to a worker: a new chat nested under yours, started with only this brief (it does not see your conversation). The task is stored, survives app restarts, and reports back to you as a new turn once you are idle. The worker's report must end with its self-review, \"## Self-review\" and the three lines Checked: / How: / Unsure:; a report without one comes straight back to it once, and a second miss is recorded as failed rather than done, so never take \"done\" on trust. Use mode async (the default) for real work: say in one line what you started, then end your turn; do not poll or do the work yourself. Use mode wait only for a short job whose result you need in this turn: it blocks until the task finishes, asks a question, or timeoutMinutes pass (waitTimedOut; the task keeps running and still reports). isolation worktree gives the worker its own git worktree from your project's current commit (uncommitted edits are not copied). Keep the same clientRequestId when retrying the same delegation so it never starts twice. Over the project's worker limit a task waits (status waiting) and starts by itself.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -230,7 +230,7 @@ fn tools() -> Value {
         {
             "name": "task_status",
             "title": "Read your tasks",
-            "description": "Your delegated tasks: status (running, question, completed, failed, cancelled), activity, last active time, the result or the provider's reason for a failure, a worker's pending question, and counts of the tasks it delegated in turn. Reading a finished result marks it read, so no report turn follows for it. Without taskIds it also lists the team's other open jobs (othersRunning: each job's title, who started it and its project; read only).",
+            "description": "Your delegated tasks: status (running, question, completed, failed, cancelled), activity, last active time, the result or the provider's reason for a failure, the worker's self-review (what it checked, how, what is still unsure), a worker's pending question, and counts of the tasks it delegated in turn. Reading a finished result marks it read, so no report turn follows for it. Without taskIds it also lists the team's other open jobs (othersRunning: each job's title, who started it and its project; read only).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "taskIds": task_ids.clone() },

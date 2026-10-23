@@ -36,7 +36,9 @@ import {
   enqueueMonoSessionCompletion,
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
+  type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
+import { reviewAsk } from "../features/monos/model/workerReview";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -54,7 +56,7 @@ import {
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
-import { hasAshOsTools, hasDelegateTool } from "../features/hub/model/hubMcp";
+import { chatMonoOwner, hasAshOsTools, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
 import {
   codingTeamChatProject,
@@ -12780,6 +12782,9 @@ function Workspace({
             brief: prompt,
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
+            // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
+            // when the turn settles through a restart's recovery path.
+            ...(delegation ? { reviewRequired: true } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
@@ -12795,28 +12800,55 @@ function Workspace({
             // Its title names it in "still running: ..." while the others report (monoSessionCompletion.ts).
             { awaitAcceptance: true, generation: row?.generation ?? 1, title: delegation?.title ?? title },
           );
+          // A7: a delegated worker's report has to end with its self-review (workerReview.ts) before the task settles.
+          // One without it is asked for once — the same entry, so the report still goes out with this turn's others —
+          // and a second miss settles failed with the plain reason, so a Lead never reads "done" without the checks.
+          const reviewRequired = !!delegation;
+          let settled = false;
+          let asked = false;
+          const finish = (result: MonoSessionCompletionResult) => {
+            if (settled) return;
+            settled = true;
+            launch?.settle(result);
+            settle(result);
+          };
+          const turnEnded = async (outcome: ControlOutcome, latestTurn: boolean) => {
+            faultStop.done();
+            const result = monoSessionCompletionResult({
+              requestId,
+              sessionId,
+              project,
+              prompt,
+              outcome: faultedOutcome(outcome, fault, faultStop.stopped()),
+              ...faultedReply(outcome, fault, faultStop.stopped()),
+              session: sessionsRef.current.find(
+                (session) => session.id === sessionId,
+              ),
+              // The re-ask's answer is the session's latest turn, not the block the request named.
+              ...(latestTurn ? { latestTurn: true } : {}),
+              ...(reviewRequired ? { reviewRequired: true } : {}),
+            });
+            // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
+            // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
+            if (holdForLimit(result)) {
+              settle.discard();
+              return;
+            }
+            if (result.status === "completed" && result.reviewProblem && !asked) {
+              asked = true;
+              // Sending it now carries the worker on into the second turn; `onSettled` keeps that turn's own report
+              // on this same row, with the review it is asked for.
+              const accepted = await submitSessionRef.current(sessionId, reviewAsk(result.reviewProblem), [], {
+                onSettled: (next) => void turnEnded(next, true),
+              });
+              if (!accepted) finish(result);
+              return;
+            }
+            finish(result);
+          };
           return Object.assign(
             (outcome: ControlOutcome) => {
-              faultStop.done();
-              const result = monoSessionCompletionResult({
-                requestId,
-                sessionId,
-                project,
-                prompt,
-                outcome: faultedOutcome(outcome, fault, faultStop.stopped()),
-                ...faultedReply(outcome, fault, faultStop.stopped()),
-                session: sessionsRef.current.find(
-                  (session) => session.id === sessionId,
-                ),
-              });
-              // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
-              // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
-              if (holdForLimit(result)) {
-                settle.discard();
-                return;
-              }
-              launch?.settle(result);
-              settle(result);
+              void turnEnded(outcome, false);
             },
             {
               accept: () => {
@@ -13343,6 +13375,13 @@ function Workspace({
                     : {}),
                 }
               );
+            },
+            // A worker works as the Mono it was started under, so its skills are that Mono's (A7). Not `monoOf`: a
+            // worker may not write a soul or memory.
+            ownerMonoOf: (id) => chatMonoOwner(id),
+            monoNameOf: (monoId) => {
+              const mono = findMono(monoId);
+              return mono ? monoLook(mono).name : undefined;
             },
             habits: { load: loadHabits, update: updateHabits },
             tasks: delegationTasksHost({

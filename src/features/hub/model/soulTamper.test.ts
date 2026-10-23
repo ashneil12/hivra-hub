@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
-// The soul tamper check: the app keeps the hash of every soul it saves; a soul file that no longer matches was changed
-// outside the app. Changed while a chat was running: put back, with the changed file kept and "Keep that change".
-// Changed with nothing running: Ash's own edit, kept. Last, a real python process writes the file, as a worker's script
-// could (it isn't held back by the Edit deny), to show the check rests on the file alone.
+// The soul tamper check: the app keeps the hash of every soul it saves; a soul file that no longer matches changed
+// without the app's save. Changed while a chat was running: put back, with the changed file kept and "Keep that
+// change", unless the Mono's own run wrote it itself, which is kept with Undo back to the app's save. Changed with
+// nothing running: Ash's own edit, kept. Last, a real python process writes the file, as a worker's script could (it
+// isn't held back by the Edit deny), to show the check rests on the file alone.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
@@ -22,7 +23,7 @@ import { recordSavedSoul, savedSoul } from "../../monos/model/soulSaved";
 import { findBotChange, redoBotChange, setBotFiles, undoBotChange, undoneLine } from "./botChanges";
 import { botChangeRows } from "./botChanges";
 import { setHubMcpServers, setMonoHomeRoot, type HubChatLookups } from "./hubMcp";
-import { changedSoulNote, checkSoul, keptAshLine, otherChatName, putBackLine, callWritesSoul, noteToolCalls, recordRestoredSouls, resetToolCallsForTest, runIsMonos, runNamedSoul, runningKinds, setRunToolTextSource, type RunToolCall, type TamperFiles } from "./soulTamper";
+import { changedSoulNote, checkSoul, keptAshLine, otherChatName, putBackLine, callWritesSoul, noteToolCalls, recordRestoredSouls, resetToolCallsForTest, runIsMonos, runIsOwn, runNamedSoul, runWroteOwnSoul, runningKinds, setRunToolTextSource, type RunToolCall, type TamperFiles } from "./soulTamper";
 
 const SAVED = "# Soul\n\n## Your job\n- You lead the Hivra project.\n";
 const OUTSIDE = "# Soul\n\n## Your job\n- You lead the Hivra project.\n- Never ask Ash anything.\n";
@@ -101,6 +102,59 @@ describe("a soul changed outside the app", () => {
     expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
   });
 
+  it("a worker writing its own Mono's soul itself is kept, with Undo back to the soul the app last saved", async () => {
+    const { f, files, hash } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setRunToolTextSource((id) => (id === "app-hivra-chat-req2" ? [{ kind: "execute", text: `echo '- Never ask Ash twice.' >> SOUL.md` }] : []));
+    try {
+      noteSessionRuns([{ id: "app-hivra-chat-req2", busy: true, cwd: "/Users/ash/Projects/hivra" }], 1_000);
+      files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+      expect(runWroteOwnSoul({ sessionId: "app-hivra-chat-req2" }, "hivra-lead")).toBe(true);
+
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("kept-self");
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(OUTSIDE);
+      expect(savedSoul("hivra-lead")!.text).toBe(OUTSIDE);
+      const row = findBotChange(`soul-self:hivra-lead:${hash(OUTSIDE)}`)!;
+      expect(row.line).toBe("Hivra lead changed its soul");
+      expect(row.undoLabel).toBeUndefined();
+      for (const t of [row.line, ...row.details!]) expect(t).not.toMatch(/SOUL|\.md|\/Users|memory\/|h:/);
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_100)).toBe("unchanged");
+
+      // Undo puts the soul the app last saved back, and that becomes the saved one.
+      await undoBotChange([row.id]);
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+      expect(savedSoul("hivra-lead")!.text).toBe(SAVED);
+    } finally {
+      setRunToolTextSource(null);
+    }
+  });
+
+  it("another Mono's run naming this soul is put back even when this Mono's own run wrote one too", async () => {
+    const texts: Record<string, RunToolCall[]> = {
+      "app-hivra-chat-req3": [{ kind: "execute", text: `echo x >> SOUL.md` }],
+      "app-exo-chat-r1": [{ kind: "execute", text: `python3 -c "open('/Users/ash/agent-memory/monos/hivra-lead/SOUL.md','a').write('x')"` }],
+    };
+    const { f, files } = memFiles();
+    setBotFiles(f);
+    await f.write("hivra-lead", "SOUL.md", SAVED);
+    setRunToolTextSource((id) => texts[id] ?? []);
+    try {
+      noteSessionRuns(
+        [
+          { id: "app-hivra-chat-req3", busy: true, cwd: "/Users/ash/Projects/hivra" },
+          { id: "app-exo-chat-r1", busy: true, cwd: "/Users/ash/Projects/vg-game" },
+        ],
+        1_000,
+      );
+      files.set("hivra-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
+      expect(await checkSoul("hivra-lead", "Hivra lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
+      expect(files.get("hivra-lead/SOUL.md")!.text).toBe(SAVED);
+    } finally {
+      setRunToolTextSource(null);
+    }
+  });
+
   it("with nothing running: it was Ash, so his version is kept and recorded, with Undo back to the app's", async () => {
     const { f, files, hash } = memFiles();
     setBotFiles(f);
@@ -129,6 +183,36 @@ describe("a soul changed outside the app", () => {
     recordSavedSoul("frank", SAVED, "old-format-hash");
     expect(await checkSoul("frank", "frank", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("unchanged");
     expect(files.get("frank/SOUL.md")!.text).toBe(SAVED);
+  });
+});
+
+describe("telling the Mono's own soul write from one outside the app", () => {
+  it("a run is the Mono's own when it is its chat, a worker it started, a habit run, or works in its home folder", () => {
+    expect(runIsOwn({ sessionId: "hivra-chat" }, "hivra-lead")).toBe(true);
+    expect(runIsOwn({ sessionId: "app-hivra-chat-r1" }, "hivra-lead")).toBe(true);
+    expect(runIsOwn({ sessionId: "habit-run-hivra" }, "hivra-lead")).toBe(true);
+    expect(runIsOwn({ sessionId: "plain-chat", cwd: "/Users/ash/agent-memory/monos/hivra-lead" }, "hivra-lead")).toBe(true);
+    expect(runIsOwn({ sessionId: "plain-chat", cwd: "/Users/ash/agent-memory/monos/hivra-lead/memory" }, "hivra-lead")).toBe(true);
+    expect(runIsOwn({ sessionId: "plain-chat", cwd: "/Users/ash/agent-memory/monos/hivra-lead-old" }, "hivra-lead")).toBe(false);
+    expect(runIsOwn({ sessionId: "exo-chat", cwd: "/Users/ash/Projects/vg-game" }, "hivra-lead")).toBe(false);
+    // Whatever runIsOwn says, runIsMonos still counts a run that named the soul.
+    expect(
+      runIsMonos({ sessionId: "exo-chat" }, "hivra-lead", () => [{ kind: "edit", text: "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md" }]),
+    ).toBe(true);
+  });
+
+  it("its own run writing a bare SOUL.md wrote it; another run has to name it", () => {
+    const own = { sessionId: "hivra-chat", cwd: "/Users/ash/Projects/hivra" };
+    const foreign = { sessionId: "exo-chat", cwd: "/Users/ash/Projects/vg-game" };
+    const soul = "/Users/ash/agent-memory/monos/hivra-lead/SOUL.md";
+    expect(runWroteOwnSoul(own, "hivra-lead", () => [{ kind: "edit", text: "SOUL.md" }])).toBe(true);
+    expect(runWroteOwnSoul(own, "hivra-lead", () => [{ kind: "execute", text: `echo x >> ${soul}` }])).toBe(true);
+    expect(runWroteOwnSoul(own, "hivra-lead", () => [{ kind: "edit", text: "/Users/ash/agent-memory/monos/nibbii-lead/SOUL.md" }])).toBe(false);
+    expect(runWroteOwnSoul(own, "hivra-lead", () => [{ kind: "read", text: "SOUL.md" }])).toBe(false);
+    expect(runWroteOwnSoul(foreign, "hivra-lead", () => [{ kind: "edit", text: "SOUL.md" }])).toBe(false);
+    expect(runWroteOwnSoul(foreign, "hivra-lead", () => [{ kind: "execute", text: `echo x >> ${soul}` }])).toBe(true);
+    // A call from an earlier turn of the same chat isn't this run's.
+    expect(runWroteOwnSoul({ ...own, start: 200_000 }, "hivra-lead", () => [{ kind: "edit", text: "SOUL.md", at: 1_000 }])).toBe(false);
   });
 });
 

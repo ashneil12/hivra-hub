@@ -5,6 +5,11 @@ import {
   MonoFileConflict,
   type AgentFilePath,
 } from "../../monos/model/monoFiles";
+import {
+  findBotChange,
+  setBotFiles,
+  undoBotChange,
+} from "../../hub/model/botChanges";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 
 function fixture(kind: "mono" | "habit" | "session" = "mono") {
@@ -40,7 +45,12 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     isMono: (id: string) => kind === "mono" && id === source.id,
     monoOf: () =>
       kind === "session" ? undefined : { id: "mono-1", projects: [] },
+    monoNameOf: () => "Hivra lead",
     agentFiles,
+    readAgentFile: async (_monoId: string, path: AgentFilePath) => ({
+      text: path === "SOUL.md" ? soul : null,
+      hash: hash(),
+    }),
     writeAgentFile: write,
   } as unknown as AgentAppHost;
   const run = (action: string, input: Record<string, unknown> = {}) =>
@@ -50,6 +60,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     write,
     agentFiles,
     soul: () => soul,
+    hash,
     userEdit: (text: string) => {
       soul = text;
       version++;
@@ -159,4 +170,36 @@ it("passes through storage failures", async () => {
       expectedHash: "soul@0",
     }),
   ).rejects.toThrow("Storage unavailable");
+});
+
+it("records its own soul write as a Bot changes row whose Undo puts the file back (D1)", async () => {
+  const { run, write, soul, hash } = fixture();
+  const before = soul();
+  const text = "# Soul\n\n- Be brief.\n- Use British English.\n";
+  await run("soul.update", { text, expectedHash: "soul@0" });
+  const row = findBotChange("self-write:mono-1:SOUL.md:chat");
+  expect(row).toMatchObject({
+    bot: "Hivra lead",
+    line: "Hivra lead changed its soul",
+    monoId: "mono-1",
+    file: "SOUL.md",
+    beforeText: before,
+    afterText: text,
+  });
+  // The row reads in plain words, never as the file's contents, and it is not bundled away as a small change.
+  expect(row?.small).toBeUndefined();
+  expect(`${row!.now}${row!.after}${(row!.details ?? []).join(" ")}`).not.toMatch(
+    /Be brief|SOUL\.md|Users\/|\/data\//,
+  );
+
+  setBotFiles({
+    read: async (_monoId, path) => ({
+      text: path === "SOUL.md" ? soul() : null,
+      hash: hash(),
+    }),
+    write,
+  });
+  await undoBotChange([row!.id]);
+  expect(soul()).toBe(before);
+  expect(findBotChange(row!.id)?.undone).toBe(true);
 });

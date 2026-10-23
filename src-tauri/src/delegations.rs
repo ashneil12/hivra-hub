@@ -64,6 +64,9 @@ const ERROR_MAX: usize = 2_000;
 const QUESTION_MAX: usize = 2_000;
 const LOG_MAX: usize = 50;
 const ASKS_MAX: usize = 50;
+/// A worker's self-review is three lines, not a second report (workerReview.ts has the same limits).
+const REVIEW_FIELD_MAX: usize = 1_000;
+const REVIEW_TOTAL_MAX: usize = 4_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -95,6 +98,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            updated_at INTEGER NOT NULL,
            settled_at INTEGER,
            log TEXT NOT NULL DEFAULT '[]',
+           review_required INTEGER NOT NULL DEFAULT 0,
+           self_review TEXT,
            version INTEGER NOT NULL DEFAULT 1,
            mirrored_version INTEGER NOT NULL DEFAULT 0,
            mirror_error TEXT,
@@ -134,6 +139,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN stalled_at INTEGER;",
         )?;
     }
+    let has_review = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'self_review'")?
+        .exists([])?;
+    if !has_review {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE delegations ADD COLUMN self_review TEXT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -168,6 +182,10 @@ pub struct Delegation {
     pub updated_at: i64,
     pub settled_at: Option<i64>,
     pub log: Vec<Value>,
+    /// Whether its report must carry a self-review before it can be marked done: a delegated worker's always does.
+    pub review_required: bool,
+    /// The accepted self-review, as JSON: what the worker checked, how, and what is still unsure.
+    pub self_review: Option<String>,
     pub version: i64,
     pub mirrored_version: i64,
     pub mirror_error: Option<String>,
@@ -224,7 +242,7 @@ impl Delegation {
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at";
+     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review";
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
@@ -264,6 +282,8 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         stall_kind: row.get(31)?,
         stall_reason: row.get(32)?,
         stalled_at: row.get(33)?,
+        review_required: row.get::<_, i64>(34)? != 0,
+        self_review: row.get(35)?,
     })
 }
 
@@ -290,7 +310,8 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
     conn.execute(
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)"
+             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, \
+             ?35, ?36)"
         ),
         params![
             d.id,
@@ -327,6 +348,8 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.stall_kind,
             d.stall_reason,
             d.stalled_at,
+            i64::from(d.review_required),
+            d.self_review,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -339,7 +362,7 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
         "UPDATE delegations SET generation = ?2, state = ?3, error_class = ?4, error = ?5, retryable = ?6,
            resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
            updated_at = ?12, settled_at = ?13, log = ?14, version = ?15, stall_kind = ?16, stall_reason = ?17,
-           stalled_at = ?18
+           stalled_at = ?18, review_required = ?19, self_review = ?20
          WHERE id = ?1",
         params![
             d.id,
@@ -360,6 +383,8 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.stall_kind,
             d.stall_reason,
             d.stalled_at,
+            i64::from(d.review_required),
+            d.self_review,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -429,6 +454,38 @@ fn ask_id_ok(value: &str) -> bool {
     })
 }
 
+/// A worker's self-review (workerReview.ts), checked again here: what it checked, how, and what is still unsure, each a
+/// line or two. Returned as the exact JSON the webview reads back, so stored keys are never the caller's own.
+fn review_json(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = text(value, REVIEW_TOTAL_MAX * 2) else {
+        return Ok(None);
+    };
+    let parsed: Value = serde_json::from_str(&raw).map_err(|_| {
+        "The self-review isn't in the shape the app records: it needs checked, how and unsure as text.".to_string()
+    })?;
+    let mut kept = serde_json::Map::new();
+    let mut total = 0;
+    for key in ["checked", "how", "unsure"] {
+        let part = parsed
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if part.is_empty() || part.chars().count() > REVIEW_FIELD_MAX {
+            return Err(
+                "The self-review needs checked, how and unsure, each a sentence or two."
+                    .to_string(),
+            );
+        }
+        total += part.chars().count();
+        kept.insert(key.into(), json!(part));
+    }
+    if total > REVIEW_TOTAL_MAX {
+        return Err("The self-review is too long: keep it to a sentence or two per line.".into());
+    }
+    Ok(Some(Value::Object(kept).to_string()))
+}
+
 // ---- the commands' logic, on a plain connection ------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -460,6 +517,9 @@ pub struct RecordInput {
     /// open). Used only if it is open and names the owner as its child.
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// A delegated worker's report must carry a self-review; its settle is refused as done without one (workerReview.ts).
+    #[serde(default)]
+    pub review_required: bool,
 }
 
 const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
@@ -587,6 +647,8 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         updated_at: now,
         settled_at: None,
         log: Vec::new(),
+        review_required: input.review_required,
+        self_review: None,
         version: 1,
         mirrored_version: 0,
         mirror_error: None,
@@ -626,6 +688,9 @@ pub struct SettleInput {
     pub resets_at: Option<i64>,
     #[serde(default)]
     pub by: Option<String>,
+    /// The accepted self-review, as JSON (workerReview.ts): a row that requires one is not marked done without it.
+    #[serde(default)]
+    pub self_review: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -641,6 +706,7 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     if ![COMPLETED, FAILED, CANCELLED].contains(&input.state.as_str()) {
         return Err("state must be completed, failed or cancelled".into());
     }
+    let review = review_json(input.self_review)?;
     let by = actor(input.by);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -656,6 +722,14 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
             applied: false,
             row: Some(row),
         });
+    }
+    // The app downgrades a report without a self-review to failed (delegations.ts); this refuses a "done" that would
+    // carry the checks missing, so no other caller can slip one past it.
+    if row.review_required && input.state == COMPLETED && review.is_none() {
+        return Err("This task needs the worker's self-review before it can be marked done: what it checked, how, and what is still unsure.".into());
+    }
+    if review.is_some() {
+        row.self_review = review;
     }
     row.state = input.state.clone();
     row.result = text(input.result, RESULT_MAX);
@@ -1692,6 +1766,78 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_report_is_not_marked_done_without_its_self_review() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut input = launch("mono", "req", "child");
+        input.review_required = true;
+        let row = record(&mut conn, input, 10).unwrap();
+        assert!(row.review_required);
+        // Refused, so the row stays open for the call that carries what it checked.
+        let refused = settle(&mut conn, finish(&row.id, 1, COMPLETED, "all green"), 11);
+        assert!(refused.unwrap_err().contains("self-review"));
+        assert_eq!(get(&conn, &row.id).unwrap().unwrap().state, RUNNING);
+        let done = settle(
+            &mut conn,
+            SettleInput {
+                self_review: Some(
+                    r#"{"checked":"the save bug","how":"ran mission two","unsure":"nothing","extra":"dropped"}"#
+                        .into(),
+                ),
+                ..finish(&row.id, 1, COMPLETED, "all green")
+            },
+            12,
+        )
+        .unwrap();
+        let done = done.row.unwrap();
+        assert_eq!(done.state, COMPLETED);
+        // Stored as the three lines the app reads back, whatever else the caller sent.
+        assert_eq!(
+            done.self_review.as_deref(),
+            Some(r#"{"checked":"the save bug","how":"ran mission two","unsure":"nothing"}"#)
+        );
+        assert_eq!(
+            get(&conn, &row.id).unwrap().unwrap().self_review,
+            done.self_review
+        );
+    }
+
+    #[test]
+    fn a_self_review_with_a_line_missing_is_refused() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut input = launch("mono", "req", "child");
+        input.review_required = true;
+        let row = record(&mut conn, input, 10).unwrap();
+        let empty = settle(
+            &mut conn,
+            SettleInput {
+                self_review: Some(
+                    r#"{"checked":"the save bug","how":"ran it","unsure":"  "}"#.into(),
+                ),
+                ..finish(&row.id, 1, COMPLETED, "done")
+            },
+            11,
+        );
+        assert!(empty.is_err());
+        // A failed settle never needs one: a worker that did not finish has nothing to review.
+        let failed = settle(
+            &mut conn,
+            SettleInput {
+                self_review: Some("not json".into()),
+                ..finish(&row.id, 1, FAILED, "")
+            },
+            12,
+        );
+        assert!(failed.is_err());
+        assert!(
+            settle(&mut conn, finish(&row.id, 1, FAILED, ""), 13)
+                .unwrap()
+                .applied
+        );
+    }
+
+    #[test]
     fn errors_keep_the_provider_failure_and_are_capped() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
@@ -1708,6 +1854,7 @@ mod tests {
                 retryable: Some(false),
                 resets_at: Some(99),
                 by: None,
+                self_review: None,
             },
             11,
         )

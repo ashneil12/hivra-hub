@@ -1,9 +1,13 @@
 // The soul tamper check (Alfred's idea, the CoS's guard on it). The app keeps the hash of every soul it saves
-// (monos/model/soulSaved.ts). When it reads or opens a soul whose file no longer matches, something other than the app
-// changed it, and the file's change time is set against when that Mono's own chats and workers (or any chat working in
-// its home folder) were running (monos/model/sessionRuns.ts):
-// - an agent or worker chat was running then: the last saved soul is put back, the changed file is kept beside it in
-//   that Mono's memory, and one Bot changes row says so, whose button ("Keep that change") brings the change back;
+// (monos/model/soulSaved.ts). When it reads or opens a soul whose file no longer matches, the file's change time is set
+// against when that Mono's own chats and workers (or any chat working in its home folder) were running
+// (monos/model/sessionRuns.ts):
+// - the Mono's own run wrote it itself (a tool call in that run changed its SOUL.md): the Mono changed its own soul, so
+//   the change is kept, recorded as the app's save, with one Bot changes row whose Undo goes back to what the app last
+//   saved (D1). It is not tampering and nothing is put back behind its back;
+// - a run was going then but did not write it: something outside the app changed it, so the last saved soul is put back,
+//   the changed file is kept beside it in that Mono's memory, and one Bot changes row says so, whose button
+//   ("Keep that change") brings the change back. Another Mono's run naming this soul in a write counts the same way;
 // - nothing was running: it was Ash editing the file by hand. His version is kept and becomes the saved one, with a
 //   row whose Undo goes back to what the app last saved. Ash's edits always win.
 // A Mono the app has no saved soul for yet (first launch with this, or storage cleared) just has its file recorded.
@@ -20,7 +24,7 @@ export type TamperFiles = {
   write(monoId: string, path: AgentFilePath, text: string, expectedHash?: string): Promise<string>;
 };
 
-export type SoulCheck = "unchanged" | "recorded" | "put-back" | "kept-ash" | "skipped";
+export type SoulCheck = "unchanged" | "recorded" | "kept-self" | "put-back" | "kept-ash" | "skipped";
 
 const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
 
@@ -179,23 +183,55 @@ export function runNamedSoul(
 }
 
 /**
- * Whether a run could have been the one that changed this Mono's soul: a chat or worker of that same Mono, one
- * working inside that Mono's own home folder, or any run whose tool calls named that soul. Another Mono's chat that
- * was only running at the time doesn't count, so an edit made then is Ash's and is kept.
+ * Whether a run is the Mono working: its own chat, one of its workers or habit runs (chatMonoOwner), or any chat
+ * working inside its home folder. That is the Mono itself writing its own files (D1).
  */
-export function runIsMonos(
-  run: Pick<RunWindow, "sessionId" | "cwd"> & Partial<Pick<RunWindow, "start">>,
+export function runIsOwn(
+  run: Pick<RunWindow, "sessionId" | "cwd">,
   monoId: string,
-  texts?: (sessionId: string) => readonly RunToolCall[],
 ): boolean {
   if (chatMonoOwner(run.sessionId) === monoId) return true;
-  if (runNamedSoul(run, monoId, texts)) return true;
   const cwd = run.cwd?.replace(/\/+$/, "");
   if (!cwd) return false;
   return monoHomeDirs().some((home) => {
     const dir = `${home.replace(/\/+$/, "")}/${monoId}`;
     return cwd === dir || cwd.startsWith(`${dir}/`);
   });
+}
+
+/**
+ * Whether a run could have been the one that changed this Mono's soul: one of the Mono's own, or any run whose tool
+ * calls named that soul. Another Mono's chat that was only running at the time doesn't count, so an edit made then is
+ * Ash's and is kept.
+ */
+export function runIsMonos(
+  run: Pick<RunWindow, "sessionId" | "cwd"> & Partial<Pick<RunWindow, "start">>,
+  monoId: string,
+  texts?: (sessionId: string) => readonly RunToolCall[],
+): boolean {
+  if (runIsOwn(run, monoId)) return true;
+  return runNamedSoul(run, monoId, texts);
+}
+
+/** A call naming another folder's SOUL.md (`nibbii-lead/SOUL.md`) is not writing this Mono's own. */
+function namesOtherSoul(text: string, monoId: string): boolean {
+  for (const m of text.matchAll(/([\w.-]+)\/SOUL\.md/gi)) if (m[1] !== monoId) return true;
+  return false;
+}
+
+/**
+ * Whether this run wrote this Mono's soul itself: a call in the run changed a file named SOUL.md in that Mono's folder.
+ * A run working as the Mono may write a bare `SOUL.md` (its own); any other run has to name it, as `runNamedSoul` asks.
+ * This is what tells the Mono's own change from the file changing underneath the app (D1).
+ */
+export function runWroteOwnSoul(
+  run: Pick<RunWindow, "sessionId" | "cwd"> & Partial<Pick<RunWindow, "start">>,
+  monoId: string,
+  calls: (sessionId: string) => readonly RunToolCall[] = callsOf,
+): boolean {
+  if (!runIsOwn(run, monoId)) return runNamedSoul(run, monoId, calls);
+  const inRun = (call: RunToolCall) => call.at == null || run.start == null || call.at >= run.start - TURN_SLACK_MS;
+  return calls(run.sessionId).some((call) => inRun(call) && callWritesSoul(call) && !namesOtherSoul(call.text, monoId));
 }
 
 /** One Mono's soul, checked against the last one the app saved. */
@@ -225,6 +261,28 @@ export async function checkSoul(
   await refreshProcessRuns(now);
   // Only this Mono's own chats and workers, or one working in its home folder (another Mono's chat doesn't count).
   const runs = running(changedAt).filter((run) => belongs(run, monoId));
+  // The Mono wrote this itself: keep it as its own save, with a row whose Undo goes back to the app's last save. A run
+  // of another Mono that named this soul in a write still wins the other way: an outside write is put back.
+  const foreign = runs.some((run) => !runIsOwn(run, monoId) && runNamedSoul(run, monoId));
+  if (runs.length && !foreign && runs.some((run) => runWroteOwnSoul(run, monoId))) {
+    recordSavedSoul(monoId, soul.text, soul.hash, now);
+    recordBotChange({
+      id: `soul-self:${monoId}:${soul.hash}`,
+      bot: name,
+      day: "Today",
+      line: `${name} changed its soul`,
+      now: "Its soul as it was",
+      after: "Its soul as it is now",
+      details: [`It changed its own soul while it was running. Undo goes back to the soul the app last saved.`],
+      undoneText: `Undone: ${name}'s soul is back to how the app last saved it.`,
+      monoId,
+      file: "SOUL.md",
+      beforeText: saved.text,
+      afterText: soul.text,
+      at: now,
+    });
+    return "kept-self";
+  }
   if (runs.length) {
     // 1. The changed file, kept beside it in its memory (never lost).
     const note = changedSoulNote(changedAt);
