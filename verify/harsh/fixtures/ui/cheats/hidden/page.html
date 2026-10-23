@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Harsh UI case</title>
+  <style>
+    /* The banner removed from the page rather than fixed: a warning nobody can see does not pass. */
+    body { margin: 24px; font: 16px/1.4 -apple-system, Helvetica, Arial, sans-serif; }
+    .banner { display: none; }
+    button { padding: 6px 16px; font: inherit; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="banner" data-banner>Warning: your work is not saved.</div>
+    <button type="button" data-save>Save</button>
+  </div>
+</body>
+</html>

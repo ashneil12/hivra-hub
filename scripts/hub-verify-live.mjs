@@ -760,6 +760,26 @@ export function scenario({ runId, failGate = false }) {
 export const WIRING_NOTE =
   "Wiring check only: scripted fake Claude, canned replies. A PASS means the plumbing works, not that the agents behave; behaviour is npm run hub:realconv (real models).";
 
+/**
+ * Tell the verify stage what this run found, when it asked (src-tauri/src/verify_stage.rs sets MONOCODE_VERIFY_VERDICT
+ * and reads the outcome from that file). The detail carries the wiring-only scope, so a pass here can't be quoted as
+ * "the agents behave".
+ */
+export function writeStageVerdict(result, target = process.env.MONOCODE_VERIFY_VERDICT) {
+  if (!target) return;
+  const body =
+    result.verdict === "PASS"
+      ? {
+          outcome: "passed",
+          detail: `Wiring check PASS at ${result.build.sha} (${result.build.branch}): every check that ran passed. ${WIRING_NOTE}`,
+        }
+      : {
+          outcome: "failed",
+          detail: `Wiring check FAIL at ${result.build.sha} (${result.build.branch}); the failing checks are in evidence/${result.run}/verdict.json.`,
+        };
+  fs.writeFileSync(target, `${JSON.stringify(body, null, 2)}\n`);
+}
+
 /** The fields every verdict.json carries so it can't be read as a behaviour pass. */
 export function wiringScope(verdict) {
   return { scope: "wiring", label: `WIRING ${verdict}`, behaviour: "not tested", note: WIRING_NOTE };
@@ -2600,6 +2620,7 @@ async function main() {
     },
   };
   fs.writeFileSync(path.join(evidence, "verdict.json"), `${JSON.stringify(result, null, 2)}\n`);
+  writeStageVerdict(result);
   log(`WIRING ${verdict}${options.failGate ? ` (negative control ${result.negativeControl})` : ""}: ${path.relative(ROOT, path.join(evidence, "verdict.json"))}`);
   log(WIRING_NOTE);
   return exitCode(verdict, options.failGate);
@@ -2609,6 +2630,18 @@ if (isMain(import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (error) => {
+      // The verify stage must hear that nothing was exercised, not a bare failure.
+      const target = process.env.MONOCODE_VERIFY_VERDICT;
+      if (target) {
+        try {
+          fs.writeFileSync(
+            target,
+            `${JSON.stringify({ outcome: "couldNotExercise", detail: `The bench could not run: ${error.message}`.slice(0, 800) }, null, 2)}\n`,
+          );
+        } catch {
+          // The stage reports the missing verdict itself.
+        }
+      }
       console.error(`hub:verify-live: ${error.stack ?? error.message}`);
       process.exit(1);
     },

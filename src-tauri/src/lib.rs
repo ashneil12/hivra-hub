@@ -81,6 +81,7 @@ mod trackpad_zoom;
 #[cfg(target_os = "windows")]
 mod tray;
 mod verify_live;
+mod verify_stage;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -627,6 +628,9 @@ pub fn run() {
             project_actions::project_action_run,
             project_actions::project_action_stop,
             project_actions::project_action_wait,
+            verify_stage::verify_stage_status,
+            verify_stage::verify_stage_run,
+            verify_stage::verify_stage_latest,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
             worktree_janitor::worktree_janitor_remove,

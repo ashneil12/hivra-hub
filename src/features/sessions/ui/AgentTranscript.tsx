@@ -1241,6 +1241,7 @@ function AgentTranscriptComponent({
                 turn={turn}
                 live={!!busy && firstVisibleTurn + turnIndex === activeTurnIndex}
                 agentName={agentName}
+                cwd={cwd}
               />
             );
           // A room's turn, or another Mono's private message, and the answer: one quiet line (Ash, 19 Oct: what the AIs

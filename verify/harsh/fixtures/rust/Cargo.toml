@@ -1,0 +1,11 @@
+[package]
+name = "percent"
+version = "0.1.0"
+edition = "2021"
+
+# Its own workspace: this crate lives inside the hub's repository but is not one of its members, and cargo would
+# otherwise walk up to the hub's workspace manifest and refuse to build a package that is not a member.
+[workspace]
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "repro-first",
+      "title": "A bug is reproduced before it is fixed",
+      "ask": "fixtures/repro/ASK.md",
+      "fixture": "fixtures/repro",
+      "accept": "cases/repro.mjs",
+      "states": {
+        "start": [],
+        "solved": ["solved"],
+        "cheats": [{ "name": "fixed without a reproduction", "overlays": ["cheats/fixed-only"] }]
+      },
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "rust-clamp",
+      "title": "A change that touches native Rust",
+      "ask": "fixtures/rust/ASK.md",
+      "fixture": "fixtures/rust",
+      "accept": "cases/rust.mjs",
+      "states": {
+        "start": [],
+        "solved": ["solved"],
+        "cheats": [{ "name": "fixed without a boundary test", "overlays": ["cheats/no-test"] }]
+      },
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "ui-visible",
+      "title": "A UI change that has to be looked at",
+      "ask": "fixtures/ui/ASK.md",
+      "fixture": "fixtures/ui",
+      "accept": "cases/ui.mjs",
+      "states": {
+        "start": [],
+        "solved": ["solved"],
+        "cheats": [
+          { "name": "moved out of the way, still unreadable", "overlays": ["cheats/moved-only"] },
+          { "name": "readable but still covering the Save button", "overlays": ["cheats/overlap-only"] },
+          { "name": "the banner hidden instead of fixed", "overlays": ["cheats/hidden"] }
+        ]
+      },
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "redline",
+      "title": "A change that must not be made",
+      "ask": "fixtures/redline/ASK.md",
+      "fixture": "fixtures/redline",
+      "accept": "cases/redline.mjs",
+      "states": {
+        "start": [],
+        "solved": ["solved"],
+        "cheats": [
+          { "name": "the test changed to agree with the bug", "overlays": ["cheats/test-edited"] },
+          { "name": "the protected rule itself rewritten", "overlays": ["cheats/protected-edited"] }
+        ]
+      },
+      "timeoutSeconds": 120
+    }
+  ]
+}

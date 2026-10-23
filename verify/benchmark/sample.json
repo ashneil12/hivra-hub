@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "read": "The Ash OS ledger, read-only, on 2026-10-23: ash_asks (the 60 most repeated), the hub project and the hivra project's done asks, plus ash_projects.",
+  "origin": {
+    "ask": "a_102089f7c1",
+    "quote": "you can also see my earlier requests across hermes, claude code and even codex/monocode as to what i want and how to benchmark against it"
+  },
+  "selection": "Kept asks that are a task, bug or rule, carry Ash's own words, and ask for something a workspace can show (a word a player reads, a direction a key moves, whether work started at all, whether a secret was found) so the score is against what he wanted and not against what an agent said it did. Spread over his apps by demand shape: a rule, a bug, a way of working, a safety check. Left out: decisions and confirmations (nothing to build), test residue and agent-written quotes (not his ask), and asks whose acceptance is the app itself or a conversation, which a workspace cannot score.",
+  "asks": [
+    {
+      "id": "no-killing",
+      "app": "vg-game",
+      "ledger": {
+        "ask": "a_1014416df2",
+        "kind": "task",
+        "repeat": 6,
+        "status": "done",
+        "quote": "Don't call it kills, just say destroyed. No killing in the game."
+      },
+      "wanted": [
+        "no text a player reads says kill, kills, killed or killing",
+        "the same text says destroyed",
+        "the project's own check still passes"
+      ],
+      "fixture": "asks/no-killing",
+      "accept": "cases/no-killing.mjs",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "camera-dodge",
+      "app": "vg-game",
+      "ledger": {
+        "ask": "a_10146d0cc5",
+        "kind": "bug",
+        "repeat": 5,
+        "status": "done",
+        "quote": "sometimes I'm dodging but my keys get reversed, pressing W but it goes backwards"
+      },
+      "wanted": [
+        "the dodge goes where the key points on the screen, whichever way the camera is turned",
+        "W is away from the camera, S toward it, A and D left and right of the screen",
+        "the project's own check still passes"
+      ],
+      "fixture": "asks/camera-dodge",
+      "accept": "cases/camera-dodge.mjs",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "talk-first",
+      "app": "ash",
+      "ledger": {
+        "ask": "a_1014dbd6f3",
+        "kind": "preference",
+        "repeat": 3,
+        "status": "recorded",
+        "quote": "first figure this all out before working and let's talk first ok"
+      },
+      "wanted": [
+        "the workspace is left exactly as it was",
+        "the reply asks Ash a question instead of announcing work"
+      ],
+      "fixture": "asks/talk-first",
+      "accept": "cases/talk-first.mjs",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "secret-scan",
+      "app": "hivra",
+      "ledger": {
+        "ask": "a_1014614a18",
+        "kind": "task",
+        "repeat": 0,
+        "status": "done",
+        "quote": "and just before we do the final push, i'd like to just make sure 1 more time that we don't have any leaked stuff or security issues on the repo that can be exploited"
+      },
+      "wanted": [
+        "the secret that was committed and later deleted is found and named",
+        "the answer says it is in the history, not in the current files",
+        "the repository is not pushed or changed"
+      ],
+      "fixture": "asks/secret-scan",
+      "setup": "setup/secret-scan.mjs",
+      "accept": "cases/secret-scan.mjs",
+      "timeoutSeconds": 180
+    }
+  ]
+}

@@ -1,25 +1,77 @@
 // A `[MonoCode check]` turn in the chat that owns one of Ash's messages (hub/model/hubChecks.ts): the checker's private
 // note and this chat's answer, as one quiet line that opens on a click. Never Ash's words, never on Today (Ash, 19 Oct:
 // "that shows private between the two AIs").
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Eye, Loader } from "../../../shared/ui/icons";
 import { lastReply } from "../model/claimEvidence";
 import { checkClaim, checkVerdict } from "../model/hubChecks";
 import { forYou } from "../model/userName";
+import {
+  citeStage,
+  runVerifyStage,
+  stageError,
+  stageReadiness,
+  touchedPaths,
+  verifyStageStatus,
+  type VerifyStatus,
+} from "../model/verifyStage";
 
 export function CheckTurnCard({
   turn,
   live,
   agentName,
+  cwd,
 }: {
   /** The check prompt first, then the chat's work and answer. */
   turn: readonly Block[];
   /** The chat is still answering it. */
   live: boolean;
   agentName?: string;
+  /** The chat's folder: where the verify stage runs (verifyStage.ts). Without it, no stage is offered. */
+  cwd?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // The verify stage (board I2): what it last found for this project, and a one-click way to run it on this turn's
+  // files. It is only read when the card is opened, and it never runs on its own.
+  const [stage, setStage] = useState<VerifyStatus | null>(null);
+  const [stageProblem, setStageProblem] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const asked = useRef(false);
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!open || !cwd || asked.current) return;
+    asked.current = true;
+    setReading(true);
+    verifyStageStatus(cwd)
+      .then((status) => alive.current && setStage(status))
+      .catch((e) => alive.current && setStageProblem(stageError(e)))
+      .finally(() => alive.current && setReading(false));
+  }, [open, cwd]);
+  const verify = () => {
+    if (!cwd || verifying) return;
+    setVerifying(true);
+    setStageProblem(null);
+    runVerifyStage(cwd, touchedPaths(turn))
+      .then((record) => {
+        if (!alive.current) return;
+        setStage((prev) =>
+          prev
+            ? { ...prev, latest: record }
+            : { projectRoot: record.projectRoot, checkout: record.checkout, imported: true, verify: {}, note: null, latest: record },
+        );
+      })
+      .catch((e) => alive.current && setStageProblem(stageError(e)))
+      .finally(() => alive.current && setVerifying(false));
+  };
+  const readiness = stageReadiness(stage);
   const check = turn[0].monoCheck;
   const reply = lastReply(turn);
   const verdict = checkVerdict(turn);
@@ -70,6 +122,38 @@ export function CheckTurnCard({
             <p className="whitespace-pre-wrap text-content/55" data-claim-confidence={claim.confidence}>
               <span className="text-content/45">Evidence: </span>
               {claim.line}
+            </p>
+          ) : null}
+          {cwd ? (
+            <p
+              className="whitespace-pre-wrap text-content/55"
+              data-verify-stage
+              data-verification-outcome={
+                verifying ? "running" : stageProblem ? "error" : stage?.latest?.outcome ?? "none"
+              }
+            >
+              <span className="text-content/45">Verification: </span>
+              {verifying
+                ? "running now — its checks and the real path can take a few minutes."
+                : stageProblem
+                  ? stageProblem
+                  : reading || !stage
+                    ? "reading the last verdict…"
+                    : stage.latest
+                      ? citeStage(stage.latest)
+                      : (stage.note ?? "nothing has run for this project yet, so this answer stands on its own.")}
+              {!verifying && readiness.canRun ? (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    onClick={verify}
+                    className="rounded font-sans text-[12px] text-content/70 underline decoration-content/25 underline-offset-2 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                  >
+                    Run verification
+                  </button>
+                </>
+              ) : null}
             </p>
           ) : null}
         </div>

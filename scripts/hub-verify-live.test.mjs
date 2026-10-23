@@ -53,6 +53,7 @@ import {
   verdictOf,
   WIRING_NOTE,
   wiringScope,
+  writeStageVerdict,
 } from "./hub-verify-live.mjs";
 import { ROOT, shortHash } from "./hub-dev.mjs";
 
@@ -492,4 +493,20 @@ test("a verify-live result says it is a wiring check, never a behaviour pass", (
   const source = fs.readFileSync(SCRIPT, "utf8");
   assert.match(source, /verdict,\n\s+\.\.\.wiringScope\(verdict\)/);
   assert.match(source, /log\(`WIRING \$\{verdict\}/);
+});
+
+test("the verify stage hears this run's verdict, scope included", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-stage-verdict-"));
+  const target = path.join(dir, "verdict.json");
+  const build = { sha: "abc123", branch: "cos/r54" };
+  writeStageVerdict({ verdict: "PASS", run: "run-1", build }, target);
+  const passed = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.equal(passed.outcome, "passed");
+  assert.match(passed.detail, /abc123/);
+  assert.match(passed.detail, /Wiring check only/, "a pass keeps its wiring-only scope when the stage quotes it");
+  writeStageVerdict({ verdict: "FAIL", run: "run-2", build }, target);
+  assert.equal(JSON.parse(fs.readFileSync(target, "utf8")).outcome, "failed");
+  // No stage asked: no file, and no error.
+  writeStageVerdict({ verdict: "PASS", run: "run-3", build }, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
