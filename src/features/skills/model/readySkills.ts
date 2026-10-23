@@ -3,7 +3,9 @@
 // A skill only reaches an agent when it sits in a folder the harness scans (`skills.rs`): a project's
 // `.agents/skills`, or the user's `~/.agents/skills`. Ready-made skills install into the user's folder, the same
 // place `learnSkillLesson` writes (`selfBuild/model/skillLearn.ts`), so every project's Monos get them.
+import editingADashboard from "../../../../.agents/skills/editing-a-dashboard/SKILL.md?raw";
 import findComponents from "../../../../.agents/skills/find-components/SKILL.md?raw";
+import onboarding from "../../../../.agents/skills/onboarding/SKILL.md?raw";
 import { invalidateProjectFiles } from "../../files/model/fileIndex";
 import { joinPath } from "../../../shared/lib/paths";
 import {
@@ -29,6 +31,20 @@ export const READY_SKILLS: ReadySkill[] = [
     title: "Find components",
     what: "Reuse a good open-source component (calendar, chart, table) and restyle it to the hub's theme tokens, instead of building it from scratch. Installs for you, so every project's Monos get it.",
     markdown: findComponents,
+  },
+  {
+    id: "onboarding",
+    name: "onboarding",
+    title: "Onboarding a project",
+    what: "Get Ash up to speed in a project in three lines: where it stands, what needs him and the first real move, from memory and the hub's own data instead of a tour. Installs for you, so every project's Monos get it.",
+    markdown: onboarding,
+  },
+  {
+    id: "editing-a-dashboard",
+    name: "editing-a-dashboard",
+    title: "Editing a dashboard",
+    what: "Change a kept Page from Ash's words with Rebuild: blocks or bespoke, only the asks and taps it uses, web sources he connects himself, and the hub's theme tokens. Installs for you, so every project's Monos get it.",
+    markdown: editingADashboard,
   },
 ];
 

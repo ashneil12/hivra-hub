@@ -51,6 +51,7 @@ mod mono_transcript;
 mod notes;
 mod notifications;
 mod page_frames;
+mod page_http;
 mod pasteboard;
 mod pi_usage;
 mod portable;
@@ -741,6 +742,10 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_http::page_http_fetch,
+            page_http::page_source_token_set,
+            page_http::page_source_token_exists,
+            page_http::page_source_token_clear,
             notes::notes_delete,
             notes::notes_save_image,
             notes::notes_image_path,

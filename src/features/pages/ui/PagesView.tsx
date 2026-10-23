@@ -7,7 +7,7 @@ import { useHubSelection } from "../../hub/model/hubNav";
 import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
-import { undoBotChange } from "../../hub/model/botChanges";
+import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
 import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
@@ -16,6 +16,10 @@ import { checkBespokePage } from "../model/designCheck";
 import { describeCapability, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
 import { pageCapabilityHandlers } from "../model/pageCapabilities";
+import { connectSource, disconnectSource, hostLabel, usePageGrants } from "../model/pageGrants";
+import { clearSourceToken, hasSourceToken, pageHttpHandlers, setSourceToken } from "../model/pageHttp";
+import { pageSessionsHandlers } from "../model/pageSessions";
+import { pageWriteHandlers } from "../model/pageWrites";
 import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
 import { appPageSources } from "../model/pageSources";
 import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
@@ -238,7 +242,13 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
       tapped: () => tappedInside(ref.current),
       post: (message) => ref.current?.contentWindow?.postMessage(message, "*"),
       sources: appPageSources(sessions),
-      handlers: pageCapabilityHandlers(),
+      // Built per frame: each handler is the page's own (its key, its grants, its title on a Bot changes row).
+      handlers: {
+        ...pageCapabilityHandlers(),
+        ...pageSessionsHandlers(sessions, () => hubData().listProjects()),
+        ...pageHttpHandlers(pageId),
+        ...pageWriteHandlers(named.current),
+      },
       onSize: setHeight,
     });
     let loads = 0;
@@ -320,6 +330,112 @@ function AllowedLine({ asks }: { asks: Capability[] }) {
         </ul>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * What a kept page may read that isn't the hub's own data: the web sources Ash connected it to. A page has no internet of
+ * its own (`connect-src 'none'`), so every request goes through the app, which checks the address against this list and
+ * adds the source's token from the Keychain (the page never sees the token). Connecting and disconnecting are Bot changes
+ * rows too, so Undo is a second way to take one back; a token isn't kept for a source that is disconnected.
+ */
+function PageConnections({ page }: { page: Page }) {
+  const grants = usePageGrants(page.id);
+  const [url, setUrl] = useState("");
+  const [label, setLabel] = useState("");
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string>();
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const originOf = (raw: string) => {
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return "";
+    }
+  };
+  useEffect(() => {
+    let gone = false;
+    const next: Record<string, boolean> = {};
+    void Promise.all(
+      grants.map(async (g) => {
+        const origin = originOf(g.url);
+        if (!origin) return;
+        try {
+          if (await hasSourceToken(page.id, origin)) next[origin] = true;
+        } catch {
+          /* the app couldn't check the Keychain: the row simply doesn't say a token is saved */
+        }
+      }),
+    ).then(() => {
+      if (!gone) setSaved(next);
+    });
+    return () => {
+      gone = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- grants decide what to ask about
+  }, [page.id, grants]);
+
+  const connect = () => {
+    setError(undefined);
+    const out = connectSource(page.id, url, label);
+    if (!out.ok) return setError(out.error);
+    const done = () => {
+      recordPageSource({ by: page.title, pageId: page.id, url: out.grant.url, connected: true });
+      setUrl("");
+      setLabel("");
+      setToken("");
+    };
+    if (!token.trim()) return done();
+    void setSourceToken(page.id, originOf(out.grant.url), token)
+      .then(done)
+      .catch(() => {
+        // A source whose token didn't save would refuse the page's requests anyway: don't leave a grant that can't work.
+        disconnectSource(page.id, out.grant.url);
+        setError("The Keychain didn't save the token, so the source wasn't connected.");
+      });
+  };
+  const disconnect = (g: { url: string }) => {
+    if (!disconnectSource(page.id, g.url)) return;
+    const origin = originOf(g.url);
+    if (origin) void clearSourceToken(page.id, origin).catch(() => undefined);
+    recordPageSource({ by: page.title, pageId: page.id, url: g.url, connected: false });
+  };
+
+  return (
+    <section className={`${card} mt-3 px-4 py-3`} data-page-connections>
+      <div className="flex items-center gap-2 text-[12px] text-content/70">
+        <span className="flex-1">Web sources</span>
+        <span data-page-sources-count>{grants.length ? `${grants.length} connected` : "None connected"}</span>
+      </div>
+      <p className="mt-1 text-[12px] leading-5 text-content/60">
+        A page has no internet of its own. It reads the hub things you allowed above, and only the web sources you connect
+        here, through the app. If a source needs a token, the app keeps it and the page never sees it.
+      </p>
+      {grants.length ? (
+        <div className="mt-2 flex flex-col" data-page-sources>
+          {grants.map((g) => (
+            <div key={g.url} className="flex items-center gap-2 border-t border-stroke py-1.5 text-[13px] first:border-0" data-page-source={g.url}>
+              <span className="min-w-0 flex-1 truncate text-content/90">
+                {g.label}
+                {saved[originOf(g.url)] ? <span className="ml-1.5 text-[11px] text-content/60">token saved</span> : null}
+              </span>
+              <span className="shrink-0 text-[12px] text-content/60">{hostLabel(g.url)}</span>
+              <button type="button" className={quietBtn} data-page-source-disconnect={g.url} onClick={() => disconnect(g)}>Disconnect</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); connect(); }}>
+        <input aria-label="Source address" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/v1/"
+          className="min-w-[200px] flex-1 rounded-md bg-surface-raised px-2 py-1.5 text-[12px] text-content outline-none placeholder:text-content/50" data-page-source-url />
+        <input aria-label="What to call the source" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name it (optional)"
+          className="w-[150px] rounded-md bg-surface-raised px-2 py-1.5 text-[12px] text-content outline-none placeholder:text-content/50" data-page-source-label />
+        <input aria-label="Token for the source" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Token (optional)"
+          className="w-[150px] rounded-md bg-surface-raised px-2 py-1.5 text-[12px] text-content outline-none placeholder:text-content/50" data-page-source-token />
+        <button type="submit" className={`${primaryBtn} disabled:opacity-40`} disabled={!url.trim()} data-page-source-connect>Connect</button>
+      </form>
+      {error ? <div className="mt-2 text-[12px] leading-5 text-content/80" role="alert" data-page-source-error>{error}</div> : null}
+    </section>
   );
 }
 
@@ -562,6 +678,7 @@ export function PagesContent() {
           <PageRebuild key={shown.id} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
             <PageBody page={shown} live />
             <PageActivity pageId={shown.id} title={shown.title} />
+            {shown.spec.kind === "bespoke" ? <PageConnections page={shown} /> : null}
           </PageRebuild>
         </div>
       </div>

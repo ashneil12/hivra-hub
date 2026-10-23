@@ -60,20 +60,23 @@ export function isWall(cap: string): boolean {
 export function isCapability(cap: string): cap is Capability {
   return (CAPABILITIES as readonly string[]).includes(cap);
 }
-/** A capability the hub actually answers. The writes are declared (a page may ask) but nothing runs them yet. */
+/**
+ * A capability the hub actually answers. Every read and a page's taps are wired, and so is renaming a project
+ * (pageWrites.ts, through the hub's own store); the other writes are declared (a page may ask) but nothing runs them yet.
+ */
 export function isWired(cap: Capability): boolean {
-  return isRead(cap) || isPageAction(cap);
+  return isRead(cap) || isPageAction(cap) || cap === "project.write";
 }
 const PLAIN: Record<Capability, string> = {
   "tasks.read": "Read what's waiting on you, being built or stuck",
   "tasks.write": "Add and change tasks",
   "project.read": "Read your projects and what each is working on",
-  "project.write": "Write to a project",
+  "project.write": "Rename a project you tap",
   "mono.run": "Ask a Mono to run work",
   "automation.run": "Run an automation",
   "settings.read": "Read your name, appearance and theme",
   "settings.write": "Change your settings",
-  "agents.read": "See your agents, what each is doing and the work they handed out",
+  "agents.read": "See your agents and your chats, what each is doing and the work they handed out",
   "jobs.read": "See what's being built",
   "needs.read": "See what's waiting on you",
   "rooms.read": "Read your rooms' messages",

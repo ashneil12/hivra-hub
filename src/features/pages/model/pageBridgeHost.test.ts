@@ -178,3 +178,38 @@ it("a read that throws tells the page why (onError) instead of leaving it blank,
   await new Promise((r) => setTimeout(r, 80));
   expect(data().map((m) => m.watch)).toEqual(["w1"]);
 });
+
+it("a page's chats are behind its agents read: refused without it, answered with it", async () => {
+  const handlers = { "sessions.read": async () => ({ sessions: [{ id: "s1" }], total: 1 }) };
+  approved = [];
+  const { h } = host({ handlers });
+  h.receive({ type: "hub:call", id: "c1", call: "sessions.read" });
+  approved = ["agents.read"];
+  h.receive({ type: "hub:call", id: "c2", call: "sessions.read" });
+  await flush();
+  expect(replies()).toEqual([
+    { type: "hub:reply", id: "c1", ok: false, error: "This page didn't ask for “agents.read”, so it can't use it." },
+    { type: "hub:reply", id: "c2", ok: true, result: { sessions: [{ id: "s1" }], total: 1 } },
+  ]);
+});
+
+it("a web fetch reaches the page's own handler, and its plain refusal comes back as it was written", async () => {
+  const handlers = {
+    "http.fetch": async (args: Record<string, unknown>) => {
+      if (args.url === "https://nope.example.com") throw new Error("This page isn't connected to nope.example.com, so it can't read it.");
+      return { status: 200, type: "application/json", body: "{}", url: String(args.url) };
+    },
+  };
+  const { h } = host({ handlers });
+  h.receive({ type: "hub:call", id: "c1", call: "http.fetch", args: { url: "https://nope.example.com" } });
+  h.receive({ type: "hub:call", id: "c2", call: "http.fetch", args: { url: "https://api.example.com" } });
+  const alone = host();
+  alone.h.receive({ type: "hub:call", id: "c3", call: "http.fetch", args: { url: "https://api.example.com" } });
+  await flush();
+  // A call with no handler answers at once, so the order across two pages isn't fixed; the answers are.
+  expect(replies().sort((a, b) => String(a.id).localeCompare(String(b.id)))).toEqual([
+    { type: "hub:reply", id: "c1", ok: false, error: "This page isn't connected to nope.example.com, so it can't read it." },
+    { type: "hub:reply", id: "c2", ok: true, result: { status: 200, type: "application/json", body: "{}", url: "https://api.example.com" } },
+    { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the hub can't do this for pages yet." },
+  ]);
+});
