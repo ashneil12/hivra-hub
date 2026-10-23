@@ -11,6 +11,7 @@ import {
   answerInWords,
   autopilotMayTake,
   findWaitingChat,
+  gateLog,
   forgetWaitingChat,
   noteChats,
   openWaitingChat,
@@ -123,6 +124,49 @@ describe("which chats are waiting", () => {
   });
 });
 
+describe("the gate: only what needs Ash reaches Needs you (D3)", () => {
+  it("a plain progress update cannot reach Needs you, and both decisions are recorded", () => {
+    noteChats([
+      markerChat("progress", "Needs Ash: Working on the docs; next I'll run the checks."),
+      markerChat("real", "Needs Ash: Which export format?\nMy pick: CSV"),
+    ], 1000);
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["real"]);
+    expect(findWaitingChat("progress")).toBeUndefined();
+
+    const held = gateLog().find((r) => r.sessionId === "progress")!;
+    expect(held).toMatchObject({ admit: false, question: "Working on the docs; next I'll run the checks." });
+    expect(held.reason).toMatch(/progress update/);
+    expect(held.reason).toMatch(/stays in the chat/);
+
+    const letThrough = gateLog().find((r) => r.sessionId === "real")!;
+    expect(letThrough).toMatchObject({ admit: true, kind: "choice" });
+    expect(findWaitingChat("real")?.gate).toMatchObject({ kind: "choice" });
+  });
+
+  it("an approval with no recommendation is refused in plain words", () => {
+    noteChats([markerChat("approve", "Needs Ash: May I restart the staging server?")], 1000);
+    expect(waitingChats()).toEqual([]);
+    const held = gateLog()[0];
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/no recommendation/);
+    expect(held.reason).toMatch(/stays in the chat/);
+  });
+
+  it("records a question once, however many streamed words report it", () => {
+    const text = "Needs Ash: Working on the docs.";
+    noteChats([markerChat("p", text)], 1000);
+    noteChats([markerChat("p", text)], 2000);
+    expect(gateLog().filter((r) => r.sessionId === "p")).toHaveLength(1);
+  });
+
+  it("a listed question that turns into a progress line leaves Needs you", () => {
+    noteChats([markerChat("s", "Needs Ash: Keep it?\nMy pick: Keep it.")], 1000);
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["s"]);
+    noteChats([markerChat("s", "Needs Ash: Working on the docs; next I'll run the checks.")], 2000);
+    expect(waitingChats()).toEqual([]);
+  });
+});
+
 describe("a chat that is gone", () => {
   it("leaves Today when it is archived or deleted, and stays gone after a restart", () => {
     noteChats([markerChat("s1", "Needs Ash: Ship it?\nMy pick: Yes."), markerChat("s2", "Needs Ash: Rename it?\nMy pick: No.")]);
@@ -168,16 +212,17 @@ describe("answering from Today", () => {
   it("a reply in Ash's words answers in place, or goes as his message", async () => {
     const { live, calls } = host();
     live.set("s1", ask());
-    noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() }), markerChat("s2", "Needs Ash: Keep it?")]);
+    noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() }), markerChat("s2", "Needs Ash: Keep it?\nMy pick: Keep it.")]);
     await answerInWords("s1", "Flier, slower");
     await answerInWords("s2", "keep it for a week");
     expect(calls.respond[0][2]).toEqual({ kind: "answered", answers: { "Which boss comes first?": ["__custom__"] }, custom: { "Which boss comes first?": "Flier, slower" } });
     expect(calls.send).toEqual([["s2", "keep it for a week"]]);
   });
 
-  it("no pick, an empty reply, a chat that can't take a message: it stays waiting with a plain reason", async () => {
+  it("an errand with no pick, an empty reply, a chat that can't take a message: it stays waiting with a plain reason", async () => {
     host({ send: async () => false });
-    noteChats([markerChat("s2", "Needs Ash: Keep it?"), markerChat("s3", "Needs Ash: Q?\nMy pick: A")]);
+    // A sign-in is admitted without a pick (the errand is the recommendation), so Take the pick has nothing to take.
+    noteChats([markerChat("s2", "Needs Ash (sign in): Log in to Vercel?"), markerChat("s3", "Needs Ash: Q?\nMy pick: A")]);
     expect(await takePick("s2")).toEqual({ ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." });
     expect(await answerInWords("s2", "  ")).toEqual({ ok: false, reason: "Type an answer first." });
     expect(await takePick("s3")).toEqual({ ok: false, reason: "Boss fight couldn't take a message right now. Open the chat to answer." });
@@ -217,7 +262,7 @@ describe("hooks for Autopilot and H4", () => {
 
   it("Open hands the chat to the app", () => {
     const { calls } = host();
-    noteChats([markerChat("s2", "Needs Ash: Q?")]);
+    noteChats([markerChat("s2", "Needs Ash: Q?\nMy pick: A")]);
     openWaitingChat("s2");
     expect(calls.open).toEqual(["s2@vg-game"]);
   });

@@ -178,11 +178,13 @@ describe("useAutopilot", () => {
     expect(byChat.tests).toMatchObject({ kind: "approval", outcome: "taken", recommendation: "Allowed" });
     expect(byChat.force).toMatchObject({ kind: "approval", outcome: "held", red: "mass-destructive" });
     expect(byChat.exo).toBeUndefined();
-    // A "Needs Ash:" line takes its "My pick:" as Ash's go; one with no pick is handed back in words.
+    // A "Needs Ash:" line takes its "My pick:" as Ash's go.
     expect(sent.find((m) => m.id === "line")?.text).toBe("Go with your pick: yes, behind a flag");
     expect(byChat.line).toMatchObject({ kind: "question", outcome: "taken", recommendation: "yes, behind a flag" });
-    expect(sent.find((m) => m.id === "nopick")?.text).toMatch(/^Ash is away on autopilot until .* Decide this yourself/);
-    expect(byChat.nopick).toMatchObject({ kind: "question", outcome: "handed_back" });
+    // A question with no recommendation never reaches Waiting on you (the gate holds it in the chat), so Autopilot
+    // neither takes it nor hands it back.
+    expect(sent.find((m) => m.id === "nopick")).toBeUndefined();
+    expect(byChat.nopick).toBeUndefined();
   });
 
   it("allows only reads, listed checks and edits in the chat's own folder; every other approval waits for Ash", async () => {

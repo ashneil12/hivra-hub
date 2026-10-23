@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { CUSTOM_OPTION_ID, type UserQuestionPrompt } from "../../sessions/model/userQuestion";
 import {
   chatQuestion,
+  gateQuestion,
   lastTurnText,
   looksRedLine,
   oneLine,
@@ -126,6 +127,65 @@ describe("a 'Needs Ash:' line", () => {
       { role: "assistant" as const, text: "The worker finished." },
     ];
     expect(lastTurnText(blocks)).toContain("Needs Ash: Which branch?");
+  });
+});
+
+describe("the gate: only what needs Ash reaches Needs you (D3)", () => {
+  const marker = (question: string, pick?: string, over: Partial<{ redLine: boolean; flag: string }> = {}) => ({
+    source: "marker" as const,
+    question,
+    redLine: false,
+    ...(pick ? { pick } : {}),
+    ...over,
+  });
+
+  it("lets a choice, an approval and a red line through when each carries a recommendation", () => {
+    expect(gateQuestion(marker("Keep the old page?", "Archive it."))).toMatchObject({ admit: true, kind: "choice" });
+    expect(gateQuestion(marker("May I merge the parser branch?", "Yes, merge it."))).toMatchObject({ admit: true, kind: "approval" });
+    expect(gateQuestion(marker("Email the waitlist about the delay?", "Send it Friday.", { redLine: true }))).toMatchObject({ admit: true, kind: "red line" });
+    expect(gateQuestion(chatQuestion({ busy: true, pendingQuestion: prompt(), blocks: [] })!)).toMatchObject({ admit: true, kind: "choice" });
+  });
+
+  it("holds a plain progress update with a plain reason", () => {
+    const held = gateQuestion(marker("Working on the docs; next I'll run the checks."));
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/progress update/);
+    expect(held.reason).toMatch(/stays in the chat/);
+  });
+
+  it("refuses an approval with no recommendation, and says why", () => {
+    const held = gateQuestion(marker("May I restart the staging server?"));
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/no recommendation/);
+    expect(held.reason).toMatch(/stays in the chat/);
+  });
+
+  it("holds a live question when no option is marked as its recommendation", () => {
+    const noPick = prompt({
+      questions: [{ ...prompt().questions[0], options: [{ id: "a", label: "Alpha" }, { id: "b", label: "Beta" }] }],
+    });
+    const q = chatQuestion({ pendingQuestion: noPick, blocks: [] })!;
+    expect(q.pick).toBeUndefined();
+    const held = gateQuestion(q);
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/no recommendation|none is marked as its recommendation/);
+  });
+
+  it("lets through an errand only Ash can run, where the errand is the recommendation", () => {
+    expect(gateQuestion(marker("Log in to Vercel?", undefined, { flag: "sign in" }))).toMatchObject({ admit: true, kind: "action" });
+    expect(gateQuestion(marker("Enter the one-time code.", undefined, { flag: "enter a code" }))).toMatchObject({ admit: true, kind: "action" });
+  });
+
+  it("holds a red line with no recommendation", () => {
+    const held = gateQuestion(marker("Ship to production tonight?", undefined, { redLine: true }));
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/red line/);
+  });
+
+  it("holds an answer that isn't an ask (a status with a pick on it)", () => {
+    const held = gateQuestion(marker("The docs update is done.", "yes"));
+    expect(held.admit).toBe(false);
+    expect(held.reason).toMatch(/doesn't ask Ash/);
   });
 });
 

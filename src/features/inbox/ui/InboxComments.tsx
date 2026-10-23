@@ -29,6 +29,11 @@ export type InboxReplyTarget = {
   threadId: string;
 };
 
+/** GitHub sometimes returns a commit or comment with no author; it shows as "Unknown", never as a made-up name. */
+function authorName(author: string | undefined): string {
+  return author?.trim() || "Unknown";
+}
+
 type InboxComment = {
   id: string;
   kind: string;
@@ -385,7 +390,7 @@ function InboxComment({
       >
         <InboxCommentPerson
           avatar={!timeline}
-          name={comment.author || "ghost"}
+          name={authorName(comment.author)}
           avatarUrl={inboxPersonAvatarUrl(
             provider,
             comment.author,
@@ -442,7 +447,7 @@ function InboxComment({
               onClick={() =>
                 onReply({
                   id: comment.id,
-                  author: comment.author || "ghost",
+                  author: comment.author,
                   threadId: (comment.threadId ?? "").trim(),
                 })
               }
@@ -635,7 +640,7 @@ function InboxTimelineComment({
   first: boolean;
   last: boolean;
 }) {
-  const author = comment.author || "ghost";
+  const author = authorName(comment.author);
   const state = comment.state.trim().toUpperCase();
   if (isReviewEvent(comment)) {
     const time = formatRelativeTime(comment.createdAt);
@@ -716,7 +721,7 @@ function InboxCommitRun({
   first: boolean;
   last: boolean;
 }) {
-  const name = author || "ghost";
+  const name = authorName(author);
   const time = formatRelativeTime(commits[commits.length - 1].committedDate);
   return (
     <>

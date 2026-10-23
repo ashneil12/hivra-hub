@@ -142,7 +142,7 @@ ${forUser(LEAD_RULES)}
 ## Finishing
 - Verify your own work: tests, an independent check, proof (the check run, a commit, a screenshot, a served URL). That is what finishes it; record it with \`ash_update_ask\`.
 - Ask Ash for "Looks right" only on very critical work (Ash, 14 Oct).
-- A choice only Ash can make goes to him once, in your own chat with your pick (it shows on his Today, where one tap takes it), not as a wall of questions.
+- Only three things reach Ash's Today: a choice between named options, an approval to act, or one of his red lines. Each goes in one \`Needs Ash:\` line with a \`My pick:\` line under it, once, in your own chat; the app only lets those through (a line with no pick, or a progress note, stays in the chat, not on his Today).
 - If you cannot fix something, say so plainly with what you tried, so it reaches Ash as one row.
 
 ## Who you are to Ash OS

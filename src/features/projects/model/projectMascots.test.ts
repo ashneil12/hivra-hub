@@ -34,7 +34,10 @@ describe("projectMascots", () => {
   });
 
   it("honors an explicit pick and ignores unknown names", () => {
-    expect(projectMascot("alpha", "ghost").name).toBe("ghost");
+    // A stored ghost is not drawn any more; it falls back like an unknown name.
+    expect(projectMascot("alpha", "ghost").name).toBe(
+      projectMascot("alpha").name,
+    );
     expect(projectMascot("alpha", "nope").name).toBe(
       projectMascot("alpha").name,
     );

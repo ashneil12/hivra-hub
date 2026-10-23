@@ -204,6 +204,60 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
     : null;
 }
 
+// ---- the gate: only what needs Ash reaches "Needs you" (D3) ------------------------------------------------------
+// A Lead's brief asks it to bring Ash only what needs him, but a brief is not a check: any line it writes could reach
+// "Waiting on you". This gate is the check. waitingChats.ts lists only what is admitted here, and records every decision
+// (admitted or held, with this reason) so a wrong call can be seen and fixed instead of guessed at.
+
+/** Why a question was admitted: a decision between options, an approval to act, a red line, or an errand only Ash can run. */
+export type GateKind = "choice" | "approval" | "red line" | "action";
+export type GateDecision = { admit: true; kind: GateKind; reason: string } | { admit: false; reason: string };
+
+/** A question puts a decision to Ash: it asks, or it uses a word that asks ("approve", "deploy", "should I"). */
+const ASKS = /\?\s*$/;
+const APPROVAL =
+  /\b(?:approve|approval|go[\s-]?ahead|green[\s-]?light|may i|can i|should i|shall i|do you want|would you like|ok(?:ay)? to|permission|sign[\s-]?off|confirm|deploy\w*|ship\w*|releas\w*|publish\w*|merg\w*|send\w*|post\w*|delet\w*|remov\w*|restart\w*|appl(?:y|ies|ied)|upgrad\w*|install\w*|migrat\w*|renam\w*|run|running)\b/i;
+const CHOICE = /\b(?:which|whether|or|either|choose|choosing|pick|option|prefer|instead|vs\.?|versus)\b/i;
+/** A line reporting where the work stands, not asking Ash anything. */
+const PROGRESS =
+  /^(?:update|status|progress|heads[ -]?up|fyi|note)\b|\b(?:still|currently|now|just)\s+(?:working|running|finishing|waiting|done|finished|complete)|^(?:working|running|finishing|waiting|done|finished|completed|started|shipped|landed|next)\b/i;
+/** Flags that name an errand only Ash can run: the errand itself is the recommendation, so no pick is needed. */
+const ERLANDS = new Set(["sign in", "enter a code", "pay"]);
+
+/**
+ * Whether a question may appear in "Waiting on you". Admitted: a choice between options, an approval to act, or a red
+ * line, each with its recommendation (the pick Ash would make); and an errand only Ash can run (sign in, enter a code,
+ * pay), where the errand is the recommendation. Everything else (progress, status, a question with no recommendation)
+ * stays in the chat, and the reason says why in words Ash could act on.
+ */
+export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag">): GateDecision {
+  const question = q.question.trim();
+  const asks = ASKS.test(question) || APPROVAL.test(question) || CHOICE.test(question);
+
+  if (q.redLine) {
+    return q.pick
+      ? { admit: true, kind: "red line", reason: "Touches one of Ash's red lines, and suggests an answer." }
+      : { admit: false, reason: "It touches a red line but gives no recommendation, so it stays in the chat." };
+  }
+
+  const flagReason = q.flag ? FLAG_REASONS.find(([rx]) => rx.test(q.flag!))?.[1] : undefined;
+  if (flagReason && ERLANDS.has(flagReason))
+    return { admit: true, kind: "action", reason: `Only Ash can ${flagReason === "pay" ? "pay this" : flagReason}, so it waits for him.` };
+
+  if (q.pick) {
+    if (APPROVAL.test(question)) return { admit: true, kind: "approval", reason: "Asks Ash to approve acting, and says what it recommends." };
+    if (asks) return { admit: true, kind: "choice", reason: "Asks Ash to choose, and says which option it recommends." };
+    return { admit: false, reason: "It suggests an answer but doesn't ask Ash to choose or approve anything, so it stays in the chat." };
+  }
+
+  if (q.source === "ask") return { admit: false, reason: "The question offers options but none is marked as its recommendation, so it stays in the chat." };
+  if (!ASKS.test(question) && PROGRESS.test(question))
+    return { admit: false, reason: "It reads as a progress update, not something for Ash to decide, so it stays in the chat." };
+  if (APPROVAL.test(question)) return { admit: false, reason: "It asks Ash to approve something but gives no recommendation, so it stays in the chat." };
+  if (asks) return { admit: false, reason: "It asks Ash a question but gives no recommendation, so it stays in the chat." };
+  return { admit: false, reason: "It doesn't ask Ash to choose or approve anything, so it stays in the chat." };
+}
+
 // ---- answering -------------------------------------------------------------------------------------------------
 
 /** The tool answer that takes every recommended option; undefined unless each question has one. */

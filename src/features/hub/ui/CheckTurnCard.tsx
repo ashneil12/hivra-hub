@@ -23,10 +23,10 @@ export function CheckTurnCard({
   const check = turn[0].monoCheck;
   const reply = lastReply(turn);
   const verdict = checkVerdict(turn);
-  // A "fixed" carries its evidence (claimEvidence.ts): verified, likely, or a guess the line says is not proven.
+  // A "fixed" carries its evidence (claimEvidence.ts): verified, or not yet confirmed with what is missing said in the
+  // line. Only a check that passed after the turn's last change gets it there.
   const claim = reply ? checkClaim(turn) : undefined;
-  const worth =
-    verdict && claim ? (claim.confidence === "verified" ? "verified" : claim.confidence === "likely" ? "likely" : "not proven") : "";
+  const worth = verdict && claim ? (claim.confidence === "verified" ? "verified" : "not yet confirmed") : "";
   const state = live
     ? "looking at it"
     : verdict

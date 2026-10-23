@@ -50,6 +50,37 @@ describe("activityTimeline", () => {
   });
 });
 
+describe("InboxComments authors", () => {
+  it("a comment with no author shows as Unknown, never as a ghost", () => {
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        createElement(InboxComments, {
+          thread: {
+            truncated: false,
+            comments: [
+              { ...comment("no author here", "2026-10-03T09:00:00Z"), author: "" },
+            ],
+            commits: [],
+          },
+          loading: false,
+          error: null,
+          cwd: "/repo",
+          provider: "github",
+        }),
+      ),
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("Unknown");
+    expect(text).not.toMatch(/ghost/i);
+    act(() => root.unmount());
+  });
+});
+
 describe("InboxComments timeline", () => {
   it("puts a push and a bare approval on the rail between comments", () => {
     (

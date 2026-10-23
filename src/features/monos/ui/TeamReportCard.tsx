@@ -11,7 +11,7 @@ export function TeamReportCard({ report }: { report: TeamReport }) {
   const tall = reportIsTall(report.text);
   const [open, setOpen] = useState(false);
   // A report that says it is done says what that is worth (claimEvidence.ts, board I5); the app has the words, not the
-  // team's transcript, so a claim with nothing named reads as a guess rather than as a finished job.
+  // team's transcript, so a claim with nothing named reads as not yet confirmed, never as a finished job.
   const claim = claimEvidenceOf(report.text);
   return (
     <fieldset
@@ -38,6 +38,7 @@ export function TeamReportCard({ report }: { report: TeamReport }) {
       {claim ? (
         <p
           data-team-report-claim={claim.confidence}
+          data-team-report-confirmed={claim.backed ? "yes" : "no"}
           className="mt-1.5 border-t border-content/10 pt-1.5 text-[11.5px] leading-4 text-content/50"
         >
           {claim.line}
