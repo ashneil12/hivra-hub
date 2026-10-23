@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { monoTeamItem, openMonoChat, setMonoChatOpener } from "./hubNav";
+import { monoTeamItem, openMonoChat, setHubSelection, setMonoChatOpener } from "./hubNav";
 
 let off: (() => void) | undefined;
 afterEach(() => off?.());
@@ -16,9 +16,10 @@ it("goes through the app's Mono chat opener when there is one", () => {
   expect(opened).toEqual(["alfred"]);
 });
 
-it("without the app (a browse-only page) it still selects the Mono's team", () => {
+it("without the app (a browse-only page) it still selects the Mono's team, over the project Ash was in", () => {
+  setHubSelection({ project: "vg-game", item: "inbox" });
   openMonoChat("alfred");
-  expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "today", item: monoTeamItem("alfred") });
+  expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "vg-game", item: monoTeamItem("alfred") });
 });
 
 it("the app's opener leaves Settings when the Mono's chat arrives", () => {

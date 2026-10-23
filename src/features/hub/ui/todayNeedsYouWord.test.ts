@@ -75,7 +75,7 @@ afterEach(async () => {
 /** The job's word on Today's Being built list ("Hivra · its Lead · <word>") and on the project's Being built row. */
 async function words() {
   act(() => root.render(createElement("div", null,
-    createElement(HubSurface, { selection: { project: "today", item: "inbox" } }),
+    createElement(HubSurface, { selection: { project: "hivra", item: "inbox" } }),
     createElement("div", { "data-project-being-built": "" }, createElement(BeingBuiltView, { projectId: "hivra" })))));
   await until(() => container.querySelector('[data-hub-today-job="j_sender"]') && container.querySelector('[data-hub-worker="j_sender"]'), "both lists");
   const today = container.querySelector('[data-hub-today-job="j_sender"] [data-hub-chip]')?.textContent;

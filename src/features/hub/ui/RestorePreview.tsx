@@ -1,6 +1,6 @@
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft } from "../../../shared/ui/icons";
-import { setHubSelection } from "../model/hubNav";
+import { showProjectToday } from "../model/hubNav";
 import { restore, setPendingImport, usePendingImport } from "../../portable/model/portable";
 import type { ImportSummary, PendingImport } from "../../portable/model/importPlan";
 import { ImportPreview } from "../../portable/ui/ImportPreview";
@@ -17,7 +17,7 @@ export function RestorePreview({ pending: given, onBack, onRestore, inline }: {
 }) {
   const picked = usePendingImport();
   const p = given ?? picked;
-  const back = onBack ?? (() => { setPendingImport(null); setHubSelection({ project: "today", item: "inbox" }); });
+  const back = onBack ?? (() => { setPendingImport(null); showProjectToday(); });
   const body = !p ? (
     <div className="grid h-full place-items-center text-[13px] text-content/60">No export picked.</div>
   ) : (

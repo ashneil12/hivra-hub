@@ -3,7 +3,7 @@ import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
 import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
-import { setHubSelection } from "../model/hubNav";
+import { showAppItem, showProjectToday } from "../model/hubNav";
 import { addTeamAddon } from "../model/hubTeam";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
@@ -62,7 +62,10 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     finishOnboarding();
     if (name.trim()) setUserName(name);
     if (addon && start === "fresh") addTeamAddon(ADDON_OFFER.id);
-    setHubSelection({ project: "today", item: next === "today" ? "inbox" : next });
+    // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
+    // (New project, Restore) opens over it.
+    if (next === "today") showProjectToday();
+    else showAppItem(next);
     onClose();
   };
 
@@ -89,7 +92,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col gap-2">
             <h1 className="text-[18px] text-content">Welcome</h1>
             <p className="text-[13px] leading-5 text-content/75">
-              This is where your projects, your Monos and the coding team live. Today gives you access to your projects, Pages and work that needs your attention.
+              This is where your projects, your Monos and the coding team live. Each project has its own Today, Pages and work that needs your attention.
             </p>
             <label className="mt-2 flex flex-col gap-1">
               <span className="text-xs text-content/60">What should your team call you?</span>
@@ -143,7 +146,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
               The {THEME_PRESETS.find((t) => t.id === theme)?.label} look.{" "}
-              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your export brings." : "Today opens next."}
+              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your export brings." : "That is everything. Your projects are on the left."}
             </p>
           </div>
         ) : null}
@@ -167,7 +170,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             </>
           ) : last ? (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
-              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : "Go to Today"}
+              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : "Start using MonoCode"}
             </button>
           ) : (
             <button type="button" data-hub-onboarding-next onClick={() => setStep(step + 1)} className={PRIMARY}>

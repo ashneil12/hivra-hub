@@ -36,6 +36,11 @@ export function ProjectPagesView({ projectId, title }: { projectId: string; titl
             <div className="flex max-w-[420px] flex-col items-center gap-2 text-center">
               <p className="text-[13px] text-content">No dashboards yet.</p>
               <p className="text-[13px] leading-5 text-content/60">A Mono can build one for this project from Pages. Pages you keep for it show up here.</p>
+              <button type="button" data-hub-project-pages-open
+                onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }))}
+                className="mt-1 rounded-md bg-content/12 px-3 py-1.5 text-[13px] text-content hover:bg-content/16">
+                Open Pages
+              </button>
             </div>
           </div>
         )}

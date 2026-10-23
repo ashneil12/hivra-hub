@@ -85,7 +85,7 @@ describe("the Hub in the new layout", () => {
       act(() =>
         root.render(
           createElement(ProjectStrip, {
-            selection: { project: "today", item: "inbox" },
+            selection: { project: "hivra", item: "inbox" },
             onPickProject: () => undefined,
             onCreateProject: () => undefined,
             titleBarAbove,

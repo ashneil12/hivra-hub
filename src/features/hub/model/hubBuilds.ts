@@ -29,11 +29,6 @@ let builds: Build[] = examples([
   { id: "b12", projectId: "exo-game", version: "0.12", title: "Example: Area 3 Furnace Court", status: "ready", action: "play", builtAt: "9 Oct", notes: [] },
 ]);
 
-/** When a project's first build is expected, for the empty state. */
-const FIRST_BUILD: Record<string, string> = {
-  nibbii: "tomorrow morning, once the coding team has a first playable version.",
-};
-
 const EVENT = "monocode:hub-builds-changed";
 let version = 0;
 function changed(): void {
@@ -60,8 +55,18 @@ export function getBuild(id: string): Build | undefined {
   return builds.find((b) => b.id === id);
 }
 
-export function firstBuildExpected(projectId: string): string {
-  return FIRST_BUILD[projectId] ?? "after the coding team's first playable version.";
+/**
+ * A build Ash has in hand (one the team made, or one he downloaded): it joins the list ready to try, so he can play it
+ * and keep playtest notes on it. This is what the section offers when there is nothing in it yet.
+ */
+export function addBuild(projectId: string, version: string, title: string): Build | undefined {
+  const v = version.trim();
+  const t = title.trim();
+  if (!v || !t) return undefined;
+  const build: Build = { id: `b${Date.now().toString(36)}`, projectId, version: v, title: t, status: "ready", action: "play", builtAt: "Just now", notes: [] };
+  builds = [build, ...builds];
+  changed();
+  return build;
 }
 
 /** Who is acting: Ash, or a bot/Mono id. */

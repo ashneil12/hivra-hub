@@ -54,13 +54,18 @@ describe("ships clean", () => {
 
   it("first launch: Today is one calm line and a New project button, nothing else", async () => {
     const { HubSurface } = await load(false);
-    act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));
+    // No project chosen and none to open: the create-a-project empty state (G1; there is no all-projects board).
+    act(() => root.render(createElement(HubSurface, { selection: { project: "", item: "" } })));
     const empty = container.querySelector("[data-hub-today-empty]")!;
+    expect(container.querySelector("[data-hub-surface]")?.getAttribute("aria-label")).toBe("Projects");
     expect(empty).toBeTruthy();
     expect(empty.querySelectorAll("p").length).toBe(1);
     expect(container.querySelector("[data-hub-today-new-project]")?.textContent).toBe("New project");
     expect(text()).not.toMatch(/Example|Operator|Playtester|Hivra|EXO/);
     expect(container.querySelector("[data-hub-need]")).toBeNull();
+    // No project's board, and no all-projects one either: nothing to read until a project exists.
+    expect(container.querySelectorAll("[data-hub-today-section]").length).toBe(0);
+    expect(text()).not.toContain("Today for all projects");
   });
 });
 
@@ -100,8 +105,9 @@ describe("at most five rows per project on Today", () => {
   it("Today shows five rows for that project; the Later line is a real button and opens the rest", async () => {
     const { waiting, HubSurface } = await load(true);
     const laterCount = waiting.laterItems("exo-game").length;
-    act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));
-    const section = [...container.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "EXO game" || s.querySelector("[data-hub-later]")) as HTMLElement;
+    act(() => root.render(createElement(HubSurface, { selection: { project: "exo-game", item: "inbox" } })));
+    // The project's Needs you section, where its Later rows live.
+    const section = container.querySelector<HTMLElement>('[data-hub-today-section="needs"]')!;
     expect(section).toBeTruthy();
     const fold = section.querySelector("[data-hub-later-toggle]") as HTMLButtonElement;
     expect(fold.tagName).toBe("BUTTON");

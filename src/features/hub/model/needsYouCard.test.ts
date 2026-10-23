@@ -61,7 +61,6 @@ describe("on screen", () => {
     setHubDataSource(undefined);
     const src = Object.create(hubData());
     src.listProjects = () => [PROJECT];
-    src.todayLayout = () => mapToday(OLD_BOARD);
     setHubDataSource(src);
   });
   afterEach(() => act(() => root?.unmount()));
@@ -83,9 +82,9 @@ describe("on screen", () => {
     expect(line).not.toMatch(/up to 5|Stuck: needs you/);
   });
 
-  it("Today drawn from an old saved board shows one Needs you section", async () => {
+  it("a project's Today shows one Needs you section, from its template", async () => {
     const { HubSurface } = await import("../ui/HubSurface");
-    const host = await mount(createElement(HubSurface, { selection: { project: "today", item: "inbox" } }));
+    const host = await mount(createElement(HubSurface, { selection: { project: PROJECT.id, item: "inbox" } }));
     expect(host.querySelectorAll('[data-hub-today-section="needs"]')).toHaveLength(1);
     expect(host.textContent).not.toMatch(/up to 5|Stuck: needs you/);
   });

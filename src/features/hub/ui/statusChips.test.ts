@@ -75,16 +75,17 @@ afterEach(async () => {
 });
 
 
+// Today is a project's own (G1): the rows below live on Hivra's and Nibbii's Todays, side by side.
 function mountAll() {
   act(() => root.render(createElement("div", null,
-    createElement("div", { "data-today": "" }, createElement(HubSurface, { selection: { project: "today", item: "inbox" } })),
+    createElement("div", { "data-today": "hivra" }, createElement(HubSurface, { selection: { project: "hivra", item: "inbox" } })),
+    createElement("div", { "data-today": "nibbii" }, createElement(HubSurface, { selection: { project: "nibbii", item: "inbox" } })),
     createElement("div", { "data-built": "hivra" }, createElement(BeingBuiltView, { projectId: "hivra" })),
     createElement("div", { "data-built": "nibbii" }, createElement(BeingBuiltView, { projectId: "nibbii" })))));
 }
 /** The chip on Today's own row for a title (the Needs you / stuck rows, not the Being built list). */
 function todayRowChip(title: string) {
-  const today = container.querySelector("[data-today]")!;
-  const rows = [...today.querySelectorAll<HTMLElement>("div")].filter(
+  const rows = [...container.querySelectorAll<HTMLElement>("[data-today] div")].filter(
     (d) => d.textContent?.startsWith(title) && !d.closest("[data-hub-today-job]") && d.querySelector("[data-hub-chip]"),
   );
   const row = rows.at(-1); // the innermost

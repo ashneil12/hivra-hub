@@ -4,7 +4,7 @@ import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { liveHubStore } from "../model/hubData";
 import { leadSpecFor } from "../model/hubLeads";
-import { setHubSelection } from "../model/hubNav";
+import { setHubSelection, showProjectToday } from "../model/hubNav";
 import { createProject, defaultProjectFolder, projectSlug } from "../model/projectActions";
 import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
@@ -142,7 +142,7 @@ export function NewProjectView() {
   const cancel = () => {
     ended.current = true;
     clearProjectDraft();
-    setHubSelection({ project: "today", item: "inbox" });
+    showProjectToday();
   };
   const t = tpl ? TEMPLATES.find((x) => x.id === tpl)! : null;
 

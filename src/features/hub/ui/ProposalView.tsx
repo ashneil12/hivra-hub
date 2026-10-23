@@ -9,7 +9,7 @@ import {
   type PreviewSketch,
 } from "../model/proposals";
 import { hubData } from "../model/hubData";
-import { setHubSelection } from "../model/hubNav";
+import { showProjectToday } from "../model/hubNav";
 
 const QUIET = "rounded-md px-2.5 py-1 text-xs text-content/60 hover:bg-content/8 hover:text-content";
 
@@ -25,7 +25,7 @@ export function ProposalView({ id }: { id: string }) {
           type="button"
           title="Back"
           aria-label="Back"
-          onClick={() => setHubSelection({ project: p?.projectId ?? "today", item: "inbox" })}
+          onClick={() => showProjectToday(p?.projectId)}
           className="grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/8 hover:text-content"
         >
           <ArrowLeft className="size-3.5" strokeWidth={1.75} />
