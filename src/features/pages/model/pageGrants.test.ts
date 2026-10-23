@@ -7,7 +7,7 @@ import {
   covers,
   disconnectSource,
   forgetAllGrants,
-  grantedOrigins,
+  grantedUrls,
   grantsFor,
   hostLabel,
   MAX_PER_PAGE,
@@ -89,11 +89,11 @@ it("disconnects one source, and only if it was connected", () => {
   expect(disconnectSource("page-a", "https://api.example.com/v1")).toBe(false);
 });
 
-it("hands Rust one origin per host, and refuses an address outside the granted paths", () => {
+it("hands Rust each grant's own address, path included, and refuses an address outside the granted paths", () => {
   connectSource("page-a", "https://api.example.com/v1");
   connectSource("page-a", "https://api.example.com/v2");
   connectSource("page-a", "https://other.example.com");
-  expect(grantedOrigins("page-a")).toEqual(["https://api.example.com", "https://other.example.com"]);
+  expect(grantedUrls("page-a")).toEqual(["https://api.example.com/v1", "https://api.example.com/v2", "https://other.example.com"]);
   expect(allowsUrl("page-a", "https://api.example.com/v2/players")).toBe(true);
   expect(allowsUrl("page-a", "https://api.example.com/v3")).toBe(false);
   expect(allowsUrl("page-a", "https://unconnected.example.com")).toBe(false);

@@ -514,54 +514,9 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
                 )],
             ) {
                 Ok((run, seconds)) => {
-                    let (outcome, detail) = match run.status {
-                        crate::project_actions::RunStatus::Succeeded => {
-                            match read_verdict(&verdict_path) {
-                                Ok((Outcome::NotRun, detail))
-                                | Ok((Outcome::CouldNotExercise, detail)) => (
-                                    Outcome::CouldNotExercise,
-                                    if detail.is_empty() {
-                                        "ran, but reported it could not exercise the change"
-                                            .to_string()
-                                    } else {
-                                        detail
-                                    },
-                                ),
-                                Ok((outcome, detail)) => (outcome, detail),
-                                Err(error) => (
-                                    Outcome::Failed,
-                                    format!("finished without a usable verdict: {error}"),
-                                ),
-                            }
-                        }
-                        crate::project_actions::RunStatus::Failed => {
-                            if run.exit_code == Some(127) {
-                                (
-                                    Outcome::CouldNotExercise,
-                                    "could not run: its command was not found".to_string(),
-                                )
-                            } else {
-                                (
-                                    Outcome::Failed,
-                                    match run.exit_code {
-                                        Some(code) => format!("failed (exit {code})"),
-                                        None => "failed".to_string(),
-                                    },
-                                )
-                            }
-                        }
-                        crate::project_actions::RunStatus::TimedOut => (
-                            Outcome::CouldNotExercise,
-                            "did not finish before its timeout".to_string(),
-                        ),
-                        crate::project_actions::RunStatus::Stopped => (
-                            Outcome::NotRun,
-                            "was stopped before it finished".to_string(),
-                        ),
-                        crate::project_actions::RunStatus::Running => {
-                            (Outcome::CouldNotExercise, "did not finish".to_string())
-                        }
-                    };
+                    let (outcome, detail) = real_path_outcome(run.status, run.exit_code, || {
+                        read_verdict(&verdict_path)
+                    });
                     StepResult {
                         kind: "realPath".into(),
                         id: "real-path".into(),
@@ -744,6 +699,59 @@ pub async fn verify_stage_latest(cwd: String) -> Result<Option<VerifyRecord>, St
     .map_err(|e| e.to_string())?
 }
 
+/// How a finished real-path run reads in the verdict. Its own verdict file decides only when it finished successfully;
+/// a run Ash stopped proves nothing, exactly as a stopped check does, so it fails the stage instead of reading as "not
+/// applicable" beside a passing check.
+fn real_path_outcome(
+    status: crate::project_actions::RunStatus,
+    exit_code: Option<i32>,
+    verdict: impl FnOnce() -> Result<(Outcome, String), String>,
+) -> (Outcome, String) {
+    use crate::project_actions::RunStatus;
+    match status {
+        RunStatus::Succeeded => match verdict() {
+            Ok((Outcome::NotRun, detail)) | Ok((Outcome::CouldNotExercise, detail)) => (
+                Outcome::CouldNotExercise,
+                if detail.is_empty() {
+                    "ran, but reported it could not exercise the change".to_string()
+                } else {
+                    detail
+                },
+            ),
+            Ok((outcome, detail)) => (outcome, detail),
+            Err(error) => (
+                Outcome::Failed,
+                format!("finished without a usable verdict: {error}"),
+            ),
+        },
+        RunStatus::Failed => {
+            if exit_code == Some(127) {
+                (
+                    Outcome::CouldNotExercise,
+                    "could not run: its command was not found".to_string(),
+                )
+            } else {
+                (
+                    Outcome::Failed,
+                    match exit_code {
+                        Some(code) => format!("failed (exit {code})"),
+                        None => "failed".to_string(),
+                    },
+                )
+            }
+        }
+        RunStatus::TimedOut => (
+            Outcome::CouldNotExercise,
+            "did not finish before its timeout".to_string(),
+        ),
+        RunStatus::Stopped => (
+            Outcome::Failed,
+            "was stopped before it finished".to_string(),
+        ),
+        RunStatus::Running => (Outcome::CouldNotExercise, "did not finish".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +794,22 @@ mod tests {
             Outcome::NotRun
         );
         assert_eq!(VerifyRecord::aggregate(&[]), Outcome::NotRun);
+    }
+
+    #[test]
+    fn a_stopped_real_path_fails_the_stage_instead_of_reading_as_not_applicable() {
+        use crate::project_actions::RunStatus;
+        // Its verdict file is never read: a run Ash stopped proves nothing, whatever it would have reported.
+        let (outcome, detail) = real_path_outcome(RunStatus::Stopped, Some(0), || {
+            Ok((Outcome::Passed, "passed".to_string()))
+        });
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(detail, "was stopped before it finished");
+        // Beside a passing check, the stage must not read as a pass.
+        assert_eq!(
+            VerifyRecord::aggregate(&[step("web", Outcome::Passed), step("real-path", outcome)]),
+            Outcome::Failed
+        );
     }
 
     #[test]

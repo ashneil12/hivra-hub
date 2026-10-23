@@ -143,6 +143,27 @@ it("runs the stage on this turn's files and shows a failed verdict as not proven
   expect(row.textContent).not.toMatch(/every check that ran passed/i);
 });
 
+it("never cites a stage as passed when the required real path was stopped", async () => {
+  mocked.mockResolvedValue(
+    status({
+      latest: record({
+        outcome: "failed",
+        steps: [
+          { kind: "check", id: "web", name: "Web checks", outcome: "passed", detail: "ran and passed", runId: "r", logPath: "/tmp/l", seconds: 3 },
+          { kind: "realPath", id: "real-path", name: "Real path", outcome: "failed", detail: "was stopped before it finished", runId: "r4", logPath: "/tmp/l4", seconds: 1 },
+        ],
+      }),
+    }),
+  );
+  render("/repo");
+  await open();
+  const row = container.querySelector("[data-verify-stage]")!;
+  expect(row.getAttribute("data-verification-outcome")).toBe("failed");
+  expect(row.textContent).toContain("Real path: was stopped before it finished");
+  expect(row.textContent).toContain("Not proven");
+  expect(row.textContent).not.toMatch(/every check that ran passed/i);
+});
+
 it("shows a verdict that could not be exercised as such", async () => {
   mocked.mockResolvedValue(
     status({
