@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 
 import { HubOnboarding } from "./HubOnboarding";
 import { storedUserName } from "../model/userName";
+import { recordSetupFact, SETUP_FACT_IDS } from "../model/setupProof";
 import { listMonos } from "../../monos/model/mono";
 
 let root: Root;
@@ -16,6 +17,8 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  // H7 puts the setup checks first on an unproved install; these tests are about the welcome choices behind them.
+  for (const id of SETUP_FACT_IDS) recordSetupFact(id, "proved");
 });
 afterEach(() => {
   act(() => root.unmount());

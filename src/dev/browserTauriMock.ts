@@ -5,6 +5,13 @@ import { emit } from "@tauri-apps/api/event";
 import { createStubBridge } from "./hubStubBridge";
 import { configureChildBackend } from "../integrations/harness/core/child";
 import { fakeClaudeBackend } from "./fakeClaudeBackend";
+import { recordSetupFact, SETUP_FACT_IDS } from "../features/hub/model/setupProof";
+
+// The first-launch setup checks (H7) need a real CLI and real paths, so they can never pass in a plain browser. The
+// preview stands in for a proved install; the card itself is exercised in the app's own tests.
+function markSetupProved() {
+  for (const id of SETUP_FACT_IDS) recordSetupFact(id, "proved by the browser preview");
+}
 
 // ?fakeClaude: a stand-in for the Claude CLI behind the real Claude adapter (fakeClaudeBackend.ts), for browser tests.
 // The chats' project folders then count as there, so a message goes in.
@@ -16,7 +23,8 @@ Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 
 // Example Monos for the hub's mock projects (real ones come from the store).
 // Dev page: example data and no onboarding, unless ?onboarding is in the URL,
-// which starts like a clean first launch (no projects, as the app ships).
+// which starts like a clean first launch (no projects, as the app ships) — apart from the setup checks, which need a
+// real CLI and are marked proved here (see markSetupProved).
 //
 // With `?stub=http://127.0.0.1:<port>` the hub reads a hub-stub-server (started with --dev) through the app's real
 // transport code, as it would read Ash OS through the Rust plugin: no example data, no onboarding.
@@ -26,6 +34,7 @@ const stubUrl = new URLSearchParams(location.search).get("stub") ?? liveUrl;
 if (stubUrl) {
   for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
   localStorage.setItem("monocode:hub-onboarded", "1");
+  markSetupProved();
   // A proof can start from some of Ash's saved Monos (e.g. his picked green crab on Chief of Staff); otherwise none.
   localStorage.setItem("monocode:mono-roster", localStorage.getItem("monocode:dev-roster-seed") ?? "[]");
   // Make the project Leads as the Hub bundle does, so the Coding team shows them here too.
@@ -37,9 +46,11 @@ if (stubUrl) {
     // Clean start: none of our example Monos.
     localStorage.setItem("monocode:mono-roster", "[]");
   }
+  markSetupProved();
 } else {
   localStorage.setItem("monocode:hub-examples", "1");
   localStorage.setItem("monocode:hub-onboarded", "1");
+  markSetupProved();
 }
 if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getItem("monocode:mono-roster") ?? "[]") === "[]") {
   localStorage.setItem(

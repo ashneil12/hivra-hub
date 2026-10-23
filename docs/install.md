@@ -2,6 +2,19 @@
 
 Download the x86_64 `.deb`, `.rpm`, or AppImage from [GitHub Releases](https://github.com/hardbeat920/monocode/releases/latest). Install and sign in to at least one [supported provider](providers.md) before starting a session.
 
+## First launch
+
+The first time MonoCode opens it checks the four things a chat needs, instead of asking you whether they are true:
+
+1. **Claude Code is installed.** MonoCode runs its sessions on the Claude Code CLI, which is a separate program on your Mac or Linux machine. Install it from [claude.com/claude-code](https://claude.com/claude-code), or point MonoCode at a copy you already have in Settings → Providers.
+2. **Claude Code is signed in.** Run `claude` once in a terminal and sign in, and MonoCode will see the account. A test message that comes back also counts as proof, which covers API-key setups.
+3. **A folder is ready to work in.** Pick the folder your projects' files live in, or let MonoCode use one an existing project already has.
+4. **A first reply comes back.** MonoCode sends one short message and waits for the answer. This is the check that proves the whole chain works.
+
+Each check that passes is written down, and the card only asks again next launch for the ones that did not pass. Press **Check again** to run all four afresh — for example after installing Claude Code or signing in. **Not now** closes the card without recording anything, so the next launch checks again rather than trusting a setup nothing proved.
+
+Once all four have passed, MonoCode does not ask again. A dev copy does not show this card unless you open it with `?onboarding`.
+
 ## Ubuntu / Debian packages
 
 Install the downloaded `.deb` with apt so its runtime dependencies are installed too:
