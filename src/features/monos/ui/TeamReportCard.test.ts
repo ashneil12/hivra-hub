@@ -32,8 +32,11 @@ it("a report that says it is done carries what that claim is worth", () => {
   render("Fixed the save bug.\nTests pass.");
   const claim = el.querySelector("[data-team-report-claim]")!;
   expect(claim.getAttribute("data-team-report-claim")).toBe("likely");
+  // The card has the team's words, not its transcript, so no report reaches it confirmed.
+  expect(claim.getAttribute("data-team-report-confirmed")).toBe("no");
   expect(claim.textContent).toContain("says the checks passed");
   expect(claim.textContent).toContain("the app saw no test or type-check run in this turn");
+  expect(claim.textContent).toContain("Not yet confirmed.");
 });
 
 it("a done claim with nothing behind it reads as not proven", () => {

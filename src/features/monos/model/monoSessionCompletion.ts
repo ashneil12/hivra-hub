@@ -60,9 +60,10 @@ export type MonoSessionCompletionResult = {
   reason?: string;
   /**
    * The session's own done/fixed claim, with what the app saw it run (claimEvidence.ts, board I5): verified, likely or
-   * a guess. A Lead passes the confidence on rather than reporting a guess as done.
+   * a guess, and what would confirm it when it is not verified. A Lead passes the confidence on rather than reporting a
+   * guess or a thin claim as done.
    */
-  claim?: { confidence: ClaimConfidence; line: string };
+  claim?: { confidence: ClaimConfidence; backed: boolean; missing: string[]; line: string };
 };
 
 export function monoSessionCompletionResult(
@@ -104,7 +105,9 @@ export function monoSessionCompletionResult(
     result: result.slice(0, RESULT_MAX_CHARS),
     truncated: result.length > RESULT_MAX_CHARS,
     ...(outcome.error ? { error: outcome.error } : {}),
-    ...(claim ? { claim: { confidence: claim.confidence, line: claim.line } } : {}),
+    ...(claim
+      ? { claim: { confidence: claim.confidence, backed: claim.backed, missing: claim.missing, line: claim.line } }
+      : {}),
     ...failureReport(outcome, session),
   };
 }
@@ -224,11 +227,18 @@ export function completionMessage(
   const failedLine = failedTitles.length
     ? ` FAILED, not done: ${nameList(failedTitles)}. Say so plainly in your reply, with why; don't report it as done.`
     : "";
-  // r55 (board I5): a done claim carries what was run and how sure it is. The Lead passes that on, never upgrades it.
+  // r55 (board I5): a done claim carries what was run and how sure it is. The Lead passes that on, never upgrades it. A
+  // claim with thin evidence (likely) reaches it as "not yet confirmed", with what is missing.
   const claimed = results.filter((result) => result.claim);
   const guessed = claimed.filter((result) => result.claim!.confidence === "guess").map((result) => result.title);
+  const unconfirmed = claimed
+    .filter((result) => result.claim!.confidence === "likely")
+    .map((result) => {
+      const missing = result.claim!.missing?.length ? ` (missing ${result.claim!.missing.join(" and ")})` : "";
+      return `${result.title}${missing}`;
+    });
   const claimLine = claimed.length
-    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run; never report a guess as done.${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
+    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run; never report a guess as done.${unconfirmed.length ? ` NOT YET CONFIRMED: ${unconfirmed.join("; ")}.` : ""}${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
     : "";
   const elsewhere = progress?.elsewhere?.length
     ? ` Also still running from your other turns: ${nameList(progress.elsewhere)}.`
@@ -536,6 +546,9 @@ function isCompletionResult(
 ): value is MonoSessionCompletionResult {
   if (!value || typeof value !== "object") return false;
   const result = value as MonoSessionCompletionResult;
+  // A payload queued before r55 has a claim without backed or missing; it is still readable, so both stay optional here.
+  const claim = (value as { claim?: { confidence?: unknown; line?: unknown; backed?: unknown; missing?: unknown } })
+    .claim;
   return (
     typeof result.sessionId === "string" &&
     typeof result.project === "string" &&
@@ -550,10 +563,14 @@ function isCompletionResult(
     (result.retryable === undefined || typeof result.retryable === "boolean") &&
     (result.resetsAt === undefined || typeof result.resetsAt === "string") &&
     (result.reason === undefined || typeof result.reason === "string") &&
-    (result.claim === undefined ||
-      (typeof result.claim === "object" &&
-        typeof result.claim.confidence === "string" &&
-        typeof result.claim.line === "string"))
+    (claim === undefined ||
+      (typeof claim === "object" &&
+        typeof claim.confidence === "string" &&
+        typeof claim.line === "string" &&
+        (claim.backed === undefined || typeof claim.backed === "boolean") &&
+        (claim.missing === undefined ||
+          (Array.isArray(claim.missing) &&
+            claim.missing.every((item) => typeof item === "string")))))
   );
 }
 

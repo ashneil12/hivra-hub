@@ -96,9 +96,10 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
     <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
         {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
-        {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3). */}
+        {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3).
+            The gate's own reason (D3) is on hover, so a row that shouldn't be here can be traced. */}
         {where ? <span className="shrink-0" aria-hidden>·</span> : null}
-        <span className="shrink-0" data-hub-waiting-reason>{needsReason(chat)}</span>
+        <span className="shrink-0" data-hub-waiting-reason data-hub-gate={chat.gate?.kind} title={chat.gate?.reason}>{needsReason(chat)}</span>
         {chat.redLine ? <span className="sr-only" data-hub-red-line>Red line</span> : null}
       </div>
       <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>

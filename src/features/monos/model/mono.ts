@@ -534,8 +534,8 @@ export function isLetterAvatar(mascot: string | undefined): boolean {
  * Mono has no image, or Ash picked Letter: the letters he typed as he typed them, otherwise the automatic two capitals.
  */
 export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">): string {
-  // Ash doesn't like ghost stuff (15 Oct): a ghost nobody picked (the Hivra lead's old look) is a dino, in its own colour.
-  if (mono.mascot === "ghost" && !mono.mascotPicked) return "dino";
+  // Ash doesn't like ghost stuff (15 Oct): the ghost is gone from display, picked or not, and shows as a dino in its own colour.
+  if (mono.mascot === "ghost") return "dino";
   if (mono.mascot && !isLetterAvatar(mono.mascot)) return mono.mascot;
   if (mono.mascotPicked && mono.mascot !== LETTER_AVATAR) return mono.mascot;
   return `${LETTER_AVATAR}:${monoTileLetters(mono.name?.trim() || "Mono")}`;
@@ -601,13 +601,14 @@ export function monosSnapshot(): string {
   }
 }
 
-/** Mascots whose Mono name is shorter than the mascot's. */
-const MONO_NAME: Record<string, string> = { mushroom: "Shroom", ghost: "Wisp" };
+/** Plain first names a Mono goes by until the user names it. A Mono's placeholder should read like a name, not "MonoWisp". */
+const DEFAULT_NAMES = ["Ada", "Milo", "Juno", "Remy", "Nova", "Otto", "Iris", "Leo", "Pia", "Sol", "Theo", "Vera"] as const;
 
-/** The name a Mono goes by until the user names it: "MonoCrab", "MonoShroom". */
+/** The name a Mono goes by until the user names it: a plain name, stable for its mascot so the placeholder doesn't change. */
 export function defaultMonoName(mascot: string): string {
-  if (isLetterAvatar(mascot)) return "Mono";
-  return `Mono${MONO_NAME[mascot] ?? mascot.charAt(0).toUpperCase() + mascot.slice(1)}`;
+  let hash = 0;
+  for (let i = 0; i < mascot.length; i++) hash = (hash * 31 + mascot.charCodeAt(i)) >>> 0;
+  return DEFAULT_NAMES[hash % DEFAULT_NAMES.length];
 }
 
 /** One project a Mono works on, as the rail labels it. */
@@ -615,7 +616,7 @@ export type MonoProject = { path: string; name: string };
 
 export type MonoLook = {
   id?: string;
-  /** The user's name for it, or its default: "MonoInvader", "MonoCrab". */
+  /** The user's name for it, or its plain default (defaultMonoName). */
   name: string;
   /** Its role label (monoRole), if it has one. */
   role?: string;

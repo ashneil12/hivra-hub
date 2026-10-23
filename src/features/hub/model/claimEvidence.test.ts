@@ -112,6 +112,59 @@ describe("what a claim is worth", () => {
   });
 });
 
+describe("what counts as evidence for the change", () => {
+  const edited = (path: string) =>
+    ({
+      role: "assistant",
+      text: "",
+      tool: { callId: path, title: `Edit ${path}`, kind: "edit", status: "completed", paths: [path] },
+    }) as unknown as Block;
+
+  it("does not count a check that ran before the last edit", () => {
+    const turn = [ran("npx vitest run src/save.test.ts"), edited("src/save.ts")];
+    const evidence = claimEvidenceOf("Fixed: the save path retries", turn)!;
+    expect(evidence).toMatchObject({ confidence: "guess", backed: false, counted: [] });
+    expect(evidence.missing).toContain("a check after the last edit (save.ts)");
+  });
+
+  it("counts a passing project-wide check that ran after the change", () => {
+    const turn = [edited("src/save.ts"), ran("npm test")];
+    const evidence = claimEvidenceOf("Fixed: the save path retries", turn)!;
+    expect(evidence).toMatchObject({ confidence: "verified", backed: true, missing: [] });
+    expect(evidence.counted).toEqual([{ command: "npm test", passed: true }]);
+  });
+
+  it("counts a check that names the file the turn changed", () => {
+    const turn = [edited("src/save.ts"), ran("npx vitest run src/save.test.ts")];
+    expect(claimEvidenceOf("Fixed: the save path retries", turn)).toMatchObject({ confidence: "verified" });
+  });
+
+  it("does not count a check aimed at other files, and says what it would have to cover", () => {
+    const turn = [edited("src/save.ts"), ran("npx vitest run src/other.test.ts")];
+    const evidence = claimEvidenceOf("Done — the export works", turn)!;
+    expect(evidence).toMatchObject({ confidence: "guess", backed: false, counted: [] });
+    expect(evidence.missing).toContain("a check for what changed (save.ts)");
+  });
+
+  it("does not let a read of the file stand in for a check", () => {
+    const read = {
+      role: "assistant",
+      text: "",
+      tool: { callId: "r1", title: "Read src/save.ts", kind: "read", status: "completed" },
+    } as unknown as Block;
+    const evidence = claimEvidenceOf("Fixed: the save path retries", [edited("src/save.ts"), read])!;
+    expect(evidence).toMatchObject({ confidence: "guess", ran: [] });
+  });
+
+  it("says which file the reply talks about was never read", () => {
+    const evidence = claimEvidenceOf("Fixed: the save path in src/save.ts now retries.\nChecks: npm test")!;
+    expect(evidence).toMatchObject({ confidence: "likely", backed: false });
+    expect(evidence.missing).toContain("reading save.ts");
+    expect(evidence.line).toContain("Not yet confirmed.");
+    expect(evidence.line).toContain("Missing:");
+  });
+});
+
 describe("reading the reply of a turn", () => {
   it("takes the last thing said, not a tool call or a hidden note", () => {
     const turn = [

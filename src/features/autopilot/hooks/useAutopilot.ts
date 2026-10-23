@@ -304,6 +304,11 @@ export function useAutopilot(options: {
         void log({ ...base, kind: "question", outcome: "held", red: red ?? null });
         return;
       }
+      if (chat.gate?.kind === "action") {
+        // A sign-in, a code or a payment: only Ash can do it, so neither Autopilot nor the Lead can take it.
+        void log({ ...base, kind: "question", outcome: "held" });
+        return;
+      }
       if (chat.pick) {
         const taken = await takePick(chat.sessionId, { by: "autopilot" });
         if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });

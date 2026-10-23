@@ -16,7 +16,16 @@ import { findMono, monoForSession } from "../../monos/model/mono";
 import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { Block, HarnessId, Session } from "../../sessions/model/session";
 import { sessionDisplayTitle } from "../../sessions/model/session";
-import { chatQuestion, pickMessage, pickReply, wordsMessage, wordsReply, type ChatQuestion } from "./chatQuestions";
+import {
+  chatQuestion,
+  gateQuestion,
+  pickMessage,
+  pickReply,
+  wordsMessage,
+  wordsReply,
+  type ChatQuestion,
+  type GateKind,
+} from "./chatQuestions";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
 import { forYou } from "./userName";
@@ -32,6 +41,8 @@ export type WaitingEntry = ChatQuestion & {
   askedAt: number;
   /** A worker's question H4 handed to the Lead that delegated it: not Ash's. */
   routedToLead?: boolean;
+  /** Why the gate let it through (D3): a choice, an approval, a red line or an errand only Ash can run. */
+  gate?: { kind: GateKind; reason: string };
 };
 
 /** A waiting chat as Today shows it. */
@@ -65,8 +76,25 @@ type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pe
 };
 
 const KEY = "monocode:hub-waiting-chats";
+const GATE_LOG_KEY = "monocode:hub-gate-log";
+const GATE_LOG_MAX = 100;
+
+/** One gate decision, kept so a wrong call can be seen: what was asked, and why it was let through or held back. */
+export type GateRecord = {
+  at: number;
+  sessionId: string;
+  title: string;
+  question: string;
+  pick?: string;
+  admit: boolean;
+  kind?: GateKind;
+  reason: string;
+};
 
 let entries: Record<string, WaitingEntry> | undefined;
+let gateRecords: GateRecord[] | undefined;
+/** Questions already written to the gate log this run; the app reports the same question on every streamed word. */
+const gateLogged = new Set<string>();
 let host: WaitingChatsHost | undefined;
 let router: WorkerQuestionRouter | undefined;
 let version = 0;
@@ -95,6 +123,44 @@ function save(next: Record<string, WaitingEntry>): void {
   }
   version += 1;
   listeners.forEach((l) => l());
+}
+
+/** The gate decisions so far, newest last. Kept across restarts so a wrong call can still be found afterwards. */
+export function gateLog(): GateRecord[] {
+  if (!gateRecords) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(GATE_LOG_KEY) ?? "[]") as unknown;
+      gateRecords = Array.isArray(raw) ? (raw as GateRecord[]) : [];
+    } catch {
+      gateRecords = [];
+    }
+  }
+  return [...gateRecords];
+}
+
+function recordGate(chat: ChatInput, q: ChatQuestion, gate: ReturnType<typeof gateQuestion>, now: number): void {
+  const key = `${chat.id}\u0000${q.question}\u0000${q.pick ?? ""}\u0000${gate.admit}`;
+  if (gateLogged.has(key)) return;
+  gateLogged.add(key);
+  const next = [
+    ...gateLog(),
+    {
+      at: now,
+      sessionId: chat.id,
+      title: sessionDisplayTitle(chat.title, chat.harness as HarnessId),
+      question: q.question,
+      ...(q.pick ? { pick: q.pick } : {}),
+      admit: gate.admit,
+      ...(gate.admit ? { kind: gate.kind } : {}),
+      reason: gate.reason,
+    },
+  ].slice(-GATE_LOG_MAX);
+  gateRecords = next;
+  try {
+    localStorage.setItem(GATE_LOG_KEY, JSON.stringify(next));
+  } catch {
+    /* without storage the log still works until the app restarts */
+  }
 }
 
 const sameQuestion = (a: WaitingEntry, b: ChatQuestion) =>
@@ -140,7 +206,9 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const q = readChat(chat);
     if (q) {
       if (q.source === "ask") seenLive.add(liveKey(chat.id, q.requestId));
-      if (old && sameQuestion(old, q)) continue;
+      // An entry stored before the gate existed has no decision yet: judge it again even when the question is unchanged.
+      if (old && sameQuestion(old, q) && old.gate) continue;
+      const gate = gateQuestion(q);
       const mono = monoForSession(chat.id);
       const entry: WaitingEntry = {
         ...q,
@@ -151,6 +219,15 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
         askedAt: old && old.question === q.question ? old.askedAt : now,
       };
       if (router?.(entry)) entry.routedToLead = true;
+      // A worker's question is its Lead's, not Ash's, so the gate doesn't judge it. Everything else must be admitted.
+      if (!entry.routedToLead) {
+        recordGate(chat, q, gate, now);
+        if (!gate.admit) {
+          if (old) delete edit()[chat.id];
+          continue;
+        }
+        entry.gate = { kind: gate.kind, reason: gate.reason };
+      }
       edit()[chat.id] = entry;
       continue;
     }
@@ -195,10 +272,16 @@ function describe(entry: WaitingEntry): WaitingChat {
   };
 }
 
+/** An entry stored before the gate existed is judged as it is now; a worker's question is never Ash's. */
+function admitted(entry: WaitingEntry): boolean {
+  if (entry.routedToLead) return false;
+  return entry.gate ? true : gateQuestion(entry).admit;
+}
+
 /** The chats waiting on Ash, oldest question first; one project's when `projectId` is given. Workers routed to a Lead are not his. */
 export function waitingChats(projectId?: string): WaitingChat[] {
   return Object.values(load())
-    .filter((e) => !e.routedToLead)
+    .filter(admitted)
     .map(describe)
     .filter((c) => !projectId || c.projectId === projectId)
     .sort((a, b) => a.askedAt - b.askedAt);
@@ -206,7 +289,7 @@ export function waitingChats(projectId?: string): WaitingChat[] {
 
 export function findWaitingChat(sessionId: string): WaitingChat | undefined {
   const e = load()[sessionId];
-  return e && !e.routedToLead ? describe(e) : undefined;
+  return e && admitted(e) ? describe(e) : undefined;
 }
 
 function drop(sessionId: string): void {
@@ -365,11 +448,13 @@ export function useWaitingChatsVersion(): number {
   return useSyncExternalStore(subscribeWaitingChats, () => version, () => version);
 }
 
-/** Tests: forget the list (and what is stored). */
+/** Tests: forget the list, the gate log, and what is stored. */
 export function resetWaitingChats(): void {
   entries = undefined;
+  gateRecords = undefined;
   host = undefined;
   router = undefined;
   seenLive.clear();
+  gateLogged.clear();
   version += 1;
 }

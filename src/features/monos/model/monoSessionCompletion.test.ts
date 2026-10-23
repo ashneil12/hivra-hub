@@ -153,8 +153,28 @@ describe("Mono session completion notifications", () => {
     const message = monoSessionCompletionMessage({ ...options, session });
     expect(message.text).toContain("API fix says it's done — verified");
     const payload = JSON.parse(message.text.slice(message.text.indexOf("\n\n") + 2));
-    expect(payload.claim).toMatchObject({ confidence: "verified" });
+    expect(payload.claim).toMatchObject({ confidence: "verified", backed: true, missing: [] });
     expect(payload.claim.line).toContain("1 check ran in this turn and passed (npx vitest run src/api.test.ts)");
+  });
+
+  it("marks a done claim with thin evidence NOT YET CONFIRMED, with what is missing", () => {
+    const session = newSession("codex", options.project);
+    session.title = "API fix";
+    session.blocks = [
+      { id: "u", role: "user", text: options.prompt, appRequestId: options.requestId },
+      { id: "reply", role: "assistant", text: "Fixed: the endpoint returns 204; 12 tests pass." },
+    ];
+    const message = monoSessionCompletionMessage({ ...options, session });
+    expect(message.text).toContain("API fix says it's done — likely");
+    expect(message.text).toContain(
+      "NOT YET CONFIRMED: API fix (missing a test run, a type check or a build in this turn).",
+    );
+    expect(message.text).not.toContain("NOT PROVEN: API fix");
+    expect(JSON.parse(message.text.slice(message.text.indexOf("\n\n") + 2)).claim).toMatchObject({
+      confidence: "likely",
+      backed: false,
+      missing: ["a test run, a type check or a build in this turn"],
+    });
   });
 
   it("marks a done claim with nothing behind it NOT PROVEN, so a Lead can't pass it on as done", () => {

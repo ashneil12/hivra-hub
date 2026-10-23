@@ -42,8 +42,8 @@ it("a tile shows the letters Ash chose, as typed; clearing them goes back to the
   expect(monoLook(findMono("alfred")!).mascot).toBe("letter:AL");
 });
 
-it("a ghost nobody picked (the Hivra lead's old look) shows as a dino in its own colour; a picked ghost stays", () => {
+it("a ghost shows as a dino in its own colour, picked or not", () => {
   expect(monoAvatar({ mascot: "ghost", name: "Hivra lead" })).toBe("dino");
-  expect(monoAvatar({ mascot: "ghost", mascotPicked: true, name: "Hivra lead" })).toBe("ghost");
+  expect(monoAvatar({ mascot: "ghost", mascotPicked: true, name: "Hivra lead" })).toBe("dino");
   expect(monoAvatar({ mascot: "crab", mascotPicked: true, name: "Chief of Staff" })).toBe("crab");
 });

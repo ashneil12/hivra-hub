@@ -263,9 +263,12 @@ export const MASCOT_GRID = GRID;
 const NOT_OFFERED = new Set(["ghost", "skull", "mushroom"]);
 export const PICKABLE_MASCOTS: readonly ProjectMascot[] = PROJECT_MASCOTS.filter((m) => !NOT_OFFERED.has(m.name));
 
+/** The ghost is gone from the product (Ash, 15 Oct): a Mono or project still storing it draws something else. */
+const HIDDEN = new Set(["ghost"]);
+
 /** Stable per-project pick — a different mix than the color hash so a project's
- *  mascot and color vary independently. An explicit `name` wins; an unknown one
- *  falls back to the hash over the offered mascots only. */
+ *  mascot and color vary independently. An explicit `name` wins unless it is ghost;
+ *  an unknown one falls back to the hash over the offered mascots only. */
 export function projectMascot(
   project: string,
   name?: string | null,
@@ -273,7 +276,7 @@ export function projectMascot(
   const chosen = name
     ? PROJECT_MASCOTS.find((mascot) => mascot.name === name)
     : undefined;
-  if (chosen) return chosen;
+  if (chosen && !HIDDEN.has(chosen.name)) return chosen;
 
   let hash = 0;
   for (let i = 0; i < project.length; i++) {

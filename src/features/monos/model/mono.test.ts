@@ -148,7 +148,11 @@ it("says what it needs from you", () => {
   ).toEqual({ status: "needs-you", activity: "Approve git push" });
 });
 
-it("names an unnamed Mono after its mascot", () => {
-  expect(defaultMonoName("crab")).toBe("MonoCrab");
-  expect(defaultMonoName("mushroom")).toBe("MonoShroom");
+it("gives an unnamed Mono a plain name that doesn't read like a variable", () => {
+  for (const mascot of ["crab", "mushroom", "ghost", "letter:F", "letter"]) {
+    const name = defaultMonoName(mascot);
+    expect(name).toMatch(/^[A-Z][a-z]+$/);
+    expect(name).not.toMatch(/^Mono/);
+    expect(defaultMonoName(mascot)).toBe(name);
+  }
 });

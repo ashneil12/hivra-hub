@@ -6,14 +6,30 @@ import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { setHubSelection } from "../model/hubNav";
 import { addTeamAddon } from "../model/hubTeam";
 import { setUserName } from "../model/userName";
-import { applyThemePreset, finishOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
+import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
+import { setupProved } from "../model/setupProof";
+import { HubOnboardingSetup } from "./HubOnboardingSetup";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
 
-/** First launch: welcome, roles & projects, theme, done. Skippable at every step. */
+type Step = "setup" | "welcome" | "start" | "theme" | "done";
+const CHOICES: Step[] = ["welcome", "start", "theme", "done"];
+
+/**
+ * First launch: the four setup checks (when they are not proved yet), then welcome, roles & projects, theme, done.
+ * The choices are skippable; the setup is not, because a chat cannot work without it — its "Not now" closes the card
+ * without recording anything, so the next launch checks again.
+ */
 export function HubOnboarding({ onClose }: { onClose: () => void }) {
+  // Fixed when the card opens: proving a check mid-flow must not reshuffle the steps under the person's feet.
+  const [steps] = useState<Step[]>(() => {
+    const setup: Step[] = setupProved() ? [] : ["setup"];
+    const choices = needsOnboarding() ? CHOICES : [];
+    return setup.length || choices.length ? [...setup, ...choices] : CHOICES;
+  });
   const [step, setStep] = useState(0);
+  const [setupOk, setSetupOk] = useState(false);
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -50,19 +66,26 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     onClose();
   };
 
+  const kind = steps[step];
+  const last = step === steps.length - 1;
+
   return (
-    <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={step}>
+    <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
       <div className="flex w-[520px] flex-col gap-6 rounded-2xl bg-background-base p-8 shadow-2xl ring-0">
         <div className="flex items-center justify-between text-xs text-content/60">
-          <span>Step {step + 1} of 4</span>
-          {step < 3 ? (
+          <span>Step {step + 1} of {steps.length}</span>
+          {!last && kind !== "setup" ? (
             <button type="button" data-hub-onboarding-skip onClick={() => done()} className="rounded px-1.5 py-0.5 hover:bg-content/8 hover:text-content">
               Skip
             </button>
           ) : null}
         </div>
 
-        {step === 0 ? (
+        {kind === "setup" ? (
+          <HubOnboardingSetup onProvedChange={setSetupOk} />
+        ) : null}
+
+        {kind === "welcome" ? (
           <div className="flex flex-col gap-2">
             <h1 className="text-[18px] text-content">Welcome</h1>
             <p className="text-[13px] leading-5 text-content/75">
@@ -77,7 +100,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
 
-        {step === 1 ? (
+        {kind === "start" ? (
           <div className="flex flex-col gap-4">
             <h1 className="text-[18px] text-content">How would you like to start?</h1>
             <Group label="Start">
@@ -99,7 +122,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
 
-        {step === 2 ? (
+        {kind === "theme" ? (
           <div className="flex flex-col gap-4">
             <h1 className="text-[18px] text-content">Pick a look</h1>
             <Group label="Theme">
@@ -115,7 +138,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
 
-        {step === 3 ? (
+        {kind === "done" ? (
           <div className="flex flex-col gap-2">
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
@@ -126,16 +149,29 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
         ) : null}
 
         <div className="flex justify-end gap-2">
-          {step > 0 && step < 3 ? (
+          {step > 0 && !last ? (
             <button type="button" onClick={() => setStep(step - 1)} className={QUIET}>Back</button>
           ) : null}
-          {step < 3 ? (
-            <button type="button" data-hub-onboarding-next onClick={() => setStep(step + 1)} className={PRIMARY}>
-              {step === 0 ? "Get started" : "Continue"}
-            </button>
-          ) : (
+          {kind === "setup" ? (
+            <>
+              <button type="button" data-hub-onboarding-not-now onClick={onClose} className={QUIET}>Not now</button>
+              <button
+                type="button"
+                data-hub-onboarding-next
+                disabled={!setupOk}
+                onClick={() => (last ? onClose() : setStep(step + 1))}
+                className={`${PRIMARY} disabled:cursor-not-allowed disabled:opacity-50`}
+              >
+                {last ? "Start using MonoCode" : "Continue"}
+              </button>
+            </>
+          ) : last ? (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
               {start === "fresh" ? "Create your first project" : restored ? "Review the export" : "Go to Today"}
+            </button>
+          ) : (
+            <button type="button" data-hub-onboarding-next onClick={() => setStep(step + 1)} className={PRIMARY}>
+              {kind === "welcome" ? "Get started" : "Continue"}
             </button>
           )}
         </div>

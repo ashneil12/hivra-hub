@@ -66,7 +66,8 @@ it("never offers or names a ghost when making a Mono", async () => {
   const { defaultMonoName, nextMonoLook } = await import("../model/mono");
   expect(PICKABLE_MASCOTS.map((m) => m.name)).not.toContain("ghost");
   expect(monoIntroCrowd(look).map((m) => m.name)).not.toContain("ghost");
-  expect(defaultMonoName("ghost")).toBe("MonoWisp");
+  expect(defaultMonoName("ghost")).toMatch(/^[A-Z][a-z]+$/);
+  expect(defaultMonoName("ghost")).not.toMatch(/ghost|Mono/i);
   for (let n = 0; n < 12; n++) expect(nextMonoLook(Array.from({ length: n }, (_, i) => ({ mascot: PICKABLE_MASCOTS[i % PICKABLE_MASCOTS.length].name, color: "x" }))).mascot).not.toBe("ghost");
 });
 
