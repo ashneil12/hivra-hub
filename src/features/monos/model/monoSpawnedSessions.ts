@@ -31,6 +31,10 @@ export function sanitizeMonoSpawnedSessions(
       !item.model.trim()
     )
       continue;
+    const effort =
+      typeof item.effort === "string" && item.effort.trim() && item.effort.length <= 40
+        ? item.effort.trim()
+        : undefined;
     if (!result.has(item.sessionId))
       result.set(item.sessionId, {
         sessionId: item.sessionId,
@@ -38,6 +42,7 @@ export function sanitizeMonoSpawnedSessions(
         title: item.title.trim().slice(0, 300) || "Agent session",
         harness: item.harness,
         model: item.model,
+        ...(effort ? { effort } : {}),
       });
   }
   return [...result.values()];

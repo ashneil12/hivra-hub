@@ -45,7 +45,9 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS worker_limits (
             project TEXT PRIMARY KEY,
             workers INTEGER NOT NULL,
-            heavy INTEGER NOT NULL
+            heavy INTEGER NOT NULL,
+            model TEXT,
+            effort TEXT
          );
          CREATE TABLE IF NOT EXISTS worker_heavy (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +62,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "ALTER TABLE worker_queue ADD COLUMN claimed_until INTEGER;
              ALTER TABLE worker_queue ADD COLUMN claimed_by TEXT;",
+        )?;
+    }
+    // A project's own worker model came after the table (E7): add it to a database made before.
+    let has_model: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('worker_limits') WHERE name = 'model'")?
+        .exists([])?;
+    if !has_model {
+        conn.execute_batch(
+            "ALTER TABLE worker_limits ADD COLUMN model TEXT;
+             ALTER TABLE worker_limits ADD COLUMN effort TEXT;",
         )?;
     }
     Ok(())
@@ -191,6 +203,35 @@ pub fn set_limits(
     Ok(json!({ "workers": workers, "heavy": heavy }))
 }
 
+/// A project's own worker model (E7, Ash's choice in the Workers dialog): the model and effort every worker in the
+/// project runs on unless the task names its own. `None` clears it, and the project's workers go back to the usual
+/// Sonnet (taskDifficulty.ts). Clearing a model clears its effort with it. The limits are left as they are.
+pub fn set_model(
+    conn: &Connection,
+    project: &str,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<Value, String> {
+    if project.trim().is_empty() || project.len() > ID_MAX {
+        return Err("A project is needed".into());
+    }
+    let model = model.filter(|value| !value.trim().is_empty());
+    if model.as_ref().is_some_and(|value| value.len() > ID_MAX) {
+        return Err("That model id is too long".into());
+    }
+    let effort = model
+        .as_ref()
+        .and(effort.filter(|value| !value.trim().is_empty()));
+    // A new row starts at the app's own defaults, the same as workerPool.ts (6 at once, 2 of them heavy).
+    conn.execute(
+        "INSERT INTO worker_limits (project, workers, heavy, model, effort) VALUES (?1, 6, 2, ?2, ?3)
+         ON CONFLICT(project) DO UPDATE SET model = excluded.model, effort = excluded.effort",
+        params![project, model, effort],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(json!({ "model": model, "effort": effort }))
+}
+
 pub fn mark_heavy(conn: &Connection, child: &str) -> Result<bool, String> {
     if child.trim().is_empty() || child.len() > ID_MAX {
         return Err("A worker is needed".into());
@@ -209,11 +250,11 @@ pub fn mark_heavy(conn: &Connection, child: &str) -> Result<bool, String> {
     Ok(added > 0)
 }
 
-/// `{ limits: { <project>: { workers, heavy } }, heavy: [<child>...] }`.
+/// `{ limits: { <project>: { workers, heavy, model?, effort? } }, heavy: [<child>...] }`.
 pub fn settings(conn: &Connection) -> Result<Value, String> {
     let mut limits = serde_json::Map::new();
     let mut statement = conn
-        .prepare("SELECT project, workers, heavy FROM worker_limits")
+        .prepare("SELECT project, workers, heavy, model, effort FROM worker_limits")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -221,12 +262,29 @@ pub fn settings(conn: &Connection) -> Result<Value, String> {
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     for row in rows {
-        let (project, workers, heavy) = row.map_err(|e| e.to_string())?;
-        limits.insert(project, json!({ "workers": workers, "heavy": heavy }));
+        let (project, workers, heavy, model, effort) = row.map_err(|e| e.to_string())?;
+        limits.insert(
+            project,
+            match model {
+                // The effort goes only when one was chosen (workerPool.ts reads it as optional).
+                Some(model) => match effort {
+                    Some(effort) => json!({
+                        "workers": workers,
+                        "heavy": heavy,
+                        "model": model,
+                        "effort": effort,
+                    }),
+                    None => json!({ "workers": workers, "heavy": heavy, "model": model }),
+                },
+                None => json!({ "workers": workers, "heavy": heavy }),
+            },
+        );
     }
     let mut statement = conn
         .prepare("SELECT child FROM worker_heavy ORDER BY seq")
@@ -390,6 +448,19 @@ pub fn worker_limits_set(
     heavy: i64,
 ) -> Result<Value, String> {
     let saved = set_limits(&*store.lock_conn()?, &project, workers, heavy)?;
+    changed(&app);
+    Ok(saved)
+}
+
+#[tauri::command(async)]
+pub fn worker_model_set(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<Value, String> {
+    let saved = set_model(&*store.lock_conn()?, &project, model, effort)?;
     changed(&app);
     Ok(saved)
 }
@@ -624,6 +695,56 @@ mod tests {
         let all = settings(&conn).unwrap();
         assert_eq!(all["limits"]["hivra"], json!({ "workers": 20, "heavy": 4 }));
         assert_eq!(all["heavy"], json!(["app-lead-r1"]));
+    }
+
+    #[test]
+    fn keeps_a_projects_own_worker_model_apart_from_its_limits() {
+        let conn = conn();
+        // Chosen before any limit was set: the row starts at the app's defaults.
+        assert_eq!(
+            set_model(
+                &conn,
+                "hivra",
+                Some("claude:opus-5".into()),
+                Some("high".into())
+            )
+            .unwrap(),
+            json!({ "model": "claude:opus-5", "effort": "high" })
+        );
+        assert_eq!(
+            settings(&conn).unwrap()["limits"]["hivra"],
+            json!({ "workers": 6, "heavy": 2, "model": "claude:opus-5", "effort": "high" })
+        );
+        // The numbers Ash set later leave the model alone; the model he picks leaves the numbers alone.
+        set_limits(&conn, "hivra", 9, 3).unwrap();
+        set_model(&conn, "hivra", Some("custom:deepseek".into()), None).unwrap();
+        assert_eq!(
+            settings(&conn).unwrap()["limits"]["hivra"],
+            json!({ "workers": 9, "heavy": 3, "model": "custom:deepseek" })
+        );
+        // Back to the usual model: the field goes, and nothing else does.
+        set_model(&conn, "hivra", None, Some("high".into())).unwrap();
+        assert_eq!(
+            settings(&conn).unwrap()["limits"]["hivra"],
+            json!({ "workers": 9, "heavy": 3 })
+        );
+    }
+
+    #[test]
+    fn adds_the_model_columns_to_limits_made_before_them() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE worker_limits (project TEXT PRIMARY KEY, workers INTEGER NOT NULL,
+                heavy INTEGER NOT NULL);",
+        )
+        .unwrap();
+        set_limits(&conn, "old", 4, 1).unwrap();
+        ensure_tables(&conn).unwrap();
+        set_model(&conn, "old", Some("claude:sonnet-5".into()), None).unwrap();
+        assert_eq!(
+            settings(&conn).unwrap()["limits"]["old"],
+            json!({ "workers": 4, "heavy": 1, "model": "claude:sonnet-5" })
+        );
     }
 
     #[test]

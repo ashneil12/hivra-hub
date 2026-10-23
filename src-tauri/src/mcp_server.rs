@@ -211,10 +211,12 @@ fn tools() -> Value {
                     "asks": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "The Ash OS ask ids (a_...) this job covers." },
                     "goal": { "type": "string", "description": "Done when: the condition that finishes the job." },
                     "project": { "type": "string", "description": "The hub project id, folder path or name. Omit when you have one project." },
-                    "model": { "type": "string", "description": "A model id (claude:sonnet-5) or family (sonnet). Inherits yours by default." },
+                    "model": { "type": "string", "description": "A model id (claude:sonnet-5), a family (sonnet), or one of Ash's own models (custom:<id>). Omit to let the app choose: Sonnet for a usual job, a stronger model for a hard one (hard, heavy, scope or redoes), or this project's saved worker model." },
                     "effort": { "type": "string", "description": "The model's effort setting, when it has one." },
                     "isolation": { "type": "string", "enum": ["shared", "worktree"], "default": "shared" },
-                    "heavy": { "type": "boolean", "default": false, "description": "Your call: true when the job runs heavy tests (full suites, e2e, builds). Each project runs only so many of those at once; the rest wait their turn and start by themselves." },
+                    "heavy": { "type": "boolean", "default": false, "description": "Your call: true when the job runs heavy tests (full suites, e2e, builds). Each project runs only so many of those at once; the rest wait their turn and start by themselves. A heavy job is also a hard one for the model." },
+                    "hard": { "type": "boolean", "default": false, "description": "Your call: true when the job is hard (subtle, high-risk, or wide). A hard job runs on a stronger model, at high effort when that model offers it; a usual one runs on Sonnet." },
+                    "scope": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "The files or areas this job covers, as you see them. 8 or more makes it a hard job by itself; omit when you can't say." },
                     "mode": { "type": "string", "enum": ["async", "wait"], "default": "async" },
                     "timeoutMinutes": wait_minutes.clone(),
                     "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
@@ -473,7 +475,7 @@ fn tools() -> Value {
     tools
 }
 
-const DELEGATE_APP_FIELDS: [&str; 12] = [
+const DELEGATE_APP_FIELDS: [&str; 14] = [
     "brief",
     "title",
     "asks",
@@ -483,6 +485,8 @@ const DELEGATE_APP_FIELDS: [&str; 12] = [
     "effort",
     "isolation",
     "heavy",
+    "hard",
+    "scope",
     "lead",
     "whenBusy",
     "redoes",
@@ -635,8 +639,8 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         "waitTimedOut": false,
     });
     // A Lead brief says how it went in (started, queued behind the Lead's work, or steered into it) and to whom.
-    // A worker over its project's limit waits, and says why.
-    for key in ["delivery", "lead", "waiting"] {
+    // A worker over its project's limit waits, and says why; a worker says which model and effort it runs on (E7).
+    for key in ["delivery", "lead", "waiting", "model", "effort", "modelWhy"] {
         if let Some(value) = started.get(key) {
             out[key] = value.clone();
         }

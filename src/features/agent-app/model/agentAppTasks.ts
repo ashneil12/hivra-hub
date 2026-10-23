@@ -19,7 +19,8 @@
 //   dropped.
 import { MONO_HOME_FENCE } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
-import { modelsFor } from "../../sessions/model/models";
+import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
+import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
   type HarnessId,
@@ -52,7 +53,7 @@ import {
 } from "../../monos/model/workerPool";
 import { projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
-import { judgeBrief, routeWorker } from "./taskDifficulty";
+import { judgeTask, routeWorker, type WorkerModel } from "./taskDifficulty";
 
 /**
  * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
@@ -73,13 +74,30 @@ export type WorkerPoolHost = {
   unqueue(owner: string, id: string): boolean;
   limits(project: string): WorkerLimits;
   setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
+  /** The project's own worker model (E7), when Ash chose one; else undefined for the usual Sonnet. */
+  model(project: string): WorkerModel | undefined;
 };
 
 /** The FIELDS entries of the task actions (agentApp.ts). */
 export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   [
     "tasks.delegate",
-    ["brief", "title", "asks", "goal", "project", "model", "effort", "isolation", "heavy", "lead", "whenBusy", "redoes"],
+    [
+      "brief",
+      "title",
+      "asks",
+      "goal",
+      "project",
+      "model",
+      "effort",
+      "isolation",
+      "heavy",
+      "hard",
+      "scope",
+      "lead",
+      "whenBusy",
+      "redoes",
+    ],
   ],
   ["tasks.workers", ["project", "workers", "heavy"]],
   ["tasks.status", ["taskIds"]],
@@ -302,6 +320,27 @@ function taskIds(value: unknown): string[] | undefined {
   return [...new Set(value as string[])];
 }
 
+/** The files or areas a job covers, as the Lead declares them (delegate_task `scope`): a size signal, never prose. */
+const SCOPE_MAX = 50;
+
+function scopeList(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > SCOPE_MAX ||
+    !value.every((item) => typeof item === "string" && item.trim() && item.trim().length <= 200)
+  )
+    throw new Error(forUser`scope must be up to ${SCOPE_MAX} files or areas, each a short line`);
+  return value.map((item: string) => item.trim());
+}
+
+/** The effort a start runs at, as the picker words it (the same value the model's own setting carries). */
+function launchEffort(launch: Pick<QuickLaunch, "harness" | "model" | "modelSettings">): string | undefined {
+  return launch.model
+    ? modelEffortLabel(resolveModel(launch.harness, launch.model), launch.modelSettings)
+    : undefined;
+}
+
 /** A model id from any harness, or a family ("sonnet") among the caller's own harness's models. */
 function taskModel(
   value: unknown,
@@ -309,6 +348,8 @@ function taskModel(
 ): { harness: HarnessId; model: string } | undefined {
   if (value === undefined) return undefined;
   const wanted = text(value, "model", 128);
+  // One of Ash's own models ("Other models"): it runs through Claude Code's router, as the picker starts it.
+  if (isCustomModelId(wanted)) return { harness: "claude", model: wanted };
   for (const harness of HARNESSES) {
     const exact = modelsFor(harness).find((model) => model.id === wanted);
     if (exact) return { harness, model: exact.id };
@@ -504,8 +545,13 @@ async function delegate(
     throw new Error('isolation must be "shared" or "worktree"');
   if (input.heavy !== undefined && typeof input.heavy !== "boolean")
     throw new Error("heavy must be true or false");
+  if (input.hard !== undefined && typeof input.hard !== "boolean")
+    throw new Error("hard must be true or false");
   // The Lead's own call: this job runs heavy tests, so its project runs only so many like it at once.
   const heavy = input.heavy === true;
+  // The job's size, as the Lead declared it, and its own "this one is hard": signals the model chooser reads (E7).
+  const hard = input.hard === true;
+  const scope = scopeList(input.scope);
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
@@ -530,11 +576,18 @@ async function delegate(
     }
   }
   // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
-  // offers one) for a hard one. A model or effort the caller names always wins, and the route never touches another
-  // engine or one of Ash's own models (taskDifficulty.ts).
+  // offers one) for a hard one, and a project's own worker model for any of its jobs. A model or effort the caller
+  // names always wins, and the route never touches another engine or one of Ash's own models (taskDifficulty.ts).
+  const folder =
+    ownTeam?.folder ??
+    (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
+  const projectKey = tasks.hubProjectId?.(folder) ?? folder;
+  const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   const namedModel = taskModel(input.model, source);
   const route =
-    namedModel || input.effort !== undefined ? undefined : routeWorker(source, judgeBrief(brief, goal));
+    namedModel || input.effort !== undefined
+      ? undefined
+      : routeWorker(source, difficulty, tasks.pool?.model(projectKey));
   const model = namedModel ?? (route ? { harness: route.harness, model: route.model } : undefined);
   const effort = input.effort !== undefined ? input.effort : route?.effort;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
@@ -623,6 +676,7 @@ async function delegate(
         cwd: launch.cwd,
         harness: launch.harness,
         model: launch.model,
+        ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
         ...(route ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
         note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path), then end your turn.`,
@@ -657,6 +711,8 @@ async function delegate(
     cwd: launch.cwd,
     harness: launch.harness,
     model: launch.model,
+    // The effort it runs at, as the picker words it, so the Lead can say it and the card shows the same value.
+    ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
     // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
     ...(route ? { modelWhy: route.why } : {}),
     ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
