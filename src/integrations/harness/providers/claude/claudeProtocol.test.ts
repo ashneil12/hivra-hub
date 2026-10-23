@@ -10,7 +10,6 @@ import {
   askUserQuestionAllowInput,
   buildClaudeSpawnArgs,
   CLAUDE_SETTING_SOURCES,
-  HUB_OFF_SKILLS,
   buildClaudeUserMessage,
   contextFromResult,
   contextUsedFromAssistant,
@@ -144,22 +143,17 @@ describe("buildClaudeSpawnArgs", () => {
     expect(JSON.parse(settings)).toMatchObject({ disableAllHooks: true });
   });
 
-  // Mac finding, 21 Oct: hub chats load ~/.claude, and Ash's dump-triage skill sorted every dump into tickets.
-  it("keeps the hub-off skills to Ash calling them by name in a chat, alongside any other settings", () => {
-    const args = buildClaudeSpawnArgs({ settings: { disableAllHooks: true, skillOverrides: { "other-skill": "off" } } });
+  // Ash, 23 Oct: a dump in a hub chat is triaged like one anywhere else, so no skill is held back there.
+  it("holds no skill back in a hub chat, and passes the caller's settings through", () => {
+    const args = buildClaudeSpawnArgs({ settings: { disableAllHooks: true } });
     expect(args).toContain(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-    expect(settings).toEqual({
-      disableAllHooks: true,
-      skillOverrides: { "dump-triage": "user-invocable-only", "other-skill": "off" },
-    });
-    expect(HUB_OFF_SKILLS).toEqual(["dump-triage"]);
-    expect(JSON.parse(buildClaudeSpawnArgs({})[buildClaudeSpawnArgs({}).indexOf("--settings") + 1])).toEqual({
-      skillOverrides: { "dump-triage": "user-invocable-only" },
-    });
-    // The app's own background calls don't load ~/.claude, so they get no override.
+    expect(settings).toEqual({ disableAllHooks: true });
+    const bare = buildClaudeSpawnArgs({});
+    expect(JSON.parse(bare[bare.indexOf("--settings") + 1])).toEqual({});
+    // The app's own background calls don't load ~/.claude at all.
     const isolated = buildClaudeSpawnArgs({ isolated: true });
-    expect(JSON.parse(isolated[isolated.indexOf("--settings") + 1]).skillOverrides).toBeUndefined();
+    expect(JSON.parse(isolated[isolated.indexOf("--settings") + 1])).toMatchObject({ disableAllHooks: true });
   });
 
   it("skips permissions and MCP for isolated text sessions", () => {
