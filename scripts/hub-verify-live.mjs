@@ -90,6 +90,7 @@ import path from "node:path";
 
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
+import { signInFakeClaude } from "./hub-fake-claude-login.mjs";
 
 export const MAX_RESUMES = 3;
 
@@ -97,7 +98,7 @@ export const MAX_RESUMES = 3;
 export const WALK = [
   "isolated",
   "lead_delegated",
-  "delegation_mirrored",
+  "delegation_local",
   "worker_ran",
   "brief_queued",
   "inflight_saved_background",
@@ -1082,6 +1083,10 @@ async function main() {
 
   try {
     for (const dir of [home, project, bin, fake]) fs.mkdirSync(dir, { recursive: true });
+    // The app asks Claude's usage before it admits a worker, and a machine with no Claude login has no room: the walk
+    // would sit with every delegate waiting. The fake Claude needs no login, so the bench writes the shape of a
+    // signed-in account with a stale token (no network call: the probe answers 401 itself).
+    log(`signed the throwaway HOME's Claude in (expired fake token): ${path.relative(scratch, signInFakeClaude(home))}`);
 
     // -- the slot, the fake and the plan -------------------------------------------------------------------------------
     // Planned against the real slot registry (read only) so it never takes another worktree's slot, but registered only
@@ -1276,11 +1281,18 @@ async function main() {
     else
       fail("lead_delegated", "A Lead delegates (a stored H2 row)", `mark ${!!delegated}, call ${JSON.stringify(call?.response ?? null)}, rows ${JSON.stringify(rows)}`);
     const leadId = row?.owner_session;
-    const mirrored = row && (await until(() => stub.delegations.has(row.id), scale(15_000)));
-    (mirrored ? pass : fail)(
-      "delegation_mirrored",
-      "The delegation row is copied to Ash OS (the stub) by the outbox",
-      mirrored ? `stub has ${row.id} v${stub.delegations.get(row.id)?.version}` : "the stub never received it",
+    // Delegations are the app's own rows since 21 Oct (src-tauri/src/delegations.rs, "No mirror"): every change bumps
+    // the row's version here, and Ash OS is never sent a copy. The walk pins that, so a copy reappearing on the stub
+    // (a half-restored mirror) is a failure rather than a silent change of contract.
+    const copied = row ? await until(() => stub.delegations.has(row.id), scale(5_000)) : false;
+    (copied ? fail : pass)(
+      "delegation_local",
+      "The delegation row stays in the app (no mirror to Ash OS)",
+      !row
+        ? "no row to check"
+        : copied
+          ? `the stub was sent ${row.id}, but delegations are the app's own rows since 21 Oct`
+          : `${row.id} is the app's row and the stub has no copy`,
     );
 
     phase();
