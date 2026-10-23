@@ -9,15 +9,32 @@
 // rest of the hub reads (checkpointEdits.ts, soulTamper.ts), not just the reply's prose.
 import type { Block, Session } from "../../sessions/model/session";
 import { isEditTool, isExecuteTool } from "../../../integrations/harness/core/preview";
+import {
+  asksFor,
+  coveringEvidence,
+  evidenceSince,
+  extractAsks,
+  handleAsk,
+  recordAskText,
+  type EvidenceSource,
+} from "./askLedger";
 import { CHECK_RULES } from "./checkerRules";
 import { CHECK_PREFIX, type HubCheck } from "./hubChecks";
 import { forUser } from "./userName";
 
-/** A dump: a long message, or one over several lines. Short asks are left to the chat. */
+/**
+ * A dump: a message with something in it to act on. A long paste or one over several lines, and now also a short ask
+ * ("fix the save bug") — its asks go into the ledger (askLedger.ts) and are checked like any other. Only chatter is
+ * left out, so a "thanks" produces nothing.
+ */
 export function isDump(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.startsWith("[MonoCode")) return false;
-  return trimmed.length >= 280 || trimmed.split("\n").filter((line) => line.trim()).length >= 3;
+  return (
+    extractAsks(trimmed).length > 0 ||
+    trimmed.length >= 280 ||
+    trimmed.split("\n").filter((line) => line.trim()).length >= 3
+  );
 }
 
 /** The id of a chat's latest message from Ash, for noticing a new one arrives (the app's own hidden turns count as a change). */
@@ -116,6 +133,8 @@ export function noteDumps(
         text: (found.block.text ?? "").slice(0, NOTE_TEXT_MAX),
         at: now,
       });
+      // The same moment the note is written, his asks go into the ledger (B5): a repeated ask lands on its row.
+      recordAskText(session.id, found.block.id, found.block.text ?? "", found.block.startedAt ?? found.block.sentAt ?? now);
       known.add(found.block.id);
       added = true;
     }
@@ -261,12 +280,17 @@ export type DumpCheckOptions = {
   now?: number;
   /** Chats left alone: the checker's own (it only reads), and any other this copy says no to. */
   skip?: (sessionId: string) => boolean;
+  /** Where commits and Bot changes come from (askEvidence.ts); the look compares them too, not only the reply. */
+  source?: EvidenceSource;
 };
 
 /**
  * Look at each dump once, in any hub chat. A dump is noted when it arrives (noteDumps), so this walks the notes, not
- * the chats: a note survives the chat being quit and is looked at after a restart. A chat that went idle without
- * answering or building anything gets one "never answered" note instead of a comparison.
+ * the chats: a note survives the chat being quit and is looked at after a restart. What the chat built is compared with
+ * what he asked: the tool blocks after his message, and (when a source is given) the commits in the chat's folder since
+ * he said it and the Bot changes rows. A chat that went idle without answering or building anything gets one "never
+ * answered" note instead of a comparison. When nothing was missed, the asks whose build lines up are closed in the
+ * ledger; the rest stay open for askSettle.ts.
  */
 export async function lookAtDumps(
   sessions: readonly Session[],
@@ -286,8 +310,12 @@ export async function lookAtDumps(
       continue;
     }
     const index = session.blocks.findIndex((block) => block.id === note.blockId);
+    const block = index >= 0 ? session.blocks[index] : undefined;
+    const since = block?.startedAt ?? block?.sentAt ?? note.at;
+    const built = index >= 0 ? builtEvidence(session.blocks, index) : [];
+    const git = options.source ? await evidenceSince({ cwd: session.cwd, since }, options.source) : [];
+    const evidence = [...built, ...git];
     const reply = index >= 0 ? replyAfter(session.blocks, index) : "";
-    const evidence = index >= 0 ? builtEvidence(session.blocks, index) : [];
     if (!reply.trim() && !evidence.length) {
       forgetDumpNote(note.blockId);
       await offer([unansweredDumpCheck(session.id, note)]);
@@ -295,7 +323,16 @@ export async function lookAtDumps(
     }
     const missed = parseMissed(await look(dumpCheckPrompt(note.text, reply, evidence)).catch(() => ""));
     forgetDumpNote(note.blockId);
-    if (missed.length) await offer([dumpCheck(session.id, { id: note.blockId }, missed)]);
+    if (missed.length) {
+      await offer([dumpCheck(session.id, { id: note.blockId }, missed)]);
+      continue;
+    }
+    // Nothing missed: close the asks the build visibly covers, leaving any the look could not tie to work open.
+    for (const ask of asksFor(session.id, note.blockId)) {
+      if (ask.status !== "open") continue;
+      const cover = coveringEvidence(ask, evidence);
+      if (cover) handleAsk(ask.id, `looked, and the build shows: ${cover}`);
+    }
   }
 }
 

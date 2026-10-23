@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Eye, Loader } from "../../../shared/ui/icons";
+import { openAskLine } from "../model/askLedger";
 import { lastReply } from "../model/claimEvidence";
 import { checkClaim, checkVerdict } from "../model/hubChecks";
 import { forYou } from "../model/userName";
@@ -73,6 +74,8 @@ export function CheckTurnCard({
   };
   const readiness = stageReadiness(stage);
   const check = turn[0].monoCheck;
+  // The asks from that message the ledger still has open (askLedger.ts): one quiet line, empty for a check about chatter.
+  const stillOpen = check?.dumpId ? openAskLine(check.dumpId) : "";
   const reply = lastReply(turn);
   const verdict = checkVerdict(turn);
   // A "fixed" carries its evidence (claimEvidence.ts): verified, or not yet confirmed with what is missing said in the
@@ -112,6 +115,11 @@ export function CheckTurnCard({
             <span className="text-content/45">The checker noticed: </span>
             {check?.finding ?? forYou("something about one of Ash's messages.")}
           </p>
+          {stillOpen ? (
+            <p className="whitespace-pre-wrap text-content/55" data-ask-ledger>
+              {stillOpen}
+            </p>
+          ) : null}
           {reply ? (
             <p className="whitespace-pre-wrap">
               <span className="text-content/45">{agentName ?? "This chat"} answered: </span>

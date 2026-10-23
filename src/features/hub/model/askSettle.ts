@@ -1,0 +1,149 @@
+// Settle Ash's asks against what was built (B5, I6). askLedger.ts keeps the rows; this file walks the open ones and
+// asks the same question every time: does the build cover his words? Only a "right" answer closes an ask, a "fixed"
+// whose build lines up with it, or a done claim with something behind it. A "fixed" or a done claim with nothing behind
+// it leaves the row open, says in plain words what is missing, and sends one private check to the owning chat through
+// the usual delivery (hubChecks.ts) so its card shows the still-open asks beside the verification line.
+import type { Block, Session } from "../../sessions/model/session";
+import { CHECK_RULES } from "./checkerRules";
+import {
+  askCovered,
+  coveringEvidence,
+  doneClaimOf,
+  evidenceSince,
+  gapLine,
+  handleAsk,
+  openAsks,
+  patchAsk,
+  type EvidenceSource,
+  type LedgerAsk,
+} from "./askLedger";
+import { builtEvidence } from "./dumpCheck";
+import { CHECK_PREFIX, checkVerdict, type HubCheck } from "./hubChecks";
+import { forUser } from "./userName";
+
+/** The chat's reply to one of his messages: its assistant text, up to his next message. */
+function replyUntil(blocks: readonly Block[], index: number): string {
+  const parts: string[] = [];
+  for (let i = index + 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (block.role === "user" && !block.internal && !block.draft) break;
+    if (block.role === "assistant" && block.text?.trim()) parts.push(block.text.trim());
+  }
+  return parts.join("\n\n");
+}
+
+/** The `[MonoCode check]` turn that answered one of his messages, as the turn's blocks. */
+function checkTurnFor(blocks: readonly Block[], blockId: string): Block[] | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.monoCheck?.dumpId !== blockId) continue;
+    const turn = [block];
+    for (let j = i + 1; j < blocks.length; j++) {
+      const next = blocks[j];
+      if (next.role === "user" && !next.internal) break;
+      turn.push(next);
+    }
+    return turn;
+  }
+  return undefined;
+}
+
+/** The private check sent into the chat that owns an ask. */
+function askCheck(ask: LedgerAsk, finding: string, body: string, id: string): HubCheck {
+  return {
+    id,
+    dumpId: ask.blockId,
+    owner: ask.chatId,
+    chatId: ask.chatId,
+    finding,
+    askIds: [ask.id],
+    prompt: forUser`${CHECK_PREFIX} ${body}\n${CHECK_RULES}`,
+  };
+}
+
+/** A "fixed" the build does not back up: it stays open and the chat is asked once. */
+function holdFixed(ask: LedgerAsk, gap: string): HubCheck {
+  patchAsk(ask.id, { gap, held: undefined });
+  return askCheck(
+    ask,
+    `- "${ask.title}" was answered fixed, but nothing built since it lines up`,
+    `Ash asked: "${ask.title}". This chat answered Fixed, but ${gap}. Run the project's own verification for it and close that gap.`,
+    `dc-${ask.blockId}-gap`,
+  );
+}
+
+/** A done claim with an open ask behind it: the claim is not recorded, and the card shows what is still open. */
+function holdClaim(ask: LedgerAsk, claim: string, gap: string): HubCheck {
+  patchAsk(ask.id, { gap, held: { claim, at: Date.now() } });
+  return askCheck(
+    ask,
+    `- "${ask.title}" was called done with nothing built for it`,
+    `This chat called it done ("${claim}"), but Ash asked: "${ask.title}", and ${gap}. A done claim is not recorded while that is open. Run the project's own verification for it and close the gap.`,
+    `dc-${ask.blockId}-held`,
+  );
+}
+
+/**
+ * Compare every open ask with the build in its chat: the tool blocks after his message, the commits in the chat's
+ * folder since he said it (whoever made them), and the Bot changes rows (askEvidence.ts). Runs after each idle flush,
+ * next to the dump look. A chat that is busy or has a message waiting is left until it is done, so nothing is read
+ * halfway through a turn.
+ */
+export async function settleAsks(
+  sessions: readonly Session[],
+  source: EvidenceSource,
+  offer: (checks: HubCheck[]) => unknown,
+  options: { skip?: (sessionId: string) => boolean } = {},
+): Promise<void> {
+  const asks = openAsks();
+  if (!asks.length) return;
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const checks: HubCheck[] = [];
+  for (const ask of asks) {
+    const session = byId.get(ask.chatId);
+    if (!session || session.busy || session.queuedMessages?.length) continue;
+    if (session.id.startsWith("app-") || options.skip?.(session.id)) continue;
+    const index = session.blocks.findIndex((block) => block.id === ask.blockId);
+    if (index < 0) continue;
+    const evidence = [
+      ...builtEvidence(session.blocks, index),
+      ...(await evidenceSince({ cwd: session.cwd, since: ask.at }, source)),
+    ];
+    const turn = checkTurnFor(session.blocks, ask.blockId);
+    const verdict = turn ? checkVerdict(turn) : undefined;
+    const checkId = turn?.[0].monoCheck?.id ?? "";
+    if (verdict) {
+      // One answer settles an ask once, however often the chat is read.
+      if (ask.settledCheck === checkId) continue;
+      patchAsk(ask.id, { settledCheck: checkId });
+      if (verdict === "right") {
+        handleAsk(ask.id, evidenceLineOf(ask, evidence, "answered right as it is"));
+        continue;
+      }
+      if (askCovered(ask, evidence)) {
+        handleAsk(ask.id, evidenceLineOf(ask, evidence, "answered fixed, and the build shows"));
+        continue;
+      }
+      if (ask.reopenCheck === checkId) continue;
+      patchAsk(ask.id, { reopenCheck: checkId });
+      checks.push(holdFixed(ask, gapLine(ask, evidence)));
+      continue;
+    }
+    const claim = doneClaimOf(replyUntil(session.blocks, index));
+    if (!claim) continue;
+    if (askCovered(ask, evidence)) {
+      handleAsk(ask.id, evidenceLineOf(ask, evidence, "called done, and the build shows"));
+      continue;
+    }
+    // The same claim already held: nothing new to say until the chat answers.
+    if (ask.held?.claim === claim) continue;
+    checks.push(holdClaim(ask, claim, gapLine(ask, evidence)));
+  }
+  if (checks.length) await offer(checks);
+}
+
+/** "…: committed abc123 fixed the save (src/save.ts)", or just the plain words when nothing lines up. */
+function evidenceLineOf(ask: LedgerAsk, evidence: readonly string[], how: string): string {
+  const cover = coveringEvidence(ask, evidence);
+  return cover ? `${how}: ${cover}` : how;
+}
