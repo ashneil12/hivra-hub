@@ -34,6 +34,13 @@ export type BotChange = {
   hubChangeId?: string;
   /** A Mono pinned or unpinned a page: Undo flips it back, Redo flips it again. */
   pin?: { pageId: string; pinned: boolean };
+  /**
+   * A page changed something in the hub (today: a project's name): Undo runs the same action with `before`, Redo with
+   * `after`, so the write goes through the hub's real store both ways.
+   */
+  write?: { action: string; payload: Record<string, unknown>; before: Record<string, unknown>; after: Record<string, unknown> };
+  /** A page was connected to, or disconnected from, a web source: Undo flips it back, Redo flips it again. */
+  source?: { pageId: string; url: string; connected: boolean };
   /** One applied part of an offered change (selfBuild/model/changeFlow.ts): its kind's code undoes and redoes it. */
   flow?: { kind: string; data: unknown; undone?: unknown };
   /** A Mono made from a chat with Ash (step 13): Undo retires it (archived, not deleted), Redo brings it back. */
@@ -215,6 +222,63 @@ export function recordPinChange(pageId: string, by: string, title: string, pinne
   changed();
 }
 
+/** Pages registers how a page writes to the hub, so Undo here doesn't import the Pages store. */
+type WriteHook = (action: string, payload: Record<string, unknown>) => Promise<void>;
+let writeHook: WriteHook | undefined;
+export function setWriteHook(next: WriteHook): void {
+  writeHook = next;
+}
+/**
+ * A page wrote to the hub through its bridge (pageWrites.ts): a Bot changes row whose Undo runs the same action with
+ * `before` and whose Redo runs it with `after`. It carries no `pageId`: that field means "a kept page", and Undo on it
+ * takes the page away.
+ */
+export function recordPageWrite(part: {
+  by: string;
+  line: string;
+  now: string;
+  after: string;
+  undoneText: string;
+  write: NonNullable<BotChange["write"]>;
+}): string {
+  const id = `page-write:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 6)}`;
+  list = [{ id, bot: part.by, day: "Today", line: part.line, now: part.now, after: part.after, undoneText: part.undoneText, write: part.write, at: Date.now() }, ...list];
+  saveReal();
+  changed();
+  return id;
+}
+
+/** Pages registers how a source is connected and disconnected, for Undo and Redo (resolving to a refusal, if any). */
+type SourceHook = (pageId: string, url: string, connected: boolean) => Promise<string | undefined>;
+let sourceHook: SourceHook | undefined;
+export function setSourceHook(next: SourceHook): void {
+  sourceHook = next;
+}
+/** A page was connected to, or disconnected from, a web source: a Bot changes row under the page's title. */
+export function recordPageSource(part: { by: string; pageId: string; url: string; connected: boolean }): string {
+  let host = part.url;
+  try {
+    host = new URL(part.url).host;
+  } catch {
+    /* the caller already checked the address; a row still gets written */
+  }
+  const id = `page-source:${part.pageId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 6)}`;
+  list = [{
+    id,
+    bot: part.by,
+    day: "Today",
+    line: `The page “${part.by}” ${part.connected ? `can now read ${host}` : `can't read ${host} any more`}`,
+    now: part.connected ? "Not connected" : `Connected to ${host}`,
+    after: part.connected ? `Connected to ${host}` : "Not connected",
+    undoneText: part.connected ? `Undone: the page can't reach ${host} any more.` : `Undone: the page can reach ${host} again.`,
+    source: { pageId: part.pageId, url: part.url, connected: part.connected },
+    at: Date.now(),
+  }, ...list];
+  saveReal();
+  changed();
+  return id;
+}
+
 /** Undo all from one Mono: every change of theirs that isn't undone yet. */
 export async function undoAllFrom(bot: string): Promise<void> {
   await undoBotChange(all().filter((c) => c.bot === bot && !c.undone && !c.note).map((c) => c.id));
@@ -233,14 +297,14 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || (c.note && c.monoId)));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || c.write || c.source || (c.note && c.monoId)));
   } catch {
     return [];
   }
 }
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || (c.note && c.monoId))));
+    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || c.write || c.source || (c.note && c.monoId))));
   } catch {
     /* best effort */
   }
@@ -370,6 +434,16 @@ export async function undoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
       }
+    } else if (c.write) {
+      try {
+        if (!writeHook) throw new Error("Not connected yet, so nothing was undone.");
+        await writeHook(c.write.action, { ...c.write.payload, ...c.write.before });
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
+      }
+    } else if (c.source) {
+      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, !c.source.connected) : "Pages isn't open yet, so nothing was undone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Pages isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
@@ -464,6 +538,16 @@ export async function redoBotChange(ids: string[]): Promise<void> {
       } catch (e) {
         next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
+    } else if (c.write) {
+      try {
+        if (!writeHook) throw new Error("Not connected yet, so nothing was redone.");
+        await writeHook(c.write.action, { ...c.write.payload, ...c.write.after });
+      } catch (e) {
+        next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
+      }
+    } else if (c.source) {
+      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, c.source.connected) : "Pages isn't open yet, so nothing was redone.";
+      if (refused) next = { ...c, problem: refused };
     } else if (c.pin) {
       const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Pages isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };

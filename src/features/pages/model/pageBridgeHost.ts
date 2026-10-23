@@ -59,6 +59,11 @@ export class PageBridgeHost {
 
   private why(call: Pick<BridgeCall, "call" | "args">): string | undefined {
     if (isWall(call.call)) return WALL_REFUSAL;
+    // `sessions.read` and `http.fetch` can't be asked for as permissions (pageSpec.ts knows a fixed set), so they never
+    // appear in `asks`. A page's chats are behind its agents read and its refusal; a web source is behind the page's own
+    // grants (pageGrants.ts), and the handler refuses an address nobody connected in plain words.
+    if (call.call === "sessions.read") return refusal({ call: "agents.read" }, this.allowed());
+    if (call.call === "http.fetch") return undefined;
     if (!this.o.live && this.o.asks.includes(call.call as Capability) && !isRead(call.call)) return isPageAction(call.call) ? PREVIEW_TAP : PREVIEW_OTHER;
     return refusal(call, this.allowed());
   }

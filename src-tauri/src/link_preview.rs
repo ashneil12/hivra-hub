@@ -160,7 +160,8 @@ fn is_http_url(url: &Url) -> bool {
     url.scheme() == "https" || url.scheme() == "http"
 }
 
-fn validate_public_target(url: &Url) -> Result<(), String> {
+/// Also used by page_http.rs: a page's web source gets the same public-address check a link preview does.
+pub(crate) fn validate_public_target(url: &Url) -> Result<(), String> {
     if !is_http_url(url) || !url.username().is_empty() || url.password().is_some() {
         return Err("Link preview target is invalid".into());
     }
