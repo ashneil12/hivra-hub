@@ -1,13 +1,13 @@
 // A page reading a web source it was connected to (C4). The page posts `http.fetch` with an address; the bridge is the
 // only way out (its document keeps `connect-src 'none'`), so the address is checked against the page's grants here and
 // again in Rust, and the request itself is made native (page_http.rs): the same public-address checks a link preview
-// gets, no cross-host redirects, a size and time cap, and the source's token added by the app — a token never goes
-// through the page or comes back to it.
+// gets, no redirect that leaves the grant that authorised the request, a size and time cap, and the source's token
+// added by the app — a token never goes through the page or comes back to it.
 //
 // The page gets the status, the content type and the body as text; it can show the body or parse it as JSON itself.
 // Untrusted content stays data: it arrives as a string, never as script the app runs.
 import { invoke } from "@tauri-apps/api/core";
-import { allowsUrl, grantedOrigins } from "./pageGrants";
+import { allowsUrl, grantedUrls } from "./pageGrants";
 
 export type PageHttpReply = {
   status: number;
@@ -15,7 +15,7 @@ export type PageHttpReply = {
   type: string;
   /** The body as text. */
   body: string;
-  /** The address finally read (a redirect inside the same host only). */
+  /** The address finally read (a redirect inside the grant that authorised the first request only). */
   url: string;
 };
 
@@ -28,8 +28,8 @@ const MAX_BODY = 100_000;
 type Runner = (request: {
   pageId: string;
   url: string;
-  /** The origins this page was connected to; Rust refuses an address outside them. */
-  origins: string[];
+  /** This page's grants (origin plus path); Rust refuses an address outside them, and a redirect out of them. */
+  grants: string[];
   method: string;
   body?: string;
   accept?: string;
@@ -71,7 +71,7 @@ export async function pageFetch(pageId: string, args: Record<string, unknown>): 
   if (body !== undefined && (method === "GET" || method === "HEAD")) throw new Error(`A ${method} request can't have a body.`);
   const accept = typeof args.accept === "string" ? args.accept.slice(0, 200) : undefined;
   const contentType = typeof args.contentType === "string" ? args.contentType.slice(0, 200) : undefined;
-  return runner({ pageId, url, origins: grantedOrigins(pageId), method, body, accept, contentType });
+  return runner({ pageId, url, grants: grantedUrls(pageId), method, body, accept, contentType });
 }
 
 // ---- the source's token ----------------------------------------------------------------------------------------------

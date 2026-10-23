@@ -1,11 +1,13 @@
 //! A page's only way out to the web (C4). The page's own document keeps `connect-src 'none'`, so the request is made
 //! here, by the app, on the bridge's word — and the bridge only speaks for a source Ash connected to that page.
 //!
-//! Three walls stand between a page and a host nobody allowed. The address must be https and its origin must be one the
-//! page was granted (the renderer checks its own list first; the same list is handed here and checked again, so a skipped
-//! check in the webview doesn't open a door). Every hop, redirects included, passes the public-address checks a link
-//! preview gets, so a page can't be steered at this Mac or the local network. And the source's token, if it has one, is
-//! read from the Keychain here and put on the request by the app: it never goes through the page and never comes back.
+//! Three walls stand between a page and a host nobody allowed. The address must be https and covered by a grant the page
+//! holds — an origin, and the path under it (the renderer checks its own list first; the same grants are handed here and
+//! checked again, so a skipped check in the webview doesn't open a door). Every hop, redirects included, stays inside the
+//! grant that authorised the first request and passes the public-address checks a link preview gets, so a page can't be
+//! steered at this Mac, the local network, or another path on a host it was connected to. And the source's token, if it
+//! has one, is read from the Keychain here and put on the request by the app: it never goes through the page and never
+//! comes back.
 //!
 //! The page gets the status, the content type and the body as text, whatever the status: a 404 is the source's answer,
 //! not a failure, so the page can show it. The body stays data — it arrives as a string the page may parse, never as
@@ -37,13 +39,13 @@ pub struct PageHttpReply {
     url: String,
 }
 
-/// One request for a page. The address must be on one of `origins`, the page's connected sources, and every hop must
-/// be public.
+/// One request for a page. The address must be covered by one of `grants`, the page's connected sources (origin and
+/// the path under it), and every hop must stay inside that grant and be public.
 #[tauri::command]
 pub async fn page_http_fetch(
     page_id: String,
     url: String,
-    origins: Vec<String>,
+    grants: Vec<String>,
     method: String,
     body: Option<String>,
     accept: Option<String>,
@@ -53,7 +55,7 @@ pub async fn page_http_fetch(
         fetch_for_page(
             &page_id,
             &url,
-            &origins,
+            &grants,
             &method,
             body.as_deref(),
             accept.as_deref(),
@@ -130,10 +132,52 @@ fn parse_origin(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+/// One thing a page may read: an origin, and the path under it (`/v1`; the root covers the whole origin). The renderer
+/// keeps the same rule (pageGrants.ts's `covers`) and checks it before asking; this is the check that stands when it
+/// doesn't, and the one every redirect is measured against.
+#[derive(Clone, Debug)]
+struct Grant {
+    origin: String,
+    /// The granted path with its trailing slashes dropped, or `/` for the whole origin.
+    base: String,
+}
+
+impl Grant {
+    fn parse(raw: &str) -> Option<Grant> {
+        let url = Url::parse(raw.trim()).ok()?;
+        if url.scheme() != "https"
+            || url.host().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return None;
+        }
+        let base = url.path().trim_end_matches('/');
+        Some(Grant {
+            origin: url.origin().ascii_serialization(),
+            base: if base.is_empty() {
+                "/".to_string()
+            } else {
+                base.to_string()
+            },
+        })
+    }
+
+    /// Same origin, and the address is the granted path or under it.
+    fn covers(&self, url: &Url) -> bool {
+        if url.origin().ascii_serialization() != self.origin {
+            return false;
+        }
+        self.base == "/"
+            || url.path() == self.base
+            || url.path().starts_with(&format!("{}/", self.base))
+    }
+}
+
 fn fetch_for_page(
     page_id: &str,
     raw: &str,
-    origins: &[String],
+    grants: &[String],
     method: &str,
     body: Option<&str>,
     accept: Option<&str>,
@@ -154,7 +198,7 @@ fn fetch_for_page(
         return Err("That request's body is too long for a page.".into());
     }
 
-    let mut url = parse_target(raw, origins)?;
+    let (mut url, grant) = parse_target(raw, grants)?;
     let origin = url.origin().ascii_serialization();
     let token = hub_keychain::read(&token_service(page_id), &origin)?;
 
@@ -197,17 +241,9 @@ fn fetch_for_page(
             let location = response.header("Location").ok_or_else(|| {
                 "The source's redirect has no destination, so nothing was read.".to_string()
             })?;
-            let next = url.join(location).map_err(|_| {
-                "The source's redirect is invalid, so nothing was read.".to_string()
-            })?;
-            // A redirect is only a second address on a source that was allowed; letting it pick another host would
-            // hand the page a fetch nobody connected.
-            if next.origin().ascii_serialization() != origin {
-                return Err(format!(
-                    "The source sent the page to {}, which it isn't connected to, so nothing was read.",
-                    next.host_str().unwrap_or("another address")
-                ));
-            }
+            // Only where the grant that authorised the first request still covers it: letting a redirect leave that
+            // grant would hand the page a fetch nobody connected, with the source's token on it.
+            let next = redirect_target(&url, location, &grant)?;
             if response.status() == 303 {
                 method = "GET".to_string();
                 body = None;
@@ -222,9 +258,9 @@ fn fetch_for_page(
     Err("The source redirected too many times, so nothing was read.".into())
 }
 
-/// The address, if it is https and on a source this page was connected to. Refusals are in the page's own words: the
-/// page shows them as they are.
-fn parse_target(raw: &str, origins: &[String]) -> Result<Url, String> {
+/// The address and the grant that covers it, if one does: https, inside a source this page was connected to (origin
+/// and path), and public. Refusals are in the page's own words: the page shows them as they are.
+fn parse_target(raw: &str, grants: &[String]) -> Result<(Url, Grant), String> {
     let value = raw.trim();
     if value.is_empty() || value.len() > MAX_URL {
         return Err("That isn't a web address. It should start with https://".into());
@@ -237,15 +273,37 @@ fn parse_target(raw: &str, origins: &[String]) -> Result<Url, String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("Leave the name and password out of the address.".into());
     }
-    let origin = url.origin().ascii_serialization();
-    if !origins.contains(&origin) {
-        return Err(format!(
-            "This page isn't connected to {}, so it can't read it.",
-            url.host_str().unwrap_or("that address")
-        ));
-    }
+    let grant = grants
+        .iter()
+        .filter_map(|raw| Grant::parse(raw))
+        .find(|grant| grant.covers(&url))
+        .ok_or_else(|| {
+            format!(
+                "This page isn't connected to {}, so it can't read it.",
+                url.host_str().unwrap_or("that address")
+            )
+        })?;
     validate_public_target(&url).map_err(|_| unreachable_target())?;
-    Ok(url)
+    Ok((url, grant))
+}
+
+/// Where a redirect points, if the grant that authorised the first request still covers it. Another host, or another
+/// path on this host, is a fetch nobody connected, so it is refused with the plain reason the page shows.
+fn redirect_target(current: &Url, location: &str, grant: &Grant) -> Result<Url, String> {
+    let next = current
+        .join(location)
+        .map_err(|_| "The source's redirect is invalid, so nothing was read.".to_string())?;
+    if !grant.covers(&next) {
+        let host = next.host_str().unwrap_or("another address");
+        return Err(if next.origin().ascii_serialization() != grant.origin {
+            format!("The source sent the page to {host}, which it isn't connected to, so nothing was read.")
+        } else {
+            format!(
+                "The source sent the page to a different path on {host}, which the page isn't connected to, so nothing was read."
+            )
+        });
+    }
+    Ok(next)
 }
 
 fn unreachable_target() -> String {
@@ -412,24 +470,40 @@ mod tests {
     }
 
     #[test]
-    fn a_redirect_is_only_allowed_inside_the_same_source() {
-        let granted = vec![origin("https://93.184.216.34")];
-        let in_source = Url::parse("https://93.184.216.34/a")
-            .unwrap()
-            .join("/b")
-            .unwrap();
-        assert_eq!(
-            in_source.origin().ascii_serialization(),
-            origin("https://93.184.216.34")
-        );
-        let elsewhere = Url::parse("https://93.184.216.34/a")
-            .unwrap()
-            .join("https://evil.example/b")
-            .unwrap();
-        assert_ne!(
-            elsewhere.origin().ascii_serialization(),
-            origin("https://93.184.216.34")
-        );
-        assert!(parse_target(elsewhere.as_str(), &granted).is_err());
+    fn a_grant_covers_its_path_and_nothing_beside_it() {
+        let granted = vec!["https://93.184.216.34/v1".to_string()];
+        let (url, grant) = parse_target("https://93.184.216.34/v1/players", &granted).unwrap();
+        assert_eq!(url.as_str(), "https://93.184.216.34/v1/players");
+        assert_eq!(grant.base, "/v1");
+        // The same host outside the granted path is a fetch nobody connected.
+        assert!(parse_target("https://93.184.216.34/admin", &granted).is_err());
+        assert!(parse_target("https://93.184.216.34/v10", &granted).is_err());
+        assert!(parse_target("https://93.184.216.34", &granted).is_err());
+        // A bare origin covers every path on it.
+        let whole = vec!["https://93.184.216.34".to_string()];
+        assert!(parse_target("https://93.184.216.34/anything/at/all", &whole).is_ok());
+        // A grant that doesn't parse grants nothing.
+        assert!(parse_target("https://93.184.216.34/v1", &["not a url".to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_redirect_is_only_followed_where_the_original_grant_still_covers_it() {
+        let granted = vec!["https://93.184.216.34/v1".to_string()];
+        let (start, grant) = parse_target("https://93.184.216.34/v1/players", &granted).unwrap();
+
+        // Under the granted path it is a second address on the source that was allowed.
+        let hop = redirect_target(&start, "/v1/other", &grant).unwrap();
+        assert_eq!(hop.as_str(), "https://93.184.216.34/v1/other");
+
+        // Another path on the same source is a fetch nobody connected, even with the source's token on it.
+        let why = redirect_target(&start, "/admin", &grant).unwrap_err();
+        assert!(why.contains("different path on 93.184.216.34"), "{why}");
+        // So is another host, and an address with `..` that leaves the path.
+        assert!(redirect_target(&start, "https://evil.example/x", &grant).is_err());
+        assert!(redirect_target(&start, "/v1/../admin", &grant).is_err());
+
+        // A chain is checked hop by hop: the first hop stays inside, the next one out of it is refused.
+        let why = redirect_target(&hop, "/admin", &grant).unwrap_err();
+        assert!(why.contains("different path"), "{why}");
     }
 }

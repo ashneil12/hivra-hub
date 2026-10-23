@@ -4,8 +4,9 @@
 // connect and disconnect is a Bot changes row (botChanges.ts's `source`), so Undo is a second way to take one back.
 //
 // A grant is the only way out: the bridge refuses `http.fetch` for any address this list doesn't cover, in plain words,
-// and the Rust side (page_http.rs) is handed the same origins and refuses anything else, so a page can never reach a
-// host nobody allowed, even if the renderer's check were skipped.
+// and the Rust side (page_http.rs) is handed the same grants, path included, and refuses anything else — a redirect out
+// of the granted path too — so a page can never reach a host or path nobody allowed, even if the renderer's check were
+// skipped.
 import { useSyncExternalStore } from "react";
 import { setSourceHook } from "../../hub/model/botChanges";
 
@@ -127,18 +128,9 @@ export function covers(grant: Pick<PageGrant, "url">, raw: string): boolean {
 export function grantsFor(pageId: string): readonly PageGrant[] {
   return store[pageId] ?? EMPTY;
 }
-/** The origins a page may reach, handed to Rust with every fetch (and checked there as well). */
-export function grantedOrigins(pageId: string): string[] {
-  const origins: string[] = [];
-  for (const g of grantsFor(pageId)) {
-    try {
-      const origin = new URL(g.url).origin;
-      if (!origins.includes(origin)) origins.push(origin);
-    } catch {
-      /* a stored grant that no longer parses grants nothing */
-    }
-  }
-  return origins;
+/** A page's grants as Rust reads them (origin plus the path under it), handed with every fetch and checked there too. */
+export function grantedUrls(pageId: string): string[] {
+  return grantsFor(pageId).map((g) => g.url);
 }
 export function allowsUrl(pageId: string, raw: string): boolean {
   return grantsFor(pageId).some((g) => covers(g, raw));

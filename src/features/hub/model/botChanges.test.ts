@@ -67,6 +67,35 @@ it("folds a second write from the same run into the row, keeping the file as tha
   });
 });
 
+it("keeps the earlier row when a write in between the run's own writes stops a fold", async () => {
+  const { files, texts } = filesInMemory({ "SOUL.md": "B\n" });
+  setBotFiles(files);
+  // A→B, then the Mono's own shell command rewrites the file to B′, then its next self-write B′→C.
+  recordSelfWrite(selfWrite("run-g", "A\n", "B\n"));
+  texts.set("SOUL.md", "B′\n");
+  recordSelfWrite(selfWrite("run-g", "B′\n", "C\n"));
+
+  // The first row still holds A→B, and the second sits beside it holding B′→C.
+  expect(findBotChange("self-write:mono-1:SOUL.md:run-g")).toMatchObject({ beforeText: "A\n", afterText: "B\n" });
+  expect(findBotChange("self-write:mono-1:SOUL.md:run-g:1")).toMatchObject({ beforeText: "B′\n", afterText: "C\n" });
+
+  // Undo of the newer row puts the file back to B′; once the file is where the first row left it, its Undo still reaches A.
+  await undoBotChange(["self-write:mono-1:SOUL.md:run-g:1"]);
+  expect(texts.get("SOUL.md")).toBe("B′\n");
+  texts.set("SOUL.md", "B\n");
+  await undoBotChange(["self-write:mono-1:SOUL.md:run-g"]);
+  expect(texts.get("SOUL.md")).toBe("A\n");
+});
+
+it("a run that puts the file back where it found it removes its own newer row, not the earliest", () => {
+  recordSelfWrite(selfWrite("run-h", "A\n", "B\n"));
+  recordSelfWrite(selfWrite("run-h", "B′\n", "C\n"));
+  // Folds into the newer row, back to where that row started: that row goes, and the first one stays.
+  recordSelfWrite(selfWrite("run-h", "C\n", "B′\n"));
+  expect(findBotChange("self-write:mono-1:SOUL.md:run-h")).toMatchObject({ beforeText: "A\n", afterText: "B\n" });
+  expect(findBotChange("self-write:mono-1:SOUL.md:run-h:1")).toBeUndefined();
+});
+
 it("gives another run its own row", () => {
   recordSelfWrite(selfWrite("run-c", "one\n", "two\n"));
   recordSelfWrite(selfWrite("run-d", "two\n", "three\n"));

@@ -15,7 +15,7 @@ import {
 type Request = {
   pageId: string;
   url: string;
-  origins: string[];
+  grants: string[];
   method: string;
   body?: string;
   accept?: string;
@@ -56,12 +56,12 @@ it("refuses an address the page wasn't connected to, and never goes out", async 
   expect(sent).toEqual([]);
 });
 
-it("sends the request through the app with the page's origins, trim, and GET by default", async () => {
+it("sends the request through the app with the page's grants, path included, trim, and GET by default", async () => {
   connectSource("page-a", "https://api.example.com/v1");
   const reply = await pageFetch("page-a", { url: "  https://api.example.com/v1/players  " });
   expect(reply).toMatchObject({ status: 200, type: "application/json", body: '{"ok":true}' });
   expect(sent).toEqual([
-    { pageId: "page-a", url: "https://api.example.com/v1/players", origins: ["https://api.example.com"], method: "GET", body: undefined, accept: undefined, contentType: undefined },
+    { pageId: "page-a", url: "https://api.example.com/v1/players", grants: ["https://api.example.com/v1"], method: "GET", body: undefined, accept: undefined, contentType: undefined },
   ]);
 });
 

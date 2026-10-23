@@ -377,9 +377,10 @@ export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now
  * A Mono wrote one of its own files during a run: its soul, its memory, one of its skills. It is a real change, so it
  * gets a row like any other, and Undo puts the file back (D1). One row per Mono, file and run: a run that edits the
  * same file again folds into the row it already has, which therefore holds the file as it was before that run touched
- * it. A fold needs the file to still read what that row left, so an Undo (or a write from somewhere else) in between
- * starts a new row rather than swallowing it. A run that leaves a file where it started (a fact added, then removed)
- * leaves no row: nothing changed in the end, so there is nothing to undo.
+ * it. A fold needs the file to still read what that row left. A write from somewhere else in between (the Mono's own
+ * shell command) leaves that row alone and records a new one beside it, so the state it holds is never lost; an Undo
+ * puts the file back where the row began, so the run's next write can take the row over. A run that leaves a file where
+ * it started (a fact added, then removed) leaves no row: nothing changed in the end, so there is nothing to undo.
  */
 export function recordSelfWrite(write: {
   monoId: string;
@@ -392,18 +393,28 @@ export function recordSelfWrite(write: {
   run: string;
 }): void {
   if (write.before === write.after) return;
-  const id = `self-write:${write.monoId}:${write.file}:${write.run}`;
-  const last = list.find((c) => c.id === id);
+  const base = `self-write:${write.monoId}:${write.file}:${write.run}`;
+  // This run's rows for this file, newest first.
+  const mine = list.filter((c) => c.id === base || c.id.startsWith(`${base}:`));
+  const last = mine[0];
   const fold = !!last && !last.undone && !last.problem && last.afterText === write.before;
   const beforeText = fold ? (last.beforeText ?? write.before) : write.before;
   // The run's writes came back to where they started (a fact added and then removed): nothing changed in the end.
   if (beforeText === write.after) {
-    if (last) {
-      list = list.filter((c) => c.id !== id);
+    if (fold && last) {
+      list = list.filter((c) => c.id !== last.id);
       saveReal();
       changed();
     }
     return;
+  }
+  // The row may take the write only when it folds into it, or when an Undo already put the file back where the row
+  // began (so nothing recorded is lost). Anything else takes a new id, beside the earlier row rather than over it.
+  let id = base;
+  if (!fold && last && !last.undone) {
+    let n = 1;
+    while (list.some((c) => c.id === `${base}:${n}`)) n++;
+    id = `${base}:${n}`;
   }
   recordBotChange({
     id,
