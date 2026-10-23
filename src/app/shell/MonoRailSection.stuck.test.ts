@@ -38,7 +38,7 @@ beforeEach(() => {
   resetStuckDismissals();
   resetMonoTeams();
   resetWaitingChats();
-  setHubSelection({ project: "today", item: "inbox" });
+  setHubSelection({ project: "vg-game", item: "inbox" });
 });
 afterEach(() => {
   act(() => root.unmount());

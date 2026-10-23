@@ -3,14 +3,14 @@ import { stuckWhere } from "../model/stuckWhere";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
-import { Check, Clock, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { Check, FolderOpen, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { examplesOn } from "../model/examples";
 import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
-import { openMonoChat, setHubSelection } from "../model/hubNav";
+import { appItemInView, openMonoChat, setHubSelection, showAppItem } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
-import { TODAY_DEFAULT, type HubJob, type Need, type TodaySection } from "../model/types";
+import type { HubJob, Need, TodaySection } from "../model/types";
 import { findPage, keptPages, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
@@ -22,14 +22,13 @@ import { DetailSheet, QuestionSheet } from "./QuestionSheet";
 import { WaitingOnYou } from "./WaitingOnYou";
 import { StuckToday } from "./StuckToday";
 import { stuckWorkerChip } from "../../monos/model/stuckChip";
-import { attentionCount, failedMonosFor, stuckProject, useAttentionVersion } from "../model/todayCounts";
+import { failedMonosFor, stuckProject } from "../model/todayCounts";
 import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText, sinceGlance, withoutStuckTalk } from "../model/appSince";
-import { botChangesSince, useBotChangesVersion } from "../model/botChanges";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
@@ -60,41 +59,42 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   useTemplatesVersion();
   useConnectorsVersion();
   useHubBuildsVersion();
+  const data = hubData();
+  const projects = data.listProjects();
+  const project = projects.find((p) => p.id === selection.project);
+  // A project is the unit of the hub (G1): with no project chosen — a first launch, or the last one removed — and
+  // projects there, the app opens the first one; with none at all it offers to start one. It never shows a board of all
+  // of them. (A Mono's own team fills the workspace instead; App.tsx doesn't show the hub then.)
+  const home = !project && !appItemInView(selection);
+  const first = projects[0]?.id;
+  useEffect(() => {
+    if (home && first) setHubSelection({ project: first, item: "inbox" });
+  }, [home, first]);
   if (selection.item === "new-project") return <NewProjectView />;
   if (selection.item === "restore") return <RestorePreview />;
   if (selection.item === "autopilot") return <AutopilotView />;
-  const data = hubData();
-  if (selection.project !== "today") {
-    if (selection.item === "leadership-team")
-      return <GroupChatView key={selection.project} chatId={leadershipChatId(selection.project)} projectId={selection.project} />;
-    if (selection.item.startsWith("chat:"))
-      return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={selection.project} />;
-    if (selection.item === "new-chat") return <NewGroupChat projectId={selection.project} />;
-    if (selection.item.startsWith("proposal:"))
-      return <ProposalView key={selection.item} id={selection.item.slice(9)} />;
-    if (selection.item === "being-built") return <BeingBuiltView key={selection.project} projectId={selection.project} />;
-    const section = data.listProjectItems(selection.project).find((i) => i.id === selection.item);
-    if (section?.sectionType === "builds-playtests")
-      return <BuildsView key={selection.project} projectId={selection.project} title={section.title} />;
-    if (section?.sectionType === "project-pages")
-      return <ProjectPagesView key={selection.project} projectId={selection.project} title={section.title} />;
-  }
-  const project = data.listProjects().find((p) => p.id === selection.project);
-  const item = project ? data.listProjectItems(project.id).find((i) => i.id === selection.item) : undefined;
+  if (!project) return <HubHome />;
+  if (selection.item === "leadership-team")
+    return <GroupChatView key={project.id} chatId={leadershipChatId(project.id)} projectId={project.id} />;
+  if (selection.item.startsWith("chat:"))
+    return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={project.id} />;
+  if (selection.item === "new-chat") return <NewGroupChat projectId={project.id} />;
+  if (selection.item.startsWith("proposal:")) return <ProposalView key={selection.item} id={selection.item.slice(9)} />;
+  if (selection.item === "being-built") return <BeingBuiltView key={project.id} projectId={project.id} />;
+  const section = data.listProjectItems(project.id).find((i) => i.id === selection.item);
+  if (section?.sectionType === "builds-playtests")
+    return <BuildsView key={project.id} projectId={project.id} title={section.title} />;
+  if (section?.sectionType === "project-pages")
+    return <ProjectPagesView key={project.id} projectId={project.id} title={section.title} />;
+  const item = section;
 
-  let Icon: IconComponent = Clock;
-  let title = "Today";
-  let body = <TodayBody projectId={undefined} />;
-  if (project) {
-    if (!item) {
-      Icon = Inbox;
-      title = "Inbox";
-      body = <TodayBody projectId={project.id} />;
-    } else {
-      title = item.title;
-      Icon = item.kind === "leadership-team" || item.kind === "group-chat" ? MessagesSquare : item.kind === "being-built" ? Hammer : PackageOpen;
-      body = <Pending what={item.title} unit={item.kind === "leadership-team" ? 4 : item.kind === "being-built" ? 6 : 5} />;
-    }
+  let Icon: IconComponent = Inbox;
+  let title = "Inbox";
+  let body = <TodayBody projectId={project.id} />;
+  if (item) {
+    title = item.title;
+    Icon = item.kind === "leadership-team" || item.kind === "group-chat" ? MessagesSquare : item.kind === "being-built" ? Hammer : PackageOpen;
+    body = <Pending what={item.title} unit={item.kind === "leadership-team" ? 4 : item.kind === "being-built" ? 6 : 5} />;
   }
 
   return (
@@ -113,39 +113,73 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   );
 }
 
-function TodayBody({ projectId }: { projectId: string | undefined }) {
+/**
+ * No project chosen: the create-a-project empty state (or what keeps the hub from loading). There is no central area
+ * and no board of all projects (G1): a project is the unit of the hub, and HubSurface opens the first one as soon as
+ * there is one.
+ */
+function HubHome() {
+  useHubDataVersion();
+  const data = hubData();
+  const connection = data.connection();
+  return (
+    <div role="region" aria-label="Projects" data-hub-surface className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+      <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
+          <FolderOpen className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+          <span className="min-w-0 truncate text-content">Projects</span>
+        </div>
+        {IS_MAC ? null : <div className="w-[120px]" />}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {connection.status === "unreachable" ? (
+          <>
+            <ShipNotice />
+            <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />
+          </>
+        ) : connection.status === "loading" || data.listProjects().length ? (
+          // Reading Ash OS: a project opens a moment later (HubSurface), so say nothing rather than flash "No projects yet".
+          <div data-hub-loading />
+        ) : (
+          <>
+            {/* The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it). */}
+            <ShipNotice />
+            <FirstTodayEmpty />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TodayBody({ projectId }: { projectId: string }) {
   useWaitingChatsVersion();
   useMonoFailuresVersion();
   const { stuck: stuckWorkersNow } = useStuckWorkers();
   const delegationRows = useDelegationRows();
-  useBotChangesVersion();
   const [sheet, setSheet] = useState<SheetFor | null>(null);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(25);
   const data = hubData();
   const connection = data.connection();
-  // The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it).
-  const shipAlone = projectId ? null : <ShipNotice />;
-  if (connection.status === "unreachable") return <>{shipAlone}<AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} /></>;
-  // Reading Ash OS for the first time: say nothing rather than flash "No projects yet".
-  if (connection.status === "loading" && !data.listProjects().length) return <div data-hub-loading />;
-  if (!data.listProjects().length) return <>{shipAlone}<FirstTodayEmpty /></>;
+  if (connection.status === "unreachable") return <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />;
   const since = data.sinceSummary(projectId);
   const sinceAt = data.sinceAt();
-  // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the projects' work, then
-  // the app's own real events (work handed out, finished and reported back, stuck, Bot changes: appSince.ts).
+  // C9: one paragraph of what happened since Ash was last active (typing): Ash OS's words about the project's work, then
+  // the app's own real events (work handed out, finished and reported back, stuck: appSince.ts). A project's Today says
+  // only what happened in that project.
   const sinceMs = sinceAt ? Date.parse(sinceAt) : NaN;
   const appSince = Number.isFinite(sinceMs)
     ? appSinceText({
         sinceMs,
-        rows: projectId ? delegationRows.filter((r) => r.project === projectId) : delegationRows,
-        stuck: projectId ? stuckWorkersNow.filter((s) => stuckProject(s)?.id === projectId) : stuckWorkersNow,
-        changes: projectId ? [] : botChangesSince(sinceMs),
+        rows: delegationRows.filter((r) => r.project === projectId),
+        stuck: stuckWorkersNow.filter((s) => stuckProject(s)?.id === projectId),
+        changes: [],
         nameOf: (row) => leadNameOf({ row }),
         // Ash OS's stuck and gave-up jobs join the app's own in one count and one list (appSince.ts).
         jobs: data
           .listProjects()
-          .filter((p) => !projectId || p.id === projectId)
+          .filter((p) => p.id === projectId)
           .flatMap((p) => data.listJobs?.(p.id) ?? [])
           .flatMap((g) => g.jobs)
           .filter((j) => j.state === "stuck" || j.state === "sent_to_lead" || j.state === "lead_gave_up")
@@ -153,17 +187,16 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       })
     : "";
   const waiting = waitingOnAsh(projectId);
-  const projects = data.listProjects().filter((p) => !projectId || p.id === projectId);
+  const projects = data.listProjects().filter((p) => p.id === projectId);
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
   const chatsWaiting =
     waitingChats(projectId).length > 0 ||
     failedMonosFor(projectId).length > 0 ||
-    stuckWorkersNow.some((s) => !projectId || stuckProject(s)?.id === projectId);
+    stuckWorkersNow.some((s) => stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);
-  // Today's sections are Ash OS's board (`ash-hub-layout`): a seated Mono can add a kept page, move, rename or take
-  // off a section through Edit Today, and Apply / Undo moves it here. A project's Inbox draws its own board: the cards
-  // its template names, so a game project opens on builds and a product project on its dashboards.
-  const sections: readonly TodaySection[] = projectId ? projectTodaySections(projectId) : data.todayLayout?.() ?? TODAY_DEFAULT;
+  // A project's Inbox draws its own board: the cards its template names (templates.ts, stored per project), so a game
+  // project opens on builds and a product project on its dashboards. There is no app-wide board to fall back to.
+  const sections: readonly TodaySection[] = projectTodaySections(projectId);
   const sinceBlock = (s: TodaySection) => (
     <section key={s.id} data-hub-today-section={s.kind}>
       {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{s.title === "Since you were away" ? sinceLabel(sinceAt) : `${s.title} · ${sinceLabel(sinceAt).toLowerCase()}`}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
@@ -187,18 +220,24 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       )}
     </section>
   );
-  const setupBlock = (s: TodaySection) =>
-    !projectId && setupItems().length ? (
-      <section key={s.id} data-hub-setup data-hub-today-section={s.kind}>
-        <h2 className="mb-1 text-xs text-content/60">{s.title}</h2>
-        <p className="px-2 pb-1 text-[13px] text-content/60">Passwords and keys never travel in the setup file.</p>
-        <div className="flex flex-col">
-          {setupItems().map((w) => (
-            <StuckRow key={w.id} item={w} />
-          ))}
-        </div>
-      </section>
-    ) : null;
+  // What Ash has to set up waits for him from anywhere (waiting.ts: connector sign-ins, Mono proposals, the setup file's
+  // rows). It belongs to no project, so it shows on whichever project's Today he is in, and goes once it is done.
+  const setupBlock = setupItems().length ? (
+    <section data-hub-today-setup>
+      <h2 className="mb-1 text-xs text-content/60">Setup</h2>
+      <p className="px-2 pb-1 text-[13px] text-content/60">Passwords and keys never travel in the setup file.</p>
+      <div className="flex flex-col">
+        {setupItems().map((w) => (
+          <StuckRow key={w.id} item={w} />
+        ))}
+      </div>
+    </section>
+  ) : null;
+  // What waits on Ash in this project, grouped as needs.ts names it (Waiting on you sits above, in Needs you).
+  const pStuck = waiting.filter((w) => w.state);
+  const pNeeds = waiting.flatMap((w) => (w.need ? [w.need] : []));
+  const pOther = waiting.filter((w) => !w.state && !w.need);
+  const needsListed = pStuck.length + pNeeds.length + pOther.length > 0 || laterItems(projectId).length > 0;
   // Above about 1800px the project sections sit side by side, so a row's buttons stay near its words (review 21 Oct).
   const needsBlock = (s: TodaySection) => (
     <div key={s.id} className="flex flex-col gap-6" data-hub-today-section={s.kind}>
@@ -216,27 +255,16 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
             {matches.slice(0, shown).map((n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />)}
             {matches.length > shown ? <button type="button" onClick={() => setShown((n) => n + 25)} className="mt-2 self-start rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/70">Show 25 more</button> : null}</>;
         })()}
-      </section> : <div className="grid grid-cols-1 items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects>{projects.map((p) => {
-        const pStuck = waiting.filter((w) => w.projectId === p.id && w.state);
-        const pNeeds = waiting.flatMap((w) => (w.projectId === p.id && w.need ? [w.need] : []));
-        const pOther = waiting.filter((w) => w.projectId === p.id && !w.state && !w.need);
-        if (!pNeeds.length && !pStuck.length && !pOther.length && !laterItems(p.id).length) return null;
-        return (
-          <section key={p.id}>
-            {projectId ? null : <h2 className="mb-1 text-xs text-content/60">{p.name}</h2>}
-            <div className="flex flex-col">
-              {pStuck.map((st) => (
-                <StuckRow key={st.id} item={st} />
-              ))}
-              <NeedGroups needs={pNeeds} onSheet={setSheet} />
-              {pOther.map((w) => (
-                <StuckRow key={w.id} item={w} />
-              ))}
-              <LaterList projectId={p.id} onSheet={setSheet} />
-            </div>
-          </section>
-        );
-      })}</div>}
+      </section> : needsListed ? <div className="flex flex-col" data-hub-today-projects>
+        {pStuck.map((st) => (
+          <StuckRow key={st.id} item={st} />
+        ))}
+        <NeedGroups needs={pNeeds} onSheet={setSheet} />
+        {pOther.map((w) => (
+          <StuckRow key={w.id} item={w} />
+        ))}
+        <LaterList projectId={projectId} onSheet={setSheet} />
+      </div> : null}
     </div>
   );
   // C9: the Since paragraph is the glance at the top of Today, above the shortcuts and the project cards; the detail
@@ -245,7 +273,8 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const hasBuilt = sections.some((s) => s.kind === "being-built");
   const block = (s: TodaySection) =>
     s.kind === "since" ? null
-    : s.kind === "setup" ? setupBlock(s)
+    // Setup is the app's own, drawn once above (setupBlock), wherever a template or the fallback board has the section.
+    : s.kind === "setup" ? null
     // Waiting on you sits right above Needs you, wherever the board puts it.
     // Only what Ash must act on sits with Needs you (r30): there is no "Stuck" section. A worker its Lead is handling
     // sits with Being built, or here when the board has no Being built.
@@ -260,43 +289,17 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
       {sinceSection ? sinceBlock(sinceSection) : null}
       {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
-      {!projectId ? <ShipNotice inBody /> : null}
-      {!projectId ? <HomeTools /> : null}
-      {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
-        {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">
-          <button type="button" onClick={() => setHubSelection({ project: p.id, item: "inbox" })} className="text-[14px] font-medium text-content hover:underline">{p.name}</button>
-          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-content/60">
-            <ProjectNeedsCount projectId={p.id} />
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "leadership-team" })} className="hover:text-content">Leadership</button>
-            <button type="button" onClick={() => setHubSelection({ project: p.id, item: "being-built" })} className="hover:text-content">Being built</button>
-          </div>
-        </div>)}
-      </section> : null}
+      <ShipNotice inBody />
+      {setupBlock}
       {/* The board took Needs you off Today: the chats waiting on Ash still lead it. */}
       {sections.some((s) => s.kind === "needs") ? null : <><StuckToday projectId={projectId} tone="red" />{hasBuilt ? null : <StuckToday projectId={projectId} tone="grey" />}<WaitingOnYou projectId={projectId} /></>}
       {sections.map(block)}
       {!query.trim() ? <OlderQuestions projectId={projectId} renderRow={(n) => <NeedRow key={n.id} need={n} onSheet={setSheet} />} /> : null}
-      {!projectId ? <LastChange /> : null}
+      <LastChange projectId={projectId} />
       {sheet?.kind === "job" ? <OptionsSheet jobId={sheet.jobId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "question" ? <QuestionSheet needId={sheet.needId} onClose={() => setSheet(null)} /> : null}
       {sheet?.kind === "detail" ? <DetailSheet need={sheet.need} onClose={() => setSheet(null)} /> : null}
     </div>
-  );
-}
-
-/**
- * The project card's count: everything waiting on Ash for it, as Today lists it (todayCounts.ts): open Needs and stuck
- * rows, chats waiting on him, stuck workers and Monos that can't answer. The strip badge reads the same number.
- */
-function ProjectNeedsCount({ projectId }: { projectId: string }) {
-  useAttentionVersion();
-  const count = attentionCount(projectId);
-  // r28: a card with nothing waiting says nothing, never "0 needs".
-  if (count <= 0) return null;
-  return (
-    <button type="button" data-hub-card-needs={count} onClick={() => setHubSelection({ project: projectId, item: "inbox" })} className="hover:text-content">
-      {count} {count === 1 ? "need" : "needs"}
-    </button>
   );
 }
 
@@ -308,7 +311,7 @@ const jobWord = (j: HubJob, lead: string): string | Chip =>
   : j.state === "stuck" || j.state === "sent_to_lead" || j.state === "lead_gave_up" ? stuckChip(j.state, lead)
   : JOB_WORD[j.state] ?? "";
 
-/** Being built on Today: what the Leads are working on across the projects, one quiet line each. Hidden when idle. */
+/** Being built on Today: what the project's Leads are working on, one quiet line each. Hidden when idle. */
 function BeingBuiltToday({ title, projectId }: { title: string; projectId?: string }) {
   const data = hubData();
   // This app's own workers under each job: a stuck one makes the job read Stuck, whatever its siblings do.
@@ -327,7 +330,8 @@ function BeingBuiltToday({ title, projectId }: { title: string; projectId?: stri
     // when only Ash can sort it (credits, a rejected key, a refusal, out of retries), else grey Retrying or With <Lead>.
     return stuck.kind === "asking" && !stuck.escalated ? "Waiting" : stuckWorkerChip(stuck, lead);
   };
-  const rows = data.listProjects().flatMap((p) =>
+  // A project's Today shows that project's work (G1): there is no board where every project's jobs sit together.
+  const rows = data.listProjects().filter((p) => !projectId || p.id === projectId).flatMap((p) =>
     (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
   );
   // A worker its Lead is handling (grey With <Lead> or Retrying) is listed here, after the jobs, unless its job's row
@@ -364,7 +368,7 @@ function BeingBuiltToday({ title, projectId }: { title: string; projectId?: stri
             </div>
           );
         })}
-        {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in the projects' Being built</span> : null}
+        {rows.length > 8 ? <span className="px-2 pt-1 text-xs text-content/60">{rows.length - 8} more in Being built</span> : null}
       </div>
       <StuckToday projectId={projectId} tone="grey" skip={covered} />
     </section>
@@ -448,10 +452,12 @@ function LatestDashboardToday({ title, projectId }: { title: string; projectId: 
   );
 }
 
-/** The last change to Today or the hub (within a day), with Undo or Redo right here. */
-function LastChange() {
+/** The last change to this project's Today or hub (within a day), with Undo or Redo right here. */
+function LastChange({ projectId }: { projectId: string }) {
   const data = hubData();
-  const last = (data.listChanges?.() ?? []).find((c) => (c.flow === "today" || c.flow === "hub") && (c.state === "applied" || c.state === "undone"));
+  const last = (data.listChanges?.() ?? []).find(
+    (c) => (c.flow === "today" || c.flow === "hub") && (c.state === "applied" || c.state === "undone") && (c.projectId === projectId || !c.projectId),
+  );
   const at = last?.undoneAt ?? last?.appliedAt;
   if (!last || !at || Date.now() - Date.parse(at) > 86_400_000) return null;
   return (
@@ -676,7 +682,7 @@ function FirstTodayEmpty() {
     if (!f) return;
     try {
       setPendingImport(readImportText(f.name, await f.text()));
-      setHubSelection({ project: "today", item: "restore" });
+      showAppItem("restore");
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Couldn't read that file.");
     }
@@ -687,7 +693,7 @@ function FirstTodayEmpty() {
       if (p === "browser") return fileRef.current?.click();
       if (!p) return;
       setPendingImport(p);
-      setHubSelection({ project: "today", item: "restore" });
+      showAppItem("restore");
     } catch (e) {
       setNote(e instanceof Error ? e.message : "Couldn't read that export.");
     }
@@ -700,7 +706,7 @@ function FirstTodayEmpty() {
           <button
             type="button"
             data-hub-today-new-project
-            onClick={() => setHubSelection({ project: "today", item: "new-project" })}
+            onClick={() => showAppItem("new-project")}
             className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90"
           >
             New project

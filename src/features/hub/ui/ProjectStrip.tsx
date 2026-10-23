@@ -1,6 +1,6 @@
 import { draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Clock, MoreHorizontal, Plus, type IconComponent } from "../../../shared/ui/icons";
+import { MoreHorizontal, Plus, type IconComponent } from "../../../shared/ui/icons";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
 import { moveLocalNamesToAshOs } from "../model/projectActions";
@@ -10,15 +10,15 @@ import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
-import { monoTeamInView, setHubSelection, type HubSelection } from "../model/hubNav";
+import { appItemInView, showAppItem, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
 
 export { SHAPES } from "./projectShapeIcons";
 
 /**
- * Far-left strip: Today for all projects, then each project as a grey shape,
- * then "+". Projects differ by shape only; colour is kept for status.
+ * Far-left strip: Autopilot, then each project as a grey shape, then "+". There is no all-projects board: a project
+ * is the unit of the hub, and opening one shows its own Today. Projects differ by shape only; colour is kept for status.
  */
 export function ProjectStrip({
   selection,
@@ -64,18 +64,10 @@ export function ProjectStrip({
       {/* Room for the macOS traffic lights. */}
       {titleBarAbove ? <div className="h-1.5 w-full shrink-0" /> : <div className="h-10 w-full shrink-0" data-tauri-drag-region />}
       <StripButton
-        label="Today"
-        title="Today, all projects"
-        // A Mono's own team is selected with no project (hubNav.ts): Today isn't what is open then.
-        selected={selection.project === "today" && selection.item !== "autopilot" && !monoTeamInView(selection)}
-        onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "inbox" }); }}
-        Icon={Clock}
-      />
-      <StripButton
         label="Autopilot"
         title={autopilot.title}
         selected={selection.item === "autopilot"}
-        onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "autopilot" }); }}
+        onClick={() => { onLeaveCovers?.(); showAppItem("autopilot"); }}
         glyph={autopilot.glyph}
       />
       <div className="h-2 shrink-0" />
@@ -86,7 +78,7 @@ export function ProjectStrip({
             key={project.id}
             label={project.shortName}
             title={count ? `${project.name}, ${count} waiting on you` : project.name}
-            selected={selection.project === project.id}
+            selected={selection.project === project.id && !appItemInView(selection)}
             onClick={() => onPickProject(project)}
             glyph={<ProjectGlyph project={project} />}
             count={count}
@@ -100,12 +92,12 @@ export function ProjectStrip({
             label="Draft"
             title={`Draft: ${draftProject.name}, still being set up`}
             selected={selection.item === "new-project"}
-            onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }}
+            onClick={() => { onLeaveCovers?.(); showAppItem("new-project"); }}
             glyph={<span className="grid size-[24px] place-items-center rounded-[7px] bg-content/10 text-[12px] font-medium text-content/85 ring-1 ring-inset ring-content/10">{draftInitial(draftProject.name)}</span>}
           />
         </div>
       ) : null}
-      <StripButton label="" title="New project" selected={false} onClick={() => { onLeaveCovers?.(); setHubSelection({ project: "today", item: "new-project" }); }} Icon={Plus} />
+      <StripButton label="" title="New project" selected={false} onClick={() => { onLeaveCovers?.(); showAppItem("new-project"); }} Icon={Plus} />
       {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
       <RemovedUndoToast />
     </nav>

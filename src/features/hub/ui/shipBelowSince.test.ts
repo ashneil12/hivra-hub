@@ -63,11 +63,11 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   stub = await startStub({});
-  stub.setSince(
+  // A project's Today says what happened in that project (G1: there is no board of all projects).
+  const sinceText =
     "Example: EXO's new level is in and plays well. 102 things are waiting on you. Merged PRs: #412 and #415. " +
-      "Hivra's waitlist email went out to 40 people.",
-    {},
-  );
+    "Hivra's waitlist email went out to 40 people.";
+  stub.setSince(sinceText, { "vg-game": sinceText });
   store = new HubStore({ transport: httpTransport(() => stub.url, () => stub.token), coalesceMs: 5, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 });
   setHubDataSource(createLiveHubData(store), store);
   container = document.createElement("div");
@@ -91,10 +91,10 @@ it("the update card sits below the Since paragraph, which stays first on Today",
     current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log",
       from: { sha: "a".repeat(40), branch: "hub/next" }, to: { sha: "b".repeat(40), branch: "hub/next" } },
   });
-  act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));
+  act(() => root.render(createElement(HubSurface, { selection: { project: "vg-game", item: "inbox" } })));
   await until(() => container.querySelector("[data-hub-since]")?.textContent?.includes("Example:") && container.querySelector("[data-hub-ship]"), "Today with the update card");
   const body = container.querySelector("[data-hub-surface-body]")!;
-  const order = [...body.children].map((el) => el.getAttribute("data-hub-today-section") ?? (el.hasAttribute("data-hub-ship") ? "ship" : el.hasAttribute("data-hub-home-tools") ? "tools" : el.tagName));
+  const order = [...body.children].map((el) => el.getAttribute("data-hub-today-section") ?? (el.hasAttribute("data-hub-ship") ? "ship" : el.tagName));
   expect(order[0]).toBe("since");
   expect(order[1]).toBe("ship");
   expect(container.querySelector("[data-hub-ship]")!.textContent).toContain("MonoCode Hub was updated.");

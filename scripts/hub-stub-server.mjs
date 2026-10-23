@@ -492,7 +492,8 @@ export async function startStub({
       Object.assign(n, { state: "done", doneAt: now(), doneReason: "dismissed" });
       emit("question.expired", n.actionTarget.replace(/^question:/, ""), n.projectId);
     }
-    const left = state.needs.filter((n) => n.older && n.state === "open").length;
+    // "N still waiting" is what is left in what was asked about: a project's Today never hears another project's count.
+    const left = state.needs.filter((n) => n.older && n.state === "open" && (!v.project || n.projectId === v.project)).length;
     const receipt = closing.length
       ? `Dismissed ${closing.length} older question${closing.length === 1 ? "" : "s"}. Their asks are parked: saying one again brings it back.${left ? ` ${left} still waiting.` : ""}`
       : "Nothing that old was waiting.";

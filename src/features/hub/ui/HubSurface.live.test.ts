@@ -64,7 +64,8 @@ const rows = () => [...container.querySelectorAll("[data-hub-need]")].map((r) =>
 function mount(el: ReturnType<typeof createElement>) {
   act(() => root.render(el));
 }
-const surface = () => createElement(HubSurface, { selection: { project: "today", item: "inbox" } });
+// A project is the unit of the hub (G1): each test opens the project whose rows it is about, or "" for home.
+const surface = (project = "vg-game") => createElement(HubSurface, { selection: { project, item: "inbox" } });
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -88,28 +89,29 @@ afterEach(async () => {
 
 describe("Today, live", () => {
   it("shows a blank page, not 'No projects yet', while Ash OS is first being read", () => {
-    mount(surface());
+    mount(surface(""));
     expect(container.querySelector("[data-hub-loading]")).toBeTruthy();
     expect(text()).not.toContain("No projects yet");
   });
 
-  it("shows Since, each project's Needs with one action each, and what is under Later", async () => {
-    mount(surface());
-    await until(() => rows().length >= 8, "needs");
+  it("a project's Today shows its own Since and Needs, one action each, and what is under its Later", async () => {
+    mount(surface("vg-game"));
+    await until(() => rows().length === 2, "needs");
     await until(() => text().includes("Since"), "since label");
-    expect(text()).toMatch(/Since (yesterday|\d|[A-Z][a-z]+)/);
-    expect(text()).toContain("Example: the game's new level is in and working");
-    for (const name of ["EXO", "Hivra", "Hub"]) expect(text()).toContain(name);
-    expect(container.querySelector("[data-hub-home-projects]")?.textContent).toContain("Nibbii"); // quiet projects remain accessible
-    const org = container.querySelectorAll('[data-hub-need]');
-    for (const row of org) expect(row.querySelectorAll("button").length).toBe(1);
+    expect(text()).toMatch(/Since you were last here · since (yesterday|\d|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/);
+    expect(text()).toContain("Example: the new level is in and working. Two things need your hands.");
+    expect(rows().sort()).toEqual(["q1", "q2"]);
+    for (const row of container.querySelectorAll("[data-hub-need]")) expect(row.querySelectorAll("button").length).toBe(1);
+    expect(text()).not.toContain("Example: which Hivra folder is the real one?"); // no other project's rows
+    mount(surface("hub"));
+    await until(() => container.querySelector("[data-hub-later] > button"), "Later");
     expect(text()).toContain("1 more under Later");
     expect(text()).not.toContain("renew the domain names"); // Later is a count until its list is built
   });
 
-  it("the strip's badge is the open rows Today shows for the project (stuck included, Later not), with no zero badge", async () => {
-    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
-    await until(() => rows().length >= 8, "needs");
+  it("the strip's badge is the open rows that project's Today shows (stuck included, Later not), with no zero badge", async () => {
+    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "vg-game", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface("vg-game")));
+    await until(() => container.querySelector("[data-hub-strip] .hub-count-badge"), "badges");
     const badge = (name: string) => container.querySelector(`button[aria-label^="${name}"] span.hub-count-badge`)?.textContent;
     expect(badge("EXO")).toBe("2");
     expect(badge("Hivra")).toBe("1");
@@ -119,8 +121,8 @@ describe("Today, live", () => {
   });
 
   it("a Need answered elsewhere ticks itself off in place, stops counting, and goes when Ash leaves the page", async () => {
-    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
-    await until(() => rows().length >= 8, "needs");
+    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "hivra", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface("hivra")));
+    await until(() => rows().length === 1, "needs");
     const before = rows();
     stub.doneNeed("q3");
     await until(() => container.querySelector('[data-hub-need="q3"][data-hub-need-done]'), "tick");
@@ -131,13 +133,13 @@ describe("Today, live", () => {
     expect(container.querySelector('button[aria-label^="Hivra"] .hub-count-badge')).toBeNull(); // no zero badge
     // leaving the page: ticked rows go
     mount(createElement("div"));
-    mount(surface());
-    await until(() => !container.querySelector('[data-hub-need="q3"]') && rows().length > 0, "gone");
+    mount(surface("hivra"));
+    await until(() => !container.querySelector('[data-hub-need="q3"]'), "gone");
   });
 
   it("a new Need arrives at the bottom of its project without a reload", async () => {
-    mount(surface());
-    await until(() => rows().length >= 8, "needs");
+    mount(surface("vg-game"));
+    await until(() => rows().length === 2, "needs");
     stub.addNeed({ id: "q20", projectId: "vg-game", title: "Example: late arrival", rank: 0 });
     await until(() => rows().includes("q20"), "new row");
     // Last of its project's rows of its own kind (Today groups a project's Needs: to decide, to check, to look at).
@@ -149,7 +151,7 @@ describe("Today, live", () => {
 
   it("with Ash OS down it shows one calm sentence and one button, never example data", async () => {
     await stub.close();
-    mount(surface());
+    mount(surface("hivra"));
     await until(() => container.querySelector("[data-hub-down]"), "down state");
     expect(text()).toContain("The harness service is unavailable.");
     expect(text()).not.toMatch(/Example|EXO|Hivra/);
@@ -164,11 +166,11 @@ describe("Today, live", () => {
     const port = stub.port;
     const token = stub.token;
     await stub.close();
-    mount(surface());
+    mount(surface("hivra"));
     await until(() => container.querySelector("[data-hub-down]"), "down state");
     stub = await startStub({ port, token });
     act(() => (container.querySelector("[data-hub-down-retry]") as HTMLButtonElement).click());
-    await until(() => rows().length >= 8, "today after retry");
+    await until(() => rows().length === 1, "today after retry");
     expect(container.querySelector("[data-hub-down]")).toBeNull();
   });
 
@@ -210,11 +212,11 @@ describe("ships clean and calm", () => {
     expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
   });
 
-  it("the strip shows Today, Autopilot, then EXO, Hivra, Nibbii, Hub in that order, each its own grey shape (never a ghost)", async () => {
-    mount(createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
+  it("the strip shows Autopilot, then EXO, Hivra, Nibbii, Hub — never a board of all projects — each its own grey shape (never a ghost)", async () => {
+    mount(createElement(ProjectStrip, { selection: { project: "vg-game", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }));
     await until(() => container.querySelectorAll("[data-hub-strip] button").length > 3, "strip");
     const labels = [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
-    expect(labels).toEqual(["Today", "Autopilot", "EXO", "Hivra", "Nibbii", "Hub"]);
+    expect(labels).toEqual(["Autopilot", "EXO", "Hivra", "Nibbii", "Hub"]);
     // Each project wears its shape from Ash OS, grey (Ash picks another from the tile's menu): never the ghost.
     const tiles = [...container.querySelectorAll("[data-hub-strip] [data-project-glyph]")].map((g) => g.getAttribute("data-project-shape"));
     expect(tiles).toEqual(["gamepad", "sparkles", "palette", "gauge"]);
@@ -224,7 +226,7 @@ describe("ships clean and calm", () => {
     await stub.close();
     stub = await startStub({ pendingSinceOnce: true });
     url = stub.url;
-    mount(surface());
+    mount(surface("vg-game"));
     await until(() => container.querySelector("[data-hub-since-pending]"), "pending line");
     expect(container.querySelector("[data-hub-since-pending]")?.textContent).toBe("Writing up what changed…");
     expect(text()).not.toContain("on their way");
@@ -245,7 +247,7 @@ describe("questions and asks open something useful", () => {
   };
 
   it("a question with options: the question, the suggestion with Go with this, one row per option (Suggested marked quietly), Not now, Drop it, one Send", async () => {
-    mount(surface());
+    mount(surface("vg-game"));
     await open("q2");
     expect(container.querySelector("[data-hub-question]")?.textContent).toBe("Example: skim the new game rules");
     expect(container.querySelector("[data-hub-recommendation]")?.textContent).toContain("Yes: they read like what you said on 12 Oct.");
@@ -259,9 +261,7 @@ describe("questions and asks open something useful", () => {
   });
 
   it("a question with no options still works: the suggestion, Go with this, Not now, Drop it, Say something else", async () => {
-    mount(surface());
-    await until(() => container.querySelector('[data-hub-need="q4"]'), "row");
-    // q4 is an ask (Open); make a plain question row to open
+    mount(surface("hivra"));
     stub.addNeed({ id: "q:qx", projectId: "hivra", title: "Example: archive the old waitlist?", why: "My suggestion: Park it for later.", actionType: "see_options", actionTarget: "question:qx" });
     await open("q:qx");
     expect(container.querySelectorAll("[data-hub-question-option]").length).toBe(0);
@@ -276,7 +276,7 @@ describe("questions and asks open something useful", () => {
     await stub.close();
     stub = await startStub({ answerDelayMs: 400 });
     url = stub.url;
-    mount(surface());
+    mount(surface("vg-game"));
     await open("q2");
     const order = rows();
     act(() => (container.querySelectorAll("[data-hub-question-option]")[1] as HTMLButtonElement).click());
@@ -290,7 +290,7 @@ describe("questions and asks open something useful", () => {
   });
 
   it("words Ash OS can't act on leave the row open with the receipt, its button back", async () => {
-    mount(surface());
+    mount(surface("hivra"));
     await open("q3");
     const input = container.querySelector('input[placeholder="Say something else…"]') as HTMLInputElement;
     await act(async () => {
@@ -305,7 +305,7 @@ describe("questions and asks open something useful", () => {
   });
 
   it("Open on an ask shows it in full (title, why, detail), and no ids", async () => {
-    mount(surface());
+    mount(surface("hub"));
     await until(() => container.querySelector('[data-hub-need="q4"]'), "ask row");
     await act(async () => btn('[data-hub-need="q4"]', "Open")!.click());
     const sheet = container.querySelector("[data-hub-detail]")!;

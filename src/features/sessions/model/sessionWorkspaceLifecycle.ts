@@ -14,7 +14,7 @@ import {
   type WorkspaceTabCloseScope,
 } from "../../workspace/model/workspaceTabGroups";
 import { sameProjectPath } from "../../projects/model/recents";
-import type { HubSelection } from "../../hub/model/hubNav";
+import { NO_PROJECT, type HubSelection } from "../../hub/model/hubNav";
 
 export type SessionWorkspaceRemoval = {
   tabs: WorkspaceTab[];
@@ -194,8 +194,11 @@ function removeSessionDocuments(
   return { ...tab, layout, focusedId, editorPanes };
 }
 
-/** Today, the window's home: where Ash lands when a delete takes the window's last tab (r30e). Null otherwise. */
-export const WINDOW_HOME: HubSelection = { project: "today", item: "inbox" };
+/**
+ * The window's home: where Ash lands when a delete takes the window's last tab (r30e). With no project chosen the hub
+ * opens a project's Today (the first one, or the create-a-project empty state) — there is no central board (G1).
+ */
+export const WINDOW_HOME: HubSelection = { project: NO_PROJECT, item: "" };
 
 export function homeAfterRemoval(
   mode: "archive" | "delete",

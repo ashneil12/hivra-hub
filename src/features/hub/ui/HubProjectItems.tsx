@@ -6,6 +6,7 @@ import { deleteChat } from "../model/hubChats";
 import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
+import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import { leadSpecFor } from "../model/hubLeads";
 import type { HubProject, ProjectItem } from "../model/types";
@@ -54,8 +55,9 @@ export function HubProjectItems({
 }) {
   useHubDataVersion();
   useHubChatsVersion();
+  // The project's sections come from its template, so switching it changes this list too.
+  useTemplatesVersion();
   const [menu, setMenu] = useState<PopoverAnchor>();
-  if (selection.project === "today") return null;
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
   const items = hubData().listProjectItems(project.id);

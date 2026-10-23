@@ -1,20 +1,20 @@
 // @vitest-environment happy-dom
-// Today drawn from Ash OS's board (`ash-hub-layout`) and the Change the hub / Edit Today history with Undo and Redo,
-// against the stub's own calls over real HTTP (scripts/hub-stub-studio.mjs): a seated Mono's preview, Apply, the
-// board moving on Today, Undo and Redo from Today, the history and Bot changes, and a refused Undo said plainly.
-import { act, createElement } from "react";
+// A project's Today is its template's board (G1): the cards the template names, drawn from live data, then Being built.
+// And, against the stub's own calls over real HTTP (scripts/hub-stub-studio.mjs), the Change the hub history with Undo
+// and Redo: a seated Mono's preview, Apply, the history and Bot changes, and a refused Undo said plainly.
+import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startStub, type Stub } from "../../../../scripts/hub-stub-server.mjs";
 import { httpTransport } from "../../../dev/hubTestTransport";
 import { applyChange, requestChange, undoChange } from "../../hubChange/model/hubChange";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
-import { buildPage } from "../../pages/model/buildPage";
-import { keepPage, pageFromSpec, setPagesBackend } from "../../pages/model/pages";
 import { botChangeRows, redoBotChange, undoBotChange } from "../model/botChanges";
 import { setHubDataSource } from "../model/hubData";
 import { HubStore } from "../model/hubStore";
 import { createLiveHubData } from "../model/liveHubData";
+import { setTemplate } from "../model/templates";
+import { ProjectStrip } from "./ProjectStrip";
 import { HubSurface } from "./HubSurface";
 
 // UI timing under a busy Mac (hub:check-all with Xcode builds alongside, load 35+): generous limits, same checks.
@@ -37,8 +37,21 @@ async function until(read: () => unknown, what: string, ms = 15000) {
   }
 }
 const sections = () => [...container.querySelectorAll("[data-hub-today-section]")].map((s) => s.getAttribute("data-hub-today-section"));
-const today = () => createElement(HubSurface, { selection: { project: "today", item: "inbox" } });
+// A project is the unit of the hub (G1): a project's Today, never a board of all projects.
+const today = (project = "vg-game") => createElement(HubSurface, { selection: { project, item: "inbox" } });
 const ask = (flow: "hub" | "today", prompt: string) => requestChange({ flow, projectId: "today", monoId: "projects-manager", prompt }, { roster });
+
+/** A strip and the project's surface, as the app arranges them: picking a project opens that project's Today. */
+function Hub({ start }: { start: string }) {
+  const [project, setProject] = useState(start);
+  const selection = { project, item: "inbox" };
+  return createElement(
+    "div",
+    null,
+    createElement(ProjectStrip, { selection, onPickProject: (p) => setProject(p.id), onCreateProject: () => undefined }),
+    createElement(HubSurface, { selection }),
+  );
+}
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -47,7 +60,6 @@ beforeEach(async () => {
   stub = await startStub({ buildMs: 0, jobs: true });
   store = new HubStore({ transport: httpTransport(() => stub.url, () => stub.token), ...FAST });
   setHubDataSource(createLiveHubData(store), store);
-  setPagesBackend(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -61,59 +73,48 @@ afterEach(async () => {
   await stub.close();
 });
 
-/** A kept page in the record, built by the stub's "Mono". */
-async function keptPage(prompt: string) {
-  const r = await buildPage({ projectId: "hivra", monoId: "hivra-lead", prompt }, { roster });
-  if (r.status !== "ready") throw new Error(r.status);
-  await keepPage(pageFromSpec(r.spec, prompt, "Hivra lead", "hivra", r.warnings, 1, r.pageId, "hivra-lead"));
-  return r.pageId!;
-}
-
-describe("Today draws Ash OS's board", () => {
-  it("in the shipped order until a change moves it: Since, Setup (only with setup items), Needs you, Being built", async () => {
-    act(() => root.render(today()));
-    await until(() => store.getSnapshot().today, "layout read");
-    await until(() => sections().includes("being-built"), "being built on Today");
-    expect(sections()).toEqual(["since", "needs", "being-built"]);
+describe("A project's Today draws its template's board", () => {
+  it("a game's: Since, Needs you and its latest build, then Being built", async () => {
+    act(() => root.render(today("vg-game")));
+    await until(() => sections().includes("being-built"), "being built");
+    expect(sections()).toEqual(["since", "needs", "latest-build", "being-built"]);
+    expect(container.querySelector('[data-hub-today-section="latest-build"]')?.textContent).toContain("No build yet.");
     expect(container.querySelector("[data-hub-today-being-built]")?.textContent).toContain("Example: adding the air dodge");
   });
 
-  it("an applied Edit Today change puts a kept page on Today, Undo on Today takes it off, Redo puts it back", async () => {
-    act(() => root.render(today()));
-    await until(() => store.getSnapshot().today, "layout read");
-    const pageId = await keptPage("Sign-ups this week");
-    const r = await ask("today", "put my sign-ups page on Today");
-    if (r.status !== "ready") throw new Error(`${r.status}: ${"reason" in r ? r.reason : ""}`);
-    expect(r.preview.preview.sections[0].rows).toEqual(["Since you were away", "Page: Example: Sign-ups this week", "Setup", "Needs you", "Being built"]);
-    // A preview never touches the live board.
-    expect(stub.studio.today.map((s) => s.id)).toEqual(["since", "setup", "needs", "being-built"]);
-    expect(await applyChange("today", r.preview, { roster } as never)).toEqual({ status: "applied" });
-    await until(() => container.querySelector(`[data-hub-today-page="${pageId}"]`), "page on Today");
-    expect(sections()).toEqual(["since", "page", "needs", "being-built"]);
-    expect(container.querySelector(`[data-hub-today-page="${pageId}"]`)?.textContent).toContain("Example: Sign-ups this week");
-
-    // The last change sits on Today with its Undo.
-    await until(() => container.querySelector("[data-hub-today-last-change] [data-hub-change-row-undo]"), "last change line");
-    expect(container.querySelector("[data-hub-today-last-change]")?.textContent).toContain("Projects Manager changed Today: Put “Example: Sign-ups this week” on Today");
-    await act(async () => (container.querySelector("[data-hub-today-last-change] [data-hub-change-row-undo]") as HTMLButtonElement).click());
-    await until(() => !container.querySelector(`[data-hub-today-page="${pageId}"]`), "page off Today after Undo");
-    expect(stub.studio.changes[0].state).toBe("undone");
-    await until(() => container.querySelector("[data-hub-today-last-change] [data-hub-change-row-redo]"), "Redo offered");
-    await act(async () => (container.querySelector("[data-hub-today-last-change] [data-hub-change-row-redo]") as HTMLButtonElement).click());
-    await until(() => container.querySelector(`[data-hub-today-page="${pageId}"]`), "page back after Redo");
+  it("a product's: the same two, then its latest dashboard", async () => {
+    act(() => root.render(today("hivra")));
+    await until(() => sections().includes("latest-page"), "latest dashboard");
+    expect(sections()).toEqual(["since", "needs", "latest-page", "being-built"]);
+    expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
   });
 
-  it("renamed and removed sections show as Ash OS has them", async () => {
-    act(() => root.render(today()));
-    await until(() => store.getSnapshot().today, "layout read");
-    for (const prompt of ["rename Needs you to Waiting on me", "hide being built"]) {
-      const r = await ask("today", prompt);
-      if (r.status !== "ready") throw new Error(r.status);
-      await applyChange("today", r.preview);
-    }
-    await until(() => container.querySelector("[data-hub-needs-heading]"), "renamed heading");
-    expect(container.querySelector("[data-hub-needs-heading]")?.textContent).toBe("Waiting on me");
-    expect(sections()).not.toContain("being-built");
+  it("an ops hub's: just the two, no project card and nothing being built", async () => {
+    act(() => root.render(today("hub")));
+    await until(() => container.querySelector("[data-hub-since]"), "since");
+    expect(sections()).toEqual(["since", "needs"]);
+  });
+
+  it("switching project shows that project's own board", async () => {
+    act(() => root.render(createElement(Hub, { start: "vg-game" })));
+    await until(() => sections().includes("latest-build"), "EXO's builds card");
+    const hivra = [...container.querySelectorAll("[data-hub-strip] button")].find((b) => b.textContent?.includes("Hivra")) as HTMLButtonElement;
+    await act(async () => hivra.click());
+    await until(() => sections().includes("latest-page") && !sections().includes("latest-build"), "Hivra's dashboards card");
+    expect(sections()).toEqual(["since", "needs", "latest-page", "being-built"]);
+  });
+
+  it("Ash changing a project's template changes its board at once", async () => {
+    act(() => root.render(today("hivra")));
+    await until(() => sections().includes("latest-page"), "dashboards card");
+    act(() => setTemplate("hivra", "game-studio"));
+    await until(() => sections().includes("latest-build"), "builds card");
+    expect(sections()).toEqual(["since", "needs", "latest-build", "being-built"]);
+    act(() => setTemplate("hivra", "org-ops"));
+    await until(() => !sections().includes("latest-build"), "no project card");
+    expect(sections()).toEqual(["since", "needs", "being-built"]);
+    act(() => setTemplate("hivra", "product-saas"));
+    await until(() => sections().includes("latest-page"), "back to its dashboards");
   });
 });
 

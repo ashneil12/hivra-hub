@@ -56,10 +56,12 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   stub = await startStub({});
+  // A project's Today says what happened in that project (G1: there is no board of all projects).
   stub.setSince(
     "Example: EXO's new level is in and plays well. 102 things are waiting on you. Merged PRs: #412 and #415. " +
       "Hivra's waitlist email went out to 40 people.",
-    {},
+    { "vg-game": "Example: EXO's new level is in and plays well. 102 things are waiting on you. Merged PRs: #412 and #415. " +
+      "Hivra's waitlist email went out to 40 people." },
   );
   store = new HubStore({ transport: httpTransport(() => stub.url, () => stub.token), coalesceMs: 5, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 });
   setHubDataSource(createLiveHubData(store), store);
@@ -76,15 +78,13 @@ afterEach(async () => {
   await stub.close();
 });
 
-it("the Since paragraph is the first thing on Today, a glance of what happened, with the detail below", async () => {
-  act(() => root.render(createElement(HubSurface, { selection: { project: "today", item: "inbox" } })));
-  await until(() => container.querySelector("[data-hub-since]")?.textContent?.includes("Example:") && container.querySelector("[data-hub-home-projects]"), "Today");
+it("the Since paragraph is the first thing on a project's Today, a glance of what happened, with the detail below", async () => {
+  act(() => root.render(createElement(HubSurface, { selection: { project: "vg-game", item: "inbox" } })));
+  await until(() => container.querySelector("[data-hub-since]")?.textContent?.includes("Example:") && container.querySelector('[data-hub-today-section="needs"]'), "Today");
   const body = container.querySelector("[data-hub-surface-body]")!;
-  const order = [...body.children].map((el) => el.getAttribute("data-hub-today-section") ?? (el.hasAttribute("data-hub-home-tools") ? "tools" : el.hasAttribute("data-hub-home-projects") ? "projects" : el.tagName));
+  const order = [...body.children].map((el) => el.getAttribute("data-hub-today-section") ?? el.tagName);
   expect(order[0]).toBe("since");
-  expect(order.indexOf("since")).toBeLessThan(order.indexOf("tools"));
-  expect(order.indexOf("since")).toBeLessThan(order.indexOf("projects"));
-  expect(order.indexOf("projects")).toBeLessThan(order.indexOf("needs"));
+  expect(order.indexOf("since")).toBeLessThan(order.indexOf("needs"));
   expect(order.filter((o) => o === "since")).toHaveLength(1);
 
   const text = container.querySelector("[data-hub-since]")!.textContent!;

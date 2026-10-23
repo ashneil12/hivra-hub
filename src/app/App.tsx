@@ -195,6 +195,7 @@ import {
 } from "../features/hub/model/hubData";
 import "../features/hub/model/stripBackdrop";
 import {
+  NO_PROJECT,
   hubSurfaceOpen,
   monoTeamInView,
   monoTeamItem,
@@ -202,6 +203,8 @@ import {
   setHubSelection,
   setMonoChatOpener,
   setMonoTeamOpener,
+  showAppItem,
+  showProjectToday,
   useHubSelection,
   type CodingTeamTarget,
   type MonoTeamTarget,
@@ -5424,7 +5427,8 @@ function Workspace({
         }
       } else if (own) {
         const mono = findMono(monoId);
-        setHubSelection({ project: "today", item: monoTeamItem(monoId) });
+        // The Mono's own team opens over the project Ash was last in (a project is the unit of the hub, G1).
+        showAppItem(monoTeamItem(monoId));
         nameMonoTeam(own.folder, mono ? monoLook(mono).name : undefined);
         noteCodingTeamView(monoTeamItem(monoId), "lead");
         if (!sameProjectPath(projectCwdRef.current, own.folder)) {
@@ -7023,7 +7027,7 @@ function Workspace({
         return;
       }
       closeMonoView();
-      setHubSelection({ project: "today", item });
+      showAppItem(item);
       nameMonoTeam(team.folder, monoLook(mono).name);
       onSelectProject(team.folder);
     },
@@ -11831,7 +11835,7 @@ function Workspace({
     stop: (sessionId) => onStopFromUser(sessionId),
     showHub: (selection) => {
       // The coding team is the project's folder with its Sessions list, opened as Ash's click on it does.
-      if (selection.item === "coding-team" && selection.project !== "today") return openCodingTeam(selection.project);
+      if (selection.item === "coding-team" && selection.project !== NO_PROJECT) return openCodingTeam(selection.project);
       closeMonoView();
       setHubSelection(selection);
     },
@@ -15708,7 +15712,7 @@ function Workspace({
     setHubSelection({ project: hubSel.project, item: "inbox" });
   };
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === "today" ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -15832,7 +15836,7 @@ function Workspace({
           name: monoViewTeam.name,
           open: monoViewTeamOpen,
           onToggle: () => {
-            if (monoViewTeamOpen) setHubSelection({ project: "today", item: "inbox" });
+            if (monoViewTeamOpen) showProjectToday();
             else openMonoTeamView(monoViewMono.id, { owner: true });
           },
         }
@@ -16155,7 +16159,7 @@ function Workspace({
       onGoToFile={onGoToFile}
       searchActive={searchViewOpen}
       inboxActive={
-        hubShown && hubSel.project !== "today" && hubSel.item === "inbox"
+        hubShown && hubSel.project !== NO_PROJECT && hubSel.item === "inbox"
       }
       notesActive={notesViewOpen}
       automationsActive={automationsViewOpen && !pagesMode}

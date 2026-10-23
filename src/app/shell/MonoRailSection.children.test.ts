@@ -39,7 +39,7 @@ beforeEach(() => {
   resetSubChatFolds();
   resetStuckDismissals();
   resetMonoTeams();
-  setHubSelection({ project: "today", item: "inbox" });
+  setHubSelection({ project: "vg-game", item: "inbox" });
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -213,7 +213,7 @@ describe("Open team (the hub)", () => {
     expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
     expect(onOpen).not.toHaveBeenCalled();
     // A Mono's team in view: its row is the current one (no project is).
-    act(() => setHubSelection({ project: "today", item: `team:${alfred.id}` }));
+    act(() => setHubSelection({ project: "vg-game", item: `team:${alfred.id}` }));
     expect(container.querySelector(`[data-selected][data-mono-status]`)?.querySelector("[data-mono-primary-name]")?.textContent).toBe("Alfred");
     // The menu offers it as well.
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Alfred options"]')!.click());

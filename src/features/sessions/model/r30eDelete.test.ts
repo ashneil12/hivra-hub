@@ -27,13 +27,14 @@ describe("deleting the window's last tab", () => {
     createReplacement: replacement,
   };
 
-  it("says the window emptied, and the app lands on Today, not an empty New session", () => {
+  it("says the window emptied, and the app lands on home, not an empty New session", () => {
     const removal = removeSessionFromWorkspace(input);
     expect(removal.windowEmptied).toBe(true);
     const homeAfterRemoval = (lifecycle as Record<string, unknown>).homeAfterRemoval as
       | ((mode: "archive" | "delete", origin: "ui" | "cli", r: { windowEmptied: boolean }) => unknown)
       | undefined;
-    expect(homeAfterRemoval?.("delete", "ui", removal)).toEqual({ project: "today", item: "inbox" });
+    // Home picks a project (or shows the empty state when there are none); it is not an all-projects board.
+    expect(homeAfterRemoval?.("delete", "ui", removal)).toEqual({ project: "", item: "" });
     // An archive, or a CLI delete, is not Ash deleting the tab in front of him: no jump.
     expect(homeAfterRemoval?.("archive", "ui", removal)).toBeNull();
     expect(homeAfterRemoval?.("delete", "cli", removal)).toBeNull();

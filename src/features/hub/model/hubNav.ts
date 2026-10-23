@@ -1,10 +1,13 @@
 // Which project and which project item is shown. Persisted locally.
 import { useSyncExternalStore } from "react";
 
+/** No project chosen yet: the hub is the create-a-project empty state (HubSurface). A project is the unit of the hub. */
+export const NO_PROJECT = "";
+
 export type HubSelection = {
-  /** "today" = Today for all projects (top of the strip). */
+  /** The project id, or NO_PROJECT when none is chosen (first run, or the last one was removed). */
   project: string;
-  /** Item id inside the project; "inbox" = the project's own Today. */
+  /** Item id inside the project; "inbox" = the project's own Today, "" = nothing chosen. */
   item: string;
   /** Optional thing to scroll to and highlight, e.g. a chat message's refId. */
   focus?: string;
@@ -12,7 +15,7 @@ export type HubSelection = {
 
 const KEY = "monocode:hub-nav";
 const EVENT = "monocode:hub-nav-changed";
-const DEFAULT: HubSelection = { project: "today", item: "inbox" };
+const DEFAULT: HubSelection = { project: NO_PROJECT, item: "" };
 
 let cached: HubSelection | undefined;
 function read(): HubSelection {
@@ -20,6 +23,9 @@ function read(): HubSelection {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<HubSelection> | null;
     cached = raw && typeof raw.project === "string" && typeof raw.item === "string" ? { project: raw.project, item: raw.item } : DEFAULT;
+    // Before 23 Oct the top of the strip was "Today for all projects", stored as the project "today". There is no central
+    // area now: an old selection opens on the first project's Today, the same as a first launch with no project chosen.
+    if (cached.project === "today") cached = { project: NO_PROJECT, item: cached.item === "inbox" ? "" : cached.item };
   } catch {
     cached = DEFAULT;
   }
@@ -46,6 +52,22 @@ export function useHubSelection(): HubSelection {
 }
 
 /**
+ * One of the app's own views (Autopilot, New project, Restore) opens over the project Ash was last in: it is not a
+ * project's item, but leaving it comes back to that project, and quitting from it opens the app there again.
+ */
+export function showAppItem(item: string): void {
+  setHubSelection({ project: read().project, item });
+}
+
+/**
+ * Back to the hub: the project's own Today — the one given, else the last project Ash was in. With no project at all it
+ * opens the create-a-project empty state (HubSurface picks the first project once there is one).
+ */
+export function showProjectToday(projectId?: string): void {
+  setHubSelection({ project: projectId ?? read().project, item: "inbox" });
+}
+
+/**
  * A Mono's own team (monoTeams.ts) is the item `team:<mono id>`, with no project selected (Today's): it isn't a project,
  * so the strip highlights none and the Monos rail marks the Mono instead.
  */
@@ -60,10 +82,15 @@ export function monoTeamInView(sel: HubSelection): string | undefined {
   return sel.item.startsWith(MONO_TEAM_ITEM) ? sel.item.slice(MONO_TEAM_ITEM.length) || undefined : undefined;
 }
 
+/** True while one of the app's own views (hubNav.showAppItem) is open: it belongs to no project, so no project tile is lit. */
+export function appItemInView(sel: HubSelection): boolean {
+  return sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
+}
+
 /** True when a hub view (not Monocode's own workspace) fills the main area: a coding team or a Mono's team is a workspace. */
 export function hubSurfaceOpen(sel: HubSelection): boolean {
   if (monoTeamInView(sel)) return false;
-  return sel.project === "today" || sel.item !== "coding-team";
+  return sel.project === NO_PROJECT || sel.item !== "coding-team";
 }
 
 /**
@@ -104,7 +131,7 @@ export function setMonoTeamOpener(open: (monoId: string, target?: MonoTeamTarget
 
 export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
   if (monoTeamOpener) monoTeamOpener(monoId, target);
-  else setHubSelection({ project: "today", item: monoTeamItem(monoId) });
+  else showAppItem(monoTeamItem(monoId));
 }
 
 /**

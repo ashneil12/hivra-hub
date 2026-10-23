@@ -70,7 +70,8 @@ const rows = () => [...container.querySelectorAll("[data-hub-need]")].map((r) =>
 function mount(el: ReturnType<typeof createElement>) {
   act(() => root.render(el));
 }
-const surface = () => createElement(HubSurface, { selection: { project: "today", item: "inbox" } });
+// A project's own Today (G1): there is no board of all projects, so each test opens the project its rows live in.
+const surface = (project = "hivra") => createElement(HubSurface, { selection: { project, item: "inbox" } });
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -97,12 +98,15 @@ const button = (scope: string, label: string) =>
   [...container.querySelectorAll(`${scope} button`)].find((b) => b.textContent?.trim() === label) as HTMLButtonElement | undefined;
 
 describe("Later, Older, Looks right and the options sheet", () => {
-  it("Later is a quiet line that opens its rows; Older is collapsed, counted on its own and in no badge", async () => {
-    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
-    await until(() => rows().length >= 8, "needs");
-    // Older (3): one quiet line at the bottom of Today, shut
+  it("a project's Today holds only its own asks; Later is a quiet line that opens its rows; Older is collapsed, counted on its own and in no badge", async () => {
+    mount(createElement("div", null, createElement(ProjectStrip, { selection: { project: "hivra", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined }), surface()));
+    await until(() => rows().length === 2, "needs");
+    // Hivra's Today holds Hivra's asks: its headline question and its given-up job, never another project's.
+    expect([...rows()].sort()).toEqual(["j:j_sender", "q3"]);
+    expect(text()).not.toContain("Example: rework the app's notch pet");
+    // Older (2): one quiet line at the bottom of Today, shut
     const older = container.querySelector("[data-hub-older] > button")!;
-    expect(older.textContent).toBe("Older questions (3)");
+    expect(older.textContent).toBe("Older questions (2)");
     expect(older.getAttribute("aria-expanded")).toBe("false");
     expect(text()).not.toContain("Recovered from an old chat");
     // not in any badge: Hivra has 2 real Needs (the headline and the given-up job), 2 old ones
@@ -111,9 +115,11 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(badge("EXO")).toBe("2");
     act(() => (older as HTMLElement).click());
     expect(text()).toContain("Example: which Hivra folder is the real one?");
-    expect([...container.querySelectorAll("[data-hub-older] h2")].map((h) => h.textContent)).toEqual(["Hivra", "EXO"]);
+    expect(text()).not.toContain("Example: is the second boss still wanted?"); // EXO's old question stays on EXO's Today
     expect(badge("Hivra")).toBe("2"); // opening it changes no count
-    // Later (the harness has one past five): a line that opens
+    // Later (the hub has one filed by Ash OS): a line that opens, on the hub's Today, not on Hivra's
+    mount(surface("hub"));
+    await until(() => container.querySelector("[data-hub-later] > button"), "Later");
     const later = container.querySelector("[data-hub-later] > button")!;
     expect(later.textContent).toBe("1 more under Later");
     act(() => (later as HTMLElement).click());
@@ -121,7 +127,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
   });
 
   it("a Looks-right row shows Ash OS's own action, Looks right, which accepts it and ticks it off", async () => {
-    mount(surface());
+    mount(surface("nibbii"));
     await until(() => container.querySelector('[data-hub-need="s:a_cannon"]'), "looks-right row");
     const row = '[data-hub-need="s:a_cannon"]';
     expect(container.querySelectorAll(`${row} button`).length).toBe(1);
@@ -133,7 +139,7 @@ describe("Later, Older, Looks right and the options sheet", () => {
   });
 
   it("an older Looks-right row (action Open) keeps its one action, Seen", async () => {
-    mount(surface());
+    mount(surface("nibbii"));
     await until(() => container.querySelector('[data-hub-need="s:a_legacy"]'), "legacy row");
     const row = '[data-hub-need="s:a_legacy"]';
     expect([...container.querySelectorAll(`${row} button`)].map((b) => b.textContent)).toEqual(["Seen"]);

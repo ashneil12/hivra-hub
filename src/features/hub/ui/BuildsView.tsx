@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowLeft, Play } from "../../../shared/ui/icons";
-import { addNote, markPlayed, firstBuildExpected, getBuild, listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
+import { addBuild, addNote, markPlayed, getBuild, listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
 import { hubData } from "../model/hubData";
 import type { Build } from "../model/types";
 import { StatusMark } from "./StatusMark";
@@ -61,14 +61,58 @@ export function BuildsView({ projectId, title }: { projectId: string; title: str
           <BuildList builds={builds} onOpen={setOpenId} />
         ) : (
           <div className="grid h-full place-items-center px-8" data-hub-builds-empty>
-            <div className="flex max-w-[420px] flex-col items-center gap-2 text-center">
+            <div className="flex w-full max-w-[420px] flex-col items-center gap-2 text-center">
               <p className="text-[13px] text-content">No builds of {projectName} yet.</p>
-              <p className="text-[13px] leading-5 text-content/60">Example: the first one should turn up {firstBuildExpected(projectId)}</p>
-              <p className="text-[13px] leading-5 text-content/60">It will appear here with a Play button, and you can add playtest notes to it.</p>
+              <p className="text-[13px] leading-5 text-content/60">A build shows up here with a Play button, and you can add playtest notes to it.</p>
+              <AddBuild projectId={projectId} />
             </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** The section's own action when it is empty: record a build Ash already has (its version and what changed). */
+function AddBuild({ projectId }: { projectId: string }) {
+  const [version, setVersion] = useState("");
+  const [title, setTitle] = useState("");
+  const add = () => {
+    if (!addBuild(projectId, version, title)) return;
+    setVersion("");
+    setTitle("");
+  };
+  return (
+    <div className="flex w-full flex-col gap-2 pt-2" data-hub-add-build>
+      <div className="flex gap-2">
+        <input
+          data-hub-build-version
+          value={version}
+          onChange={(e) => setVersion(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          aria-label="Build version"
+          placeholder="0.16"
+          className="w-20 shrink-0 rounded-md bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none placeholder:text-content/45"
+        />
+        <input
+          data-hub-build-title
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          aria-label="What changed in this build"
+          placeholder="What changed"
+          className="min-w-0 flex-1 rounded-md bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none placeholder:text-content/45"
+        />
+      </div>
+      <button
+        type="button"
+        data-hub-add-build-button
+        disabled={!version.trim() || !title.trim()}
+        onClick={add}
+        className="self-start rounded-md bg-content/12 px-3 py-1.5 text-[13px] text-content hover:bg-content/16 disabled:opacity-50"
+      >
+        Add build
+      </button>
     </div>
   );
 }
