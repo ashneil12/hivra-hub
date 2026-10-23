@@ -250,7 +250,11 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   };
   // Chief of Staff's conversation carries every earlier phase's tag: the room's rules still come first.
   const cosTags = ["tree-cos", "durable-cos", "flow-cos"];
-  assert.equal(step(`${context}${turn("Chief of Staff", "Ash just wrote. You host this room", ash1)}`, cosTags), "room-cos-answer-1");
+  // roomTurns.ts writes "Ash just wrote" through forUser, which renames the user when the install has no Ash team pack
+  // (the bench's throwaway HOME says "The user just wrote"). The rule matches the hosting sentence, so either name works.
+  const hosting = (who) => `${who} just wrote. You host this room, so you answer first, now.`;
+  assert.equal(step(`${context}${turn("Chief of Staff", hosting("The user"), ash1)}`, cosTags), "room-cos-answer-1");
+  assert.equal(pick(`${context}${turn("Chief of Staff", hosting("Ash"), ash1)}`, cosTags), "room-cos-answer-1", "Ash's own install reads the same rule");
   const cos1 = "Chief of Staff: Heard. PM, post round 1 for review.";
   assert.equal(step(turn("Projects Manager", "Chief of Staff addressed you in the message marked >> below.", `${ash1}\n\n>> ${cos1}`)), "room-pm-round");
   assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n>> ${round}`)), "room-frank-flag");
@@ -264,7 +268,7 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   assert.equal(step(`${context}${ROOM_BUSY} run r1: work on the label copy.`), "room-frank-busy");
   assert.equal(rules.find((rule) => rule.name === "room-frank-busy").steerable, true);
   const ash2 = `Ash: ${ROOM_ASH(2)}: is the label in?`;
-  assert.equal(step(turn("Chief of Staff", "Ash just wrote. You host this room", `${ash1}\n\n${ash2}`), cosTags), "room-cos-answer-2");
+  assert.equal(step(turn("Chief of Staff", hosting("The user"), `${ash1}\n\n${ash2}`), cosTags), "room-cos-answer-2");
   const dm = rules.find((rule) => rule.name === "room-cos-answer-2").steps.find((s) => s.app === "monos.message").input;
   assert.equal(dm.to, "alfred");
   assert.ok(dm.text.startsWith(ROOM_DM));

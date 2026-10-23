@@ -182,6 +182,15 @@ export const goalFor = (worker, runId) => `${worker.replace("-WORKER", "")} run 
 /** An app notification as the turn's own message: first in the prompt, or right after the Mono's context block. */
 export const said = (prefix) => `(?:^|</monocode_context>\\s*)${prefix}`;
 
+/**
+ * A delegated worker's report as the app requires it (A7): a report without the self-review section (workerReview.ts)
+ * is bounced and the task never records done. The fake is scripted, so its worker writes that section the way a real
+ * one would. Only a `tasks.delegate` worker needs it — a Lead's, a Mono's or a chat's own turn is not review-gated —
+ * and never the Lead's own report, which the walk compares word for word.
+ */
+export const reviewed = (report) =>
+  `${report}\n\n## Self-review\nChecked: the work the brief asked for, run end to end\nHow: ran it in the bench project and read the result back\nUnsure: nothing`;
+
 /** The fake Claude's rules for the walk. `failGate` plants the failure the negative control must catch. */
 export function scenario({ runId, failGate = false }) {
   const worker = {
@@ -312,7 +321,7 @@ export function scenario({ runId, failGate = false }) {
             mark: "asker-answered",
           },
         },
-        { say: "ASKER-DONE: going with {{answer}}." },
+        { say: reviewed("ASKER-DONE: going with {{answer}}.") },
       ],
     },
     {
@@ -474,14 +483,14 @@ export function scenario({ runId, failGate = false }) {
       match: brief(FLOW_API),
       setTag: "flow-api",
       times: 1,
-      steps: [{ say: "On the API." }, { mark: "flow-api-started" }, { waitFile: "flow-api-go", timeoutMs: 900_000 }, { say: `FLOW-API-DONE run ${runId}` }],
+      steps: [{ say: "On the API." }, { mark: "flow-api-started" }, { waitFile: "flow-api-go", timeoutMs: 900_000 }, { say: reviewed(`FLOW-API-DONE run ${runId}`) }],
     },
     {
       name: "flow-ui",
       match: brief(FLOW_UI),
       setTag: "flow-ui",
       times: 1,
-      steps: [{ say: "On the UI." }, { mark: "flow-ui-started" }, { waitFile: "flow-ui-go", timeoutMs: 900_000 }, { say: `FLOW-UI-DONE run ${runId}` }],
+      steps: [{ say: "On the UI." }, { mark: "flow-ui-started" }, { waitFile: "flow-ui-go", timeoutMs: 900_000 }, { say: reviewed(`FLOW-UI-DONE run ${runId}`) }],
     },
     {
       name: "flow-ash-1",
@@ -562,10 +571,13 @@ export function scenario({ runId, failGate = false }) {
   ];
   // The room. First of all: a room turn's prompt quotes the room's transcript, so only its own opening may match, and
   // the last rule keeps any other room turn quiet (a room prompt no rule matched would otherwise be posted).
+  // Never match the user's name: roomTurns.ts writes "Ash just wrote" through forUser, which renames the user on an
+  // install without his team, so under the bench's throwaway HOME it reads "The user just wrote". The hosting sentence
+  // after it is a plain literal and survives either way.
   const room = [
     {
       name: "room-cos-answer-2",
-      match: `${roomTurn("Chief of Staff")}[\\s\\S]*Ash just wrote[\\s\\S]*${ROOM_ASH(2)}`,
+      match: `${roomTurn("Chief of Staff")}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(2)}`,
       times: 1,
       steps: [
         { app: "monos.message", input: { to: "alfred", text: `${ROOM_DM} run ${runId}: keep the label rule in mind.` }, save: "room-dm" },
@@ -575,7 +587,7 @@ export function scenario({ runId, failGate = false }) {
     },
     {
       name: "room-cos-answer-1",
-      match: `${roomTurn("Chief of Staff")}[\\s\\S]*Ash just wrote[\\s\\S]*${ROOM_ASH(1)}`,
+      match: `${roomTurn("Chief of Staff")}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(1)}`,
       times: 1,
       steps: [{ mark: "room-cos-answered" }, { say: "Heard. PM, post round 1 for review." }],
     },
@@ -637,7 +649,7 @@ export function scenario({ runId, failGate = false }) {
       match: brief(CT_WORKER),
       setTag: "ct-worker",
       times: 1,
-      steps: [{ mark: "ct-worker-started" }, { say: `CT-WORKER-DONE run ${runId}: the widget is fine.` }],
+      steps: [{ mark: "ct-worker-started" }, { say: reviewed(`CT-WORKER-DONE run ${runId}: the widget is fine.`) }],
     },
     {
       name: "ct-report",
@@ -680,7 +692,7 @@ export function scenario({ runId, failGate = false }) {
       name: "mt-lead-worker",
       match: brief(MT_LEAD_WORKER),
       times: 1,
-      steps: [{ mark: "mt-lead-worker-started" }, { waitFile: "mt-lead-worker-go", timeoutMs: 900_000 }, { say: `MT-LEAD-WORKER-DONE run ${runId}: copy fixed.` }],
+      steps: [{ mark: "mt-lead-worker-started" }, { waitFile: "mt-lead-worker-go", timeoutMs: 900_000 }, { say: reviewed(`MT-LEAD-WORKER-DONE run ${runId}: copy fixed.`) }],
     },
     {
       name: "mt-lead-report",
@@ -694,7 +706,7 @@ export function scenario({ runId, failGate = false }) {
       name: "mt-own",
       match: brief(MT_OWN),
       times: 1,
-      steps: [{ mark: "mt-own-started" }, { waitFile: "mt-own-go", timeoutMs: 900_000 }, { say: `MT-OWN-DONE run ${runId}: three examples found.` }],
+      steps: [{ mark: "mt-own-started" }, { waitFile: "mt-own-go", timeoutMs: 900_000 }, { say: reviewed(`MT-OWN-DONE run ${runId}: three examples found.`) }],
     },
     { name: "mt-mono-own-report", tag: "mt-mono", match: reportWith("MT-OWN-DONE"), times: 1, steps: [{ mark: "mt-got-own-report" }, { say: "The examples are back." }] },
     { name: "mt-mono-lead-report", tag: "mt-mono", match: reportWith("MT-LEAD-REPORT"), times: 1, steps: [{ mark: "mt-got-lead-report" }, { say: "The copy is fixed, noted." }] },
@@ -707,8 +719,11 @@ export function scenario({ runId, failGate = false }) {
     ...flow,
     ...durable,
     ...tree,
-    // The Lead after its transcript was lost: a fresh conversation whose first prompt carries the chat's brief.
-    { name: "lead-recovered", match: "<chat_brief>", setTag: "lead", steps: [{ mark: "lead-recovered" }, { waitFile: "never" }] },
+    // The Lead after its transcript was lost: a fresh conversation whose first prompt carries the chat's brief. Its own
+    // tag, so a resume here (phase 6 kills it again and again) is told apart from a resumed kickoff (phase 4 above).
+    { name: "lead-recovered", match: "<chat_brief>", setTag: "lead-lost", steps: [{ mark: "lead-recovered" }, { waitFile: "never" }] },
+    // A resume of the recovered turn stays in flight: phase 6 has to cut it under way, resume after resume, to see the cap.
+    { name: "lead-lost-resume", tag: "lead-lost", match: CONTINUE, steps: [{ mark: "lead-lost-resumed" }, { waitFile: "never" }] },
     ...(failGate
       ? []
       : [
@@ -719,7 +734,10 @@ export function scenario({ runId, failGate = false }) {
             steps: [{ mark: "worker-resumed" }, { say: "WORKER-DONE" }],
           },
         ]),
-    { name: "lead-resume", tag: "lead", match: CONTINUE, steps: [{ waitFile: "never" }] },
+    // The kickoff turn can be cut before its last step and after the worker's brief went out (the kill lands between
+    // `lead-queued` and the Lead's final line). The resumed turn finishes the kickoff and ends, so the worker's report
+    // queued behind it is flushed into a turn of its own; hanging here would wedge the very report phase 4 waits for.
+    { name: "lead-resume", tag: "lead", match: CONTINUE, steps: [{ mark: "lead-resumed" }, { say: "Started it." }] },
     {
       name: "lead-report",
       tag: "lead",
@@ -1406,7 +1424,8 @@ async function main() {
         );
 
       // 6. Killed under the Lead's resumed turn again and again: three resumes, then Needs you.
-      const leadResumes = () => prompts().filter((entry) => entry.rule === "lead-recovered" || entry.rule === "lead-resume");
+      const leadResumes = () =>
+        prompts().filter((entry) => entry.rule === "lead-recovered" || entry.rule === "lead-lost-resume");
       let capped = Boolean(recovered);
       for (let resume = 2; capped && resume <= MAX_RESUMES; resume += 1) {
         const counted = await until(async () => {
@@ -2393,6 +2412,12 @@ async function main() {
         return {};
       }
     })();
+    // The hub hands Claude one comma-joined --allowedTools value (mcp__monocode__*,Read(<hub-docs>/**)), not a bare
+    // element, so the delegate tool is looked for inside each argument as well as across them.
+    const ctAllowed = ctArgs
+      .filter((arg) => typeof arg === "string")
+      .flatMap((arg) => arg.split(","))
+      .map((tool) => tool.trim());
     const ctFirstPrompt = prompts().find((entry) => entry.rule === "ct-kickoff")?.prompt ?? "";
     // Vanilla Claude Code plus the hub's note (Ash, 21 Oct): the note rides on --append-system-prompt, never in the message.
     const ctAppend = (() => {
@@ -2406,8 +2431,12 @@ async function main() {
       chat: ctChatRow,
       child: ctChildRow,
       chatIsMono: ctMonoBlocks > 0 || !!ctRow?.owner_mono,
-      delegateTool: !!ctMcp.monocode && ctArgs.includes("mcp__monocode__*"),
-      note: ["running inside MonoCode Hub", "coding team", "delegate_task", "<project_memory>"].filter((part) => ctAppend.includes(part)),
+      delegateTool: !!ctMcp.monocode && ctAllowed.includes("mcp__monocode__*"),
+      // Alfred's hub-note.md word for word (f43e07bc, Ash 21 Oct) names no tools; what it says about handing work on is
+      // "hand work to another Mono", and the chat's own line says it is in the project's coding team.
+      note: ["running inside MonoCode Hub", "coding team", "hand work to another Mono", "<project_memory>"].filter((part) =>
+        ctAppend.includes(part),
+      ),
       noteBytes: Buffer.byteLength(ctAppend),
       systemPromptReplaced: ctArgs.includes("--system-prompt"),
       messageClean: !!ctFirstPrompt && !ctFirstPrompt.includes("<monocode_context>"),

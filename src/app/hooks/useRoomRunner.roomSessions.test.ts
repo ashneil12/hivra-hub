@@ -146,6 +146,41 @@ it("a deleted room conversation's text doesn't reach the next room prompt", asyn
   expect(sessionsRef.current.some((s) => s.blocks.some((x) => x.text.includes(SECRET)))).toBe(false);
 });
 
+// Bench run f4dc: with one session per room conversation, the room judged only the room's own session, so a Mono busy in
+// its 1:1 chat got a fresh turn in the room beside the work. docs/leadership/ROOM.md: it takes the wake into its work.
+it("a Mono busy in its own chat takes the room's wake there, not a turn in the room's session", async () => {
+  const { chat, mono, room, sessionsRef, submitted } = await setup();
+  sessionsRef.current = sessionsRef.current.map((s) => (s.id === "own-frank" ? { ...s, busy: true } : s));
+  const a = chat.startConversation(room.id, "frank, is the label in?");
+  // Not awaited: the room stays busy while the wake waits in frank's own work, which is the point of the test.
+  void chat.requestReply(room.id, a);
+  const own = () => sessionsRef.current.find((s) => s.id === "own-frank")!;
+  await vi.waitFor(() => expect(own().queuedMessages?.length).toBe(1));
+  const wake = own().queuedMessages![0];
+  expect(wake.text).toContain("You are in the middle of your own work");
+  expect(wake.text).toContain(`answer in the room with room_post (room "${room.id}")`);
+  expect(wake.monoNote).toMatchObject({ kind: "room", ref: room.id });
+  // Nothing came to the room's session for this conversation: it was never made, and frank's chat was never submitted to.
+  expect(mono.monoRoomSession("frank", room.id, a)).toBeUndefined();
+  expect(submitted.filter((s) => s.sessionId === "own-frank")).toEqual([]);
+  // Once frank's own work has the wake answered, the room carries on.
+  sessionsRef.current = sessionsRef.current.map((s) =>
+    s.id === "own-frank"
+      ? {
+          ...s,
+          busy: false,
+          queuedMessages: [],
+          blocks: [
+            ...s.blocks,
+            { id: "waker", role: "user", text: wake.text, internal: true, appRequestId: wake.id } as Block,
+            { id: "wakea", role: "assistant", text: "The label is in." } as Block,
+          ],
+        }
+      : s,
+  );
+  await chat.roomIdle(room.id);
+});
+
 it("deleting a whole room lets go of every conversation's sessions", async () => {
   const { chat, mono, sessionsRef, dropped } = await setup();
   const other = chat.createChat("hub", "Pricing", ["chief-of-staff"]);

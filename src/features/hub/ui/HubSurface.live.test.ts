@@ -97,8 +97,10 @@ describe("Today, live", () => {
   it("a project's Today shows its own Since and Needs, one action each, and what is under its Later", async () => {
     mount(surface("vg-game"));
     await until(() => rows().length === 2, "needs");
-    await until(() => text().includes("Since"), "since label");
-    expect(text()).toMatch(/Since you were last here · since (yesterday|\d|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/);
+    // The heading draws before the day it counts from does, so the wait is for the whole label, not just "Since".
+    const since = /Since you were last here · since (yesterday|\d|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/;
+    await until(() => since.test(text()), "since label");
+    expect(text()).toMatch(since);
     expect(text()).toContain("Example: the new level is in and working. Two things need your hands.");
     expect(rows().sort()).toEqual(["q1", "q2"]);
     for (const row of container.querySelectorAll("[data-hub-need]")) expect(row.querySelectorAll("button").length).toBe(1);

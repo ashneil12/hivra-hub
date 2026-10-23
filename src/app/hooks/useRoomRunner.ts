@@ -18,7 +18,14 @@ import type { ControlOutcome } from "../../features/orchestration/model/orchestr
 import type { Attachment, Block, Session } from "../../features/sessions/model/session";
 import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { monoTakesRoomTurnNow, queueMonoNote } from "../../features/monos/model/monoMessaging";
-import { forgetMonoRoomSession, monoForSession, monoLook, monoRoomSessionsOf } from "../../features/monos/model/mono";
+import {
+  findMono,
+  forgetMonoRoomSession,
+  monoForSession,
+  monoLook,
+  monoRoomSession,
+  monoRoomSessionsOf,
+} from "../../features/monos/model/mono";
 import {
   postBack,
   roomTurnOf,
@@ -83,6 +90,16 @@ function change(host: RoomRunnerHost, sessionId: string, update: (session: Sessi
 function resetsAt(session: Session): string {
   const at = session.usageLimit?.resetsAt;
   return at ? ` until ${new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
+}
+
+/**
+ * The Mono's own 1:1 chat, unless that is the session the room turn is about to use: r52 gives a Mono one session per
+ * room conversation, so a Mono working in its own chat is not busy in the room's session, and the wake has to find it.
+ */
+function ownChatSession(host: RoomRunnerHost, monoId: string, roomSessionId: string | undefined): Session | undefined {
+  const id = findMono(monoId)?.sessionId;
+  if (!id || id === roomSessionId) return undefined;
+  return host.sessionsRef.current.find((s) => s.id === id);
 }
 
 /** The Mono's last words after the user block carrying `requestId` (its answer to a hidden turn). */
@@ -194,19 +211,35 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
     const runner: GroupChatRunner = {
       async run(request): Promise<RoomTurnOutcome> {
         const h = latest.current;
+        const mono = findMono(request.monoId);
+        const name = mono ? monoLook(mono).name : request.monoId;
+        const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
+        const attachments: Attachment[] = (request.attachments ?? []).map((file) => ({ ...file }));
+        // A Mono working in its own chat (work it delegated, a report turn) takes the room's wake into that work, steered
+        // into it or sent behind it, as docs/leadership/ROOM.md says. Its room session for this conversation is a
+        // different chat (r52), so judging only that one ran a second turn beside the work (bench run f4dc). Work in
+        // this conversation's own session still wins, because that is where the wake belongs.
+        const roomId = monoRoomSession(request.monoId, request.chatId, request.convId);
+        const roomBusy = !!roomId && !!h.sessionsRef.current.find((s) => s.id === roomId)?.busy;
+        const own = roomBusy ? undefined : ownChatSession(h, request.monoId, roomId);
+        if (own?.busy) {
+          const ownMemory = await roomMemory(own, request.projectId).catch(() => undefined);
+          const queued = wake(own, request.wakeId, ownMemory ? withRoomMemory(request.wakePrompt, ownMemory.block) : request.wakePrompt, note, attachments);
+          if (ownMemory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && ownMemory.delivered());
+          return queued;
+        }
+        // Its own chat is the only session this Mono has in this conversation, so a limit there means there is nothing
+        // to send to; with one of the conversation's own it is that session's limit that decides, below.
+        if (own?.usageLimit && !roomId) throw new Error(`${name} is out of its usage limit${resetsAt(own)}. Your message is saved.`);
         const session = h.openRoom ? await h.openRoom(request.monoId, request.chatId, request.convId) : await h.openMono(request.monoId);
         if (!session) throw new Error("This Mono is no longer available. Add another Mono to the chat.");
         const current = h.sessionsRef.current.find((s) => s.id === session.id) ?? session;
-        const mono = monoForSession(session.id);
-        const name = mono ? monoLook(mono).name : request.monoId;
-        const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
         if (current.usageLimit && !current.busy)
           throw new Error(`${name} is out of its usage limit${resetsAt(current)}. Your message is saved.`);
         // The room's project memory, ahead of the conversation, when this conversation of the seat's chat hasn't had it.
         const memory = await roomMemory(current, request.projectId).catch(() => undefined);
         const prompt = memory ? withRoomMemory(request.prompt, memory.block) : request.prompt;
         const wakePrompt = memory ? withRoomMemory(request.wakePrompt, memory.block) : request.wakePrompt;
-        const attachments: Attachment[] = (request.attachments ?? []).map((file) => ({ ...file }));
         if (monoTakesRoomTurnNow(current)) {
           const reply = await new Promise<string | undefined>((resolve, reject) => {
             const timer = window.setTimeout(
