@@ -54,6 +54,8 @@ export type BotChange = {
   details?: string[];
   /** Only a note of something a bot left alone on purpose: nothing changed, so there is no Undo. */
   note?: boolean;
+  /** The app itself did this (harness self-repair): it belongs to no Mono, so it has no Ask and no Mono to name. */
+  system?: boolean;
   /** What the row reads once undone, as one natural sentence (e.g. "Undone: Hivra lead's soul is back to how it was."). */
   undoneText?: string;
   /** What the Undo button says when "Undo" isn't the plain word for it (a put-back soul's "Keep that change"). */
@@ -297,14 +299,17 @@ export function setBotFiles(next: BotFiles): void {
 const KEY = "monocode:hub-bot-changes";
 function loadReal(): BotChange[] {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && ((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || c.write || c.source || (c.note && c.monoId)));
+    return (JSON.parse(localStorage.getItem(KEY) ?? "[]") as BotChange[]).filter((c) => c && kept(c));
   } catch {
     return [];
   }
 }
+/** The rows worth keeping across restarts: a real change with something to put back, or a note's own words. */
+const kept = (c: BotChange) =>
+  !!((c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || c.write || c.source || (c.note && (c.monoId || c.system)));
 function saveReal(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.filter((c) => (c.monoId && c.file) || c.retired || c.pageId || c.hubChangeId || c.pin || c.flow || c.made || c.madeTeam || c.write || c.source || (c.note && c.monoId))));
+    localStorage.setItem(KEY, JSON.stringify(list.filter(kept)));
   } catch {
     /* best effort */
   }
@@ -367,7 +372,7 @@ export function recordBotChange(change: Omit<BotChange, "undone" | "problem"> & 
 }
 
 /** Something a bot left alone on purpose, said in plain words: a row with no Undo (there is nothing to put back). */
-export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now" | "after" | "details" | "monoId" | "ask">): void {
+export function recordBotNote(note: Pick<BotChange, "id" | "bot" | "line" | "now" | "after" | "details" | "monoId" | "ask" | "system">): void {
   list = [{ ...note, day: "Today", note: true }, ...list.filter((c) => c.id !== note.id)];
   saveReal();
   changed();

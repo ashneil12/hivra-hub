@@ -44,6 +44,7 @@ import { useProposalsVersion } from "../model/proposals";
 import { listBuilds, useHubBuildsVersion } from "../model/hubBuilds";
 import { ProjectPagesView } from "./ProjectPagesView";
 import { ShipNotice } from "./ShipNotice";
+import { HarnessCareNotice } from "./HarnessCareNotice";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 
 
@@ -125,7 +126,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
   const data = hubData();
   const connection = data.connection();
   // The update card shows even when Today can't load (r28: otherwise it sits under the Since paragraph, never above it).
-  const shipAlone = projectId ? null : <ShipNotice />;
+  const shipAlone = projectId ? null : <><ShipNotice /><HarnessCareNotice /></>;
   if (connection.status === "unreachable") return <>{shipAlone}<AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} /></>;
   // Reading Ash OS for the first time: say nothing rather than flash "No projects yet".
   if (connection.status === "loading" && !data.listProjects().length) return <div data-hub-loading />;
@@ -261,6 +262,7 @@ function TodayBody({ projectId }: { projectId: string | undefined }) {
       {sinceSection ? sinceBlock(sinceSection) : null}
       {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
       {!projectId ? <ShipNotice inBody /> : null}
+      {!projectId ? <HarnessCareNotice inBody /> : null}
       {!projectId ? <HomeTools /> : null}
       {!projectId ? <section aria-label="Projects" className="grid gap-2 sm:grid-cols-2" data-hub-home-projects>
         {projects.map((p) => <div key={p.id} className="rounded-lg border border-stroke px-3 py-2.5">

@@ -109,7 +109,36 @@ class H(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         self.reply(200, {'ok': True, 'result': hub.wait_events(after, float(one('timeout', 0) or 0))})
+    def proof_act(self):
+        """Proof only, before the token check: Ash's own side of a working day on this throwaway ledger — a message
+        captured, its chat writing his asks down, a done claim — through the real AshOS methods. The app's routes below
+        stay behind the token."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or b'{}')
+            action, value = body.get('action'), body.get('value') or {}
+            if action == 'dump':
+                result = ash.dump(value.get('text') or '', source=value.get('source') or 'proof',
+                                  session=value.get('session'), project=value.get('project'))
+            elif action == 'record':
+                result = ash.record(dump_id=value.get('dump_id'), text=value.get('text'), session=value.get('session'),
+                                    asks=value.get('asks'), none=bool(value.get('none')))
+            elif action == 'asks':
+                result = ash.asks(project=value.get('project'), status=value.get('status'), kind=value.get('kind'),
+                                  limit=int(value.get('limit') or 60), open_only=bool(value.get('open_only')))
+            elif action == 'update-ask':
+                result = ash.update_ask(value.get('ask_id'), status=value.get('status'), note=value.get('note'),
+                                        project=value.get('project'), title=value.get('title'),
+                                        outcome=value.get('outcome'), evidence=value.get('evidence'),
+                                        critical=value.get('critical'), session=value.get('session'))
+            else:
+                raise ValueError(f'Unknown proof action {action!r}')
+            self.reply(200, {'ok': True, 'result': result})
+        except Exception as e:
+            self.reply(200, {'ok': False, 'error': str(e)})
+
     def do_POST(self):
+        if self.path == '/__proof/act':
+            return self.proof_act()
         if not self.authed():
             return self.reply(401, {'ok': False, 'error': 'Studio authorization required'})
         try:

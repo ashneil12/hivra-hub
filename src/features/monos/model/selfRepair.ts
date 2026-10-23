@@ -3,10 +3,12 @@
 //
 // A worker that crashed (a passing provider fault or its process dying, its Lead not yet told) or hung (the stall
 // watcher marked it quiet while busy, or idle without reporting back) is retried with backoff: 1, 5, then 15 minutes
-// after it went wrong. A hung busy worker is nudged first and restarted after; the rest are continued. After three tries
-// it is left stuck ("Crashed 4 times, retries ran out") and its Lead is told to handle it. A fault only starts over once
-// the worker has run cleanly for half an hour, so a crash loop can't be retried for ever. A question, a usage limit, a
-// billing or sign-in refusal, and anything Ash stopped are never retried. It reads no folders and runs no model.
+// after it went wrong. A hung busy worker is nudged first and restarted after; the rest are continued. Since 23 Oct the
+// same backoff covers a worker the progress judge (workerProgress.ts) found quiet, looping or with no work after an hour;
+// work that landed in its folder without it is reported to its owner once, never retried. After three tries it is left
+// stuck ("Crashed 4 times, retries ran out") and its Lead is told to handle it. A fault only starts over once the worker
+// has run cleanly for half an hour, so a crash loop can't be retried for ever. A question, a usage limit, a billing or
+// sign-in refusal, and anything Ash stopped are never retried. It reads no folders and runs no model.
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
@@ -14,6 +16,7 @@ import type { Delegation, DelegationTracker } from "./delegations";
 import type { Stall } from "./workerStall";
 import { forUser } from "../../hub/model/userName";
 import { stuckOwner } from "./workerStuck";
+import { noProgressReason, stalledVerdict, type WorkerJudgement } from "./workerProgress";
 
 const MIN = 60_000;
 /** How long a repaired worker must run cleanly before a later fault gets fresh tries. */
@@ -34,13 +37,20 @@ export type RepairHost = {
   stopTurn(row: Delegation): Promise<boolean>;
   /** Its unread failure report won't be needed (it is being retried): out of the Lead's queue. */
   dropReport?(row: Delegation): void;
+  /**
+   * What the app read about a worker that has been running over an hour (workerProgress.ts): moving, quiet, looping,
+   * done elsewhere or no work yet. The host decides when a row is old enough to read, and may cache the reading.
+   */
+  reading?(row: Delegation): Promise<WorkerJudgement | undefined>;
   now?(): number;
   backoffMs?: readonly number[];
 };
 
-type Repair = { episode: string; tries: number; nextAt: number; gaveUp: boolean; okSince?: number; restarting?: boolean; verdict?: Stall };
+type Repair = { episode: string; tries: number; nextAt: number; gaveUp: boolean; okSince?: number; restarting?: boolean; verdict?: Stall; told?: boolean };
 
 const NUDGE = "Check-in from the app: there's been no output for a while. If a command hangs, stop it and carry on, and say where you are.";
+const PROGRESS_NUDGE =
+  "Check-in from the app: an hour in, this work isn't moving — no commits, changed files or passing test runs. Stop any step that keeps failing or repeating, say in one line where you are and what's blocking you, then take a different next step.";
 const titleOf = (row: Delegation) => (row.title || "Delegated work").trim();
 const short = (text: string, max = 100) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 const lowerFirst = (text: string) => (text[0] && text[1] && text[1] === text[1].toLowerCase() ? text[0].toLowerCase() + text.slice(1) : text);
@@ -138,6 +148,7 @@ export class SelfRepair {
     let episode: string | undefined;
     let wentWrongAt = now;
     let how: "continue" | "nudge" = "continue";
+    let progress: WorkerJudgement | undefined;
     if (row.state === "failed" && repairableFailure(row)) {
       episode = `failed:${row.errorClass ?? ""}:${row.error ?? ""}`;
       wentWrongAt = row.settledAt ?? row.updatedAt;
@@ -145,6 +156,18 @@ export class SelfRepair {
       episode = `stall:${row.stallKind}`;
       wentWrongAt = row.stalledAt ?? row.updatedAt;
       how = row.stallKind === "quiet" && chat.busy ? "nudge" : "continue";
+    } else if (row.state === "running" && !chat.pendingQuestion && !chat.usageLimit && this.host.reading) {
+      // Running past the hour with no stall: ask what the app read about it (workerProgress.ts). Only a verdict that
+      // needs a hand starts an episode; a worker that is moving keeps the clean-run reset below.
+      progress = await this.host.reading(row).catch(() => undefined);
+      if (progress && progress.verdict === "done-elsewhere") {
+        episode = "progress:done-elsewhere";
+        wentWrongAt = row.createdAt;
+      } else if (progress && stalledVerdict(progress.verdict)) {
+        episode = `progress:${progress.verdict}`;
+        wentWrongAt = row.createdAt;
+        how = chat.busy ? "nudge" : "continue";
+      }
     }
     if (!episode) {
       // Working again: after half an hour of it, a later fault starts over (a crash loop never does).
@@ -156,6 +179,14 @@ export class SelfRepair {
     }
     const r = existing ?? { episode, tries: 0, nextAt: wentWrongAt + backoff[0], gaveUp: false };
     this.repairs.set(row.id, r);
+    if (episode === "progress:done-elsewhere") {
+      // Its folder moved without it: nothing to retry. Tell the owner once so it can stop it or find it the right work.
+      if (!r.told) {
+        r.told = true;
+        await this.host.tellLead(row, forUser`"${titleOf(row)}": ${progress!.line} ${progress!.advice}`);
+      }
+      return;
+    }
     if (r.episode !== episode) {
       // A new fault in the same run: it waits its own backoff, and the tries carry on counting.
       r.episode = episode;
@@ -165,9 +196,9 @@ export class SelfRepair {
     if (r.gaveUp || now < r.nextAt) return;
     if (r.tries >= backoff.length) {
       r.gaveUp = true;
-      const reason = gaveUpReason(row, r.tries + 1);
+      const reason = progress ? noProgressReason(progress, r.tries + 1) : gaveUpReason(row, r.tries + 1);
       // Its stall line now says what happened, over the watcher's minutes-scale one.
-      if (row.state === "running") r.verdict = { kind: "loop", reason, since: wentWrongAt, final: true };
+      if (row.state === "running") r.verdict = { kind: progress && progress.verdict !== "looping" ? "quiet" : "loop", reason, since: wentWrongAt, final: true };
       // r48: a failure its retries ran out on (or any red reason) is Ash's red Needs you on every surface (workerStuck.ts
       // stuckOwner), so its Lead is told he has been shown it, not to handle it without him.
       if (row.state === "failed" && stuckOwner({ kind: "failed", row }) === "needs-you") {
@@ -186,7 +217,7 @@ export class SelfRepair {
     r.tries++;
     r.nextAt = now + (backoff[r.tries] ?? backoff[backoff.length - 1]);
     if (how === "nudge" && r.tries === 1) {
-      await this.host.message(row, NUDGE).catch(() => false);
+      await this.host.message(row, progress ? PROGRESS_NUDGE : NUDGE).catch(() => false);
       return;
     }
     if (chat.busy) {
