@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   addMonoProject,
   createMono,
+  defaultMonoName,
   findMono,
   listMonos,
   monoLook,
@@ -30,7 +31,9 @@ it("gives each new Mono a mascot and color the others are not using", () => {
   const second = createMono();
   expect(second.mascot).not.toBe(first.mascot);
   expect(second.color).not.toBe(first.color);
-  expect(monoLook(first).name).toMatch(/^Mono[A-Z]/);
+  // G4: a Mono's default reads like a name ("Sol"), not "MonoWisp".
+  expect(monoLook(first).name).toBe(defaultMonoName(first.mascot));
+  expect(monoLook(first).name).toMatch(/^[A-Z][a-z]+$/);
   expect(first.projects).toEqual([]);
 });
 
