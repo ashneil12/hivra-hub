@@ -74,16 +74,16 @@ describe("main surfaces fill the width", () => {
     expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 py-6 xl:px-8" data-pages-list');
   });
 
-  it("Today and a project's dashboard put project sections side by side above about 1800px", () => {
-    expect(read("src/features/hub/ui/HubSurface.tsx")).toContain('className="grid grid-cols-1 items-start gap-6 min-[1800px]:grid-cols-2 min-[1800px]:gap-x-12" data-hub-today-projects');
-  });
-
   it("an ask's long title never widens Today past the window (Ash's Mac, 21 Oct: rows ran off the right edge)", () => {
-    // A grid with no columns sizes its one column to the widest content, and a one-line (truncated) title is as wide as
-    // all its words, so the rows ran off the window, cut without an ellipsis. One shrinkable column, below 1800px too.
+    // A container that sizes to its widest content would do it again, and a one-line (truncated) title is as wide as all
+    // its words. Today's asks are a single shrinkable flex column, and a row's words truncate inside it. G1 (23 Oct) took
+    // away the all-projects board and the 1800px two-column grid that held it; the guard the grid was written for stands.
     const today = read("src/features/hub/ui/HubSurface.tsx");
-    const grid = today.split("\n").find((line) => line.includes("data-hub-today-projects>"))!;
-    expect(grid).toMatch(/className="grid grid-cols-1\b/);
+    const rows = today.split("\n").find((line) => line.includes("data-hub-today-projects>"))!;
+    expect(rows).toContain('className="flex flex-col"');
+    expect(rows).not.toMatch(/\bgrid-cols-\b/);
+    expect(today).toContain('<span className="min-w-0 truncate text-content">{title}</span>');
+    expect(today).toContain(`<div className={\`truncate text-[13px] \${done ? "text-content/60" : "text-content"}\`}>{need.title}</div>`);
   });
 
   it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {

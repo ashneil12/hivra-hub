@@ -238,7 +238,8 @@ function TodayBody({ projectId }: { projectId: string }) {
   const pNeeds = waiting.flatMap((w) => (w.need ? [w.need] : []));
   const pOther = waiting.filter((w) => !w.state && !w.need);
   const needsListed = pStuck.length + pNeeds.length + pOther.length > 0 || laterItems(projectId).length > 0;
-  // Above about 1800px the project sections sit side by side, so a row's buttons stay near its words (review 21 Oct).
+  // What waits on Ash in this project, as one shrinkable column: a row stretches to the surface and its words truncate,
+  // so an ask with a long title can never widen Today past the window (Ash's Mac, 21 Oct).
   const needsBlock = (s: TodaySection) => (
     <div key={s.id} className="flex flex-col gap-6" data-hub-today-section={s.kind}>
       {s.title !== "Needs you" || (chatsWaiting && needsShown) ? <h2 className="-mb-4 text-xs text-content/60" data-hub-needs-heading>{s.title}</h2> : null}
