@@ -610,7 +610,7 @@ function MonoPicker({ chat, monos, anchor, onClose }: { chat: GroupChat; monos: 
       role="menu"
       data-hub-mono-picker
       style={{ left: anchor.left, top: Math.max(8, top) }}
-      className="fixed z-50 w-[260px] rounded-lg border border-stroke bg-background-base p-1 shadow-2xl"
+      className="fixed z-50 w-[260px] rounded-lg border border-stroke popover-glass p-1 shadow-2xl"
     >
       <div className="px-2 pb-1 pt-1 text-xs text-content/60">Add a Mono to {chat.name}</div>
       {monos.map((mono) => {

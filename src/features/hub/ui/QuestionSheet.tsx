@@ -13,7 +13,7 @@ function Sheet({ label, onClose, children }: { label: string; onClose: () => voi
   }, [onClose]);
   return (
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-sheet={label} onClick={onClose}>
-      <div role="dialog" aria-label={label} onClick={(e) => e.stopPropagation()} className="flex max-h-[calc(100vh-96px)] w-[540px] max-w-[calc(100vw-48px)] flex-col gap-4 overflow-y-auto rounded-2xl bg-background-base p-6 shadow-2xl">
+      <div role="dialog" aria-label={label} onClick={(e) => e.stopPropagation()} className="flex max-h-[calc(100vh-96px)] w-[540px] max-w-[calc(100vw-48px)] flex-col gap-4 overflow-y-auto rounded-2xl border border-content/7 dialog-glass p-6 shadow-2xl">
         {children}
       </div>
     </div>

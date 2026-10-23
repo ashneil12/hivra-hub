@@ -1066,7 +1066,7 @@ export function ModelPicker({
               aria-label={settingLabel(submenu.setting)}
               onMouseEnter={() => setSubmenu(submenu)}
               data-model-picker
-              className="p-1 font-sans"
+              className="solid-panel-glass p-1 font-sans"
             >
               {submenu.setting.options.map((option, index) => {
                 const selected =
@@ -1159,7 +1159,7 @@ export function ModelPicker({
           tabIndex={-1}
           onContextMenu={(event) => event.preventDefault()}
           data-model-picker
-          className="p-1 font-sans"
+          className="solid-panel-glass p-1 font-sans"
         >
           {recentMenu.models.map((item, index) => {
             const selected = item.id === current.id;
@@ -1537,7 +1537,7 @@ function SelectPill({
             if (item) pick(item.setting, item.option.value);
           }}
           data-model-control
-          className="p-1 font-sans"
+          className="solid-panel-glass p-1 font-sans"
         >
           {menuSettings.map((menuSetting, groupIndex) => (
             <Fragment key={menuSetting.id}>

@@ -66,7 +66,7 @@ function UndoAllFrom({ rows }: { rows: BotChangeRow[] }) {
         Undo all from…
       </button>
       {open ? (
-        <div role="menu" className="absolute left-3 top-full z-10 mt-1 flex min-w-44 flex-col rounded-lg border border-content/10 bg-background-base p-1 shadow-lg" data-undo-all-from-menu>
+        <div role="menu" className="absolute left-3 top-full z-10 mt-1 flex min-w-44 flex-col rounded-lg border border-content/10 popover-glass p-1 shadow-lg" data-undo-all-from-menu>
           {bots.map((b) => (
             <button key={b} type="button" role="menuitem" data-undo-all-from-item={b}
               className="rounded-md px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8"
