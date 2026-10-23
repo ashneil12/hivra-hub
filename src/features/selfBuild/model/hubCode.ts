@@ -12,15 +12,18 @@ import { forUser } from "../../hub/model/userName";
  */
 export const HUB_CODE = "hub-code";
 
+/** How this copy puts a change in: a dev copy shows it in place, the installed app builds and ships it. */
+export type HubDelivery = "inPlace" | "rebuild";
+
 export type HubCodeCommands = {
-  prepare(id: string): Promise<{ id: string; folder: string; base: string }>;
-  collect(id: string): Promise<{ commits: { sha: string; subject: string; files: string[] }[]; blocked: { path: string; area: string }[] }>;
+  prepare(id: string): Promise<{ id: string; folder: string; base: string; delivery: HubDelivery }>;
+  collect(id: string): Promise<{ delivery: HubDelivery; commits: { sha: string; subject: string; files: string[] }[]; blocked: { path: string; area: string }[] }>;
   preview(id: string, on: boolean): Promise<void>;
   apply(id: string): Promise<{ sha: string; subject: string }[]>;
   discard(id: string): Promise<void>;
   revert(sha: string): Promise<string>;
   ping(): Promise<void>;
-  live(): Promise<string | null>;
+  live(): Promise<{ id: string; delivery: HubDelivery } | null>;
 };
 let commands: HubCodeCommands = {
   prepare: (id) => invoke("hub_change_prepare", { id }),
@@ -48,18 +51,22 @@ function keepPinging(on: boolean): void {
 }
 
 type Part = { sha: string };
+type ChangeData = { id: string; delivery?: HubDelivery };
+/** The installed app's preview is a browser page that outlives the window, so only an in-place one is kept alive. */
+const watches = (data: unknown, on: boolean) => on && (data as ChangeData).delivery !== "rebuild";
+
 registerChangeKind(HUB_CODE, {
   preview: async (data, on) => {
-    await commands.preview((data as { id: string }).id, on).catch((e) => Promise.reject(plain(e)));
-    keepPinging(on);
+    await commands.preview((data as ChangeData).id, on).catch((e) => Promise.reject(plain(e)));
+    keepPinging(watches(data, on));
   },
   apply: async (data) => {
-    const applied = await commands.apply((data as { id: string }).id).catch((e) => Promise.reject(plain(e)));
+    const applied = await commands.apply((data as ChangeData).id).catch((e) => Promise.reject(plain(e)));
     keepPinging(false);
     return applied.map((c) => ({ title: c.subject || "Hub change", data: { sha: c.sha } satisfies Part }));
   },
   discard: async (data) => {
-    await commands.discard((data as { id: string }).id).catch((e) => Promise.reject(plain(e)));
+    await commands.discard((data as ChangeData).id).catch((e) => Promise.reject(plain(e)));
     keepPinging(false);
   },
   undo: (part) => commands.revert((part as Part).sha).catch((e) => Promise.reject(plain(e))),
@@ -69,14 +76,30 @@ registerChangeKind(HUB_CODE, {
   },
 });
 
-const pending = new Map<string, { title: string; by: string; ask: string }>();
+const pending = new Map<string, { title: string; by: string; ask: string; delivery: HubDelivery }>();
 
 /** Make the preview copy. Returns its id and folder, for the worker's brief. */
 export async function startHubChange(ask: string, title: string | undefined, by: string, now = Date.now()) {
   const id = `hc-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const change = await commands.prepare(id).catch((e) => Promise.reject(plain(e)));
-  pending.set(id, { title: title?.trim() || ask.split("\n")[0].slice(0, 120), by, ask });
-  return { changeId: id, folder: change.folder };
+  pending.set(id, {
+    title: title?.trim() || ask.split("\n")[0].slice(0, 120),
+    by,
+    ask,
+    delivery: change.delivery,
+  });
+  return { changeId: id, folder: change.folder, delivery: change.delivery };
+}
+
+/** What the bar says for each way a change reaches the app; a dev copy's in-place preview needs no special words. */
+function deliveryText(delivery: HubDelivery) {
+  if (delivery !== "rebuild") return {};
+  return {
+    nowText: "Now: your hub as it is.",
+    previewText: "Preview: open in your browser.",
+    applyText: "Rebuild and ship",
+    workingText: "Building the hub with your change, then it restarts by itself. This takes a few minutes.",
+  };
 }
 
 /** The brief the Claude Code worker gets: Ash's words and where to work. The limits are enforced, not asked for. */
@@ -103,7 +126,15 @@ export async function readyHubChange(changeId: string, by: string) {
   }
   if (!got.commits.length) throw new Error("The preview copy has no changes yet: wait for the worker's report.");
   const parts = got.commits.map((c) => c.subject || "Hub change");
-  offerChange({ id: changeId, kind: HUB_CODE, title: known.title, by: known.by, data: { id: changeId }, parts });
+  offerChange({
+    id: changeId,
+    kind: HUB_CODE,
+    title: known.title,
+    by: known.by,
+    data: { id: changeId, delivery: got.delivery } satisfies ChangeData,
+    parts,
+    ...deliveryText(got.delivery),
+  });
   pending.delete(changeId);
   return {
     changeId,
@@ -128,10 +159,21 @@ export async function undoHubPart(which: string) {
   return { undone: row.after, note: "Only that part went back; it can be redone in Bot changes." };
 }
 
-/** A reloaded window picks a live preview back up (else Rust takes it out after 30 s). */
+/** A reloaded window picks a live preview back up (else Rust takes an in-place one out after 30 s). */
 export async function resumeLivePreview(): Promise<void> {
-  const id = await commands.live().catch(() => null);
-  if (!id || offeredChanges().some((o) => o.id === id)) return;
-  offerChange({ id, kind: HUB_CODE, title: "Your hub change (preview is on)", by: "A Mono", data: { id }, previewing: true });
-  keepPinging(true);
+  const live = await commands.live().catch(() => null);
+  if (!live || offeredChanges().some((o) => o.id === live.id)) return;
+  offerChange({
+    id: live.id,
+    kind: HUB_CODE,
+    title:
+      live.delivery === "rebuild"
+        ? "Your hub change (preview is open in your browser)"
+        : "Your hub change (preview is on)",
+    by: "A Mono",
+    data: { id: live.id, delivery: live.delivery } satisfies ChangeData,
+    previewing: true,
+    ...deliveryText(live.delivery),
+  });
+  keepPinging(live.delivery !== "rebuild");
 }

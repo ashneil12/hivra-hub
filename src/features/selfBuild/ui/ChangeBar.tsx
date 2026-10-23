@@ -87,11 +87,13 @@ export function ChangeBar() {
                 <div className="truncate text-[13px] text-content">
                   {o.title}
                 </div>
-                <div className="text-[12px] text-content/65">
+                <div className="text-[12px] text-content/65" data-change-state>
                   from {o.by} ·{" "}
-                  {o.previewing
-                    ? "Preview: showing in your hub now."
-                    : "Now: your hub as it is."}
+                  {o.busy
+                    ? (o.workingText ?? "Working…")
+                    : o.previewing
+                      ? (o.previewText ?? "Preview: showing in your hub now.")
+                      : (o.nowText ?? "Now: your hub as it is.")}
                 </div>
               </div>
               <div
@@ -157,7 +159,7 @@ export function ChangeBar() {
                 data-change-apply
                 onClick={() => void applyOffered(o.id)}
               >
-                Apply
+                {o.applyText ?? "Apply"}
               </button>
             </div>
           </div>

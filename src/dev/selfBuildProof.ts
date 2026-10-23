@@ -61,8 +61,9 @@ setHubCodeCommands({
     id,
     folder: `/Users/ash/Library/Application Support/MonoCode Hub/self-build/${id}`,
     base: "a0f86920",
+    delivery: "inPlace",
   }),
-  collect: async () => ({ commits, blocked: [] }),
+  collect: async () => ({ delivery: "inPlace", commits, blocked: [] }),
   preview: async (_id, on) => {
     for (const c of commits) on ? showing.add(c.sha) : showing.delete(c.sha);
     paint();
