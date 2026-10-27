@@ -96,6 +96,28 @@ describe("Settings → Connectors", () => {
       expect(fs.readFileSync(path.resolve(__dirname, "../model", file), "utf8")).not.toMatch(/notion/i);
   });
 
+  // The red rule (CoS, 22 Oct): red "Needs you" only for what Ash must do, with its reason; everything else grey, no amber.
+  it("a connector error is grey, and red Needs you with its reason only when Ash has to sign in again", async () => {
+    const { c, view } = await setup();
+    view.settings.connectors = {
+      github: { signedIn: true, method: "token", status: { ok: false, message: "GitHub said the token is expired. Sign in again.", at: 1 } },
+      slack: { signedIn: true, method: "token", status: { ok: false, message: "Slack didn't answer in 10 s.", at: 1 } },
+    };
+    const { ConnectorsPage } = await import("./ConnectorsPage");
+    await act(async () => root.render(createElement(ConnectorsPage)));
+    await act(async () => c.loadConnectors());
+    const pill = (id: string) => container.querySelector(`[data-hub-connector="${id}"] [data-hub-connector-state]`)!;
+    expect(pill("github").textContent).toBe("Needs you");
+    expect(pill("github").className).toContain("text-red-400");
+    expect(container.querySelector('[data-hub-connector="github"]')!.textContent).toContain("Sign in again.");
+    expect(pill("slack").textContent).toBe("Error");
+    expect(pill("slack").className).not.toMatch(/red|amber/);
+    expect(pill("slack").hasAttribute("data-hub-connector-needs-you")).toBe(false);
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    expect(fs.readFileSync(path.resolve(__dirname, "ConnectorsPage.tsx"), "utf8")).not.toMatch(/amber-\d/);
+  });
+
   it("a pasted token goes only to the login command, then the row is Connected and tested", async () => {
     const { calls, c } = await setup();
     const { ConnectorsPage } = await import("./ConnectorsPage");

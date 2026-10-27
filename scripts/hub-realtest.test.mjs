@@ -9,7 +9,7 @@ import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-real
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deepseekBridge, grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
+import { deepseekBridge, graderVia, grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -145,6 +145,8 @@ test("a chat routed to a custom model keeps its own model and effort through the
 test("--grok-sub: every call, helpers too, goes to the bench model; without it Haiku helpers stay Haiku", () => {
   assert.equal(benchArgs(["--grok-sub"]).grokSub, true);
   assert.equal(benchArgs([]).grokSub, false);
+  assert.equal(benchArgs(["--agents", "grok-sub"]).grokSub, true);
+  assert.equal(benchArgs(["--agents", "grok-sub"]).deepseekSub, false);
   assert.equal(pickModel("claude-haiku-4-5", { grok: false }), "claude-haiku-4-5");
   assert.notEqual(pickModel("claude-haiku-4-5", { grok: true }), "claude-haiku-4-5");
   assert.notEqual(pickModel("opus", { grok: true }), "opus");
@@ -163,7 +165,16 @@ test("--grok-sub refuses in plain words when the bridge launcher isn't there, an
 test("--deepseek-sub: its own switch, its own launcher, and never both bridges at once", () => {
   assert.equal(benchArgs(["--deepseek-sub"]).deepseekSub, true);
   assert.equal(benchArgs(["--deepseek-sub"]).grokSub, false);
-  assert.equal(benchArgs([]).deepseekSub, false);
+});
+
+// Ash, 27 Oct: "no test or run may use his Claude (Anthropic) subscription".
+test("the bench runs on DeepSeek by default, grader too; Claude only when someone names it", () => {
+  assert.deepEqual(benchArgs([]), { ...benchArgs([]), grokSub: false, deepseekSub: true });
+  assert.equal(benchArgs(["--agents", "deepseek-sub"]).deepseekSub, true);
+  assert.deepEqual([benchArgs(["--agents", "claude"]).grokSub, benchArgs(["--agents", "claude"]).deepseekSub], [false, false]);
+  assert.throws(() => benchArgs(["--agents", "claude", "--deepseek-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "gpt"]), /--agents is deepseek-sub, grok-sub, claude/);
+  assert.deepEqual(graderVia({ grokSub: false, deepseekSub: false }), {});
 });
 
 test("--deepseek-sub refuses in plain words when its launcher isn't there, and takes it when it is", () => {

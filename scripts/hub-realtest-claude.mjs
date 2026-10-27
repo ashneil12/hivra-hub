@@ -18,7 +18,9 @@
 //   - on the Grok bridge (REALTEST_GROK_BRIDGE=1, `--grok-sub`) holds every call, helpers too, to REALTEST_MODEL;
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
-// Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it.
+// Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it. The bench points REALTEST_REAL_CLAUDE
+// at the DeepSeek launcher by default (Ash, 27 Oct), at the Grok bridge on `--agents grok-sub`, and at the real Claude
+// CLI only on `--agents claude`, so this pass-through never reaches Ash's Claude subscription unless someone asks.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";

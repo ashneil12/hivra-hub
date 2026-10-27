@@ -4,7 +4,10 @@
 // with the evidence quoted. The rule metrics (timings, counts) are computed by the player, not the model, and are
 // written next to the model's grade so a reader can check one against the other. report.md puts it all together.
 //
-//   node scripts/hub-realtest-grade.mjs evidence/realtest/<run>      # grade a finished run (again)
+//   node scripts/hub-realtest-grade.mjs evidence/realtest/<run>      # grade a finished run (again), on DeepSeek
+//   node scripts/hub-realtest-grade.mjs evidence/realtest/<run> --agents grok-sub   # or on Grok (or `claude`, only if named)
+//
+// The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, never Claude unless named.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -78,7 +81,7 @@ export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir
   return grade;
 }
 
-export async function gradeRun(evidenceDir, { claudeConfig }) {
+export async function gradeRun(evidenceDir, { claudeConfig, claude, model }) {
   const scenariosDir = path.join(evidenceDir, "scenarios");
   const summary = (() => {
     try {
@@ -91,7 +94,7 @@ export async function gradeRun(evidenceDir, { claudeConfig }) {
   const grades = {};
   for (const id of ids) {
     console.log(`[realtest grade] ${id} ...`);
-    grades[id] = gradeScenario(path.join(scenariosDir, id), { claudeConfig });
+    grades[id] = gradeScenario(path.join(scenariosDir, id), { claudeConfig, ...(claude ? { claude } : {}), ...(model ? { model } : {}) });
     console.log(`[realtest grade] ${id}: ${grades[id].grade}`);
   }
   fs.writeFileSync(path.join(evidenceDir, "grades.json"), JSON.stringify(grades, null, 2));
@@ -195,5 +198,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     console.error("usage: node scripts/hub-realtest-grade.mjs evidence/realtest/<run>");
     process.exit(64);
   }
-  await gradeRun(path.resolve(dir), { claudeConfig: path.join(os.homedir(), ".monocode-hub-dev/claude-config") });
+  const { benchAgents, graderVia } = await import("./hub-realtest.mjs");
+  const at = process.argv.indexOf("--agents");
+  const via = graderVia(benchAgents(process.argv, at > 0 ? process.argv[at + 1] : null));
+  await gradeRun(path.resolve(dir), { claudeConfig: path.join(os.homedir(), ".monocode-hub-dev/claude-config"), ...via });
 }

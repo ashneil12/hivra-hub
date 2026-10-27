@@ -12,6 +12,7 @@ import {
   GOOGLE_CLIENT_HELP,
   OUTSIDE,
   cancelBrowserSignIn,
+  connectorNeedsAsh,
   connectorsLoadError,
   directEntries,
   forgetGoogleClient,
@@ -169,12 +170,12 @@ export function ConnectorsPage() {
   );
 }
 
-function StatePill({ state }: { state: RowState }) {
-  const tone =
-    state === "error" ? "text-amber-500" : state === "connected" ? "text-content/75" : "text-content/50";
+/** Grey, except a failure only Ash can fix: red "Needs you" (the row's second line says why). No amber. */
+function StatePill({ state, ash }: { state: RowState; ash: boolean }) {
+  const tone = ash ? "text-red-400" : state === "connected" ? "text-content/75" : "text-content/50";
   return (
-    <span className={`shrink-0 text-xs ${tone}`} data-hub-connector-state={state}>
-      {STATE_WORD[state]}
+    <span className={`shrink-0 text-xs ${tone}`} data-hub-connector-state={state} data-hub-connector-needs-you={ash || undefined}>
+      {ash ? "Needs you" : STATE_WORD[state]}
     </span>
   );
 }
@@ -212,7 +213,7 @@ function ConnectorRow({
             {info?.signedIn && info.status?.message ? info.status.message : entry.blurb}
           </span>
         </span>
-        <StatePill state={state} />
+        <StatePill state={state} ash={state === "error" && connectorNeedsAsh(info?.status)} />
       </button>
       {expanded ? (
         <div className="flex flex-col gap-4 px-9 pb-4 pt-1" data-hub-connector-detail={entry.id}>
@@ -261,7 +262,7 @@ function SignedIn({ entry, view }: { entry: CatalogEntry; view: ConnectorsView }
         {info?.account ? ` · ${info.account}` : ""}
       </p>
       {info?.status ? (
-        <p className={`text-xs ${info.status.ok ? "text-content/60" : "text-amber-500"}`} data-hub-connector-status>
+        <p className={`text-xs ${connectorNeedsAsh(info.status) ? "text-red-400" : "text-content/60"}`} data-hub-connector-status>
           {info.status.message}
         </p>
       ) : null}
@@ -284,7 +285,7 @@ function SignedIn({ entry, view }: { entry: CatalogEntry; view: ConnectorsView }
           {info?.method === "none" ? "Turn off" : "Sign out"}
         </button>
       </div>
-      {problem ? <p className="text-xs text-amber-500">{problem}</p> : null}
+      {problem ? <p className="text-xs text-content/60">{problem}</p> : null}
     </div>
   );
 }
@@ -393,7 +394,7 @@ function SignIn({ entry, view, scopes }: { entry: CatalogEntry; view: Connectors
           </button>
         )}
       </div>
-      {problem ? <p className="text-xs text-amber-500" data-hub-connector-problem>{problem}</p> : null}
+      {problem ? <p className="text-xs text-content/60" data-hub-connector-problem>{problem}</p> : null}
     </div>
   );
 }
@@ -416,7 +417,7 @@ function GoogleClientForm() {
           Save Google client
         </button>
       </div>
-      {problem ? <p className="text-xs text-amber-500">{problem}</p> : null}
+      {problem ? <p className="text-xs text-content/60">{problem}</p> : null}
     </div>
   );
 }

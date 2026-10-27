@@ -304,3 +304,14 @@ export function rowState(settings: ConnectorSettings, entry: CatalogEntry): RowS
   if (state.status && !state.status.ok) return "error";
   return "connected";
 }
+
+/**
+ * A failed check only Ash can fix (sign in again, a new key): the one connector error that goes red, with its reason.
+ * Any other failure (a timeout, the service down) stays grey; the red rule has no amber (CoS, 22 Oct).
+ */
+export function connectorNeedsAsh(status?: ConnectorStatus): boolean {
+  if (!status || status.ok) return false;
+  return /sign(ed)?[ -]?(in|out)|log(ged)?[ -]?(in|out)|expired|revoked|unauthori[sz]ed|forbidden|\b40[13]\b|(invalid|wrong|bad) (api )?(key|token)|re-?auth|permission/i.test(
+    status.message,
+  );
+}
