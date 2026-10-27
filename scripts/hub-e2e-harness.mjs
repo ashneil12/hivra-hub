@@ -181,6 +181,8 @@ function makeHelpers(ctx, stopped) {
 
 // Words a blind run must never hear (it isn't a test to them).
 const TEST_WORDS = /\btest fault\b|dev-faults|on purpose for a test|set to fail|\bbenchmark\b|\bscorecard\b|\bblind (?:test|run|qa)\b|\bthe tester\b|\brealtest\b|marked test residue|old test card/i;
+// The bench's own throwaway folder (monocode-realtest-*) shows up in honest worktree paths; that is not the app saying "test".
+const isTestWording = (text) => TEST_WORDS.test(String(text ?? "").replace(/\S*monocode-realtest-\S*/g, ""));
 const HE_WORDS = /\b(?:he|him)\b/i;
 
 const stamp = () => new Date().toISOString().slice(11, 19);
@@ -273,7 +275,7 @@ async function testD5(ctx, h) {
   check("'Open <Lead>'s chat' is offered", !!openChat && new RegExp(esc(leadName), "i").test(openChat[0]), openChat?.[0]?.trim() ?? "no open-chat line");
   // No test wording leaks into anything visible.
   const lines = await h.texts();
-  const leaked = lines.filter((l) => TEST_WORDS.test(l.text));
+  const leaked = lines.filter((l) => isTestWording(l.text));
   check("no test-fault wording anywhere visible", leaked.length === 0, leaked.map((l) => `${l.where}: ${l.text.slice(0, 100)}`).join(" | "));
 
   out.evidence.leadName = leadName;
@@ -389,7 +391,7 @@ async function testA1(ctx, h) {
   }
 
   const lines = (await h.texts()).filter((l) => (l.t ?? 0) >= t0);
-  const testLines = lines.filter((l) => TEST_WORDS.test(l.text));
+  const testLines = lines.filter((l) => isTestWording(l.text));
   const heLines = lines.filter((l) => HE_WORDS.test(l.text));
   check("no test wording", testLines.length === 0, testLines.map((l) => `${l.where}: ${l.text.slice(0, 90)}`).join(" | "));
   check("no Mono calls Ash 'he'", heLines.length === 0, heLines.map((l) => `${l.where}: ${l.text.slice(0, 90)}`).join(" | "));
@@ -499,7 +501,7 @@ async function testA11H6(ctx, h) {
   check("the Lead delegated the work on", delegated.length > 0 || (leadBlocks ?? []).some((b) => /delegate|worker/i.test(String(b.text ?? ""))), delegated.map((r) => `${r.id} ${r.state}`).join(", ") || "no child workers");
 
   const lines = (await h.texts()).filter((l) => (l.t ?? 0) >= t0);
-  const testLines = lines.filter((l) => TEST_WORDS.test(l.text));
+  const testLines = lines.filter((l) => isTestWording(l.text));
   check("no test wording", testLines.length === 0, testLines.map((l) => `${l.where}: ${l.text.slice(0, 90)}`).join(" | "));
 
   out.verdict = checks.every((c) => c.ok) ? "pass" : checks.some((c) => c.ok) ? "partial" : "fail";
@@ -630,7 +632,7 @@ async function testH13(ctx, h) {
   const distinct = Object.keys(samples).length >= 2 && new Set(Object.values(samples).map((v) => v.join("|").slice(0, 200))).size > 1;
   check("Monos speak in distinct voices", distinct, Object.keys(samples).join(", "));
 
-  const testLines = lines.filter((l) => TEST_WORDS.test(l.text));
+  const testLines = lines.filter((l) => isTestWording(l.text));
   check("no test wording", testLines.length === 0, testLines.map((l) => `${l.where}: ${l.text.slice(0, 90)}`).join(" | "));
 
   out.verdict = checks.every((c) => c.ok) ? "pass" : checks.some((c) => c.ok) ? "partial" : "fail";
