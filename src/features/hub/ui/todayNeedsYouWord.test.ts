@@ -92,9 +92,9 @@ it("a job its Lead gave up on reads 'Needs you' on Today, the same as Being buil
   expect(container.querySelector('[data-hub-today-job="j_backup"]')!.textContent).toMatch(/· With Hivra lead$/);
 });
 
-it("with the old-style dev flag both places still agree", async () => {
+it("the old-style dev flag no longer brings back a red Stuck: both places still read Needs you", async () => {
   localStorage.setItem("monocode:hub-gaveup-style", "stuck");
   const { today, built } = await words();
-  expect(today).toBe("Stuck");
-  expect(built).toBe("Stuck");
+  expect(today).toBe("Needs you");
+  expect(built).toBe("Needs you");
 });

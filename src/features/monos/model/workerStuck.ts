@@ -301,12 +301,23 @@ export type WorkCounts = {
  * Never "stuck".
  */
 export type StuckOwner = "needs-you" | "retrying" | "with-lead";
+/** Whether the newest block on the row was declared by its owner (the Lead), not by the worker on its own row. */
+function blockedByLead(row: Pick<Delegation, "log">): boolean {
+  const log = (row.log ?? []) as LogEntry[];
+  for (let i = log.length - 1; i >= 0; i--) if (log[i].event === "stalled") return byLead(log[i]);
+  return false;
+}
+
 export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner {
   if (stuck.kind !== "failed") {
-    // A declared block (task_cannot) is the agent's own word that it cannot finish: it is Ash's at once, unless its
-    // Lead has already taken it on (a redo or a split). A judged stall still waits on its Lead.
+    // A declared block (task_cannot) is the agent's own word that it cannot finish. A judged stall waits on its Lead.
     if (stuck.row.stallKind !== "blocked") return leadRetried(stuck.row) ? "retrying" : "with-lead";
-    return leadRetried(stuck.row) ? "retrying" : "needs-you";
+    if (leadRetried(stuck.row)) return "retrying";
+    // The Lead's own word (it gave up on its task) is Ash's at once. A worker's own word goes to its Lead first, like a
+    // failed worker (r30h, Ash 21 Oct: a worker's trouble is never escalated past its Lead): Ash's only once the Lead's
+    // chat is known not to be mid-turn.
+    if (blockedByLead(stuck.row)) return "needs-you";
+    return chatBusy(stuck.row.ownerSession) === false ? "needs-you" : "with-lead";
   }
   const why = ashMustAct(stuck.row);
   if (why && why !== "out-of-retries") return "needs-you";

@@ -160,7 +160,7 @@ describe("DelegationBatchRow", () => {
     expect(container.querySelector("[data-delegation-rollup]")?.textContent).toBe(
       "Delegated 2: 1 working, 1 with its Lead",
     );
-    expect(container.querySelector('[data-delegation-stuck="w2"]')?.textContent).toBe("Stuck");
+    expect(container.querySelector('[data-delegation-stuck="w2"]')?.textContent).toBe("Stalled");
     expect(container.querySelector('[data-delegation-stuck="w1"]')).toBeNull();
     expect(
       [...container.querySelectorAll<HTMLElement>("[data-delegation-stop]")].map((b) => b.dataset.delegationStop),
