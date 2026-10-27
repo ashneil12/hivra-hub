@@ -59,6 +59,11 @@ pub struct Plan {
     /// Only with `claudeBinary`.
     #[serde(default)]
     pub grok: bool,
+    /// The bench's Claude Code runs on DeepSeek through the local gateway launcher (scripts/hub-realtest.mjs
+    /// `--deepseek-sub`): no Claude sign-in holds its workers back, as when Ash's CLI path is `claude-deepseek`.
+    /// Only with `claudeBinary`.
+    #[serde(default)]
+    pub deepseek: bool,
     /// How long a worker may be silent before the window marks it stalled (monos/model/workerStall.ts), so the bench
     /// sees a stall in seconds instead of minutes. 1 s to 10 min.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +109,14 @@ pub fn parse(text: &str) -> Result<Plan, String> {
         return Err(
             "verify plan: grok needs claudeBinary (the bench's Claude on the bridge)".into(),
         );
+    }
+    if plan.deepseek && plan.claude_binary.is_none() {
+        return Err(
+            "verify plan: deepseek needs claudeBinary (the bench's Claude on the bridge)".into(),
+        );
+    }
+    if plan.grok && plan.deepseek {
+        return Err("verify plan: grok and deepseek are two different bridges; pass one".into());
     }
     if plan.goals && plan.claude_binary.is_none() {
         return Err(
@@ -197,6 +210,9 @@ pub fn window_info(plan: &Plan) -> Value {
     }
     if plan.grok {
         info["grok"] = Value::Bool(true);
+    }
+    if plan.deepseek {
+        info["deepseek"] = Value::Bool(true);
     }
     info
 }
@@ -319,6 +335,25 @@ mod tests {
         assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#)
             .unwrap_err()
             .contains("grok"));
+    }
+
+    #[test]
+    fn a_bench_on_the_deepseek_bridge_says_so_to_the_window() {
+        let plan = parse(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","deepseek":true}"#,
+        )
+        .unwrap();
+        assert!(plan.deepseek);
+        assert_eq!(window_info(&plan)["deepseek"], true);
+        assert!(window_info(&plan).get("grok").is_none());
+        assert!(parse(r#"{"version":1,"runId":"a","deepseek":true}"#)
+            .unwrap_err()
+            .contains("deepseek"));
+        assert!(parse(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#
+        )
+        .unwrap_err()
+        .contains("pass one"));
     }
 
     #[test]

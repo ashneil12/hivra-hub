@@ -638,7 +638,7 @@ import {
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
-import { claudeRunsOnGrok, modelInUseLabel } from "../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge, modelInUseLabel } from "../integrations/harness/providers/claude/claudeGrokBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
 import {
@@ -12538,8 +12538,9 @@ function Workspace({
     workerRoom(harness, {
       now: Date.now(),
       usageFor: (entry) => getCachedRateLimits(entry.provider, entry.id),
-      // On Grok 4.7 a Claude account's limit doesn't hold Claude Code workers back: they don't use it.
-      elsewhere: harness === "claude" && claudeRunsOnGrok(),
+      // On a subscription bridge (Grok 4.7 or DeepSeek) a Claude account's sign-in and limit don't hold Claude Code
+      // workers back: they don't use it.
+      elsewhere: harness === "claude" && claudeRunsOnSubscriptionBridge(),
     });
   // Waiting workers start by themselves, in order, when a worker frees up or a provider's limit resets (H8).
   const pumpingWorkers = useRef(false);

@@ -30,6 +30,30 @@ export function claudeRunsOnGrok(
   return bench || (!!path && baseName(path.trim()) === CLAUDE_GROK_BRIDGE_NAME);
 }
 
+/**
+ * The DeepSeek launcher, `~/.local/bin/claude-deepseek`: the normal Claude Code against Ash's local gateway, holding
+ * every call (helpers and subagents too) to DeepSeek. Like the Grok one it keeps its key to itself.
+ */
+export const CLAUDE_DEEPSEEK_BRIDGE_NAME = "claude-deepseek";
+
+/**
+ * True when Claude Code runs on a subscription bridge of any kind (Grok or DeepSeek): its CLI path is one of the
+ * bridge launchers, or this is the real bench on one (plan `grok` or `deepseek`). Then a Claude account's sign-in and
+ * limits say nothing about whether a worker can start, because no Claude Code process uses them (27 Oct: the blind
+ * run on DeepSeek left every delegated worker waiting on "Claude isn't signed in"). Names and labels still follow
+ * claudeRunsOnGrok: a DeepSeek chat is not Grok 4.7.
+ */
+export function claudeRunsOnSubscriptionBridge(
+  path: string | null = runtimeProviderBinaryPath("claude"),
+  bench: VerifyFlags | undefined = appIdentity()?.verify,
+): boolean {
+  if (claudeRunsOnGrok(path, bench?.grok === true)) return true;
+  if (bench?.deepseek === true) return true;
+  return !!path && baseName(path.trim()) === CLAUDE_DEEPSEEK_BRIDGE_NAME;
+}
+
+type VerifyFlags = { grok?: boolean; deepseek?: boolean };
+
 /** What a Claude Code chat on the bridge really runs, as the hub names it (GROK_BRIDGE_MODEL). */
 export const GROK_BRIDGE_LABEL = "Grok 4.7";
 

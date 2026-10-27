@@ -44,6 +44,8 @@ export type VerifyPlan = {
   driver?: boolean;
   /** The real bench's Claude Code runs on Grok 4.7 through the Grok subscription bridge (claudeGrokBridge.ts). */
   grok?: boolean;
+  /** The real bench's Claude Code runs on DeepSeek through the local gateway launcher (`--deepseek-sub`). */
+  deepseek?: boolean;
 };
 
 export type AppIdentity = {
@@ -67,6 +69,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
     ...(typeof value.stallMs === "number" && value.stallMs >= 1_000 && value.stallMs <= 600_000 ? { stallMs: value.stallMs } : {}),
     ...(value.driver === true ? { driver: true } : {}),
     ...(value.grok === true ? { grok: true } : {}),
+    ...(value.deepseek === true ? { deepseek: true } : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

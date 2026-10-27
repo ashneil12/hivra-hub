@@ -468,8 +468,9 @@ export async function runBench(options, hooks = {}) {
       { mode: 0o755 },
     );
     const planFile = path.join(scratch, "verify-plan.json");
-    // On the bridge the window knows it (plan `grok`): Grok 4.7 for every chat, and no Claude account's limit holds workers.
-    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.grokSub ? { grok: true } : {}) };
+    // On a bridge the window knows it (plan `grok` or `deepseek`): no Claude account's sign-in or limit holds workers, and on
+    // Grok every chat is Grok 4.7.
+    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.grokSub ? { grok: true } : {}), ...(options.deepseekSub ? { deepseek: true } : {}) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);
 
