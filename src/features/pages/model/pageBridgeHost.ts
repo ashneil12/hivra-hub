@@ -10,7 +10,7 @@
 // Ash's tap inside the page is fresh, so a page can never act by itself.
 import { refusal, WALL_REFUSAL, type BridgeCall, type BridgeHandlers } from "./bridge";
 import { runPageAction, type ActionContext } from "./pageActions";
-import { isLiveRead, isPageAction, isRead, isWall, LIVE_READS, type Capability, type LiveRead } from "./pageSpec";
+import { isLiveRead, isRead, isTapCall, isWall, LIVE_READS, type Capability, type LiveRead } from "./pageSpec";
 
 export type PageSource = { read(args: Record<string, unknown>): unknown; subscribe(onChange: () => void): () => void };
 export type PageSources = Record<LiveRead, PageSource>;
@@ -64,7 +64,7 @@ export class PageBridgeHost {
     // grants (pageGrants.ts), and the handler refuses an address nobody connected in plain words.
     if (call.call === "sessions.read") return refusal({ call: "agents.read" }, this.allowed());
     if (call.call === "http.fetch") return undefined;
-    if (!this.o.live && this.o.asks.includes(call.call as Capability) && !isRead(call.call)) return isPageAction(call.call) ? PREVIEW_TAP : PREVIEW_OTHER;
+    if (!this.o.live && this.o.asks.includes(call.call as Capability) && !isRead(call.call)) return isTapCall(call.call) ? PREVIEW_TAP : PREVIEW_OTHER;
     return refusal(call, this.allowed());
   }
 
@@ -91,7 +91,7 @@ export class PageBridgeHost {
     if (no) return this.reply(id, { ok: false, error: no });
     try {
       if (isLiveRead(call)) return this.reply(id, { ok: true, result: this.o.sources[call].read(args) });
-      if (isPageAction(call)) {
+      if (isTapCall(call)) {
         if (!this.o.tapped()) return this.reply(id, { ok: false, error: TAP_ONLY });
         const ctx = { pageId: this.o.pageId, pageTitle: this.o.title };
         return this.reply(id, { ok: true, result: await (this.o.act ?? runPageAction)(call, args, ctx) });

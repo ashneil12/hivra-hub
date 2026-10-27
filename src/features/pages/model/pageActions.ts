@@ -230,6 +230,23 @@ async function stop(args: Record<string, unknown>, d: PageActionDeps): Promise<s
   return `Stopped ${mono ? agentName(mono) : chatName(chat, d)}`;
 }
 
+/** mono.run (C4): ask one Mono to run work, as a message into its chat (it steers or queues, as typing would). */
+async function run(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
+  const text = str(args.text) || str(args.task);
+  if (!text) throw new Error("Say what to run first.");
+  if (!str(args.agentId)) throw new Error("Say which Mono should run it (agentId).");
+  return (await message({ agentId: args.agentId, text }, ctx, d)).replace(/^Sent (.*?): “/, "Asked $1 to run: “");
+}
+
+/** tasks.write (C4): answer a task that asks, stop one, or hand a new one to a Mono. Each is the tap's own path. */
+async function writeTask(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
+  const op = str(args.op);
+  if (op === "answer") return answer(args, ctx, d);
+  if (op === "stop") return stop(args, d);
+  if (op === "add") return run(args, ctx, d);
+  throw new Error("A page can answer, stop or add a task (op: answer, stop or add).");
+}
+
 function open(args: Record<string, unknown>, d: PageActionDeps): string {
   const workerId = str(args.workerId);
   const agentId = str(args.agentId);
@@ -279,6 +296,12 @@ export async function runPageAction(call: PageAction | string, args: Record<stri
       break;
     case "agents.stop":
       done = await stop(args, d);
+      break;
+    case "mono.run":
+      done = await run(args, ctx, d);
+      break;
+    case "tasks.write":
+      done = await writeTask(args, ctx, d);
       break;
     case "chats.open":
       // Opening is a tap too, but it changes nothing: not logged.

@@ -115,3 +115,24 @@ it("says plainly when the app can't do it yet, and never guesses", async () => {
   await expect(runPageAction("agents.answer", { chatId: "s-lead", text: "x" }, ctx, failing.d)).rejects.toThrow("EXO lead couldn't take a message right now.");
   vi.restoreAllMocks();
 });
+
+// C4 (Ash: "dashboards that are genuinely connected to agents ... so i can ... see what the agents are doing and
+// respond"): mono.run and tasks.write no longer answer "Not connected yet"; each takes the tap's own path.
+it("mono.run asks a Mono to run work, as a message from the page into its chat", async () => {
+  const { d, calls } = deps();
+  expect(await runPageAction("mono.run", { agentId: "frank", text: "Pull this week's signups" }, ctx, d)).toEqual({ done: "Asked frank to run" });
+  expect(calls).toEqual([["send", "s-frank", "Pull this week's signups\n\n(sent from the Agents page)"]]);
+  expect(pageActionLog("pg_1")[0].line).toBe("Asked frank to run: “Pull this week's signups”");
+  await expect(runPageAction("mono.run", { text: "x" }, ctx, d)).rejects.toThrow("Say which Mono should run it (agentId).");
+  await expect(runPageAction("mono.run", { agentId: "frank" }, ctx, d)).rejects.toThrow("Say what to run first.");
+  await expect(runPageAction("mono.run", { agentId: "nobody", text: "x" }, ctx, d)).rejects.toThrow("That agent isn't on your Monos list.");
+});
+
+it("tasks.write answers, stops or hands out a task the way the taps do, and refuses anything else plainly", async () => {
+  const { d, calls } = deps();
+  expect(await runPageAction("tasks.write", { op: "answer", chatId: "s-lead", text: "Three" }, ctx, d)).toEqual({ done: "Answered EXO lead" });
+  expect(await runPageAction("tasks.write", { op: "stop", workerId: "d1" }, ctx, d)).toEqual({ done: "Stopped “Example: d1”" });
+  expect(await runPageAction("tasks.write", { op: "add", agentId: "frank", text: "Write the launch post" }, ctx, d)).toEqual({ done: "Asked frank to run" });
+  expect(calls.map((c) => c[0])).toEqual(["answerInWords", "stopRow", "send"]);
+  await expect(runPageAction("tasks.write", { op: "delete", workerId: "d1" }, ctx, d)).rejects.toThrow("A page can answer, stop or add a task (op: answer, stop or add).");
+});

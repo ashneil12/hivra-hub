@@ -53,6 +53,14 @@ export function isRead(cap: string): cap is Read {
 export function isPageAction(cap: string): cap is PageAction {
   return (PAGE_ACTIONS as readonly string[]).includes(cap);
 }
+/**
+ * C4 (PM r57): the writes that run on Ash's tap like a page action: `mono.run` asks a Mono to run work (a message into
+ * its chat), `tasks.write` answers, stops or hands out a task. Same gate as the taps (kept, allowed, tapped).
+ */
+export const TAP_WRITES = ["mono.run", "tasks.write"] as const;
+export function isTapCall(cap: string): boolean {
+  return isPageAction(cap) || (TAP_WRITES as readonly string[]).includes(cap);
+}
 const WALLS = /^(monos?\.(add|seat|rename|delete|create|remove)|ipc|tauri)(\.|:|$)/i;
 export function isWall(cap: string): boolean {
   return WALLS.test(cap);
@@ -61,18 +69,19 @@ export function isCapability(cap: string): cap is Capability {
   return (CAPABILITIES as readonly string[]).includes(cap);
 }
 /**
- * A capability the hub actually answers. Every read and a page's taps are wired, and so is renaming a project
- * (pageWrites.ts, through the hub's own store); the other writes are declared (a page may ask) but nothing runs them yet.
+ * A capability the hub actually answers. Every read and a page's taps are wired, so are mono.run and tasks.write (on a
+ * tap, pageActions.ts) and renaming a project (pageWrites.ts, through the hub's own store); automation.run and
+ * settings.write are declared (a page may ask) but nothing runs them yet.
  */
 export function isWired(cap: Capability): boolean {
-  return isRead(cap) || isPageAction(cap) || cap === "project.write";
+  return isRead(cap) || isTapCall(cap) || cap === "project.write";
 }
 const PLAIN: Record<Capability, string> = {
   "tasks.read": "Read what's waiting on you, being built or stuck",
-  "tasks.write": "Add and change tasks",
+  "tasks.write": "Answer, stop or hand out a task when you tap",
   "project.read": "Read your projects and what each is working on",
   "project.write": "Rename a project you tap",
-  "mono.run": "Ask a Mono to run work",
+  "mono.run": "Ask a Mono to run work when you tap",
   "automation.run": "Run an automation",
   "settings.read": "Read your name, appearance and theme",
   "settings.write": "Change your settings",

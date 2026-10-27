@@ -1,6 +1,6 @@
 // What answers a page's hub reads (pageSpec.ts HUB_READS): the same data the app's own screens read, in the same plain
-// words. A page asks; the hub answers; nothing here changes anything. The writes (tasks.write, mono.run, …) have no
-// handler yet, so an approved write still answers "Not connected yet" rather than pretending (bridge.ts).
+// words. A page asks; the hub answers; nothing here changes anything. tasks.write and mono.run run on Ash's tap
+// (pageActions.ts); automation.run and settings.write have no handler yet, so they still answer "Not connected yet".
 import { hubData } from "../../hub/model/hubData";
 import { userName } from "../../hub/model/userName";
 import type { HubJobGroup, HubMono, HubProject, Need } from "../../hub/model/types";
