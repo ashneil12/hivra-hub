@@ -77,6 +77,25 @@ describe("Settings → Connectors", () => {
     expect(text()).toContain("This dev copy keeps its own logins");
   });
 
+  it("Notion is optional and off by default: unconnected, nothing connected, and memory stays local (G7)", async () => {
+    const { c, calls } = await setup();
+    const { ConnectorsPage } = await import("./ConnectorsPage");
+    await act(async () => root.render(createElement(ConnectorsPage)));
+    await act(async () => c.loadConnectors());
+    const notion = container.querySelector('[data-hub-connector="notion"]')!;
+    expect(notion).not.toBeNull();
+    expect(notion.closest("[data-hub-connector-category]")?.getAttribute("data-hub-connector-category")).toBe("Work and docs");
+    expect(notion.querySelector("[data-hub-connector-state]")?.getAttribute("data-hub-connector-state")).not.toBe("connected");
+    expect(container.querySelector("[data-hub-connectors-connected]")).toBeNull();
+    // Opening Settings signs nothing in by itself.
+    expect(calls.filter((x) => x.command === "connector_save_login" || x.command === "connector_test")).toEqual([]);
+    // The memory a Lead starts from is Ash OS's own files on this Mac; nothing in it goes through Notion.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    for (const file of ["hubMemoryPrimer.ts", "roomMemory.ts", "decisions.ts"])
+      expect(fs.readFileSync(path.resolve(__dirname, "../model", file), "utf8")).not.toMatch(/notion/i);
+  });
+
   it("a pasted token goes only to the login command, then the row is Connected and tested", async () => {
     const { calls, c } = await setup();
     const { ConnectorsPage } = await import("./ConnectorsPage");
