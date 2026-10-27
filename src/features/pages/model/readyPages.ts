@@ -1,6 +1,8 @@
 // Ready-made pages: built with the same connected bridge a Mono's page uses (hub.watch and the taps), so Ash can see it
 // working and ask a Mono for his own on the same pattern (Rebuild changes it from his words). They go through the same
-// preview and Keep and allow as any page; nothing is kept or allowed by itself.
+// preview and Keep and allow as any page. C8 (Ash: "a few default dashboards that always come with every setup, that
+// just explain the basics"): on a fresh setup the four are kept once by themselves (readyPagesSeed.ts), each with its
+// one-line `what` shown under its title.
 import type { BespokeSpec } from "./pageSpec";
 
 /** The request a ready-made page is kept with: how Pages knows the page is already there. */
@@ -530,3 +532,8 @@ export const READY_PAGES: readonly ReadyPage[] = [
   { id: "being-built", title: "Being built", what: "What is being built right now across every project, with anything that needs you on top, and a way into the agent doing it.", request: BUILT_READY, spec: BUILT_PAGE },
   { id: "projects", title: "Projects", what: "Your projects with what each one holds and what in it is waiting on you, opened in place without leaving the page.", request: PROJECTS_READY, spec: PROJECTS_PAGE },
 ];
+
+/** The one line a ready-made page explains itself with (C8), by the request it was kept with; undefined for any other. */
+export function readyWhat(request: string): string | undefined {
+  return READY_PAGES.find((r) => r.request === request)?.what;
+}
