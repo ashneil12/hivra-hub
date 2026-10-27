@@ -3,12 +3,13 @@ import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu } from "./ProjectMenu";
 import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
 import { deleteChat } from "../model/hubChats";
-import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, StickyNote, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import { leadSpecFor } from "../model/hubLeads";
+import { DECISIONS_ITEM } from "../model/decisions";
 import type { HubProject, ProjectItem } from "../model/types";
 
 function iconFor(item: ProjectItem): IconComponent {
@@ -21,7 +22,7 @@ function iconFor(item: ProjectItem): IconComponent {
     case "being-built":
       return Hammer;
     default:
-      return item.sectionType === "builds-playtests" ? PackageOpen : Layers;
+      return item.sectionType === "builds-playtests" ? PackageOpen : item.sectionType === "decisions" ? StickyNote : Layers;
   }
 }
 
@@ -60,7 +61,8 @@ export function HubProjectItems({
   const [menu, setMenu] = useState<PopoverAnchor>();
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
-  const items = hubData().listProjectItems(project.id);
+  // D2: every project's own Decisions, last (Settings → Decisions still lists them all).
+  const items = [...hubData().listProjectItems(project.id), DECISIONS_ITEM];
   return (
     <div className="mb-2 shrink-0" data-hub-items>
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header

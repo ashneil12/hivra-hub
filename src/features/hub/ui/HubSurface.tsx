@@ -3,7 +3,7 @@ import { stuckWhere } from "../model/stuckWhere";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
 import { RestorePreview } from "./RestorePreview";
-import { Check, FolderOpen, Inbox, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
+import { Check, FolderOpen, Inbox, StickyNote, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { examplesOn } from "../model/examples";
 import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
@@ -34,6 +34,8 @@ import { openLead } from "../../monos/model/stuckActions";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
+import { DecisionsPage } from "./DecisionsPage";
+import { DECISIONS_ITEM } from "../model/decisions";
 import { plainStateWord } from "../model/liveJobs";
 import { ProposalView } from "./ProposalView";
 import { NewProjectView } from "./NewProjectView";
@@ -82,6 +84,7 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   if (selection.item === "new-chat") return <NewGroupChat projectId={project.id} />;
   if (selection.item.startsWith("proposal:")) return <ProposalView key={selection.item} id={selection.item.slice(9)} />;
   if (selection.item === "being-built") return <BeingBuiltView key={project.id} projectId={project.id} />;
+  if (selection.item === DECISIONS_ITEM.id) return <ProjectDecisionsView key={project.id} projectId={project.id} />;
   const section = data.listProjectItems(project.id).find((i) => i.id === selection.item);
   if (section?.sectionType === "builds-playtests")
     return <BuildsView key={project.id} projectId={project.id} title={section.title} />;
@@ -740,4 +743,25 @@ function HomeTools() {
     {(["Pages", "Notes", "Automations"] as const).map((name) => <button key={name} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: name.toLowerCase() }))}
       className="rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/10">{name}</button>)}
   </nav>;
+}
+
+/**
+ * D2 (PM r57): each project's own Decisions, beside its other items: Settings → Decisions filtered to this project.
+ * Full width, like Being built.
+ */
+function ProjectDecisionsView({ projectId }: { projectId: string }) {
+  return (
+    <div role="region" aria-label="Decisions" data-hub-surface data-hub-project-decisions={projectId} className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+      <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
+          <StickyNote className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+          <span className="min-w-0 truncate text-content">Decisions</span>
+        </div>
+        {IS_MAC ? null : <div className="w-[120px]" />}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        <DecisionsPage projectId={projectId} />
+      </div>
+    </div>
+  );
 }
