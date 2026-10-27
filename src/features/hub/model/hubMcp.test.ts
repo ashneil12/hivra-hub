@@ -221,7 +221,11 @@ describe("the delegate tool", () => {
     // Only the fence round the Monos' home, which every hub chat has.
     const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS].join(",")];
     expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual(fence);
-    expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual(fence);
+    // A Mono's chat also has Claude Code's own worktree tools kept from it (the app makes its workers' checkouts).
+    expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual([
+      "--disallowedTools",
+      `${fence[1]},EnterWorktree,ExitWorktree`,
+    ]);
   });
 
   it("is taught to a chat only when its Claude Code session really has it", () => {
@@ -333,6 +337,25 @@ describe("the fence round the Monos' home (decided 20 Oct: only the app writes t
     expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain(`Fence: ${MONO_HOME_FENCE}`);
     expect(MONO_HOME_FENCE).toContain("~/agent-memory/monos/");
     expect(MONO_HOME_FENCE).toMatch(/never write, move or delete/);
+  });
+});
+
+describe("worktrees (run dd7f, 27 Oct: a Lead made its own Claude worktree and its worker committed there)", () => {
+  const denied = (session: string) => {
+    const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
+    return args[args.indexOf("--disallowedTools") + 1].split(",");
+  };
+
+  it("keeps Claude Code's own worktree tools from a Mono's chat, its habit runs and its workers: the app makes their checkouts", () => {
+    for (const session of ["chat-exo", "chat-frank", "habit-run-1", "app-chat-exo-r1"])
+      expect(denied(session)).toEqual(expect.arrayContaining(["EnterWorktree", "ExitWorktree"]));
+  });
+
+  it("leaves them to Ash's own plain chats, and the Monos' home fence stays in the same one deny list", () => {
+    expect(denied("plain-1")).not.toContain("EnterWorktree");
+    expect(denied("chat-exo")).toContain("Edit(~/agent-memory/monos/**)");
+    const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+    expect(args.filter((a) => a === "--disallowedTools")).toHaveLength(1);
   });
 });
 

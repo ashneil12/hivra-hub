@@ -258,6 +258,19 @@ export function chatRunKind(sessionId: string, lookups: HubChatLookups | undefin
  * Whether this chat gets the delegate tool: the chats Ash talks to, a Mono's own chat (not the checker's: it only
  * reads) and a coding-team chat.
  */
+/**
+ * Claude Code's own worktree tools, which the app keeps from every chat it runs for a Mono, a coding team or a worker.
+ * The app owns worktrees there: a worker is started in the checkout the delegate tool made for it (isolation
+ * "worktree"). Run dd7f, 27 Oct: Tally's Lead called EnterWorktree, made .claude/worktrees/readme-truth and briefed
+ * its worker to commit there, so the worker's own checkout under tally-worktrees/ sat empty and the app tracked
+ * the wrong folder. Ash's own plain chats keep the tools.
+ */
+export const HUB_WORKTREE_DENIED_TOOLS = ["EnterWorktree", "ExitWorktree"];
+
+export function worktreeDeniedTools(identity: HubChatIdentity): string[] {
+  return identity.kind === "chat" ? [] : HUB_WORKTREE_DENIED_TOOLS;
+}
+
 export function getsDelegateTool(identity: HubChatIdentity): boolean {
   return (identity.kind === "mono" && identity.role !== "checker") || identity.kind === "team";
 }
@@ -306,7 +319,10 @@ export function hubMcpArgs(
   // The checker only reads, whatever else this chat gets (its deny list carries the fence round the Monos' home too).
   const restrict = identity.role === "checker" ? checkerToolArgs() : [];
   // Every other chat is fenced out of the Monos' home: last, so a chat's own arguments read as they always have.
-  const fence = identity.role === "checker" ? [] : ["--disallowedTools", chatDeniedTools().join(",")];
+  const fence =
+    identity.role === "checker"
+      ? []
+      : ["--disallowedTools", [...chatDeniedTools(), ...worktreeDeniedTools(identity)].join(",")];
   const mcpServers: Record<string, unknown> = {};
   // A Mono's connectors go in first, so the hub's own entries below always keep their names.
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
