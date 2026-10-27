@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { usePagesVersion } from "../../pages/model/pages";
+import { markFreshSetup, seedReadyPages } from "../../pages/model/readyPagesSeed";
 import { needsOnboarding } from "../model/onboarding";
 import { setupProved } from "../model/setupProof";
 import { HubOnboarding } from "./HubOnboarding";
@@ -19,8 +21,16 @@ export function HubOnboardingGate() {
   const [open, setOpen] = useState(() => {
     // First launch: the roster starts with the built-in Monos only. At first render, not at import, so the roster from
     // the Monos' home is back first and an existing install is never taken for a fresh one (teamPack.ts).
-    if (needsOnboarding()) ensureBuiltInMonos();
+    if (needsOnboarding()) {
+      ensureBuiltInMonos();
+      // C8: a fresh setup comes with the four ready-made dashboards.
+      markFreshSetup();
+    }
     return showsOnboarding();
   });
+  const pagesVersion = usePagesVersion();
+  useEffect(() => {
+    void seedReadyPages();
+  }, [pagesVersion]);
   return open ? <HubOnboarding onClose={() => setOpen(false)} /> : null;
 }

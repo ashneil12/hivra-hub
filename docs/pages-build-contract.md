@@ -80,10 +80,10 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 | Permission | What the preview says |
 |---|---|
 | `tasks.read` | Read what's waiting on you, being built or stuck |
-| `tasks.write` | Add and change tasks (not connected yet) |
+| `tasks.write` | Answer, stop or hand out a task when you tap |
 | `project.read` | Read your projects and what each is working on |
 | `project.write` | Rename a project you tap |
-| `mono.run` | Ask a Mono to run work (not connected yet) |
+| `mono.run` | Ask a Mono to run work when you tap |
 | `automation.run` | Run an automation (not connected yet) |
 | `settings.read` | Read your name, appearance and theme |
 | `settings.write` | Change your settings (not connected yet) |
@@ -111,7 +111,10 @@ A bespoke page renders in an `<iframe sandbox="allow-scripts" srcdoc=…>`.
 - **Limits line** on the empty, preview and kept screens: "This can't change the app's core screens, the sidebar, settings, keys or Monos." A page reaches settings only through an ask Ash approved, and never reaches a key.
 - **Wired:** the agent capabilities below ("Connected pages"), the live reads, and the hub reads (`tasks.read`,
   `project.read`, `settings.read`), answered by `pageCapabilities.ts`. `project.write` runs one change, a rename
-  (`pageWrites.ts`); `tasks.write`, `mono.run`, `automation.run` and `settings.write` have no handler yet and still
+  (`pageWrites.ts`). `mono.run` and `tasks.write` run on Ash's tap like the agent taps (`pageActions.ts`, r57):
+  `mono.run` `{agentId, text}` sends that Mono the work as a message from the page; `tasks.write` `{op: "answer",
+  chatId|needId, text}`, `{op: "stop", workerId|agentId|chatId}` or `{op: "add", agentId, text}` takes the same path
+  as `agents.answer`, `agents.stop` or `mono.run`. `automation.run` and `settings.write` have no handler yet and still
   answer "Not connected yet". Two calls a page may use are not permissions of their own: `sessions.read` (the hub's
   chats) sits behind `agents.read`, and `http.fetch` (a connected web source) behind the page's own grants (4c).
 
@@ -205,8 +208,8 @@ Code: `pageWrites.ts`. One change is supported today: `project.write` with `{op:
   Studio"), and Undo runs the old name back through the same call; Redo puts the new one on. If the project has gone
   since, the row stays and says why.
 - Renaming to the name it already has writes no row and changes nothing.
-- The other writes (`tasks.write`, `mono.run`, `automation.run`, `settings.write`) still have no handler and answer
-  "Not connected yet"; a page must not build a button on them.
+- `mono.run` and `tasks.write` are taps (section 3 above). The other writes (`automation.run`, `settings.write`)
+  still have no handler and answer "Not connected yet"; a page must not build a button on them.
 
 ## 5. Design check (bespoke pages, before the preview)
 

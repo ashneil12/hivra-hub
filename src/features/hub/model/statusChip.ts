@@ -8,7 +8,6 @@
 //     one that comes right by itself (usage limit, overloaded, a dropped connection, unknown) → "Can't answer", grey
 // Every red "Needs you" shows its reason and "Open <Lead>'s chat" (NeedsYouChip in StatusMark.tsx).
 // The job logic is untouched: only what the row says and its colour.
-import { gaveUpAsNeedsYou } from "./hubWork";
 import type { StuckState, Worker } from "./types";
 import { stuckOwner } from "../../monos/model/workerStuck";
 
@@ -27,7 +26,8 @@ export function withLead(lead?: string | null): Chip {
 
 /** The chip for an Ash OS stuck state. */
 export function stuckChip(state: StuckState, lead?: string | null): Chip {
-  if (state === "lead_gave_up") return gaveUpAsNeedsYou() ? NEEDS_YOU : { word: "Stuck", tone: "red" }; // old look: dev flag only
+  // The red rule (r30b): never "Stuck", not even under the old-look dev flag (PM r57).
+  if (state === "lead_gave_up") return NEEDS_YOU;
   if (state === "sent_to_lead") return withLead(lead);
   return RETRYING;
 }

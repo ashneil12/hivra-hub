@@ -13,7 +13,7 @@
 // the page points at the folders for those. Superseded lines are not here at all (they are history: `ash_recall`).
 import { hubData } from "./hubData";
 import { fetchMemoryPrimer, type MemoryPrimer } from "./hubMemoryPrimer";
-import type { Need } from "./types";
+import type { Need, ProjectItem } from "./types";
 
 export type MemoryLine = {
   kind: "never" | "decision";
@@ -108,3 +108,6 @@ export function asksFrom(needs: readonly Need[]): DecisionAsk[] {
 export function projectAsks(project: string): DecisionAsk[] {
   return asksFrom(hubData().listNeeds(project));
 }
+
+/** D2 (PM r57): the Decisions item every project lists after its own items, opening that project's Decisions. */
+export const DECISIONS_ITEM: ProjectItem = { id: "decisions", kind: "section", title: "Decisions", sectionType: "decisions" };

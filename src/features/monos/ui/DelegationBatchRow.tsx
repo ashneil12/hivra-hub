@@ -1,5 +1,5 @@
 // A Lead's delegated batch in its chat (H4; T3's agentSpawnSummary): one counted line ("Delegated 3: 2 working, 1
-// failed"), then each worker's chat as a clickable chip with a Stop while it runs, and an amber Stuck beside one that
+// failed"), then each worker's chat as a clickable chip with a Stop while it runs, and a grey Stalled beside one that
 // stalled (workerStall.ts; its card above the composer says how). Ash's Stop on a row stops that task
 // and everything it delegated in turn (stopTree.ts), and no report follows for it.
 import { useState } from "react";
@@ -149,10 +149,10 @@ export function DelegationBatchRow({
             {states[index] === "stuck" ? (
               <span
                 data-delegation-stuck={launch.sessionId}
-                className="flex shrink-0 items-center gap-1 font-sans text-[12px] text-amber-400"
+                className="flex shrink-0 items-center gap-1 font-sans text-[12px] text-content/55"
               >
                 <CircleAlert className="size-3.5" strokeWidth={1.75} />
-                Stuck
+                Stalled
               </span>
             ) : null}
             {row && running ? (

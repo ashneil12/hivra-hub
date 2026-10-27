@@ -32,8 +32,10 @@ npm run hub:realconv -- --scenes S10 \
   --judge deepseek --judge-model deepseek-chat --judge-key-env DEEPSEEK_API_KEY
 ```
 
-**Agents on a custom model.** The agents' model is whatever `--agents` says. The default, `claude:sonnet-5`, is held
-to Sonnet and medium effort by the bench's `claude`. With `custom:<id>`, the hub runs its chats through its own model
+**Agents on a custom model.** The agents' model is whatever `--agents` says. The default is `deepseek-sub` (Ash, 27 Oct:
+no test or run may use his Claude subscription), and the tester and judge follow it; `--agents grok-sub` moves all
+three to Grok. `claude:<model>` runs only when someone passes it, held to Sonnet and medium effort by the bench's `claude`
+(and the tester and judge still stay on DeepSeek unless named). With `custom:<id>`, the hub runs its chats through its own model
 router, exactly as it does when you pick that model:
 
 ```bash

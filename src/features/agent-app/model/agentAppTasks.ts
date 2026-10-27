@@ -958,9 +958,11 @@ async function cannot(source: Session, input: Record<string, unknown>, host: Age
     taskId: row.id,
     ...(row.title ? { title: row.title } : {}),
     status: row.state,
-    needsYou: true,
+    needsYou: by.startsWith("owner:"),
     reason,
-    note: "It is in Ash's Needs you now. Say in one line what would unblock it, and do not report the work as done.",
+    note: by.startsWith("owner:")
+      ? "It is in Ash's Needs you now. Say in one line what would unblock it, and do not report the work as done."
+      : "Your Lead has it now and goes to Ash if only he can unblock it. Say in one line what would unblock it, and do not report the work as done.",
   };
 }
 

@@ -83,8 +83,10 @@ const STATE_WORD: Record<Exclude<JobState, "unknown">, string> = {
   working: "Working",
   checking: "Checking",
   waiting: "Waiting",
-  stuck: "Stuck",
-  gave_up: "Stuck",
+  // The red rule (r30b): never "Stuck". A job still with its Lead reads a calm grey Retrying (statusChip.ts reads it so);
+  // one its Lead gave up on is Ash's (D5), even under the old dev flag.
+  stuck: "Retrying",
+  gave_up: "Needs you",
   needs_you: "Needs you",
   done_unseen: "Done",
   done: "Done",

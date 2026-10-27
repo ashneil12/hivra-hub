@@ -130,8 +130,24 @@ it("a preview shows live data it asked to read, but its buttons and everything e
   await flush();
   expect(replies().map((r) => r.ok)).toEqual([true, false, false]);
   expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the page.");
-  expect(replies()[2].error).toBe("This is a preview: it can do that once you keep the page.");
+  // mono.run is a tap now (C4): a preview's button waits until the page is kept.
+  expect(replies()[2].error).toBe("This is a preview: its buttons work once you keep the page.");
   expect(acted).toEqual([]);
+});
+
+it("mono.run and tasks.write run on Ash's tap on a kept page that asked for them, never on their own (C4)", async () => {
+  approved = ["agents.read", "mono.run", "tasks.write"];
+  const { h } = host({ asks: ["agents.read", "mono.run", "tasks.write"] });
+  h.receive({ type: "hub:call", id: "m1", call: "mono.run", args: { agentId: "frank", text: "Pull signups" } });
+  await flush();
+  expect(replies()[0]).toEqual({ type: "hub:reply", id: "m1", ok: false, error: TAP_ONLY });
+  tapped = true;
+  h.receive({ type: "hub:call", id: "m2", call: "mono.run", args: { agentId: "frank", text: "Pull signups" } });
+  h.receive({ type: "hub:call", id: "m3", call: "tasks.write", args: { op: "stop", workerId: "d1" } });
+  await flush();
+  expect(replies().slice(1).map((r) => r.ok)).toEqual([true, true]);
+  expect(acted.map((a) => a[0])).toEqual(["mono.run", "tasks.write"]);
+  expect(JSON.stringify(replies())).not.toContain("Not connected yet");
 });
 
 it("the walls stay: never Monos, never the app itself; anything unknown is refused plainly", async () => {

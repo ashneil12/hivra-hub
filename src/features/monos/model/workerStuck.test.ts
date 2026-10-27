@@ -3,6 +3,7 @@
 // idea (the rail: question or failed; Being built: whatever Ash OS's job said, where a running sibling hid a failure).
 import { describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
+import { setBusyChats } from "./delegationStore";
 import {
   shortSplit,
   waitingOnLeadLabel,
@@ -233,8 +234,9 @@ describe("a declared block: the agent's own word that it cannot finish", () => {
       ...patch,
     });
 
-  it("reads Cannot finish with its reason, escalated, and is Ash's at once rather than its Lead's", () => {
-    const stuck = stuckWorkers([blocked()], NOW)[0];
+  it("reads Cannot finish with its reason, escalated; the Lead's own block is Ash's at once", () => {
+    const byLead = blocked({ log: [{ at: NOW - 3 * MIN, by: "owner:lead-chat", event: "stalled" }] });
+    const stuck = stuckWorkers([byLead], NOW)[0];
     expect(stuck).toMatchObject({
       kind: "stalled",
       escalated: true,
@@ -249,6 +251,20 @@ describe("a declared block: the agent's own word that it cannot finish", () => {
     // A judged stall (quiet) still waits on its Lead.
     const quiet = stuckWorkers([blocked({ stallKind: "quiet", stallReason: "Still running npm test" })], NOW)[0];
     expect(stuckOwner(quiet)).toBe("with-lead");
+  });
+
+  it("a worker's own block goes to its Lead first, and is Ash's only once the Lead's chat is not mid-turn", () => {
+    const own = blocked({ ownerSession: "lead-chat", log: [{ at: NOW - 3 * MIN, by: "self:w-b", event: "stalled" }] });
+    // Run state unknown (no window has said): its Lead's, grey.
+    expect(stuckOwner(stuckWorkers([own], NOW)[0])).toBe("with-lead");
+    setBusyChats(["lead-chat"], ["lead-chat"]);
+    expect(stuckOwner(stuckWorkers([own], NOW)[0])).toBe("with-lead");
+    setBusyChats([], ["lead-chat"]);
+    expect(stuckOwner(stuckWorkers([own], NOW)[0])).toBe("needs-you");
+    // A redo by the Lead still reads retrying.
+    const redone = { ...own, log: [...own.log, { at: NOW - MIN, by: "owner:lead-chat", event: "lead_redo" }] };
+    expect(stuckOwner(stuckWorkers([redone], NOW)[0])).toBe("retrying");
+    setBusyChats([], []);
   });
 
   it("unfinishedWorker is the one reading a done claim and a followed brief check", () => {

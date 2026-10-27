@@ -25,6 +25,10 @@
 //   npm run hub:realtest -- --grok-sub                     # every chat on Grok 4.7 through Ash's Grok subscription:
 //                                                          # Claude Code behind ~/.local/bin/claude-grok (his own bridge
 //                                                          # launcher, which keeps its key and sign-in to itself)
+//   npm run hub:realtest -- --agents grok-sub              # the same (--agents deepseek-sub | grok-sub | claude)
+//
+// Default (Ash, 27 Oct: "no test or run may use his Claude subscription"): every chat, helper call and the grader on
+// DeepSeek V4.1 Flash through ~/.local/bin/claude-deepseek. Claude runs only when someone passes `--agents claude`.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -147,9 +151,26 @@ export function parseArgs(argv) {
     maxMinutes: Number(value("--max-minutes", "0")) || null,
     maxRequests: Number(value("--max-requests", "0")) || null,
     claudeConfigs: claudeConfigArgs(argv),
-    grokSub: argv.includes("--grok-sub"),
-    deepseekSub: argv.includes("--deepseek-sub"),
+    ...benchAgents(argv, value("--agents", null)),
   };
+}
+
+/** Which model the agents (and the grader) run on: DeepSeek by default, Grok on ask, Claude only when named. */
+export function benchAgents(argv, named = null) {
+  if (named !== null && !BENCH_AGENTS.includes(named)) throw new Error(`--agents is ${BENCH_AGENTS.join(", ")}, not "${named}"`);
+  const grokSub = argv.includes("--grok-sub") || named === "grok-sub";
+  const claude = named === "claude";
+  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!grokSub && !claude);
+  if (claude && (grokSub || deepseekSub)) throw new Error("--agents claude and a subscription bridge are two different agents' models; pass one");
+  return { grokSub, deepseekSub };
+}
+export const BENCH_AGENTS = ["deepseek-sub", "grok-sub", "claude"];
+
+/** The grader's CLI and model: through the same bridge as the agents, so grading never spends Claude unless asked. */
+export function graderVia(options) {
+  if (options.deepseekSub) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
+  if (options.grokSub) return { claude: grokBridge(), model: GROK_BRIDGE_MODEL };
+  return {};
 }
 
 export function runId(now = new Date()) {
@@ -213,7 +234,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.gradeOnly) {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
-    return gradeRun(path.resolve(options.gradeOnly), { claudeConfig: DEV_CLAUDE_CONFIG });
+    return gradeRun(path.resolve(options.gradeOnly), { claudeConfig: DEV_CLAUDE_CONFIG, ...graderVia(options) });
   }
   await runBench(options);
   return 0;
@@ -824,7 +845,7 @@ export async function runBench(options, hooks = {}) {
   }
   if (options.grade && !hooks.play) {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
-    await gradeRun(evidence, { claudeConfig: DEV_CLAUDE_CONFIG });
+    await gradeRun(evidence, { claudeConfig: DEV_CLAUDE_CONFIG, ...graderVia(options) });
   }
   return { id, evidence, results, stopReason };
 }

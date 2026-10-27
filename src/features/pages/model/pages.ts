@@ -158,6 +158,16 @@ function recordPages(store: HubStore): Page[] {
   return [...byId.values()];
 }
 
+/** Whether the pages are known yet: this Mac's at once, Ash OS's once its first list has come back. */
+export function pagesLoaded(): boolean {
+  const b = backend();
+  return b.kind === "local" || b.store.getSnapshot().pages !== undefined;
+}
+/** Whether any page was ever kept here, removed ones included (so a page Ash took away is never put back). */
+export function anyPageEver(): boolean {
+  return pages().some((p) => p.keptAt || p.removed);
+}
+
 /** Every page there is right now: the record's, or this Mac's. */
 function pages(): Page[] {
   const b = backend();
@@ -293,9 +303,12 @@ export function pinnedPages(): Page[] {
 }
 
 // ---- Ash's taps --------------------------------------------------------------------------------------------------------
-/** Keep (blocks) or Keep and allow (bespoke): the page's asks are approved and stored with it. */
-export function keepPage(page: Page, now = Date.now()): Promise<boolean> {
-  const permissions = page.spec.kind === "bespoke" ? page.spec.permissions : [];
+/**
+ * Keep (blocks) or Keep and allow (bespoke): the page's asks are approved and stored with it. With `allow: false` the
+ * page is kept with nothing approved, so it asks Keep and allow when opened (needsAllow), like a page from a setup file.
+ */
+export function keepPage(page: Page, now = Date.now(), opts: { allow?: boolean } = {}): Promise<boolean> {
+  const permissions = page.spec.kind === "bespoke" && opts.allow !== false ? page.spec.permissions : [];
   const kept: Page = { ...page, permissions, keptAt: now, removed: false };
   const b = backend();
   if (b.kind === "local") {

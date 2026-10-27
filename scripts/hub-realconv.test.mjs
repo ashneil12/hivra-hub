@@ -237,9 +237,13 @@ test("options: the agents are what the hub is set to, a custom model comes from 
   const o = parseArgs(["--scenes", "s10,s5", "--agents", "custom:grok", "--tester", "xai", "--tester-model", "grok-4", "--tester-key-env", "XAI_API_KEY"]);
   assert.deepEqual(o.scenes, ["S10", "S5"]);
   assert.equal(o.tester.keyEnv, "XAI_API_KEY");
-  assert.equal(o.judge.provider, "claude");
+  assert.equal(o.judge.provider, "deepseek-sub");
   assert.throws(() => parseArgs(["--agents", "gpt"]), /claude:<model> or custom:<id>/);
-  assert.equal(benchSpec(book, [], parseArgs([])).appModel, "claude:sonnet-5");
+  // Ash, 27 Oct: nothing defaults to his Claude subscription; agents, tester and judge are on DeepSeek unless named.
+  const plain = parseArgs([]);
+  assert.deepEqual([plain.agents, plain.tester.provider, plain.judge.provider], ["deepseek-sub", "deepseek-sub", "deepseek-sub"]);
+  assert.equal(parseArgs(["--agents", "claude:sonnet-5"]).judge.provider, "deepseek-sub");
+  assert.equal(benchSpec(book, [], plain).appModel, "claude:sonnet-5");
   assert.equal(benchSpec(book, [], parseArgs(["--agents", "claude:opus-4"])).model, "opus");
   const dir = tmp();
   const file = path.join(dir, "model.json");

@@ -1038,7 +1038,9 @@ describe("tasks.cannot: the agent's own word that it cannot finish", () => {
       { reason: "Two tests disagree about the cache." },
       host,
     );
-    expect(result).toMatchObject({ taskId: "t-mine", status: "running", needsYou: true });
+    // A worker's own block goes to its Lead first (workerStuck.ts stuckOwner), so it isn't Ash's yet.
+    expect(result).toMatchObject({ taskId: "t-mine", status: "running", needsYou: false });
+    expect((result as { note: string }).note).toMatch(/^Your Lead has it now/);
     expect(declared).toEqual([["self:app-mono-exo-r0", "t-mine", "Two tests disagree about the cache."]]);
     // No task of its own running: it says so rather than reaching for someone else's.
     api.selfTask = vi.fn(async () => undefined);

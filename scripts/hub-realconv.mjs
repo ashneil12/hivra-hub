@@ -15,8 +15,9 @@
 //   npm run hub:realconv -- --list          # the scenes and which can run
 //   npm run hub:realconv -- --dry-run ...   # check the options and print the plan; nothing starts
 //
-// Defaults: agents on claude:sonnet-5 (the bench's budget model); tester and judge on claude sonnet through the dev
-// copies' login. Keys: only from a variable Ash names with --*-key-env, never found on their own.
+// Defaults (Ash, 27 Oct: no test or run may use his Claude subscription): agents, tester and judge on deepseek-sub;
+// `--agents grok-sub` moves all three to Grok. Claude runs only when someone names it (`--agents claude:<model>`,
+// `--tester claude`, `--judge claude`). Keys: only from a variable Ash names with --*-key-env, never found on their own.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -39,10 +40,10 @@ export function parseArgs(argv, env = process.env) {
     keyEnv: value(`--${who}-key-env`),
     effort: value(`--${who}-effort`),
   });
-  const agents = value("--agents", "claude:sonnet-5");
+  const agents = value("--agents", "deepseek-sub");
   if (!/^(claude:[\w.-]+|custom:[\w.-]+|grok-sub|deepseek-sub)$/.test(agents)) throw new Error(`--agents is claude:<model> or custom:<id> (or grok-sub, deepseek-sub), not "${agents}"`);
-  // On a subscription the tester and judge go there too unless named: Ash's Claude limit is what's short.
-  const llmDefault = agents === "grok-sub" || agents === "deepseek-sub" ? agents : "claude";
+  // The tester and judge go where the agents go unless named; never Claude by default, even with Claude agents.
+  const llmDefault = agents === "grok-sub" ? "grok-sub" : "deepseek-sub";
   return {
     scenes: value("--scenes", "S10,S5,S14").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
     agents,

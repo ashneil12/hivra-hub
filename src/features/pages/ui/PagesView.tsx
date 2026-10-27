@@ -11,7 +11,7 @@ import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
 import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
-import { READY_BY, READY_PAGES, type ReadyPage } from "../model/readyPages";
+import { READY_BY, READY_PAGES, readyWhat, type ReadyPage } from "../model/readyPages";
 import { checkBespokePage } from "../model/designCheck";
 import { describeCapability, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
@@ -663,6 +663,7 @@ export function PagesContent() {
             <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
             <PinToggle page={shown} inHeader />
           </div>
+          {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
           {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
           <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
           <div className="mb-4 mt-1"><Limits /></div>
@@ -738,6 +739,7 @@ export function PagesContent() {
                   <div key={p.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-row={p.id}>
                     <button type="button" className="flex min-w-0 flex-1 flex-col text-left" onClick={() => setOpen(p.id)}>
                       <span className="truncate text-[13px] text-content">{p.title}</span>
+                      {readyWhat(p.request) ? <span className="truncate text-[12px] text-content/70" data-pages-what>{readyWhat(p.request)}</span> : null}
                       <span className="truncate text-[12px] text-content/60">by {p.by}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
                     </button>
                     <PinToggle page={p} />

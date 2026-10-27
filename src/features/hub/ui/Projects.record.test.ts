@@ -14,11 +14,12 @@ import { HubStore } from "../model/hubStore";
 import { createLiveHubData } from "../model/liveHubData";
 import { moveLocalNamesToAshOs, resetNameMoveForTest } from "../model/projectActions";
 import { saveProjectDraft, projectDraft } from "../model/projectDraft";
-import { pendingUndo } from "../model/projectPrefs";
+import { pendingUndo, setProjectFileActions } from "../model/projectPrefs";
 import { templateOf } from "../model/templates";
 import { NewProjectView } from "./NewProjectView";
 import { ProjectMenu, RemoveFromHub } from "./ProjectMenu";
 import { ProjectStrip } from "./ProjectStrip";
+import { HubProjectItems } from "./HubProjectItems";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => { throw new Error("no native side in this test"); }) }));
 
@@ -161,6 +162,30 @@ describe("a project's menu", () => {
     await act(async () => (document.querySelector('[data-project-shape-choice="megaphone"]') as HTMLElement).click());
     await until(() => stub.state.projects.find((p) => p.id === "hivra")?.iconShape === "megaphone", "shape in Ash OS");
     await until(() => q('button[aria-label^="Hivra"] [data-project-shape="megaphone"]'), "strip shows the shape");
+  });
+
+  it("Change icon → Upload image… puts the picked image on the strip and the rail, and it stays after a relaunch (G3)", async () => {
+    const picked: string[] = [];
+    setProjectFileActions({
+      showFolder: async () => undefined,
+      pickImage: async (id) => (picked.push(id), { src: "asset://localhost/hub-hivra-logo.png", path: "/data/logos/hub-hivra-logo.png" }),
+    });
+    const rail = () => createElement(HubProjectItems, { selection: { project: "hivra", item: "inbox" }, onPick: () => undefined });
+    act(() => root.render(createElement("div", null, strip(), rail(), createElement(ProjectMenu, { project: project("hivra"), anchor: { x: 10, y: 10 }, onClose: () => undefined }))));
+    act(() => (document.querySelector('[data-project-menu-item="Change icon"]') as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-project-upload]") as HTMLElement).click());
+    expect(picked).toEqual(["hivra"]);
+    const images = () => [...container.querySelectorAll<HTMLImageElement>('[data-project-glyph="image"]')].map((i) => i.getAttribute("src"));
+    await until(() => images().length >= 2, "image on the strip and the rail");
+    expect(q('button[aria-label^="Hivra"] [data-project-glyph="image"]')?.getAttribute("src")).toBe("asset://localhost/hub-hivra-logo.png");
+    expect(q('[data-hub-project-header] [data-project-glyph="image"]')?.getAttribute("src")).toBe("asset://localhost/hub-hivra-logo.png");
+    // A relaunch: everything unmounted and drawn again from what this Mac kept.
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(createElement("div", null, strip(), rail())));
+    await until(() => images().length >= 2, "image after a relaunch");
+    expect(images().every((src) => src === "asset://localhost/hub-hivra-logo.png")).toBe(true);
+    expect(JSON.parse(localStorage.getItem("monocode:hub-project-prefs")!).icons.hivra).toMatchObject({ kind: "image", src: "asset://localhost/hub-hivra-logo.png" });
   });
 
   it("Remove from hub says what stays open, archives it in Ash OS, and Undo brings it back", async () => {
