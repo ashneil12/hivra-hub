@@ -627,6 +627,8 @@ import {
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
+import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
+import { overlayLiveWorking } from "../features/sessions/model/liveTurns";
 import { homeAfterRemoval } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
@@ -2486,6 +2488,8 @@ function Workspace({
     busySessionIdsRef.current = nextBusySessionIds;
   }
   const busySessionIds = busySessionIdsRef.current;
+  // Other windows never saw Session.busy; the process union is what the rail reads.
+  const liveBusySessionIds = useLiveTurns(busySessionIds);
 
   /** Probe the active session's harness for its live model catalog whenever
    * the active harness changes. Catalogs load lazily (probing spawns a CLI
@@ -2639,7 +2643,7 @@ function Workspace({
   }, []);
   const finishedTurnIds = useUnseenFinishedSessions(
     sessions,
-    busySessionIds,
+    liveBusySessionIds,
     activeSessionId,
   );
   // The green Done tick follows the worker's job, not only its chat's last turn (workOutcome.ts: one source).
@@ -2658,8 +2662,8 @@ function Workspace({
   );
   // How many replies each Mono has that the user has not read, for the rail. An answer to the checker is not one, nor
   // is a room turn's (its reply is in the room, r52).
-  const replyBusyRef = useRef(busySessionIds);
-  const replyBusy = withoutQuietTurns(busySessionIds, sessions);
+  const replyBusyRef = useRef(liveBusySessionIds);
+  const replyBusy = withoutQuietTurns(liveBusySessionIds, sessions);
   if (!setsEqual(replyBusyRef.current, replyBusy)) replyBusyRef.current = replyBusy;
   const monoReplies = useUnseenReplyCounts(
     monoSessionIds,
@@ -15638,12 +15642,20 @@ function Workspace({
         : undefined;
       if (session) {
         // An idle Mono that is waiting on a pull request says so instead of nothing.
-        const state = monoState(session);
+        const state = overlayLiveWorking(
+          monoState(session),
+          liveBusySessionIds.has(session.id),
+        );
         const waiting =
           state.status === "idle"
             ? waitingActivity(prWatches.watchingFor(session.id))
             : undefined;
         states.set(mono.id, waiting ? { ...state, activity: waiting } : state);
+      } else if (
+        mono.sessionId &&
+        liveBusySessionIds.has(mono.sessionId)
+      ) {
+        states.set(mono.id, overlayLiveWorking({ status: "idle" }, true));
       }
       const count = mono.sessionId
         ? monoReplies.counts.get(mono.sessionId)
@@ -15652,7 +15664,14 @@ function Workspace({
     }
     return { states, unseen };
     // The roster is read through its snapshot.
-  }, [monosSnap, sessions, monoReplies.counts, prWatches, prWatchVersion]);
+  }, [
+    monosSnap,
+    sessions,
+    liveBusySessionIds,
+    monoReplies.counts,
+    prWatches,
+    prWatchVersion,
+  ]);
   const monoRail = useStableValue(monoRailState);
   const busyProjectPaths = useStableValue(
     promptableSessions.flatMap((session) =>
@@ -15698,7 +15717,7 @@ function Workspace({
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
 
   // r30h: which chats run a turn now, so a failed worker whose Lead's turn ended goes red (workerStuck.ts leadTurnOver).
-  useBusyChatsFeed(sessions);
+  useBusyChatsFeed(sessions, liveBusySessionIds);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();
@@ -15965,7 +15984,11 @@ function Workspace({
   const teamLeadLook = teamLeadMono ? monoLook(teamLeadMono) : undefined;
   const teamLeadStatus = teamLeadMono ? (monoRail.states.get(teamLeadMono.id)?.status ?? "idle") : "idle";
   const teamLeadActive = !!teamLeadMono && monoCovers && monoViewMono?.id === teamLeadMono.id;
-  const teamLeadBusy = !!teamLeadSession?.busy;
+  const teamLeadBusy =
+    !!teamLeadSession?.busy ||
+    !!(
+      teamLeadMono?.sessionId && liveBusySessionIds.has(teamLeadMono.sessionId)
+    );
   // Kept by identity while nothing it shows changes: the Sidebar is memoized.
   const codingTeamList = useMemo<CodingTeamList | undefined>(
     () =>
@@ -16105,7 +16128,7 @@ function Workspace({
       onOpenFilesSearch={onFindInProject}
       searchFocusToken={searchFocusToken}
       sessions={sidebarHistory}
-      busySessionIds={busySessionIds}
+      busySessionIds={liveBusySessionIds}
       approvalSessionIds={approvalSessionIds}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
       activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
