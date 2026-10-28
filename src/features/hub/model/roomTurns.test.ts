@@ -146,6 +146,16 @@ describe("the prompts", () => {
     expect(transcript).toBe("Ash: what did we decide about colour?\n\n>> frank: Colour means status only.\n\n(app): Alfred couldn't answer: offline.");
   });
 
+  it("r61 (A2): each Mono is told its own role, so asked 'what do you do' it doesn't answer as the host", () => {
+    const base = { chatName: "Leadership", chatId: "c1", projectId: "hub", seats: TEAM, host: COS, transcript };
+    const frank = turnPrompt({ ...base, me: FRANK, kind: "answer" });
+    const pm = turnPrompt({ ...base, me: PM, kind: "answer" });
+    expect(frank).toMatch(/\nYour own role: frank \(memory and checks\)/);
+    expect(pm).toMatch(/\nYour own role: Projects Manager: the board/);
+    expect(frank).not.toMatch(/Your own role: Chief of Staff/);
+    expect(pm).toContain("never another Mono's");
+  });
+
   it("a room names its project by name with the id, not just the lowercase id", () => {
     const base = { chatName: "Leadership team", chatId: "bark-desk:leadership", projectId: "bark-desk", seats: TEAM, host: COS, transcript };
     expect(turnPrompt({ ...base, projectName: "Bark Desk", me: COS, kind: "answer" })).toContain('for project "Bark Desk" (`bark-desk`).');

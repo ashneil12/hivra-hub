@@ -1,4 +1,6 @@
-import { draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
+import { clearProjectDraft, draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
+import { Popover } from "../../../shared/ui/Popover";
+import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MoreHorizontal, Plus, type IconComponent } from "../../../shared/ui/icons";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
@@ -10,7 +12,7 @@ import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
-import { appItemInView, showAppItem, type HubSelection } from "../model/hubNav";
+import { appItemInView, showAppItem, showProjectToday, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
 
@@ -53,6 +55,7 @@ export function ProjectStrip({
   useProjectDraftVersion();
   const draftProject = projectDraft();
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
+  const [draftMenu, setDraftMenu] = useState<PopoverAnchor>();
   const autopilot = useAutopilotStrip();
   return (
     <nav
@@ -94,13 +97,59 @@ export function ProjectStrip({
             selected={selection.item === "new-project"}
             onClick={() => { onLeaveCovers?.(); showAppItem("new-project"); }}
             glyph={<span className="grid size-[24px] place-items-center rounded-[7px] bg-content/10 text-[12px] font-medium text-content/85 ring-1 ring-inset ring-content/10">{draftInitial(draftProject.name)}</span>}
+            onMenu={setDraftMenu}
           />
         </div>
       ) : null}
       <StripButton label="" title="New project" selected={false} onClick={() => { onLeaveCovers?.(); showAppItem("new-project"); }} Icon={Plus} />
+      {draftMenu && draftProject ? (
+        <DraftMenu
+          name={draftProject.name}
+          anchor={draftMenu}
+          onClose={() => setDraftMenu(undefined)}
+          onDiscard={() => {
+            setDraftMenu(undefined);
+            const open = selection.item === "new-project";
+            clearProjectDraft();
+            if (open) showProjectToday();
+          }}
+        />
+      ) : null}
       {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
       <RemovedUndoToast />
     </nav>
+  );
+}
+
+/**
+ * r61 (PM's blind run: "Draft: kids maths" sat on the strip with no way off it): the draft tile's menu. Discard asks once,
+ * with Cancel focused (D4), and then the interview so far is gone; nothing was ever a project, so nothing else changes.
+ */
+export function DraftMenu({ name, anchor, onClose, onDiscard }: { name: string; anchor: PopoverAnchor; onClose: () => void; onDiscard: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <Popover anchor={anchor} side="right" align="start" width={230} constrainHeight={false} role="menu" aria-label={`Draft: ${name} options`}
+      onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-hub-draft-menu>
+      {confirm ? (
+        <div className="p-2 text-[13px]" data-hub-draft-discard-confirm>
+          <p className="pb-2 text-content/85">Discard the draft "{name}"? The setup chat so far is lost.</p>
+          <div className="flex justify-end gap-1.5">
+            <button type="button" autoFocus onClick={onClose} data-hub-draft-discard-cancel
+              className={`rounded-md px-3 py-1.5 text-content/85 hover:bg-content/8 ${CANCEL_FOCUS_RING}`}>Cancel</button>
+            <button type="button" onClick={onDiscard} data-hub-draft-discard-yes
+              className="rounded-md px-3 py-1.5 text-red-400 hover:bg-red-500/10">Discard</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <button type="button" role="menuitem" data-hub-draft-open onClick={() => { onClose(); showAppItem("new-project"); }}
+            className="flex h-7 w-full items-center rounded-md px-2 text-left text-[13px] text-content hover:bg-content/8">Open draft</button>
+          <div role="separator" className="my-1 h-px bg-content/10" />
+          <button type="button" role="menuitem" data-hub-draft-discard onClick={() => setConfirm(true)}
+            className="flex h-7 w-full items-center rounded-md px-2 text-left text-[13px] text-red-400 hover:bg-red-500/10">Discard draft…</button>
+        </>
+      )}
+    </Popover>
   );
 }
 

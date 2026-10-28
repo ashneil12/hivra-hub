@@ -61,6 +61,9 @@ export function HubProjectItems({
   const [menu, setMenu] = useState<PopoverAnchor>();
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
+  // A new project's draft is no project's page (PM's r60 G2): the project Ash was last in stays underneath, so leaving
+  // the draft comes back to it, but its name and items aren't shown as if the draft were one of its pages.
+  if (selection.item === "new-project") return null;
   // D2: every project's own Decisions, last (Settings → Decisions still lists them all).
   const items = [...hubData().listProjectItems(project.id), DECISIONS_ITEM];
   return (

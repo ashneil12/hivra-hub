@@ -1,4 +1,4 @@
-import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE } from "./bridgeModels";
+import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE, GROK_BRIDGE_MODEL_ID, bridgeSafeModel } from "./bridgeModels";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
@@ -207,7 +207,8 @@ export const MODELS: AgentModel[] = [
 ];
 
 export const DEFAULT_MODEL_ID: Record<HarnessId, string> = {
-  claude: "claude:sonnet-5",
+  // r61 (Alfred): never an Anthropic default. Claude Code runs only on the bridges, so its default is Grok 4.7.
+  claude: GROK_BRIDGE_MODEL_ID,
   codex: "",
   cursor: "cursor:composer-2.5",
   grok: "grok:grok-4.6",
@@ -841,11 +842,15 @@ export function loadDefaultModels(): Partial<Record<HarnessId, string>> {
       return {};
     }
     const out: Partial<Record<HarnessId, string>> = {};
+    let migrated = false;
     for (const [key, value] of Object.entries(parsed)) {
       if (isHarnessId(key) && typeof value === "string" && value) {
-        out[key] = value;
+        out[key] = bridgeSafeModel(key, value);
+        migrated ||= out[key] !== value;
       }
     }
+    // r61: an Anthropic default kept from before the bridges is rewritten once, so the stored value is Grok 4.7 too.
+    if (migrated) localStorage.setItem(DEFAULT_MODELS_KEY, JSON.stringify(out));
     return out;
   } catch {
     return {};
@@ -941,7 +946,11 @@ export function loadLastModelChoice(): LastModelChoice | null {
       typeof (parsed as LastModelChoice).model === "string" &&
       isHarnessId((parsed as LastModelChoice).harness)
     ) {
-      return parsed as LastModelChoice;
+      const last = parsed as LastModelChoice;
+      const model = bridgeSafeModel(last.harness, last.model);
+      if (model === last.model) return last;
+      localStorage.setItem(LAST_MODEL_KEY, JSON.stringify({ harness: last.harness, model }));
+      return { harness: last.harness, model };
     }
     return null;
   } catch {
@@ -1053,10 +1062,7 @@ function comparableNativeId(harness: HarnessId, id: string): string {
 function pickDefaultId(harness: HarnessId, models: AgentModel[]): string {
   if (harness === "claude") {
     return (
-      models.find((model) => model.nativeId === "claude-sonnet-5")?.id ??
-      models.find((model) => model.nativeId === "sonnet")?.id ??
-      models.find((model) => model.id === DEFAULT_MODEL_ID.claude)?.id ??
-      models[0]?.id ??
+      // r61: a live Claude catalog lists Anthropic's models; the default stays the bridge's Grok 4.7 whatever it lists.
       DEFAULT_MODEL_ID.claude
     );
   }

@@ -240,7 +240,7 @@ handler, list every read and tap in `permissions`), and, for a Rebuild, the page
 ## Ready-made pages
 
 `readyPages.ts`. Pages offers them under **Ready-made** (in the list, and on the empty screen) until one is kept. **Add**
-shows its preview with what it asks, and **Keep and allow** keeps it like any page (by "Ready-made", on Today's pages).
+shows its preview with what it asks, and **Keep and allow** keeps it like any page (by "Ready-made", on Pages, not tied to a project).
 - **Agents** (`agents.read` + the taps): every agent and what it is doing; the ones that need Ash (`needsYou` or asking;
   agents and the work they handed out, at any depth) on top with **Take it**, **Answer**, **Open** and **Stop**; then
   Working (with each agent's recent work) and Idle (with **Message**). It watches `agents.read` and uses only the taps,

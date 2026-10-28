@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { showsOnboarding } from "./HubOnboardingGate";
 import { finishOnboarding } from "../model/onboarding";
-import { recordSetupFact, SETUP_FACT_IDS } from "../model/setupProof";
+import { recordSetupFact, SETUP_FACT_IDS, snoozeSetupCard } from "../model/setupProof";
 
 describe("onboarding in a dev copy", () => {
   afterEach(() => {
@@ -32,6 +32,14 @@ describe("onboarding in a dev copy", () => {
   it("stays away once every setup check has passed", () => {
     finishOnboarding();
     for (const id of SETUP_FACT_IDS) recordSetupFact(id, "proved");
+    expect(showsOnboarding(false)).toBe(false);
+  });
+
+  // r61 (PM's blind run on 0.16.2): "Not now" on the setup card came back on every launch.
+  it("stays away on later launches once Ash said Not now, proved or not", () => {
+    finishOnboarding();
+    expect(showsOnboarding(false)).toBe(true);
+    snoozeSetupCard();
     expect(showsOnboarding(false)).toBe(false);
   });
 });

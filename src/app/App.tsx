@@ -627,7 +627,8 @@ import {
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
-import { homeAfterRemoval } from "../features/sessions/model/sessionWorkspaceLifecycle";
+import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
+import { paneFocus } from "./model/paneFocus";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
 import {
@@ -4736,26 +4737,25 @@ function Workspace({
 
   const onFocusPane = useCallback(
     (paneId: string) => {
-      if (paneId === monoViewIdRef.current) {
+      const focus = paneFocus(paneId, {
+        monoViewId: monoViewIdRef.current,
+        shownMonoSessionId: shownMonoSessionIdRef.current ?? null,
+      });
+      if (focus === "mono") {
         setMonoShownSessionFocused(false);
         setProjectTerminalFocused(false);
         setComposerFocused(true);
         return;
       }
-      if (paneId === shownMonoSessionIdRef.current) {
+      if (focus === "shown") {
         setMonoShownSessionFocused(true);
         setProjectTerminalFocused(false);
         setComposerFocused(true);
         return;
       }
-      // Over the Mono, only its sidebar holds panes outside the workspace: a
-      // launched session sliding away as another opens. Its late focus must
-      // not close the Mono and send that session to its project.
-      if (
-        monoViewIdRef.current &&
-        !tabsRef.current.some((tab) => leafIds(tab.layout).includes(paneId))
-      )
-        return;
+      // Over the Mono every workspace tab is hidden, and a pane outside the workspace is a launched session sliding
+      // away from its sidebar: Ash can't have clicked either, so their focus never closes the Mono (r61).
+      if (focus === "ignore") return;
       closeMonoView();
       if (
         tabsRef.current.find((tab) => tab.id === activeTabIdRef.current)
@@ -6030,7 +6030,7 @@ function Workspace({
       sessionId: string,
       mode: "archive" | "delete",
       skipDeleteConfirm = false,
-      origin: "ui" | "cli" = "ui",
+      origin: RemovalOrigin = "ui",
     ): Promise<boolean> => {
       if (
         removingSessionIds.current.has(sessionId) ||
@@ -6167,14 +6167,24 @@ function Workspace({
               tabsRef.current = removal.tabs;
               setSessions(removal.sessions);
               setTabs(removal.tabs);
-              if (removal.activeTabId !== activeTabIdRef.current) {
-                activateTab(removal.activeTabId);
+              // r61: only Ash's own archive or delete moves him; a background removal leaves the view alone.
+              const after = viewAfterRemoval(
+                change.mode,
+                origin,
+                removal,
+                activeTabIdRef.current,
+              );
+              if (after.activeTabId && after.reveal) {
+                activateTab(after.activeTabId);
+              } else if (after.activeTabId) {
+                activeTabIdRef.current = after.activeTabId;
+                setActiveTabIdState(after.activeTabId);
               }
               const activeTab = removal.tabs.find(
                 (tab) => tab.id === removal.activeTabId,
               );
               // r30e: deleting the window's last tab shows its home (Today), not an empty "New session".
-              const showHome = homeAfterRemoval(change.mode, origin, removal);
+              const showHome = after.home;
               if (showHome) setHubSelection(showHome);
               setComposerFocused(
                 !showHome &&
@@ -10156,7 +10166,8 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       }),
-    dropSession: (id) => onRemoveHistorySession(id, "delete", true),
+    // The room's own housekeeping, not Ash's: it never moves the view (r61).
+    dropSession: (id) => onRemoveHistorySession(id, "delete", true, "app"),
   });
   const roomsHostRef = useRef(roomsHost);
   roomsHostRef.current = roomsHost;
@@ -12151,7 +12162,8 @@ function Workspace({
       orchestrationRuns,
     );
     if (next.tabs !== tabs) setTabs(next.tabs);
-    if (next.activeTabId !== activeTabId) setActiveTabId(next.activeTabId);
+    // Reconciling a run's worker tabs is bookkeeping, not navigation: it never closes a Mono's chat over them (r61).
+    if (next.activeTabId !== activeTabId) setActiveTabIdState(next.activeTabId);
   }, [tabs, activeTabId, orchestrationRuns]);
 
   useLayoutEffect(() => {
@@ -15697,7 +15709,7 @@ function Workspace({
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
 
-  // r30h: which chats run a turn now, so a failed worker whose Lead's turn ended goes red (workerStuck.ts leadTurnOver).
+  // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
@@ -15901,6 +15913,7 @@ function Workspace({
             : activeTabId
       }
       cwd={sidebarCwd}
+      viewTitle={hubShown && hubSel.item === "new-project" ? "New project" : undefined}
       projectRailOpen={projectRailOpen}
       sessionSidebarOpen={sessionSidebarOpen}
       compactRail={!insetLayout && compactTitleNavigation}

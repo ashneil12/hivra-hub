@@ -113,6 +113,18 @@ it("a stuck Being built job makes its Lead stuck, with the job and the reason", 
   expect(jobsData(jobs, projects).jobs[0]).toMatchObject({ projectName: "Hivra", agentName: "Hivra lead", state: "stuck" });
 });
 
+// r61 (PM's blind C3 on 0.16.2): the Chief of Staff, idle, showed "Working · Scribe writes release notes" from an old job.
+it("an idle Mono is not working on an Ash OS job nobody has touched for a while; a fresh one still counts", () => {
+  const job = (id: string, agoMs: number) => ({ id, projectId: "hivra", title: `Example: ${id}`, lead: "chief-of-staff", leadName: "Chief of Staff", state: "working" as const,
+    startedAt: new Date(NOW - agoMs - 60_000).toISOString(), lastActiveAt: new Date(NOW - agoMs).toISOString(), finishedAt: null, seen: true });
+  const cos = mono("chief-of-staff", { name: "Chief of Staff", sessionId: "s-cos" });
+  const stale: HubJobGroup[] = [{ leadId: "chief-of-staff", leadName: "Chief of Staff", projectId: "hivra", jobs: [job("scribe writes release notes", 3 * 86_400_000)] }];
+  const idle = agentsData(inputs({ monos: [cos], jobs: stale, sessions: [session("s-cos")] })).agents[0];
+  expect(idle).toMatchObject({ state: "idle", doing: "" });
+  const fresh: HubJobGroup[] = [{ ...stale[0], jobs: [job("tidy the notes", 5 * 60_000)] }];
+  expect(agentsData(inputs({ monos: [cos], jobs: fresh, sessions: [session("s-cos")] })).agents[0]).toMatchObject({ state: "working", doing: "Example: tidy the notes" });
+});
+
 it("needs and waiting chats, and rooms' latest messages, in plain shapes", () => {
   const n = needsData(
     [{ id: "q:7", projectId: "hivra", title: "Example: pick a headline", why: "Two tested the same.", actionType: "see_options", actionLabel: "See options", state: "open" },

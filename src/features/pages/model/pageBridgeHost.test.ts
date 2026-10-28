@@ -229,3 +229,28 @@ it("a web fetch reaches the page's own handler, and its plain refusal comes back
     { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the hub can't do this for pages yet." },
   ]);
 });
+
+// r61 (PM's blind C3 on 0.16.2): a reply typed on a page went nowhere and the page showed nothing either way.
+it("every tap's outcome is said on the page by the app: Sending… while it runs, then sent, refused or failed", async () => {
+  const { pageActionLog, pageActionRunning, resetPageActionsForTest } = await import("./pageActions");
+  resetPageActionsForTest();
+  approved = ["agents.read", "agents.stop", "agents.message"] as Capability[];
+  // Refused: no tap.
+  const { h } = host({ asks: ["agents.read", "agents.stop", "agents.message"] as Capability[] });
+  h.receive({ type: "hub:call", id: "r1", call: "agents.message", args: { agentId: "chief-of-staff", text: "hi" } });
+  await flush();
+  expect(pageActionLog("pg_1")[0]).toMatchObject({ line: `Didn't go through: ${TAP_ONLY}`, ok: false });
+  // Running, then failed with the plain reason.
+  tapped = true;
+  let fail!: (e: Error) => void;
+  const failing = host({ asks: ["agents.message"] as Capability[], act: () => new Promise((_, rej) => { fail = rej; }) }).h;
+  failing.receive({ type: "hub:call", id: "r2", call: "agents.message", args: { agentId: "chief-of-staff", text: "hi" } });
+  await flush();
+  expect(pageActionRunning("pg_1")).toBe(true);
+  fail(new Error("Chief of Staff couldn't take a message right now. Open the chat instead."));
+  await flush();
+  expect(pageActionRunning("pg_1")).toBe(false);
+  expect(pageActionLog("pg_1")[0]).toMatchObject({ line: "Didn't go through: Chief of Staff couldn't take a message right now. Open the chat instead.", ok: false });
+  expect(replies().find((m) => m.id === "r2")).toMatchObject({ ok: false });
+  resetPageActionsForTest();
+});

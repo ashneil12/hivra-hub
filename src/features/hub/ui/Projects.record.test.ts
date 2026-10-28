@@ -39,6 +39,8 @@ async function until(read: () => unknown, what: string, ms = 4000) {
   }
 }
 const q = (s: string) => container.querySelector(s) as HTMLElement | null;
+/** Popovers open on document.body. */
+const dq = (s: string) => document.querySelector(s) as HTMLElement | null;
 const strip = () => createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined });
 const stripLabels = () => [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
 const calls = (name: string) => stub.calls.filter((c) => c.path === `/api/ash-hub-${name}`).length;
@@ -82,6 +84,22 @@ function answered(name: string) {
 }
 
 describe("New project", () => {
+  it("r61: a draft on the strip can be discarded from its menu, after one confirm with Cancel focused (\"Draft: kids maths\" was stuck)", async () => {
+    answered("kids maths");
+    act(() => root.render(strip()));
+    await until(() => q("[data-hub-project-draft]"), "draft tile");
+    act(() => (q("[data-hub-project-draft] [data-project-more]") as HTMLButtonElement).click());
+    await until(() => dq("[data-hub-draft-discard]"), "draft menu");
+    act(() => dq("[data-hub-draft-discard]")!.click());
+    await until(() => dq("[data-hub-draft-discard-confirm]"), "confirm");
+    expect(document.activeElement?.hasAttribute("data-hub-draft-discard-cancel")).toBe(true);
+    expect(projectDraft()?.name).toBe("kids maths");
+    act(() => dq("[data-hub-draft-discard-yes]")!.click());
+    await until(() => !q("[data-hub-project-draft]"), "draft gone from the strip");
+    expect(projectDraft()).toBeNull();
+    expect(localStorage.getItem("monocode:hub-project-draft")).toBeNull();
+  });
+
   it("ends on a preview that says what Create makes, and nothing is made before Create", async () => {
     answered("Moonrise Farm");
     act(() => root.render(createElement(NewProjectView)));

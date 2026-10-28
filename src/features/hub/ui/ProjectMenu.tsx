@@ -2,6 +2,7 @@ import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/pr
 import { DEEPSEEK_BRIDGE_NAME } from "../../sessions/model/bridgeModels";
 import { useEffect, useRef, useState } from "react";
 import { Popover, type PopoverAnchor } from "../../../shared/ui/Popover";
+import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
 import {
   Archive, Bot, Check, Clock, DashboardSquare, GitBranch, Inbox, MessageSquare, Shield,
   Star, StickyNote, Terminal, Wrench, Zap, type IconComponent,
@@ -327,6 +328,13 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
   const [check, setCheck] = useState<ArchiveCheck>();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // r61: a destructive confirm opens with Cancel focused (after the popover has placed itself).
+  useEffect(() => {
+    const t = setTimeout(() => cancelRef.current?.focus({ preventScroll: true }), 0);
+    cancelRef.current?.focus({ preventScroll: true });
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => {
     if (!live) return;
     let on = true;
@@ -379,7 +387,9 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
         </>
       ) : null}
       <div className="flex justify-end gap-1.5 pt-1">
-        <button type="button" onClick={onClose} className="rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8">Cancel</button>
+        {/* r61 (PM's D4): Cancel has the focus, with a visible ring, so Enter cancels (as in ConfirmDelete). */}
+        <button type="button" ref={cancelRef} data-project-remove-cancel onClick={onClose}
+          className={`rounded-md px-2.5 py-1 text-[12px] text-content/60 hover:bg-content/8 ${CANCEL_FOCUS_RING}`}>Cancel</button>
         <button type="button" data-project-remove disabled={!ready}
           onClick={remove}
           className="rounded-md bg-red-500/15 px-2.5 py-1 text-[12px] text-red-300 hover:bg-red-500/25 disabled:opacity-35">

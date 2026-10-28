@@ -54,7 +54,7 @@ import {
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
-import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   bridgeFamily,
   GROK_BRIDGE_MODEL_ID,
@@ -346,6 +346,18 @@ function launchEffort(launch: Pick<QuickLaunch, "harness" | "model" | "modelSett
   return launch.model
     ? modelEffortLabel(resolveModel(launch.harness, launch.model), launch.modelSettings)
     : undefined;
+}
+
+/**
+ * What a start runs on, in the words the worker card uses ("DeepSeek V4.1 Flash · High"), so a Lead names the model and
+ * effort the way Ash sees them, never the raw id (r61, PM: a Lead said "claude:deepseek-v4.1-flash", not DeepSeek high).
+ */
+export function launchModelName(launch: Pick<QuickLaunch, "harness" | "model" | "modelSettings">): string | undefined {
+  if (!launch.model) return undefined;
+  const name = resolveModel(launch.harness, launch.model).name;
+  const shown = launch.harness === "claude" ? claudePillName(name) : name;
+  const effort = launchEffort(launch);
+  return effort ? `${shown} · ${effort}` : shown;
 }
 
 /** A model id from any harness, or a family ("sonnet") among the caller's own harness's models. */
@@ -731,9 +743,10 @@ async function delegate(
         harness: launch.harness,
         model: launch.model,
         ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
+        ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
         ...(route ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
-        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path), then end your turn.`,
+        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; name its model as modelName says, never the raw model id), then end your turn.`,
       };
     }
   }
@@ -767,6 +780,8 @@ async function delegate(
     model: launch.model,
     // The effort it runs at, as the picker words it, so the Lead can say it and the card shows the same value.
     ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
+    // The model and effort in Ash's words: what the Lead says, never the raw model id.
+    ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
     // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
     ...(route ? { modelWhy: route.why } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
@@ -786,7 +801,7 @@ async function delegate(
     // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
     ...(ownTeam ? { team: ownTeam.name } : {}),
     note: row
-      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path) and end your turn; whenever he writes meanwhile, answer him at once.`
+      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path; name its model as modelName says, never the raw model id) and end your turn; whenever he writes meanwhile, answer him at once.`
       : "It started, but its task record could not be stored; its report still comes back to you.",
   };
 }

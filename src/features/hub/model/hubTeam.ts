@@ -70,6 +70,41 @@ export async function seedTeamFiles(read: Read = readAgentFile, write: Write = w
   return wrote;
 }
 
+const ASH_ASKS_KEY = "monocode:hub-frank-ash-asks-seeded";
+/** frank's soul names it as his master list of Ash's own words (teamSouls.ts). */
+export const ASH_ASKS_PATH = "memory/ash-asks.md";
+/**
+ * r61 (A4): frank's soul checks work against "memory/ash-asks.md", but no install ever made the file, so his first
+ * owner's-words check had nothing to read. It starts as the list's shape with no quotes in it: frank adds Ash's words
+ * as Ash says them, and never invents one.
+ */
+export const ASH_ASKS_SEED = `# What Ash asked for, in his words
+
+The owner's-words check reads this list. One line each: the date, Ash's exact words in quotes, and what they're about.
+Only Ash's own words go here, never a Mono's summary of them. A newer line on the same thing says which line it replaces.
+
+<!-- e.g. - 2026-10-14 · "..." · reasoning level -->
+`;
+
+/**
+ * Once per install, for frank (the Mono whose spec is frank): write memory/ash-asks.md when it doesn't exist yet. An
+ * existing list is never touched. A frank whose files can't be reached is tried again next launch.
+ */
+export async function seedFrankAshAsks(read: Read = readAgentFile, write: Write = writeAgentFile): Promise<boolean> {
+  if (readSet(ASH_ASKS_KEY).has("frank")) return false;
+  const frank = seatedTeam().find((m) => m.specId === "frank");
+  if (!frank) return false;
+  try {
+    const file = await read(frank.id, ASH_ASKS_PATH);
+    const wrote = file.text == null || !file.text.trim();
+    if (wrote) await write(frank.id, ASH_ASKS_PATH, ASH_ASKS_SEED, file.hash);
+    addTo(ASH_ASKS_KEY, "frank");
+    return wrote;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Every team Mono becomes a member of every one of Ash's projects that has a folder (never the global `ash` memory),
  * once per Mono and project: a project Ash later takes off a Mono stays off. `register` tells Ash OS

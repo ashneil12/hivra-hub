@@ -27,6 +27,14 @@ export const BRIDGE_MODEL_NAMES: Readonly<Record<string, { name: string; nativeI
   [DEEPSEEK_BRIDGE_MODEL_ID]: { name: DEEPSEEK_BRIDGE_NAME, nativeId: DEEPSEEK_BRIDGE_NATIVE },
 };
 
+/**
+ * r61 (Alfred): a Claude Code model kept from before the bridges (the real app still stored `claude:sonnet-5` as its
+ * default) is read as Grok 4.7, so no stored value can name an Anthropic model. Any other harness or name is as it was.
+ */
+export function bridgeSafeModel(harness: string | undefined, model: string): string {
+  return harness === "claude" && bridgeFamily(model) === "claude" ? GROK_BRIDGE_MODEL_ID : model;
+}
+
 /** Which bridge Claude Code runs through. */
 export type BridgeKind = "grok" | "deepseek";
 

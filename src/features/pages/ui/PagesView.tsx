@@ -20,7 +20,7 @@ import { connectSource, disconnectSource, hostLabel, usePageGrants } from "../mo
 import { clearSourceToken, hasSourceToken, pageHttpHandlers, setSourceToken } from "../model/pageHttp";
 import { pageSessionsHandlers } from "../model/pageSessions";
 import { pageWriteHandlers } from "../model/pageWrites";
-import { pageActionLog, usePageActionsVersion } from "../model/pageActions";
+import { pageActionLog, pageActionRunning, usePageActionsVersion } from "../model/pageActions";
 import { appPageSources } from "../model/pageSources";
 import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
 import { frameKey, pageFrameUrl } from "../model/pageFrame";
@@ -200,7 +200,9 @@ export function PageBody({ page, live }: { page: Page; live?: boolean }) {
  * holds it), or, without that API, the frame holding the focus. */
 export function tappedInside(frame: HTMLIFrameElement | null): boolean {
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  if (activation) return activation.isActive;
+  if (activation?.isActive) return true;
+  // r61: WebKit does not always pass a tap inside the sandboxed frame on to the app's own activation, so a page's Send
+  // was refused on the Mac. The frame holding the focus in the app's focused window means Ash's tap or typing is in it.
   return !!frame && document.activeElement === frame && document.hasFocus();
 }
 
@@ -279,6 +281,27 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
   );
 }
 
+/**
+ * r61 (PM's blind C3): the newest tap on this page, at the top where Ash is looking: "Sending…" while it runs, then
+ * "Sent Chief of Staff" or, in red, why it didn't go through. Shown by the app, so a page that ignores its reply still
+ * tells Ash what happened. Gone after a minute; the full list stays under the page.
+ */
+function PageTapStatus({ pageId }: { pageId: string }) {
+  usePageActionsVersion();
+  const now = useNow(15_000);
+  const running = pageActionRunning(pageId);
+  const last = pageActionLog(pageId)[0];
+  const fresh = last && now - last.at < 60_000;
+  if (!running && !fresh) return null;
+  const failed = !running && last?.ok === false;
+  return (
+    <div role="status" aria-live="polite" data-page-tap-status={running ? "sending" : failed ? "failed" : "done"}
+      className={`${card} mb-3 px-3 py-2 text-[12px] ${failed ? "text-red-400" : "text-content/80"}`}>
+      {running ? "Sending…" : last!.line}
+    </div>
+  );
+}
+
 /** What this page did on Ash's taps (answered, sent, stopped), newest first: who did it is the page. */
 function PageActivity({ pageId, title }: { pageId: string; title: string }) {
   usePageActionsVersion();
@@ -288,7 +311,7 @@ function PageActivity({ pageId, title }: { pageId: string; title: string }) {
   return (
     <div className="mt-3 flex flex-col gap-0.5 px-1 text-[12px] text-content/60" data-page-activity>
       {log.map((e) => (
-        <div key={`${e.at}-${e.line}`} className="truncate">{e.line} · from the {/\bpage$/i.test(title) ? title : `${title} page`} · {agoLabel(e.at, now)}</div>
+        <div key={`${e.at}-${e.line}`} className={`truncate ${e.ok === false ? "text-red-400/80" : ""}`}>{e.line} · from the {/\bpage$/i.test(title) ? title : `${title} page`} · {agoLabel(e.at, now)}</div>
       ))}
     </div>
   );
@@ -677,6 +700,7 @@ export function PagesContent() {
           ) : null}
           {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
           <PageRebuild key={shown.id} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
+            <PageTapStatus pageId={shown.id} />
             <PageBody page={shown} live />
             <PageActivity pageId={shown.id} title={shown.title} />
             {shown.spec.kind === "bespoke" ? <PageConnections page={shown} /> : null}

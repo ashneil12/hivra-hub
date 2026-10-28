@@ -137,3 +137,13 @@ it("a long post shows its first lines with Show more; a short one shows whole", 
   expect(container.textContent).toContain("Item 14 with its owner");
   expect(q("[data-hub-msg-more]")!.textContent).toBe("Show less");
 }, 20_000);
+
+it("r61 (PM's blind G4): the room's member list gives each Mono its role line, like the sidebar", async () => {
+  const { q } = await render();
+  const mono = await import("../../monos/model/mono");
+  for (const id of ["chief-of-staff", "projects-manager", "frank"]) {
+    const role = mono.monoRole({ id });
+    expect(role).toBeTruthy();
+    expect(q(`[data-hub-member="${id}"] [data-hub-member-role]`)!.textContent).toBe(role);
+  }
+});

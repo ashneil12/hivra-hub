@@ -21,6 +21,7 @@ import {
 import { CHECK_RULES } from "./checkerRules";
 import { CHECK_PREFIX, type HubCheck } from "./hubChecks";
 import { forUser } from "./userName";
+import { RESEND_NOTE, resumeStopped } from "../../sessions/model/inFlight";
 
 /**
  * A dump: a message with something in it to act on. A long paste or one over several lines, and now also a short ask
@@ -64,6 +65,8 @@ function recentDumps(
   for (let index = last, seen = 0; index >= 0 && seen < SCAN_BLOCKS; index--, seen++) {
     const block = session.blocks[index];
     if (block.role !== "user" || block.draft || block.internal || !isDump(block.text ?? "")) continue;
+    // The app's own resend after a restart is not Ash writing (r61: verify-live's crash_loop_capped flake).
+    if ((block.text ?? "").startsWith(RESEND_NOTE)) continue;
     const started = block.startedAt ?? block.sentAt;
     const answered = index < last;
     if (started !== undefined && answered && now - started > RECENT_MS) break;
@@ -303,6 +306,9 @@ export async function lookAtDumps(
   for (const note of readDumpNotes()) {
     const session = byId.get(note.chatId);
     if (!session || session.busy || session.queuedMessages?.length) continue;
+    // A chat that stopped resuming itself after restart after restart waits for Ash: a check would start it again
+    // behind his back (r61: the fourth resume verify-live's crash_loop_capped caught, a "never answered" check).
+    if (resumeStopped(session)) continue;
     // A worker (`app-...`) never owns a check, and the checker's own chat would only note on itself.
     if (session.id.startsWith("app-") || options.skip?.(session.id)) continue;
     if (!claimDumpCheck(note.blockId)) {

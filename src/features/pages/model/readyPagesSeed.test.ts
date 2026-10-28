@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // C8 (Ash: "a few default dashboards that always come with every setup, that just explain the basics"): a fresh setup
-// has the four ready-made pages without asking, each explaining itself in a line. An install that already has pages, or
-// one where Ash took them away, is never touched, and nothing is kept twice.
+// has the four ready-made pages without asking, each explaining itself in a line. r61: so does an install from before C8;
+// a ready page Ash took away is never put back, and nothing is kept twice.
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterAll, beforeEach, expect, it } from "vitest";
@@ -27,23 +27,25 @@ it("a fresh setup keeps the four ready-made pages once, in order, each asking Ke
   expect(allPages()).toHaveLength(4);
 });
 
-it("an install that isn't fresh, or already has a page, gets nothing", async () => {
+it("r61: an install from before C8, with its own pages, gets the four once too; its own pages stay", async () => {
+  await keepPage(buildPreview("a page about builds", "Hub lead", 1), 1);
+  expect(await seedReadyPages()).toBe(4);
+  expect(allPages().map((p) => p.title).slice(0, 4)).toEqual(["Agents", "Needs you", "Being built", "Projects"]);
+  expect(allPages().map((p) => p.request)).toContain("a page about builds");
   expect(await seedReadyPages()).toBe(0);
-  expect(allPages()).toHaveLength(0);
-  await keepPage(buildPreview("a page about builds", "Hub lead"));
-  markFreshSetup();
-  expect(await seedReadyPages()).toBe(0);
-  expect(allPages().map((p) => p.request)).toEqual(["a page about builds"]);
+  expect(allPages()).toHaveLength(5);
 });
 
-it("a page Ash took away is never put back", async () => {
-  const p = buildPreview("a page about builds", "Hub lead");
-  await keepPage(p);
-  await undoBotChange([`page:${p.id}`]);
-  expect(allPages()).toHaveLength(0);
+it("a ready page Ash took away is never put back, and one already kept is not kept twice", async () => {
   markFreshSetup();
+  expect(await seedReadyPages()).toBe(4);
+  const agents = allPages().find((p) => p.title === "Agents")!;
+  await undoBotChange([`page:${agents.id}`]);
+  expect(allPages().map((p) => p.title)).not.toContain("Agents");
+  // Even with the seeded flag gone (a reinstall that kept this Mac's pages), nothing comes back or doubles.
+  localStorage.removeItem("monocode:ready-pages-seeded-v2");
   expect(await seedReadyPages()).toBe(0);
-  expect(allPages()).toHaveLength(0);
+  expect(allPages().map((p) => p.title)).toEqual(["Needs you", "Being built", "Projects"]);
 });
 
 it("Pages lists each one with the line that explains it", async () => {

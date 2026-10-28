@@ -537,8 +537,31 @@ it("words Ash watched stream in stay when the turn ends on a NO_REPLY line; unse
   await done;
   expect(chat.roomDrafts(id, conv)).toEqual([]);
   const post = said(conv).find((m) => m.from === "frank");
-  expect(post).toMatchObject({ id: draftId, text: words });
+  // r61: the kept words were a promise ("I'm checking ..."), so the post says the check was done.
+  expect(post).toMatchObject({ id: draftId, text: `${words}\n\nChecked: nothing to add to what's been said.` });
   expect(post!.text).not.toMatch(/NO_REPLY/);
+});
+
+it("r61 (PM's blind run): a Mono that said it would check, checked and ended on NO_REPLY doesn't leave the promise hanging", async () => {
+  const { chat, id, said } = await room();
+  let write!: (text: string) => void;
+  let end!: (text: string) => void;
+  chat.setGroupChatRunner({
+    run: (request) => {
+      if (request.monoId !== "frank") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
+      write = (text) => request.onText?.(text);
+      return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
+    },
+  });
+  const conv = chat.startConversation(id, "frank, what does the settings heading say?");
+  const done = chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(write).toBeTypeOf("function"));
+  const promise = "I'll check the settings heading against the canary code before I say anything.";
+  write(promise);
+  end(`${promise}\n\nNO_REPLY`);
+  await done;
+  const post = said(conv).find((m) => m.from === "frank");
+  expect(post!.text).toBe(`${promise}\n\nChecked: nothing to add to what's been said.`);
 });
 
 it("a turn that thinks aloud and ends on NO_REPLY before anything showed posts nothing", async () => {

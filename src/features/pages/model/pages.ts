@@ -167,6 +167,10 @@ export function pagesLoaded(): boolean {
 export function anyPageEver(): boolean {
   return pages().some((p) => p.keptAt || p.removed);
 }
+/** Every page ever kept here, removed ones included (r61: so a ready-made page Ash took away is never put back). */
+export function pagesEverKept(): Page[] {
+  return pages().filter((p) => p.keptAt || p.removed);
+}
 
 /** Every page there is right now: the record's, or this Mac's. */
 function pages(): Page[] {

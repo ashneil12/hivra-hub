@@ -36,24 +36,25 @@ const stuck = (r: Delegation) => stuckOf(r, NOW)!;
 beforeEach(() => store.resetDelegationStore());
 
 describe("a failed worker whose Lead is done with it", () => {
-  it("goes red Needs you, with the plain reason, once the Lead's turn has ended after reading the failure", () => {
+  // r61 (PM's blind D5 on r60): r30h's red here gave Ash nothing to act on (the Lead had dealt with it), so it stays grey.
+  it("stays grey With <Lead>, with the plain reason, once the Lead's turn has ended after reading a plain failure (r61)", () => {
     setBusy([]);
     const failed = row("faq");
-    expect(stuckOwner(stuck(failed))).toBe("needs-you");
-    expect(stuckWorkerChip(stuck(failed), "Hivra lead")).toEqual({ word: "Needs you", tone: "red" });
+    expect(stuckOwner(stuck(failed))).toBe("with-lead");
+    expect(stuckWorkerChip(stuck(failed), "Hivra lead")).toEqual({ word: "With Hivra lead", tone: "grey" });
     expect(plainStuckLine(stuck(failed))).toBe("Stopped with an error.");
     // Read through task status, or the Lead's chat went: the same.
-    expect(stuckOwner(stuck(row("ack", { delivery: "acknowledged" })))).toBe("needs-you");
-    expect(stuckOwner(stuck(row("gone", { delivery: "disposed" })))).toBe("needs-you");
+    expect(stuckOwner(stuck(row("ack", { delivery: "acknowledged" })))).toBe("with-lead");
+    expect(stuckOwner(stuck(row("gone", { delivery: "disposed" })))).toBe("with-lead");
   });
 
   it("stays grey With <Lead> while the Lead's turn still runs", () => {
     setBusy(["lead-chat"]);
     expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
     expect(stuckWorkerChip(stuck(row("faq")), "Hivra lead")).toEqual({ word: "With Hivra lead", tone: "grey" });
-    // The turn ends: red.
+    // The turn ends: still the Lead's (r61).
     setBusy([]);
-    expect(stuckOwner(stuck(row("faq")))).toBe("needs-you");
+    expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
   });
 
   it("stays the Lead's until the failure has reached it, and while the Lead retries or splits it", () => {
@@ -74,7 +75,7 @@ describe("a failed worker whose Lead is done with it", () => {
     expect(busyChatIds([{ id: "lead-chat", busy: true }, { id: "other" }, { id: "w-faq", busy: false }])).toEqual(["lead-chat"]);
     const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
     expect(app).toMatch(/useBusyChatsFeed\(sessions\)/);
-    expect(readFileSync(`${process.cwd()}/src/features/monos/model/workerStuck.ts`, "utf8")).toMatch(/if \(leadTurnOver\(stuck\.row\)\) return "needs-you";/);
+    expect(readFileSync(`${process.cwd()}/src/features/monos/model/workerStuck.ts`, "utf8")).not.toMatch(/if \(leadTurnOver\(stuck\.row\)\) return "needs-you";/);
   });
 });
 
@@ -151,7 +152,7 @@ describe("Being built", () => {
     const failed = appWorkers?.("hivra", [], [row("faq")], NOW, where) ?? [];
     expect(failed.map((w) => w.id)).toEqual(["app:faq"]);
     const laid = stuckJobs.withStuckWorkers(failed, [row("faq")], NOW);
-    expect(laid[0]?.stuckWorker && stuckWorkerChip(laid[0].stuckWorker, "Hivra lead")).toEqual({ word: "Needs you", tone: "red" });
+    expect(laid[0]?.stuckWorker && stuckWorkerChip(laid[0].stuckWorker, "Hivra lead")).toEqual({ word: "With Hivra lead", tone: "grey" });
     expect(appWorkers?.("hivra", [], [row("done", { state: "completed", error: null })], NOW, where)).toEqual([]);
   });
 
@@ -174,11 +175,14 @@ describe("r51: a Lead chat this window doesn't hold", () => {
     expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
   });
 
-  it("once this window holds it and it isn't running, its failed worker goes red", () => {
+  // r61: a plain failure no longer goes red; a worker's own "I can't go on" still does once its Lead's turn is over.
+  it("once this window holds it and it isn't running, a worker that said it can't go on goes red", () => {
+    const blocked = row("faq", { state: "running", stallKind: "blocked", error: null, delivery: "pending", settledAt: null, stalledAt: NOW - 60_000,
+      log: [{ at: NOW - 60_000, by: "child:w-faq", event: "stalled" }] } as Partial<Delegation>);
     store.setBusyChats([], ["lead-chat"]);
     expect(store.chatBusy("lead-chat")).toBe(false);
-    expect(stuckOwner(stuck(row("faq")))).toBe("needs-you");
+    expect(stuckOwner(stuck(blocked))).toBe("needs-you");
     store.setBusyChats(["lead-chat"], ["lead-chat"]);
-    expect(stuckOwner(stuck(row("faq")))).toBe("with-lead");
+    expect(stuckOwner(stuck(blocked))).toBe("with-lead");
   });
 });

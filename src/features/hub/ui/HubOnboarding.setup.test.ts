@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 // H7: the setup checks come before the welcome choices, cannot be skipped, and close without recording anything if the
-// person says "Not now" — so the next launch checks again instead of trusting a setup nobody proved.
+// person says "Not now". r61: that "Not now" is remembered, so the card stays away on later launches.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finishOnboarding, needsOnboarding } from "../model/onboarding";
-import { recordSetupFact, SETUP_FACT_IDS } from "../model/setupProof";
+import { recordSetupFact, SETUP_FACT_IDS, setupCardSnoozed, setupProved } from "../model/setupProof";
 import { HubOnboarding } from "./HubOnboarding";
 
 // The card's own checks are covered in HubOnboardingSetup.test.ts; here only how the steps are wired.
@@ -56,11 +56,13 @@ describe("setup before the welcome choices", () => {
     expect(container.textContent).toContain("Step 2 of 5");
   });
 
-  it("'Not now' closes without finishing onboarding, so the next launch checks again", () => {
+  it("'Not now' closes without finishing onboarding or proving anything, and is remembered (r61)", () => {
     render();
     act(() => notNow().click());
     expect(closed).toBe(1);
     expect(needsOnboarding()).toBe(true);
+    expect(setupProved()).toBe(false);
+    expect(setupCardSnoozed()).toBe(true);
   });
 
   it("leaves a proved install with just the four welcome steps, even when opened on purpose", () => {

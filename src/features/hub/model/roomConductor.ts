@@ -607,7 +607,7 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
   // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
   const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
-  if (kept && !isSilent(kept)) text = kept;
+  if (kept && !isSilent(kept)) text = closePromise(kept);
   else if (isSilent(text)) {
     // "Got it" is a 👍 on what it answers; the host that has nothing to say to Ash still shows it read him.
     const emoji = /<reaction>\s*(✅|👀)\s*<\/reaction>/.exec(text)?.[1] ?? "👍";
@@ -632,6 +632,20 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   });
   answered();
   if (posted) afterPost(chatId, posted.convId, posted.message, wake);
+}
+
+/**
+ * Words kept from a turn that ended on NO_REPLY can be only its opening promise ("I'll check the settings heading
+ * against the canary code before I say anything."): the Mono did check, found nothing to add, and the room was left
+ * with a promise nobody kept (PM's blind run, 28 Oct: frank and PM in the Leadership room, and the "I'll check X, then
+ * Y" pattern across rows). The post then says the check was done.
+ */
+export const PROMISE_CLOSED = "Checked: nothing to add to what's been said.";
+const PROMISE = /\b(i'll|i’ll|i will|let me|going to|i'm (checking|looking)|i’m (checking|looking))\b/i;
+export function closePromise(kept: string): string {
+  const parts = kept.trim().split(/\n\s*\n/);
+  const last = parts[parts.length - 1] ?? "";
+  return PROMISE.test(last) && !last.includes("?") ? `${kept.trim()}\n\n${PROMISE_CLOSED}` : kept;
 }
 
 /** Never silent: a turn that failed, ran out of budget or couldn't start says so in the thread. */

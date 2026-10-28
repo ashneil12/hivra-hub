@@ -37,8 +37,10 @@ function lists(groups: HubJobGroup[], delegations: Delegation[]) {
 
 beforeEach(() => store.resetDelegationStore());
 
-describe("r51 × r30h: the Lead-done reds are counted", () => {
-  it("Critiquito's mix on the 30h proof: two red rows (the Lead is done with them) and one grey: chip 2, panel 2, rows 2", () => {
+// r61 (PM's blind D5 on r60): a plain failure its Lead is done with is no longer red (it gave Ash nothing to act on), so
+// the same mix is all grey now; the chip, panel and rows still agree.
+describe("r51 × r30h × r61: chip, panel and red rows agree", () => {
+  it("Critiquito's mix on the 30h proof: the Lead-done failures stay grey now: chip 0, panel 0, rows 0", () => {
     setBusy([]); // the Lead's turn is over
     const delegations = [
       row("t1"), // under an Ash OS job; failed, delivered, Lead done: red
@@ -47,13 +49,13 @@ describe("r51 × r30h: the Lead-done reds are counted", () => {
     ];
     const { rows, list, beingBuiltRed } = lists([{ leadId: "hivra-lead", leadName: "Hivra lead", projectId: "hivra", jobs: [job("j1", "delegation:t1")] }], delegations);
     expect(rows.map((w) => w.id).sort()).toEqual(["app:app1", "app:app2", "j1"]);
-    expect(rows.filter(isNeedsYouRow).map((w) => w.id).sort()).toEqual(["app:app1", "j1"]);
-    expect(needsYouCountFor(list, "hivra-lead")).toBe(2);
-    expect(needsYouPanel(needsYouFor(list, "hivra-lead")).count).toBe(2);
-    expect(beingBuiltRed).toBe(2);
+    expect(rows.filter(isNeedsYouRow).map((w) => w.id).sort()).toEqual([]);
+    expect(needsYouCountFor(list, "hivra-lead")).toBe(0);
+    expect(needsYouPanel(needsYouFor(list, "hivra-lead")).count).toBe(0);
+    expect(beingBuiltRed).toBe(0);
   });
 
-  it("while the Lead's turn still runs they stay grey and count 0; when it ends they count, chip = panel = rows", () => {
+  it("while the Lead's turn runs and after it ends they stay grey and count 0, chip = panel = rows", () => {
     const delegations = [row("t1"), row("app1"), row("app2", { delivery: "pending" })];
     const groups = [{ leadId: "hivra-lead", leadName: "Hivra lead", projectId: "hivra", jobs: [job("j1", "delegation:t1")] }];
     setBusy(["hivra-chat"]);
@@ -61,16 +63,16 @@ describe("r51 × r30h: the Lead-done reds are counted", () => {
     setBusy([]);
     const after = lists(groups, delegations);
     expect(needsYouCountFor(after.list, "hivra-lead")).toBe(after.beingBuiltRed);
-    expect(needsYouPanel(needsYouFor(after.list, "hivra-lead")).count).toBe(2);
+    expect(needsYouPanel(needsYouFor(after.list, "hivra-lead")).count).toBe(0);
   });
 
-  it("mixes every kind: a gave-up job, a credits worker, a Lead-done worker, and greys; the count is the red rows", () => {
+  it("mixes every kind: a gave-up job and a credits worker are red; a Lead-done worker and the rest grey; the count is the red rows", () => {
     setBusy([]);
     const delegations = [row("done1"), row("credits", { errorClass: "billing", error: "Billing refused" }), row("grey", { delivery: "pending" }), row("run", { state: "running", settledAt: null, log: [] })];
     const gaveUp = { ...job("g1", "delegation:none"), state: "lead_gave_up", reason: "It still fails" } as HubJob;
     const { list, beingBuiltRed } = lists([{ leadId: "hivra-lead", leadName: "Hivra lead", projectId: "hivra", jobs: [gaveUp] }], delegations);
-    expect(needsYouCountFor(list, "hivra-lead")).toBe(3);
-    expect(beingBuiltRed).toBe(3);
-    expect(needsYouPanel(needsYouFor(list, "hivra-lead")).count).toBe(3);
+    expect(needsYouCountFor(list, "hivra-lead")).toBe(2);
+    expect(beingBuiltRed).toBe(2);
+    expect(needsYouPanel(needsYouFor(list, "hivra-lead")).count).toBe(2);
   });
 });

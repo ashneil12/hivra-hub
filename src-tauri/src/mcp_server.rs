@@ -409,7 +409,7 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "The hub project's id or name. Omit for a page on Today." },
+                    "project": { "type": "string", "description": "The hub project's id or name. Omit for a page not tied to a project (it lists on Pages)." },
                     "spec": { "type": "object", "description": "The PageSpec." },
                     "request": { "type": "string", "maxLength": 2000, "description": "Ash's words for it." },
                     "previewId": { "type": "string" },
@@ -640,7 +640,15 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
     });
     // A Lead brief says how it went in (started, queued behind the Lead's work, or steered into it) and to whom.
     // A worker over its project's limit waits, and says why; a worker says which model and effort it runs on (E7).
-    for key in ["delivery", "lead", "waiting", "model", "effort", "modelWhy"] {
+    for key in [
+        "delivery",
+        "lead",
+        "waiting",
+        "model",
+        "modelName",
+        "effort",
+        "modelWhy",
+    ] {
         if let Some(value) = started.get(key) {
             out[key] = value.clone();
         }

@@ -9,7 +9,7 @@
 // asked for (so Ash sees what he keeps) but nothing else; a tap (pageActions.ts) runs only on a kept page and only while
 // Ash's tap inside the page is fresh, so a page can never act by itself.
 import { refusal, WALL_REFUSAL, type BridgeCall, type BridgeHandlers } from "./bridge";
-import { runPageAction, type ActionContext } from "./pageActions";
+import { beginPageAction, notePageActionFailure, runPageAction, type ActionContext } from "./pageActions";
 import { isLiveRead, isRead, isTapCall, isWall, LIVE_READS, type Capability, type LiveRead } from "./pageSpec";
 
 export type PageSource = { read(args: Record<string, unknown>): unknown; subscribe(onChange: () => void): () => void };
@@ -81,6 +81,25 @@ export class PageBridgeHost {
       this.o.onSize?.(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.ceil(m.height))));
   }
 
+  /** One of Ash's taps: "Sending…" on the page while it runs, then what happened or why it didn't (r61). */
+  private async tap(id: string, call: string, args: Record<string, unknown>): Promise<void> {
+    if (!this.o.tapped()) {
+      notePageActionFailure(this.o.pageId, TAP_ONLY);
+      return this.reply(id, { ok: false, error: TAP_ONLY });
+    }
+    const ctx = { pageId: this.o.pageId, pageTitle: this.o.title };
+    const end = beginPageAction(this.o.pageId);
+    try {
+      this.reply(id, { ok: true, result: await (this.o.act ?? runPageAction)(call, args, ctx) });
+    } catch (e) {
+      const error = e instanceof Error && e.message ? e.message : "That didn't work.";
+      notePageActionFailure(this.o.pageId, error);
+      this.reply(id, { ok: false, error });
+    } finally {
+      end();
+    }
+  }
+
   private reply(id: string, out: { ok: true; result: unknown } | { ok: false; error: string }): void {
     if (!this.closed) this.o.post({ type: "hub:reply", id, ...out });
   }
@@ -88,14 +107,14 @@ export class PageBridgeHost {
   private async call(id: string, call: string, args: Record<string, unknown>): Promise<void> {
     if (!call) return this.reply(id, { ok: false, error: "That isn't a page call." });
     const no = this.why({ call, args });
-    if (no) return this.reply(id, { ok: false, error: no });
+    // r61: a tap that is refused says so on the page too (the app's line), not only to the page's code.
+    if (no) {
+      if (isTapCall(call) && this.o.live) notePageActionFailure(this.o.pageId, no);
+      return this.reply(id, { ok: false, error: no });
+    }
+    if (isTapCall(call)) return this.tap(id, call, args);
     try {
       if (isLiveRead(call)) return this.reply(id, { ok: true, result: this.o.sources[call].read(args) });
-      if (isTapCall(call)) {
-        if (!this.o.tapped()) return this.reply(id, { ok: false, error: TAP_ONLY });
-        const ctx = { pageId: this.o.pageId, pageTitle: this.o.title };
-        return this.reply(id, { ok: true, result: await (this.o.act ?? runPageAction)(call, args, ctx) });
-      }
       const run = this.o.handlers?.[call];
       if (run) return this.reply(id, { ok: true, result: await run(args) });
       this.reply(id, { ok: false, error: "Not connected yet: the hub can't do this for pages yet." });

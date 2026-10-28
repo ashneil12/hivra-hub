@@ -289,6 +289,9 @@ describe("tasks.delegate on the subscription bridge: workers run Claude Code on 
       modelSettings: { effort: "high" },
     });
     expect(result).toMatchObject({ harness: "claude", model: "claude:deepseek-v4.1-flash", effort: "High" });
+    // r61 (PM): the Lead names it as Ash sees it, not by its raw id.
+    expect(result).toMatchObject({ modelName: "DeepSeek V4.1 Flash · High" });
+    expect(String((result as { note?: string }).note)).toContain("never the raw model id");
   });
 
   it("keeps DeepSeek or Grok 4.7 the Lead names, by any engine's id, on the bridge", async () => {

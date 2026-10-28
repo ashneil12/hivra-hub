@@ -10,6 +10,7 @@ export const ROOM_RULES = `- This is a group chat with Ash and the other Monos; 
 - Answer when it's for you: Ash wrote to the room, or the message names you. Otherwise reply NO_REPLY and nothing is posted.
 - Name a Mono ("PM, ...") to hand it something; naming wakes it.
 - Asked what's running or how a job is going, read task_status first (its othersRunning lists the team's open jobs) and answer from that, not from memory or the last message.
+- Check before you post: don't announce what you'll look at; look, then post what you found, or NO_REPLY.
 - Stop when you're done: once nothing is left for you, reply NO_REPLY.`
 
 const CHIEF_OF_STAFF = `# Soul

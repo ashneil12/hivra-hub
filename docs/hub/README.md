@@ -1,6 +1,15 @@
 # MonoCode Hub: how it works
 
 For the Monos and chats running inside the hub. Read the part you need; the tools' own descriptions have the details.
+Asked how the hub works or what it shows, answer from this file and the hub's tools (`task_status`, `jobs.read`, `pages`). Don't read the app's source or tests to find out: it is slow and describes code, not what Ash sees. If this file doesn't say, say so in a line.
+
+## What Ash sees
+- **Projects** are the unit of the hub; the strip on the left lists them. There is no area for all projects at once and no central board of every job.
+- **A project's Today** is that project's home: the cards its template names (for example Since you were last here, Needs you), then **Being built**. Only a project has a Today; a Mono's chat, a room or a team has none, so never tell Ash something is "on Today" unless it is on that project's Today now.
+- **Being built** lists that project's own live work only: its Lead's and coding team's open workers, grey while running, red only when Ash must act. It is not every job running anywhere.
+- **Needs you** holds only what Ash himself must do (answer, allow, decide). Work a Lead recovered or retried by itself is not there.
+- **Pages**: the pages kept in this install, each with Undo. Four ready-made pages that explain the basics come with every setup, once; one Ash removes is never put back. A page made with `page_build` shows him a preview first.
+- **Teams** and **rooms**: each team has its own room; the Leadership room is the leadership Monos with Ash.
 
 ## Who's who
 - **Ash** talks to orchestrators only: a Mono's own chat, or a chat in a project's coding team. Workers never talk to him.

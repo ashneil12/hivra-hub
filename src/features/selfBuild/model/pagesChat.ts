@@ -58,8 +58,17 @@ export function settleChatPreview(id: string): void {
   changed();
 }
 
+/** What Pages calls a page with no project (PagesView's meta line), so a Mono says what Ash sees. */
+export const NO_PROJECT = "Not tied to a project";
+/** Where a kept page is, in the words of the screen it is on. */
+export function pagePlace(projectName: string): string {
+  return projectName === NO_PROJECT ? "Pages (not tied to a project)" : `${projectName}'s Pages`;
+}
+
 function projectOf(ref: unknown): { id: string; name: string } {
-  if (ref === undefined) return { id: "today", name: "Today" };
+  // r61 (PM's blind C3): this said "Today", so a Mono told Ash the preview was "on Today", and there is no Today page.
+  // The page's id stays "today" (where it is stored); its name is what Pages shows for it.
+  if (ref === undefined) return { id: "today", name: NO_PROJECT };
   if (typeof ref !== "string" || !ref.trim()) throw new Error("project must be a hub project's id or name");
   const want = ref.trim().toLowerCase();
   const found = hubData().listProjects().find((p) => p.id.toLowerCase() === want || p.name.toLowerCase() === want);
@@ -81,8 +90,9 @@ export function previewFromChat(input: Record<string, unknown>, by: { monoId: st
     previewId,
     title: result.spec.title,
     project: project.name,
+    where: `A preview on ${pagePlace(project.name)}`,
     ...(result.warnings.length ? { warnings: result.warnings.map((w) => w.plain) } : {}),
-    note: forUser("Ash sees it at the bottom of the window (See it opens the preview on Pages, with Apply and Discard). Tell him in one line; after he says it looks good, call page_build with previewId and keep true."),
+    note: forUser("Ash sees it at the bottom of the window (See it opens the preview on Pages, with Apply and Discard). Tell him in one line, naming where it is as `where` says (there is no Today page); after he says it looks good, call page_build with previewId and keep true."),
   };
 }
 
@@ -100,5 +110,8 @@ export async function keepFromChat(previewId: unknown, by: { monoId: string }, a
   const ok = await keepPage(preview.page);
   if (!ok) throw new Error(forUser("Pages couldn't save it just now. Ask Ash to tap Keep on the preview."));
   settleChatPreview(previewId);
-  return { kept: preview.page.title, pageId: preview.page.id, note: "It's on the project's Pages, with Undo in Bot changes." };
+  const where = preview.page.projectId && preview.page.projectId !== "today"
+    ? pagePlace(hubData().listProjects().find((p) => p.id === preview.page.projectId)?.name ?? preview.page.projectId)
+    : pagePlace(NO_PROJECT);
+  return { kept: preview.page.title, pageId: preview.page.id, note: `It's on ${where}, with Undo in Bot changes. There is no Today page; never say it is on Today.` };
 }

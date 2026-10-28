@@ -147,3 +147,17 @@ describe("Critiquito, the add-on", () => {
     expect(addTeamAddon("dr-eggbot")).toBeUndefined();
   });
 });
+
+it("r61 (A4): frank gets memory/ash-asks.md once, with no quotes in it; an existing list is never touched", async () => {
+  const team = await import("./hubTeam");
+  addMono({ id: "frank", name: "frank", mascot: "robot", color: "x", projects: [] });
+  const f = files();
+  expect(await team.seedFrankAshAsks(f.read, f.write)).toBe(true);
+  expect(f.store.get("frank/memory/ash-asks.md")).toBe(team.ASH_ASKS_SEED);
+  expect(team.ASH_ASKS_SEED).not.toMatch(/^- \d{4}-/m);
+  f.store.set("frank/memory/ash-asks.md", "- 2026-10-14 · Ash's own line");
+  localStorage.removeItem("monocode:hub-frank-ash-asks-seeded");
+  expect(await team.seedFrankAshAsks(f.read, f.write)).toBe(false);
+  expect(f.store.get("frank/memory/ash-asks.md")).toBe("- 2026-10-14 · Ash's own line");
+});
+

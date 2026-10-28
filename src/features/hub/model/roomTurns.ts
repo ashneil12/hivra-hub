@@ -366,7 +366,8 @@ export function turnPrompt(input: TurnInput): string {
     ? forUser`\nThis is the conversation ${JSON.stringify(conv.title)}${started}, separate from this room's earlier ones: what Ash asks here is a new ask, even if an earlier conversation had the same one.`
     : "";
   const cards = input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : "";
-  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}${fresh}${cards}
+  return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}
+Your own role: ${cardOf(me)} Asked who you are or what you do, describe this role, in your own voice; never another Mono's.${fresh}${cards}
 In the room: Ash${others.length ? `, and:\n${others.map((s) => `- ${cardOf(s)}`).join("\n")}` : "."}
 
 Room rules:

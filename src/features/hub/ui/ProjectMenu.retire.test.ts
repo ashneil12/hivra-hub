@@ -121,6 +121,8 @@ describe("retire the Lead with its project", () => {
     const { menu, disk } = await load();
     act(() => root.render(createElement(menu.RemoveFromHub, { project: hivra, anchor: { x: 10, y: 10 }, onClose: () => {} })));
     const q = (s: string) => document.querySelector(s) as HTMLElement;
+    // r61 (PM's D4): Cancel has the focus when it opens.
+    expect(document.activeElement).toBe(q("[data-project-remove-cancel]"));
     expect(document.body.textContent).toContain("Retire Hivra lead too");
     expect(document.body.textContent).not.toContain("Remove Hivra lead too");
     expect((q("[data-project-remove]") as HTMLButtonElement).disabled).toBe(false);

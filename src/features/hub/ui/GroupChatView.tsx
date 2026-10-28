@@ -206,9 +206,13 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             {members.map((mono) => {
               const look = monoLook(mono);
               return (
-                <div key={mono.id} className="group flex h-6 items-center gap-2 text-[13px] text-content/80" data-hub-member-working={working.has(mono.id) || undefined}>
+                <div key={mono.id} className={`group flex items-center gap-2 text-[13px] text-content/80 ${look.role ? "min-h-6 py-0.5" : "h-6"}`} data-hub-member={mono.id} data-hub-member-working={working.has(mono.id) || undefined}>
                   <MonoRailMascot name={look.mascot} color={look.color} status={working.has(mono.id) ? "working" : "idle"} />
-                  <span className="min-w-0 flex-1 truncate">{look.name}</span>
+                  {/* r61 (PM's blind G4): each member says what it does, like the sidebar's role line. */}
+                  <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                    <span className="truncate">{look.name}</span>
+                    {look.role ? <span className="truncate text-[11px] text-content/60" data-hub-member-role>{look.role}</span> : null}
+                  </span>
                   <button
                     type="button"
                     title={`Remove ${look.name} from this chat`}
