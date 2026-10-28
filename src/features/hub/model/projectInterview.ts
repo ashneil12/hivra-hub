@@ -37,6 +37,10 @@ export function interviewNote(name: string): string {
     `- code: "new" (a new git folder at ${defaultProjectFolder(id)}), "existing" (a folder he already has; put its path in folder if he gives it) or "none"`,
     `- addon: true to also add ${ADDON_OFFER.name}, who ${ADDON_OFFER.what}`,
     "",
+    // r61 (PM's blind G2, 28 Oct): the turn is text only, so "I'll check whether a folder exists, then ask" ended the
+    // chat with nothing to answer. Said as a fact about this chat, not as a way to talk.
+    "This chat has no tools: you can't look at files, folders or anything else from here, and nothing runs after your reply. Each reply ends with either one question for Ash or the project block below.",
+    "",
     "To propose, end your reply with:",
     "```project",
     `{"name": "${name}", "oneLine": "...", "template": "...", "code": "new", "addon": false}`,
@@ -44,11 +48,15 @@ export function interviewNote(name: string): string {
   ].join("\n");
 }
 
-/** The turn's prompt: who the Mono is, the note and the chat so far ahead of Ash's latest line. */
-export function interviewPrompt(name: string, lines: readonly InterviewLine[], who?: string): string {
+/**
+ * The turn's prompt: who the Mono is, the note and the chat so far ahead of Ash's latest line. `nudge` takes Ash's
+ * place when the last reply left him nothing to answer (askChiefOfStaff).
+ */
+export function interviewPrompt(name: string, lines: readonly InterviewLine[], who?: string, nudge?: string): string {
   const last = lines[lines.length - 1];
-  const latest = last?.from === "ash" ? last.text : "(Ash has just named the project and is waiting for you to start.)";
-  const before = last?.from === "ash" ? lines.slice(0, -1) : lines;
+  const fromAsh = !nudge && last?.from === "ash";
+  const latest = nudge ?? (fromAsh ? last.text : "(Ash has just named the project and is waiting for you to start.)");
+  const before = fromAsh ? lines.slice(0, -1) : lines;
   const transcript = before.length ? `\n\nThis chat so far:\n${before.map((l) => `${l.from === "cos" ? "You" : "Ash"}: ${l.text}`).join("\n")}` : "";
   return monoTurn(latest, [...(who ? [who] : []), `${interviewNote(name)}${transcript}`]);
 }
@@ -97,17 +105,29 @@ async function cosContext(): Promise<string | undefined> {
   }
 }
 
-/** One turn of the interview: Chief of Staff's next reply to the chat so far. */
+/** A reply Ash can answer: it asks him something or puts the setup card up. */
+export function replyAwaitsAsh(reply: InterviewReply): boolean {
+  return !!reply.proposal || reply.text.includes("?");
+}
+
+/** Said in Ash's place when a reply left him nothing to answer: the facts of this chat, not a script. */
+export const STALLED_TURN_NUDGE =
+  "(Your last reply ended without a question for Ash or the project block, and nothing can run from this chat, so he is waiting with nothing to answer. Reply to him again now: ask him your one question, or propose the project with the block.)";
+
+/**
+ * One turn of the interview: Chief of Staff's next reply to the chat so far. A reply that neither asks Ash anything nor
+ * proposes the project ("I'll check whether a folder exists, then ask": PM's blind G2, 28 Oct, where the chat then sat
+ * idle) is asked again once, and Ash sees that second reply instead.
+ */
 export async function askChiefOfStaff(name: string, lines: readonly InterviewLine[], signal?: AbortSignal): Promise<InterviewReply> {
   const { harness, model } = cosEngine();
   if (!canRunHarnessTextPrompt(harness)) throw new NoInterviewRuntime("Chief of Staff can't answer here: no Claude Code runtime is connected on this Mac, so this chat can't go on yet. Connect it in Settings and come back; your chat is kept.");
-  const raw = await runHarnessTextPrompt({
-    harness,
-    cwd: await homeDir(),
-    model,
-    prompt: interviewPrompt(name, lines, await cosContext()),
-    timeoutMs: TURN_TIMEOUT_MS,
-    signal,
-  });
-  return parseInterviewReply(raw);
+  const cwd = await homeDir();
+  const who = await cosContext();
+  const turn = async (prompt: string) =>
+    parseInterviewReply(await runHarnessTextPrompt({ harness, cwd, model, prompt, timeoutMs: TURN_TIMEOUT_MS, signal }));
+  const first = await turn(interviewPrompt(name, lines, who));
+  if (replyAwaitsAsh(first) || signal?.aborted) return first;
+  const again = await turn(interviewPrompt(name, [...lines, { from: "cos", text: first.text }], who, STALLED_TURN_NUDGE));
+  return again.text || again.proposal ? again : first;
 }
