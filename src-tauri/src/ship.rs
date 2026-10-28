@@ -1689,6 +1689,9 @@ pub fn ship_start(
         .arg("--json")
         .current_dir(&repo)
         .env("PATH", &path)
+        // The app asked (app.ship, self-build Apply): a version that wasn't bumped only warns (hub-ship.mjs, r59).
+        // An env var, so an older checkout's hub-ship.mjs simply ignores it.
+        .env("MONOCODE_SHIP_FROM_APP", "1")
         .stdin(Stdio::null());
     if let Some(session) = requested_by.as_deref() {
         if !tidy(session) {

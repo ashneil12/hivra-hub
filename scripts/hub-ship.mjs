@@ -26,7 +26,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HUB_IDENTIFIER, readIdentifier, readStamp, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
 import {
   DEFAULT_TIMEOUTS,
   FINAL,
@@ -144,8 +144,9 @@ export function shipInProgress(paths) {
 }
 
 /** The checks before anything changes. Every refusal is collected, not just the first. */
-export function preflight({ repo, bundle, paths, skipHealthcheck = false }) {
+export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowSameVersion = false, fromApp = false }) {
   const refusals = [];
+  const warnings = [];
   const facts = {};
   // The checkout: clean, and the bundle built from its HEAD.
   try {
@@ -202,6 +203,16 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false }) {
         `The installed app (${facts.installed ? stampLabel(facts.installed) : "no stamp"}) predates Ship and can't quit for an update. Install this build once with npm run hub:install.`,
       );
   }
+  // A newer version than the installed app. Refused from the command line; a ship the app itself asked for (app.ship)
+  // only warns, so its Ship button never stops on it; --allow-same-version turns the refusal into the warning.
+  facts.version = { bundle: exists(bundle) ? readVersion(bundle) : null, installed: exists(paths.app) ? readVersion(paths.app) : null };
+  const notBumped = versionProblem({
+    bundleVersion: facts.version.bundle,
+    installedVersion: facts.version.installed,
+    bundleSha: facts.stamp?.sha,
+    installedSha: facts.installed?.sha,
+  });
+  if (notBumped) (allowSameVersion || fromApp ? warnings : refusals).push(notBumped);
   // Room for the staged copy and the database backup, and a margin.
   if (exists(bundle)) {
     const dbBytes = ["monocode.db", "monocode.db-wal", "monocode.db-shm"].reduce(
@@ -244,7 +255,27 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false }) {
     else facts.supersedes = busy.id;
     releaseLock(busy.lock);
   }
-  return { refusals, facts };
+  return { refusals, warnings, facts };
+}
+
+/** -1, 0 or 1 for two dotted versions ("0.16.1" vs "0.16.0"); a missing or odd part counts as 0. */
+export function compareVersions(a, b) {
+  const parts = (v) => String(v).split(/[.+-]/).slice(0, 3).map((n) => Number.parseInt(n, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
+  return 0;
+}
+
+/**
+ * r59 (PM: the r58 install still said 0.16.0): a new build must carry a newer version than the installed app (the last
+ * ship), or the app, running.json and Info.plist can't tell them apart. Returns the problem as one line, or null: when
+ * either version is unknown, or it is the same build (a re-ship of one commit), there is nothing to say.
+ */
+export function versionProblem({ bundleVersion, installedVersion, bundleSha, installedSha }) {
+  if (!bundleVersion || !installedVersion) return null;
+  if (bundleSha && installedSha && bundleSha === installedSha) return null;
+  if (compareVersions(bundleVersion, installedVersion) > 0) return null;
+  return `The version wasn't bumped since the last ship: this build is ${bundleVersion} and the installed app is ${installedVersion}. Bump it (package.json, package-lock.json, src-tauri/tauri.conf.json, Cargo.toml, Cargo.lock) and rebuild, or pass --allow-same-version.`;
 }
 
 function shipId(sha, suffix = "") {
@@ -531,6 +562,7 @@ function parseArgs(argv) {
     else if (arg === "--legacy") options.legacy = true;
     else if (arg === "--drill-rollback") options.drill = "rollback";
     else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--allow-same-version") options.allowSameVersion = true;
     else if (arg === "--repo") options.repo = value();
     else if (arg === "--bundle") options.bundle = value();
     else if (arg === "--requested-by") options.requestedBy = value();
@@ -598,9 +630,17 @@ export async function main(argv = process.argv.slice(2)) {
     return out({ ...result, legacy: true });
   }
 
-  const { refusals, facts } = preflight({ repo, bundle, paths });
-  if (refusals.length) return out({ ok: false, refusals, facts });
-  if (options.dryRun) return out({ ok: true, dryRun: true, facts });
+  const { refusals, warnings, facts } = preflight({
+    repo,
+    bundle,
+    paths,
+    allowSameVersion: Boolean(options.allowSameVersion),
+    fromApp: Boolean(options.requestedBy) || process.env.MONOCODE_SHIP_FROM_APP === "1",
+  });
+  // Loud, on stderr, whatever happens next (the JSON result carries them too).
+  for (const warning of warnings) console.error(`\n*** WARNING: ${warning} ***\n`);
+  if (refusals.length) return out({ ok: false, refusals, warnings, facts });
+  if (options.dryRun) return out({ ok: true, dryRun: true, warnings, facts });
 
   const owner = appOwner(paths.data);
   const to = { sha: facts.stamp.sha, branch: facts.stamp.branch, builtAt: facts.stamp.builtAt, dirty: facts.stamp.dirty };
@@ -636,6 +676,7 @@ export async function main(argv = process.argv.slice(2)) {
     from: label(from),
     drill: options.drill ?? null,
     appRunning: owner != null,
+    warnings,
     runner: staged.ship.runner,
     note: owner
       ? options.whenBusy === "restart"

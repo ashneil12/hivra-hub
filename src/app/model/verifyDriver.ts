@@ -22,7 +22,7 @@ import {
   typingIn,
 } from "../../features/hub/model/hubChats";
 import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
-import { listMonos, monoForSession, monoState, updateMono } from "../../features/monos/model/mono";
+import { listMonos, monoForSession, monoState, removeMono, updateMono } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
 import { openSubChats } from "../../features/monos/model/subChats";
@@ -60,7 +60,62 @@ export type DriverHost = {
   startCodingTeamChat?(projectId: string, runtimeMode?: RuntimeMode): string | null;
   /** Ash's Allow on a chat's permission card (the bench's `approve` step; a verify dev copy only). */
   approve?(sessionId: string, requestId: number): void;
+  /**
+   * The sidebar's Archive on one chat (App.tsx onRemoveHistorySession in archive mode, no confirm): the run's own
+   * teardown (`cleanup`). Never the Reset chat path.
+   */
+  archive?(sessionId: string): Promise<boolean>;
 };
+
+/** What `cleanup` did with the ids a run gave it: nothing outside those ids is touched. */
+export type CleanupResult = {
+  ok: boolean;
+  archived: string[];
+  removedMonos: string[];
+  missing: string[];
+  failed: { id: string; error: string }[];
+};
+
+function idList(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0))] : [];
+}
+
+/**
+ * A run's teardown (scripts/hub-verify-live.mjs): archives exactly the chats it names, through the sidebar's Archive,
+ * and removes exactly the Monos it names, as the rail's Remove does. A Mono the roster doesn't have is reported as
+ * missing; nothing else is looked at.
+ */
+export async function cleanup(action: DriverAction, host: DriverHost): Promise<CleanupResult> {
+  const result: CleanupResult = { ok: true, archived: [], removedMonos: [], missing: [], failed: [] };
+  // The Monos first, as the rail's Remove (hub repair then leaves a removed Lead gone), then the chats.
+  const roster = new Set(listMonos().map((mono) => mono.id));
+  for (const id of idList(action.monos)) {
+    if (!roster.has(id)) {
+      result.missing.push(id);
+      continue;
+    }
+    try {
+      removeMono(id);
+      result.removedMonos.push(id);
+    } catch (error) {
+      result.failed.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  for (const id of idList(action.sessions)) {
+    if (!host.archive) {
+      result.failed.push({ id, error: "this window can't archive" });
+      continue;
+    }
+    try {
+      if (await host.archive(id)) result.archived.push(id);
+      else result.failed.push({ id, error: "archive refused" });
+    } catch (error) {
+      result.failed.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  result.ok = result.failed.length === 0;
+  return result;
+}
 
 /** Runtime modes a bench send may start a coding-team chat in. Anything else keeps the app's default. */
 const BENCH_MODES: readonly RuntimeMode[] = ["supervised", "auto-accept-edits", "auto", "full-access"];
@@ -505,6 +560,8 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       await wait(Number(action.settleMs ?? 800));
       return { ...result, at: Date.now() };
     }
+    case "cleanup":
+      return { ...(await cleanup(action, host)), at: Date.now() };
     case "drain":
       log.tick(host);
       return { ok: true, events: log.drain() };

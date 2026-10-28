@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-28
+
+### Changed
+
+- The version is now 0.16.1, so an installed copy reports the build it is.
+- `hub:ship` refuses a build whose version is no newer than the installed app's (unless it is the same build). Pass `--allow-same-version` to ship it anyway. A ship started from the app warns instead of refusing.
+
+### Fixed
+
+- `hub:verify-live` cleans up after itself, pass or fail. It archives the chats and workers it made and removes the Monos it made (Verify Lead, Verify lead, Verify Marketing). It also drops the Verify project it listed. Items are tracked by id, nothing else is touched, and Reset chat is never used. A run that leaves any of them behind fails.
+
 ## [0.16.0] - 2026-10-19
 
 ### Added

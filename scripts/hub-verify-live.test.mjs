@@ -11,6 +11,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
+  RUN_MONO_NAMES,
+  insideScratch,
+  teardownLeftovers,
+  teardownList,
   ASKER,
   CT_KICKOFF,
   CT_WORKER,
@@ -513,4 +517,82 @@ test("the verify stage hears this run's verdict, scope included", () => {
   // No stage asked: no file, and no error.
   writeStageVerdict({ verdict: "PASS", run: "run-3", build }, undefined);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("r59: the teardown lists only what this run made, by id, inside its scratch folder", () => {
+  const scratch = "/tmp/monocode-verify-abc";
+  const project = `${scratch}/project`;
+  assert.deepEqual(RUN_MONO_NAMES, ["Verify Lead", "Verify Marketing"]);
+  assert.equal(insideScratch(`${scratch}/home/x`, scratch), true);
+  assert.equal(insideScratch("/Users/ash/Projects/monocode-hub", scratch), false);
+  assert.equal(insideScratch(`${scratch}-other/project`, scratch), false);
+  const windowMonos = [
+    { id: "chief-of-staff", name: "Chief of Staff", projects: ["/Users/example/Projects/hivra", project], sessionId: "cos-chat" },
+    { id: "lead-uuid", name: "Verify Lead", projects: [project], sessionId: "lead-chat" },
+    { id: "verify-lead", name: "Verify lead", projects: [project], sessionId: "flow-lead-chat" },
+    { id: "mt-uuid", name: "Verify Marketing", projects: [project], sessionId: "mt-chat" },
+    // Same name, another place: not this run's.
+    { id: "other-marketing", name: "Verify Marketing", projects: ["/Users/ash/Projects/elsewhere"], sessionId: "x-chat" },
+  ];
+  const windowSessions = [
+    { id: "cos-chat", cwd: project },
+    { id: "lead-chat", cwd: project },
+    { id: "flow-lead-chat", cwd: project },
+    { id: "mt-chat", cwd: `${scratch}/home/monos/mt` },
+    { id: "x-chat", cwd: "/Users/ash/Projects/elsewhere" },
+    { id: "app-lead-chat-w1", cwd: project },
+    { id: "app-app-lead-chat-w1-w2", cwd: project, worktree: `${scratch}/wt` },
+    { id: "delegated", cwd: project },
+    { id: "ct-chat", cwd: project },
+    { id: "app-ct-chat-w", cwd: project },
+    { id: "ash-real", cwd: "/Users/ash/Projects/monocode-hub" },
+    { id: "app-ash-real-w", cwd: "/Users/ash/Projects/monocode-hub" },
+    { id: "untouched", cwd: project },
+  ];
+  const appCalls = [
+    { action: "sessions.start", response: { ok: true, result: { id: "app-lead-chat-w1" } } },
+    { action: "tasks.delegate", response: { ok: true, result: { childSessionId: "delegated" } } },
+    { action: "tasks.delegate", response: { ok: false, error: "nope" } },
+    // A message to an existing Mono's chat makes nothing: its session id isn't listed.
+    { action: "monos.message", response: { ok: true, result: { sessionId: "cos-chat" } } },
+    // Something that claims a chat outside the scratch folder is still not touched.
+    { action: "sessions.start", response: { ok: true, result: { id: "ash-real" } } },
+  ];
+  const list = teardownList({
+    appCalls,
+    extraSessions: ["ct-chat"],
+    monoIds: ["mt-uuid"],
+    leadMonoId: "verify-lead",
+    windowMonos,
+    windowSessions,
+    scratch,
+    project,
+  });
+  assert.deepEqual(list.monos, ["lead-uuid", "mt-uuid", "verify-lead"]);
+  assert.deepEqual(list.sessions, [
+    "app-app-lead-chat-w1-w2",
+    "app-ct-chat-w",
+    "app-lead-chat-w1",
+    "ct-chat",
+    "delegated",
+    "flow-lead-chat",
+    "lead-chat",
+    "mt-chat",
+  ]);
+  for (const kept of ["cos-chat", "x-chat", "ash-real", "app-ash-real-w", "untouched"]) assert.ok(!list.sessions.includes(kept), kept);
+  assert.ok(!list.monos.includes("chief-of-staff") && !list.monos.includes("other-marketing"));
+});
+
+test("r59: a Mono the window no longer has and an empty run list nothing", () => {
+  const list = teardownList({ monoIds: ["gone"], leadMonoId: "verify-lead", windowMonos: [], windowSessions: [], scratch: "/tmp/s", project: "/tmp/s/project" });
+  assert.deepEqual(list, { sessions: [], monos: [] });
+});
+
+test("r59: leftovers are the listed chats not archived and the listed Monos still on the rail", () => {
+  const list = { sessions: ["a", "b", "c"], monos: ["m1", "m2"] };
+  assert.deepEqual(
+    teardownLeftovers(list, { rows: [{ id: "a", archived: 1 }, { id: "b", archived: 0 }, { id: "z", archived: 0 }], windowMonos: [{ id: "m2" }, { id: "chief-of-staff" }] }),
+    { sessions: ["b", "c"], monos: ["m2"] },
+  );
+  assert.deepEqual(teardownLeftovers(list, { rows: list.sessions.map((id) => ({ id, archived: 1 })), windowMonos: [] }), { sessions: [], monos: [] });
 });
