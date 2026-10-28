@@ -202,8 +202,33 @@ export const WINDOW_HOME: HubSelection = { project: NO_PROJECT, item: "" };
 
 export function homeAfterRemoval(
   mode: "archive" | "delete",
-  origin: "ui" | "cli",
+  origin: RemovalOrigin,
   removal: Pick<SessionWorkspaceRemoval, "windowEmptied">,
 ): HubSelection | null {
   return mode === "delete" && origin === "ui" && removal.windowEmptied ? WINDOW_HOME : null;
+}
+
+/**
+ * Who took a session out of the window: Ash in the app ("ui"), the CLI or phone ("cli"), or the app's own background
+ * work ("app": a finished run's teardown, a group room letting go of a session).
+ */
+export type RemovalOrigin = "ui" | "cli" | "app";
+
+/**
+ * What a session leaving the window does to what Ash sees (r61, PM's r60 D5/C3: the app jumped from the Lead's or a
+ * Mono's chat to the coding team's tabs on its own). Only Ash's own archive or delete moves him: the next tab is shown,
+ * closing a Mono's chat or hub page over it. Anything else only updates which tab the hidden workspace has selected,
+ * and never takes him home.
+ */
+export function viewAfterRemoval(
+  mode: "archive" | "delete",
+  origin: RemovalOrigin,
+  removal: Pick<SessionWorkspaceRemoval, "windowEmptied" | "activeTabId">,
+  activeTabId: string,
+): { activeTabId: string | null; reveal: boolean; home: HubSelection | null } {
+  return {
+    activeTabId: removal.activeTabId !== activeTabId ? removal.activeTabId : null,
+    reveal: origin === "ui",
+    home: homeAfterRemoval(mode, origin, removal),
+  };
 }

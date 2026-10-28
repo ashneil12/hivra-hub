@@ -28,6 +28,7 @@ import {
   type ReactNode,
 } from "react";
 import { basename } from "../../platform/tauri/fs";
+import { systemWindowTitle } from "./windowTitle";
 import { looksLikeProject } from "../../features/projects/model/recents";
 import type { HarnessId } from "../../features/sessions/model/session";
 import { CwdPicker } from "../../features/projects/ui/CwdPicker";
@@ -119,6 +120,12 @@ type Props = {
   tabs: Tab[];
   activeId: string;
   cwd: string;
+  /**
+   * A view the hub shows over the workspace (New project): the window is named for it, not for the workspace tab
+   * hidden under it, so nothing changing in that workspace renames the window (PM's r60 G2: "Hivra-public-canary —
+   * MonoCode" while a new-project draft was open).
+   */
+  viewTitle?: string;
   /**
    * The Mono filling the main area. It takes the tabs' place, and nothing
    * project-scoped belongs beside it.
@@ -774,6 +781,7 @@ function TitleBarComponent({
   tabs,
   activeId,
   cwd,
+  viewTitle,
   mono,
   content,
   onToggleMonoOverview,
@@ -938,17 +946,9 @@ function TitleBarComponent({
             ? basename(activeTab.files[0])
             : activeTab.project
       : "";
-    const project = cwd ? basename(cwd) : "";
     // A dev copy's windows end in "MonoCode Hub Dev - <branch> @ <sha>".
-    const app = windowTitleSuffix();
-    if (activeName && project && activeName !== project) {
-      return `${activeName} — ${project} — ${app}`;
-    }
-    if (project) {
-      return `${project} — ${app}`;
-    }
-    return app;
-  }, [activeTab, cwd]);
+    return systemWindowTitle(activeName, cwd, windowTitleSuffix(), viewTitle);
+  }, [activeTab, cwd, viewTitle]);
 
   useEffect(() => {
     document.title = systemTitle;

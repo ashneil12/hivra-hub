@@ -56,7 +56,8 @@ describe("deleting the window's last tab", () => {
 
   it("the App takes Ash home from a UI delete", () => {
     const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    expect(app).toMatch(/homeAfterRemoval\(change\.mode, origin, removal\)/);
+    expect(app).toMatch(/viewAfterRemoval\(\s*change\.mode,\s*origin,\s*removal,/);
+    expect(app).toMatch(/const showHome = after\.home;/);
     expect(app).toMatch(/if \(showHome\) setHubSelection\(showHome\)/);
   });
 });

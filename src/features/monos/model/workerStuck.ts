@@ -295,10 +295,10 @@ export type WorkCounts = {
 };
 
 /**
- * Whose a stalled or failed worker is, under the red rule (r30, r30b): Ash's only when its provider refused it for
- * billing or sign-in ("needs you", red); a retry's while one has it ("retrying", grey); Ash's again once its Lead has
- * read the failure and its turn ended without a retry (r30h, leadTurnOver); else its Lead's ("with <Lead>", grey).
- * Never "stuck".
+ * Whose a stalled or failed worker is, under the red rule (r30, r30b, r61): Ash's only when he must act (its provider
+ * refused it for billing, a key, sign-in or policy, self-repair's retries ran out, or its Lead declared it can't go on):
+ * "needs you", red; a retry's while one has it ("retrying", grey); else its Lead's ("with <Lead>", grey), also once the
+ * Lead's turn is over (r61: r30h's red for that is gone, it had no action for Ash). Never "stuck".
  */
 export type StuckOwner = "needs-you" | "retrying" | "with-lead";
 /** Whether the newest block on the row was declared by its owner (the Lead), not by the worker on its own row. */
@@ -324,7 +324,10 @@ export function stuckOwner(stuck: Pick<StuckWorker, "kind" | "row">): StuckOwner
   if (leadRetried(stuck.row)) return "retrying";
   if (why === "out-of-retries") return "needs-you";
   if (repairableFailure(stuck.row)) return "retrying";
-  if (leadTurnOver(stuck.row)) return "needs-you";
+  // r61 (PM's blind D5 on r60, 28 Oct): a failure with no Ash reason stays its Lead's once its turn is over, too. The
+  // Lead read it and moved on (there, it did the check itself), so a red "Needs you · Stopped with an error." gave Ash
+  // nothing to act on. Red is only for something Ash must do: the reasons above, or the Lead's own word that it can't
+  // go on. The Lead's chat still says the worker failed (unfinishedWorker), and the row ages out with the failure.
   return "with-lead";
 }
 
