@@ -820,11 +820,17 @@ export function exitCode(verdict, failGate) {
 /** Monos the run itself makes by name (its kickoff's Lead, Ash's own Mono on the Verify project). */
 export const RUN_MONO_NAMES = ["Verify Lead", MT_MONO];
 
-/** True when a path is the run's scratch folder or inside it (its temporary HOME, project, the Monos' folders there). */
+/**
+ * True when a path is the run's scratch folder or inside it (its temporary HOME, project, worktrees, the Monos'
+ * folders there). `scratch` may list the folder under several spellings (macOS's /var is /private/var).
+ */
 export function insideScratch(file, scratch) {
-  if (typeof file !== "string" || !file || !scratch) return false;
-  const rel = path.relative(scratch, file);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (typeof file !== "string" || !file) return false;
+  return [scratch].flat().some((root) => {
+    if (typeof root !== "string" || !root) return false;
+    const rel = path.relative(root, file);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  });
 }
 
 /**
@@ -834,7 +840,8 @@ export function insideScratch(file, scratch) {
  * - Monos it made: the Lead for the project it listed (`leadMonoId`), the Monos its kickoffs named (`monoIds`), and any
  *   Mono named in RUN_MONO_NAMES whose only project is this run's scratch project (a fresh mkdtemp path, so its id);
  * - those Monos' chats, and every chat the app made under a listed chat (`app-<owner>-…`).
- * Every chat must be one the window knows whose folder is inside the run's scratch folder; nothing else is listed.
+ * Every chat must be one the database knows whose folder (and worktree, if any) is inside the run's scratch folder;
+ * nothing else is listed.
  */
 export function teardownList({ appCalls = [], extraSessions = [], monoIds = [], leadMonoId = null, windowMonos = [], windowSessions = [], scratch, project }) {
   const monos = new Set(monoIds.filter(Boolean));
@@ -866,7 +873,7 @@ export function teardownList({ appCalls = [], extraSessions = [], monoIds = [], 
   }
   const sessions = [...seeds].filter((id) => {
     const row = known.get(id);
-    return !!row && insideScratch(row.worktree || row.cwd, scratch);
+    return !!row && insideScratch(row.cwd, scratch) && (!row.worktree || insideScratch(row.worktree, scratch));
   });
   return { sessions: sessions.sort(), monos: listedMonos.sort() };
 }
@@ -2123,7 +2130,7 @@ async function main() {
         leadMonoId: ledger.project ? FLOW_LEAD_MONO : null,
         windowMonos: await windowMonos(),
         windowSessions: await rows(),
-        scratch,
+        scratch: [scratch, fs.realpathSync(scratch)],
         project,
       });
       const done = await act("cleanup", list, 90_000);

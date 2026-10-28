@@ -526,6 +526,7 @@ test("r59: the teardown lists only what this run made, by id, inside its scratch
   assert.equal(insideScratch(`${scratch}/home/x`, scratch), true);
   assert.equal(insideScratch("/Users/ash/Projects/monocode-hub", scratch), false);
   assert.equal(insideScratch(`${scratch}-other/project`, scratch), false);
+  assert.equal(insideScratch(`/private${scratch}/project-worktrees/mc-1`, [scratch, `/private${scratch}`]), true);
   const windowMonos = [
     { id: "chief-of-staff", name: "Chief of Staff", projects: ["/Users/example/Projects/hivra", project], sessionId: "cos-chat" },
     { id: "lead-uuid", name: "Verify Lead", projects: [project], sessionId: "lead-chat" },
@@ -541,7 +542,9 @@ test("r59: the teardown lists only what this run made, by id, inside its scratch
     { id: "mt-chat", cwd: `${scratch}/home/monos/mt` },
     { id: "x-chat", cwd: "/Users/ash/Projects/elsewhere" },
     { id: "app-lead-chat-w1", cwd: project },
-    { id: "app-app-lead-chat-w1-w2", cwd: project, worktree: `${scratch}/wt` },
+    { id: "app-app-lead-chat-w1-w2", cwd: project, worktree: `/private${scratch}/project-worktrees/mc-1` },
+    // A worktree outside the scratch folder: never touched.
+    { id: "app-lead-chat-out", cwd: project, worktree: "/Users/ash/Worktrees/real" },
     { id: "delegated", cwd: project },
     { id: "ct-chat", cwd: project },
     { id: "app-ct-chat-w", cwd: project },
@@ -565,7 +568,7 @@ test("r59: the teardown lists only what this run made, by id, inside its scratch
     leadMonoId: "verify-lead",
     windowMonos,
     windowSessions,
-    scratch,
+    scratch: [scratch, `/private${scratch}`],
     project,
   });
   assert.deepEqual(list.monos, ["lead-uuid", "mt-uuid", "verify-lead"]);
@@ -579,7 +582,7 @@ test("r59: the teardown lists only what this run made, by id, inside its scratch
     "lead-chat",
     "mt-chat",
   ]);
-  for (const kept of ["cos-chat", "x-chat", "ash-real", "app-ash-real-w", "untouched"]) assert.ok(!list.sessions.includes(kept), kept);
+  for (const kept of ["cos-chat", "x-chat", "ash-real", "app-ash-real-w", "untouched", "app-lead-chat-out"]) assert.ok(!list.sessions.includes(kept), kept);
   assert.ok(!list.monos.includes("chief-of-staff") && !list.monos.includes("other-marketing"));
 });
 
