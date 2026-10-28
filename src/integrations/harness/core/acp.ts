@@ -3,6 +3,7 @@ import {
   type JsonRpcHandlers,
   type JsonRpcId,
   type JsonRpcMessage,
+  type JsonRpcRequestOptions,
 } from "./jsonRpc";
 
 export type { JsonRpcMessage };
@@ -51,8 +52,8 @@ export class AcpClient {
     this.rpc.rejectPending(error);
   }
 
-  request<T>(method: string, params?: unknown, timeoutMs = 0): Promise<T> {
-    return this.rpc.request<T>(method, params, timeoutMs);
+  request<T>(method: string, params?: unknown, timeoutMs = 0, options?: JsonRpcRequestOptions): Promise<T> {
+    return this.rpc.request<T>(method, params, timeoutMs, options);
   }
 
   notify(method: string, params?: unknown): Promise<void> {

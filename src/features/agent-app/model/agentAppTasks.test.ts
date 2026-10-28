@@ -35,9 +35,16 @@ import { isOpenDelegation } from "../../monos/model/delegations";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
+// Ash's Mac: Claude Code runs through the claude-grok bridge, and the Grok CLI is installed too.
+const bridge = vi.hoisted(() => ({ on: false }));
+vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async (actual) => {
+  const real = await actual<typeof import("../../../integrations/harness/providers/claude/claudeGrokBridge")>();
+  return { ...real, claudeRunsOnSubscriptionBridge: () => bridge.on };
+});
 vi.mock("../../../integrations/harness/core/availability", () => ({
   // Before the first probe ends every harness reads as missing.
-  isHarnessAvailable: (id: string) => probe.probed && (id === "claude" || id === "codex"),
+  isHarnessAvailable: (id: string) =>
+    probe.probed && (id === "claude" || id === "codex" || (bridge.on && id === "grok")),
   hasProbedHarnessAvailability: () => probe.probed,
   probeHarnessAvailability: async () => {
     probe.runs += 1;
@@ -252,6 +259,103 @@ describe("tasks.delegate redoes: the Lead retries or splits its stuck task", () 
     ).rejects.toThrow(/redoes is for your own workers' tasks/);
     expect([...started, ...second.started]).toEqual([]);
     expect(api.redo).not.toHaveBeenCalled();
+  });
+});
+
+// 28 Oct blind run in Ash's app: a Lead on claude:grok-4.7 delegated, the app routed the worker to DeepSeek and then
+// refused its own choice ("Unknown model"), so the Lead named grok:grok-4.6 and every worker ran on the Grok CLI.
+describe("tasks.delegate on the subscription bridge: workers run Claude Code on DeepSeek or Grok 4.7", () => {
+  beforeEach(() => {
+    bridge.on = true;
+    setHarnessModels("grok", [{ id: "grok:grok-4.6", harness: "grok", name: "Grok 4.6", settings: [] }]);
+  });
+  afterEach(() => {
+    bridge.on = false;
+  });
+
+  function onBridge() {
+    const f = fixture();
+    f.source.model = "claude:grok-4.7";
+    return f;
+  }
+
+  it("starts a worker the app routes itself on the bridge's DeepSeek at high effort", async () => {
+    const { source, host, started } = onBridge();
+    const result = await handleAgentApp(source, "r-b1", "tasks.delegate", { brief: "Make every window see a lead mid-turn." }, host);
+    expect(started).toHaveLength(1);
+    expect(started[0][0]).toMatchObject({
+      harness: "claude",
+      model: "claude:deepseek-v4.1-flash",
+      modelSettings: { effort: "high" },
+    });
+    expect(result).toMatchObject({ harness: "claude", model: "claude:deepseek-v4.1-flash", effort: "High" });
+  });
+
+  it("keeps DeepSeek or Grok 4.7 the Lead names, by any engine's id, on the bridge", async () => {
+    for (const [asked, model] of [
+      ["deepseek-v4.1-flash", "claude:deepseek-v4.1-flash"],
+      ["omp:deepseek/deepseek-v4-pro", "claude:deepseek-v4.1-flash"],
+      ["grok-4.7", "claude:grok-4.7"],
+      ["grok:grok-4.6", "claude:grok-4.7"],
+    ] as const) {
+      const { source, host, started } = onBridge();
+      await handleAgentApp(source, `r-${asked.replace(/[^a-z0-9]/gi, "")}`, "tasks.delegate", { brief: "Do it.", model: asked }, host);
+      expect(started[0][0]).toMatchObject({ harness: "claude", model });
+    }
+  });
+
+  it("runs another engine's model on the bridge's DeepSeek, and a Claude name too, never the Claude subscription", async () => {
+    for (const asked of ["codex:gpt-5.5", "claude:opus-4.6", "sonnet"]) {
+      const { source, host, started } = onBridge();
+      setHarnessModels("codex", [{ id: "codex:gpt-5.5", harness: "codex", name: "GPT-5.5", settings: [] }]);
+      const result = await handleAgentApp(source, `r-${asked.replace(/[^a-z0-9]/gi, "")}`, "tasks.delegate", { brief: "Do it.", model: asked }, host);
+      expect(started[0][0]).toMatchObject({ harness: "claude", model: "claude:deepseek-v4.1-flash" });
+      if (asked.startsWith("codex:"))
+        expect((result as { modelWhy: string }).modelWhy).toContain(`"${asked}" doesn't run on the bridge`);
+    }
+  });
+});
+
+// 28 Oct blind run: each redo/finish worker started in the main checkout, not the first worker's worktree.
+describe("tasks.delegate redoes: the redo works where the job did", () => {
+  const TREE = "/tmp/vg-game-worktrees/mc-1";
+  function withFirstWorker(worktreeCwd: string | undefined, onDisk = true) {
+    const first = row({ id: "t-first", childSession: "app-mono-exo-first", state: "failed", delivery: "acknowledged" });
+    const f = fixture([first]);
+    f.api.redo = vi.fn(async () => undefined);
+    f.host.session = vi.fn(async (id: string) =>
+      id === "app-mono-exo-first"
+        ? ({ ...newSession("claude", PROJECT, "claude:sonnet-5"), id, ...(worktreeCwd ? { worktreeCwd } : {}) } as Session)
+        : null,
+    );
+    f.host.worktrees = vi.fn(async () => ({
+      worktrees: onDisk && worktreeCwd ? [{ path: worktreeCwd, branch: "mc/fix", missing: false }] : [],
+      defaultRoot: "/tmp/vg-game-worktrees",
+    })) as unknown as AgentAppHost["worktrees"];
+    return f;
+  }
+
+  it("reuses the first worker's own checkout, with its half-done work", async () => {
+    const { source, host, started } = withFirstWorker(TREE);
+    const result = await handleAgentApp(source, "r-finish", "tasks.delegate", { brief: "Finish the half-written fix.", redoes: "t-first" }, host);
+    expect(started[0][0]).toMatchObject({ cwd: PROJECT, workspaceMode: "current", worktreeCwd: TREE });
+    expect(result).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("same checkout") });
+  });
+
+  it("gives a fresh checkout when the first worker had none, or it is gone; never the shared one", async () => {
+    for (const [tree, onDisk] of [[undefined, true], [TREE, false]] as const) {
+      const { source, host, started } = withFirstWorker(tree, onDisk);
+      await handleAgentApp(source, "r-again", "tasks.delegate", { brief: "Try it again, smaller.", redoes: "t-first" }, host);
+      expect(started[0][0]).toMatchObject({ workspaceMode: "worktree" });
+      expect(started[0][0]).not.toHaveProperty("worktreeCwd");
+    }
+  });
+
+  it("still works in the shared checkout when the chat asks for shared", async () => {
+    const { source, host, started } = withFirstWorker(TREE);
+    await handleAgentApp(source, "r-shared", "tasks.delegate", { brief: "Again.", redoes: "t-first", isolation: "shared" }, host);
+    expect(started[0][0]).toMatchObject({ workspaceMode: "current" });
+    expect(started[0][0]).not.toHaveProperty("worktreeCwd");
   });
 });
 

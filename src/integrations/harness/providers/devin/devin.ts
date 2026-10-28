@@ -9,7 +9,7 @@ import {
   unwatchChild,
   watchChild,
 } from "../../core/child";
-import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
+import { JsonRpcClient, TURN_IDLE_TIMEOUT_MS, type JsonRpcId } from "../../core/jsonRpc";
 import type { NativeCommand } from "../../core/nativeCommands";
 import type {
   ApprovalDecision,
@@ -96,7 +96,9 @@ const INIT_TIMEOUT_MS = 20_000;
 const AUTH_TIMEOUT_MS = 5 * 60_000;
 const SESSION_TIMEOUT_MS = 45_000;
 const CONTROL_TIMEOUT_MS = 20_000;
-const PROMPT_TIMEOUT_MS = 30 * 60_000;
+// A turn is given up on only after an hour without one line from the process (TURN_IDLE_TIMEOUT_MS): never a cap on
+// how long real work may take (28 Oct: a 30-minute cap killed workers mid-work). The hub's hour check judges progress.
+const PROMPT_IDLE_MS = TURN_IDLE_TIMEOUT_MS;
 const TITLE_TIMEOUT_MS = 90_000;
 const TITLE_LIMIT = 50;
 
@@ -608,7 +610,8 @@ async function prompt(
     const result = await live.rpc.request(
       "session/prompt",
       { sessionId: live.acpSessionId, prompt: blocks },
-      PROMPT_TIMEOUT_MS,
+      PROMPT_IDLE_MS,
+      { idle: true },
     );
     const stopReason = asRecord(result)?.stopReason;
     if (live.cancelled || stopReason === "cancelled") return;
