@@ -15,7 +15,7 @@ import { codingTeamChatProject } from "./codingTeam";
 import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
-import { noteTeamEngines, seatLeadershipTeams, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
+import { noteTeamEngines, seatLeadershipTeams, seedFrankAshAsks, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
 import { refreshSoulsSoon } from "./soulRefresh";
 import { renameAshLeadToHubLead } from "./monoRename";
 import { applyMemoryLineFixes } from "./memoryLineFixes";
@@ -145,6 +145,7 @@ function startHubBundleLeads(store: HubStore): void {
     // Then every soul is checked against the last one the app saved, before anything else reads it (soulTamper.ts).
     watchSoulOpens();
     void seedTeamFiles()
+      .then(() => seedFrankAshAsks())
       .then(() => checkSouls())
       .then(() => applyMemoryLineFixes())
       .then(() => refreshSoulsSoon());
