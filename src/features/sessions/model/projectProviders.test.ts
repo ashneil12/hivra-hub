@@ -32,10 +32,10 @@ describe("project provider settings", () => {
   });
 
   it("stores a project default provider and model", () => {
-    setProjectDefaultProvider("/repo/a", "claude", "claude:opus-5");
+    setProjectDefaultProvider("/repo/a", "claude", "claude:deepseek-v4.1-flash");
     expect(loadProjectProviderSettings("/repo/a")).toEqual({
       defaultHarness: "claude",
-      defaultModel: "claude:opus-5",
+      defaultModel: "claude:deepseek-v4.1-flash",
     });
   });
 

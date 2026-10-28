@@ -1,5 +1,6 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { HarnessId } from "./session";
+import { bridgeSafeModel } from "./bridgeModels";
 
 /**
  * Per-project overrides for the Providers settings: which provider new
@@ -178,13 +179,14 @@ function normalize(value: ProjectProviderSettings): ProjectProviderSettings {
     next.defaultHarness = value.defaultHarness;
   }
   if (typeof value.defaultModel === "string" && value.defaultModel) {
-    next.defaultModel = value.defaultModel;
+    // r61: a project's Claude default from before the bridges reads as Grok 4.7, never an Anthropic model.
+    next.defaultModel = bridgeSafeModel(next.defaultHarness, value.defaultModel);
   }
   if (value.models && typeof value.models === "object") {
     const models: Partial<Record<HarnessId, string>> = {};
     for (const [harness, model] of Object.entries(value.models)) {
       if (typeof model === "string" && model) {
-        models[harness as HarnessId] = model;
+        models[harness as HarnessId] = bridgeSafeModel(harness, model);
       }
     }
     if (Object.keys(models).length > 0) next.models = models;

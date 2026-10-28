@@ -57,11 +57,11 @@ describe("newSessionForProject", () => {
   });
 
   it("applies a project model override to the carried provider", () => {
-    setProjectDefaultModel("/repo/a", "claude", "claude:haiku-4.5");
+    setProjectDefaultModel("/repo/a", "claude", "claude:deepseek-v4.1-flash");
     const seed = newSession("claude", "/repo/a", "claude:opus-5");
     const session = newSessionForProject(seed, "/repo/a");
     expect(session.harness).toBe("claude");
-    expect(session.model).toBe("claude:haiku-4.5");
+    expect(session.model).toBe("claude:deepseek-v4.1-flash");
   });
 });
 
@@ -111,7 +111,7 @@ describe("retargetSessionToProject", () => {
   });
 
   it("keeps the provider session but drops the account when the project changes", () => {
-    setProjectDefaultModel("/repo/a", "claude", "claude:haiku-4.5");
+    setProjectDefaultModel("/repo/a", "claude", "claude:deepseek-v4.1-flash");
     const blank: Session = {
       ...newSession("claude", "~", "claude:opus-5"),
       providerSessionId: "claude-session",
