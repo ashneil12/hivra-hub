@@ -1,4 +1,4 @@
-import { BRIDGE_MODEL_NAMES } from "./bridgeModels";
+import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE } from "./bridgeModels";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
@@ -354,10 +354,39 @@ function lookupModel(id: string): AgentModel | undefined {
   return findModel(id) ?? bundledById.get(id) ?? bridgeModel(id);
 }
 
+/**
+ * DeepSeek's effort levels on the bridge: workers run it at high effort (r58), so the setting has to exist for a
+ * worker start to carry it. Grok 4.7 (the Monos' and Leads' model) keeps no setting, so their chats start as before.
+ */
+const DEEPSEEK_BRIDGE_EFFORT: ModelSetting = {
+  id: "effort",
+  label: "Reasoning",
+  kind: "select",
+  value: "high",
+  options: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "max", label: "Max" },
+  ],
+};
+
 /** Grok 4.7 and DeepSeek as a Claude Code chat on a subscription bridge names them (bridgeModels.ts). */
 function bridgeModel(id: string | undefined): AgentModel | undefined {
   const entry = id ? BRIDGE_MODEL_NAMES[id.trim()] : undefined;
-  return entry ? { id: id!.trim(), harness: "claude", name: entry.name, nativeId: entry.nativeId } : undefined;
+  if (!entry) return undefined;
+  return {
+    id: id!.trim(),
+    harness: "claude",
+    name: entry.name,
+    nativeId: entry.nativeId,
+    ...(entry.nativeId === DEEPSEEK_BRIDGE_NATIVE ? { settings: [DEEPSEEK_BRIDGE_EFFORT] } : {}),
+  };
+}
+
+/** True for the app's own id of a bridge model (claude:grok-4.7, claude:deepseek-v4.1-flash), which no catalog lists. */
+export function isBridgeModelId(id: string | undefined): boolean {
+  return !!id && Object.prototype.hasOwnProperty.call(BRIDGE_MODEL_NAMES, id.trim());
 }
 
 export function resolveModel(harness: HarnessId, id?: string): AgentModel {

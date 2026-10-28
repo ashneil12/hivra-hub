@@ -51,9 +51,9 @@ import {
   type QueuedWorker,
   type WorkerLimits,
 } from "../../monos/model/workerPool";
-import { projectName } from "../../../shared/lib/paths";
+import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
-import { judgeTask, routeWorker, type WorkerModel } from "./taskDifficulty";
+import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   bridgeFamily,
@@ -356,11 +356,14 @@ function taskModel(
 ): { harness: HarnessId; model: string } | undefined {
   if (value === undefined) return undefined;
   const wanted = text(value, "model", 128);
-  // On a subscription bridge Grok and DeepSeek go by their own names (bridgeModels.ts).
+  // On a subscription bridge Grok and DeepSeek go by their own names (bridgeModels.ts), whatever harness the id names:
+  // grok:grok-4.6 is the Grok CLI, and a worker on it ran outside the bridge (28 Oct), so it means the bridge's Grok 4.7.
   if (onBridge) {
-    const family = bridgeFamily(wanted);
+    const family = bridgeFamily(wanted.replace(/^[a-z][a-z0-9-]*:/i, ""));
     if (family === "grok") return { harness: "claude", model: GROK_BRIDGE_MODEL_ID };
     if (family === "deepseek") return { harness: "claude", model: WORKER_BRIDGE_MODEL_ID };
+    // A Claude name is only a label there, listed or not: the worker takes the bridge's own route (DeepSeek, high).
+    if (family === "claude") return undefined;
   }
   // One of Ash's own models ("Other models"): it runs through Claude Code's router, as the picker starts it.
   if (isCustomModelId(wanted)) return { harness: "claude", model: wanted };
@@ -382,6 +385,25 @@ function taskModel(
       .map((model) => model.id)
       .join(", ")}`,
   );
+}
+
+/**
+ * Where a redo of `row` works: the checkout its worker had (still on disk, in the same project), or `{}` for a fresh
+ * one. The app's own session row says where that worker ran; a worker in the shared checkout leaves `{}` too.
+ */
+async function redoCheckout(row: Delegation, host: AgentAppHost, cwd: string): Promise<{ path?: string }> {
+  const child = await host.session(row.childSession).catch(() => null);
+  const tree = child?.worktreeCwd;
+  if (!child || !tree || pathKey(child.cwd) !== pathKey(cwd) || pathKey(tree) === pathKey(cwd)) return {};
+  const listed = await host.worktrees(cwd).catch(() => undefined);
+  const live = listed?.worktrees.find((entry) => !entry.missing && pathKey(entry.path) === pathKey(tree));
+  return live ? { path: live.path } : {};
+}
+
+/** The route's reason, led by why a model the Lead named isn't used: it can't run on the bridge. */
+function withOffBridgeWhy(route: WorkerRoute | undefined, asked: string | undefined): WorkerRoute | undefined {
+  if (!route || !asked) return route;
+  return { ...route, why: `"${asked}" doesn't run on the bridge (workers run only on Grok 4.7 or DeepSeek). ${route.why}` };
 }
 
 /** Who delegates: a Mono's own chat (signed with its name), or a coding-team chat (signed "<Project> coding team"). */
@@ -601,12 +623,19 @@ async function delegate(
   // 27 Oct: workers on DeepSeek; bridgeModels.ts). Grok or DeepSeek, named, is kept.
   const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
   const askedModel = taskModel(input.model, source, onBridge);
-  const namedModel = onBridge && askedModel?.harness === "claude" && isClaudeAliasModel(askedModel.model) ? undefined : askedModel;
+  // Workers on the bridge run only Grok 4.7 or DeepSeek through Claude Code (Ash, 27 Oct): another engine's model (the
+  // Grok CLI, Codex, Cursor...) named by the Lead runs as the bridge's DeepSeek instead, and the Lead hears why.
+  const offBridgeAsk =
+    onBridge && askedModel !== undefined && askedModel.harness !== "claude" ? String(input.model) : undefined;
+  const namedModel =
+    onBridge && (offBridgeAsk || (askedModel?.harness === "claude" && isClaudeAliasModel(askedModel.model)))
+      ? undefined
+      : askedModel;
   // An effort alone keeps the route on the bridge (its model is still DeepSeek); off it, it keeps the chat's model.
   const route =
     namedModel || (input.effort !== undefined && !onBridge)
       ? undefined
-      : routeWorker(source, difficulty, tasks.pool?.model(projectKey), onBridge);
+      : withOffBridgeWhy(routeWorker(source, difficulty, tasks.pool?.model(projectKey), onBridge), offBridgeAsk);
   const model = namedModel ?? (route ? { harness: route.harness, model: route.model } : undefined);
   const effort = input.effort !== undefined ? input.effort : route?.effort;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
@@ -636,10 +665,11 @@ async function delegate(
     id,
     new Set(everyone.flatMap((row) => (row.brief ? [portOfBrief(row.brief)].filter((p): p is number => !!p) : []))),
   );
-  const launchWith = (workspaceMode: "worktree" | "current") =>
+  const launchWith = (workspaceMode: "worktree" | "current", worktreeCwd?: string) =>
     helpers.startLaunch(
       source,
       {
+        ...(worktreeCwd ? { worktreeCwd } : {}),
         prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
         ...(ownTeam
           ? { project: ownTeam.folder }
@@ -656,12 +686,17 @@ async function delegate(
       host,
     );
   let launch = launchWith(asked === "worktree" ? "worktree" : "current");
+  // A redo of a job (redoes) works where that job did: its worker's own checkout, so the half-done work is there, or a
+  // fresh one when it had none left. Never the shared checkout unless the chat said "shared" (28 Oct: three redoes
+  // started in the main checkout and had to cd into the first worker's worktree by hand).
+  const redo = redoes && !ownTeam && asked === undefined ? await redoCheckout(redoes, host, launch.cwd) : undefined;
+  if (redo) launch = redo.path ? launchWith("current", redo.path) : launchWith("worktree");
   // Several workers in one repo at once each get a checkout of their own unless the chat said "shared": the baseline
   // (20 Oct) had two in one checkout stopping each other's dev server.
   const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
   // Never in a Mono's own team: its folder is no repository (the checkout would never be made, and the worker never run).
   const auto =
-    !ownTeam && asked === undefined && everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+    !redo && !ownTeam && asked === undefined && everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
   // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
@@ -713,7 +748,7 @@ async function delegate(
     await host.start(launch, id, undefined, source.id, meta);
   } catch (error) {
     // A checkout of its own couldn't be made (a folder that isn't a git repository): the shared one, as asked for.
-    if (!auto) throw error;
+    if (!auto && !(redo && !redo.path)) throw error;
     launch = launchWith("current");
     await host.start(launch, id, undefined, source.id, meta);
   }
@@ -734,9 +769,16 @@ async function delegate(
     ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
     // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
     ...(route ? { modelWhy: route.why } : {}),
-    ...(launch.workspaceMode === "worktree" ? { isolation: "worktree" } : {}),
+    ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? { isolationWhy: "Another worker is working in this project, so this one has a checkout of its own." }
+      : {}),
+    ...(redo && (launch.workspaceMode === "worktree" || launch.worktreeCwd)
+      ? {
+          isolationWhy: redo.path
+            ? "A redo of that task, so it works in the same checkout its first worker used, with its work still there."
+            : "A redo of that task, whose first worker left no checkout, so this one has a fresh checkout of its own.",
+        }
       : {}),
     ...(heavy ? { heavy: true } : {}),
     // Its port, which its brief tells it to use for any server it starts.

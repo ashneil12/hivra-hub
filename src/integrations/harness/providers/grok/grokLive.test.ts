@@ -277,4 +277,33 @@ describe("grok live turn sequence", () => {
     await compact;
     await stopGrokSession("t4");
   });
+
+  // 28 Oct blind run: "session/prompt timed out" at 30 minutes killed three workers mid-work.
+  it("waits on a turn by its silence, never by a cap on how long it runs", async () => {
+    const { JsonRpcClient, TURN_IDLE_TIMEOUT_MS } = await import("../../core/jsonRpc");
+    const spy = vi.spyOn(JsonRpcClient.prototype, "request");
+    try {
+      const turn = sendGrokTurn({
+        sessionId: "t-idle",
+        cwd: "/repo",
+        model: "grok:grok-4.6",
+        modelSettings: {},
+        runtimeMode: "full-access",
+        text: "work for a long time",
+        onEvent: () => undefined,
+      });
+      await handshake();
+      await waitFor(() => parse().some((m) => m.method === "session/prompt"), "prompt");
+      const call = spy.mock.calls.find(([method]) => method === "session/prompt")!;
+      expect(call[2]).toBe(TURN_IDLE_TIMEOUT_MS);
+      expect(TURN_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(60 * 60_000);
+      expect(call[3]).toEqual({ idle: true });
+      reply(parse().find((m) => m.method === "session/prompt")!.id, { stopReason: "end_turn" });
+      await turn;
+    } finally {
+      spy.mockRestore();
+      await stopGrokSession("t-idle");
+    }
+  });
 });
+

@@ -82,4 +82,83 @@ describe("JsonRpcClient", () => {
       vi.useRealTimers();
     }
   });
+
+  // 28 Oct blind run: a 30-minute cap on session/prompt killed three workers that were still streaming work.
+  describe("an idle deadline (a running turn)", () => {
+    const MIN = 60_000;
+    const note = (client: JsonRpcClient) =>
+      client.pushLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { tick: true } }));
+
+    it("never times out a turn that keeps streaming, however long it runs", async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new JsonRpcClient("busy", {});
+        const outcome = client
+          .request("session/prompt", {}, 60 * MIN, { idle: true })
+          .then(() => "done", (e: Error) => e.message);
+        // Three hours of work, one update every 20 minutes: far past any absolute cap.
+        for (let i = 0; i < 9; i++) {
+          await vi.advanceTimersByTimeAsync(20 * MIN);
+          note(client);
+        }
+        client.pushLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+        await expect(outcome).resolves.toBe("done");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still gives up on a process that goes silent for the whole window", async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new JsonRpcClient("silent", {});
+        const outcome = client
+          .request("session/prompt", {}, 60 * MIN, { idle: true })
+          .then(() => "done", (e: Error) => e.message);
+        await vi.advanceTimersByTimeAsync(40 * MIN);
+        note(client);
+        // 59 minutes after its last word it is still waited for; at 60 it is given up on.
+        await vi.advanceTimersByTimeAsync(59 * MIN);
+        let settled = false;
+        void outcome.then(() => (settled = true));
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(2 * MIN);
+        await expect(outcome).resolves.toMatch(/no word from the harness for 60 minutes and timed out$/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("holds the clock while the child waits on our answer (an approval or a question)", async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new JsonRpcClient("asks", {});
+        const outcome = client
+          .request("session/prompt", {}, 60 * MIN, { idle: true })
+          .then(() => "done", (e: Error) => e.message);
+        client.pushLine(JSON.stringify({ jsonrpc: "2.0", id: 77, method: "session/request_permission", params: {} }));
+        await vi.advanceTimersByTimeAsync(3 * 60 * MIN);
+        await client.respond(77, { outcome: "allowed" });
+        client.pushLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
+        await expect(outcome).resolves.toBe("done");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps a plain deadline absolute", async () => {
+      vi.useFakeTimers();
+      try {
+        const client = new JsonRpcClient("plain", {});
+        const outcome = client.request("session/set_mode", {}, 15_000).catch((e: Error) => e.message);
+        await vi.advanceTimersByTimeAsync(10_000);
+        note(client);
+        await vi.advanceTimersByTimeAsync(6_000);
+        await expect(outcome).resolves.toBe("session/set_mode timed out");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

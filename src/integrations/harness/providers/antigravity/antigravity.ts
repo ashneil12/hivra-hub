@@ -2,6 +2,7 @@ import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { AcpClient, type AcpHandlers } from "../../core/acp";
+import { TURN_IDLE_TIMEOUT_MS } from "../../core/jsonRpc";
 import {
   killChild,
   resolveAntigravityBinary,
@@ -73,7 +74,9 @@ type Resume = {
 const INIT_TIMEOUT_MS = 12_000;
 const SESSION_TIMEOUT_MS = 45_000;
 const CONTROL_TIMEOUT_MS = 15_000;
-const PROMPT_TIMEOUT_MS = 30 * 60_000;
+// A turn is given up on only after an hour without one line from the process (TURN_IDLE_TIMEOUT_MS): never a cap on
+// how long real work may take (28 Oct: a 30-minute cap killed workers mid-work). The hub's hour check judges progress.
+const PROMPT_IDLE_MS = TURN_IDLE_TIMEOUT_MS;
 // Antigravity answers session/prompt only after its post-turn work (trajectory
 // idle + external hooks) finishes, so a wedged server never resolves it. Silence
 // is ambiguous — a long quiet tool call is legitimate — so past this point we
@@ -697,7 +700,8 @@ async function prompt(live: Live, input: SendTurnInput): Promise<void> {
         sessionId: live.acpSessionId,
         prompt: blocks,
       },
-      PROMPT_TIMEOUT_MS,
+      PROMPT_IDLE_MS,
+      { idle: true },
     );
     const stopReason = asRecord(result)?.stopReason;
     if (live.cancelled || stopReason === "cancelled") return;

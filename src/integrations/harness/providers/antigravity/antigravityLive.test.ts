@@ -435,13 +435,19 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     }
   });
 
-  it("recycles a prompt that outlives the hard timeout and resumes once", async () => {
+  it("recycles a prompt whose process goes silent for the idle window and resumes once", async () => {
     vi.useFakeTimers();
     try {
       const turn = provider.send(input);
       await flush();
       const outcome = turn.then(() => "resolved").catch((e: Error) => e.message);
+      // Silence alone ends a turn now (TURN_IDLE_TIMEOUT_MS, an hour), not 30 minutes of work.
       await vi.advanceTimersByTimeAsync(31 * 60_000);
+      let early = false;
+      void outcome.then(() => (early = true));
+      await Promise.resolve();
+      expect(early).toBe(false);
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
       await expect(outcome).resolves.toMatch(/timed out/);
     } finally {
       vi.useRealTimers();
