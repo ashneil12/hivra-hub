@@ -643,7 +643,8 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
 export const PROMISE_CLOSED = "Checked: nothing to add to what's been said.";
 const PROMISE = /\b(i'll|i’ll|i will|let me|going to|i'm (checking|looking)|i’m (checking|looking))\b/i;
 export function closePromise(kept: string): string {
-  const last = kept.trim().split(/\n\s*\n/).at(-1) ?? "";
+  const parts = kept.trim().split(/\n\s*\n/);
+  const last = parts[parts.length - 1] ?? "";
   return PROMISE.test(last) && !last.includes("?") ? `${kept.trim()}\n\n${PROMISE_CLOSED}` : kept;
 }
 
