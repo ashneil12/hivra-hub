@@ -1,6 +1,7 @@
 // The leadership team made real (HUB-PLAN phase 3): each team Mono gets its soul and starting memory once, and is a
 // member of every one of Ash's projects, so it can see and reach that project's sessions and its Lead (the app CLI
 // only lets a Mono work in its own projects). Critiquito is an add-on: it arrives only when Ash ticks it.
+import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
 import { projectKey } from "../../../shared/lib/paths";
 import { addMono, addMonoProject, findMono, listMonos, monoWorksOn, updateMono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
@@ -129,7 +130,7 @@ export function noteTeamEngines(): string[] {
   for (const mono of listMonos()) {
     const spec = teamSpecOf(mono);
     if (!spec || mono.engine) continue;
-    updateMono(mono.id, (m) => ({ ...m, engine: spec.engine }));
+    updateMono(mono.id, (m) => ({ ...m, engine: spec.engine, engineModel: MONO_BRIDGE_MODEL_ID }));
     noted.push(mono.id);
   }
   return noted;

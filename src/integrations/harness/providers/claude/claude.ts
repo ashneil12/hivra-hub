@@ -146,7 +146,8 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { chatOnGrokBridge, claudeRunsOnGrok, GROK_BRIDGE_MODEL, grokBridgeEffort, routedOffBridge } from "./claudeGrokBridge";
+import { chatOnGrokBridge, claudeBridgeKind, claudeRunsOnGrok, grokBridgeEffort, routedOffBridge } from "./claudeGrokBridge";
+import { bridgeLaunchModel } from "../../../../features/sessions/model/bridgeModels";
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -2777,15 +2778,16 @@ function launchOptions(
   // Long-running chats compact at their ceiling instead of near the window.
   const ceiling = contextCeilingFor({ harness: "claude", model: input.model });
   if (ceiling) settings.autoCompactWindow = ceiling;
-  // Claude Code on Grok 4.7 (claudeGrokBridge.ts): one model for every chat, and Grok's own levels, except a chat on
-  // a non-Grok Other model, which leaves the bridge and keeps its own model (routedOffBridge; E7's DeepSeek default).
+  // Claude Code on a subscription bridge (claudeGrokBridge.ts): the model asked for runs as the bridge's Grok 4.7 or
+  // DeepSeek, by the launcher's own name, so a live model change only ever sends one of those (claudeLaunch.ts), and a
+  // model the bridge can't place throws here, before anything starts (bridgeModels.ts). Grok gets its own levels. A
+  // chat on a non-Grok Other model leaves the bridge and keeps its own model (routedOffBridge; E7's DeepSeek default).
   const onGrok = chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings });
+  const asked = route ? route.modelId : resolveClaudeApiModelId(native, context);
+  const offBridge = claudeRunsOnGrok() && routedOffBridge({ model: input.model, modelSettings: input.modelSettings });
+  const bridge = offBridge ? undefined : claudeBridgeKind();
   return {
-    model: onGrok
-      ? GROK_BRIDGE_MODEL
-      : route
-        ? route.modelId
-        : resolveClaudeApiModelId(native, context),
+    model: bridge ? bridgeLaunchModel(asked, bridge) : asked,
     effort: onGrok
       ? grokBridgeEffort(normalizeClaudeCliEffort(effortRaw, native))
       : route

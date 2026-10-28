@@ -1,3 +1,4 @@
+import { migrateMonoModels } from "../../monos/model/monoModels";
 import { DEFAULT_TEAM, ensureBuiltInMonos } from "./builtInMonos";
 import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
@@ -138,6 +139,8 @@ function startHubBundleLeads(store: HubStore): void {
       tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
     );
     seatLeadershipTeams(strip);
+    // Every Mono and Lead names Grok 4.7, the Monos made before that included (monoModels.ts); idempotent.
+    migrateMonoModels();
     // After the seeds: a Mono whose soul is behind the app's template takes it, as a Bot change with Undo (soulRefresh.ts).
     // Then every soul is checked against the last one the app saved, before anything else reads it (soulTamper.ts).
     watchSoulOpens();

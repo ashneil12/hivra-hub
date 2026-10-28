@@ -34,7 +34,8 @@ import {
   type ClaudeFailure,
   type ClaudeFailureContext,
 } from "./claudeFailure";
-import { claudeRunsOnGrok, GROK_BRIDGE_MODEL, grokBridgeEffort } from "./claudeGrokBridge";
+import { claudeBridgeKind, grokBridgeEffort } from "./claudeGrokBridge";
+import { bridgeLaunchModel } from "../../../../features/sessions/model/bridgeModels";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -298,10 +299,12 @@ export function buildClaudeSpawnArgs(input: {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push("--settings", JSON.stringify(settings));
   }
-  // Claude Code on Grok 4.7 (claudeGrokBridge.ts): every process asks for Grok 4.7, whatever was picked.
-  const onGrok = claudeRunsOnGrok() && !input.offBridge;
-  const model = onGrok ? GROK_BRIDGE_MODEL : input.model;
-  const effort = onGrok ? grokBridgeEffort(input.effort) : input.effort;
+  // Claude Code on a subscription bridge (claudeGrokBridge.ts): every process asks for Grok 4.7 or DeepSeek by the
+  // launcher's own name, whatever Claude model was picked, and one it can't place throws before anything starts
+  // (bridgeModels.ts), so no name ever reaches the gateway for it to route elsewhere.
+  const bridge = input.offBridge ? undefined : claudeBridgeKind();
+  const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
+  const effort = bridge === "grok" ? grokBridgeEffort(input.effort) : input.effort;
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
   if (input.permissionMode) {

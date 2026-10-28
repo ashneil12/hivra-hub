@@ -1,3 +1,4 @@
+import { BRIDGE_MODEL_NAMES } from "./bridgeModels";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
@@ -350,7 +351,13 @@ const bundledById = new Map(MODELS.map((model) => [model.id, model]));
  * and hands the CLI an id it rejects.
  */
 function lookupModel(id: string): AgentModel | undefined {
-  return findModel(id) ?? bundledById.get(id);
+  return findModel(id) ?? bundledById.get(id) ?? bridgeModel(id);
+}
+
+/** Grok 4.7 and DeepSeek as a Claude Code chat on a subscription bridge names them (bridgeModels.ts). */
+function bridgeModel(id: string | undefined): AgentModel | undefined {
+  const entry = id ? BRIDGE_MODEL_NAMES[id.trim()] : undefined;
+  return entry ? { id: id!.trim(), harness: "claude", name: entry.name, nativeId: entry.nativeId } : undefined;
 }
 
 export function resolveModel(harness: HarnessId, id?: string): AgentModel {
@@ -424,6 +431,8 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
     if (bundled && bundled.harness === harness) {
       return withAliasSettings(bundled, available);
     }
+    const bridged = harness === "claude" ? bridgeModel(id) : undefined;
+    if (bridged) return bridged;
 
     // A saved concrete Claude version may be absent from both catalogs.
     // Keep the requested id so a new session does not silently switch models.
