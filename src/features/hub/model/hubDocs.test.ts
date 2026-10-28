@@ -37,3 +37,11 @@ it("the hub docs say what's shipped and what's stuck come from the hub and the l
   // The docs must never tell a chat to reach for gh.
   expect(readme).not.toMatch(/`gh (pr|api|issue|run)/);
 });
+
+it("r61 (PM's blind G1): the hub docs say what Ash sees, so CoS answers from them, not by reading the app's source", () => {
+  expect(readme).toContain("Don't read the app's source or tests to find out");
+  expect(readme).toContain("no central board of every job");
+  expect(readme).toContain("It is not every job running anywhere.");
+  expect(readme).toContain("Only a project has a Today");
+  expect(readme).toContain("Four ready-made pages that explain the basics come with every setup");
+});
