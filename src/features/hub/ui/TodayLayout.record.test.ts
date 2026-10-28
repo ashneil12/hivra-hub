@@ -84,7 +84,8 @@ describe("A project's Today draws its template's board", () => {
 
   it("a product's: the same two, then its latest dashboard", async () => {
     act(() => root.render(today("hivra")));
-    await until(() => sections().includes("latest-page"), "latest dashboard");
+    // Wait for the last section: Being built can land a tick after the dashboard under load (r61, a flake in the full run).
+    await until(() => sections().includes("latest-page") && sections().includes("being-built"), "latest dashboard and being built");
     expect(sections()).toEqual(["since", "needs", "latest-page", "being-built"]);
     expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
   });
