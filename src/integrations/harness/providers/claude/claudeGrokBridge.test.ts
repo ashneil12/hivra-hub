@@ -114,6 +114,13 @@ describe("Claude Code on Grok 4.7 through the Grok subscription", () => {
     expect(spawned[0]!.route).toBeUndefined();
   });
 
+  it("r61 (PM, item 7): a DeepSeek worker on the bridge starts at the high effort it was given", async () => {
+    cliPath = "/Users/ash/.local/bin/claude-grok";
+    await oneTurn("deepseek-v4.1-flash", "high");
+    expect(flag(spawned[0]!.args, "--model")).toContain("deepseek");
+    expect(flag(spawned[0]!.args, "--effort")).toBe("high");
+  });
+
   it("a chat on the normal CLI still starts on the Claude model it picked", async () => {
     await oneTurn("claude-opus-5-5", "high");
     expect(flag(spawned[0]!.args, "--model")).not.toBe("grok-4.7");
