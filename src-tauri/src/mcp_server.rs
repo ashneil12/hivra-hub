@@ -409,7 +409,7 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "The hub project's id or name. Omit for a page on Today." },
+                    "project": { "type": "string", "description": "The hub project's id or name. Omit for a page not tied to a project (it lists on Pages)." },
                     "spec": { "type": "object", "description": "The PageSpec." },
                     "request": { "type": "string", "maxLength": 2000, "description": "Ash's words for it." },
                     "previewId": { "type": "string" },
