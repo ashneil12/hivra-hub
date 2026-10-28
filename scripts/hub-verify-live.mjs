@@ -817,6 +817,77 @@ export function exitCode(verdict, failGate) {
 }
 
 /** RFC 7396 merge, the way `tauri --config a --config b` layers configs into TAURI_CONFIG. */
+/** Monos the run itself makes by name (its kickoff's Lead, Ash's own Mono on the Verify project). */
+export const RUN_MONO_NAMES = ["Verify Lead", MT_MONO];
+
+/**
+ * True when a path is the run's scratch folder or inside it (its temporary HOME, project, worktrees, the Monos'
+ * folders there). `scratch` may list the folder under several spellings (macOS's /var is /private/var).
+ */
+export function insideScratch(file, scratch) {
+  if (typeof file !== "string" || !file) return false;
+  return [scratch].flat().some((root) => {
+    if (typeof root !== "string" || !root) return false;
+    const rel = path.relative(root, file);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  });
+}
+
+/**
+ * The run's teardown list (r59: verify-live leaves nothing of its own in a sidebar). Only ids this run made:
+ * - chats its fake Claude had the app start (sessions.start's id, tasks.delegate's childSessionId in fake/app-calls),
+ *   plus the chats it noted itself (`extraSessions`, e.g. the coding-team chat its window kickoff opened);
+ * - Monos it made: the Lead for the project it listed (`leadMonoId`), the Monos its kickoffs named (`monoIds`), and any
+ *   Mono named in RUN_MONO_NAMES whose only project is this run's scratch project (a fresh mkdtemp path, so its id);
+ * - those Monos' chats, and every chat the app made under a listed chat (`app-<owner>-…`).
+ * Every chat must be one the database knows whose folder (and worktree, if any) is inside the run's scratch folder;
+ * nothing else is listed.
+ */
+export function teardownList({ appCalls = [], extraSessions = [], monoIds = [], leadMonoId = null, windowMonos = [], windowSessions = [], scratch, project }) {
+  const monos = new Set(monoIds.filter(Boolean));
+  if (leadMonoId) monos.add(leadMonoId);
+  for (const mono of windowMonos) {
+    const projects = Array.isArray(mono?.projects) ? mono.projects : [];
+    if (RUN_MONO_NAMES.includes(mono?.name) && projects.length === 1 && projects[0] === project) monos.add(mono.id);
+  }
+  const known = new Map(windowSessions.filter((row) => row?.id).map((row) => [row.id, row]));
+  const roster = new Map(windowMonos.filter((mono) => mono?.id).map((mono) => [mono.id, mono]));
+  const listedMonos = [...monos].filter((id) => roster.has(id));
+  const seeds = new Set(extraSessions.filter(Boolean));
+  for (const entry of appCalls) {
+    const result = entry?.response?.ok ? entry.response.result : null;
+    if (!result || typeof result !== "object") continue;
+    if (entry.action === "sessions.start" && typeof result.id === "string") seeds.add(result.id);
+    if (entry.action === "tasks.delegate" && typeof result.childSessionId === "string") seeds.add(result.childSessionId);
+  }
+  for (const id of listedMonos) if (roster.get(id).sessionId) seeds.add(roster.get(id).sessionId);
+  // Chats the app made under a listed chat, to any depth.
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const id of known.keys())
+      if (!seeds.has(id) && [...seeds].some((owner) => id.startsWith(`app-${owner}-`))) {
+        seeds.add(id);
+        grew = true;
+      }
+  }
+  const sessions = [...seeds].filter((id) => {
+    const row = known.get(id);
+    return !!row && insideScratch(row.cwd, scratch) && (!row.worktree || insideScratch(row.worktree, scratch));
+  });
+  return { sessions: sessions.sort(), monos: listedMonos.sort() };
+}
+
+/** What's left of the teardown list once it ran: chats not archived in the database, Monos still on the rail. */
+export function teardownLeftovers(list, { rows = [], windowMonos = [] }) {
+  const archived = new Map(rows.map((row) => [row.id, Number(row.archived) === 1]));
+  const onRail = new Set(windowMonos.map((mono) => mono?.id));
+  return {
+    sessions: list.sessions.filter((id) => archived.get(id) !== true),
+    monos: list.monos.filter((id) => onRail.has(id)),
+  };
+}
+
 export function mergePatch(target, patch) {
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
   const result = target && typeof target === "object" && !Array.isArray(target) ? { ...target } : {};
@@ -1057,6 +1128,10 @@ async function main() {
   let rulesFile;
   let planFile;
   let plan;
+  // r59: what this run made, by id, and the teardown that takes it back out of the window before the copy stops.
+  const ledger = { sessions: new Set(), monos: new Set(), project: null };
+  let teardown = null;
+  let cleanupResult = { ran: false, why: "the run never reached a launch with the window's driver; the temporary HOME goes with everything in it" };
 
   const cleanup = async () => {
     if (app && alive(app.pid)) {
@@ -1081,6 +1156,22 @@ async function main() {
   // the build, vite and the stub stop, the database is kept as evidence and the temporary HOME goes (unless --keep).
   const ending = cleanupOnExit(
     async () => {
+      // Pass or fail: archive and remove what this run made (only its own ids, through the window's own Archive and
+      // Remove, never Reset chat) while the copy is still up, then stop it.
+      if (teardown && app && alive(app.pid)) {
+        try {
+          let timer;
+          cleanupResult = await Promise.race([
+            teardown(),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("teardown took longer than 2 minutes")), 120_000);
+            }),
+          ]).finally(() => clearTimeout(timer));
+        } catch (error) {
+          cleanupResult = { ran: true, ok: false, error: error.message };
+        }
+        log(`cleanup: ${cleanupResult.ok ? "OK" : "LEFT SOMETHING"} ${JSON.stringify(cleanupResult.leftovers ?? cleanupResult.error ?? {})}`);
+      }
       await cleanup();
       // The database, after the app is gone (WAL and all).
       if (dataDir) {
@@ -1477,6 +1568,7 @@ async function main() {
     // scratch folder, so the hub makes its Lead ("Verify lead") and ties the built-in team to it; the kickoff waits for
     // Chief of Staff to work on that folder and sends it the brief.
     stub.state.projects.push({ ...TREE_PROJECT, folder: project, workOwner: "ash_os", status: "active" });
+    ledger.project = TREE_PROJECT.id;
     await kill("for the double-delegation plan");
     const treePlan = {
       ...plan,
@@ -2019,6 +2111,56 @@ async function main() {
       return answer;
     };
 
+    // The run's teardown, for the ending (pass or fail): only ids this run made (teardownList), through the driver.
+    teardown = async () => {
+      const appCalls = [];
+      try {
+        for (const line of fs.readFileSync(path.join(fake, "app-calls.ndjson"), "utf8").split("\n"))
+          if (line.trim()) appCalls.push(JSON.parse(line));
+      } catch {
+        // no calls logged
+      }
+      const rows = async () =>
+        (await query(db, "SELECT id, cwd, worktree_cwd AS worktree, archived FROM sessions")).map((row) => ({ ...row }));
+      const windowMonos = async () => (await act("snapshot", {}, 30_000))?.monos ?? [];
+      const list = teardownList({
+        appCalls,
+        extraSessions: [...ledger.sessions],
+        monoIds: [...ledger.monos],
+        leadMonoId: ledger.project ? FLOW_LEAD_MONO : null,
+        windowMonos: await windowMonos(),
+        windowSessions: await rows(),
+        scratch: [scratch, fs.realpathSync(scratch)],
+        project,
+      });
+      const done = await act("cleanup", list, 90_000);
+      // The project this run listed goes from the stub too, so its sidebar group goes.
+      let projectDropped = null;
+      if (ledger.project && stub?.state?.projects) {
+        stub.state.projects = stub.state.projects.filter((entry) => entry.id !== ledger.project);
+        projectDropped = ledger.project;
+      }
+      let leftovers = { sessions: list.sessions, monos: list.monos };
+      await until(async () => {
+        leftovers = teardownLeftovers(list, { rows: await rows(), windowMonos: await windowMonos() });
+        return leftovers.sessions.length + leftovers.monos.length === 0 ? true : null;
+      }, scale(20_000));
+      const ok = done?.ok === true && leftovers.sessions.length + leftovers.monos.length === 0;
+      fs.writeFileSync(path.join(evidence, "cleanup.json"), `${JSON.stringify({ list, done, projectDropped, leftovers }, null, 2)}\n`);
+      return {
+        ran: true,
+        ok,
+        sessions: list.sessions.length,
+        monos: list.monos,
+        archived: done?.archived?.length ?? 0,
+        removedMonos: done?.removedMonos ?? [],
+        missing: done?.missing ?? [],
+        failed: done?.failed ?? [],
+        projectDropped,
+        leftovers,
+      };
+    };
+
     // 13. The Lead hands both jobs out and says it's done: one "Still running: 2" note, and the brief stays open.
     const flowBriefed = await waitMark("flow-cos-briefed", 180_000);
     const flowBrief = savedCall("flow-brief")?.response?.result;
@@ -2396,6 +2538,7 @@ async function main() {
       ? (await query(db, "SELECT id, owner_session, owner_mono, child_session, project, state, delivery FROM delegations WHERE child_session = ?", ctChild))[0] ?? null
       : null;
     const ctChat = ctRow?.owner_session ?? null;
+    if (ctChat) ledger.sessions.add(ctChat);
     const ctSessions = await query(db, "SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (?, ?)", ctChat ?? "?", ctChild ?? "?");
     const ctChatRow = ctSessions.find((row) => row.id === ctChat) ?? null;
     const ctChildRow = ctSessions.find((row) => row.id === ctChild) ?? null;
@@ -2504,6 +2647,7 @@ async function main() {
     const mtOwn = await mtRow(mtOwnCall?.result?.taskId);
     const mtLead = await mtRow(mtLeadCall?.result?.taskId);
     const mtMonoId = mtBrief?.owner_mono ?? null;
+    if (mtMonoId) ledger.monos.add(mtMonoId);
     const mtChat = mtBrief?.owner_session ?? null;
     const mtLeadChat = mtLead?.owner_session ?? null;
     const teamFolder = mtMonoId ? path.join(dataDir, "mono-teams", mtMonoId) : null;
@@ -2652,6 +2796,7 @@ async function main() {
     slot: options.slot,
     launches,
     checks,
+    cleanup: cleanupResult,
     evidence: {
       fakeEvents: "fake/events.ndjson",
       prompts: "fake/prompts.ndjson",
@@ -2664,6 +2809,11 @@ async function main() {
   writeStageVerdict(result);
   log(`WIRING ${verdict}${options.failGate ? ` (negative control ${result.negativeControl})` : ""}: ${path.relative(ROOT, path.join(evidence, "verdict.json"))}`);
   log(WIRING_NOTE);
+  // r59: a run that couldn't take its own Monos and chats back out fails, whatever the walk said.
+  if (!options.failGate && cleanupResult.ran && !cleanupResult.ok) {
+    console.error(`\n*** hub:verify-live: the run left some of its own items behind: ${JSON.stringify(cleanupResult.leftovers ?? cleanupResult.error)} (evidence/${id}/cleanup.json) ***\n`);
+    return 1;
+  }
   return exitCode(verdict, options.failGate);
 }
 

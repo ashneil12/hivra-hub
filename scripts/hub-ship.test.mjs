@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs } from "./hub-ship.mjs";
+import { compareVersions, isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -182,14 +182,14 @@ esac
 exit 0
 `;
 
-function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root }) {
+function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version }) {
   fs.mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   fs.mkdirSync(path.join(app, "Contents/Resources"), { recursive: true });
   fs.writeFileSync(
     path.join(app, "Contents/Info.plist"),
     `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>monocode</string></dict></plist>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>monocode</string>${version ? `<key>CFBundleShortVersionString</key><string>${version}</string>` : ""}</dict></plist>
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
@@ -490,6 +490,48 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
   }
+});
+
+test("r59: compareVersions and versionProblem", () => {
+  assert.equal(compareVersions("0.16.1", "0.16.0"), 1);
+  assert.equal(compareVersions("0.16.0", "0.16.0"), 0);
+  assert.equal(compareVersions("0.9.9", "0.16.0"), -1);
+  assert.equal(compareVersions("1.0", "0.99.99"), 1);
+  const base = { bundleSha: "b".repeat(40), installedSha: "a".repeat(40) };
+  assert.match(versionProblem({ ...base, bundleVersion: "0.16.0", installedVersion: "0.16.0" }), /wasn't bumped since the last ship: this build is 0\.16\.0 and the installed app is 0\.16\.0/);
+  assert.match(versionProblem({ ...base, bundleVersion: "0.15.9", installedVersion: "0.16.0" }), /wasn't bumped/);
+  assert.equal(versionProblem({ ...base, bundleVersion: "0.16.1", installedVersion: "0.16.0" }), null);
+  assert.equal(versionProblem({ ...base, bundleVersion: null, installedVersion: "0.16.0" }), null, "unknown: nothing to say");
+  assert.equal(versionProblem({ bundleSha: "a".repeat(40), installedSha: "a".repeat(40), bundleVersion: "0.16.0", installedVersion: "0.16.0" }), null, "the same build");
+});
+
+test("r59: a build whose version wasn't bumped is refused from the command line, warned about from the app or with --allow-same-version", () => {
+  const same = () => {
+    const w = world({ newBundle: { version: "0.16.0" } });
+    bundleAt(w.app, { sha: SHA_A, behavior: "old", root: w.root, version: "0.16.0" });
+    return w;
+  };
+  const w = same();
+  const before = fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode"));
+  const refused = ship(w, ["--dry-run"]);
+  assert.equal(refused.code, 1);
+  assert.ok(refused.answer.refusals.some((r) => /version wasn't bumped/.test(r)), JSON.stringify(refused.answer.refusals));
+  assert.equal(fs.existsSync(path.join(w.data, "ship")), false, "nothing staged");
+  assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, "app untouched");
+
+  const allowed = ship(same(), ["--dry-run", "--allow-same-version"]);
+  assert.equal(allowed.code, 0, JSON.stringify(allowed.answer));
+  assert.ok(allowed.answer.warnings.some((r) => /version wasn't bumped/.test(r)));
+  const fromApp = ship(same(), ["--dry-run"], { MONOCODE_SHIP_FROM_APP: "1" });
+  assert.equal(fromApp.code, 0, JSON.stringify(fromApp.answer));
+  assert.ok(fromApp.answer.warnings.some((r) => /version wasn't bumped/.test(r)));
+
+  const bumped = world({ newBundle: { version: "0.16.1" } });
+  bundleAt(bumped.app, { sha: SHA_A, behavior: "old", root: bumped.root, version: "0.16.0" });
+  const ok = ship(bumped, ["--dry-run"]);
+  assert.equal(ok.code, 0, JSON.stringify(ok.answer));
+  assert.deepEqual(ok.answer.warnings, []);
+  assert.deepEqual(ok.answer.facts.version, { bundle: "0.16.1", installed: "0.16.0" });
 });
 
 test("hub:rollback puts back the build a committed ship replaced, with that ship's database copy", async () => {

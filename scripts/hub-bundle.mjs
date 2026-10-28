@@ -40,6 +40,22 @@ export function readIdentifier(app) {
   }
 }
 
+/** CFBundleShortVersionString (the version the app shows and running.json records), or null. */
+export function readVersion(app) {
+  const plist = path.join(app, "Contents/Info.plist");
+  if (!existsSync(plist)) return null;
+  try {
+    const value = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", plist], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
 /** The build stamp embedded in a binary's bytes, or null. Values may contain "}", so each candidate end is tried. */
 export function findStamp(bytes) {
   let from = 0;

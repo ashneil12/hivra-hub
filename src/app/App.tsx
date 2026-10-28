@@ -11854,6 +11854,8 @@ function Workspace({
     startCodingTeamChat: (projectId, runtimeMode) => startCodingTeamChat(projectId, runtimeMode),
     // Called after this render, so onApproval (declared below) is set by then.
     approve: (sessionId, requestId) => onApproval(sessionId, requestId, "allow"),
+    // The run's teardown: the sidebar's Archive, no confirm. Declared below, so read through its ref.
+    archive: (sessionId) => removeSessionRef.current(sessionId, "archive", true),
     openSession: (sessionId, owner) => {
       const actions = delegationActions();
       if (owner && actions) actions.openChild(owner, sessionId);
@@ -11888,6 +11890,7 @@ function Workspace({
       startCodingTeamChat: (projectId, runtimeMode) =>
         verifyDriverHost.current!.startCodingTeamChat?.(projectId, runtimeMode) ?? null,
       approve: (sessionId, requestId) => verifyDriverHost.current!.approve?.(sessionId, requestId),
+      archive: async (sessionId) => (await verifyDriverHost.current!.archive?.(sessionId)) ?? false,
     });
   }, []);
 
