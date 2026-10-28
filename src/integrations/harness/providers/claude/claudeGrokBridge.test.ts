@@ -162,3 +162,75 @@ describe("the model in use, as the model line and the turn header both name it",
     expect(modelInUseLabel("claude", undefined)).toBeUndefined();
   });
 });
+
+/**
+ * Alfred (27 Oct, on 0.16.0): every Mono still named claude:sonnet-5 or claude:haiku, and the launcher passes a name
+ * it doesn't know to the gateway as it is; on 14 Oct a claude-sonnet-5 request went to a third-party provider. On a
+ * bridge every process now asks for Grok 4.7 or DeepSeek by the launcher's own name, and a model it can't place fails
+ * before anything starts.
+ */
+describe("every model a bridge process asks for is Grok 4.7 or DeepSeek, or it doesn't start", () => {
+  const CLAUDE_ALIASES = [
+    "sonnet", "opus", "haiku", "fable", "claude", "default",
+    "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-6[1m]", "claude-opus-5-5", "claude-opus-4-8",
+    "claude-haiku-4-5", "claude-fable-5", "claude-3-5-sonnet-latest", "claude:sonnet-5", "claude:haiku", "Sonnet-5",
+    "anthropic/claude-sonnet-4.5",
+  ];
+
+  it("runs every Claude alias, with or without a version, as Grok 4.7 on the Grok bridge", () => {
+    cliPath = "/Users/ash/.local/bin/claude-grok";
+    for (const model of CLAUDE_ALIASES) {
+      expect([model, flag(buildClaudeSpawnArgs({ model, isolated: true }), "--model")]).toEqual([model, "grok-4.7"]);
+    }
+    expect(flag(buildClaudeSpawnArgs({ isolated: true }), "--model")).toBe("grok-4.7");
+  });
+
+  it("runs a DeepSeek name as DeepSeek and a Grok name as Grok 4.7 on the Grok bridge", () => {
+    cliPath = "/Users/ash/.local/bin/claude-grok";
+    for (const model of ["deepseek-v4.1-flash", "claude:deepseek-v4.1-flash", "deepseek-chat", "DeepSeek"])
+      expect(flag(buildClaudeSpawnArgs({ model, isolated: true }), "--model")).toBe("deepseek-v4.1-flash");
+    for (const model of ["grok-4.7", "claude:grok-4.7", "grok-4", "x-ai/grok-4"])
+      expect(flag(buildClaudeSpawnArgs({ model, isolated: true }), "--model")).toBe("grok-4.7");
+  });
+
+  it("runs everything as DeepSeek on the DeepSeek bridge", () => {
+    cliPath = "/Users/ash/.local/bin/claude-deepseek";
+    for (const model of [...CLAUDE_ALIASES, "grok-4.7", "deepseek-v4.1-flash"])
+      expect(flag(buildClaudeSpawnArgs({ model, isolated: true }), "--model")).toBe("deepseek-v4.1-flash");
+  });
+
+  it("refuses, with a plain error, a model neither bridge can run, and never passes it through", async () => {
+    const { BridgeModelError } = await import("../../../../features/sessions/model/bridgeModels");
+    for (const path of ["/Users/ash/.local/bin/claude-grok", "/Users/ash/.local/bin/claude-deepseek"]) {
+      cliPath = path;
+      for (const model of ["gpt-5.6-sol", "gpt-6-astra", "gemini-4-argon", "o3", "llama-4", "mystery"]) {
+        expect(() => buildClaudeSpawnArgs({ model, isolated: true })).toThrow(BridgeModelError);
+        expect(() => buildClaudeSpawnArgs({ model, isolated: true })).toThrow(/can't run here.*Nothing was sent/);
+      }
+    }
+  });
+
+  it("a chat on a model the bridge can't run fails before any process starts", async () => {
+    cliPath = "/Users/ash/.local/bin/claude-grok";
+    await expect(
+      sendClaudeTurn({
+        sessionId: "s-unknown", cwd: "/repo", model: "gpt-5.6-sol", modelSettings: {}, runtimeMode: "supervised",
+        text: "hello", attachments: [], onEvent: () => undefined,
+      }),
+    ).rejects.toThrow(/can't run here/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("a chat that names DeepSeek starts on DeepSeek on the Grok bridge, and isn't labelled Grok 4.7", async () => {
+    cliPath = "/Users/ash/.local/bin/claude-grok";
+    await oneTurn("claude:deepseek-v4.1-flash", "high");
+    expect(flag(spawned[0]!.args, "--model")).toBe("deepseek-v4.1-flash");
+    const { onGrokBridge } = await import("./claudeGrokBridge");
+    expect(onGrokBridge("claude", "claude:deepseek-v4.1-flash")).toBe(false);
+    expect(onGrokBridge("claude", "claude:grok-4.7")).toBe(true);
+  });
+
+  it("leaves the plain Claude Code alone (no bridge, no mapping)", () => {
+    expect(flag(buildClaudeSpawnArgs({ model: "gpt-5.6-sol", isolated: true }), "--model")).toBe("gpt-5.6-sol");
+  });
+});

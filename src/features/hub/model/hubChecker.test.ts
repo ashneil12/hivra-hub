@@ -235,10 +235,10 @@ describe("3. no delegate: the tool, the tasks and the teaching all stay away fro
 });
 
 describe("the Checker Mono", () => {
-  it("runs on the runtime's own model (no Haiku pin) with Alfred's slim soul, and nothing in it says Haiku or hourly", () => {
+  it("runs on Grok 4.7, named (no Haiku pin) with Alfred's slim soul, and nothing in it says Haiku or hourly", () => {
     const entry = checkerRosterEntry();
     expect(entry).toMatchObject({ id: "checker", name: "Checker", engine: "claude", projects: [] });
-    expect(entry).not.toHaveProperty("engineModel");
+    expect(entry.engineModel).toBe("claude:grok-4.7");
     expect(entry.instructions).toBe(CHECKER_SOUL);
     expect(CHECKER_SOUL.startsWith("# Soul\n\n## Role\nAfter Ash sends a dump, I take one quick look")).toBe(true);
     expect(CHECKER_SOUL).toContain("One note per dump at most, and none when nothing's missed.");
@@ -274,7 +274,7 @@ describe("the Checker Mono", () => {
     const first = deps();
     expect(await ensureChecker(first.deps as never)).toEqual({ created: true, paused: false });
     expect(first.added[0]).toMatchObject({ id: "checker", engine: "claude" });
-    expect(first.added[0]).not.toHaveProperty("engineModel");
+    expect(first.added[0]).toHaveProperty("engineModel", "claude:grok-4.7");
     expect(first.habits()).toEqual([]);
     const old = { id: CHECKER_HABIT_ID, name: "Check Ash's messages", enabled: true } as unknown as Habit;
     const later = deps({ monos: ["checker"], habits: [old] });

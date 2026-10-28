@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appIdentity } from "../../../../app/model/appIdentity";
 import { runtimeProviderBinaryPath } from "../../../../features/providers/model/providerBinaryPaths";
 import { customModelRoute } from "../../../../features/sessions/model/customModels";
+import { bridgeFamily, GROK_BRIDGE_NATIVE, type BridgeKind } from "../../../../features/sessions/model/bridgeModels";
 
 /**
  * Claude Code on Grok 4.7 through Ash's Grok (SuperGrok / X Premium+) subscription.
@@ -13,7 +14,7 @@ import { customModelRoute } from "../../../../features/sessions/model/customMode
  */
 export const CLAUDE_GROK_BRIDGE_NAME = "claude-grok";
 /** The model every Claude Code process asks for on the bridge; the launcher maps it to the gateway's Grok 4.7. */
-export const GROK_BRIDGE_MODEL = "grok-4.7";
+export const GROK_BRIDGE_MODEL = GROK_BRIDGE_NATIVE;
 
 function baseName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
@@ -54,6 +55,15 @@ export function claudeRunsOnSubscriptionBridge(
 
 type VerifyFlags = { grok?: boolean; deepseek?: boolean };
 
+/** Which bridge Claude Code runs through, or undefined on the plain Claude Code (bridgeModels.ts bridgeLaunchModel). */
+export function claudeBridgeKind(
+  path: string | null = runtimeProviderBinaryPath("claude"),
+  bench: VerifyFlags | undefined = appIdentity()?.verify,
+): BridgeKind | undefined {
+  if (claudeRunsOnGrok(path, bench?.grok === true)) return "grok";
+  return claudeRunsOnSubscriptionBridge(path, bench) ? "deepseek" : undefined;
+}
+
 /** What a Claude Code chat on the bridge really runs, as the hub names it (GROK_BRIDGE_MODEL). */
 export const GROK_BRIDGE_LABEL = "Grok 4.7";
 
@@ -69,9 +79,13 @@ export function routedOffBridge(target: { model?: string; modelSettings?: Record
   return !!route && route.provider !== "xai" && !/grok/i.test(route.modelId);
 }
 
-/** Whether this chat (by its model) runs on the bridge's Grok 4.7: Claude Code is on the bridge and it isn't routed off. */
+/**
+ * Whether this chat (by its model) runs on the bridge's Grok 4.7: Claude Code is on the bridge, it isn't routed off,
+ * and it doesn't name DeepSeek.
+ */
 export function chatOnGrokBridge(target: { model?: string; modelSettings?: Record<string, string> } = {}): boolean {
-  return claudeRunsOnGrok() && !routedOffBridge(target);
+  // A DeepSeek name stays on the bridge but runs as DeepSeek there (bridgeLaunchModel), so it isn't shown as Grok 4.7.
+  return claudeRunsOnGrok() && !routedOffBridge(target) && bridgeFamily(target.model) !== "deepseek";
 }
 
 /**
@@ -118,5 +132,7 @@ export function shownModelName(harness: string, name: string, onGrok: boolean = 
  * Grok showed the gateway's own label for claude-sonnet-5, "Gemini 4 Argon", though the chat ran on grok-4.7).
  */
 export function claudePillName(name: string, onGrok: boolean = claudeRunsOnGrok()): string {
-  return onGrok ? GROK_BRIDGE_LABEL : name.replace(/^Claude /, "");
+  // A worker on the bridge's DeepSeek says so (bridgeModels.ts); anything else there runs as Grok 4.7.
+  if (onGrok) return /deepseek/i.test(name) ? name : GROK_BRIDGE_LABEL;
+  return name.replace(/^Claude /, "");
 }

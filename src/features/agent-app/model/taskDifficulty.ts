@@ -8,6 +8,9 @@
 // model call is made.
 //
 // Every existing default holds when the job is not routed: a route that changes nothing returns undefined.
+//
+// On a subscription bridge (Ash, 27 Oct: no Claude subscription anywhere) the Claude ladder is only labels, so every
+// worker runs on DeepSeek, high effort, named explicitly (bridgeModels.ts), unless the project saved its own model.
 import type { AgentModel } from "../../sessions/model/models";
 import {
   modelEffortSetting,
@@ -15,6 +18,7 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
+import { bridgeFamily, DEEPSEEK_BRIDGE_NAME, WORKER_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
 import type { HarnessId, Session } from "../../sessions/model/session";
 
 /** What the app can see about a job, all of it declared on delegate_task. */
@@ -113,6 +117,7 @@ export function routeWorker(
   source: Session,
   difficulty: JobDifficulty,
   projectChoice?: WorkerModel,
+  onBridge = false,
 ): WorkerRoute | undefined {
   // The catalog's ladder is Claude's: another engine starts its workers its own way.
   if (source.harness !== "claude") return undefined;
@@ -128,6 +133,7 @@ export function routeWorker(
       why: `This project's workers run on ${name}${chosen.effort ? ` at ${chosen.effort} effort` : ""}.`,
     };
   }
+  if (onBridge) return bridgeWorkerRoute(source, difficulty);
   // One of Ash's own models ("Other models") is his choice of route, not a rung on the ladder.
   if (isCustomModelId(source.model)) return undefined;
   const available = modelsFor("claude");
@@ -143,6 +149,25 @@ export function routeWorker(
       ? `A hard job (${difficulty.reasons.join("; ")}), so ${name}${effort ? " at high effort" : ""}.`
       : `A usual job (${difficulty.reasons.join("; ")}), so ${name}.`;
   return { harness: "claude", model: chosen.id, ...(effort ? { effort } : {}), why };
+}
+
+/** The effort a worker on the bridge's DeepSeek runs at (E7: "DeepSeek on high"). */
+export const BRIDGE_WORKER_EFFORT = "high";
+
+/**
+ * A worker on a subscription bridge: DeepSeek, high effort, for any job. A chat already on DeepSeek (one of Ash's own
+ * DeepSeek models, or the bridge's) passes its own model on, as it always has.
+ */
+function bridgeWorkerRoute(source: Session, difficulty: JobDifficulty): WorkerRoute | undefined {
+  const own = resolveModel("claude", source.model);
+  if (bridgeFamily(own.nativeId ?? source.model) === "deepseek" || /deepseek/i.test(own.name)) return undefined;
+  const kind = difficulty.level === "hard" ? `A hard job (${difficulty.reasons.join("; ")})` : `A usual job (${difficulty.reasons.join("; ")})`;
+  return {
+    harness: "claude",
+    model: WORKER_BRIDGE_MODEL_ID,
+    effort: BRIDGE_WORKER_EFFORT,
+    why: `${kind}: workers run on ${DEEPSEEK_BRIDGE_NAME} at high effort.`,
+  };
 }
 
 /** A saved project model as a route, without the usual/hard rule (used for both). */

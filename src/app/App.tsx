@@ -1,3 +1,4 @@
+import { monoChatModelFix } from "../features/monos/model/monoModels";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
@@ -7550,6 +7551,17 @@ function Workspace({
     },
     [],
   );
+
+  // Ash (27 Oct): no Claude subscription anywhere. A Mono's chat still on a Claude name (the old default) moves to the
+  // model its Mono names, Grok 4.7 (monoModels.ts), through the picker's own change; a model Ash picked stays.
+  useEffect(() => {
+    for (const mono of listMonos()) {
+      const chat = mono.sessionId ? sessions.find((session) => session.id === mono.sessionId) : undefined;
+      if (!chat || chat.busy || isPreparingHandoff(chat)) continue;
+      const model = monoChatModelFix(mono, chat);
+      if (model) onModelChange(chat.id, chat.harness, model);
+    }
+  }, [sessions, onModelChange]);
 
   const onModelSettingsChange = useCallback(
     (sessionId: string, modelSettings: Record<string, string>) => {

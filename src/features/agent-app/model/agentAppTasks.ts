@@ -54,6 +54,13 @@ import {
 import { projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
 import { judgeTask, routeWorker, type WorkerModel } from "./taskDifficulty";
+import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import {
+  bridgeFamily,
+  GROK_BRIDGE_MODEL_ID,
+  isClaudeAliasModel,
+  WORKER_BRIDGE_MODEL_ID,
+} from "../../sessions/model/bridgeModels";
 
 /**
  * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
@@ -345,9 +352,16 @@ function launchEffort(launch: Pick<QuickLaunch, "harness" | "model" | "modelSett
 function taskModel(
   value: unknown,
   source: Session,
+  onBridge = false,
 ): { harness: HarnessId; model: string } | undefined {
   if (value === undefined) return undefined;
   const wanted = text(value, "model", 128);
+  // On a subscription bridge Grok and DeepSeek go by their own names (bridgeModels.ts).
+  if (onBridge) {
+    const family = bridgeFamily(wanted);
+    if (family === "grok") return { harness: "claude", model: GROK_BRIDGE_MODEL_ID };
+    if (family === "deepseek") return { harness: "claude", model: WORKER_BRIDGE_MODEL_ID };
+  }
   // One of Ash's own models ("Other models"): it runs through Claude Code's router, as the picker starts it.
   if (isCustomModelId(wanted)) return { harness: "claude", model: wanted };
   for (const harness of HARNESSES) {
@@ -583,11 +597,16 @@ async function delegate(
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
-  const namedModel = taskModel(input.model, source);
+  // On a subscription bridge a Claude name is only a label: a worker it names runs on DeepSeek like any other (Ash,
+  // 27 Oct: workers on DeepSeek; bridgeModels.ts). Grok or DeepSeek, named, is kept.
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const askedModel = taskModel(input.model, source, onBridge);
+  const namedModel = onBridge && askedModel?.harness === "claude" && isClaudeAliasModel(askedModel.model) ? undefined : askedModel;
+  // An effort alone keeps the route on the bridge (its model is still DeepSeek); off it, it keeps the chat's model.
   const route =
-    namedModel || input.effort !== undefined
+    namedModel || (input.effort !== undefined && !onBridge)
       ? undefined
-      : routeWorker(source, difficulty, tasks.pool?.model(projectKey));
+      : routeWorker(source, difficulty, tasks.pool?.model(projectKey), onBridge);
   const model = namedModel ?? (route ? { harness: route.harness, model: route.model } : undefined);
   const effort = input.effort !== undefined ? input.effort : route?.effort;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.

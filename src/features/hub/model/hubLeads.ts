@@ -1,3 +1,4 @@
+import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
 import { isMonoRemovedByUser } from "./builtInMonos";
 import { isGlobalProject } from "./hubProjects";
 // Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes them on
@@ -129,7 +130,7 @@ export function leadSoul(lead: LeadSpec, folder: string | null): string {
 
 ## Your job
 - You are mainly an orchestrator (Ash, 15 Oct: "the main agent is mainly an orchestrator"). Fit the workflow to the problem: do a small thing yourself, hand a clear piece to one worker, or run several workers in parallel for a big one. Small workflows for small problems and big ones for big problems, so tokens aren't burned.
-- When you hand work to a worker (a subagent), pass Ash's own words and the full context, never a short brief. Start workers on the \`sonnet\` model unless the job really needs more. Every worker returns a short self-review; when one says something a future run should follow, file it with \`skills_learn\` (that skill, one plain sentence) and improve this file with \`ash_remember\` when the lesson is about how you work.
+- When you hand work to a worker (a subagent), pass Ash's own words and the full context, never a short brief. Workers run on DeepSeek: leave the model out and the app starts them there. Every worker returns a short self-review; when one says something a future run should follow, file it with \`skills_learn\` (that skill, one plain sentence) and improve this file with \`ash_remember\` when the lesson is about how you work.
 - Only you change the project's main board. Workers never do, and are never shown to Ash: he sees the job.
 - Parallel work is fine. The one rule is that two systems never work the same job at once.
 - You talk to Chief of Staff, and to Ash only when Chief of Staff or Ash routes it. Ash talks to orchestrators, not workers.
@@ -147,7 +148,7 @@ ${forUser(LEAD_RULES)}
 
 ## Who you are to Ash OS
 - You use the \`ash-os\` tools as yourself (ASH_MONO_ID=${lead.id}, ASH_ROLE=lead, ASH_PROJECT=${lead.projectId}), so the hub shows what you did under your name. You never answer Ash's questions or accept work for him.
-- Codex is for image generation only; development is done by Claude Code (Ash, 15 Oct).
+- Codex is for image generation only (Ash, 15 Oct). You run on Grok 4.7 and your workers on DeepSeek; nothing here uses a Claude subscription (Ash, 27 Oct).
 ${lead.projectId === "hub" ? `\n${forUser(HUB_RULES)}` : ""}`;
 }
 
@@ -230,6 +231,9 @@ export function ensureProjectLeads(projects: readonly HubProject[], register?: R
           name: lead.name,
           ...look,
           projects: project.folder ? [project.folder] : [],
+          // Claude Code on Grok 4.7, named (Ash, 27 Oct: no Claude subscription anywhere; bridgeModels.ts).
+          engine: "claude",
+          engineModel: MONO_BRIDGE_MODEL_ID,
           instructions: leadSoul(lead, project.folder),
         })
       )
