@@ -231,3 +231,23 @@ it("turns a finding into one private check for the owning chat, answered Right o
   expect(claimDumpCheck("u1")).toBe(true);
   expect(claimDumpCheck("u1")).toBe(false);
 });
+
+// r61: verify-live's crash_loop_capped flake (28 Oct, evidence 20261028-174828-b222). The Lead stopped resuming after
+// three restarts, then a "never answered" check on the app's own resend started it a fourth time behind Ash's back.
+it("never sends a check into a chat that stopped resuming itself, nor counts the app's resend as Ash's message", async () => {
+  const now = Date.now();
+  const stopped = session("chat-1", [
+    block("u1", "user", DUMP, { startedAt: now }),
+    { id: "s1", role: "system", text: "stopped", notice: "resume-stopped" } as Block,
+  ]);
+  const offered: unknown[] = [];
+  await lookAtDumps([stopped], vi.fn(async () => "NONE"), (checks) => offered.push(...checks), { now });
+  expect(offered).toEqual([]);
+  // Ash's message waits for him; the look comes back to it once he writes and the chat moves on.
+  expect(readDumpNotes().map((note) => note.blockId)).toEqual(["u1"]);
+
+  localStorage.clear();
+  const resent = `MonoCode Hub restarted before this message reached you, so it is sent again:\n\n${DUMP}`;
+  noteDumps([session("chat-2", [block("r1", "user", resent, { startedAt: now })])], now);
+  expect(readDumpNotes()).toEqual([]);
+});

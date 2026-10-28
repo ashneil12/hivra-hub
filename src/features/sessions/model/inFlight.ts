@@ -346,7 +346,11 @@ export function resumePrompt(
 ): string {
   // Cut before the agent had the message: it goes again, whole (it carries any what-was-cut note it had itself).
   const unsent = cutMessageBeforeOutput(session);
-  if (unsent) return `${RESEND_NOTE}\n\n${unsent.text.trim()}`;
+  if (unsent) {
+    // A resend cut again goes once more with one note, not a note inside a note.
+    const text = unsent.text.trim();
+    return text.startsWith(RESEND_NOTE) ? text : `${RESEND_NOTE}\n\n${text}`;
+  }
   const base = ship ? shipResumePrompt(session.id, ship.note) : CONTINUE_PROMPT;
   const note = cutWorkNote(session.cutWork ?? []);
   return note ? `${note}\n\n${base}` : base;
