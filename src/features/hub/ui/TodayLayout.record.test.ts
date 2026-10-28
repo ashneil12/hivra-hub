@@ -109,10 +109,11 @@ describe("A project's Today draws its template's board", () => {
     act(() => root.render(today("hivra")));
     await until(() => sections().includes("latest-page"), "dashboards card");
     act(() => setTemplate("hivra", "game-studio"));
-    await until(() => sections().includes("latest-build"), "builds card");
+    // Each section lands on its own render: wait for the last one, not the first (flaked in the full run under load).
+    await until(() => sections().includes("latest-build") && sections().includes("being-built"), "builds card");
     expect(sections()).toEqual(["since", "needs", "latest-build", "being-built"]);
     act(() => setTemplate("hivra", "org-ops"));
-    await until(() => !sections().includes("latest-build"), "no project card");
+    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "no project card");
     expect(sections()).toEqual(["since", "needs", "being-built"]);
     act(() => setTemplate("hivra", "product-saas"));
     await until(() => sections().includes("latest-page"), "back to its dashboards");
