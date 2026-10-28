@@ -222,6 +222,14 @@ function workersUnder(owner: string, inputs: AgentInputs, depth: number, seen: S
   });
 }
 
+/** r61: how long an Ash OS job may go without activity and still count as an idle Mono's current work. */
+export const JOB_FRESH_MS = 20 * 60_000;
+/** Whether a job was active recently enough to say its Mono is working on it. */
+export function jobIsFresh(job: Pick<PageJob, "lastActiveAt" | "startedAt">, now: number): boolean {
+  const at = job.lastActiveAt ?? job.startedAt;
+  return at !== undefined && now - at < JOB_FRESH_MS;
+}
+
 const RANK: Record<PageAgent["role"], number> = { team: 0, lead: 1, mono: 2 };
 
 /** Every seated agent (the Monos roster: the team, the Leads, any Mono Ash added) and what each is doing now. */
@@ -295,7 +303,10 @@ export function agentsData(inputs: AgentInputs): AgentsData {
       doing = doing || stuckJob.title;
       since = stuckJob.lastActiveAt ?? since;
     } else if (state === "idle") {
-      const busyJob = jobs.find((j) => j.state === "working" || j.state === "checking");
+      // r61 (PM's blind C3): an idle Mono showed "Working · Scribe writes release notes" from an Ash OS job nobody had
+      // touched in days. A job only makes an idle Mono working while it is fresh (active in the last 20 minutes) or the
+      // Mono has no chat here to say otherwise.
+      const busyJob = jobs.find((j) => (j.state === "working" || j.state === "checking") && (!look || jobIsFresh(j, inputs.now)));
       if (busyJob) {
         state = "working";
         doing = busyJob.title;
