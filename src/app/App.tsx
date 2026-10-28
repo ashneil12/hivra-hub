@@ -15709,7 +15709,7 @@ function Workspace({
   );
   const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
 
-  // r30h: which chats run a turn now, so a failed worker whose Lead's turn ended goes red (workerStuck.ts leadTurnOver).
+  // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
