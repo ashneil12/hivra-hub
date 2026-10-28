@@ -28,7 +28,7 @@ it("a fresh setup keeps the four ready-made pages once, in order, each asking Ke
 });
 
 it("r61: an install from before C8, with its own pages, gets the four once too; its own pages stay", async () => {
-  await keepPage(buildPreview("a page about builds", "Hub lead"), 1);
+  await keepPage(buildPreview("a page about builds", "Hub lead", 1), 1);
   expect(await seedReadyPages()).toBe(4);
   expect(allPages().map((p) => p.title).slice(0, 4)).toEqual(["Agents", "Needs you", "Being built", "Projects"]);
   expect(allPages().map((p) => p.request)).toContain("a page about builds");

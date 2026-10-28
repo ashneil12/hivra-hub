@@ -87,15 +87,44 @@ export function fromPage(title: string): string {
 const signed = (text: string, ctx: ActionContext) => `${text.trim()}\n\n${fromPage(ctx.pageTitle)}`;
 
 // ---- what pages did (shown under the page) ----------------------------------------------------------------------------
-export type PageActionEntry = { at: number; line: string };
+// r61 (PM's blind C3 on 0.16.2): a reply typed on a page went nowhere and the page said nothing. Every tap's outcome is
+// logged now, a refusal or failure too (`ok: false`), and the app shows the newest one at the top of the page, with
+// "Sending…" while it runs, whatever the page's own code does with the reply.
+export type PageActionEntry = { at: number; line: string; ok?: false };
 const LOG_MAX = 20;
 const log = new Map<string, PageActionEntry[]>();
+const inFlight = new Map<string, number>();
 let version = 0;
 const listeners = new Set<() => void>();
-function note(pageId: string, line: string): void {
-  log.set(pageId, [{ at: Date.now(), line }, ...(log.get(pageId) ?? [])].slice(0, LOG_MAX));
+function bump(): void {
   version++;
   listeners.forEach((l) => l());
+}
+function note(pageId: string, line: string, ok = true): void {
+  log.set(pageId, [{ at: Date.now(), line, ...(ok ? {} : { ok: false as const }) }, ...(log.get(pageId) ?? [])].slice(0, LOG_MAX));
+  bump();
+}
+/** A tap the page asked for didn't go through (refused, or it failed): said on the page in plain words. */
+export function notePageActionFailure(pageId: string, reason: string): void {
+  note(pageId, `Didn't go through: ${reason}`, false);
+}
+/** A tap is running for this page ("Sending…" on the page); call the returned function when it settles. */
+export function beginPageAction(pageId: string): () => void {
+  inFlight.set(pageId, (inFlight.get(pageId) ?? 0) + 1);
+  bump();
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    const n = (inFlight.get(pageId) ?? 1) - 1;
+    if (n > 0) inFlight.set(pageId, n);
+    else inFlight.delete(pageId);
+    bump();
+  };
+}
+/** Whether a tap is running for this page now. */
+export function pageActionRunning(pageId: string): boolean {
+  return (inFlight.get(pageId) ?? 0) > 0;
 }
 /** What this page did, newest first. */
 export function pageActionLog(pageId: string): PageActionEntry[] {
@@ -112,6 +141,7 @@ export function usePageActionsVersion(): number {
 }
 export function resetPageActionsForTest(): void {
   log.clear();
+  inFlight.clear();
   host = undefined;
 }
 
