@@ -7,7 +7,7 @@ import { showAppItem, showProjectToday } from "../model/hubNav";
 import { addTeamAddon } from "../model/hubTeam";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
-import { setupProved } from "../model/setupProof";
+import { setupProved, snoozeSetupCard } from "../model/setupProof";
 import { HubOnboardingSetup } from "./HubOnboardingSetup";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
@@ -19,7 +19,7 @@ const CHOICES: Step[] = ["welcome", "start", "theme", "done"];
 /**
  * First launch: the four setup checks (when they are not proved yet), then welcome, roles & projects, theme, done.
  * The choices are skippable; the setup is not, because a chat cannot work without it — its "Not now" closes the card
- * without recording anything, so the next launch checks again.
+ * without proving anything. r61: that "Not now" is remembered, so the card does not come back on the next launch.
  */
 export function HubOnboarding({ onClose }: { onClose: () => void }) {
   // Fixed when the card opens: proving a check mid-flow must not reshuffle the steps under the person's feet.
@@ -157,7 +157,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           ) : null}
           {kind === "setup" ? (
             <>
-              <button type="button" data-hub-onboarding-not-now onClick={onClose} className={QUIET}>Not now</button>
+              <button type="button" data-hub-onboarding-not-now onClick={() => { snoozeSetupCard(); onClose(); }} className={QUIET}>Not now</button>
               <button
                 type="button"
                 data-hub-onboarding-next

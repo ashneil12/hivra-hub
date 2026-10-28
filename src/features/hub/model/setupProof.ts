@@ -24,6 +24,8 @@ const HARNESS: ConfigurableBinaryProvider & ProviderAccountProvider = "claude";
 
 const PROOF_KEY = "monocode:hub-setup-proof";
 const FOLDER_KEY = "monocode:hub-setup-folder";
+/** r61: Ash said "Not now" to the setup card; it stays away on later launches (PM's blind run saw it come back). */
+const SNOOZE_KEY = "monocode:hub-setup-not-now";
 const PROOF_VERSION = 1;
 
 export type SetupFactId = "installed" | "signedIn" | "folder" | "roundTrip";
@@ -327,4 +329,21 @@ export async function checkHubSetup(input: CheckHubSetupInput = {}): Promise<Set
 
   const rows = SETUP_FACT_IDS.map((id) => checks[id]);
   return { checks: rows, proved: rows.every((row) => row.state === "proved") };
+}
+
+/** r61: "Not now" on the setup card is remembered, so the card stays away on later launches. Proving nothing. */
+export function snoozeSetupCard(now = Date.now()): void {
+  try {
+    localStorage.setItem(SNOOZE_KEY, String(now));
+  } catch {
+    /* best effort */
+  }
+}
+/** Whether Ash said "Not now" to the setup card on this Mac. */
+export function setupCardSnoozed(): boolean {
+  try {
+    return localStorage.getItem(SNOOZE_KEY) !== null;
+  } catch {
+    return false;
+  }
 }
