@@ -573,3 +573,21 @@ See /workspace/hub-spec/SPEC.md, the section "Decisions 2026-10-14". Agents are 
 
 ## Locked 2026-10-14 23:58
 See the end of /workspace/hub-spec/SPEC.md for the locked decisions and the queued frontend rework.
+
+## r66 #8: requests with thinking clamped to 0 (29 Oct 2026)
+
+Measured on 0.16.7 live: 23 of 122 Grok requests since install carried thinking disabled, all from one path. It is
+Claude Code 2.1.312's auto-mode permission classifier (querySource `auto_mode`, stages xml_s1/xml_s2). It runs before
+Bash, Write and some MCP tool calls in sessions started with `--permission-mode auto`: Mono 1:1 chats, room turns and a
+Lead's report turn. Its model is hardcoded to claude-opus-4-8, which is the bridge's Grok alias, and it always sends
+thinking off. Titles, branch-name and plan helpers, room drafts, main turns and bypass-mode workers were all clean.
+
+There's no safe fix in the app, so r66 changes nothing here:
+- `CLAUDE_CODE_AUTO_MODE_MODEL=grok-4.7` is refused by the org model policy.
+- `CLAUDE_CODE_MODEL_CAPABILITIES` doesn't override the hardcoded classifier list.
+- An unknown claude-* name must never go to the gateway, because it could route to Anthropic on the subscription.
+Ash has two options:
+1. Add a second Grok alias in the claude-gpt gateway config for the classifier. That config is off-limits to agents, so Ash makes this change himself.
+2. Run Monos in a permission mode without the classifier. This trades a safety check for thinking on that one yes/no
+   call, so it's Ash's decision.
+The clamp only affects the classifier's yes/no on a tool call. The turn's own answer keeps its thinking.
