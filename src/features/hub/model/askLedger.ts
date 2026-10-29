@@ -391,10 +391,16 @@ export function gapLine(ask: Pick<LedgerAsk, "title" | "words">, evidence: reado
 /** A done / fixed / shipped claim in a reply, as the sentence that makes it. */
 const DONE = /\b(?:done|fixed|finished|shipped|complete|completed|all set)\b/i;
 
+/** The words outside quotes and code spans. */
+function unquoted(text: string): string {
+  return text.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|(?<![\w])'[^'\n]*'(?![\w])|‘[^’\n]*’/g, " ");
+}
+
 export function doneClaimOf(reply: string): string | undefined {
   for (const raw of reply.split(/(?<=[.!?])\s+|\n+/)) {
     const sentence = oneLine(raw);
-    if (!sentence || !DONE.test(sentence)) continue;
+    // r76 (blind s13): 'what "done" means' in an echoed ask is a quoted word, not a claim.
+    if (!sentence || !DONE.test(unquoted(raw))) continue;
     // "isn't done yet" is not a claim; the contraction has no word boundary before its n.
     if (/\b(?:not|never|nothing)\b|n['’]t\b/i.test(sentence)) continue;
     return sentence.slice(0, 160);

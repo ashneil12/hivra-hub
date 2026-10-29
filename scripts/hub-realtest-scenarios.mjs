@@ -185,11 +185,12 @@ export async function runScenario(scenario, ctx) {
       record.notes.push(`scenario time (${scenario.minutes} min) ran out before step ${JSON.stringify(step).slice(0, 80)}`);
       break;
     }
+    // r76: a send or a Today answer can be skipped when an earlier step (by label) already reached Ash's agent.
+    if ((step.send || step.answer) && step.unlessSent && wentOut(record.sends, step.unlessSent)) {
+      record.notes.push(`${step.send ? "send" : "answer"} ${step.label ?? ""}: not needed (${[step.unlessSent].flat().join(" or ")} went out)`);
+      continue;
+    }
     if (step.send) {
-      if (step.unlessSent && record.sends.some((send) => send.label === step.unlessSent && !send.skipped && send.answer?.ok !== false)) {
-        record.notes.push(`send ${step.label ?? ""}: not needed (${step.unlessSent} went out)`);
-        continue;
-      }
       const text = textOf(step.text);
       if (TAGGED.test(text)) record.notes.push("scenario text tags someone (should not)");
       const to = await target(step.send);
@@ -267,7 +268,7 @@ export async function runScenario(scenario, ctx) {
       }
     } else if (step.answer) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text }).catch((error) => ({ ok: false, error: error.message }));
-      record.sends.push({ t: Date.now(), todayAnswer: step.answer, result: answer });
+      record.sends.push({ t: Date.now(), label: step.label, todayAnswer: step.answer, result: answer });
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.reload) {
       // The window reloads (a vite full reload, View > Reload): whatever runs is cut the way that cuts it.
@@ -405,6 +406,12 @@ export function questionAnswers(state, since = 0) {
   return out.sort((a, b) => a.t - b.t);
 }
 
+/** Did the step labelled `label` reach its target? A chat send that failed, or a Today answer with nothing waiting, did not. */
+export function wentOut(sends, label) {
+  const labels = [label].flat();
+  return sends.some((send) => labels.includes(send.label) && !send.skipped && send.answer?.ok !== false && send.result?.ok !== false);
+}
+
 /**
  * Run-wide rule checks: another project's facts showing up (leak), em dashes in what agents wrote to Ash, workers in
  * the room, the same room message twice, console errors, and which projects' memory each chat read.
@@ -439,6 +446,13 @@ export function runChecks(checks, { room, texts, events, memoryCalls }) {
 }
 
 /** What a reader (and the grader) needs, in time order. */
+// A chat line as the grader reads it: whole up to the cap, and plainly marked when the harness cuts it (r76: a
+// silent 1200-character cut made s13's full reply look cut off at "28. T").
+const CHAT_LINE_MAX = 6000;
+function chatLine(text) {
+  return text.length <= CHAT_LINE_MAX ? text : `${text.slice(0, CHAT_LINE_MAX)} [${text.length - CHAT_LINE_MAX} more characters clipped by the test harness, not by the chat]`;
+}
+
 export function transcript(scenario, result, t0) {
   const lines = [`# ${scenario.id}: ${scenario.title}`, "", `Benchmark: ${(scenario.bench ?? []).join(", ")}`, "", "## What this checks", "", scenario.criteria ?? "", ""];
   const timeline = [];
@@ -464,7 +478,7 @@ export function transcript(scenario, result, t0) {
     const asked = (line.tools ?? []).filter((tool) => String(tool).startsWith("AskUserQuestion:"));
     if (asked.length) timeline.push({ t: line.t, line: `[${line.who} chat] asks with buttons: ${asked.join(" ; ").replace("AskUserQuestion: ", "")}` });
     if (!line.text) continue;
-    timeline.push({ t: line.t, line: `[${line.who} chat] ${line.text.slice(0, 1200)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
+    timeline.push({ t: line.t, line: `[${line.who} chat] ${chatLine(line.text)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
   }
   for (const a of result.answers ?? [])
     timeline.push({ t: a.t, line: a.answers ? `(the app answered the question in Claude: ${JSON.stringify(a.answers).slice(0, 400)})` : `(the app declined the question in Claude: ${a.message ?? a.behavior})` });

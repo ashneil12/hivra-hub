@@ -1,3 +1,4 @@
+import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { isCliNotice } from "./cliNotices";
 import type {
   AgentRunMeta,
@@ -739,8 +740,16 @@ export function promoteLastAssistantToPlan(
   return { ...session, blocks };
 }
 
+/** r76: a reply is saved without em dashes once it stops streaming (not mid-stream: the stream folding needs the raw text). */
+function sealProse(block: Block): Block {
+  const sealed = { ...block, streaming: false };
+  if (block.role !== "assistant" || !block.text) return sealed;
+  const text = withoutEmDashes(block.text);
+  return text === block.text ? sealed : { ...sealed, text };
+}
+
 function stopBlockProgress(block: Block): Block {
-  let stopped = block.streaming ? { ...block, streaming: false } : block;
+  let stopped = block.streaming ? sealProse(block) : block;
   if (stopped.orchestration?.status === "planning") {
     stopped = {
       ...stopped,
@@ -1382,7 +1391,7 @@ function sealLastStream(blocks: Block[]): Block[] {
   }
   const next = blocks.slice();
   if (isBareProseStream(last)) next.splice(index, 1);
-  else next[index] = { ...last, streaming: false };
+  else next[index] = sealProse(last);
   return next;
 }
 
@@ -1498,7 +1507,7 @@ function finishRole(session: Session, role: Block["role"]): Session {
     ...session,
     blocks: session.blocks.flatMap((block) => {
       if (block.role !== role || !block.streaming) return [block];
-      return isBareProseStream(block) ? [] : [{ ...block, streaming: false }];
+      return isBareProseStream(block) ? [] : [sealProse(block)];
     }),
   };
 }

@@ -38,7 +38,7 @@ const prompt = (over: Partial<UserQuestionPrompt> = {}): UserQuestionPrompt => (
 describe("a live AskUserQuestion", () => {
   it("is one line with the option the agent marked (Recommended) as its pick", () => {
     const q = chatQuestion({ busy: true, pendingQuestion: prompt(), blocks: [] });
-    expect(q).toEqual({ source: "ask", requestId: 7, question: "Which boss comes first?", more: 0, pick: "Shield", redLine: false });
+    expect(q).toEqual({ source: "ask", requestId: 7, question: "Which boss comes first?", more: 0, pick: "Shield", redLine: false, options: ["Shield", "Flier"] });
     expect(plainOptionLabel("Shield (Recommended)")).toBe("Shield");
   });
 

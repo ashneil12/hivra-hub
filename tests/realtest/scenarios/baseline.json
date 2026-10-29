@@ -231,7 +231,7 @@
         "P4",
         "B13"
       ],
-      "minutes": 12,
+      "minutes": 20,
       "maxTurns": 50,
       "steps": [
         {
@@ -289,23 +289,28 @@
           "text": "private by default. the owner can turn sharing on per tally with a shared flag"
         },
         {
+          "answer": {
+            "mono": "lead",
+            "text": "private by default. the owner can turn sharing on per tally with a shared flag"
+          },
+          "label": "answer-today",
+          "unlessSent": "answer-worker"
+        },
+        {
           "send": {
             "mono": "lead"
           },
           "label": "answer-lead",
-          "unlessSent": "answer-worker",
+          "unlessSent": [
+            "answer-worker",
+            "answer-today"
+          ],
           "text": "private by default. the owner can turn sharing on per tally with a shared flag"
         },
         {
           "wait": {
             "monoReply": "lead",
             "maxSec": 60
-          }
-        },
-        {
-          "answer": {
-            "mono": "lead",
-            "text": "private by default. the owner can turn sharing on per tally with a shared flag"
           }
         },
         {
