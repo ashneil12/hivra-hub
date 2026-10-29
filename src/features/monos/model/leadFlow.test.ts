@@ -306,7 +306,7 @@ describe("says it's done while delegated work is still out (borrowed from Block'
     expect(note).toMatchObject({
       role: "system",
       notice: "still-running",
-      text: 'Still running: 2 (API, UI). "Ship the API and UI" stays open until they report back.',
+      text: 'Still working on API, UI. "Ship the API and UI" stays open until they report back.',
       stillRunning: { taskIds: ["w-api", "w-ui"], briefId: "t-1" },
     });
     // Once it is there, the same claim again (or another one for the brief) adds nothing.
@@ -317,7 +317,7 @@ describe("says it's done while delegated work is still out (borrowed from Block'
     // Without a brief (Ash talking to the Lead): once per task; a new task gets its own note.
     expect(stillRunningNote(again, rows)).toBeUndefined();
     const more = [...rows, open("w-docs", "Docs")];
-    expect(stillRunningNote(again, more)?.text).toBe("Still running: 3 (API, UI, Docs). Their reports come back here when they finish.");
+    expect(stillRunningNote(again, more)?.text).toBe("Still working on API, UI, Docs. Their reports come back here when they finish.");
     // Nothing out, or a reply that says what still runs: no note.
     expect(stillRunningNote(lead({ blocks }), [rows[2], rows[3]])).toBeUndefined();
     expect(stillRunningNote(lead({ blocks: [blocks[0], said("API is done; UI is still running.")] }), rows)).toBeUndefined();
@@ -330,7 +330,7 @@ describe("says it's done while delegated work is still out (borrowed from Block'
     const failed = open("w-ui", "UI", { state: "failed", error: "The build broke.", settledAt: 10_000, delivery: "delivered" });
     const note = stillRunningNote(lead({ blocks }), [...rows, failed], undefined, at)!;
     expect(note.text).toBe(
-      "Still running: 2 (API, UI). Not finished: 1 (UI — Failed: the build broke). The work is not done yet.",
+      "Still working on API, UI. Not finished: 1 (UI — Failed: the build broke). The work is not done yet.",
     );
     expect(note.stillRunning?.taskIds).toEqual(["w-api", "w-ui"]);
     expect(stillRunningNote(lead({ blocks: [...blocks, note] }), [...rows, failed], undefined, at)).toBeUndefined();
@@ -338,15 +338,15 @@ describe("says it's done while delegated work is still out (borrowed from Block'
     const blocked = open("w-ui", "UI", { stallKind: "blocked", stallReason: "The staging deploy key is not on this machine", stalledAt: 10_000 });
     const onlyApi = [open("w-api", "API"), blocked];
     expect(stillRunningNote(lead({ blocks }), onlyApi, undefined, at)?.text).toBe(
-      "Still running: 1 (API). Not finished: 1 (UI — Cannot finish: the staging deploy key is not on this machine). The work is not done yet.",
+      "Still working on API. Not finished: 1 (UI — Cannot finish: the staging deploy key is not on this machine). The work is not done yet.",
     );
     const retried = { ...blocked, log: [{ at: 10_000, by: "owner:lead-chat", event: "lead_redo" }] };
     expect(stillRunningNote(lead({ blocks }), [open("w-api", "API"), retried], undefined, at)?.text).toBe(
-      "Still running: 1 (API). Their reports come back here when they finish.",
+      "Still working on API. Their reports come back here when they finish.",
     );
     // On a brief it says the brief itself is not done.
     expect(stillRunningNote(lead({ blocks }), [...rows, failed], { id: "t-1", title: "Ship the API and UI" }, at)?.text).toBe(
-      'Still running: 2 (API, UI). Not finished: 1 (UI — Failed: the build broke). "Ship the API and UI" is not done.',
+      'Still working on API, UI. Not finished: 1 (UI — Failed: the build broke). "Ship the API and UI" is not done.',
     );
   });
 

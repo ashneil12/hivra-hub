@@ -108,6 +108,13 @@ const question: UserQuestionPrompt = {
   ],
 };
 
+
+/** r70: stopped workers above a Lead's composer start folded ("<N> workers stopped · Show"); these tests open them. */
+function openStopped() {
+  const toggle = container.querySelector<HTMLButtonElement>("[data-stuck-stopped-toggle]");
+  if (toggle && toggle.getAttribute("aria-expanded") === "false") act(() => toggle.click());
+}
+
 describe("stuck workers in the Lead's chat", () => {
   function setup() {
     const lead = createMono(["/code/vg-game"]);
@@ -138,6 +145,7 @@ describe("stuck workers in the Lead's chat", () => {
     };
     setWaitingChatsHost(host);
     act(() => root.render(createElement(LeadLine)));
+    openStopped();
     const card = (child: string) => container.querySelector<HTMLElement>(`[data-stuck-worker="${child}"]`);
     return { actions, host, card };
   }
@@ -209,6 +217,10 @@ describe("many stuck workers in one Lead's chat", () => {
       [1, 2, 3, 4].map((n) => row(`t-${n}`, `w${n}`, { state: "failed", settledAt: now - n * 60_000, error: "Disk full." })),
     );
     act(() => root.render(createElement(LeadLine)));
+    // r70: folded first, one line for the four.
+    expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(0);
+    expect(container.querySelector("[data-stuck-stopped-fold]")!.textContent).toBe("4 workers stopped·Show");
+    openStopped();
     expect(container.querySelectorAll("[data-stuck-worker]")).toHaveLength(3);
     const more = container.querySelector<HTMLButtonElement>("[data-stuck-more]")!;
     expect(more.textContent).toBe("1 more"); // no "stuck" word (r30)
@@ -260,6 +272,7 @@ describe("what its Lead did, on the red card (Critiquito, 21 Oct)", () => {
     setDelegationActions({ openOwner: vi.fn(), openChild: vi.fn(), stopTree: vi.fn(), stopRow: vi.fn(), noteAnswer: vi.fn() });
     setWaitingChatsHost({ liveQuestion: () => undefined, respond: vi.fn(), send: vi.fn(async () => true), open: vi.fn() });
     act(() => root.render(createElement(LeadLine)));
+    openStopped();
     return (child: string) => container.querySelector<HTMLElement>(`[data-stuck-worker="${child}"]`)!;
   }
   const HOUR_MS = 60 * 60_000;

@@ -43,7 +43,7 @@ export type ChatQuestion = {
 // (the agent's words stay the question line), so a vague ask can't hide what kind of thing it is.
 
 /** The only reasons a row can give, in Ash's words. */
-export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "provide something", "pick an option", "approve a red-line step", "review"] as const;
+export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "Needs a key from you", "provide something", "pick an option", "approve a red-line step", "review"] as const;
 export type NeedsReason = (typeof NEEDS_REASONS)[number];
 
 const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
@@ -60,7 +60,7 @@ const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
  */
 export function needsReason(q: Pick<ChatQuestion, "source" | "pick" | "redLine" | "flag" | "provide">): NeedsReason {
   // Something only Ash can hand over is never "approve a red-line step", even when a key is a red-line word (r65).
-  if (q.provide) return "provide something";
+  if (q.provide) return keyAsk(q.provide) ? "Needs a key from you" : "provide something";
   const flagged = q.flag ? FLAG_REASONS.find(([rx]) => rx.test(q.flag!))?.[1] : undefined;
   if (flagged) return flagged;
   if (q.redLine) return "approve a red-line step";
@@ -108,6 +108,15 @@ const MY_PICK = /^[\s>*_\-•]*(?:my\s+pick|my\s+recommendation|recommend(?:atio
 export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean; flag?: string; provide?: string };
 
 // ---- something only Ash can provide ------------------------------------------------------------------------------
+
+/**
+ * r70 (Critiquito): a key ask (an API key, a token, a password, a secret or credential) reads "Needs a key from you",
+ * not "provide something"; access, a login, an invite or a seat keep "provide something".
+ */
+const KEY_THING = /\b(?:api[\s-]?keys?|keys?|tokens?|passwords?|passphrases?|secrets?|credentials?)\b/i;
+export function keyAsk(provide: string): boolean {
+  return KEY_THING.test(provide);
+}
 
 /** What only Ash can hand over: a key, a token, a password, access. */
 const PROVIDE_THING = /\b(?:api[\s-]?keys?|keys?|tokens?|passwords?|passphrases?|secrets?|credentials?|access|logins?|invites?|invitations?|seats?)\b/i;

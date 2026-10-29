@@ -108,7 +108,7 @@ describe("r69: a turn that tried a secret action stops at Needs Ash, red", () =>
     const q = chatQuestion({ busy: false, blocks: blocks as never });
     expect(q).not.toBeNull();
     expect(q!.redLine).toBe(true);
-    expect(needsReason(q!)).toBe("provide something");
+    expect(needsReason(q!)).toBe("Needs a key from you");
     expect(gateQuestion(q!).admit).toBe(true);
     expect(q!.question).toMatch(/vercel env run/);
     expect(JSON.stringify(q)).not.toMatch(/re_live_secret/);

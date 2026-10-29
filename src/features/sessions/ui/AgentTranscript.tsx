@@ -19,6 +19,7 @@ import {
 } from "../../../shared/ui/icons";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
+import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
 import { noteRuns } from "../../monos/model/agentNoteView";
 import {
@@ -2675,6 +2676,15 @@ const TranscriptBlock = memo(function TranscriptBlock({
     }
     // Agent-to-agent notes (monos/model/agentNotes.ts): a small line that opens that agent's chat when there is one.
     if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded={embedded} />;
+    if (block.notice === "still-running") {
+      return (
+        <div className={`${embedded ? "" : "px-4"} py-2`}>
+          <p data-still-running className={STILL_RUNNING_CLASS}>
+            {stillRunningText(block.text)}
+          </p>
+        </div>
+      );
+    }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
         <pre className="min-w-0 whitespace-pre-wrap break-words">
@@ -4674,13 +4684,16 @@ function ActivityRow({
 
 /** A status row folded into the trail: one muted line, nothing to open. */
 function ActivityStatusRow({ block }: { block: Block }) {
+  const still = block.notice === "still-running";
+  const text = still ? stillRunningText(block.text.trim()) : block.text.trim();
   return (
     <div className="flex min-w-0 items-center gap-1.5 py-1">
       <span
-        title={block.text}
-        className="min-w-0 flex-1 truncate font-sans text-sm text-content/50"
+        title={text}
+        {...(still ? { "data-still-running": true } : {})}
+        className={`min-w-0 flex-1 truncate font-sans text-sm ${still ? "text-content/85" : "text-content/50"}`}
       >
-        {block.text.trim()}
+        {text}
       </span>
     </div>
   );
