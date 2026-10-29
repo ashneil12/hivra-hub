@@ -83,7 +83,7 @@ export async function fetchMemoryPrimer(
 export type PrimerReader = {
   /** The chat calls the ash-os tools (a Claude Code session with Ash's entry): it can search further itself. */
   tools: boolean;
-  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it with ash_remember when Ash says remember or lock. */
+  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it with ash_remember (r76: his answer to its own question too). */
   worker: boolean;
 };
 
@@ -103,7 +103,7 @@ export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefi
   }
   const more = reader.tools
     ? forUser`For anything not here (older lines, what Ash said, what changed and when), search with ash_recall: a query, project "${project}". ${own}${
-        reader.worker ? "" : forUser(" Save to it with ash_remember only when Ash says remember or lock (project ash only for how Ash works in every project).")
+        reader.worker ? "" : forUser(" Save to it with ash_remember at once when Ash makes a call: he answers a question you asked him, or says remember, lock or from now on (project ash only for how Ash works in every project). A half-made or contested thought stays unsaved.")
       }`
     : forUser`This chat has no Ash OS tools: for more, read never.md and decisions.md in ${folder}. ${own}`;
   return forUser`<project_memory>\nAsh OS loaded this at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
