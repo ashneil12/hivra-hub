@@ -16,6 +16,7 @@ import {
 } from "../model/delegations";
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
+import { statusReply } from "../model/statusReply";
 import { workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -163,6 +164,16 @@ export function useFollowedBriefs(options: {
         noted.current.add(block.id);
         note(chatId, block);
       }
+      // r78: Ash asks a busy Lead or coding-team chat how it's going: a line from the app at once (statusReply.ts).
+      const startsWorkers = latest.current.startsWorkers;
+      if (startsWorkers)
+        for (const chat of sessionsRef.current) {
+          if (!chat.busy || !startsWorkers(chat.id)) continue;
+          const block = statusReply(chat, known, noted.current, notesSince.current, now);
+          if (!block) continue;
+          noted.current.add(block.id);
+          note(chat.id, block);
+        }
     }
     const { startsWorkers, ask } = latest.current;
     if (startsWorkers && ask) {
