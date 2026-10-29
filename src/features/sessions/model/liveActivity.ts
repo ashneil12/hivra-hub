@@ -8,7 +8,8 @@ import { delegateToolName } from "./monocodeToolCall";
 import type { Block } from "./session";
 import { isProseBlock, isThinkingBlock, isToolBlock, needsApproval, toolCategory } from "./transcriptActivity";
 
-export type LiveStep = { key: string; label: string };
+/** `lastStep`: on a "Thinking" step, the last tool step of the turn, for "Still working on …" (r66). */
+export type LiveStep = { key: string; label: string; lastStep?: string };
 /**
  * How a step names its file: rooms and Mono 1:1s say just the file name ("Reading app.tsx"); coding chats give the path
  * and the command (Critiquito, 29 Oct).
@@ -17,10 +18,15 @@ export type StepDetail = "name" | "full";
 /** What a turn's worker is doing now, from the worker's own stream (r62): the parent turn and the room show it. */
 export type WorkerProgress = { label: string; lastEventAt: number };
 /** A step, when this window first saw it, and when it last saw anything new in the turn's stream. */
-export type LiveActivity = LiveStep & { since: number; lastEventAt: number };
+export type LiveActivity = LiveStep & { since: number; lastEventAt: number; stepSince?: number };
 
 /** No new event for this long and the line says so, in grey, instead of a step that may be over. */
 export const STALL_MS = 60_000;
+/**
+ * r66 (Alfred, 0.16.5: "Thinking" for 5+ minutes): thinking this long with no tool, while the stream's heartbeat still
+ * comes, the line says what it is still on ("Still working on running npm test"), not a bare "Thinking".
+ */
+export const STILL_MS = 60_000;
 
 const DONE = new Set(["completed", "failed", "error", "cancelled", "canceled", "interrupted", "stopped"]);
 const CHECK = /\b(?:test|tests|vitest|jest|playwright|tsc|typecheck|lint|eslint|clippy|check|cargo\s+(?:test|check|fmt))\b/i;
@@ -108,15 +114,19 @@ export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDet
   let latest: Block | undefined;
   for (const block of seen) if (isToolBlock(block) || isProseBlock(block) || isThinkingBlock(block)) latest = block;
   if (!latest) return { key: "start", label: "Thinking" };
+  let lastTool: Block | undefined;
+  for (const block of seen) if (isToolBlock(block)) lastTool = block;
+  const lastStep = lastTool ? toolStep(lastTool, cwd, detail) : undefined;
+  const thinking = (key: string): LiveStep => (lastStep ? { key, label: "Thinking", lastStep } : { key, label: "Thinking" });
   if (isToolBlock(latest)) {
     const status = latest.tool?.status?.toLowerCase();
     if (latest.tool?.background && !DONE.has(status ?? "")) return { key: `bg:${latest.id}`, label: "Waiting on a background task" };
     // A finished call is not what it is doing now: it is deciding what comes next.
-    if (status && DONE.has(status)) return { key: `after:${latest.id}`, label: "Thinking" };
+    if (status && DONE.has(status)) return thinking(`after:${latest.id}`);
     return { key: `tool:${latest.id}`, label: toolStep(latest, cwd, detail) };
   }
   if (isProseBlock(latest)) return { key: `prose:${latest.id}`, label: "Writing" };
-  return { key: `think:${latest.id}`, label: "Thinking" };
+  return thinking(`think:${latest.id}`);
 }
 
 /** Changes whenever the stream brings anything: a block, more words, output, a status. */
@@ -185,7 +195,7 @@ export function trackActivity(
   tracked.set(id, next);
   if (tracked.size > MAX_TRACKED) tracked.delete(tracked.keys().next().value as string);
   const { sig: _sig, ...activity } = next;
-  return activity;
+  return { ...activity, stepSince: activity.since };
 }
 
 // ---- Worker progress (r62) ----------------------------------------------------------------------------------------
@@ -222,5 +232,9 @@ export function formatElapsed(ms: number): string {
 export function activityLine(activity: LiveActivity, now: number): { text: string; stalled: boolean } {
   const idle = now - activity.lastEventAt;
   if (idle >= STALL_MS) return { text: `No activity for ${Math.floor(idle / 60_000)} min`, stalled: true };
+  if (activity.label === "Thinking" && now - (activity.stepSince ?? activity.since) >= STILL_MS) {
+    const on = activity.lastStep ? ` on ${activity.lastStep.charAt(0).toLowerCase()}${activity.lastStep.slice(1)}` : "";
+    return { text: `Still working${on} · ${formatElapsed(now - activity.since)}`, stalled: false };
+  }
   return { text: `${activity.label} · ${formatElapsed(now - activity.since)}`, stalled: false };
 }
