@@ -18,7 +18,7 @@
 //   npm run hub:realtest -- --no-build                     # reuse target/debug/monocode
 //   npm run hub:realtest -- --only s01,s02                 # some scenarios
 //   npm run hub:realtest -- --max-turns 300 --max-minutes 110
-//   npm run hub:realtest -- --no-grade                     # skip the Sonnet grader (rule metrics only)
+//   npm run hub:realtest -- --no-grade                     # skip the grader (rule metrics only)
 //   npm run hub:realtest -- --grade-only evidence/realtest/<run>   # grade a finished run again
 //   npm run hub:realtest -- --keep                         # keep the temporary HOME afterwards
 //   npm run hub:realtest -- --claude-config ~/claude-acct-2   # more Claude accounts Ash signed in himself (repeatable)

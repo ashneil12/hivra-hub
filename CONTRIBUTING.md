@@ -32,7 +32,7 @@ npm run tauri dev
 npm run check
 ```
 
-That runs what CI runs: vitest, `tsc --noEmit`, `cargo fmt`, `cargo clippy`, and `cargo test`. If it’s green locally it should be green on GitHub. `npm run check:web` and `npm run check:rust` run the two halves separately when you only touched one side.
+That runs what CI runs, plus the script tests: vitest, `tsc --noEmit`, `node --test scripts/*.test.cjs scripts/*.test.mjs`, `cargo fmt`, `cargo clippy`, and `cargo test`. If it’s green locally it should be green on GitHub. `npm run check:web` and `npm run check:rust` run the two halves separately when you only touched one side; `npm run check:scripts` runs just the script tests.
 
 For transcript layout and scrolling changes, also run the real-browser tests:
 
