@@ -613,6 +613,14 @@ describe("groupTurnItems", () => {
       read("t1"),
     ]);
     expect(initialThinkingIndex(toolActivity)).toBe(-1);
+
+    // r81 (Critiquito): a reply after it means "Thinking…" would sit above older replies; the live line says it.
+    const answered = groupTurnItems([
+      { id: "u", role: "user", text: "Investigate it" },
+      thought("r1"),
+      { id: "a1", role: "assistant", text: "Health is back and checked." },
+    ]);
+    expect(initialThinkingIndex(answered)).toBe(-1);
   });
 });
 

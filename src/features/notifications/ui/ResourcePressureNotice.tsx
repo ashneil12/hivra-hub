@@ -200,6 +200,9 @@ export function ResourcePressureNotice({
         ? "Low available memory"
         : "Slow response",
   );
+  const busyParts = pressure.reasons.map((reason) =>
+    reason === "CPU saturation" ? "CPU" : reason === "Memory pressure" ? "memory" : "slow to respond",
+  );
   return (
     <>
       {pressure.active && chipHost
@@ -212,7 +215,8 @@ export function ResourcePressureNotice({
               aria-haspopup="dialog"
               aria-expanded={open}
               onClick={() => setOpen(true)}
-              title={`${reasons.join(" · ")} · Review running work`}
+              // r81 (Critiquito): what's busy and what to do, in the hover, the same for every build.
+              title={`Your Mac is busy (${busyParts.join(" and ")}), so things may feel slower. Click to see what's running and stop what you don't need.`}
               className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap ${insetChip ? "rounded-full px-2" : "rounded-md px-1.5"} text-content/55 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-accent ${open ? "bg-content/8 text-content" : ""}`}
             >
               {/* Grey (r28): no amber in any status mark; red is only for Needs you. */}
@@ -222,7 +226,7 @@ export function ResourcePressureNotice({
                 strokeWidth={1.75}
                 aria-hidden
               />
-              <span>Mac busy</span>
+              <span>Mac busy: {busyParts.join(", ")}</span>
             </button>,
             chipHost,
           )

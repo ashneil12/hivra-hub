@@ -160,7 +160,7 @@ function LiveAgentCard({
       ? formatLiveElapsed(agent.startedAt, now)
       : "";
   const activity = agent.needsApproval
-    ? "Need approval"
+    ? "Needs you"
     : agent.done
       ? "Done"
       : agent.activity;

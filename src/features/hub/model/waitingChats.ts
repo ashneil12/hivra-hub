@@ -17,6 +17,7 @@ import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model
 import type { Block, HarnessId, Session } from "../../sessions/model/session";
 import { sessionDisplayTitle } from "../../sessions/model/session";
 import {
+  askedBy,
   chatQuestion,
   gateQuestion,
   pickMessage,
@@ -25,6 +26,7 @@ import {
   wordsReply,
   type ChatQuestion,
   type GateKind,
+  whoAsks,
 } from "./chatQuestions";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
@@ -226,13 +228,17 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
   for (const chat of chats) {
     if (!counts(chat)) continue;
     const old = prev[chat.id];
-    const q = readChat(chat);
+    const read = readChat(chat);
+    const mono = monoForSession(chat.id);
+    const q =
+      read?.source === "permission"
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title })) }
+        : read;
     if (q) {
       if (q.source === "ask") seenLive.add(liveKey(chat.id, q.requestId));
       // An entry stored before the gate existed has no decision yet: judge it again even when the question is unchanged.
       if (old && sameQuestion(old, q) && old.gate) continue;
       const gate = gateQuestion(q);
-      const mono = monoForSession(chat.id);
       const entry: WaitingEntry = {
         ...q,
         sessionId: chat.id,

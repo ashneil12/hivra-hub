@@ -346,11 +346,29 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
   const file = call?.paths?.[0]?.split("/").pop();
   if (file) {
     if (/^(edit|write|multiedit|notebookedit)$/i.test(tool)) return `Allow it to change ${file}?`;
-    if (/^read$/i.test(tool)) return `Allow it to read ${file}?`;
     if (/^(grep|glob|ls)$/i.test(tool)) return `Allow it to look through ${file}?`;
-    return `Allow it to use ${tool} on ${file}?`;
+    // r81 (Critiquito): never a tool's name; reading or anything else unnamed on a file is looking at it.
+    return `Allow it to look at ${file}?`;
   }
-  return `Allow it to use ${tool}?`;
+  return /^web/i.test(tool) ? "Allow it to look something up online?" : "Allow it to take its next step?";
+}
+
+/**
+ * r81 (Critiquito): who is asking, instead of "it": "the Tally Lead", "the health worker". A name that is already a
+ * person's (a Mono called Pip) stays bare; a chat's title becomes "the <title> worker".
+ */
+export function whoAsks(input: { monoName?: string; title?: string }): string {
+  const name = input.monoName?.trim();
+  if (name) return /\b(lead|worker|team|chat|bot)$/i.test(name) ? `the ${name}` : name;
+  const title = input.title?.trim().replace(/\s+worker$/i, "");
+  if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
+  const plain = /^[A-Z][a-z]/.test(title) ? title[0].toLowerCase() + title.slice(1) : title;
+  return `the ${plain} worker`;
+}
+
+/** The permission question with "it" swapped for who asks. */
+export function askedBy(question: string, who: string): string {
+  return who === "it" ? question : question.replace(/^Allow it\b/, `Allow ${who}`);
 }
 
 /**
