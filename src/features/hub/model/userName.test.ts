@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // G5, 21 Oct: the app's instructions to agents name this install's user, not Ash. Ash's own install (his team, or the
 // pack set to his) reads "Ash" without anything written, so every prompt is byte for byte what 4b7bb1b built — apart
-// from the Lead "Needs Ash" line, rewritten on 23 Oct (D3), and the room rules' task_status line (27 Oct, H6), each carried
+// from the Lead "Needs Ash" line, rewritten on 23 Oct (D3), and the room rules' task_status line (27 Oct, H6) and the roles-ask line (29 Oct, r66), each carried
 // in the fixture the same day.
 import BEFORE_JSON from "./testdata/ashPrompts.4b7bb1b.json";
 import { beforeEach, describe, expect, it } from "vitest";
