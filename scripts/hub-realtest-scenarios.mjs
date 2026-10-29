@@ -439,6 +439,13 @@ export function runChecks(checks, { room, texts, events, memoryCalls }) {
 }
 
 /** What a reader (and the grader) needs, in time order. */
+// A chat line as the grader reads it: whole up to the cap, and plainly marked when the harness cuts it (r76: a
+// silent 1200-character cut made s13's full reply look cut off at "28. T").
+const CHAT_LINE_MAX = 6000;
+function chatLine(text) {
+  return text.length <= CHAT_LINE_MAX ? text : `${text.slice(0, CHAT_LINE_MAX)} [${text.length - CHAT_LINE_MAX} more characters clipped by the test harness, not by the chat]`;
+}
+
 export function transcript(scenario, result, t0) {
   const lines = [`# ${scenario.id}: ${scenario.title}`, "", `Benchmark: ${(scenario.bench ?? []).join(", ")}`, "", "## What this checks", "", scenario.criteria ?? "", ""];
   const timeline = [];
@@ -464,7 +471,7 @@ export function transcript(scenario, result, t0) {
     const asked = (line.tools ?? []).filter((tool) => String(tool).startsWith("AskUserQuestion:"));
     if (asked.length) timeline.push({ t: line.t, line: `[${line.who} chat] asks with buttons: ${asked.join(" ; ").replace("AskUserQuestion: ", "")}` });
     if (!line.text) continue;
-    timeline.push({ t: line.t, line: `[${line.who} chat] ${line.text.slice(0, 1200)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
+    timeline.push({ t: line.t, line: `[${line.who} chat] ${chatLine(line.text)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
   }
   for (const a of result.answers ?? [])
     timeline.push({ t: a.t, line: a.answers ? `(the app answered the question in Claude: ${JSON.stringify(a.answers).slice(0, 400)})` : `(the app declined the question in Claude: ${a.message ?? a.behavior})` });
