@@ -219,6 +219,7 @@ function counts(chat: ChatInput): boolean {
  * died (a restart) with nothing said since stays, to be answered with a message.
  */
 export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
+  noteBusy(chats);
   const prev = load();
   let next: Record<string, WaitingEntry> | undefined;
   const edit = () => (next ??= { ...prev });
@@ -460,6 +461,34 @@ export function respondInChat(sessionId: string, requestId: number, reply: UserQ
 export async function sendToChat(sessionId: string, text: string): Promise<boolean> {
   if (!host || !text.trim()) return false;
   return host.send(sessionId, text.trim()).catch(() => false);
+}
+
+// r81 (c02 r80: Today said "all 5 are done" while the Lead was still checking two): which chats are mid-turn, kept
+// apart from the waiting list so a turn starting or ending doesn't wake Autopilot.
+let busyChats = new Set<string>();
+let busyVersion = 0;
+const busyListeners = new Set<() => void>();
+function noteBusy(chats: readonly ChatInput[]): void {
+  const next = new Set(busyChats);
+  for (const chat of chats) chat.busy ? next.add(chat.id) : next.delete(chat.id);
+  if (next.size === busyChats.size && [...next].every((id) => busyChats.has(id))) return;
+  busyChats = next;
+  busyVersion += 1;
+  for (const listener of busyListeners) listener();
+}
+
+/** Whether a chat's turn is still running, as last noted (a Lead still checking what came back). */
+export function chatBusy(sessionId: string): boolean {
+  return busyChats.has(sessionId);
+}
+
+/** Re-render when a chat starts or ends a turn. */
+export function useChatsBusyVersion(): number {
+  return useSyncExternalStore(
+    (listener) => (busyListeners.add(listener), () => void busyListeners.delete(listener)),
+    () => busyVersion,
+    () => busyVersion,
+  );
 }
 
 /** The app lends its hands; the returned function takes them back. */

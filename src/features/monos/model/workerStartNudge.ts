@@ -55,3 +55,53 @@ export function workerStartNudge(
     text: forUser`${START_WORKERS_PREFIX} From the app: your last reply listed Ash's asks and said work starts, but no worker was started. Start them now: one delegate_task per independent area, each a short brief (his words for it, what it may change, the check to run, what to report). Then tell him in one line what is out. If nothing in the list is ready to start, say that in one line instead. This is an app notification, not a new message from Ash.`,
   };
 }
+
+/**
+ * r81 (c02 r80: "Five workers start now" with none started; the nudge came 80s later): the line the chat gets beside the
+ * nudge, so its claim doesn't stand uncorrected. True when written and true after: it was not started then.
+ */
+export function notStartedNote(nudge: QueuedMessage): Block {
+  return {
+    id: `not-started-${nudge.id.replace(/^start-workers-/, "")}`,
+    role: "system",
+    notice: "still-running",
+    text: "No worker had started when that reply was written. The app has asked this chat to start them now.",
+  };
+}
+
+export const SAVE_RULE_PREFIX = "[MonoCode save rule]";
+
+/** A standing rule in Ash's words ("from now on always run npm test"): what holds for later work, not one job. */
+const STANDING_RULE =
+  /\b(?:from now on|going forward|from here on|every time you|always (?:run|use|check|ask|write|test|keep|make|do|put|say|commit|add)|never (?:again|use|run|commit|push|ship|change|touch))\b/i;
+
+const remembers = (block: Block) =>
+  (block.role === "tool" || block.role === "approval") &&
+  [block.tool?.kind, block.tool?.title, block.text].some((t) => !!t && /ash_remember/.test(t));
+
+/**
+ * r81 (P9, c02 r80: "saved after these jobs are handed off", confirmed 3 minutes later): a chat that hands out work and
+ * whose turn is over, with a standing rule in Ash's last message and no ash_remember since, gets one app message to save
+ * it now in his words. Once per Ash message, never while it works.
+ */
+export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): QueuedMessage | undefined {
+  if (chat.busy || chat.queuedMessages?.length) return undefined;
+  let index = chat.blocks.length - 1;
+  for (; index >= 0; index--) {
+    const block = chat.blocks[index];
+    if (block.role === "user" && !block.draft && !block.monoNote && !/^\s*\[MonoCode /.test(block.text)) break;
+  }
+  if (index < 0) return undefined;
+  const ask = chat.blocks[index];
+  const rule = ask.text.split(/(?<=[.!?\n])\s*/).find((line) => STANDING_RULE.test(line))?.trim();
+  if (!rule || nudged.has(ask.id)) return undefined;
+  const after = chat.blocks.slice(index + 1);
+  if (!after.some((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim())) return undefined;
+  if (after.some(remembers)) return undefined;
+  return {
+    id: `save-rule-${ask.id}`,
+    attachments: [],
+    waitForIdle: true,
+    text: forUser`${SAVE_RULE_PREFIX} From the app: Ash gave a standing rule ("${rule.slice(0, 200)}") and it isn't saved yet. Save it now with ash_remember, in his words, then carry on; one line to him at most. This is an app notification, not a new message from Ash.`,
+  };
+}
