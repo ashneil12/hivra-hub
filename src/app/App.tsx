@@ -284,6 +284,11 @@ import { ConfirmDeleteHost, confirmDelete } from "../shared/ui/ConfirmDelete";
 import { monoDeleteDetail } from "../features/monos/model/monoDelete";
 import { delegationOf } from "../features/monos/model/delegationView";
 import {
+  unusedWorktreeOf,
+  withinDeadline,
+  worktreeTickedByDefault,
+} from "../features/sessions/model/sessionDeletePlan";
+import {
   type WorktreeFocus,
   useWorktreeFocus,
   worktreeFocus,
@@ -1408,6 +1413,7 @@ function Workspace({
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
     unusedWorktree?: string;
+    worktreeTicked?: boolean;
     resolve: (choice: SessionDeleteChoice) => void;
   }>();
   const switchingWorktrees = useRef(new Map<string, string>());
@@ -6050,40 +6056,43 @@ function Workspace({
         (session) => session.id === sessionId,
       );
       const summary = history.find((entry) => entry.id === sessionId);
-      const seed = open ?? summary;
+      removingSessionIds.current.add(sessionId);
+      // r69 (g): a sub-chat of another project is neither open nor in the shown history; read its saved record so the
+      // confirm names it and offers its worktree (never waiting past DELETE_LOOKUP_MS).
+      const seed: (Session | SessionSummary) | undefined =
+        open ??
+        summary ??
+        (mode === "delete" && !skipDeleteConfirm
+          ? ((await withinDeadline(readSession(sessionId))) ?? undefined)
+          : undefined);
       const label = seed
         ? sessionDisplayTitle(seed.title, seed.harness)
         : "this session";
-      removingSessionIds.current.add(sessionId);
       let deleteWorktreePath: string | undefined;
       if (mode === "delete" && !skipDeleteConfirm) {
         deleteConfirmationPending.current = true;
-        let unusedWorktree: string | undefined;
-        if (seed?.worktreeCwd) {
-          try {
-            const { worktrees } = await listWorktrees(seed.cwd);
-            const tree = worktrees.find(
-              (entry) => pathKey(entry.path) === pathKey(seed.worktreeCwd!),
-            );
-            if (
-              tree &&
-              !tree.isMain &&
-              !tree.locked &&
-              tree.branch &&
-              worktreeSessionIds(tree, sessionsRef.current).every(
-                (id) => id === sessionId,
-              )
-            )
-              unusedWorktree = tree.path;
-          } catch {
-            // A failed lookup must never offer filesystem cleanup.
-          }
-        }
+        const subChat =
+          !!delegationOf(sessionId, delegationRows()) || !!seed?.orchestrationLeadId;
+        // A slow or failed listing never keeps the confirm away (it then offers no worktree).
+        const listed = seed?.worktreeCwd
+          ? await withinDeadline(listWorktrees(seed.cwd))
+          : undefined;
+        const unusedWorktree = unusedWorktreeOf(
+          sessionId,
+          seed,
+          listed?.worktrees,
+          sessionsRef.current,
+        );
         // r30d: every delete asks first, in the one shared confirm (Cancel focused); a session with an unused
-        // worktree of its own also offers to clear that.
+        // worktree of its own also offers to clear that (ticked for a sub-chat, r69).
         {
           const choice = await new Promise<SessionDeleteChoice>((resolve) => {
-            setSessionDeleteDialog({ title: label, ...(unusedWorktree ? { unusedWorktree } : {}), resolve });
+            setSessionDeleteDialog({
+              title: label,
+              ...(unusedWorktree ? { unusedWorktree } : {}),
+              worktreeTicked: worktreeTickedByDefault(subChat, unusedWorktree),
+              resolve,
+            });
           });
           deleteConfirmationPending.current = false;
           if (!choice.confirmed) {
@@ -16874,6 +16883,7 @@ function Workspace({
             <DeleteSessionDialog
               title={sessionDeleteDialog.title}
               unusedWorktree={sessionDeleteDialog.unusedWorktree}
+              worktreeTicked={sessionDeleteDialog.worktreeTicked}
               onClose={(choice) => {
                 sessionDeleteDialog.resolve(choice);
                 setSessionDeleteDialog(undefined);

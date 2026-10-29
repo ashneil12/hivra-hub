@@ -11,13 +11,16 @@ export type SessionDeleteChoice = {
 export function DeleteSessionDialog({
   title,
   unusedWorktree,
+  worktreeTicked = false,
   onClose,
 }: {
   title: string;
   unusedWorktree?: string;
+  /** r69: a sub-chat's own worktree is offered ticked (sessionDeletePlan.ts). */
+  worktreeTicked?: boolean;
   onClose: (choice: SessionDeleteChoice) => void;
 }) {
-  const [deleteWorktree, setDeleteWorktree] = useState(false);
+  const [deleteWorktree, setDeleteWorktree] = useState(worktreeTicked);
   return (
     <ConfirmDelete
       name={title}
