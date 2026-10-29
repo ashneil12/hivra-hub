@@ -69,6 +69,25 @@ export const CHAT_CARDS_SHOWN = 3;
 
 type Done = { stuck: StuckWorker; said: string };
 
+/**
+ * One card per job in a chat (r65, Critiquito crit-2: a job whose workers failed three times stood as three stacked
+ * copies of the same card). The first (newest) worker on a job stands for it; Today and Being built list every row.
+ */
+export function oneCardPerJob(stuck: readonly StuckWorker[]): StuckWorker[] {
+  const seen = new Set<string>();
+  return stuck.filter((s) => {
+    const job = `${s.row.ownerSession ?? s.row.ownerMono ?? ""}\u0000${stuckTitle(s).toLowerCase()}`;
+    if (seen.has(job)) return false;
+    seen.add(job);
+    return true;
+  });
+}
+
+/** What happens next to a failed worker its Lead still has (r65): the Lead re-hands it once, then tells Ash. */
+export function failedNextStep(lead: string): string {
+  return `${lead} hands it to a fresh worker once, and tells you if that fails too.`;
+}
+
 export function StuckList({
   stuck,
   now,
@@ -95,6 +114,7 @@ export function StuckList({
 }) {
   const [done, setDone] = useState<Record<string, Done>>({});
   const [all, setAll] = useState(false);
+  if (variant === "chat") stuck = oneCardPerJob(stuck);
   const held = Object.values(done).filter((d) => !stuck.some((s) => s.key === d.stuck.key));
   if (!stuck.length && !held.length) return null;
   const more = variant === "chat" && !all ? Math.max(0, stuck.length - CHAT_CARDS_SHOWN) : 0;
@@ -185,7 +205,9 @@ export function StuckWorkerCard({
   const send = () => text.trim() && !busy && void run(() => sendWords(stuck, text));
   const frame =
     variant === "chat"
-      ? "flex flex-col gap-1 rounded-2xl border border-content/10 px-4 py-3 font-sans text-[13px]"
+      ? // r65 (Critiquito crit-2): pinned over the chat, so it is near-opaque with a blur behind it; chat text never
+        // shows through.
+        "flex flex-col gap-1 rounded-2xl border border-content/10 bg-background-base/95 px-4 py-3 font-sans text-[13px] shadow-lg backdrop-blur-xl"
       : "flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5";
   const placeholder =
     stuck.kind === "asking" ? "Or answer in your words…" : stuck.kind === "stalled" ? "Tell it what to do…" : "Reply in its chat…";
@@ -219,6 +241,10 @@ export function StuckWorkerCard({
       {acted ? (
         <div className="whitespace-normal break-words text-[12px] leading-5 text-content/60" data-stuck-lead-action>
           {acted}
+        </div>
+      ) : stuck.kind === "failed" && !red ? (
+        <div className="whitespace-normal break-words text-[12px] leading-5 text-content/60" data-stuck-next>
+          {failedNextStep(lead)}
         </div>
       ) : null}
       {stuck.kind === "asking" && pick && !options.length ? (

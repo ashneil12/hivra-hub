@@ -1,3 +1,5 @@
+import { chatQuestion, gateQuestion } from "../../hub/model/chatQuestions";
+import { forUser } from "../../hub/model/userName";
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
 import { pausedLabel } from "../../autopilot/model/limitResume";
 import { projectKey, projectName } from "../../../shared/lib/paths";
@@ -733,6 +735,13 @@ export function monoState(
     lastBlock.notice === "resume-stopped"
   ) {
     return { status: "needs-you", activity: "Stopped after restarts" };
+  }
+  // r65 (PM's r63 run): a Lead that ended its turn on a "Needs Ash:" ask the gate lets into Waiting on you is waiting on
+  // Ash, red like a live question, never a grey idle row while the Inbox counts it.
+  if (!session.busy && !session.worktreeRemoved) {
+    const asked = chatQuestion({ busy: false, blocks });
+    if (asked && gateQuestion(asked).admit)
+      return { status: "needs-you", activity: asked.provide ? forUser`Ash needs to provide ${asked.provide}` : asked.question };
   }
   if (!session.busy) return { status: "idle" };
   const last = blocks[blocks.length - 1];

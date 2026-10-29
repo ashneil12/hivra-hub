@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
 import type { GeneratedSessionTitle } from "../../../features/sessions/model/sessionTitle";
@@ -308,6 +309,13 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
         ...input,
         // Workflow runs also feed views outside the chat (Being built).
         onEvent: (event) => {
+          // r65 (#13): every harness, not only Claude: a keychain or credential read is refused here before it reaches
+          // the chat or any auto-approval, and the agent is left to ask Ash for it.
+          if (event.type === "approval.requested" && credentialBlock(event.call, input.cwd)) {
+            // Some providers register the pending approval just after emitting it (grok, cursor, pi): answer next tick.
+            setTimeout(() => adapter.respondApproval(input.sessionId, event.requestId, "deny"), 0);
+            return;
+          }
           if (event.type === "workflow.progress") {
             noteWorkflowRun(input.sessionId, event.run);
           }

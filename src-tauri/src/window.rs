@@ -693,6 +693,8 @@ fn clear_run(id: u32) {
 pub fn confirm_quit(app: AppHandle) {
     *QUIT_RUN.lock().unwrap() = None;
     ALLOW_EXIT.store(true, Ordering::SeqCst);
+    // r65: the frame is read while the window is still there, before it shows or the app goes.
+    crate::window_frame::save(&app);
     for window in workspace_windows(&app) {
         let _ = window.show();
     }

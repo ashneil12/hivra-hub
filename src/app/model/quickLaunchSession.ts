@@ -9,7 +9,9 @@ import {
   mergeModelSettings,
   resolveModel,
 } from "../../features/sessions/model/models";
+import { listTitle } from "../../shared/text/plainTitle";
 import {
+  formatSessionTitle,
   newSession,
   type Session,
   type Attachment,
@@ -80,6 +82,9 @@ export async function acceptQuickLaunch(
     );
   session.id = deliveryId;
   if (!existing && launch.sidebarHidden) session.sidebarHidden = true;
+  // A delegated worker is named after its job, never its brief's opening line (PM's r63 run, 29 Oct).
+  if (!existing && launch.title && listTitle(launch.title))
+    session.title = formatSessionTitle(session.harness, launch.title);
   if (launch.modelSettings) {
     session.modelSettings = mergeModelSettings(
       resolveModel(session.harness, session.model),

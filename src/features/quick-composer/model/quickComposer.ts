@@ -55,6 +55,8 @@ export type QuickLaunch = {
   /** Mono's visibility preference, captured before creating the session. */
   sidebarHidden?: boolean;
   prompt: string;
+  /** The chat's title, when the starter knows the job's name (a delegated worker: its task title, never its brief). */
+  title?: string;
   /** Create an unsent user draft instead of starting an agent turn. */
   draft?: boolean;
   /** Turn mode picked with a leading composer command. */
@@ -136,6 +138,7 @@ export function parseQuickLaunch(value: unknown): QuickLaunch | null {
       ? { worktreeCwd: raw.worktreeCwd }
       : {}),
     prompt: raw.prompt,
+    ...(typeof raw.title === "string" && raw.title.trim() ? { title: raw.title.trim().slice(0, 200) } : {}),
     ...(attachments.length ? { attachments } : {}),
     cwd: raw.cwd,
     harness: raw.harness,

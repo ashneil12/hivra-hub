@@ -1,3 +1,4 @@
+import { plainTitle } from "../../../shared/text/plainTitle";
 // New project's interview (scorecard G2; Ash: setup was "fixed questions", not an agent talking to him). Chief of Staff
 // talks it through for real: each turn is its own Mono (soul and memory, on its own engine, so Grok 4.7 on the bridge)
 // with one short note on what Create needs. It asks what it needs and, when it has enough, ends a reply on a
@@ -73,7 +74,8 @@ export function parseInterviewReply(raw: string): InterviewReply {
     const p = JSON.parse(match[1]) as Record<string, unknown>;
     const template = TEMPLATES.find((t) => t.id === p.template)?.id;
     const code = CODES.find((c) => c === p.code) ?? "new";
-    const oneLine = typeof p.oneLine === "string" ? p.oneLine.trim() : "";
+    // The card and the project's tagline are plain text: no markdown marks (r65).
+    const oneLine = typeof p.oneLine === "string" ? plainTitle(p.oneLine) : "";
     if (!template) return { text: text || raw.trim() };
     const name = typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
     const folder = typeof p.folder === "string" && p.folder.trim() ? p.folder.trim() : undefined;

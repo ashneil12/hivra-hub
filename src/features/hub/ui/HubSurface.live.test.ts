@@ -98,9 +98,11 @@ describe("Today, live", () => {
     mount(surface("vg-game"));
     await until(() => rows().length === 2, "needs");
     // The heading draws before the day it counts from does, so the wait is for the whole label, not just "Since".
-    const since = /Since you were last here · since (yesterday|\d|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/;
+    // r65: "since" once: the Since title reads just the time.
+    const since = /Since (yesterday|\d|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/;
     await until(() => since.test(text()), "since label");
     expect(text()).toMatch(since);
+    expect(text()).not.toMatch(/since[^.]*· since/i);
     expect(text()).toContain("Example: the new level is in and working. Two things need your hands.");
     expect(rows().sort()).toEqual(["q1", "q2"]);
     for (const row of container.querySelectorAll("[data-hub-need]")) expect(row.querySelectorAll("button").length).toBe(1);
@@ -206,12 +208,12 @@ describe("ships clean and calm", () => {
     expect(kinds).toEqual(["since", "needs", "latest-build"]);
     expect(container.querySelector('[data-hub-today-section="latest-build"]')?.textContent).toContain("No build yet.");
 
-    // The product's Today: Since, Needs you, then its latest kept dashboard (none kept for it yet).
+    // The product's Today: Since, Needs you; its latest dashboard card hides until one is kept (r65).
     mount(createElement(HubSurface, { selection: { project: "hivra", item: "inbox" } }));
-    await until(() => container.querySelector('[data-hub-today-section="latest-page"]'), "latest dashboard card");
+    await until(() => container.querySelector('[data-hub-today-section="needs"]'), "needs card");
     const productKinds = [...container.querySelectorAll("[data-hub-today-section]")].map((s) => s.getAttribute("data-hub-today-section"));
-    expect(productKinds).toEqual(["since", "needs", "latest-page"]);
-    expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
+    expect(productKinds).toEqual(["since", "needs"]);
+    expect(container.textContent).not.toContain("No dashboard yet");
   });
 
   it("the strip shows Autopilot, then EXO, Hivra, Nibbii, Hub — never a board of all projects — each its own grey shape (never a ghost)", async () => {

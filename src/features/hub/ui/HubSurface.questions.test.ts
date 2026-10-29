@@ -179,7 +179,7 @@ describe("Waiting on you", () => {
 
   it("a project with nothing waiting shows no badge and no needs count, never \"0 needs\"", async () => {
     act(() => root.render(today("nibbii")));
-    await until(() => q('[data-hub-today-section="latest-page"]'), "nibbii's Today");
+    await until(() => q('[data-hub-today-section="needs"]'), "nibbii's Today");
     expect(needRows()).toEqual([]);
     expect(q("[data-hub-waiting]")).toBeNull();
     expect(badge("Nibbii")).toBeUndefined();

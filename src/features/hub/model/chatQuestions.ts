@@ -29,6 +29,11 @@ export type ChatQuestion = {
   redLine: boolean;
   /** The "(sign in)" style flag on a "Needs Ash" line, as written, when it named one other than a red line. */
   flag?: string;
+  /**
+   * Something only Ash can hand over (a key, a token, access), in the agent's words: "a new project API key from the
+   * Canary PostHog project". Such an ask is an errand, not an approval: its card has no Approve/Deny (PM's r63 run).
+   */
+  provide?: string;
 };
 
 // ---- why Ash is needed ---------------------------------------------------------------------------------------
@@ -37,7 +42,7 @@ export type ChatQuestion = {
 // (the agent's words stay the question line), so a vague ask can't hide what kind of thing it is.
 
 /** The only reasons a row can give, in Ash's words. */
-export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "pick an option", "approve a red-line step", "review"] as const;
+export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "provide something", "pick an option", "approve a red-line step", "review"] as const;
 export type NeedsReason = (typeof NEEDS_REASONS)[number];
 
 const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
@@ -52,7 +57,9 @@ const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
  * Why Ash is needed: a flag the agent wrote wins, then a red line (approve a red-line step), then a choice with a pick or
  * a live question (pick an option); anything else is "review" (Alan's fallback is "take a look").
  */
-export function needsReason(q: Pick<ChatQuestion, "source" | "pick" | "redLine" | "flag">): NeedsReason {
+export function needsReason(q: Pick<ChatQuestion, "source" | "pick" | "redLine" | "flag" | "provide">): NeedsReason {
+  // Something only Ash can hand over is never "approve a red-line step", even when a key is a red-line word (r65).
+  if (q.provide) return "provide something";
   const flagged = q.flag ? FLAG_REASONS.find(([rx]) => rx.test(q.flag!))?.[1] : undefined;
   if (flagged) return flagged;
   if (q.redLine) return "approve a red-line step";
@@ -97,7 +104,46 @@ export function plainOptionLabel(label: string): string {
 const NEEDS_ASH = /^[\s>*_\-•]*needs\s+ash\s*(\((?<flag>[^)]*)\))?\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<q>.+)$/im;
 const MY_PICK = /^[\s>*_\-•]*(?:my\s+pick|my\s+recommendation|recommend(?:ation|ed)?|suggested|i\s+recommend)\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<p>.+)$/im;
 
-export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean; flag?: string };
+export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean; flag?: string; provide?: string };
+
+// ---- something only Ash can provide ------------------------------------------------------------------------------
+
+/** What only Ash can hand over: a key, a token, a password, access. */
+const PROVIDE_THING = /\b(?:api[\s-]?keys?|keys?|tokens?|passwords?|passphrases?|secrets?|credentials?|access|logins?|invites?|invitations?|seats?)\b/i;
+/** "provide / give / create … me …" at the question's start, with its polite or "Ash has to" opener. */
+const PROVIDE_VERB =
+  /^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+|(?:i|we)\s+need\s+(?:you\s+to\s+)?|(?:ash|you)\s+(?:needs?|has|have)\s+to\s+|(?:ash|you)\s+(?:must|should)\s+)?(?:provide|give|create|generate|make|send|share|issue|grant|mint|rotate|set\s+up|hand\s+over|get)\s+(?:me|us|it|the\s+(?:lead|agent|worker))?\s*/i;
+/** A noun phrase standing for the ask itself ("a new project API key from …", "git access to the repo"). */
+const NOUN_START = /^(?:(?:a|an|the|your|new|fresh|another)\s+|[\w$.-]+\s+(?:api[\s-]?key|key|token|access|password|secret|credentials?)\b)/i;
+const NOT_PROVIDE = /\b(?:approve|deploy|merge|delete|ship|publish|choose|pick|which|whether)\b/i;
+
+/**
+ * What Ash is asked to hand over, in the agent's words, when the ask is that (a key only he can make, git access, a
+ * token); undefined for anything else. A "(provide)" or "(key)" flag on the "Needs Ash" line counts on its own.
+ */
+export function provideNeeded(question: string, flag?: string): string | undefined {
+  const q = oneLine(question).replace(/[?.!]+$/, "").trim();
+  if (!q) return undefined;
+  if (flag && /\b(?:provide|key|token|secret|credential|access|password)s?\b/i.test(flag)) return lowerFirst(cutAsk(q.replace(PROVIDE_VERB, "")) || q);
+  if (NOT_PROVIDE.test(q)) return undefined;
+  const verb = PROVIDE_VERB.exec(q);
+  if (verb && verb[0].trim()) {
+    const rest = cutAsk(q.slice(verb[0].length));
+    return rest && PROVIDE_THING.test(rest) ? lowerFirst(rest) : undefined;
+  }
+  if (NOUN_START.test(q) && PROVIDE_THING.test(q.split(/\s+/).slice(0, 8).join(" "))) return lowerFirst(cutAsk(q));
+  return undefined;
+}
+
+/** The thing itself, without what comes after it ("…, so I can rotate it", " - set it on prod"). */
+function cutAsk(text: string): string {
+  const cut = text.split(/\s+(?:so|then|and\s+then|because|to\s+let|for\s+me\s+to)\s+|\s[-–—]\s|[;:]\s|\.\s/i)[0].trim();
+  return cut.length > 140 ? `${cut.slice(0, 139).replace(/\s+\S*$/, "")}…` : cut;
+}
+
+function lowerFirst(text: string): string {
+  return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+}
 
 /** The last "Needs Ash:" line in an agent's text, with the "My pick:" line after it. */
 export function parseNeedsAsh(text: string): NeedsAshMarker | null {
@@ -111,7 +157,14 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   const pick = MY_PICK.exec(after)?.groups?.p;
   const flagged = /red/i.test(found.groups.flag ?? "");
   const flag = !flagged && found.groups.flag?.trim() ? { flag: found.groups.flag.trim() } : {};
-  return { question, ...(pick && oneLine(pick) ? { pick: oneLine(pick) } : {}), redLine: flagged || looksRedLine(`${question} ${pick ?? ""}`), ...flag };
+  const provide = provideNeeded(question, found.groups.flag);
+  return {
+    question,
+    ...(pick && oneLine(pick) ? { pick: oneLine(pick) } : {}),
+    redLine: flagged || looksRedLine(`${question} ${pick ?? ""}`),
+    ...flag,
+    ...(provide ? { provide } : {}),
+  };
 }
 
 // ---- Ash's red lines -------------------------------------------------------------------------------------------
@@ -174,7 +227,13 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
     more: prompt.questions.length - 1,
     ...(pick ? { pick } : {}),
     redLine: flagged || looksRedLine(`${words} ${pick ?? ""}`),
+    ...(provideFrom(first.prompt || first.header || "") ?? {}),
   };
+}
+
+function provideFrom(question: string): { provide: string } | undefined {
+  const provide = provideNeeded(question);
+  return provide ? { provide } : undefined;
 }
 
 /**
@@ -200,7 +259,15 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.busy) return null;
   const marker = parseNeedsAsh(lastTurnText(chat.blocks));
   return marker
-    ? { source: "marker", question: marker.question, more: 0, ...(marker.pick ? { pick: marker.pick } : {}), redLine: marker.redLine, ...(marker.flag ? { flag: marker.flag } : {}) }
+    ? {
+        source: "marker",
+        question: marker.question,
+        more: 0,
+        ...(marker.pick ? { pick: marker.pick } : {}),
+        redLine: marker.redLine,
+        ...(marker.flag ? { flag: marker.flag } : {}),
+        ...(marker.provide ? { provide: marker.provide } : {}),
+      }
     : null;
 }
 
@@ -230,9 +297,12 @@ const ERLANDS = new Set(["sign in", "enter a code", "pay"]);
  * pay), where the errand is the recommendation. Everything else (progress, status, a question with no recommendation)
  * stays in the chat, and the reason says why in words Ash could act on.
  */
-export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag">): GateDecision {
+export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag" | "provide">): GateDecision {
   const question = q.question.trim();
   const asks = ASKS.test(question) || APPROVAL.test(question) || CHOICE.test(question);
+
+  // A key, a token or access only Ash can hand over: an errand that waits for him, with or without a pick (r65).
+  if (q.provide) return { admit: true, kind: "action", reason: `Only Ash can provide ${q.provide}, so it waits for him.` };
 
   if (q.redLine) {
     return q.pick

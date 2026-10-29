@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { needsReason } from "../model/chatQuestions";
+import { userLabel } from "../model/userName";
+import { NEEDS_YOU } from "../model/statusChip";
+import { ChipMark } from "./StatusMark";
 import {
   answerApproval,
   answerInWords,
@@ -45,7 +48,7 @@ export function WaitingOnYou({ projectId }: { projectId: string | undefined }) {
     });
     return res;
   };
-  const takeable = waiting.filter((c) => c.pick && !c.redLine);
+  const takeable = waiting.filter((c) => c.pick && !c.redLine && !c.provide);
   const takeAll = async () => {
     setBusyAll(true);
     for (const chat of takeable) await answer(chat, () => takePick(chat.sessionId));
@@ -95,6 +98,9 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
   return (
     <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
+        {/* r65 (PM/Critiquito r63): every ask here is one only Ash can act on, so each row carries the red Needs you
+            ring; the project badge counts these rows (todayCounts.ts), so badge and red rows agree. */}
+        <span data-hub-waiting-red><ChipMark chip={NEEDS_YOU} ringOnly /></span>
         {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
         {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3).
             The gate's own reason (D3) is on hover, so a row that shouldn't be here can be traced. */}
@@ -102,18 +108,30 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
         <span className="shrink-0" data-hub-waiting-reason data-hub-gate={chat.gate?.kind} title={chat.gate?.reason}>{needsReason(chat)}</span>
         {chat.redLine ? <span className="sr-only" data-hub-red-line>Red line</span> : null}
       </div>
-      <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>
-        {chat.question}
-        {chat.more ? <span className="text-content/60"> (+{chat.more} more)</span> : null}
-      </div>
+      {chat.provide ? (
+        // r65 (PM's r63 run): a key only Ash can make is an errand, not an approval: plain words, no Approve/Deny.
+        <div className="flex flex-col gap-0.5" data-hub-provide>
+          <div className="whitespace-normal break-words text-[13px] font-medium leading-5 text-content" data-hub-waiting-question>
+            {userLabel()} needs to provide {chat.provide}
+          </div>
+          <div className="text-[12px] leading-5 text-content/60" data-hub-provide-note>
+            Open the chat to see where it goes. Don't paste keys or passwords here.
+          </div>
+        </div>
+      ) : (
+        <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>
+          {chat.question}
+          {chat.more ? <span className="text-content/60"> (+{chat.more} more)</span> : null}
+        </div>
+      )}
       {/* No suggestion, no line: the reply box and Open chat already say what to do. */}
-      {chat.pick ? (
+      {chat.pick && !chat.provide ? (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
           Suggests: {chat.pick}
         </div>
       ) : null}
       <div className="mt-1 flex items-center gap-2">
-        {chat.redLine ? (
+        {chat.provide ? null : chat.redLine ? (
           // A red line is an approval: two explicit choices in the same quiet style, neither one the default, and no
           // "this session" or "always" (matched to Alan's Workspace approvalBody, minus its broader grants).
           <span className="flex shrink-0 items-center gap-2" data-hub-approval role="group" aria-label="Approve or deny">
@@ -138,7 +156,7 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
           onKeyDown={(e) => {
             if (e.key === "Enter" && text.trim() && !busy) void run(() => answerInWords(chat.sessionId, text), e.currentTarget);
           }}
-          placeholder="Or answer in your words…"
+          placeholder={chat.provide ? "Say when it's done, or reply in your words…" : "Or answer in your words…"}
           aria-label={`Answer ${chat.chatName} in your words`}
           maxLength={4000}
           data-hub-waiting-reply

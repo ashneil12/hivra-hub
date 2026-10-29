@@ -1,4 +1,5 @@
 import { TurnNotReadyError } from "../../core/types";
+import { credentialBlock } from "../../core/credentialGuard";
 import { claudeAppend, claudeAppendArgs, claudeExtraArgs } from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
 import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
@@ -1731,6 +1732,14 @@ async function handleControlRequest(
   }
 
   applyKnownToolInput(live, toolName, input, control.toolUseId);
+
+  // r65 (#13): a keychain or credential read is refused in code before any mode can allow it, with a message that sends
+  // the agent to ask Ash instead of retrying.
+  const blocked = credentialBlock(approvalCall(toolName, input), live.cwd);
+  if (blocked) {
+    await writeJson(sessionId, buildControlResponse(control.requestId, { behavior: "deny", message: blocked }));
+    return;
+  }
 
   if (live.planning) {
     const kind = toolKindFromName(toolName);

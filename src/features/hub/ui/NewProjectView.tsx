@@ -15,6 +15,7 @@ import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { addTeamAddon } from "../model/hubTeam";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES, StripButton } from "./ProjectStrip";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
@@ -175,7 +176,12 @@ export function NewProjectView() {
               {lines.map((l, i) => (
                 <div key={i} className="hub-fade-in">
                   <div className="pb-0.5 text-xs text-content/60">{l.from === "cos" ? COS : "You"}</div>
-                  <div className="text-[13px] text-content">{l.text}</div>
+                  {l.from === "cos" ? (
+                    // r65 (PM's r63 run): CoS writes markdown ("**A product families use**"); it renders, never shows raw.
+                    <AgentMarkdown text={l.text} className="agent-chat-bubble-md text-[13px] text-content" />
+                  ) : (
+                    <div className="whitespace-pre-wrap text-[13px] text-content">{l.text}</div>
+                  )}
                 </div>
               ))}
               {t ? (

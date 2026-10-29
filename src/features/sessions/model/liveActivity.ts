@@ -35,6 +35,31 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+/** "npm test", "cargo test --lib": a command's first words with no paths in them, for a room or a Mono's 1:1 (r65). */
+function shortCommand(command: string): string | undefined {
+  // The program and its verb: up to three words, stopping at the first flag, path or pipe.
+  const words: string[] = [];
+  for (const w of command.split(" ").filter(Boolean)) {
+    if (w.startsWith("-") || /[\\/~<>|&;]/.test(w) || words.length === 3) break;
+    words.push(w);
+  }
+  const out = words.join(" ");
+  return out.length > MAX_COMMAND ? `${out.slice(0, MAX_COMMAND - 1)}…` : out || undefined;
+}
+
+/** "mcp__linear__list_issues" → "Linear: list issues"; "TodoWrite" → "todo write". Undefined when it names nothing. */
+export function toolName(raw: string | undefined): string | undefined {
+  const t = (raw ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!t || /[\\/]/.test(t)) return undefined;
+  const words = (s: string) => s.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(t);
+  if (mcp) {
+    const server = words(mcp[1]!);
+    return `${server.charAt(0).toUpperCase()}${server.slice(1)}: ${words(mcp[2]!)}`;
+  }
+  return words(t) || undefined;
+}
+
 function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): string {
   const preview = block.tool?.preview;
   const rawPath = preview?.path ? displayPath(preview.path, cwd) : preview?.fileName;
@@ -51,14 +76,25 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
       return path ? `Editing ${path}` : "Editing a file";
     case "research":
       if (isReadTool(block.tool?.kind, title, preview)) return path ? `Reading ${path}` : "Reading a file";
+      // r65 (PM's r63 run): the real search, not a generic word.
+      if (/web/i.test(`${block.tool?.kind ?? ""} ${title}`)) return /fetch/i.test(title) ? "Reading a web page" : "Searching the web";
+      if (preview?.query) {
+        const q = preview.query.replace(/\s+/g, " ").trim();
+        return `Searching for “${q.length > 32 ? `${q.slice(0, 31)}…` : q}”`;
+      }
       return "Searching the project";
     case "run":
       // A coding chat names the command it runs; a room or a Mono's 1:1 keeps it plain.
       if (detail === "full" && command)
         return `Running ${command.length > MAX_COMMAND ? `${command.slice(0, MAX_COMMAND - 1)}…` : command}`;
+      // r65: a room or 1:1 still says what runs ("Running npm test"), without paths or arguments past the third word.
+      if (command && shortCommand(command)) return `Running ${shortCommand(command)}`;
       return CHECK.test(title) ? "Running a check" : "Running a command";
-    default:
-      return "Using a tool";
+    default: {
+      if (/web/i.test(`${block.tool?.kind ?? ""} ${title}`)) return /fetch/i.test(title) ? "Reading a web page" : "Searching the web";
+      const name = toolName(block.tool?.title ?? title);
+      return name ? `Using ${name}` : "Using a tool";
+    }
   }
 }
 

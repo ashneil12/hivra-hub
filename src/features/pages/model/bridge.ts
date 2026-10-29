@@ -13,11 +13,19 @@ export type BridgeHandlers = Partial<Record<string, (args: Record<string, unknow
 export const WALL_REFUSAL = "Pages can't do that: changing Monos and reaching the app directly are never allowed.";
 export const KEYS_REFUSAL = "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.";
 
-/** Why this call may not run with what is approved, in plain words; undefined when it may. */
-export function refusal(call: Pick<BridgeCall, "call">, approved: readonly Capability[]): string | undefined {
+/** A page asked for this but Ash hasn't tapped Allow yet (a ready-made page, or one from a setup file). */
+export const WAITING_ALLOW = "This page is waiting for you to allow it. Tap Allow above the page to let it show this.";
+/** The page never asked for this. No permission ids in the words (r65, PM's r63 run). */
+export const NOT_ASKED = "This page didn't ask to use that, so it can't.";
+
+/**
+ * Why this call may not run with what is approved, in plain words; undefined when it may. `asks` is what the page's
+ * spec asked for: asked but not approved yet says it's waiting for Allow, never "didn't ask for" (r65).
+ */
+export function refusal(call: Pick<BridgeCall, "call">, approved: readonly Capability[], asks: readonly Capability[] = []): string | undefined {
   if (call.call === "keys.read" || call.call.startsWith("keys.")) return KEYS_REFUSAL;
   if (isWall(call.call)) return WALL_REFUSAL;
-  if (!approved.includes(call.call as Capability)) return `This page didn't ask for “${call.call}”, so it can't use it.`;
+  if (!approved.includes(call.call as Capability)) return asks.includes(call.call as Capability) ? WAITING_ALLOW : NOT_ASKED;
   return undefined;
 }
 

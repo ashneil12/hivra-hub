@@ -266,6 +266,14 @@ export function calmSummary(text: string): string {
 }
 
 /** "Since 2pm", "Since yesterday", "Since Monday", "Since 3 Oct". */
+/**
+ * r65 (Critiquito: the Inbox said "since" twice): a section titled "Since you were last here" or "Since you were away"
+ * reads just the time ("Since 2:10am"); any other title keeps it after a dot ("Changes · since 2:10am").
+ */
+export function sinceHeading(title: string, label: string): string {
+  return /^since\b/i.test(title.trim()) ? label : `${title} · ${label.toLowerCase()}`;
+}
+
 export function sinceLabel(iso: string, now = new Date()): string {
   const then = new Date(iso);
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();

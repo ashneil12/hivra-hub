@@ -683,6 +683,8 @@ async function delegate(
       {
         ...(worktreeCwd ? { worktreeCwd } : {}),
         prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
+        // PM's r63 run: a worker tab was named from the brief's first line ("Ash's words, verbatim: …"); it is the job.
+        title,
         ...(ownTeam
           ? { project: ownTeam.folder }
           : named !== undefined && !owner.team
