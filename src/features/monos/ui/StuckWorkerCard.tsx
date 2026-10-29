@@ -22,11 +22,13 @@ import {
 } from "../model/stuckActions";
 import { leadActionLine, stuckMinutes, type StuckWorker } from "../model/workerStuck";
 import { plainStuckLine, stuckWorkerChip } from "../model/stuckChip";
-import { ChipMark, NeedsYouLinkLine } from "../../hub/ui/StatusMark";
+import { ChipMark, NeedsYouLinkLine, redRowProps } from "../../hub/ui/StatusMark";
 import { foldStopped, stoppedLine } from "../model/stuckFold";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
+/** Tailwind's shadow-lg, spelled out so a red card's bar can sit on top of it (an inline box-shadow replaces the class). */
+const CARD_SHADOW = "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)";
 const QUIET = "shrink-0 rounded-md px-2 py-1 text-xs text-content/45 hover:bg-content/6 hover:text-content/80 disabled:opacity-60";
 
 /** The Mono a worker answers to, by name ("EXO lead"). */
@@ -242,7 +244,15 @@ export function StuckWorkerCard({
     onOpened?.();
   };
   return (
-    <div className={frame} data-stuck-worker={stuck.row.childSession} data-stuck-kind={stuck.kind} data-stuck-escalated={stuck.escalated || undefined}>
+    <div
+      className={frame}
+      data-stuck-worker={stuck.row.childSession}
+      data-stuck-kind={stuck.kind}
+      data-stuck-escalated={stuck.escalated || undefined}
+      // r70b (Critiquito): a card only Ash can unstick reads like a red row (r69): neutral background, the 2px red left
+      // bar and the red Needs you word; never a red card. The pinned card keeps its drop shadow under the bar.
+      {...redRowProps(red, variant === "chat" ? CARD_SHADOW : undefined)}
+    >
       <div className="flex min-w-0 items-center gap-1.5 text-[12px] text-content/60">
         {stuck.kind === "asking" ? <StuckMark kind={stuck.kind} /> : null}
         <span className="min-w-0 truncate" data-stuck-where>
