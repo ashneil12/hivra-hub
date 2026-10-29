@@ -25,6 +25,7 @@ import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { NEEDS_YOU, failureChip } from "../../features/hub/model/statusChip";
 import { ChipMark, NeedsYouChip } from "../../features/hub/ui/StatusMark";
+import { openWaitingChat, useWaitingChatsVersion, waitingChats, type WaitingChat } from "../../features/hub/model/waitingChats";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
@@ -227,6 +228,11 @@ export function MonoRailSection({
   // "N needs you" counts the one list Being built draws its red rows from (needsYouRows.ts, Critiquito on r30: Being
   // built showed Hivra lead two red rows while this said "1 needs you").
   const needsYou = useNeedsYouRows();
+  // r75 (blind s06, B12): a Mono's own chat waiting on Ash (a Lead that asked before starting any job) is red on its row
+  // too, like Today and Being built; it opens that chat.
+  useWaitingChatsVersion();
+  const waitingByMono = new Map<string, WaitingChat>();
+  for (const c of waitingChats()) if (c.monoId && !waitingByMono.has(c.monoId)) waitingByMono.set(c.monoId, c);
   const workOf = (monoId: string) => {
     const children = childChats.get(monoId) ?? [];
     return {
@@ -552,6 +558,7 @@ export function MonoRailSection({
               </button>
             </div>
             {state.status === "failed" ? <MonoFailedLine monoId={mono.id} state={state} onOpen={() => onOpen(mono.id)} /> : null}
+            {state.status !== "failed" && waitingByMono.has(mono.id) ? <MonoWaitingLine monoId={mono.id} chat={waitingByMono.get(mono.id)!} /> : null}
             {railSplit(counts) ? (
               <MonoWorkLine
                 monoId={mono.id}
@@ -790,6 +797,21 @@ function FoldedWorkSummary({
  * "Open <Lead>'s chat". It should come right by itself or with Try again (usage limit, overloaded, a dropped
  * connection): a grey ring named "Can't answer" and the reason, which opens its chat. Try again either way.
  */
+/** r75: the Mono's own chat waits on Ash's answer: the red Needs you, the question on hover, Open <its> chat. */
+function MonoWaitingLine({ monoId, chat }: { monoId: string; chat: WaitingChat }) {
+  return (
+    <div
+      className="ml-5 flex min-h-6 min-w-0 items-start gap-1 border-l border-content/10 py-0.5 pl-1.5"
+      data-mono-waiting={monoId}
+      title={chat.question}
+    >
+      <span className="min-w-0 flex-1 px-1.5 text-[12px]">
+        <NeedsYouChip reason="waiting on your answer" lead={chat.chatName} onOpenLead={() => openWaitingChat(chat.sessionId)} />
+      </span>
+    </div>
+  );
+}
+
 function MonoFailedLine({ monoId, state, onOpen }: { monoId: string; state: MonoState; onOpen: () => void }) {
   const [trying, setTrying] = useState(false);
   const chip = failureChip(state.tone);
