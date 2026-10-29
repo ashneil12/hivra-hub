@@ -236,7 +236,7 @@ export function domRows() {
     tag: element.tagName.toLowerCase(),
     attrs: Object.fromEntries(
       [...element.attributes]
-        .filter((attr) => attr.name.startsWith("data-") || attr.name === "aria-expanded" || attr.name === "aria-label" || attr.name === "role")
+        .filter((attr) => attr.name.startsWith("data-") || attr.name === "aria-expanded" || attr.name === "aria-checked" || attr.name === "aria-label" || attr.name === "role")
         .map((attr) => [attr.name, clip(attr.value, 200)]),
     ),
     text: clip(element.innerText?.trim() ?? "", 300),

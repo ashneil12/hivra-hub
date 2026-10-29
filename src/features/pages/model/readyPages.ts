@@ -65,6 +65,8 @@ button:disabled{opacity:.45;cursor:default}
 // Plain DOM, no libraries: a page re-draws on every push and keeps what Ash is typing (and where) across a redraw.
 const BASE_JS = `
 const $ = (sel) => document.querySelector(sel);
+// r67 (Critiquito): a page still waiting for Allow says what to tap, not "Can't read …: This page is waiting for you…".
+const problemLine = (what, err) => /waiting for you to allow/i.test(String((err && err.message) || "")) ? "Tap Allow to show " + what : "Can't read " + what + ": " + ((err && err.message) || err);
 const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = String(text); return x; };
 const WORD = { asking: "Asking", stuck: "With its lead", working: "Working", paused: "Paused", idle: "Idle", failed: "Failed", done: "Done", stopped: "Stopped" };
 const open = {};      // which answer or message box is open, and what is typed in it
@@ -252,7 +254,7 @@ function draw() {
 }
 
 hub.watch("agents.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read your agents: " + err.message; });
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = problemLine("your agents", err); });
 setInterval(draw, 30000);
 `;
 
@@ -343,7 +345,7 @@ function draw() {
 }
 
 hub.watch("needs.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read what's waiting: " + err.message; });
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = problemLine("what's waiting", err); });
 `;
 
 /** Everything waiting on Ash in one place: the chats asking him, then what his projects want him to look at. */
@@ -405,7 +407,7 @@ function draw() {
 }
 
 hub.watch("jobs.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read what's being built: " + err.message; });
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = problemLine("what's being built", err); });
 `;
 
 /** What is being built right now, newest first, with a job whose lead gave up on top. */
@@ -496,7 +498,7 @@ function load(button) {
   hub.call("project.read", {})
     .then((out) => { data = out.projects || []; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); })
     .catch((e) => {
-      const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read your projects: " + e.message;
+      const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = problemLine("your projects", e);
     })
     .finally(() => { if (button) button.disabled = false; });
 }

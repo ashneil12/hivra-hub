@@ -1,5 +1,6 @@
 import { gaveUpAsNeedsYou } from "../model/hubWork";
 import { NEEDS_YOU, stuckChip, wireChip, type Chip, type ChipTone } from "../model/statusChip";
+import { askNeedsAsh } from "../model/askNeeds";
 import type { Need, StuckState } from "../model/types";
 
 const RED = "rgb(239 68 68)";
@@ -46,7 +47,12 @@ export function StatusMark({ state, lead, ringOnly = false }: { state: StuckStat
  * Oct 20:40), whatever word Ash OS sends; the old red "Stuck" only behind the `monocode:hub-gaveup-style=stuck` dev flag.
  * Since r27 every other row is grey (Retrying, With its lead): red is only for Needs you.
  */
-export function needMark(need: Pick<Need, "circle" | "word" | "jobId">): { circle: ChipTone; word: string } | null {
+export function needMark(
+  need: Pick<Need, "circle" | "word" | "jobId"> & Partial<Pick<Need, "actionTarget" | "state">>,
+  counted = false,
+): { circle: ChipTone; word: string } | null {
+  // r67: an open ask the badge counts is something only Ash can do, so it reads red, older asks included (askNeeds.ts).
+  if (askNeedsAsh(need, counted)) return { circle: NEEDS_YOU.tone, word: NEEDS_YOU.word };
   if (!need.circle || !need.word) return null;
   if (need.jobId && need.circle === "red") return { circle: "red", word: gaveUpAsNeedsYou() ? "Needs you" : "Stuck" };
   // Red only for Needs you; any other word Ash OS sends is a grey chip in the same words as Being built.

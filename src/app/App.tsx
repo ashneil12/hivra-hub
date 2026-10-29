@@ -1,3 +1,4 @@
+import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
 import { monoChatModelFix } from "../features/monos/model/monoModels";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
@@ -40,7 +41,7 @@ import {
   MonoSessionCompletionBatches,
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
-import { reviewAsk } from "../features/monos/model/workerReview";
+import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -2685,9 +2686,10 @@ function Workspace({
             {
               // The Hub's tray is running work only, each worker named by its task (liveAgents.ts).
               runningOnly: IS_HUB_BUNDLE,
+              // r67: a room seat reads as the Mono and the room, never its turn prompt.
               taskTitle: (id) =>
                 trayDelegationRows.find((row) => row.childSession === id)
-                  ?.title ?? undefined,
+                  ?.title ?? roomSeatTitle(id),
             },
           )
         : [],
@@ -12878,6 +12880,8 @@ function Workspace({
               // Sending it now carries the worker on into the second turn; `onSettled` keeps that turn's own report
               // on this same row, with the review it is asked for.
               const accepted = await submitSessionRef.current(sessionId, reviewAsk(result.reviewProblem), [], {
+                // A system note, never a turn that reads as Ash's own (r67).
+                monoNote: reviewAskNote(),
                 onSettled: (next) => void turnEnded(next, true),
               });
               if (!accepted) finish(result);

@@ -25,8 +25,10 @@ export const STALL_MS = 60_000;
 /**
  * r66 (Alfred, 0.16.5: "Thinking" for 5+ minutes): thinking this long with no tool, while the stream's heartbeat still
  * comes, the line says what it is still on ("Still working on running npm test"), not a bare "Thinking".
+ * r67 (Alfred's r66 rechecks): at 60 s it never showed; real thinking stretches between steps run 20-30 s (frank's
+ * longest was ~25 s), so it shows from 20 s.
  */
-export const STILL_MS = 60_000;
+export const STILL_MS = 20_000;
 /**
  * r67 (realconv S8 on 0.16.8: 12 minutes, never a "Still working"): a model that streams no thinking (grok through the
  * bridge) sends nothing between a tool's end and its next step, so the stream was silent at 60 s and STALL_MS won over
@@ -74,6 +76,30 @@ export function toolName(raw: string | undefined): string | undefined {
   return words(t) || undefined;
 }
 
+/** "d_1014e3d62a", "a_10292eae8d", a uuid or a long hash: an id the app made, not words Ash would recognise. */
+const RAW_ID = /^(?:[a-z]{1,4}[_-])?(?=[0-9a-f-]*\d)[0-9a-f-]*[0-9a-f]{8,}[0-9a-f-]*$/i;
+
+/**
+ * r67 (Alfred's r66 rechecks: "Searching for “d_1014e3d62a|d_1014d69d70|d_101…”"): a search for ids or a regex of them
+ * says what it looks for in words; a plain search keeps its words, and an "a|b|c" search names the first and counts the rest.
+ */
+export function searchStep(query: string): string {
+  const parts = query
+    .replace(/\\[bwsdBWSD]/g, " ")
+    .replace(/[()^$*+?[\]{}\\]/g, " ")
+    .split("|")
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (!parts.length) return "Searching the project";
+  const ids = parts.filter((p) => p.split(" ").every((w) => RAW_ID.test(w)));
+  if (ids.length === parts.length) return parts.length > 1 ? `Searching for ${parts.length} ids` : "Searching for an id";
+  const words = parts.filter((p) => !ids.includes(p));
+  const first = words[0]!;
+  const shown = first.length > 32 ? `${first.slice(0, 31)}…` : first;
+  const more = parts.length - 1;
+  return more ? `Searching for “${shown}” and ${more} more` : `Searching for “${shown}”`;
+}
+
 function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): string {
   const preview = block.tool?.preview;
   const rawPath = preview?.path ? displayPath(preview.path, cwd) : preview?.fileName;
@@ -92,10 +118,7 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
       if (isReadTool(block.tool?.kind, title, preview)) return path ? `Reading ${path}` : "Reading a file";
       // r65 (PM's r63 run): the real search, not a generic word.
       if (/web/i.test(`${block.tool?.kind ?? ""} ${title}`)) return /fetch/i.test(title) ? "Reading a web page" : "Searching the web";
-      if (preview?.query) {
-        const q = preview.query.replace(/\s+/g, " ").trim();
-        return `Searching for “${q.length > 32 ? `${q.slice(0, 31)}…` : q}”`;
-      }
+      if (preview?.query) return searchStep(preview.query);
       return "Searching the project";
     case "run":
       // A coding chat names the command it runs; a room or a Mono's 1:1 keeps it plain.

@@ -29,6 +29,28 @@ export const CREDENTIAL_DENY_RULES: readonly string[] = [
   "Read(~/.env*)",
 ];
 
+/**
+ * r67 (Alfred's r66 rechecks, 29 Oct): frank answered "what did I say about models" by running sqlite3 on the app's own
+ * database, and other Monos read sessions, delegations and transcripts out of monocode.db by hand. No agent reads the
+ * hub's database or the window's storage directly: it is Ash's whole history, half-written while the app runs, and the
+ * MonoCode tools already give the parts an agent may see. Enforced like the keychain rule, in code for every harness.
+ */
+export const HUB_DB_BLOCK_MESSAGE =
+  "Blocked by MonoCode: agents never read the hub's database or the window's storage directly. Don't retry it or look for it another way. Use the MonoCode tools: task_status for work and workers, room_read for a room's messages, and your own memory files for what Ash said. If none of them has it, say so plainly.";
+
+/** The same, as Claude Code deny rules for every hub chat. */
+export const HUB_DB_DENY_RULES: readonly string[] = [
+  "Bash(*com.ash.monocode-hub*.db*)",
+  "Bash(*com.ash.monocode-hub*sqlite*)",
+  "Read(~/Library/Application Support/com.ash.monocode-hub*/*.db*)",
+  "Read(~/Library/WebKit/com.ash.monocode-hub*/**)",
+];
+
+/** The app's data folder (the daily app or any dev slot) or its WebKit storage, then a database file in it. */
+const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';|&)]*\.(?:db|sqlite3?)(?:-wal|-shm)?\b|\/WebKit\/com\.ash\.monocode-hub)/i;
+/** A bare monocode.db read by a database tool from wherever the shell happens to be. */
+const HUB_DB_TOOL = /(^|[\s;&|(`$])(?:\/usr\/bin\/)?sqlite3\b[^;&|]*\bmonocode\.db\b/i;
+
 const KEYCHAIN = /(^|[\s;&|(`$])(\/usr\/bin\/)?security\s+(find-[\w-]+|dump-keychain|export|unlock-keychain)\b/;
 const SECRET_FILES = [
   /(~|\$HOME|\/Users\/[^/\s]+)\/\.claude\/\.credentials/,
@@ -66,6 +88,7 @@ export function credentialBlock(
   for (const text of texts) {
     if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
     if (SECRET_FILES.some((re) => re.test(text))) return CREDENTIAL_BLOCK_MESSAGE;
+    if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
     const padded = ` ${text}`;
     for (const match of padded.matchAll(ENV_PATH)) {
       if (!insideProject(match[1], cwd, home)) return CREDENTIAL_BLOCK_MESSAGE;

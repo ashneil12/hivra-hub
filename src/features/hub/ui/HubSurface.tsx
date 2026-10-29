@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { askNeedsAsh, askReason } from "../model/askNeeds";
 import { stuckWhere } from "../model/stuckWhere";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import { allConnectors, openConnectorSettings, signIn, useConnectorsVersion } from "../model/connectors";
@@ -517,7 +518,7 @@ function NeedGroups({ needs, onSheet }: { needs: readonly Need[]; onSheet: (shee
   const groups = (["decide", "check", "read"] as const)
     .map((kind) => ({ kind, rows: needs.filter((n) => needKind(n) === kind) }))
     .filter((g) => g.rows.length);
-  if (groups.length < 2) return <>{needs.map((n) => <NeedRow key={n.id} need={n} onSheet={onSheet} />)}</>;
+  if (groups.length < 2) return <>{needs.map((n) => <NeedRow key={n.id} need={n} onSheet={onSheet} counted />)}</>;
   return (
     <>
       {groups.map((g) => (
@@ -526,7 +527,7 @@ function NeedGroups({ needs, onSheet }: { needs: readonly Need[]; onSheet: (shee
             {NEED_KIND_LABEL[g.kind]} · {g.rows.length}
           </h3>
           {g.rows.map((n) => (
-            <NeedRow key={n.id} need={n} onSheet={onSheet} />
+            <NeedRow key={n.id} need={n} onSheet={onSheet} counted />
           ))}
         </div>
       ))}
@@ -545,7 +546,7 @@ function jobLead(jobId: string): { id: string | null; name: string } | undefined
   return undefined;
 }
 
-function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) => void }) {
+function NeedRow({ need, onSheet, counted = false }: { need: Need; onSheet?: (sheet: SheetFor) => void; counted?: boolean }) {
   const done = need.state === "done";
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -556,7 +557,9 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
   const seen = need.canMarkSeen && need.actionType !== "accept" && !!data.markNeedSeen;
   const isQuestion = !!need.actionTarget?.startsWith("question:");
   const answering = data.answerState?.(need.id);
-  const mark = needMark(need);
+  const mark = needMark(need, counted);
+  const askRed = askNeedsAsh(need, counted);
+  // A red ask keeps its one action (See options answers it right here), so it carries no Lead link: one action per row.
   const lead = need.jobId ? jobLead(need.jobId) : undefined;
   const run = async (call: () => Promise<void>) => {
     setBusy(true);
@@ -576,7 +579,7 @@ function NeedRow({ need, onSheet }: { need: Need; onSheet?: (sheet: SheetFor) =>
     if (need.actionType === "open" || need.actionType === "start") return onSheet?.({ kind: "detail", need });
   };
   return (
-    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined}>
+    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined} data-hub-ask-reason={askRed ? askReason(need) : undefined}>
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         {/* The reason wraps (never cut mid-word). */}

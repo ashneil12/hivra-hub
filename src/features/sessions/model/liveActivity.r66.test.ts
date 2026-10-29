@@ -17,7 +17,7 @@ it("a 1:1 or room turn names its tool step, and after 60 s thinking with no tool
   // The tool finished; it thinks. The stream keeps beating (new blocks or words), so it never reads stalled.
   let blocks: Block[] = [user, done("c", npm), think("k", "hm")];
   let a = trackActivity("r66-a", blocks, t0 + 1_000, "/repo", undefined, undefined, { detail: "name" });
-  expect(activityLine(a, t0 + 30_000).text).toBe("Thinking · 29s");
+  expect(activityLine(a, t0 + 15_000).text).toBe("Thinking · 14s");
   blocks = [user, done("c", npm), think("k", "hm, the failing test is in the room")];
   a = trackActivity("r66-a", blocks, t0 + 50_000, "/repo", undefined, undefined, { detail: "name" });
   expect(activityLine(a, t0 + 62_000)).toEqual({ text: "Still working on running npm test · 1m 01s", stalled: false });
