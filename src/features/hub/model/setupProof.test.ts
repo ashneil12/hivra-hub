@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkHubSetup,
+  plainSetupDetail,
   chosenSetupFolder,
   recordedSetupChecks,
   recordSetupFact,
@@ -49,7 +50,7 @@ describe("what has been proved", () => {
   it("shows what it already knows before anything is checked", () => {
     recordSetupFact("installed", "1.2.3 at /usr/local/bin/claude");
     expect(recordedSetupChecks()).toEqual([
-      { id: "installed", state: "proved", detail: "1.2.3 at /usr/local/bin/claude" },
+      { id: "installed", state: "proved", detail: "Claude Code 1.2.3 ready" },
       { id: "signedIn", state: "checking", detail: "" },
       { id: "folder", state: "checking", detail: "" },
       { id: "roundTrip", state: "checking", detail: "" },
@@ -170,5 +171,34 @@ describe("checking setup", () => {
     expect(run.proved).toBe(false);
     expect(roundTrip).not.toHaveBeenCalled();
     expect(setupProved()).toBe(false);
+  });
+});
+
+// r62 (Critiquito's 0.16.3 blocker): the card never shows the account's email or a raw path.
+describe("plain setup details", () => {
+  it("shows 'Signed in', never the email, for new and old records", async () => {
+    expect(plainSetupDetail("signedIn", "Signed in as ash@example.com.")).toBe("Signed in");
+    recordSetupFact("signedIn", "Signed in as ash@example.com.");
+    expect(JSON.stringify(localStorage)).not.toContain("ash@example.com");
+    localStorage.setItem("monocode:hub-setup-proof", JSON.stringify({ version: 1, facts: { signedIn: { at: 1, detail: "Signed in as ash@example.com." } } }));
+    expect(recordedSetupChecks().find((c) => c.id === "signedIn")!.detail).toBe("Signed in");
+    const run = await checkHubSetup({ folder: "/work", probes: allPass, refresh: true });
+    expect(JSON.stringify(run.checks)).not.toContain("@");
+  });
+
+  it("names the Grok launcher in plain words, and never shows a path", async () => {
+    expect(plainSetupDetail("installed", "2.1.0 (Claude Code) at /Users/ash/.local/bin/claude-grok")).toBe("Grok 4.7 ready");
+    expect(plainSetupDetail("installed", "1.2.3 at /usr/local/bin/claude")).toBe("Claude Code 1.2.3 ready");
+    expect(plainSetupDetail("folder", "/Users/ash/Projects")).toBe("Working in Projects");
+    expect(plainSetupDetail("folder", "There is no folder at /Users/ash/gone.")).toBe("There is no folder at gone.");
+    expect(plainSetupDetail("installed", "Claude Code at /Users/ash/.local/bin/claude-grok did not answer: boom")).toBe("Claude Code at the Grok launcher did not answer: boom");
+    const run = await checkHubSetup({ folder: "/Users/ash/Projects", probes: { ...allPass, installed: async () => ({ ok: true, detail: "2.1.0 at /Users/ash/.local/bin/claude-grok" }) }, refresh: true });
+    for (const check of run.checks) expect(check.detail).not.toMatch(/\/Users|~\//);
+  });
+
+  it("finds a folder from the fallbacks when no project names one (no 'No folder to work in yet')", async () => {
+    const run = await checkHubSetup({ fallbackFolders: ["/Users/ash/Projects"], probes: allPass });
+    expect(run.checks.find((c) => c.id === "folder")).toMatchObject({ state: "proved", detail: "Working in Projects" });
+    expect(run.proved).toBe(true);
   });
 });
