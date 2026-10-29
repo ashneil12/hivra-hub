@@ -344,7 +344,12 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
   const command = call?.command?.trim();
   if (command) return plainCommandQuestion(command);
   const file = call?.paths?.[0]?.split("/").pop();
-  if (file) return /^(edit|write|multiedit|notebookedit)$/i.test(tool) ? `Allow it to change ${file}?` : `Allow it to use ${tool} on ${file}?`;
+  if (file) {
+    if (/^(edit|write|multiedit|notebookedit)$/i.test(tool)) return `Allow it to change ${file}?`;
+    if (/^read$/i.test(tool)) return `Allow it to read ${file}?`;
+    if (/^(grep|glob|ls)$/i.test(tool)) return `Allow it to look through ${file}?`;
+    return `Allow it to use ${tool} on ${file}?`;
+  }
   return `Allow it to use ${tool}?`;
 }
 
