@@ -43,6 +43,12 @@ function benchText(ids) {
 
 /** One JSON object out of the model's answer (it is asked for nothing else; tolerate a code fence). */
 export function parseGrade(text) {
+  // The grader runs with --output-format json (r72: on the Grok bridge, plain -p text came back empty after a long think
+  // while the JSON envelope still carried the answer), so read the envelope's result first, then the raw text.
+  try {
+    const envelope = JSON.parse(text);
+    if (envelope && typeof envelope.result === "string" && !("grade" in envelope)) return parseGrade(envelope.result);
+  } catch {}
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
@@ -50,6 +56,16 @@ export function parseGrade(text) {
     return JSON.parse(text.slice(start, end + 1));
   } catch {
     return null;
+  }
+}
+
+/** What the grader said when no grade came back: the JSON envelope's result (or error), else its raw text. */
+function graderSays(stdout = "") {
+  try {
+    const envelope = JSON.parse(stdout);
+    return String(envelope.result || envelope.error || envelope.subtype || "");
+  } catch {
+    return stdout;
   }
 }
 
@@ -63,11 +79,12 @@ export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir
     "",
     transcript,
   ].join("\n");
-  const run = spawnSync(
+  const ask = (input) =>
+    spawnSync(
     claude,
-    ["-p", "--model", model, "--effort", effort, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "--system-prompt", SYSTEM],
+    ["-p", "--model", model, "--effort", effort, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "--output-format", "json", "--system-prompt", SYSTEM],
     {
-      input: prompt,
+      input,
       encoding: "utf8",
       cwd: dir,
       timeout: 300_000,
@@ -75,7 +92,12 @@ export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir
       env: { ...process.env, CLAUDE_CONFIG_DIR: claudeConfig, CLAUDE_SECURESTORAGE_CONFIG_DIR: claudeConfig, DISABLE_AUTOUPDATER: "1" },
     },
   );
-  const grade = parseGrade(run.stdout ?? "") ?? { grade: "UNGRADED", summary: `grader failed: ${(run.stderr || run.stdout || "").slice(0, 300)}`, items: [], problems: [] };
+  // Grok sometimes answers a tool-less grading prompt with "I'll check the repo..." and stops; ask once more, plainly.
+  let run = ask(prompt);
+  if (!parseGrade(run.stdout ?? "") && run.status === 0) run = ask(`${prompt}\n\n## Note\nYou have no tools and cannot check anything else. Grade from this evidence alone and reply with only the JSON object now.`);
+  const parsed = parseGrade(run.stdout ?? "");
+  if (!parsed) fs.writeFileSync(path.join(dir, "grade.raw.txt"), `${run.stdout ?? ""}\n--- stderr ---\n${run.stderr ?? ""}`);
+  const grade = parsed ?? { grade: "UNGRADED", summary: `grader failed: ${(graderSays(run.stdout) || run.stderr || "").slice(0, 300)}`, items: [], problems: [] };
   grade.grader = { model, effort, exit: run.status };
   fs.writeFileSync(path.join(dir, "grade.json"), JSON.stringify(grade, null, 2));
   return grade;
