@@ -82,6 +82,16 @@ function lastReply(chat: Session): string | undefined {
  * or said it cannot finish: workerStuck.ts `unfinishedWorker`). Once per task and once per `brief` (the leadership
  * brief it works on), so it never repeats and never holds the Lead.
  */
+/**
+ * r70: a note saved before r70 reads the new way too ("Still running: 2 (API, UI)" → "Still working on API, UI").
+ */
+export function stillRunningText(text: string): string {
+  return text.replace(/^Still running: \d+ \(([^)]*)\)/, "Still working on $1");
+}
+
+/** r70 (Critiquito): the still-running note is a line in the body font, not grey monospace. */
+export const STILL_RUNNING_CLASS = "min-w-0 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-content/85";
+
 export function stillRunningNote(
   chat: Session,
   rows: readonly Delegation[],
@@ -107,7 +117,8 @@ export function stillRunningNote(
   const taskIds = [...new Set([...open, ...unfinished].map((row) => row.id))];
   const title = brief?.title?.trim().split("\n")[0].slice(0, 80);
   const parts = [
-    ...(open.length ? [`Still running: ${open.length} (${names(open.map(taskName))})`] : []),
+    // r70 (Critiquito): "Still working on API, UI", not "Still running: 2 (API, UI)".
+    ...(open.length ? [`Still working on ${names(open.map(taskName))}`] : []),
     ...(unfinished.length
       ? [
           `Not finished: ${unfinished.length} (${names(
