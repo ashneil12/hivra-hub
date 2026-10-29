@@ -265,7 +265,7 @@ export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
 export type ChatLike = {
   busy?: boolean;
   pendingQuestion?: UserQuestionPrompt;
-  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool">>)[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool" | "streaming">>)[];
 };
 
 /**
@@ -305,13 +305,16 @@ function safeCommand(command: string): string {
 }
 
 /**
- * What the chat is waiting on Ash for, if anything: its live AskUserQuestion, or a "Needs Ash:" line ending a finished
- * turn (a turn still running hasn't asked yet).
+ * What the chat is waiting on Ash for, if anything: its live AskUserQuestion, or a "Needs Ash:" line in this turn.
+ * r75 (CoS call: Ash sees an ask right away): a turn still running counts once the message carrying the question is
+ * finished, so "Waiting on you" shows it while the Lead carries on; a message still streaming hasn't asked yet (its
+ * question may be half written).
  */
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
-  if (chat.busy) return null;
-  const marker = parseNeedsAsh(lastTurnText(chat.blocks));
+  const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
+  const marker = parseNeedsAsh(lastTurnText(blocks));
+  if (chat.busy && !marker) return null;
   const secret = marker ? undefined : secretActionTried(chat.blocks);
   if (secret)
     return {
