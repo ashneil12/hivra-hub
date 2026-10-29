@@ -50,7 +50,8 @@ describe("the tool-started command or path (event 4) and file names in rooms and
     expect(liveStep([user, tool("r")], "/repo", "name").label).toBe("Reading app.tsx");
     const run = tool("c", { kind: "execute", title: "npm run build", command: "npm run build", preview: undefined });
     expect(liveStep([user, run], "/repo", "full").label).toBe("Running npm run build");
-    expect(liveStep([user, run], "/repo", "name").label).toBe("Running a command");
+    // r65: a room or 1:1 names the command too, its first words only (PM: "Running npm test").
+    expect(liveStep([user, run], "/repo", "name").label).toBe("Running npm run build");
   });
 });
 
