@@ -343,7 +343,7 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
-  if (options.by === "autopilot" && chat.redLine) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  if (options.by === "autopilot" && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat));
@@ -395,8 +395,9 @@ export function openWaitingChat(sessionId: string): void {
 }
 
 /** Autopilot may answer this one by itself: the agent suggested an answer and it is not a red line. */
-export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine">): boolean {
-  return !!chat.pick && !chat.redLine;
+export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine" | "provide">): boolean {
+  // Something only Ash can hand over (a key, access) is never Autopilot's to answer (r65).
+  return !!chat.pick && !chat.redLine && !chat.provide;
 }
 
 // ---- the same hands, for a stuck worker (H4: monos/model/stuckActions.ts) --------------------------------------------

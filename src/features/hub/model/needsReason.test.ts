@@ -5,8 +5,8 @@ import { NEEDS_REASONS, chatQuestion, needsReason, parseNeedsAsh } from "./chatQ
 const reasonOf = (text: string) => needsReason(chatQuestion({ busy: false, blocks: [{ role: "assistant", text }] })!);
 
 describe("needsReason", () => {
-  it("the list is exactly six reasons", () => {
-    expect([...NEEDS_REASONS]).toEqual(["sign in", "enter a code", "pay", "pick an option", "approve a red-line step", "review"]);
+  it("the list is exactly seven reasons (r65 adds provide something)", () => {
+    expect([...NEEDS_REASONS]).toEqual(["sign in", "enter a code", "pay", "provide something", "pick an option", "approve a red-line step", "review"]);
   });
 
   it("reads the flag the agent wrote", () => {
