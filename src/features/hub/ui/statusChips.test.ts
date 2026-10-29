@@ -156,11 +156,13 @@ it("every red Needs you shows why and opens its Lead's chat, and the backup name
     act(() => link.click());
   }
   expect(opened).toEqual(["hivra-lead", "hivra-lead", "hivra-lead"]);
-  // Every red chip on screen has its link next to it.
+  // Every red chip on screen has its link next to it, except an ask (r67: older asks read red too), whose one action,
+  // See options, answers it in place.
   const reds = [...container.querySelectorAll<HTMLElement>("[data-hub-circle=red]")];
   for (const r of reds) {
     const row = r.closest("[data-hub-need], [data-hub-today-job], [data-hub-worker]")!;
-    expect(row.querySelector("[data-hub-open-lead]")).not.toBeNull();
+    if (row.hasAttribute("data-hub-ask-reason")) expect(row.querySelectorAll("button").length).toBe(1);
+    else expect(row.querySelector("[data-hub-open-lead]")).not.toBeNull();
   }
   // One Lead name on the backup row: the chip and the sent line, on Today and Being built.
   const todayBackup = [...container.querySelectorAll<HTMLElement>("[data-today] div")].filter(
