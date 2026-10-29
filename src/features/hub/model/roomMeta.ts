@@ -127,6 +127,25 @@ function stripMetaSentences(text: string): { text: string; dropped: string[] } {
   return { text: out, dropped };
 }
 
+/** "Checking the board first.", "One sec.": a seat saying it is about to look, with nothing it found. */
+const BUSY = /^(?:ok(?:ay)?[,.]?\s+|first,?\s+|so,?\s+)?(?:checking|looking|reading|verifying|reviewing|confirming|on it|one sec|one moment|give me a (?:sec|second|moment|minute)|hang on|bear with me)\b/;
+
+/**
+ * r67 (realconv S8 on 0.16.8: "I'll check the board against that status before I stay quiet."): a post that is only
+ * acknowledgements or intentions (meta, opening narration, "Checking the board first.") and holds no fact. On a status
+ * ask a seat that isn't the host posts nothing at all unless it has a missed fact, so such a post is dropped whole.
+ */
+export function isAckOrIntentOnly(text: string): boolean {
+  const body = text.replace(/```[\s\S]*?```/g, " x ").trim();
+  if (!body) return false;
+  const sentences = body.split(/\n+|(?<=[.!])\s+(?=\S)/).map((x) => x.replace(/^\s*(?:[-*]\s+|\d+[.)]\s+)/, "").trim()).filter(Boolean);
+  return sentences.every((x) => {
+    const s = NORMALISE(x);
+    if (!s.replace(/[\W_]+/g, "")) return true;
+    return isMetaSentence(x) || isNarrationSentence(x) || (!/[?:]/.test(s) && s.length <= 160 && BUSY.test(s));
+  });
+}
+
 /** On a status ask a seat that isn't the host adds one missed fact at most, never a second status. */
 export const STATUS_ADDENDUM_MAX = 280;
 export function isSecondStatus(text: string): boolean {
@@ -134,7 +153,7 @@ export function isSecondStatus(text: string): boolean {
   return t.length > STATUS_ADDENDUM_MAX || /(?:^|\n)\W*(?:landed|not fixed|still broken|waiting on you)\b/i.test(t);
 }
 
-export type DroppedPost = { chatId: string; monoId: string; why: "meta" | "second-status" | "other-seats"; text: string; at: number };
+export type DroppedPost = { chatId: string; monoId: string; why: "meta" | "second-status" | "other-seats" | "status-ack"; text: string; at: number };
 
 /**
  * r66: on a roles ask the host speaks for itself only. A line or sentence that opens with another seat's name and tells
