@@ -1,3 +1,5 @@
+import { isCliNotice } from "../../core/cliNotices";
+import { CREDENTIAL_DENY_RULES } from "../../core/credentialGuard";
 import type {
   ApprovalCall,
   Attachment,
@@ -323,6 +325,8 @@ export function buildClaudeSpawnArgs(input: {
   ) {
     args.push("--allow-dangerously-skip-permissions");
   }
+  // r65 (#13): no Claude process reads a saved password or key, Full access included (deny rules hold in bypass mode).
+  args.push("--disallowedTools", CREDENTIAL_DENY_RULES.join(","));
   if (input.resume) args.push("--resume", input.resume);
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
@@ -507,7 +511,7 @@ export function statusTextFromSystem(
   const text = (stringField(rec, "message") ?? "").trim();
   const notable =
     text && !LIFECYCLE_STATUSES.has(text.toLowerCase().replace(/[\s.…]+$/, ""));
-  if (notable) return text;
+  if (notable) return isCliNotice(text) ? undefined : text;
   // Compaction is worth one row even when the CLI sends no prose with it.
   return compact ? "Compacted context" : undefined;
 }
@@ -533,7 +537,8 @@ export function noticeFromSystem(rec: Record<string, unknown>): {
   const subtype = stringField(rec, "subtype") ?? "";
   if (!NOTICE_SUBTYPES.has(subtype)) return null;
   const text = stringField(rec, "content")?.trim();
-  if (!text) return null;
+  // r65: the CLI's notices about itself (classifier billing) never become an event at all (cliNotices.ts).
+  if (!text || isCliNotice(text)) return null;
   if (subtype !== "informational") return { text, level: "warning" };
   const level = stringField(rec, "level") ?? "notice";
   if (level === "info") return null;
