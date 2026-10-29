@@ -66,13 +66,15 @@ export type WaitingChatsHost = {
   send(sessionId: string, text: string): Promise<boolean>;
   /** Show the chat (its hub project, when it has one, so the hub can step aside for that project's coding view). */
   open(sessionId: string, projectId: string | null): void;
+  /** r77: Allow or Deny the chat's held tool call (its permission card), in place. */
+  decide?(sessionId: string, requestId: number, decision: "allow" | "deny"): void;
 };
 
 /** H4 (hub/questions-and-tree): return true when this chat is a worker and its question went to its Lead. */
 export type WorkerQuestionRouter = (chat: WaitingEntry) => boolean;
 
 type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pendingQuestion" | "inboxAsk" | "ephemeral" | "orchestrationLeadId"> & {
-  blocks: readonly Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt">[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool">>)[];
 };
 
 const KEY = "monocode:hub-waiting-chats";
@@ -219,7 +221,8 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
         ...(mono ? { monoId: mono.id } : {}),
         askedAt: old && old.question === q.question ? old.askedAt : now,
       };
-      if (router?.(entry)) entry.routedToLead = true;
+      // A held tool call only Ash can allow (r77): never a Lead's to answer.
+      if (q.source !== "permission" && router?.(entry)) entry.routedToLead = true;
       // A worker's question is its Lead's, not Ash's, so the gate doesn't judge it. Everything else must be admitted.
       if (!entry.routedToLead) {
         recordGate(chat, q, gate, now);
@@ -387,6 +390,16 @@ export async function answerApproval(
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
   return answer(chat, reply && { reply, words: text }, text);
+}
+
+/** r77: Allow or Deny a chat's held tool call from the card, when it is still the one held. */
+export function answerPermission(sessionId: string, decision: "allow" | "deny"): TakeResult {
+  const chat = findWaitingChat(sessionId);
+  if (!chat || chat.source !== "permission" || chat.requestId === undefined) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (!host?.decide) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
+  host.decide(sessionId, chat.requestId, decision);
+  drop(sessionId);
+  return { ok: true, sent: decision === "allow" ? "Allowed" : "Denied", chatName: chat.chatName };
 }
 
 /** "Open": jump into the chat. */

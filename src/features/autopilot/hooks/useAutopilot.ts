@@ -241,6 +241,8 @@ export function useAutopilot(options: {
       for (const chat of waitingChats()) {
         // A delegated worker's question is its Lead's to answer (H3's tasks.answer), not Ash's: autopilot leaves it.
         if (latest.current.isDelegated(chat.sessionId)) continue;
+        // r77: a held tool call is in the waiting list too; the approvals loop below decides it, not the words path.
+        if (chat.source === "permission") continue;
         const covering = coveringSwitch(status, chat.projectId, now);
         if (!covering) continue;
         const key = `w:${chat.sessionId}:${chat.requestId ?? "line"}:${hash(`${chat.question}|${chat.pick ?? ""}`)}`;

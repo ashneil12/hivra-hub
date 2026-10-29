@@ -268,8 +268,16 @@ export function chatRunKind(sessionId: string, lookups: HubChatLookups | undefin
  */
 export const HUB_WORKTREE_DENIED_TOOLS = ["EnterWorktree", "ExitWorktree"];
 
+/**
+ * r77 (blind c02): a coding-team chat ran \`git worktree add ../tally-health-board\` and did the work there, beside the
+ * project and outside the app's view. A coding-team chat and a worker never make a worktree by hand; delegate_task's
+ * isolation "worktree" is how one is made.
+ */
+export const HAND_WORKTREE_DENIED_TOOLS = ["Bash(git worktree add:*)"];
+
 export function worktreeDeniedTools(identity: HubChatIdentity): string[] {
-  return identity.kind === "chat" ? [] : HUB_WORKTREE_DENIED_TOOLS;
+  if (identity.kind === "chat") return [];
+  return identity.kind === "team" || identity.kind === "worker" ? [...HUB_WORKTREE_DENIED_TOOLS, ...HAND_WORKTREE_DENIED_TOOLS] : HUB_WORKTREE_DENIED_TOOLS;
 }
 
 export function getsDelegateTool(identity: HubChatIdentity): boolean {
