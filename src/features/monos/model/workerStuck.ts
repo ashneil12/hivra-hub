@@ -646,3 +646,24 @@ export function rowsUnderJob(sourceRef: string | undefined, rows: readonly Deleg
 export function stuckShownInLeadChat<S extends Pick<StuckWorker, "kind">>(stuck: readonly S[], leadAsking: boolean): S[] {
   return leadAsking ? stuck.filter((s) => s.kind !== "asking") : [...stuck];
 }
+
+/** How long a failed worker its Lead still has stays pinned above the Lead's composer (r69). */
+export const CHAT_FAILED_MS = 30 * 60 * 1000;
+
+/**
+ * r69 (PM's blind r67 (e)): four failure cards (5h, 5h, 3h old, plus "1 more") sat pinned above the Hivra lead's composer
+ * and never cleared, so a new failure was not one card on its own. Above a Lead's composer a failed worker shows only
+ * while it is news: until its Lead has handed the job to a fresh worker (a newer row with the same title from the same
+ * chat), and for half an hour, unless only Ash can sort it (red Needs you). Today and Being built still list it.
+ */
+export function stuckForLeadComposer<S extends Pick<StuckWorker, "kind" | "row" | "since">>(stuck: readonly S[], rows: readonly Delegation[], now: number): S[] {
+  const title = (row: Pick<Delegation, "title">) => (row.title ?? "").trim().toLowerCase();
+  return stuck.filter((s) => {
+    if (s.kind !== "failed") return true;
+    if (stuckOwner(s) === "needs-you") return true;
+    const rehanded = rows.some(
+      (row) => row.id !== s.row.id && row.ownerSession === s.row.ownerSession && title(row) === title(s.row) && row.createdAt > s.since,
+    );
+    return !rehanded && now - s.since <= CHAT_FAILED_MS;
+  });
+}
