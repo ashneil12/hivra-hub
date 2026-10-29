@@ -334,6 +334,8 @@ export type TurnInput = {
   /** The room's host. */
   host?: Seat;
   kind: TurnKind;
+  /** r64: Ash asked where things stand: the host gives one combined status, the others stay silent unless it missed a fact. */
+  statusAsk?: boolean;
   /** Answer: how many of Ash's messages this turn answers together. */
   batch?: number;
   /** Chime: who answered. Reply: who addressed this Mono. */
@@ -357,11 +359,15 @@ function task(input: TurnInput): string {
   switch (kind) {
     case "answer": {
       const several = input.batch && input.batch > 1 ? ` (${input.batch} messages; answer them together)` : "";
+      if (hosting && input.statusAsk)
+        return forUser`Ash just wrote${several}, asking where things stand. You host this room, so you give the one combined status for the whole team, now: read task_status and the board first, then answer once, in the shape Landed / Not fixed / Waiting on you (each item once, the numbers from what you read, unproven things labelled unproven, at most a few items waiting on him, each with your recommendation). The other seats stay silent unless you miss a fact, so leave nothing out. Don't ask him to pick what's next; recommend it.`;
       return hosting
         ? forUser`Ash just wrote${several}. You host this room, so you answer first, now. If someone else should take part of it, say so by name ("PM, ..."), which wakes that Mono.`
         : forUser`Ash just wrote to you${several}. Answer him first, from your lane. Name a Mono ("CoS, ...") only if it should act.`;
     }
     case "chime":
+      if (input.statusAsk)
+        return forUser`Ash asked where things stand and ${input.other ?? "the host"} has given the team's one combined status. This is your one turn, and silence is right here: your reply is exactly ${NO_REPLY}. The only exception is a fact from your own lane that ${input.other ?? "the host"}'s status got wrong or left out and Ash needs; then your whole post is that fact, in one or two lines, and nothing else (no status of your own, no list, no agreement).`;
       // A hello or a question to the team gets every seat; a go-ahead the host has already confirmed ("ye go") gets
       // one confirmation, not four (Critiquito, run f451 3b): the others speak only if they found something.
       return forUser`Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: Ash wrote to everyone, so he expects to hear from you too. Reply to Ash as yourself, in your own voice, briefly, without repeating what's been said. If he's only giving a go-ahead that ${input.other ?? "the host"} has already confirmed, reply with exactly ${NO_REPLY} unless you found something new from your lane; a "pass" or a restated confirmation counts as repeating. Otherwise reply with exactly ${NO_REPLY} only if his message plainly isn't for you or you'd only be repeating.`;

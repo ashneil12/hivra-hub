@@ -51,6 +51,7 @@ import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./t
 import { forUser, userLabel } from "./userName";
 import { draftStatusLines } from "../../selfBuild/model/monoMake";
 import { withoutNoReply } from "../../../shared/text/noReply";
+import { isSecondStatus, isStatusAsk, logDropped, stripMeta } from "./roomMeta";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -311,7 +312,10 @@ export function roomDrafts(chatId: string, convId?: string): RoomDraft[] {
 function showDraft(chatId: string, wake: Wake, me: Seat, text: string): void {
   const r = roomOf(chatId);
   if (stale(r, wake) || r.running.get(me.id)?.wake !== wake) return;
-  const clean = cleanPost(text, me.name);
+  // r64: on a status ask only the host's words stream in; another seat's post shows only if it lands (one missed fact).
+  if (wake.kind === "chime" && statusAsked(chatId, wake)) return;
+  // r64: notes about its own process ("I'll check the board before I add anything.") never show, even while streaming.
+  const clean = stripMeta(cleanPost(text, me.name)).text;
   const existing = r.drafts.get(wake.id);
   if (existing ? existing.text === clean : !draftShowable(clean)) return;
   r.drafts.set(
@@ -539,6 +543,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     host: hostOf(seats, chat.leadId),
     kind: wake.kind,
     batch: wake.batch?.length,
+    statusAsk: statusAsked(chatId, wake),
     other: wake.other,
     speaker: speakerOf(conv.messages, wake).name,
     back: wake.back,
@@ -616,6 +621,14 @@ function othersSinceAsh(chatId: string, convId: string | undefined, me: string):
   return out;
 }
 
+/** r64: Ash asked where things stand ("wat now", "whats landed") in the messages this answer or chime is about. */
+function statusAsked(chatId: string, wake: Wake): boolean {
+  if (wake.kind !== "answer" && wake.kind !== "chime") return false;
+  const ids = new Set(wake.kind === "answer" ? (wake.batch ?? []) : wake.trigger ? [wake.trigger] : []);
+  const conv = getChat(chatId)?.conversations.find((c) => c.id === wake.convId);
+  return !!conv?.messages.some((m) => m.from === "ash" && ids.has(m.id) && isStatusAsk(m.text));
+}
+
 /** Who wrote the message a turn answers: Ash for an answer or a chime, the Mono that posted it for a reply. */
 function speakerOf(messages: readonly ChatMessage[], wake: Wake): { id: string; name: string } {
   const from = wake.trigger ? messages.find((m) => m.id === wake.trigger)?.from : undefined;
@@ -649,10 +662,23 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     setAnsweredThrough(chatId, wake.convId, wake.batch[wake.batch.length - 1]);
     setRoomRuntime(chatId, { replyError: undefined });
   };
+  // r64 (realconv S8): sentences about the seat's own process ("I'll check the board before I add anything.", "CoS
+  // already set the order.", "nothing to add") are dropped; a post that was only that isn't posted. Logged, never shown.
+  // A bare "Got it." stays as it is: it becomes a 👍 below.
+  const meta = isSilent(text) && !/NO_REPLY/i.test(text) ? { text, dropped: [] } : stripMeta(text);
+  if (meta.dropped.length) {
+    logDropped({ chatId, monoId: me.id, why: "meta", text: meta.dropped.join(" ") });
+    text = meta.text.trim() || NO_REPLY;
+  }
+  // r64: on a status ask the host gives the one combined status; another seat adds one missed fact at most.
+  if (wake.kind === "chime" && !isSilent(text) && statusAsked(chatId, wake) && isSecondStatus(withoutNoReply(text))) {
+    logDropped({ chatId, monoId: me.id, why: "second-status", text });
+    text = NO_REPLY;
+  }
   // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
   // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
   const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
-  if (kept && !isSilent(kept)) text = closePromise(kept);
+  if (kept && !isSilent(kept)) text = kept;
   // r63: a near-copy of what another Mono already said since Ash last wrote stays out (add something new or stay quiet).
   else if (isSilent(text) || repeatsAnother(text, othersSinceAsh(chatId, wake.convId, me.id))) {
     if (!isSilent(text)) text = NO_REPLY;
@@ -679,20 +705,6 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   });
   answered();
   if (posted) afterPost(chatId, posted.convId, posted.message, wake);
-}
-
-/**
- * Words kept from a turn that ended on NO_REPLY can be only its opening promise ("I'll check the settings heading
- * against the canary code before I say anything."): the Mono did check, found nothing to add, and the room was left
- * with a promise nobody kept (PM's blind run, 28 Oct: frank and PM in the Leadership room, and the "I'll check X, then
- * Y" pattern across rows). The post then says the check was done.
- */
-export const PROMISE_CLOSED = "Checked: nothing to add to what's been said.";
-const PROMISE = /\b(i'll|i’ll|i will|let me|going to|i'm (checking|looking)|i’m (checking|looking))\b/i;
-export function closePromise(kept: string): string {
-  const parts = kept.trim().split(/\n\s*\n/);
-  const last = parts[parts.length - 1] ?? "";
-  return PROMISE.test(last) && !last.includes("?") ? `${kept.trim()}\n\n${PROMISE_CLOSED}` : kept;
 }
 
 /** Never silent: a turn that failed, ran out of budget or couldn't start says so in the thread. */
@@ -900,7 +912,10 @@ export function postFromMono(
   const replyTo = options.replyTo ?? wake?.trigger;
   if (replyTo && !chat.conversations.some((c) => c.messages.some((m) => m.id === replyTo))) throw new Error(`No message ${replyTo} in ${chat.name}.`);
   const me = seatsOf(chat).find((s) => s.id === monoId)!;
-  const clean = cleanPost(text, me.name);
+  const raw = cleanPost(text, me.name);
+  const meta = isSilent(raw) && !/NO_REPLY/i.test(raw) ? { text: raw, dropped: [] } : stripMeta(raw);
+  if (meta.dropped.length) logDropped({ chatId, monoId, why: "meta", text: meta.dropped.join(" ") });
+  const clean = meta.text;
   if (isSilent(clean)) {
     if (!replyTo) throw new Error("Nothing to post: a bare acknowledgement isn't a message. React to a message (reaction) instead, or say nothing.");
     react(chatId, replyTo, monoId, "👍", true);
