@@ -240,6 +240,42 @@ test("a coding-team step can start in Full access, and an approve step taps Allo
   fs.rmSync(evidence, { recursive: true, force: true });
 });
 
+test("allowPromptly taps Allow in the named chat as soon as a card shows, with no approve step", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-allow-"));
+  const approves = [];
+  let cards = 0;
+  const ctx = {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind, args) => {
+      if (kind === "send") {
+        cards = 1;
+        return { ok: true, at: Date.now(), session: "chat-1" };
+      }
+      if (kind === "approve") {
+        approves.push(args.session);
+        const approved = cards;
+        cards = 0;
+        return { ok: true, approved };
+      }
+      return { sessions: [], rooms: [] };
+    },
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [], claudeTexts: () => [],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  };
+  const record = await runScenario({ id: "al", title: "al", minutes: 1, allowPromptly: ["fix"], steps: [
+    { send: { codingTeam: "project" }, as: "fix", text: "the stats test is red" },
+    { wait: { quiet: true, quietSec: 0 }, maxSec: 5 },
+  ] }, ctx).catch(() => undefined);
+  assert.ok(approves.length >= 1);
+  assert.ok(approves.every((s) => s === "chat-1"));
+  if (record?.marks) assert.equal(record.marks.filter((m) => m.approve?.promptly).length, 1);
+  fs.rmSync(evidence, { recursive: true, force: true });
+});
+
 test("a room turn or a Mono's private message is a hidden turn, whose NO_REPLY the app folds away", async () => {
   const { hiddenTurnOf } = await import("./hub-realtest-claude.mjs");
   assert.equal(hiddenTurnOf("<monocode_context>…</monocode_context>\n[MonoCode room] You are frank, in the group chat"), "room");
