@@ -6,7 +6,7 @@ import { RestorePreview } from "./RestorePreview";
 import { Check, FolderOpen, Inbox, StickyNote, MessageMultiple as MessagesSquare, Play as PackageOpen, Wrench as Hammer, type IconComponent } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { examplesOn } from "../model/examples";
-import { calmSummary, dismissDoneNeeds, hubData, sinceLabel, useHubDataVersion } from "../model/hubData";
+import { calmSummary, dismissDoneNeeds, hubData, sinceHeading, sinceLabel, useHubDataVersion } from "../model/hubData";
 import { laterItems, setupItems, waitingOnAsh, type WaitingItem } from "../model/waiting";
 import { appItemInView, openMonoChat, setHubSelection, showAppItem } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
@@ -205,7 +205,7 @@ function TodayBody({ projectId }: { projectId: string }) {
   const sections: readonly TodaySection[] = projectTodaySections(projectId);
   const sinceBlock = (s: TodaySection) => (
     <section key={s.id} data-hub-today-section={s.kind}>
-      {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{s.title === "Since you were away" ? sinceLabel(sinceAt) : `${s.title} · ${sinceLabel(sinceAt).toLowerCase()}`}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
+      {sinceAt ? <h2 className="mb-2 text-xs text-content/60">{sinceHeading(s.title, sinceLabel(sinceAt))}</h2> : s.title !== "Since you were away" ? <h2 className="mb-2 text-xs text-content/60">{s.title}</h2> : null}
       {since.pending && !appSince ? (
         // Ash OS is still writing it: a quiet line, and the paragraph swaps in here when it is ready.
         <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
@@ -443,10 +443,12 @@ function LatestBuildToday({ title, projectId }: { title: string; projectId: stri
 function LatestDashboardToday({ title, projectId }: { title: string; projectId: string }) {
   usePagesVersion();
   const page = keptPages(projectId)[0];
+  // r65 (Critiquito): an empty card says nothing worth reading; it shows once a dashboard is kept.
+  if (!page) return null;
   return (
     <section data-hub-today-section="latest-page">
       <h2 className="mb-2 text-xs text-content/60">{title}</h2>
-      {page ? (
+      {(
         <div className="flex flex-col gap-1">
           <button type="button" data-hub-latest-page className="self-start text-left text-[13px] leading-5 text-content/85 hover:underline"
             onClick={() => { requestOpenPage(page.id); window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" })); }}>
@@ -454,8 +456,6 @@ function LatestDashboardToday({ title, projectId }: { title: string; projectId: 
           </button>
           <p className="text-[12px] text-content/60">Kept by {page.by}</p>
         </div>
-      ) : (
-        <p className="text-[13px] text-content/60" data-hub-latest-page-empty>No dashboard yet.</p>
       )}
     </section>
   );

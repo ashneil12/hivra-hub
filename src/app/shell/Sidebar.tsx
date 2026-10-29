@@ -6124,17 +6124,15 @@ function DiffStat({
 
   if (additions <= 0 && deletions <= 0) return null;
 
-  const label = [
-    additions > 0 ? `+${formatInteger(additions)}` : "",
-    deletions > 0 ? `-${formatInteger(deletions)}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const label = diffStatLabel(additions, deletions);
 
+  // r65 (Critiquito): the tab's count says what it counts ("+254 lines") and is grey like the rest of the strip.
   return (
     <span
       ref={containerRef}
       title={`${label} uncommitted`}
+      aria-label={`${label} uncommitted`}
+      data-diff-stat
       className="flex h-full w-full min-w-0 items-center justify-center overflow-hidden"
     >
       <span
@@ -6142,18 +6140,28 @@ function DiffStat({
         className="flex shrink-0 items-center gap-[0.55em] whitespace-nowrap font-sans text-[11px] font-semibold tabular-nums"
       >
         {additions > 0 ? (
-          <span className="text-diff-add-fg">
+          <span className="text-content/60">
             +<TightDiffNumber value={additions} />
           </span>
         ) : null}
         {deletions > 0 ? (
-          <span className="text-diff-del-fg">
+          <span className="text-content/60">
             -<TightDiffNumber value={deletions} />
           </span>
         ) : null}
+        <span className="font-normal text-content/60">{additions + deletions === 1 ? "line" : "lines"}</span>
       </span>
     </span>
   );
+}
+
+/** "+254 lines", "+3 -1 lines", "-1 line": the Explorer strip's changed-lines count with its unit. */
+export function diffStatLabel(additions: number, deletions: number): string {
+  const nums = [
+    additions > 0 ? `+${formatInteger(additions)}` : "",
+    deletions > 0 ? `-${formatInteger(deletions)}` : "",
+  ].filter(Boolean);
+  return `${nums.join(" ")} ${additions + deletions === 1 ? "line" : "lines"}`;
 }
 
 function TightDiffNumber({ value }: { value: number }) {

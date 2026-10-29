@@ -98,9 +98,11 @@ describe("app identity", () => {
 
   it("writes the Settings footer line", () => {
     const daily = buildLine(readAppIdentity(injected("daily"))!);
-    expect(daily.startsWith("MonoCode Hub 0.16.0 · hub/1b-identity @ 09141d8 · built ")).toBe(true);
-    expect(daily).toContain("2026");
-    expect(daily.endsWith(" · daily app")).toBe(true);
+    // r65: the daily app shows only its version, no branch, hash or "daily app".
+    expect(daily).toBe("MonoCode Hub 0.16.0");
+    const dev = buildLine(readAppIdentity(injected("dev"))!);
+    expect(dev).toContain(" @ ");
+    expect(dev).toContain("2026");
     expect(buildLine(readAppIdentity(injected("dev"))!)).toContain("dev copy hub-1b-identity");
   });
 });

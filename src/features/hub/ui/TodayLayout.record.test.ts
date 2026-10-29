@@ -85,9 +85,10 @@ describe("A project's Today draws its template's board", () => {
   it("a product's: the same two, then its latest dashboard", async () => {
     act(() => root.render(today("hivra")));
     // Wait for the last section: Being built can land a tick after the dashboard under load (r61, a flake in the full run).
-    await until(() => sections().includes("latest-page") && sections().includes("being-built"), "latest dashboard and being built");
-    expect(sections()).toEqual(["since", "needs", "latest-page", "being-built"]);
-    expect(container.querySelector('[data-hub-today-section="latest-page"]')?.textContent).toContain("No dashboard yet.");
+    await until(() => sections().includes("being-built"), "being built");
+    // r65: no dashboard kept yet, so its card hides rather than saying so.
+    expect(sections()).toEqual(["since", "needs", "being-built"]);
+    expect(container.textContent).not.toContain("No dashboard yet");
   });
 
   it("an ops hub's: just the two, no project card and nothing being built", async () => {
@@ -101,13 +102,14 @@ describe("A project's Today draws its template's board", () => {
     await until(() => sections().includes("latest-build"), "EXO's builds card");
     const hivra = [...container.querySelectorAll("[data-hub-strip] button")].find((b) => b.textContent?.includes("Hivra")) as HTMLButtonElement;
     await act(async () => hivra.click());
-    await until(() => sections().includes("latest-page") && !sections().includes("latest-build"), "Hivra's dashboards card");
-    expect(sections()).toEqual(["since", "needs", "latest-page", "being-built"]);
+    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "Hivra's board");
+    // r65: no dashboard kept for Hivra, so that card hides.
+    expect(sections()).toEqual(["since", "needs", "being-built"]);
   });
 
   it("Ash changing a project's template changes its board at once", async () => {
     act(() => root.render(today("hivra")));
-    await until(() => sections().includes("latest-page"), "dashboards card");
+    await until(() => sections().includes("being-built"), "Hivra's board");
     act(() => setTemplate("hivra", "game-studio"));
     // Each section lands on its own render: wait for the last one, not the first (flaked in the full run under load).
     await until(() => sections().includes("latest-build") && sections().includes("being-built"), "builds card");
@@ -116,7 +118,8 @@ describe("A project's Today draws its template's board", () => {
     await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "no project card");
     expect(sections()).toEqual(["since", "needs", "being-built"]);
     act(() => setTemplate("hivra", "product-saas"));
-    await until(() => sections().includes("latest-page"), "back to its dashboards");
+    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "back to its board");
+    expect(sections()).toEqual(["since", "needs", "being-built"]);
   });
 });
 

@@ -192,18 +192,18 @@ export function builtAtLabel(builtAt: string): string {
   });
 }
 
-/** The Settings footer: "MonoCode Hub 0.16.0 · hub/next @ 09141d8 · built 19 Oct 2026, 21:04", plus the copy. */
+/**
+ * The Settings footer. r65 (Critiquito): the daily app shows only its version ("MonoCode Hub 0.16.7"); a dev copy keeps
+ * "hub/next @ 09141d8 · built 19 Oct 2026, 21:04 · dev copy <slot>" so a test run can tell builds apart.
+ */
 export function buildLine(identity: AppIdentity): string {
+  if (identity.kind !== "dev") return `${identity.product} ${identity.version}`.trim();
   const parts = [
     `${identity.product} ${identity.version}`.trim(),
     stampLabel(identity.stamp),
   ];
   const built = builtAtLabel(identity.stamp.builtAt);
   if (built) parts.push(`built ${built}`);
-  parts.push(
-    identity.kind === "dev"
-      ? `dev copy ${identity.slot ?? ""}`.trim()
-      : "daily app",
-  );
+  parts.push(`dev copy ${identity.slot ?? ""}`.trim());
   return parts.join(" · ");
 }
