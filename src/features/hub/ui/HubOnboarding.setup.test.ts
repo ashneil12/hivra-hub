@@ -78,10 +78,25 @@ describe("setup before the welcome choices", () => {
     recordSetupFact("installed", "proved");
     render();
     expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("setup");
-    expect(container.textContent).toContain("Step 1 of 1");
+    expect(container.textContent).not.toContain("Step 1 of 1");
     act(() => (container.querySelector("[data-test-setup-pass]") as HTMLButtonElement).click());
     expect(next().textContent).toBe("Start using MonoCode");
     act(() => next().click());
     expect(closed).toBe(1);
   });
+
+  // r62 (Critiquito, 0.16.3): a card with only the setup step shows no "Step 1 of 1", and closing it once passed is
+  // remembered like "Not now".
+  it("drops the step count when setup is the only step, and remembers closing it", () => {
+    finishOnboarding();
+    render();
+    expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("setup");
+    expect(container.textContent).not.toMatch(/Step \d+ of \d+/);
+    expect(container.querySelector("[data-hub-onboarding-count]")).toBeNull();
+    act(() => (container.querySelector("[data-test-setup-pass]") as HTMLButtonElement).click());
+    act(() => next().click());
+    expect(closed).toBe(1);
+    expect(setupCardSnoozed()).toBe(true);
+  });
 });
+

@@ -47,6 +47,8 @@ import {
   TREE_KICKOFF,
   TREE_LEAD,
   WALK,
+  liveLineVerdict,
+  liveLinesSeen,
   WORKER,
   cleanupOnExit,
   exitCode,
@@ -277,11 +279,13 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   assert.equal(dm.to, "alfred");
   assert.ok(dm.text.startsWith(ROOM_DM));
   assert.equal(
-    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`, true)),
+    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`)),
     "room-frank-wake",
   );
-  const post = rules.find((rule) => rule.name === "room-frank-wake").steps.find((s) => s.app === "rooms.post").input;
-  assert.equal(post.room, ROOM_ID);
+  // r62: frank's room session takes the turn and its answer is the post, so no room_post step.
+  const wakeSteps = rules.find((rule) => rule.name === "room-frank-wake").steps;
+  assert.equal(wakeSteps.some((s) => s.app === "rooms.post"), false);
+  assert.ok(wakeSteps.some((s) => s.say === "The label is in. Pass from me."));
   assert.equal(step(`${context}[MonoCode message from Chief of Staff]\n<message from="Chief of Staff">\n${dm.text}\n</message>`), "room-alfred-dm");
   // None of the earlier phases' prompts reach the room's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, "[MonoCode report] done"])
@@ -598,4 +602,17 @@ test("r59: leftovers are the listed chats not archived and the listed Monos stil
     { sessions: ["b", "c"], monos: ["m2"] },
   );
   assert.deepEqual(teardownLeftovers(list, { rows: list.sessions.map((id) => ({ id, archived: 1 })), windowMonos: [] }), { sessions: [], monos: [] });
+});
+
+test("live_activity_line: passes only on a timed step with the runner right after the timer", () => {
+  assert.deepEqual(liveLinesSeen({}), []);
+  assert.deepEqual(liveLinesSeen({ "monocode:verify-live-lines": "not json" }), []);
+  const pinned = { key: "a", text: "frank · Thinking · 2s", runner: true, runnerAfterText: true, stalled: false };
+  assert.equal(liveLineVerdict(liveLinesSeen({ "monocode:verify-live-lines": JSON.stringify([pinned]) })).ok, true);
+  assert.equal(liveLineVerdict([{ ...pinned, runner: false, runnerAfterText: false }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, runnerAfterText: false }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, text: "frank is writing…" }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, text: "Reading app.tsx · 1m 20s" }]).ok, true);
+  const roomAt = WALK.indexOf("room_private_message");
+  assert.equal(WALK[roomAt + 1], "live_activity_line");
 });

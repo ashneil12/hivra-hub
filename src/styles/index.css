@@ -4498,3 +4498,18 @@ html.theme-light .confirm-cancel-ring:focus {
     var(--color-background-base)
   );
 }
+
+/* The little MonoCode pinned after the live line's timer (LiveActivity.tsx): still for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .live-runner .mascot-active,
+  .live-runner .mascot-rest,
+  .live-runner .mascot-talk {
+    animation: none;
+  }
+  .live-runner .mascot-rest {
+    opacity: 1;
+  }
+  .live-runner .mascot-talk {
+    opacity: 0;
+  }
+}

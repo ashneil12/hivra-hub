@@ -20,6 +20,9 @@ import {
   stopRoom,
 } from "../model/hubChats";
 import type { ChatMessage } from "../model/types";
+import { findMono, monoLook } from "../../monos/model/mono";
+import { activityLine } from "../../sessions/model/liveActivity";
+import { LiveActivityLine, useNow } from "../../sessions/ui/LiveActivity";
 
 const shorten = (text: string, max = 70) => {
   const line = withoutNoReply(text).replace(/\s+/g, " ").trim();
@@ -175,6 +178,9 @@ export function RoomMessage({
     );
   // A reply to something further up says what it answers; one to the message just above doesn't need to.
   const answered = message.replyTo && message.replyTo !== previous?.id ? messages.find((m) => m.id === message.replyTo) : undefined;
+  // While it writes, the line under its name says what it is doing now, from its turn's own stream (not "writing…").
+  const activity = live ? roomWorking(chatId).find((w) => w.monoId === message.from && w.state === "writing")?.activity : undefined;
+  const mono = live ? findMono(message.from) : undefined;
   return (
     <>
       <div className="flex items-center gap-2 pb-0.5 text-xs text-content/60">
@@ -186,14 +192,16 @@ export function RoomMessage({
             to {answered.from === "ash" ? "you" : nameOf(answered.from)}: {shorten(answered.text, 60)}
           </span>
         ) : null}
-        {live ? (
-          <span className="ml-auto text-content/45" data-hub-msg-writing>
-            writing…
-          </span>
-        ) : (
-          <ReactButtons chatId={chatId} message={message} />
-        )}
+        {live ? null : <ReactButtons chatId={chatId} message={message} />}
       </div>
+      {/* One status line: the step, its timer, and the Mono's MonoCode pinned right after it (Critiquito, 29 Oct). */}
+      {activity ? (
+        <LiveActivityLine
+          activity={activity}
+          className="pb-1"
+          runner={{ mascot: mono ? monoLook(mono) : { name: nameOf(message.from), mascot: "" } }}
+        />
+      ) : null}
       {children}
       {live ? null : <Reactions chatId={chatId} message={message} nameOf={nameOf} />}
     </>
@@ -208,20 +216,38 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
   const working = roomWorking(chatId, convId);
   // A seat whose words already show in the room needs no "is writing": the line is for seats that haven't started.
   const showing = new Set(roomDrafts(chatId, convId).map((d) => d.monoId));
-  const writing = working.filter((w) => w.state === "writing" && !showing.has(w.monoId)).map((w) => nameOf(w.monoId));
-  const away = working.filter((w) => w.state !== "writing").map((w) => nameOf(w.monoId));
+  // A seat still working before its words show says what it is doing ("Chief of Staff · Reading src/app.tsx · 14s").
+  const now = useNow();
+  // The first seat with a live step gets the live line itself, the MonoCode runner right after its timer (Critiquito,
+  // 29 Oct: pinned to the status line, never floating mid-screen). A wake waiting in (or steered into) a Mono's own
+  // session says where it is: "frank · Queued behind its current reply · 12s".
+  const lead = working.find((w) => w.activity && !(w.state === "writing" && showing.has(w.monoId)));
+  const leadMono = lead ? findMono(lead.monoId) : undefined;
+  const writing = working
+    .filter((w) => w !== lead && w.state === "writing" && !showing.has(w.monoId))
+    .map((w) => (w.activity ? `${nameOf(w.monoId)} · ${activityLine(w.activity, now).text}` : `${nameOf(w.monoId)} is writing…`));
+  const away = working.filter((w) => w.state !== "writing" && !w.activity).map((w) => nameOf(w.monoId));
+  const awayBusy = working.filter((w) => w !== lead && w.state !== "writing" && w.activity).map((w) => `${nameOf(w.monoId)} · ${activityLine(w.activity!, now).text}`);
   const strip = convId ? roomStrip(chatId, convId) : undefined;
   const paused = strip?.kind === "paused" ? strip.reason : undefined;
   const active = roomActive(chatId, convId);
   const parts = [
-    writing.length ? `${namesList(writing)} ${writing.length > 1 ? "are" : "is"} writing…` : "",
+    [...writing, ...awayBusy].join("; "),
     away.length ? `${namesList(away)} will answer from ${away.length > 1 ? "their own chats" : "its own chat"}…` : "",
   ].filter(Boolean);
   return (
     <div className="flex h-6 w-full shrink-0 items-center gap-3 px-6 xl:px-8 text-xs text-content/60" data-hub-typing aria-live="polite">
+      {lead?.activity ? (
+        <LiveActivityLine
+          activity={lead.activity}
+          who={nameOf(lead.monoId)}
+          className="shrink-0 max-w-[60%]"
+          runner={{ mascot: leadMono ? monoLook(leadMono) : { name: nameOf(lead.monoId), mascot: "" } }}
+        />
+      ) : null}
       {parts.length ? (
         <span className="min-w-0 truncate">{parts.join(" ")}</span>
-      ) : strip ? (
+      ) : lead ? null : strip ? (
         <span className="min-w-0 truncate" data-hub-room-strip={strip.kind} data-hub-room-paused={paused}>
           {strip.text}
         </span>

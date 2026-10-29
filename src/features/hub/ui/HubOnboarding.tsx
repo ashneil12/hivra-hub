@@ -76,7 +76,8 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
       <div className="flex w-[520px] flex-col gap-6 rounded-2xl border border-content/7 dialog-glass p-8 shadow-2xl ring-0">
         <div className="flex items-center justify-between text-xs text-content/60">
-          <span>Step {step + 1} of {steps.length}</span>
+          {/* One step needs no count (Critiquito, 0.16.3: "Step 1 of 1"). */}
+          {steps.length > 1 ? <span data-hub-onboarding-count>Step {step + 1} of {steps.length}</span> : <span />}
           {!last && kind !== "setup" ? (
             <button type="button" data-hub-onboarding-skip onClick={() => done()} className="rounded px-1.5 py-0.5 hover:bg-content/8 hover:text-content">
               Skip
@@ -162,7 +163,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                 type="button"
                 data-hub-onboarding-next
                 disabled={!setupOk}
-                onClick={() => (last ? onClose() : setStep(step + 1))}
+                onClick={() => {
+                  if (!last) return setStep(step + 1);
+                  // Passed and closed: remembered, so the card never opens on its own again.
+                  snoozeSetupCard();
+                  onClose();
+                }}
                 className={`${PRIMARY} disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 {last ? "Start using MonoCode" : "Continue"}

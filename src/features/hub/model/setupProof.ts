@@ -5,6 +5,7 @@
 //
 // Kept free of React and of Ash OS data: the card hands in the folders its projects already have.
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir, join } from "@tauri-apps/api/path";
 import {
   canRunHarnessTextPrompt,
   harnessUnavailableHint,
@@ -59,6 +60,8 @@ export type CheckHubSetupInput = {
   folder?: string | null;
   /** Folders existing projects work in, so an install that already has projects is not asked to pick one again. */
   knownFolders?: readonly (string | null | undefined)[];
+  /** Last resorts when nothing above is a folder (defaultWorkFolders: ~/Projects, then the home folder). */
+  fallbackFolders?: readonly (string | null | undefined)[];
   /** Check every fact again, even the ones proved before. */
   refresh?: boolean;
   signal?: AbortSignal;
@@ -73,6 +76,33 @@ export type SetupRun = {
   /** True when every fact is proved in this run. */
   proved: boolean;
 };
+
+/** Anything that looks like a path on this Mac ("/Users/…", "~/…"). */
+const PATH = /(?:~|\/(?:Users|home|opt|usr|Applications|Volumes|private|var|tmp|Library))\/[^\s:,;'"()]*/g;
+
+function lastPart(path: string): string {
+  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * A check's detail in plain words, as the card shows it (Critiquito, 0.16.3 blocker): never the account's email, never
+ * a raw path. The Grok launcher reads "Grok 4.7 ready"; a folder is named by its last part. Applied to what is stored
+ * too, so a record written by an older version (with the email or a path in it) reads the same way.
+ */
+export function plainSetupDetail(id: SetupFactId, detail: string): string {
+  const text = detail.trim();
+  if (!text) return text;
+  if (id === "signedIn") return /@|^Signed in as\b/i.test(text) ? "Signed in" : text;
+  if (id === "installed" && /claude-grok/i.test(text) && !/did not answer|could not/i.test(text)) return "Grok 4.7 ready";
+  if (id === "installed" && new RegExp(PATH.source).test(text) && !/did not answer|could not/i.test(text)) {
+    const version = text.replace(PATH, "").replace(/\bat\b\s*$/i, "").replace(/\(Claude Code\)/i, "").trim();
+    return version ? `Claude Code ${version} ready` : "Claude Code ready";
+  }
+  if (id === "folder" && text.startsWith("/") && !/\s/.test(text)) return `Working in ${lastPart(text)}`;
+  // Failures keep their sentence, with each path cut to its last part.
+  return text.replace(PATH, (path) => (/claude-grok/i.test(path) ? "the Grok launcher" : lastPart(path))).replace(/\s+/g, " ");
+}
 
 type ProvedFact = { at: number; detail: string };
 type StoredProof = { version: number; facts: Partial<Record<SetupFactId, ProvedFact>> };
@@ -121,7 +151,7 @@ export function setupProved(): boolean {
 /** Write down a fact that just passed. A failed check never calls this, and never removes an older proof. */
 export function recordSetupFact(id: SetupFactId, detail: string): void {
   const proof = readStored();
-  proof.facts[id] = { at: Date.now(), detail: detail.trim().slice(0, 240) };
+  proof.facts[id] = { at: Date.now(), detail: plainSetupDetail(id, detail).slice(0, 240) };
   writeStored(proof);
 }
 
@@ -131,7 +161,7 @@ export function recordedSetupChecks(): SetupCheck[] {
   return SETUP_FACT_IDS.map((id) => {
     const fact = facts[id];
     return fact
-      ? { id, state: "proved" as const, detail: fact.detail }
+      ? { id, state: "proved" as const, detail: plainSetupDetail(id, fact.detail) }
       : { id, state: "checking" as const, detail: "" };
   });
 }
@@ -218,7 +248,7 @@ const defaultProbes: SetupProbes = {
 function folderCandidates(input: CheckHubSetupInput): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const value of [input.folder, chosenSetupFolder(), ...(input.knownFolders ?? [])]) {
+  for (const value of [input.folder, chosenSetupFolder(), ...(input.knownFolders ?? []), ...(input.fallbackFolders ?? [])]) {
     const path = value?.trim();
     if (!path || seen.has(path)) continue;
     seen.add(path);
@@ -237,26 +267,26 @@ export async function checkHubSetup(input: CheckHubSetupInput = {}): Promise<Set
   const facts = setupFacts();
   const checks: Record<SetupFactId, SetupCheck> = {
     installed: facts.installed
-      ? { id: "installed", state: "proved", detail: facts.installed.detail }
+      ? { id: "installed", state: "proved", detail: plainSetupDetail("installed", facts.installed.detail) }
       : { id: "installed", state: "checking", detail: "" },
     signedIn: facts.signedIn
-      ? { id: "signedIn", state: "proved", detail: facts.signedIn.detail }
+      ? { id: "signedIn", state: "proved", detail: plainSetupDetail("signedIn", facts.signedIn.detail) }
       : { id: "signedIn", state: "checking", detail: "" },
     folder: facts.folder
-      ? { id: "folder", state: "proved", detail: facts.folder.detail }
+      ? { id: "folder", state: "proved", detail: plainSetupDetail("folder", facts.folder.detail) }
       : { id: "folder", state: "checking", detail: "" },
     roundTrip: facts.roundTrip
-      ? { id: "roundTrip", state: "proved", detail: facts.roundTrip.detail }
+      ? { id: "roundTrip", state: "proved", detail: plainSetupDetail("roundTrip", facts.roundTrip.detail) }
       : { id: "roundTrip", state: "checking", detail: "" },
   };
   const publish = () => input.onCheck?.(SETUP_FACT_IDS.map((id) => checks[id]));
   const aborted = () => input.signal?.aborted === true;
   const prove = (id: SetupFactId, detail: string) => {
-    checks[id] = { id, state: "proved", detail };
+    checks[id] = { id, state: "proved", detail: plainSetupDetail(id, detail) };
     recordSetupFact(id, detail);
   };
   const miss = (id: SetupFactId, detail: string) => {
-    checks[id] = { id, state: "missing", detail };
+    checks[id] = { id, state: "missing", detail: plainSetupDetail(id, detail) };
   };
 
   const needed = (id: SetupFactId) => refresh || facts[id] == null;
@@ -329,6 +359,19 @@ export async function checkHubSetup(input: CheckHubSetupInput = {}): Promise<Set
 
   const rows = SETUP_FACT_IDS.map((id) => checks[id]);
   return { checks: rows, proved: rows.every((row) => row.state === "proved") };
+}
+
+/**
+ * Where work can happen when no project names a folder yet (0.16.3: "No folder to work in yet" on every launch, though
+ * Ash's Mac has both): ~/Projects, then the home folder. The folder check still proves each one exists.
+ */
+export async function defaultWorkFolders(): Promise<string[]> {
+  try {
+    const home = await homeDir();
+    return [await join(home, "Projects"), home];
+  } catch {
+    return [];
+  }
 }
 
 /** r61: "Not now" on the setup card is remembered, so the card stays away on later launches. Proving nothing. */

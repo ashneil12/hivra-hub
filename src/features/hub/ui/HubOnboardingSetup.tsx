@@ -4,6 +4,7 @@ import { pickFolders } from "../../../platform/tauri/fs";
 import { hubData } from "../model/hubData";
 import {
   checkHubSetup,
+  defaultWorkFolders,
   recordedSetupChecks,
   rememberSetupFolder,
   SETUP_FACT_IDS,
@@ -63,6 +64,7 @@ export function HubOnboardingSetup({
       const result = await checkHubSetup({
         folder: options.folder ?? folder,
         knownFolders,
+        fallbackFolders: await defaultWorkFolders(),
         refresh: options.refresh === true,
         signal: controller.signal,
         onCheck: (next) => {

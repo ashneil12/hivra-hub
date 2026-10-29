@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   newSession,
   type Session,
@@ -24,7 +24,11 @@ function conversation(): Session {
 }
 
 describe("batched harness events", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("preserves mixed snapshots, repeated tokens, whitespace and message boundaries", () => {
+    // Tool blocks carry when they were seen (r62): one clock for both runs.
+    vi.useFakeTimers({ now: 1_000 });
     const events: HarnessEvent[] = [
       { type: "message.delta", text: " " },
       { type: "message.delta", text: "Hello world" },

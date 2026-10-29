@@ -1060,6 +1060,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     agentMascot={agent}
                     bottomAligned={!!agent}
                     inlineWork={!!agent}
+                    liveRunner={!!agent || teamChat}
                     messageDeliveries={agent ? messageDeliveries : undefined}
                     onRetryMessage={
                       agent ? () => onResumeQueue(session.id) : undefined

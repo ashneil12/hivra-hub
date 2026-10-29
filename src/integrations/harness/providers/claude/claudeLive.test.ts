@@ -377,6 +377,46 @@ describe("claude streamed tool inputs", () => {
   });
 });
 
+// r62, the live step line's backend events: a tool start that names its command, start and last-update times on the
+// block, and Claude Code's tool_progress as a heartbeat while a quiet command still runs.
+describe("claude live step events", () => {
+  it("names the command, stamps start and last-update, and turns tool_progress into a heartbeat", async () => {
+    vi.useFakeTimers({ now: 10_000, toFake: ["Date"] });
+    try {
+      const { events, turn } = await startTurn("s1");
+      emit({
+        type: "assistant",
+        session_id: "sess_1",
+        message: { content: [{ type: "tool_use", id: "toolu_build", name: "Bash", input: { command: "npm run build" } }] },
+      });
+      expect(events).toContainEqual(expect.objectContaining({ type: "tool.started", callId: "toolu_build", command: "npm run build" }));
+      let session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+      const started = session.blocks.find((b) => b.tool?.callId === "toolu_build")!.tool!;
+      expect(started.command).toBe("npm run build");
+      expect(started.startedAt).toBe(10_000);
+      expect(started.updatedAt).toBe(10_000);
+      // Ninety quiet seconds later Claude Code says it still runs: only the last-update time moves.
+      vi.setSystemTime(100_000);
+      emit({ type: "tool_progress", session_id: "sess_1", tool_use_id: "toolu_build", tool_name: "Bash", elapsed_time_seconds: 90 });
+      expect(events).toContainEqual({ type: "tool.progress", callId: "toolu_build", elapsedMs: 90_000 });
+      session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+      const beat = session.blocks.find((b) => b.tool?.callId === "toolu_build")!.tool!;
+      expect(beat.updatedAt).toBe(100_000);
+      expect(beat.status).toBe("pending");
+      emit({ type: "user", session_id: "sess_1", message: { content: [{ type: "tool_result", tool_use_id: "toolu_build", content: "ok" }] } });
+      emit({ type: "result", subtype: "success", session_id: "sess_1" });
+      await turn;
+      // A heartbeat for a finished call changes nothing: it is not activity.
+      vi.setSystemTime(200_000);
+      const done = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+      const after = applyHarnessEvent(done, { type: "tool.progress", callId: "toolu_build" });
+      expect(after).toBe(done);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("claude task tools", () => {
   function emitTaskTool(
     id: string,

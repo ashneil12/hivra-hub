@@ -122,7 +122,7 @@ function DraftTeamCard({ draft }: { draft: TeamDraft }) {
         {draft.members.length ? draft.members.map((m) => m.name).join(", ") : "no Monos yet"}
       </p>
       <div className="flex gap-2">
-        <span className="flex-1 self-center text-xs text-content/55">Nothing is made yet. Say yes in the chat to make it.</span>
+        <span className="flex-1 self-center text-xs text-content/55">Nothing is made yet. Say yes in the chat to make it; this card only turns it down.</span>
         <button type="button" className={buttonClass} data-hub-team-draft-dismiss onClick={() => dismissTeamDraft(draft.id)}>
           Not this one
         </button>

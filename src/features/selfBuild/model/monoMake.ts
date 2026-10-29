@@ -315,7 +315,7 @@ export function draftMono(
       watchFor: sections(soul).get("what i watch for") ?? "",
       skills: listed,
     },
-    note: forUser("Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) in this chat, under your message. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call mono_create with only draftId. The card is there only until he answers it: once he turns it down or it is made it is gone, so never point him to it after that."),
+    note: forUser("Nothing is made yet. Ash sees the draft card (its creature, name, role, who it is, what it watches for, skills) in this chat, under your message. Tell him in a line or two that it's ready for his yes, and end your turn. The card has no yes button: its only button is \"Not this one\", and it tells him to say yes in the chat. So never tell him to click, tap or press it; ask for his yes here in the chat. After his yes, call mono_create with only draftId. The card is there only until he answers it: once he turns it down or it is made it is gone, so never point him to it after that."),
   };
 }
 

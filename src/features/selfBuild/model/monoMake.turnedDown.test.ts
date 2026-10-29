@@ -48,4 +48,7 @@ it("the draft note says the card is gone once Ash turns it down or it is made", 
   const draft = make.draftMono(POSTIE, ME, Date.now(), undefined, { room: "hub:leadership", conv: "c" });
   expect(draft.note).toMatch(/only until (he|the user) answers it/);
   expect(draft.note).toMatch(/never point (him|them) to it after that/);
+  // r62 (A5): CoS said "click that one" on a card whose only button is "Not this one".
+  expect(draft.note).toMatch(/no yes button/);
+  expect(draft.note).toMatch(/never tell (him|them) to click/);
 });

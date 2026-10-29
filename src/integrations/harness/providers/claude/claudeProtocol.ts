@@ -290,6 +290,13 @@ export function buildClaudeSpawnArgs(input: {
     ...input.settings,
     ...(input.isolated ? { disableAllHooks: true } : {}),
   };
+  const bridge = input.offBridge ? undefined : claudeBridgeKind();
+  // r62 (bridge log, 28 Oct: 639 "thinking: budget zero not allowed ... clamped_to=0"): thinking off makes Claude Code
+  // send `thinking: {type: "disabled"}`, which the gateway turns into a budget of 0 that Grok 4.7 doesn't accept. On a
+  // bridge, thinking is always adaptive and the effort sets how much; what was "off" (helpers, the Thinking toggle)
+  // asks for low effort instead, so every request carries a level the gateway can place.
+  const thinkingWasOff = bridge ? settings.alwaysThinkingEnabled === false : false;
+  if (bridge) settings.alwaysThinkingEnabled = true;
   if (input.isolated) {
     args.push("--no-session-persistence");
     args.push("--strict-mcp-config");
@@ -302,9 +309,9 @@ export function buildClaudeSpawnArgs(input: {
   // Claude Code on a subscription bridge (claudeGrokBridge.ts): every process asks for Grok 4.7 or DeepSeek by the
   // launcher's own name, whatever Claude model was picked, and one it can't place throws before anything starts
   // (bridgeModels.ts), so no name ever reaches the gateway for it to route elsewhere.
-  const bridge = input.offBridge ? undefined : claudeBridgeKind();
   const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
-  const effort = bridge === "grok" ? grokBridgeEffort(input.effort) : input.effort;
+  const asked = input.effort ?? (thinkingWasOff ? "low" : undefined);
+  const effort = bridge === "grok" ? grokBridgeEffort(asked) : asked;
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
   if (input.permissionMode) {
@@ -874,6 +881,8 @@ export type ClaudeToolProgress = {
   parentToolUseId?: string;
   toolName?: string;
   subagentType?: string;
+  /** How long the call has run, as Claude Code reports it. */
+  elapsedMs?: number;
 };
 
 export function parseToolProgress(
@@ -888,6 +897,9 @@ export function parseToolProgress(
     ...(parent ? { parentToolUseId: parent } : {}),
     toolName: stringField(rec, "tool_name"),
     subagentType: stringField(rec, "subagent_type"),
+    ...(typeof rec.elapsed_time_seconds === "number" && Number.isFinite(rec.elapsed_time_seconds)
+      ? { elapsedMs: Math.round(rec.elapsed_time_seconds * 1000) }
+      : {}),
   };
 }
 

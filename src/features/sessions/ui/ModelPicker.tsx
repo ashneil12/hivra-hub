@@ -854,6 +854,7 @@ export function ModelPicker({
         {noIcon ? null : (
           <HarnessIcon
             harness={current.harness}
+            mono
             className={`${variant === "pill" ? "size-4" : "size-3.5"} shrink-0`}
           />
         )}

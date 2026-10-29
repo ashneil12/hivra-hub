@@ -68,7 +68,9 @@ it("the card says what the team would be and that nothing is made yet, by plain 
   expect(card.textContent).toContain("Owns the launch.");
   expect(card.textContent).toContain("Hivra, Nibbii");
   expect(card.textContent).toContain("Postie");
-  expect(card.textContent).toContain("Nothing is made yet. Say yes in the chat to make it.");
+  expect(card.textContent).toContain("Nothing is made yet. Say yes in the chat to make it; this card only turns it down.");
+  // r62 (A5): the card has no yes button, so nothing on it says to click it.
+  expect(card.textContent).not.toMatch(/click/i);
   expect(floats(card)).toEqual([]);
 });
 

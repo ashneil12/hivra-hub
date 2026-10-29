@@ -421,6 +421,9 @@ function LookButton({ monoId, agent }: { monoId: string; agent: MonoLook }) {
   );
 }
 
+/** How long a name change settles before it saves without a blur. */
+export const NAME_SETTLE_MS = 500;
+
 /** The Mono's name, edited in place; empty goes back to its mascot's name. */
 function NameField({ monoId, fallback }: { monoId: string; fallback: string }) {
   const saved = () => findMono(monoId)?.name ?? "";
@@ -440,8 +443,29 @@ function NameField({ monoId, fallback }: { monoId: string; fallback: string }) {
     if (name !== saved()) saveMonoName(monoId, name);
     setDraft(name);
   };
+  // r62 (A3): a name set without typing (accessibility, autofill, paste with no blur) saves on the change itself, a
+  // moment after it settles, and whatever is in the field when the dialog closes is kept. An empty field only goes back
+  // to the mascot's name on leaving it, so clearing to retype never flashes the default name.
+  const latest = useRef(draft);
+  latest.current = draft;
+  // A value set straight on the element (some accessibility clients fire no input event) is read from it on close.
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const name = draft.trim().slice(0, 40);
+    if (!name || name === saved()) return;
+    const timer = setTimeout(() => saveMonoName(monoId, name), NAME_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [draft, monoId]);
+  useEffect(() => {
+    const element = field.current;
+    return () => {
+      const name = (element?.value ?? latest.current).trim().slice(0, 40);
+      if (name !== saved()) saveMonoName(monoId, name);
+    };
+  }, [monoId]);
   return (
     <input
+      ref={field}
       aria-label="Name"
       value={draft}
       placeholder={placeholder}

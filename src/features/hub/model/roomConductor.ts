@@ -12,6 +12,7 @@
 //   chat, a room wake that goes into its work and that it answers with room_post. Every failure leaves a notice.
 // - Work a Mono delegated from the room comes back as "X is back" (postBack, roomReports.ts); a Lead's report on a
 //   leadership brief lands with its owner's answer (postReport).
+import type { LiveActivity } from "../../sessions/model/liveActivity";
 import { listMonos } from "../../monos/model/mono";
 import { examplesOn } from "./examples";
 import {
@@ -75,6 +76,8 @@ export type RoomTurnRequest = {
   note: RoomTurnNote;
   /** A managed turn's words so far, as they are written (the runner calls it as they grow): the room shows them live. */
   onText?(text: string): void;
+  /** What the managed turn is doing now (its step, from its own stream) and when it last did anything: the live line. */
+  onActivity?(activity: LiveActivity): void;
 };
 export type RoomWakeEnd = { status: "done" | "dropped" | "failed"; error?: string };
 /** A managed turn's reply, or a wake that went into a busy Mono's chat (steered into its work, or queued behind it). */
@@ -121,7 +124,7 @@ type Wake = {
   batch?: string[];
   back?: { title: string; answer: string };
 };
-type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean };
+type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean; activity?: LiveActivity };
 /**
  * A turn's words as it writes them, shown in the room as a live message until the turn ends (then the post takes its
  * place, under the same id) or is stopped (then it goes). Never saved: the Mono's own chat keeps the turn.
@@ -222,7 +225,17 @@ function stale(r: RoomRun, wake: Wake): boolean {
 
 // ---- What the screens read ----------------------------------------------------------------------------------------
 
-export type RoomWorker = { monoId: string; convId: string; kind: TurnKind; state: "writing" | "queued" | "steered" };
+export type RoomWorker = {
+  monoId: string;
+  convId: string;
+  kind: TurnKind;
+  state: "writing" | "queued" | "steered";
+  /**
+   * What the turn is doing now: a writing turn's step ("Thinking" since it began until its stream says more), or a
+   * queued or steered wake's, once its session has reported one.
+   */
+  activity?: LiveActivity;
+};
 /** Who is working on a room turn now, and how: writing it, or answering from their own chat. */
 export function roomWorking(chatId: string, convId?: string): RoomWorker[] {
   const r = rooms.get(chatId);
@@ -230,7 +243,18 @@ export function roomWorking(chatId: string, convId?: string): RoomWorker[] {
   return [...r.running.values()]
     .filter((x) => !convId || x.wake.convId === convId)
     .filter((x) => !(x.mode !== "turn" && x.answered))
-    .map((x) => ({ monoId: x.wake.monoId, convId: x.wake.convId, kind: x.wake.kind, state: x.mode === "turn" ? "writing" : x.mode }));
+    .map((x) =>
+      x.mode === "turn"
+        ? {
+            monoId: x.wake.monoId,
+            convId: x.wake.convId,
+            kind: x.wake.kind,
+            state: "writing" as const,
+            activity: x.activity ?? { key: "start", label: "Thinking", since: x.startedAt, lastEventAt: x.startedAt },
+          }
+        : // A queued or steered wake carries what it is doing once its session reports it (r62), never a made-up step.
+          { monoId: x.wake.monoId, convId: x.wake.convId, kind: x.wake.kind, state: x.mode, ...(x.activity ? { activity: x.activity } : {}) },
+    );
 }
 /** The first Mono writing in the room (the older single indicator). */
 export function typingIn(chatId: string): string | undefined {
@@ -535,6 +559,11 @@ async function start(chatId: string, wake: Wake): Promise<void> {
       speaker: speakerOf(conv.messages, wake),
       note: { kind: "room", room: chat.name, roomId: chatId, line: noteLine(wake) },
       onText: (text) => showDraft(chatId, wake, me, text),
+      onActivity: (activity) => {
+        if (r.running.get(me.id) !== running) return;
+        running.activity = activity;
+        notify();
+      },
     });
   } catch (error) {
     takeDraft(r, wake);

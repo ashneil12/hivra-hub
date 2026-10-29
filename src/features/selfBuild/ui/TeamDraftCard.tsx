@@ -54,7 +54,7 @@ export function TeamDraftCard({ draft }: { draft: TeamDraft }) {
       </p>
       <div className="mt-2 flex items-center gap-2">
         <span className="flex-1 text-[12px] text-content/60">
-          Nothing is made yet. Say yes in the chat to make it.
+          Nothing is made yet. Say yes in the chat to make it; this card only turns it down.
         </span>
         <button
           type="button"

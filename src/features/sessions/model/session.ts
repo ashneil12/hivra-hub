@@ -432,6 +432,12 @@ export type Block = {
     paths?: string[];
     /** Left running by the agent when it yielded; the turn waits on it. */
     background?: boolean;
+    /** The command a shell call runs, when the provider said. */
+    command?: string;
+    /** Epoch ms the app first saw this call (saved, so the live step's timer survives a reload). */
+    startedAt?: number;
+    /** Epoch ms of the last event about this call: a change, or the provider's heartbeat that it still runs. */
+    updatedAt?: number;
   };
   approval?: {
     requestId: number;
