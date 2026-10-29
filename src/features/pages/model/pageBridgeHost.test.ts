@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { PageBridgeHost, TAP_ONLY, type PageSources } from "./pageBridgeHost";
+import { NOT_ASKED, WAITING_ALLOW } from "./bridge";
 import type { Capability } from "./pageSpec";
 
 type Msg = Record<string, unknown>;
@@ -64,7 +65,7 @@ it("answers a read Ash allowed, once, and refuses one he didn't", async () => {
   await flush();
   expect(replies()).toEqual([
     { type: "hub:reply", id: "c1", ok: true, result: { agents: [{ id: "frank", state: "idle" }] } },
-    { type: "hub:reply", id: "c2", ok: false, error: "This page didn't ask for “jobs.read”, so it can't use it." },
+    { type: "hub:reply", id: "c2", ok: false, error: NOT_ASKED },
   ]);
 });
 
@@ -101,7 +102,7 @@ it("Undo stops a watch: the next change finds the permission gone and ends it", 
   approved = [];
   src.set({ agents: [] });
   await vi.advanceTimersByTimeAsync(60);
-  expect(sent.at(-1)).toEqual({ type: "hub:watch-ended", watch: "w1", error: "This page didn't ask for “agents.read”, so it can't use it." });
+  expect(sent.at(-1)).toEqual({ type: "hub:watch-ended", watch: "w1", error: WAITING_ALLOW });
   expect(src.listeners("agents.read")).toBe(0);
 });
 
@@ -204,7 +205,7 @@ it("a page's chats are behind its agents read: refused without it, answered with
   h.receive({ type: "hub:call", id: "c2", call: "sessions.read" });
   await flush();
   expect(replies()).toEqual([
-    { type: "hub:reply", id: "c1", ok: false, error: "This page didn't ask for “agents.read”, so it can't use it." },
+    { type: "hub:reply", id: "c1", ok: false, error: WAITING_ALLOW },
     { type: "hub:reply", id: "c2", ok: true, result: { sessions: [{ id: "s1" }], total: 1 } },
   ]);
 });
@@ -253,4 +254,16 @@ it("every tap's outcome is said on the page by the app: Sending… while it runs
   expect(pageActionLog("pg_1")[0]).toMatchObject({ line: "Didn't go through: Chief of Staff couldn't take a message right now. Open the chat instead.", ok: false });
   expect(replies().find((m) => m.id === "r2")).toMatchObject({ ok: false });
   resetPageActionsForTest();
+});
+
+it("r65: a page that asked but isn't allowed yet says it's waiting for Allow, never \"didn't ask\", and no permission id", async () => {
+  approved = [];
+  const { h } = host();
+  h.receive({ type: "hub:call", id: "c1", call: "agents.read" });
+  h.receive({ type: "hub:call", id: "c2", call: "jobs.read" });
+  await flush();
+  const [a, b] = replies() as { error: string }[];
+  expect(a.error).toBe(WAITING_ALLOW);
+  expect(b.error).toBe(NOT_ASKED);
+  for (const e of [a.error, b.error]) expect(e).not.toMatch(/agents\.read|jobs\.read|didn't ask for/);
 });

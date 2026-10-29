@@ -251,8 +251,8 @@ function draw() {
   restoreFocus(focused);
 }
 
-hub.watch("agents.read", (d) => { data = d; $("[data-problem]").hidden = true; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; p.textContent = "Can't read your agents: " + err.message; });
+hub.watch("agents.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read your agents: " + err.message; });
 setInterval(draw, 30000);
 `;
 
@@ -342,8 +342,8 @@ function draw() {
   restoreFocus(focused);
 }
 
-hub.watch("needs.read", (d) => { data = d; $("[data-problem]").hidden = true; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; p.textContent = "Can't read what's waiting: " + err.message; });
+hub.watch("needs.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read what's waiting: " + err.message; });
 `;
 
 /** Everything waiting on Ash in one place: the chats asking him, then what his projects want him to look at. */
@@ -404,8 +404,8 @@ function draw() {
   restoreFocus(focused);
 }
 
-hub.watch("jobs.read", (d) => { data = d; $("[data-problem]").hidden = true; draw(); },
-  (err) => { const p = $("[data-problem]"); p.hidden = false; p.textContent = "Can't read what's being built: " + err.message; });
+hub.watch("jobs.read", (d) => { data = d; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); },
+  (err) => { const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read what's being built: " + err.message; });
 `;
 
 /** What is being built right now, newest first, with a job whose lead gave up on top. */
@@ -494,9 +494,9 @@ function toggle(id) {
 function load(button) {
   if (button) button.disabled = true;
   hub.call("project.read", {})
-    .then((out) => { data = out.projects || []; $("[data-problem]").hidden = true; draw(); })
+    .then((out) => { data = out.projects || []; $("[data-problem]").hidden = true; $("[data-summary]").hidden = false; draw(); })
     .catch((e) => {
-      const p = $("[data-problem]"); p.hidden = false; p.textContent = "Can't read your projects: " + e.message;
+      const p = $("[data-problem]"); p.hidden = false; $("[data-summary]").hidden = true; p.textContent = "Can't read your projects: " + e.message;
     })
     .finally(() => { if (button) button.disabled = false; });
 }
