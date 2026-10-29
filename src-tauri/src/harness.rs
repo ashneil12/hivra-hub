@@ -4561,7 +4561,10 @@ const DEV_CLAUDE_SETTINGS: [&str; 4] = [
 ];
 
 /// The env a dev copy keeps from the app's own settings: a non-Anthropic worker's sub-agent model pins (r69).
-const DEV_CLAUDE_ENV: [&str; 2] = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"];
+const DEV_CLAUDE_ENV: [&str; 2] = [
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL",
+];
 
 /// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
 /// only ever reaches this copy's own control port. It is kept only exactly as the app writes it
@@ -4605,7 +4608,9 @@ fn isolated_dev_claude_args(args: Vec<String>, own_exe: Option<&str>) -> Vec<Str
                         .as_object()
                         .into_iter()
                         .flatten()
-                        .filter(|(name, v)| DEV_CLAUDE_ENV.contains(&name.as_str()) && v.is_string())
+                        .filter(|(name, v)| {
+                            DEV_CLAUDE_ENV.contains(&name.as_str()) && v.is_string()
+                        })
                         .map(|(name, v)| (name.clone(), v.clone()))
                         .collect();
                     if !kept.is_empty() {
@@ -4677,7 +4682,10 @@ mod dev_claude_tests {
         let raw = out.last().unwrap();
         let s: serde_json::Value = serde_json::from_str(raw).unwrap();
         assert_eq!(s["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-fable-5");
-        assert_eq!(s["env"]["CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"], "claude-fable-5");
+        assert_eq!(
+            s["env"]["CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"],
+            "claude-fable-5"
+        );
         assert!(s["env"].get("ANTHROPIC_API_KEY").is_none());
     }
 
