@@ -26,7 +26,7 @@ import { stuckWorkerChip } from "../../monos/model/stuckChip";
 import { failedMonosFor, stuckProject } from "../model/todayCounts";
 import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
-import { stuckForJob } from "../../monos/model/workerStuck";
+import { jobRowsFinishedAt, stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText, sinceGlance, withoutStuckTalk } from "../model/appSince";
@@ -342,7 +342,7 @@ function BeingBuiltToday({ title, projectId }: { title: string; projectId?: stri
   };
   // A project's Today shows that project's work (G1): there is no board where every project's jobs sit together.
   const rows = data.listProjects().filter((p) => !projectId || p.id === projectId).flatMap((p) =>
-    (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
+    (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId && !(j.state === "working" && jobRowsFinishedAt(j.sourceRef, delegations) !== undefined)).map((j) => ({ p, j, lead: g.leadName }))),
   );
   // A worker its Lead is handling (grey With <Lead> or Retrying) is listed here, after the jobs, unless its job's row
   // above already says so (r30: no "Stuck" section).

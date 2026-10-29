@@ -603,6 +603,19 @@ export function stuckForJob(sourceRef: string | undefined, rows: readonly Delega
   return stuckWorkers(under, now).sort((a, b) => URGENCY[a.kind] - URGENCY[b.kind] || a.since - b.since)[0];
 }
 
+/**
+ * r69 (PM's blind r67 (d)): Ash OS's job keeps reading "working" after this app's workers under it are done (the rows
+ * live in this app only since 21 Oct, so Ash OS never hears they finished): the Hub's Being built listed "Tidy Today…" and
+ * "Tidy the inbox list" as Working a day after both sub-chats completed. When every row under a job has settled with
+ * nothing failed (completed, or cancelled beside a completed one), this is when the last one settled; else undefined.
+ */
+export function jobRowsFinishedAt(sourceRef: string | undefined, rows: readonly Delegation[]): number | undefined {
+  const under = rowsUnderJob(sourceRef, rows);
+  if (!under.length || !under.some((row) => row.state === "completed")) return undefined;
+  if (!under.every((row) => row.state === "completed" || row.state === "cancelled")) return undefined;
+  return Math.max(...under.map((row) => row.settledAt ?? row.updatedAt));
+}
+
 /** The rows behind one of Ash OS's jobs (`delegation:<top row>` or `ask:<ask id>`): that row or ask, and all beneath. */
 export function rowsUnderJob(sourceRef: string | undefined, rows: readonly Delegation[]): Delegation[] {
   if (!sourceRef) return [];
