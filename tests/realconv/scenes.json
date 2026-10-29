@@ -233,7 +233,8 @@
       "maxAshTurns": 2,
       "minutes": 8,
       "expect": {
-        "roomSeatsMin": 1
+        "roomSeatsMin": 1,
+        "projectTests": "npm test"
       }
     },
     {

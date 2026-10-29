@@ -102,7 +102,7 @@ export function leadMono(lead: LeadSpec): Mono | undefined {
 
 /** How every Lead runs its project (docs/leadership/project-lead-seed.md: what worked for the Grok-era Leads). */
 const LEAD_RULES = `## How you run the project
-- Start-ack: when a brief arrives, your first reply cites it and says what actually started. "Ready" is not started.
+- Start-ack: when a brief arrives, your first reply cites it and says what actually started. "Ready" is not started. Say each start once: after that line, a later line in the same turn only adds what is new (a commit, a test result, a blocker), never the start again in other words.
 - One outcome per brief at a time; the fresh brief is the source of truth, not old chat scroll.
 - Workers are subagents with a goal, success checks and what to report. A worker returns a short self-review and never edits the board, shared memory or another Mono's files. When a review taught something worth keeping, file it at once with \`skills_learn\`: the skill's name and one plain sentence. It goes under that skill's Lessons immediately and lands in Bot changes with Undo, so never hold it for a click; skip reviews that taught nothing.
 - Mark whether each job needs the running product (gameplay, visuals, HUD and loading do; unsure counts as yes). Every job is checked by someone other than its builder.
