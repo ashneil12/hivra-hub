@@ -243,6 +243,30 @@ export function isSilent(reply: string): boolean {
   return BARE_ACK.test(text) || (text.length <= 90 && FILLER.test(text));
 }
 
+const words = (text: string): string[] =>
+  text
+    .toLowerCase()
+    .replace(/<[^>]+>/g, " ")
+    .split(/[^\p{L}\p{N}']+/u)
+    .filter((w) => w.length > 2);
+
+/**
+ * r63 (Critiquito): when the Lead had just answered, Chief of Staff posted a near-copy of it. A reply that mostly
+ * repeats a post another Mono made since Ash last wrote (most of its words are that post's words, and it adds few of
+ * its own) is a repeat: the room rule says add something new or stay quiet, and the conductor keeps it out.
+ */
+export function repeatsAnother(reply: string, others: readonly string[]): boolean {
+  const mine = new Set(words(reply));
+  if (mine.size < 6) return false;
+  return others.some((post) => {
+    const theirs = new Set(words(post));
+    if (theirs.size < 6) return false;
+    let shared = 0;
+    for (const w of mine) if (theirs.has(w)) shared++;
+    return shared / mine.size >= 0.75;
+  });
+}
+
 /** A turn's words show in the room as they are written once there are this many (or a line break). */
 export const DRAFT_MIN_CHARS = 20;
 
