@@ -4560,6 +4560,9 @@ const DEV_CLAUDE_SETTINGS: [&str; 4] = [
     "autoCompactWindow",
 ];
 
+/// The env a dev copy keeps from the app's own settings: a non-Anthropic worker's sub-agent model pins (r69).
+const DEV_CLAUDE_ENV: [&str; 2] = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"];
+
 /// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
 /// only ever reaches this copy's own control port. It is kept only exactly as the app writes it
 /// (src/features/hub/model/hubMcp.ts): this executable, `mcp`, and the app connection as unexpanded `${VAR}`s.
@@ -4596,6 +4599,18 @@ fn isolated_dev_claude_args(args: Vec<String>, own_exe: Option<&str>) -> Vec<Str
             for (key, value) in given {
                 if DEV_CLAUDE_SETTINGS.contains(&key.as_str()) {
                     settings.insert(key, value);
+                } else if key == "env" {
+                    // r69: only the sub-agent model pins (claudeProtocol.ts subagentModelEnv), nothing else.
+                    let kept: serde_json::Map<String, serde_json::Value> = value
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter(|(name, v)| DEV_CLAUDE_ENV.contains(&name.as_str()) && v.is_string())
+                        .map(|(name, v)| (name.clone(), v.clone()))
+                        .collect();
+                    if !kept.is_empty() {
+                        settings.insert(key, serde_json::Value::Object(kept));
+                    }
                 }
             }
         }
@@ -4649,6 +4664,22 @@ fn isolated_dev_claude_args(args: Vec<String>, own_exe: Option<&str>) -> Vec<Str
 #[cfg(test)]
 mod dev_claude_tests {
     const OWN_EXE: &str = "/Users/ash/Worktrees/x/target/debug/monocode";
+
+    #[test]
+    fn dev_copy_keeps_only_the_subagent_model_env() {
+        let out = super::isolated_dev_claude_args(
+            args(&[
+                "--settings",
+                r#"{"alwaysThinkingEnabled":true,"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"claude-fable-5","CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL":"claude-fable-5","ANTHROPIC_API_KEY":"x"}}"#,
+            ]),
+            Some(OWN_EXE),
+        );
+        let raw = out.last().unwrap();
+        let s: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(s["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-fable-5");
+        assert_eq!(s["env"]["CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"], "claude-fable-5");
+        assert!(s["env"].get("ANTHROPIC_API_KEY").is_none());
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()

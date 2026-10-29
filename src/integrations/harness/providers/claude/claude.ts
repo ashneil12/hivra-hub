@@ -2786,6 +2786,7 @@ function launchOptions(
   resume?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
+  routedModel?: string;
 } {
   const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
   const native = route ? route.modelId : nativeModelId(input.model);
@@ -2829,6 +2830,7 @@ function launchOptions(
     resume,
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
+    routedModel: route ? route.modelId : undefined,
   };
 }
 
