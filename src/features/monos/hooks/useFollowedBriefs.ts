@@ -16,7 +16,7 @@ import {
 } from "../model/delegations";
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
-import { statusReply } from "../model/statusReply";
+import { statusReply, statusReplyChange } from "../model/statusReply";
 import { workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -79,6 +79,10 @@ export function useFollowedBriefs(options: {
    * A note is never added twice (its id is the tasks it names).
    */
   note?: (chatId: string, block: Block) => void;
+  /** r80: put new words in a note already in a chat (the status line, as workers report back). */
+  renote?: (chatId: string, block: Block) => void;
+  /** r80: take a note out of a chat (the status line, once the chat's own reply lands). */
+  unnote?: (chatId: string, blockId: string) => void;
   /**
    * r78: the chats that hand out work on Ash's lists (a project Lead, a coding-team chat). One whose turn listed his asks
    * and said work starts, with no worker started, gets one app message through `ask` to start them (workerStartNudge.ts).
@@ -168,7 +172,12 @@ export function useFollowedBriefs(options: {
       const startsWorkers = latest.current.startsWorkers;
       if (startsWorkers)
         for (const chat of sessionsRef.current) {
-          if (!chat.busy || !startsWorkers(chat.id)) continue;
+          if (!startsWorkers(chat.id)) continue;
+          // r80: a line already there follows the workers, and goes once the chat's own reply lands.
+          const change = statusReplyChange(chat, known, notesSince.current, now);
+          if (change && "remove" in change) latest.current.unnote?.(chat.id, change.remove);
+          else if (change) latest.current.renote?.(chat.id, change.update);
+          if (!chat.busy) continue;
           const block = statusReply(chat, known, noted.current, notesSince.current, now);
           if (!block) continue;
           noted.current.add(block.id);

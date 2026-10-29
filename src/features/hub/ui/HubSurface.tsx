@@ -29,7 +29,7 @@ import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
 import { jobRowsFinishedAt, stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
-import { appSinceText, sinceGlance, withoutStuckTalk } from "../model/appSince";
+import { appSinceText, sinceGlance, sinceParagraph, withoutStuckTalk } from "../model/appSince";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
 import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
@@ -212,7 +212,7 @@ function TodayBody({ projectId }: { projectId: string }) {
         <p className="text-[13px] leading-5 text-content/60" data-hub-since-pending>Writing up what changed…</p>
       ) : (
         (() => {
-          const text = [since.pending ? "" : calmSummary(withoutStuckTalk(sinceGlance(since.plainText))), appSince].filter(Boolean).join(" ");
+          const text = sinceParagraph(since.pending ? "" : calmSummary(withoutStuckTalk(sinceGlance(since.plainText))), appSince);
           return (
             <p
               className={`line-clamp-4 text-[13px] leading-5 ${text ? "text-content/85" : "text-content/60"}`}

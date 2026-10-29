@@ -6,6 +6,7 @@
 // scenarios/<id>/evidence.json (sends, every room message and Claude reply with times, delegation rows, views,
 // metrics) and transcript.md (what the grader and a person read).
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -50,7 +51,7 @@ export async function runScenario(scenario, ctx) {
   const turnsCap = scenario.maxTurns ?? 60;
   const dir = path.join(evidence, "scenarios", scenario.id);
   fs.mkdirSync(dir, { recursive: true });
-  const record = { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], started: t0, sends: [], waits: [], views: [], shots: [], marks: [], faults: [], notes: [] };
+  const record = { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], started: t0, sends: [], waits: [], views: [], shots: [], marks: [], faults: [], notes: [], gates: [] };
   const lastSendTo = new Map();
   /** Coding-team chats this scenario started, by the name its steps give them (`as`). */
   const chats = new Map();
@@ -194,8 +195,53 @@ export async function runScenario(scenario, ctx) {
     }
   };
 
+  // r80 (s14): the scenario's check runs on each worker's copy from OUTSIDE it, so no worker can edit it to get past a
+  // decision (in r79 a worker added its own route to the repo's signed-off list). Its words go back to that worker's
+  // chat when they change. Ash signs a route off by answering (`signedOffAfter` labels), never the worker.
+  const gate = scenario.gate;
+  const gateCopy = gate && ctx.project ? path.join(path.dirname(path.dirname(String(ctx.project))), "bench-gates", path.basename(gate.script)) : null;
+  if (gateCopy) {
+    fs.mkdirSync(path.dirname(gateCopy), { recursive: true });
+    fs.copyFileSync(path.resolve(gate.script), gateCopy);
+  }
+  const gateSeen = new Map();
+  let gateAt = 0;
+  const runGate = async () => {
+    if (!gateCopy || Date.now() - gateAt < (gate.everySec ?? 15) * 1000) return;
+    gateAt = Date.now();
+    const root = `${ctx.project}-worktrees`;
+    if (!fs.existsSync(root)) return;
+    const signed = wentOut(record.sends, gate.signedOffAfter ?? []) ? (gate.signOff ?? []) : [];
+    let snap = null;
+    for (const name of fs.readdirSync(root)) {
+      const dir = path.join(root, name);
+      const git = (args) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 20_000 }).stdout ?? "";
+      const sig = `${git(["status", "--porcelain"])}\n${git(["diff", "HEAD"])}\n${signed.join("|")}`;
+      const seen = gateSeen.get(dir) ?? {};
+      if (seen.sig === sig) continue;
+      const run = spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", gateCopy, dir, ...signed.flatMap((r) => ["--signed-off", r])], { encoding: "utf8", timeout: 60_000 });
+      const said = String(run.stdout ?? "").trim();
+      record.gates.push({ t: Date.now(), copy: name, code: run.status, said, signedOff: signed });
+      gateSeen.set(dir, { ...seen, sig });
+      if (run.status !== 1 || !said || seen.said === said) continue;
+      snap ??= await act("snapshot").catch(() => null);
+      const session = (snap?.sessions ?? []).find((x) => x.worktree && path.resolve(x.worktree) === path.resolve(dir))?.id;
+      if (!session) {
+        gateSeen.set(dir, { sig: null, said: seen.said });
+        continue;
+      }
+      const owner = (await ctx.delegationRows()).find((row) => row.child_session === session)?.owner_session;
+      const text = `${gate.name ?? "Check"} (run from outside your copy) failed:\n${said}`;
+      const answer = await act("send", { to: { session }, owner, text }, 60_000).catch((error) => ({ ok: false, error: error.message }));
+      record.marks.push({ t: Date.now(), gate: { copy: name, session, ok: answer.ok !== false } });
+      gateSeen.set(dir, { sig, said });
+      log(`  ${gate.name ?? "check"} failed on ${name}; its words went to that worker (${answer.ok === false ? `NOT ACCEPTED: ${answer.error}` : "ok"})`);
+    }
+  };
+
   for (const step of scenario.steps ?? []) {
     await allowPromptly();
+    await runGate();
     if (expired()) {
       record.notes.push(`scenario time (${scenario.minutes} min) ran out before step ${JSON.stringify(step).slice(0, 80)}`);
       break;
@@ -245,6 +291,7 @@ export async function runScenario(scenario, ctx) {
       let met = false;
       while (Date.now() < limit) {
         await allowPromptly();
+        await runGate();
         if (await conditionMet(step.wait, ref)) {
           met = true;
           break;
@@ -499,7 +546,7 @@ export function transcript(scenario, result, t0) {
   for (const send of result.sends) {
     if (send.stop) timeline.push({ t: send.t, line: `**Ash pressed Stop** on ${JSON.stringify(send.stop)}` });
     else if (send.todayAnswer)
-      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}", pick "${send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
+      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}"; the agent had suggested "${send.result.recommended ?? send.result.pick ?? ""}"; Ash's decision: "${send.result.decision ?? send.todayAnswer.text ?? send.result.recommended ?? send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
     else if (send.retry) continue;
     else if (send.skipped) timeline.push({ t: send.t, line: `(Ash's message "${send.label}" could not be sent: ${send.skipped})` });
     else

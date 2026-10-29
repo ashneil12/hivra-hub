@@ -104,5 +104,5 @@ it("covers only events after Ash's last real input, and focus, scrolling or reop
     changes: [],
     nameOf: () => "Example: Hub lead",
   });
-  expect(text).toBe("Example: Hub lead handed out 1 job.");
+  expect(text).toBe("The Lead handed out 1 job.");
 });

@@ -5,6 +5,7 @@
 // - a "Needs Ash:" line in the agent's last turn (it ended its turn to ask): the recommendation is its "My pick:" line;
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
+import { plainCommandQuestion } from "./plainCommand";
 import {
   freeTextReply,
   type UserQuestion,
@@ -339,8 +340,9 @@ export function permissionQuestion(blocks: ChatLike["blocks"]): ChatQuestion | n
 
 function permissionText(call: ApprovalCall | undefined, toolName: string | undefined): string {
   const tool = call?.tool ?? toolName ?? "a tool";
-  const command = call?.command?.trim().split("\n")[0];
-  if (command) return `Allow it to run \`${command.length > 160 ? `${command.slice(0, 157)}...` : command}\`?`;
+  // Critiquito, 29 Oct: what the step does in plain words; the full command is in the chat's own card, behind Open.
+  const command = call?.command?.trim();
+  if (command) return plainCommandQuestion(command);
   const file = call?.paths?.[0]?.split("/").pop();
   if (file) return /^(edit|write|multiedit|notebookedit)$/i.test(tool) ? `Allow it to change ${file}?` : `Allow it to use ${tool} on ${file}?`;
   return `Allow it to use ${tool}?`;
@@ -391,7 +393,8 @@ function safeCommand(command: string): string {
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
   // A held tool call waits on Ash even mid-turn: the turn can't go on until he allows or denies it.
-  const permission = permissionQuestion(chat.blocks);
+  // r80: only while the turn runs; a card left from a turn that is over waits on nobody.
+  const permission = chat.busy === false ? null : permissionQuestion(chat.blocks);
   if (permission) return permission;
   const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
   const turnText = lastTurnText(blocks);

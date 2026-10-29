@@ -219,6 +219,18 @@ describe("answering from Today", () => {
     expect(calls.send).toEqual([["s2", "keep it for a week"]]);
   });
 
+  it("records Ash's typed words as the decision, not the agent's recommended pick (r80, s14: Today showed Gone for good)", async () => {
+    const { live } = host();
+    live.set("s1", ask());
+    noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask() }), markerChat("s2", "Needs Ash: Keep it?\nMy pick: Keep it.")]);
+    await answerInWords("s1", "flier first, then the shield");
+    await takePick("s2");
+    const s1 = gateLog().filter((r) => r.sessionId === "s1").at(-1)!;
+    expect(s1.pick).toBe("Shield");
+    expect(s1.answer).toMatchObject({ words: "flier first, then the shield", by: "words" });
+    expect(gateLog().filter((r) => r.sessionId === "s2").at(-1)!.answer).toMatchObject({ words: "Keep it.", by: "pick" });
+  });
+
   it("an errand with no pick, an empty reply, a chat that can't take a message: it stays waiting with a plain reason", async () => {
     host({ send: async () => false });
     // A sign-in is admitted without a pick (the errand is the recommendation), so Take the pick has nothing to take.

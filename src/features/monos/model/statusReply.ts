@@ -36,6 +36,51 @@ const list = (rows: readonly Pick<Delegation, "title">[]) =>
 
 export const STATUS_REPLY_PREFIX = "status-reply-";
 
+/** The line's words from what the app knows now: who is working, back, asking, and whether anything needs Ash. */
+function statusText(chat: Session, rows: readonly Delegation[], since: number, now: number): string {
+  const own = rows.filter((row) => row.ownerSession === chat.id && row.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt);
+  const working = own.filter((row) => isOpenDelegation(row) && row.state !== "question");
+  const asking = own.filter((row) => row.state === "question");
+  const back = own.filter((row) => row.state === "completed");
+  const needsYou = own.filter((row) => {
+    const stuck = stuckOf(row, now);
+    return !!stuck && stuckOwner(stuck) === "needs-you";
+  });
+  const parts = [
+    ...(working.length ? [`${working.length} working (${list(working)})`] : []),
+    ...(back.length ? [`${back.length} back (${list(back)})`] : []),
+    ...(asking.length ? [`${asking.length} asking this chat a question (${list(asking)})`] : []),
+  ];
+  const head = parts.length ? `Right now: ${parts.join(", ")}.` : "No workers out yet: this chat is still on its reply.";
+  return `${head} ${needsYou.length ? `Needs you: ${list(needsYou)}.` : "Nothing needs you yet."} The full answer comes when this turn ends.`;
+}
+
+/** A finished assistant message after `from` in the chat: its own words, not a tool step or a note. */
+const saysAfter = (chat: Session, from: number) =>
+  chat.blocks.slice(from + 1).some((b) => b.role === "assistant" && !b.tool && !b.internal && !b.streaming && b.text.trim());
+
+/**
+ * r80 (c02: the line said "5 working" at +81s and still did at +207s, after workers were back): a status line already
+ * in the chat follows the workers as they report back, and goes once the chat's own reply lands or its turn ends, so
+ * nothing stale stays showing. `update`: the same line with new words; `remove`: take it out.
+ */
+export function statusReplyChange(
+  chat: Session,
+  rows: readonly Delegation[],
+  since = 0,
+  now = Date.now(),
+): { update: Block } | { remove: string } | undefined {
+  const at = chat.blocks.findIndex((b) => b.id.startsWith(STATUS_REPLY_PREFIX));
+  if (at < 0) return undefined;
+  const line = chat.blocks[at];
+  const questionId = line.id.slice(STATUS_REPLY_PREFIX.length);
+  const queued = chat.queuedMessages?.some((m) => (m.blockId ?? m.id) === questionId);
+  const asked = chat.blocks.findIndex((b) => b.id === questionId);
+  if (!chat.busy || (!queued && saysAfter(chat, Math.max(at, asked)))) return { remove: line.id };
+  const text = statusText(chat, rows, since, now);
+  return text === line.text ? undefined : { update: { ...line, text } };
+}
+
 /**
  * The line a busy chat gets now, if any: Ash asked how it's going while its turn runs. What its workers are doing
  * (this chat's own, started since `since`: this run of the app), once per question. `replied` holds questions answered.
@@ -52,24 +97,5 @@ export function statusReply(
   if (!question) return undefined;
   const id = `${STATUS_REPLY_PREFIX}${question.id}`.slice(0, 200);
   if (replied.has(id) || chat.blocks.some((b) => b.id === id)) return undefined;
-  const own = rows.filter((row) => row.ownerSession === chat.id && row.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt);
-  const working = own.filter((row) => isOpenDelegation(row) && row.state !== "question");
-  const asking = own.filter((row) => row.state === "question");
-  const back = own.filter((row) => row.state === "completed");
-  const needsYou = own.filter((row) => {
-    const stuck = stuckOf(row, now);
-    return !!stuck && stuckOwner(stuck) === "needs-you";
-  });
-  const parts = [
-    ...(working.length ? [`${working.length} working (${list(working)})`] : []),
-    ...(back.length ? [`${back.length} back (${list(back)})`] : []),
-    ...(asking.length ? [`${asking.length} asking this chat a question (${list(asking)})`] : []),
-  ];
-  const head = parts.length ? `Right now: ${parts.join(", ")}.` : "No workers out yet: this chat is still on its reply.";
-  return {
-    id,
-    role: "system",
-    notice: "still-running",
-    text: `${head} ${needsYou.length ? `Needs you: ${list(needsYou)}.` : "Nothing needs you yet."} The full answer comes when this turn ends.`,
-  };
+  return { id, role: "system", notice: "still-running", text: statusText(chat, rows, since, now) };
 }

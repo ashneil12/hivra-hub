@@ -896,10 +896,14 @@ export function hasPendingApproval(blocks: Block[]): boolean {
   return blocks.some((block) => block.approval && !block.approval.decided);
 }
 
+/**
+ * r80 (c02): a permission card only waits on Ash while its turn runs. Once the turn is over (the CLI closed the request
+ * when its stream ended, or the app restarted), an undecided card is history, not a "Needs you".
+ */
 export function sessionNeedsInput(session: Session): boolean {
   return (
     !session.worktreeRemoved &&
-    (hasPendingApproval(session.blocks) || session.pendingQuestion != null)
+    ((session.busy !== false && hasPendingApproval(session.blocks)) || session.pendingQuestion != null)
   );
 }
 

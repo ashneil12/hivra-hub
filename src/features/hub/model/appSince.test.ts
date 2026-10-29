@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { Delegation } from "../../monos/model/delegations";
 import type { StuckWorker } from "../../monos/model/workerStuck";
-import { appSinceText, sinceGlance } from "./appSince";
+import { appSinceText, sinceGlance, sinceParagraph } from "./appSince";
 
 const SINCE = 1_000_000_000;
 function row(id: string, patch: Partial<Delegation> = {}): Delegation {
@@ -37,7 +37,7 @@ describe("appSinceText", () => {
       nameOf,
     });
     expect(text).toBe(
-      "EXO lead handed out 3 jobs and Chief of Staff 1. One finished and reported back: Wire the dodge input. " +
+      "EXO Lead handed out 3 jobs and Chief of Staff 1. One is done and reported back: Wire the dodge input. " +
         "1 failed and is with its Lead: Upload the build. 1 is with its Lead or waiting on an answer: Pick the dodge timing. " +
         "Alfred made 1 change to how it works, each with Undo in Bot changes.",
     );
@@ -48,6 +48,19 @@ describe("appSinceText", () => {
     const before: StuckWorker = { ...stuck(old, "asking"), since: SINCE - 5000 };
     const failedBefore: StuckWorker = { ...stuck(row("6", { createdAt: SINCE - 9000, state: "failed" }), "failed"), since: SINCE - 1 };
     expect(appSinceText({ sinceMs: SINCE, rows: [old], stuck: [before, failedBefore], changes: [], nameOf })).toBe("");
+  });
+
+  it("says the Lead handed out N jobs and all N are done, with a capital L (Critiquito, 29 Oct)", () => {
+    const rows = [1, 2, 3, 4, 5].map((n) => row(String(n), { title: `T${n}`, state: "completed", settledAt: SINCE + n, delivery: "acknowledged" }));
+    const tally = (_row: Delegation) => "Tally lead";
+    expect(appSinceText({ sinceMs: SINCE, rows, stuck: [], changes: [], nameOf: tally })).toBe("The Lead handed out 5 jobs and all 5 are done: T1, T2 and 3 more.");
+    expect(appSinceText({ sinceMs: SINCE, rows: rows.slice(0, 1), stuck: [], changes: [], nameOf: tally })).toBe("The Lead handed out 1 job and it is done: T1.");
+  });
+
+  it("drops Ash OS's 'Nothing new here' when the app has news, and keeps it when there is none", () => {
+    expect(sinceParagraph("Nothing new here since then.", "The Lead handed out 1 job and it is done: T1.")).toBe("The Lead handed out 1 job and it is done: T1.");
+    expect(sinceParagraph("Nothing new here since then.", "")).toBe("Nothing new here since then.");
+    expect(sinceParagraph("The build finished.", "The Lead handed out 1 job.")).toBe("The build finished. The Lead handed out 1 job.");
   });
 
   it("says a finished job hasn't reported back yet plainly, and lists long sets briefly", () => {

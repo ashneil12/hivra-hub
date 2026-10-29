@@ -390,12 +390,12 @@ export function completionMessage(
       return `${result.title}${missing}`;
     });
   const claimLine = claimed.length
-    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run; never report a guess as done.${unconfirmed.length ? ` NOT YET CONFIRMED: ${unconfirmed.join("; ")}.` : ""}${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
+    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run, in which checkout; never report a guess as done, and call a job done only when its own check passed in its own checkout.${unconfirmed.length ? ` NOT YET CONFIRMED: ${unconfirmed.join("; ")}.` : ""}${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
     : "";
   // A7: the worker's own account of what it checked travels with its result, and the unsure part is never reported as done.
   const open = results.filter((result) => result.review && !nothingOpen(result.review.unsure));
   const reviewLine = results.some((result) => result.review)
-    ? ` Each result ends with the worker's own self-review (what it checked, how, and what it is unsure about). Say what it was unsure about; don't report that part as done.${open.length ? ` Still open, in the workers' own words: ${open.map((result) => `${result.title}: ${result.review!.unsure}`).join("; ")}.` : ""}`
+    ? ` Each result ends with the worker's own self-review (what it checked, how, and what it is unsure about). ${open.length ? `Say what it was unsure about; don't report that part as done. Still open, in the workers' own words: ${open.map((result) => `${result.title}: ${result.review!.unsure}`).join("; ")}. Leave it out for the rest.` : "None of them is unsure of anything: leave that out (never write \"unsure about nothing\")."}`
     : "";
   const unchecked = results.filter((result) => result.reviewRequired && !result.review).map((result) => result.title);
   const uncheckedLine = unchecked.length

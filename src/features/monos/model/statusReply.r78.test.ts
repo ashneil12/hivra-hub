@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { Block, Session } from "../../sessions/model/session";
 import type { Delegation } from "./delegations";
-import { isStatusQuestion, statusReply } from "./statusReply";
+import { isStatusQuestion, statusReply, statusReplyChange } from "./statusReply";
 
 const chat = (blocks: Block[], over: Partial<Session> = {}): Session =>
   ({ id: "team-1", busy: true, blocks, ...over }) as unknown as Session;
@@ -38,5 +38,31 @@ describe("statusReply", () => {
     expect(statusReply(chat([...asked, said("Two running.")]), rows, new Set())).toBeUndefined();
     expect(statusReply(chat(asked), rows, new Set(["status-reply-u2"]))).toBeUndefined();
     expect(statusReply(chat([ash("u3", "also add delete")]), rows, new Set())).toBeUndefined();
+  });
+});
+
+describe("statusReplyChange (r80: nothing stale stays showing)", () => {
+  const asked = [ash("u1", "do the list"), said("On it."), ash("u2", "hows it going, anything need me")];
+  const first = statusReply(chat(asked), [row("t1", "GET /health", "running"), row("t2", "README", "running")], new Set(), 0, 100)!;
+
+  it("follows the workers as they report back", () => {
+    const later = [row("t1", "GET /health", "completed"), row("t2", "README", "running")];
+    const change = statusReplyChange(chat([...asked, first]), later, 0, 200);
+    expect(change && "update" in change && change.update.text).toBe("Right now: 1 working (README), 1 back (GET /health). Nothing needs you yet. The full answer comes when this turn ends.");
+    expect(change && "update" in change && change.update.id).toBe(first.id);
+  });
+
+  it("says nothing when nothing changed", () => {
+    expect(statusReplyChange(chat([...asked, first]), [row("t1", "GET /health", "running"), row("t2", "README", "running")], 0, 200)).toBeUndefined();
+  });
+
+  it("goes once the chat's own reply lands, or its turn ends", () => {
+    expect(statusReplyChange(chat([...asked, first, said("Two of five are back; nothing needs you.")]), [], 0, 200)).toEqual({ remove: first.id });
+    expect(statusReplyChange(chat([...asked, first], { busy: false }), [], 0, 200)).toEqual({ remove: first.id });
+  });
+
+  it("a tool step or a note after it is not the reply", () => {
+    const tool = { id: "x", role: "assistant", text: "", tool: { title: "Bash" } } as unknown as Block;
+    expect(statusReplyChange(chat([...asked, first, tool]), [], 0, 200)).not.toEqual({ remove: first.id });
   });
 });

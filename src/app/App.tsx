@@ -9856,6 +9856,22 @@ function Workspace({
             : session,
         ),
       ),
+    renote: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: session.blocks.map((entry) => (entry.id === block.id ? block : entry)) }
+            : session,
+        ),
+      ),
+    unnote: (chatId, blockId) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && session.blocks.some((entry) => entry.id === blockId)
+            ? { ...session, blocks: session.blocks.filter((entry) => entry.id !== blockId) }
+            : session,
+        ),
+      ),
     onLeadReport: ({ row, receipt, report, answer }) =>
       row.project && row.ownerMono
         ? postLeadReport({

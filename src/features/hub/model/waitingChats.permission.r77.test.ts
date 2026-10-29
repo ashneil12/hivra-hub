@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("a held permission card", () => {
   it("reads as a plain Allow question, even mid-turn, and the gate admits it as an approval", () => {
     const q = chatQuestion(held());
-    expect(q).toMatchObject({ source: "permission", requestId: 7, question: "Allow it to run `git worktree add ../tally-health-board`?" });
+    expect(q).toMatchObject({ source: "permission", requestId: 7, question: "Allow it to make a worker's copy?" });
     expect(gateQuestion(q!)).toMatchObject({ admit: true, kind: "approval" });
     expect(needsReason(q!)).toBe("allow a step");
   });
