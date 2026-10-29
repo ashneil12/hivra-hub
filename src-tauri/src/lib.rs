@@ -83,6 +83,7 @@ mod tray;
 mod verify_live;
 mod verify_stage;
 mod window;
+mod window_frame;
 mod window_transfer;
 #[cfg(windows)]
 mod windows;
@@ -332,6 +333,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_filter(window::is_workspace_window)
+                .with_state_flags(window_frame::plugin_flags())
                 .build(),
         )
         .register_uri_scheme_protocol(artifacts::HTML_SCHEME, |ctx, request| {
@@ -395,6 +397,8 @@ pub fn run() {
                     let _ = window.set_shadow(true);
                 }
             }
+            // r65: the main window's size and place, in points, after the title bar is set up (window_frame.rs).
+            window_frame::restore(app.handle());
             if identity.kind == instance::Kind::Dev {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&instance::dev_window_title(&instance::stamp()));
@@ -921,6 +925,7 @@ pub fn run() {
             window::request_quit(handle);
         }
         tauri::RunEvent::Exit => {
+            window_frame::save(handle);
             // A normal quit: the autopilot watcher never reopens it (src/autopilot.rs).
             autopilot::on_exit(handle);
             handle.state::<remote::RemoteConnections>().shutdown();
