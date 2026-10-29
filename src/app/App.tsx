@@ -15728,16 +15728,17 @@ function Workspace({
     setAutomationsViewOpen(false);
     setMonoViewId(null);
   };
-  const hubShown =
-    hubSurfaceOpen(hubSel) &&
-    !(
-      searchViewOpen ||
-      settingsOpen ||
-      inboxViewOpen ||
-      notesViewOpen ||
-      automationsViewOpen ||
-      monoCovers
-    );
+  // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
+  // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
+  // project's items, so one nav row is ever active.
+  const hubItemsCovered =
+    searchViewOpen ||
+    settingsOpen ||
+    inboxViewOpen ||
+    notesViewOpen ||
+    automationsViewOpen ||
+    monoCovers;
+  const hubShown = hubSurfaceOpen(hubSel) && !hubItemsCovered;
   const onHubOpenInbox = () => {
     closeChromeViews();
     setHubSelection({ project: hubSel.project, item: "inbox" });
@@ -16080,7 +16081,7 @@ function Workspace({
       hubItems={
         <HubProjectItems
           selection={hubSel}
-          monoOpen={monoCovers}
+          monoOpen={hubItemsCovered}
           onPick={(item) => {
             closeChromeViews();
             if (item.kind === "coding-team" && hubProject?.folder)

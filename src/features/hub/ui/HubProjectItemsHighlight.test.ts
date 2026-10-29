@@ -52,6 +52,16 @@ it("with a Mono's 1:1 open, neither Coding team nor Leadership team stays highli
 
 it("the app tells the sidebar when a Mono's 1:1 covers the main area", () => {
   const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/<HubProjectItems\s+selection=\{hubSel\}\s+monoOpen=\{monoCovers\}/);
+  expect(app).toMatch(/<HubProjectItems\s+selection=\{hubSel\}\s+monoOpen=\{hubItemsCovered\}/);
   expect(app).toContain("const monoCovers = !!monoViewId;");
+});
+
+// r63 (PM's 0.16.3 shot): Pages and Coding team were both highlighted. Pages is the automations view in pages mode; it
+// (and Search, Settings, Inbox, Notes, Automations) now covers the project's items like a 1:1 does.
+it("with Pages (or any other main view) open, no project item stays highlighted next to it", async () => {
+  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
+  const covered = app.slice(app.indexOf("const hubItemsCovered ="), app.indexOf("const hubShown ="));
+  for (const view of ["searchViewOpen", "settingsOpen", "inboxViewOpen", "notesViewOpen", "automationsViewOpen", "monoCovers"]) expect(covered).toContain(view);
+  expect(app).toContain("pagesActive={automationsViewOpen && pagesMode}");
+  expect(await highlighted("coding-team", true)).toEqual([]);
 });
