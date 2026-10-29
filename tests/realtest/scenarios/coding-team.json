@@ -32,30 +32,93 @@
     {
       "id": "c01-team-chat",
       "title": "Coding team: a new chat, a real bug, a quick question while it works",
-      "bench": ["CT", "B11", "P2", "CQ"],
+      "bench": [
+        "CT",
+        "B11",
+        "P2",
+        "CQ"
+      ],
       "minutes": 12,
       "maxTurns": 30,
       "steps": [
-        { "send": { "codingTeam": "project" }, "as": "fix", "label": "bug", "text": "the stats test is red, can u sort it and tell me what was actually wrong" },
-        { "wait": { "chatReply": "fix", "maxSec": 150 } },
-        { "send": { "chat": "fix" }, "label": "aside", "text": "quick q while thats going, where does the median live, which package" },
-        { "wait": { "chatReply": "fix", "maxSec": 120 } },
-        { "wait": { "any": [{ "settled": true }, { "chatText": "fix", "pattern": "(fixed|pass|green|tests? (now )?pass)" }], "maxSec": 420 } },
-        { "wait": { "quiet": true, "quietSec": 30, "maxSec": 120 } },
-        { "view": { "project": "tally", "item": "coding-team" }, "name": "coding-team-after-fix" }
+        {
+          "send": {
+            "codingTeam": "project"
+          },
+          "as": "fix",
+          "label": "bug",
+          "text": "the stats test is red, can u sort it and tell me what was actually wrong"
+        },
+        {
+          "wait": {
+            "chatReply": "fix",
+            "maxSec": 150
+          }
+        },
+        {
+          "send": {
+            "chat": "fix"
+          },
+          "label": "aside",
+          "text": "quick q while thats going, where does the median live, which package"
+        },
+        {
+          "wait": {
+            "chatReply": "fix",
+            "maxSec": 120
+          }
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "chatText": "fix",
+                "pattern": "(fixed|pass|green|tests? (now )?pass)"
+              }
+            ],
+            "maxSec": 420
+          }
+        },
+        {
+          "wait": {
+            "quiet": true,
+            "quietSec": 30,
+            "maxSec": 120
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "coding-team-after-fix"
+        }
       ],
       "criteria": "Ash starts a new chat in Tally's coding team (not a Mono, not the Lead). It must behave as an orchestrator that talks: acknowledge in a few words, say what it is doing and why, either fix it itself (small) or hand it to a worker, and keep answering Ash's quick question at once while the work runs (never 'busy', never a tool dump). The result comes back in plain words with proof (the test run). Any worker's chat nests under this chat in the coding team's list; workers never talk to Ash. No em dashes, no walls of text."
     },
     {
       "id": "c02-team-dump",
       "title": "Coding team: a multi-ask message with a decision in it",
-      "bench": ["CT", "P1", "P9", "B5", "CQ"],
+      "bench": [
+        "CT",
+        "P1",
+        "P9",
+        "B5",
+        "CQ"
+      ],
       "minutes": 14,
       "maxTurns": 45,
-      "allowPromptly": ["dump"],
+      "allowPromptly": [
+        "dump"
+      ],
       "steps": [
         {
-          "send": { "codingTeam": "project" },
+          "send": {
+            "codingTeam": "project"
+          },
           "as": "dump",
           "label": "dump",
           "text": [
@@ -63,33 +126,142 @@
             "6 should the week reset sunday or monday, whats normal, give me ur pick. and from now on always run npm test before u say anything is done."
           ]
         },
-        { "wait": { "chatReply": "dump", "maxSec": 180 } },
-        { "wait": { "delegation": { "ownerChat": "dump", "count": 1 }, "maxSec": 150 } },
-        { "send": { "chat": "dump" }, "label": "busy-ask", "text": "hows it going, anything need me" },
-        { "wait": { "chatReply": "dump", "maxSec": 120 } },
-        { "snapshot": "after-busy-ask" },
-        { "wait": { "any": [{ "settled": true }, { "quiet": true, "quietSec": 60 }], "maxSec": 300 } },
-        { "view": { "project": "tally", "item": "coding-team" }, "name": "coding-team-mid" },
-        { "wait": { "any": [{ "settled": true }, { "quiet": true, "quietSec": 60 }], "maxSec": 240 } },
-        { "view": { "project": "tally", "item": "coding-team" }, "name": "coding-team-after-dump" }
+        {
+          "wait": {
+            "chatReply": "dump",
+            "maxSec": 180
+          }
+        },
+        {
+          "wait": {
+            "delegation": {
+              "ownerChat": "dump",
+              "count": 1
+            },
+            "maxSec": 150
+          }
+        },
+        {
+          "send": {
+            "chat": "dump"
+          },
+          "label": "busy-ask",
+          "text": "hows it going, anything need me"
+        },
+        {
+          "wait": {
+            "chatReply": "dump",
+            "maxSec": 120
+          }
+        },
+        {
+          "snapshot": "after-busy-ask"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "quiet": true,
+                "quietSec": 60
+              }
+            ],
+            "maxSec": 300
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "coding-team-mid"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "quiet": true,
+                "quietSec": 60
+              }
+            ],
+            "maxSec": 240
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "coding-team-after-dump"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "inbox-after-dump"
+        }
       ],
-      "checks": { "leak": ["FF6A00", "Vanguard"] },
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
       "criteria": "Six asks plus a rule. The chat's first reply lists every ask back in order (none dropped or invented), says what starts now, and gives its pick on the reset day. Independent work is split across workers by area (API, UI, docs), not one worker for everything, and parallel workers in the repo get their own port and checkout (their briefs carry PORT=, a worktree for the second one) and never kill each other's processes. The 'from now on always run npm test' rule is saved at once with ash_remember (see memory calls). While workers run, Ash's 'hows it going' is answered at once with what is out. Reports come back to this chat; nothing is called done without the test run."
     },
     {
       "id": "c03-team-decision-recall",
       "title": "A decision given in a coding-team chat is saved, and the Lead recalls it",
-      "bench": ["CT", "P8", "P9", "B14"],
+      "bench": [
+        "CT",
+        "P8",
+        "P9",
+        "B14"
+      ],
       "minutes": 6,
       "maxTurns": 12,
       "takePendingPick": true,
       "steps": [
-        { "send": { "codingTeam": "project" }, "as": "decide", "label": "decision", "text": "sharing: decided. private by default, the owner can turn on a shared flag per tally. no need to build it yet, just note it" },
-        { "wait": { "chatReply": "decide", "maxSec": 120 } },
-        { "send": { "mono": "lead" }, "label": "recall", "text": "what did we decide about sharing, one line" },
-        { "wait": { "monoReply": "lead", "maxSec": 150 } }
+        {
+          "send": {
+            "codingTeam": "project"
+          },
+          "as": "decide",
+          "label": "decision",
+          "text": "sharing: decided. private by default, the owner can turn on a shared flag per tally. no need to build it yet, just note it"
+        },
+        {
+          "wait": {
+            "chatReply": "decide",
+            "maxSec": 120
+          }
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "recall",
+          "text": "what did we decide about sharing, one line"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 150
+          }
+        }
       ],
-      "checks": { "leak": ["FF6A00", "Vanguard"] },
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
       "criteria": "Ash gives a decision in a coding-team chat. That chat saves it at once with ash_remember in Tally's memory (see memory calls), says so in a few words, and starts no work (he said not to build it). Then the Lead, in its own chat, recalls the decision from memory. Nothing from EXO appears."
     }
   ]
