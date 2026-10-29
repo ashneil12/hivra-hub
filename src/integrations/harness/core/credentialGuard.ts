@@ -109,7 +109,12 @@ export function credentialBlock(
 export const SECRET_ACTION_BLOCK_MESSAGE =
   "Blocked by MonoCode: that rotates, loads, exports or prints a secret, or runs a command with secrets injected, which agents never do. Don't retry it or look for another way. Stop and ask Ash on its own line: \"Needs Ash (provide): <the key or secret action and why>\".";
 
-/** Claude Code deny rules for every Claude process (hubMcp.ts chatDeniedTools). */
+/**
+ * Claude Code deny rules for every Claude process (hubMcp.ts chatDeniedTools). r72 (29 Oct): narrowed after checking
+ * 21 days of real Claude chats on Ash's Mac: names-only listings (`gh secret list`, `wrangler secret list`, `fly
+ * secrets list`), one plain variable (`printenv CLAUDE_CODE_SESSION_ID`, `docker exec … printenv HERMES_HOME`) and
+ * "api_keys" in a PR body, table list or branch name are ordinary work, not a secret action.
+ */
 export const SECRET_ACTION_DENY_RULES: readonly string[] = [
   "Bash(*vercel env run*)",
   "Bash(*vercel env pull*)",
@@ -131,22 +136,41 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
   "Bash(*dotenv run*)",
   "Bash(*dotenvx run*)",
   "Bash(*heroku config*)",
-  "Bash(*fly secrets*)",
-  "Bash(*flyctl secrets*)",
+  "Bash(*fly secrets set*)",
+  "Bash(*fly secrets unset*)",
+  "Bash(*fly secrets import*)",
+  "Bash(*flyctl secrets set*)",
+  "Bash(*flyctl secrets unset*)",
+  "Bash(*flyctl secrets import*)",
   "Bash(*railway run*)",
   "Bash(*railway variables*)",
-  "Bash(*wrangler secret*)",
+  "Bash(*wrangler secret put*)",
+  "Bash(*wrangler secret delete*)",
+  "Bash(*wrangler secret bulk*)",
   "Bash(*supabase secrets*)",
-  "Bash(*gh secret*)",
-  "Bash(*secretsmanager*)",
+  "Bash(*supabase projects api-keys*)",
+  "Bash(*gh secret set*)",
+  "Bash(*gh secret delete*)",
+  "Bash(*gh secret remove*)",
+  "Bash(*aws secretsmanager*)",
   "Bash(*gcloud secrets*)",
   "Bash(*keyvault secret*)",
-  "Bash(*printenv*)",
+  "Bash(printenv)",
+  "Bash(printenv |*)",
+  "Bash(printenv >*)",
+  "Bash(*printenv *KEY*)",
+  "Bash(*printenv *TOKEN*)",
+  "Bash(*printenv *SECRET*)",
+  "Bash(*printenv *PASSWORD*)",
   "Bash(env)",
   "Bash(env |*)",
   "Bash(export -p*)",
-  "Bash(*api-keys*)",
-  "Bash(*api_keys*)",
+  "Bash(*curl *api-keys*)",
+  "Bash(*curl *api_keys*)",
+  "Bash(*wget *api-keys*)",
+  "Bash(*wget *api_keys*)",
+  "Bash(*https://*/api-keys*)",
+  "Bash(*https://*/api_keys*)",
 ];
 
 /** One shell segment's command start (after `cd x &&`, `;`, `|`, `$(`, a backtick, `sudo`, `npx`, `bunx`, `pnpm dlx`). */
@@ -160,19 +184,20 @@ const SECRET_ACTIONS: readonly RegExp[] = [
   new RegExp(String.raw`${AT}infisical\s+(?:run|export|secrets)\b`, "i"),
   new RegExp(String.raw`${AT}dotenvx?\s+(?:run\b|-e\b|-f\b|--\s)`, "i"),
   new RegExp(String.raw`${AT}heroku\s+config\b`, "i"),
-  new RegExp(String.raw`${AT}(?:fly|flyctl)\s+secrets\b`, "i"),
+  new RegExp(String.raw`${AT}(?:fly|flyctl)\s+secrets\s+(?:set|unset|import)\b`, "i"),
   new RegExp(String.raw`${AT}railway\s+(?:run|variables)\b`, "i"),
-  new RegExp(String.raw`${AT}wrangler\s+secret\b`, "i"),
-  new RegExp(String.raw`${AT}supabase\s+secrets\b`, "i"),
-  new RegExp(String.raw`${AT}gh\s+secret\b`, "i"),
+  new RegExp(String.raw`${AT}wrangler\s+secret\s+(?:put|delete|bulk)\b`, "i"),
+  new RegExp(String.raw`${AT}supabase\s+(?:secrets|projects\s+api-keys)\b`, "i"),
+  new RegExp(String.raw`${AT}gh\s+secret\s+(?:set|delete|remove)\b`, "i"),
   new RegExp(String.raw`${AT}aws\s+(?:secretsmanager\b|ssm\s+get-parameters?\b.*--with-decryption|iam\s+(?:create|update|delete)-access-key\b)`, "i"),
   new RegExp(String.raw`${AT}gcloud\s+secrets\b`, "i"),
   new RegExp(String.raw`${AT}az\s+keyvault\s+secret\b`, "i"),
   new RegExp(String.raw`${AT}kubectl\s+(?:get|describe|create)\s+secrets?\b`, "i"),
   // an API's key endpoints: creating, rolling or deleting a key (Resend's /api-keys, Stripe's api_keys, …)
-  /\bapi[-_]keys?\b.*\b(?:curl|wget|http|https?:\/\/)|\b(?:curl|wget|http)\b.*\bapi[-_]keys?\b/i,
+  new RegExp(String.raw`${AT}(?:curl|wget|https?|xh)\b[^;&|]*\bapi[-_]keys?\b`, "i"),
+  /https?:\/\/[^\s"'<>]*\/api[-_]keys?\b/i,
   // printing the environment
-  new RegExp(String.raw`${AT}(?:printenv|export\s+-p)\b`),
+  new RegExp(String.raw`${AT}(?:printenv(?=\s*(?:$|[|;&>)])|\s+[^;&|]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)\b)|export\s+-p\b)`),
   new RegExp(String.raw`${AT}env\s*(?:$|[|;&>])`),
   // echoing a secret variable
   /\b(?:echo|printf|cat)\b[^;&|]*\$\{?[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)\b/,
