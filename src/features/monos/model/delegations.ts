@@ -9,6 +9,7 @@
 //   one whose child is gone is reported cancelled; one whose owner is gone is dropped;
 // - a resumed turn (auto-continue, a usage-limit resume, a later message in a cut-off child) re-attaches to the
 //   child's row and bumps its generation, so its report has its own receipt (`mono-completion-<request>-g<n>`).
+import { workerTitle } from "./workerTitle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -329,7 +330,7 @@ export function storedResult(
     sessionId: row.childSession,
     // Where the work ran: the row's project is the hub project id when there is one (for Ash OS).
     project: child?.cwd ?? row.project ?? "",
-    title: child?.title || row.title || "Agent session",
+    title: workerTitle(child?.title || row.title, "Agent session") || "Agent session",
     status,
     originalPrompt: prompt.slice(0, 12_000),
     result: result.slice(0, 12_000),
@@ -617,6 +618,8 @@ export class DelegationTracker {
 
   /** Record a monitored launch or follow-up before its child starts. */
   launch(input: RecordInput): DelegationLaunch {
+    // r63: the row's title is a job name, not the Lead's "I'll check…" (workerTitle.ts).
+    if (input.title) input = { ...input, title: workerTitle(input.title, input.title) };
     const row = this.serial(async () => {
       const recorded = await this.backend.record(input);
       this.remember(recorded);
