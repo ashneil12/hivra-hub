@@ -41,7 +41,7 @@ import {
   MonoSessionCompletionBatches,
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
-import { reviewAsk } from "../features/monos/model/workerReview";
+import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -12880,6 +12880,8 @@ function Workspace({
               // Sending it now carries the worker on into the second turn; `onSettled` keeps that turn's own report
               // on this same row, with the review it is asked for.
               const accepted = await submitSessionRef.current(sessionId, reviewAsk(result.reviewProblem), [], {
+                // A system note, never a turn that reads as Ash's own (r67).
+                monoNote: reviewAskNote(),
                 onSettled: (next) => void turnEnded(next, true),
               });
               if (!accepted) finish(result);

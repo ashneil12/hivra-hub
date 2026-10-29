@@ -143,6 +143,14 @@ Don't redo the work: the checks you already ran are what belongs there. Send you
 ${SELF_REVIEW_SHAPE}`;
 }
 
+/**
+ * r67 (Critiquito on r66): the re-ask rendered as if Ash had typed it. It goes as a hidden app turn with this quiet
+ * system line instead (the same card Self-repair and Hourly check notes use), so the chat never shows it as his message.
+ */
+export function reviewAskNote(): { kind: "message"; from: string; line: string } {
+  return { kind: "message", from: "MonoCode", line: "Asked for the self-review the report came back without" };
+}
+
 /** A review read back from the row's stored JSON, when it is still the right shape. */
 export function storedReview(json: string | null | undefined): WorkerReview | undefined {
   if (!json) return undefined;
