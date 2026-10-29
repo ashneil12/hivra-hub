@@ -315,6 +315,13 @@
           }
         },
         {
+          "wait": {
+            "quiet": true,
+            "quietSec": 45,
+            "maxSec": 150
+          }
+        },
+        {
           "view": {
             "project": "tally",
             "item": "being-built"
