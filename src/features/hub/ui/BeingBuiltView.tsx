@@ -77,6 +77,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
     : undefined;
   const active = foldParts([...workflowRows, ...(live ? liveWorkers : activeWorkers(projectId))]);
   const done = live ? [] : finishedToday(projectId);
+  const activeActions = listHasActions(active);
   // Finished jobs Ash has had in front of him: when he leaves the page they have been seen and go.
   const shownDone = useRef<string[]>([]);
   shownDone.current = liveWorkers.filter((w) => w.finishedAt).map((w) => w.id);
@@ -138,7 +139,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                 {byMono(active).map(([mono, jobs]) => (
                   <div key={mono} className="flex flex-col gap-0.5" data-hub-mono-jobs={mono}>
                     <div className="px-3 text-xs text-content/60">{mono}<PausedNote who={mono} /></div>
-                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} now={now} />)}
+                    {jobs.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho={!live} now={now} actions={activeActions} />)}
                   </div>
                 ))}
               </div>
@@ -151,7 +152,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                   className="self-start rounded-md px-3 py-1 text-xs text-content/60 hover:bg-content/5 hover:text-content">
                   {showDone ? "Hide" : "Show"} finished today ({done.length})
                 </button>
-                {showDone ? done.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho />) : null}
+                {showDone ? done.map((w) => <WorkerLine key={w.id} w={w} onOpen={setOpenId} showWho actions={false} />) : null}
               </div>
             ) : null}
           </div>
@@ -188,7 +189,17 @@ export function jobTimeLabel(w: Worker, now = Date.now()): string {
   return `for ${durationLabel(w.minutes)}`;
 }
 
-export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker; onOpen: (id: string) => void; showWho: boolean; now?: number }) {
+/** A row that offers Ash something to do (answer a stuck worker, take a look). */
+export function hasJobAction(w: Worker): boolean {
+  return !w.finishedAt && !!(w.stuckWorker || w.stuck);
+}
+
+/** Whether a list of rows needs the action column: any of them, or any of their parts, has an action. */
+export function listHasActions(rows: readonly Worker[]): boolean {
+  return rows.some((w) => hasJobAction(w) || listHasActions(w.parts ?? []));
+}
+
+export function WorkerLine({ w, onOpen, showWho, now = Date.now(), actions = true }: { w: Worker; onOpen: (id: string) => void; showWho: boolean; now?: number; actions?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [answering, setAnswering] = useState(false);
   const parts = w.parts;
@@ -224,13 +235,17 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
       <span className="w-24 shrink-0 text-right text-xs tabular-nums text-content/60" data-hub-last-active>
         {jobTimeLabel(w, now)}
       </span>
-      <span className="flex w-44 shrink-0 justify-end">
-        {w.finishedAt ? null : w.stuckWorker ? (
-          <StuckJobAction w={w} answering={answering} onAnswer={() => setAnswering((v) => !v)} />
-        ) : w.stuck ? (
-          <WorkerTakeLook w={w} />
-        ) : null}
-      </span>
+      {/* r78 (Critiquito): the action column only where some row in the list has an action, so with none Working and the
+          time run to the row's right edge, and rows still line up. */}
+      {actions ? (
+        <span className="flex w-44 shrink-0 justify-end">
+          {!hasJobAction(w) ? null : w.stuckWorker ? (
+            <StuckJobAction w={w} answering={answering} onAnswer={() => setAnswering((v) => !v)} />
+          ) : (
+            <WorkerTakeLook w={w} />
+          )}
+        </span>
+      ) : null}
     </div>
     {answering && w.stuckWorker && !w.finishedAt ? (
       <div className="pl-1" data-hub-job-answer={w.id}>
@@ -239,7 +254,7 @@ export function WorkerLine({ w, onOpen, showWho, now = Date.now() }: { w: Worker
     ) : null}
     {parts && expanded ? (
       <div className="flex flex-col gap-0.5 pl-6" data-hub-parts-of={w.id}>
-        {parts.map((p) => <WorkerLine key={p.id} w={p} onOpen={onOpen} showWho={false} now={now} />)}
+        {parts.map((p) => <WorkerLine key={p.id} w={p} onOpen={onOpen} showWho={false} now={now} actions={actions} />)}
       </div>
     ) : null}
     </>
