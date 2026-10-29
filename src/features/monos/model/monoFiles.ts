@@ -25,6 +25,8 @@ export type MonoFiles = {
   memoryPath: string;
   /** Topic notes under memory/, by name; listed in the memory block. */
   topics: string[];
+  /** Notes loaded in full on every handover, not only listed (STANDING_NOTES), with their text. */
+  standing?: { name: string; text: string }[];
   /** Theme files under themes/, by name without `.json` (older backends leave it out). */
   themes?: string[];
   /** Skill files under skills/, by name without `.md` (older backends leave it out). */
@@ -59,6 +61,42 @@ export class MonoFileConflict extends Error {
   constructor() {
     super("The file changed while you were editing");
   }
+}
+
+/**
+ * r62 (A4): topic notes that load whole with the memory block, not only by name. memory/ash-asks.md holds Ash's own
+ * rules in his words; frank's Mono answered "what are Ash's rules" without the 21 Oct "DeepSeek on high" line because
+ * the note was only listed and it never read it.
+ */
+export const STANDING_NOTES: readonly string[] = ["ash-asks"];
+export const STANDING_MAX_BYTES = 12 * 1024;
+
+/**
+ * What a session must have seen of the memory: MEMORY.md, the topic list and the standing notes. A change to any of
+ * them hands the memory over again, in an existing chat too (a note seeded after the chat opened included).
+ */
+export function memoryKey(files: Pick<MonoFiles, "memoryHash"> & Partial<Pick<MonoFiles, "topics" | "standing">>): string {
+  const topics = files.topics ?? [];
+  const standing = files.standing ?? [];
+  if (!topics.length && !standing.length) return files.memoryHash;
+  return [files.memoryHash, topics.join(","), ...standing.map((note) => `${note.name}#${textHash(note.text)}`)].join("|");
+}
+
+function textHash(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36) + ":" + text.length;
+}
+
+async function standingNotes(monoId: string, topics: readonly string[]): Promise<{ name: string; text: string }[]> {
+  const out: { name: string; text: string }[] = [];
+  for (const name of STANDING_NOTES) {
+    if (!topics.includes(name)) continue;
+    const file = await readAgentFile(monoId, `memory/${name}.md`).catch(() => undefined);
+    const text = file?.text?.trim();
+    if (text) out.push({ name, text });
+  }
+  return out;
 }
 
 /** Only this much of MEMORY.md loads into a turn, whichever cuts first. */
@@ -110,6 +148,12 @@ export function loadMonoFiles(monoId: string): Promise<MonoFiles> {
 const loading = new Map<string, Promise<MonoFiles>>();
 
 async function readMonoFiles(monoId: string): Promise<MonoFiles> {
+  const files = await readMonoFilesOnly(monoId);
+  const standing = await standingNotes(monoId, files.topics ?? []);
+  return standing.length ? { ...files, standing } : files;
+}
+
+async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
   await soulOpenCheck?.(monoId).catch(() => undefined);
   const loaded = await invoke<LoadedFiles>("mono_load", folder(monoId));
   // Once read, its old project folder is its own.
@@ -290,7 +334,7 @@ export type AgentContextPlan = {
 export function planAgentContext(
   sessionId: string,
   providerSessionId: string | undefined,
-  files: Pick<MonoFiles, "soulHash" | "memoryHash">,
+  files: Pick<MonoFiles, "soulHash" | "memoryHash"> & Partial<Pick<MonoFiles, "topics" | "standing">>,
 ): AgentContextPlan {
   const handed = readHanded()[sessionId];
   // The provider id arrives with the first reply, so a record made before it
@@ -301,21 +345,21 @@ export function planAgentContext(
     (handed.provider == null || handed.provider === providerSessionId);
   if (!sameSession) return { soul: true, memory: true };
   const soul = handed.soulHash !== handedSoul(files.soulHash);
-  return { soul, memory: soul || handed.memoryHash !== files.memoryHash };
+  return { soul, memory: soul || handed.memoryHash !== memoryKey(files) };
 }
 
 /** Record what a turn the provider accepted carried. */
 export function recordAgentContext(
   sessionId: string,
   providerSessionId: string | undefined,
-  files: Pick<MonoFiles, "soulHash" | "memoryHash">,
+  files: Pick<MonoFiles, "soulHash" | "memoryHash"> & Partial<Pick<MonoFiles, "topics" | "standing">>,
 ): void {
   const next = {
     ...readHanded(),
     [sessionId]: {
       ...(providerSessionId ? { provider: providerSessionId } : {}),
       soulHash: handedSoul(files.soulHash),
-      memoryHash: files.memoryHash,
+      memoryHash: memoryKey(files),
     },
   };
   try {
@@ -439,6 +483,20 @@ export function monoContext(
   return withMemory(parts, files, plan);
 }
 
+/** The standing notes in full (bounded), after the topic list. */
+function standingBlock(standing: MonoFiles["standing"]): string {
+  if (!standing?.length) return "";
+  return standing
+    .map((note) => {
+      const bytes = new TextEncoder().encode(note.text);
+      const text = bytes.length > STANDING_MAX_BYTES
+        ? `${new TextDecoder().decode(bytes.slice(0, STANDING_MAX_BYTES)).replace(/\uFFFD$/, "")}\n[cut here; read the rest with memory.read]`
+        : note.text;
+      return `\n\nmemory/${note.name}.md (always loaded; check it before answering about these rules):\n${text}`;
+    })
+    .join("");
+}
+
 /** The memory block, when this turn hands it over. */
 function withMemory(parts: string[], files: MonoFiles, plan: AgentContextPlan): string {
   if (plan.memory) {
@@ -452,7 +510,7 @@ function withMemory(parts: string[], files: MonoFiles, plan: AgentContextPlan): 
         files.topics.length
           ? `\n\nTopic notes, read on demand with memory.read: ${files.topics.join(", ")}`
           : ""
-      }\n</memory>`,
+      }${standingBlock(files.standing)}\n</memory>`,
     );
   }
   return parts.join("\n\n");
