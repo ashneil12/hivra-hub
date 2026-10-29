@@ -67,6 +67,7 @@ import {
   codingTeamProjectFor,
   codingTeamsOn,
   forgetCodingTeamChat,
+  isCodingTeamChat,
   noteCodingTeamChat,
   projectTapSelection,
 } from "../features/hub/model/codingTeam";
@@ -784,6 +785,7 @@ import {
   findMono,
   monoWorksOn,
   isMonoSession,
+  isProjectLeadId,
   listMonos,
   loadOpenMono,
   monoForSession,
@@ -9843,6 +9845,8 @@ function Workspace({
     sessionsRef,
     // A Lead asked for its report on its own (a message steered into its last turn on the brief): like a report.
     ask: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+    // r78: a Lead or coding-team chat that listed Ash's asks and started no worker is asked to start them.
+    startsWorkers: (chatId) => isCodingTeamChat(chatId) || isProjectLeadId(monoForSession(chatId)?.id ?? ""),
     // "Still running: N" when a Lead says it's done with work it delegated still out (monos/model/leadFlow.ts).
     note: (chatId, block) =>
       setSessions((previous) =>
