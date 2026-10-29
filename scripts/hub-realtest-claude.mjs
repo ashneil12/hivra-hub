@@ -143,6 +143,49 @@ export function rewriteArgs(args, { routed = false, haiku = HAIKU_TEST } = {}) {
   return out;
 }
 
+/**
+ * r72: the bench's chats must never reach Ash's real accounts. In r72's first blind run (p01, 29 Oct 13:37 GMT) a
+ * coding chat in the throwaway HOME ran `vercel whoami`; the CLI found no login, started its device sign-in, the
+ * page was approved in the Mac's browser, and the chat then listed Ash's real Vercel projects. So every bench chat
+ * gets the account CLIs and URL openers denied (as --disallowedTools rules, which hold in every permission mode and
+ * are checked per sub-command), a shim folder first on PATH that refuses them, and BROWSER pointed at false.
+ */
+export const ACCOUNT_CLIS = [
+  "vercel", "netlify", "gh", "fly", "flyctl", "wrangler", "supabase", "railway", "heroku", "doppler", "op",
+  "infisical", "aws", "gcloud", "az", "stripe", "resend", "firebase", "render", "neonctl", "turso", "open", "xdg-open",
+];
+const RUNNERS = ["npx", "bunx", "pnpm dlx", "yarn dlx", "npm exec"];
+
+export function benchFenceArgs(args) {
+  const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
+  if (!conversation) return [...args];
+  const rules = [
+    ...ACCOUNT_CLIS.map((cli) => `Bash(${cli}:*)`),
+    ...RUNNERS.flatMap((runner) => ["vercel", "netlify", "wrangler", "supabase", "firebase"].map((cli) => `Bash(${runner} ${cli}:*)`)),
+  ].join(",");
+  const out = [...args];
+  const at = out.indexOf("--disallowedTools");
+  if (at >= 0 && at + 1 < out.length) out[at + 1] = `${out[at + 1]},${rules}`;
+  else out.push("--disallowedTools", rules);
+  return out;
+}
+
+/** The shim folder (made once per run) and the env that puts it first and stops browser opens. */
+export function benchFenceEnv(env, state) {
+  const bin = path.join(state, "bench-bin");
+  try {
+    fs.mkdirSync(bin, { recursive: true });
+    for (const cli of ACCOUNT_CLIS) {
+      const file = path.join(bin, cli);
+      if (fs.existsSync(file)) continue;
+      fs.writeFileSync(file, `#!/bin/sh\necho "${cli}: not available in the MonoCode test bench (no real accounts here; ask Ash)" >&2\nexit 1\n`, { mode: 0o755 });
+    }
+  } catch {
+    // the run's folder went away: the deny rules still hold
+  }
+  return { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}`, BROWSER: "false" };
+}
+
 /** Haiku test workers: every model is Haiku and no effort is sent (Haiku runs as the app runs its helper calls). */
 export function haikuArgs(args) {
   const out = [];
@@ -265,7 +308,8 @@ function main() {
     }
   };
   const routed = isRouted(process.env);
-  const realArgs = withMemory(rewriteArgs(args, { routed }));
+  env = benchFenceEnv(env, STATE);
+  const realArgs = benchFenceArgs(withMemory(rewriteArgs(args, { routed })));
   log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
   // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
