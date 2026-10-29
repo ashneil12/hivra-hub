@@ -42,7 +42,10 @@ describe("the words", () => {
     expect(noteParts(note({ kind: "stuck", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" is with Lead');
     expect(noteParts(note({ kind: "stuck", from: worker, to: lead, owner: "retrying" })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" is retrying');
     expect(noteParts(note({ kind: "stuck", from: worker, to: lead, owner: "needs-you" })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" needs you');
-    expect(noteParts(note({ kind: "reported", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" reported to Lead');
+    expect(noteParts(note({ kind: "reported", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe("Example: fix the save bug is back");
+    // r78: each "X is back" stands alone, never folded into "N team notes".
+    const back = note({ kind: "reported", from: worker, to: lead, at: 1_000 });
+    expect([...noteRuns([note({ at: 0 }), back, note({ at: 2_000 })]).entries()]).toEqual([[0, 1], [1, 1], [2, 1]]);
     expect(noteParts(note({ target: null })).head.some((p) => p.kind === "name" && p.opens)).toBe(false);
   });
 

@@ -7,12 +7,47 @@ import { autoResumeReason } from "../../autopilot/model/limitResume";
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import { claimEvidenceOf, type ClaimConfidence } from "../../hub/model/claimEvidence";
 import { nothingOpen, parseWorkerReview, type WorkerReview } from "./workerReview";
-import type {
-  Block,
-  MonoSessionCompletion,
-  QueuedMessage,
-  Session,
+import {
+  HARNESS_LABEL,
+  type Block,
+  type MonoSessionCompletion,
+  type QueuedMessage,
+  type Session,
 } from "../../sessions/model/session";
+import { bridgeModelName, GROK_BRIDGE_NAME, type BridgeKind } from "../../sessions/model/bridgeModels";
+import { claudeBridgeKind } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { appIdentity } from "../../../app/model/appIdentity";
+
+/** Which bridge this app's Claude Code runs on, and whether the bench holds every call to Grok 4.7 (verify.grok). */
+function currentBridge(): { kind?: BridgeKind; benchGrok: boolean } {
+  try {
+    return { kind: claudeBridgeKind(), benchGrok: appIdentity()?.verify?.grok === true };
+  } catch {
+    return { benchGrok: false };
+  }
+}
+
+/**
+ * r78 (Critiquito): a finished worker's row names the model that ran, not the harness ("claude · Last week total" read as
+ * if Claude ran it). The stored title keeps its "claude · " prefix; this swaps it for the model's name: on a bridge, what
+ * the bridge runs (DeepSeek V4.1 Flash, or Grok 4.7, and Grok 4.7 for every call on the Grok bench); otherwise the
+ * chat's own model id. A title without the prefix, or a chat with no model named, stays as it is.
+ */
+export function completionTitle(
+  session: Pick<Session, "title" | "harness" | "model">,
+  bridge: { kind?: BridgeKind; benchGrok: boolean } = currentBridge(),
+): string {
+  const title = session.title || "Agent session";
+  const prefix = `${HARNESS_LABEL[session.harness]} · `;
+  if (!title.startsWith(prefix)) return title;
+  const name =
+    session.harness === "claude" && bridge.kind
+      ? bridge.benchGrok
+        ? GROK_BRIDGE_NAME
+        : bridgeModelName(session.model, bridge.kind)
+      : session.model?.trim() || undefined;
+  return name ? `${name} · ${title.slice(prefix.length)}` : title;
+}
 
 const RESULT_MAX_CHARS = 12_000;
 const BATCH_RESULT_MAX_CHARS = 48_000;
@@ -79,7 +114,7 @@ export function monoSessionCompletionResult(
   options: CompletionOptions,
 ): MonoSessionCompletionResult {
   const { requestId, sessionId, project, prompt, outcome, session } = options;
-  const title = session?.title || "Agent session";
+  const title = session ? completionTitle(session) : "Agent session";
   const start = !session || options.reply !== undefined
     ? -1
     : options.latestTurn

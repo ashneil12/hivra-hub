@@ -100,7 +100,7 @@ export function agentNoteText(note: AgentNote): string {
     note.kind === "stuck"
       ? `${note.from.name}${stoppedWords(note)}`
       : note.kind === "reported"
-        ? `${note.from.name} reported to ${note.to.name}`
+        ? `${note.from.name.match(/"(.+)"\s*$/)?.[1]?.trim() ?? note.from.name} is back`
         : `${note.from.name} messaged ${note.to.name}`;
   return note.line ? `${head}: ${note.line}` : head;
 }

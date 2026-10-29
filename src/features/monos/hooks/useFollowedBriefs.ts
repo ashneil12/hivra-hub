@@ -16,6 +16,8 @@ import {
 } from "../model/delegations";
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
+import { statusReply } from "../model/statusReply";
+import { workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
 
@@ -77,6 +79,11 @@ export function useFollowedBriefs(options: {
    * A note is never added twice (its id is the tasks it names).
    */
   note?: (chatId: string, block: Block) => void;
+  /**
+   * r78: the chats that hand out work on Ash's lists (a project Lead, a coding-team chat). One whose turn listed his asks
+   * and said work starts, with no worker started, gets one app message through `ask` to start them (workerStartNudge.ts).
+   */
+  startsWorkers?: (chatId: string) => boolean;
   backend?: DelegationsBackend;
   now?: () => number;
 }): void {
@@ -87,6 +94,7 @@ export function useFollowedBriefs(options: {
   const reported = useRef(new Set<string>());
   const asked = useRef(new Map<string, number>());
   const noted = useRef(new Set<string>());
+  const nudged = useRef(new Set<string>());
   // Agent-to-agent notes (model/agentNotes.ts): moves from this run on, each once; which worker chats exist, once each.
   const notesSince = useRef<number | undefined>(undefined);
   const chatThere = useRef(new Map<string, boolean>());
@@ -155,6 +163,27 @@ export function useFollowedBriefs(options: {
       for (const { chatId, block } of newAgentNoteBlocks(known, sessionsRef.current, notesSince.current, now, exists, noted.current)) {
         noted.current.add(block.id);
         note(chatId, block);
+      }
+      // r78: Ash asks a busy Lead or coding-team chat how it's going: a line from the app at once (statusReply.ts).
+      const startsWorkers = latest.current.startsWorkers;
+      if (startsWorkers)
+        for (const chat of sessionsRef.current) {
+          if (!chat.busy || !startsWorkers(chat.id)) continue;
+          const block = statusReply(chat, known, noted.current, notesSince.current, now);
+          if (!block) continue;
+          noted.current.add(block.id);
+          note(chat.id, block);
+        }
+    }
+    const { startsWorkers, ask } = latest.current;
+    if (startsWorkers && ask) {
+      const known = tracker.known();
+      for (const chat of sessionsRef.current) {
+        if (!startsWorkers(chat.id)) continue;
+        const request = workerStartNudge(chat, known, nudged.current);
+        if (!request) continue;
+        nudged.current.add(request.id.replace(/^start-workers-/, ""));
+        await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
       }
     }
     const onLeadReport = latest.current.onLeadReport;
