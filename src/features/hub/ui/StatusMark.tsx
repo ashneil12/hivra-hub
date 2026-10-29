@@ -4,6 +4,8 @@ import { askNeedsAsh } from "../model/askNeeds";
 import type { Need, StuckState } from "../model/types";
 
 const RED = "rgb(239 68 68)";
+/** r70b (Critiquito): the red "Needs you" word, a touch lighter than the bar so it reads on the dark card (~#ff6b6b). */
+export const NEEDS_YOU_RED = "#ff6b6b";
 
 /** The circle on its own: 14px, a 2px ring. Red only for Needs you; every other state a calm grey. */
 function Ring({ circle }: { circle: ChipTone }) {
@@ -29,7 +31,7 @@ export function CircleWord({ circle, word, ringOnly = false }: { circle: ChipTon
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1.5 text-xs ${circle === "red" ? "" : "text-content/60"}`}
-      style={circle === "red" ? { color: RED } : undefined}
+      style={circle === "red" ? { color: NEEDS_YOU_RED } : undefined}
       data-hub-circle={circle}
       data-hub-chip={word}
     >
@@ -44,8 +46,13 @@ export function CircleWord({ circle, word, ringOnly = false }: { circle: ChipTon
  * 2px red bar on its left edge plus the red "Needs you" word; its background stays neutral. An inset shadow, so the
  * row's text doesn't move by the bar's width.
  */
-export function redRowProps(red: boolean): { style?: { boxShadow: string }; "data-hub-red-row"?: true } {
-  return red ? { style: { boxShadow: `inset 2px 0 0 ${RED}` }, "data-hub-red-row": true } : {};
+export function redRowProps(
+  red: boolean,
+  /** A shadow the element already has (a pinned card's drop shadow), kept under the bar. */
+  keepShadow?: string,
+): { style?: { boxShadow: string }; "data-hub-red-row"?: true } {
+  if (!red) return {};
+  return { style: { boxShadow: [`inset 2px 0 0 ${RED}`, keepShadow].filter(Boolean).join(", ") }, "data-hub-red-row": true };
 }
 
 export function ChipMark({ chip, ringOnly = false }: { chip: Chip; ringOnly?: boolean }) {
