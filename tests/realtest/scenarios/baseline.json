@@ -173,7 +173,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today"
@@ -269,7 +269,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-stuck"
@@ -312,6 +312,13 @@
           "wait": {
             "settled": true,
             "maxSec": 300
+          }
+        },
+        {
+          "wait": {
+            "quiet": true,
+            "quietSec": 45,
+            "maxSec": 150
           }
         },
         {
@@ -444,7 +451,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-402"
@@ -728,7 +735,7 @@
       "steps": [
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-final"

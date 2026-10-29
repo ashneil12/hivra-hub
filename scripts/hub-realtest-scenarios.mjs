@@ -169,7 +169,11 @@ export async function runScenario(scenario, ctx) {
     try {
       const answer = await act("open", { hub: step.view, settleMs: 2000 }, 30_000);
       const shot = await ctx.screenshot(`${scenario.id}-${name}`);
-      record.views.push({ t: Date.now(), name, view: step.view, mainText: answer.dom?.bodyText ?? answer.dom?.mainText ?? "", elements: answer.dom?.elements ?? [], screenshot: shot });
+      // r73: read the page again after the screenshot. The 2 s settle can miss a list that draws late (blind s06: the
+      // shot showed Today's Waiting-on-you row while the text the grader read still said "Nothing new here").
+      const later = (await act("snapshot").catch(() => null))?.dom;
+      const dom = later?.bodyText || later?.mainText ? later : answer.dom;
+      record.views.push({ t: Date.now(), name, view: step.view, mainText: dom?.bodyText ?? dom?.mainText ?? "", elements: dom?.elements ?? [], screenshot: shot });
       if (!shot.ok) record.notes.push(`screenshot ${name}: ${shot.why}`);
     } catch (error) {
       record.views.push({ t: Date.now(), name, error: error.message });

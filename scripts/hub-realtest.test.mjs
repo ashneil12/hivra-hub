@@ -298,3 +298,17 @@ test("the run's git can't use Ash's logins or push to GitHub, even after an agen
   assert.equal(env.GIT_SSH_COMMAND, "false");
   fsm.rmSync(home, { recursive: true, force: true });
 });
+
+test("r73: every scenario view opens a real project (no central Today since 23 Oct; 'today' fell back to the first project)", () => {
+  const dir = new URL("../tests/realtest/scenarios/", import.meta.url);
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const doc = JSON.parse(fs.readFileSync(new URL(file, dir), "utf8"));
+    const own = typeof doc.project === "object" ? doc.project?.id : doc.project;
+    for (const scenario of doc.scenarios ?? [])
+      for (const step of scenario.steps ?? [])
+        if (step.view) {
+          assert.notEqual(step.view.project, "today", `${file} ${scenario.id}: view opens "today"`);
+          if (own) assert.equal(step.view.project, own, `${file} ${scenario.id}: view opens another project`);
+        }
+  }
+});
