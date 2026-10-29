@@ -134,6 +134,7 @@ export function loadConnectors(): Promise<void> {
     .then((next) => {
       view = checked(next);
       loadError = undefined;
+      pruneRetiredMonos();
     })
     .catch((error) => {
       loadError = message(error);
@@ -143,6 +144,52 @@ export function loadConnectors(): Promise<void> {
       changed();
     });
   return loading;
+}
+
+// ---- r66 (Alfred A10): a retired Mono's per-Mono entry leaves connectors.json with it, and stays gone.
+
+const RETIRED_KEY = "monocode:retired-mono-ids";
+function retiredIds(): string[] {
+  try {
+    const list: unknown = JSON.parse(localStorage.getItem(RETIRED_KEY) ?? "[]");
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveRetiredIds(ids: string[]): void {
+  try {
+    localStorage.setItem(RETIRED_KEY, JSON.stringify([...new Set(ids)].slice(-200)));
+  } catch {
+    // Storage full or off: the entry was still removed now; only the sweep at the next start is lost.
+  }
+}
+/** The Monos retired on this Mac and not brought back (their entries must never come back in connectors.json). */
+export function retiredMonoIds(): readonly string[] {
+  return retiredIds();
+}
+/** A Mono's own connector choice in connectors.json, when the state has been read. */
+export function monoConnectorChoice(monoId: string): MonoChoice | undefined {
+  return view?.settings.monos[monoId];
+}
+/** Retiring: its entry is removed now and remembered, so a later read (a restart, another writer) removes it again. */
+export async function forgetRetiredMonoConnectors(monoId: string): Promise<void> {
+  saveRetiredIds([...retiredIds(), monoId]);
+  if (!view) await loadConnectors();
+  if (view && !(monoId in view.settings.monos)) return;
+  await setMonoConnectors(monoId, null);
+}
+/** Undo of the retire: the Mono is back, so its entry is too (the choice it had when it was retired). */
+export async function restoreRetiredMonoConnectors(monoId: string, choice: MonoChoice | undefined): Promise<void> {
+  saveRetiredIds(retiredIds().filter((id) => id !== monoId));
+  if (choice) await setMonoConnectors(monoId, choice);
+}
+/** Every read: an entry for a retired Mono that isn't on the roster again is removed (never a Mono that is). */
+function pruneRetiredMonos(): void {
+  const retired = new Set(retiredIds());
+  if (!view || !retired.size) return;
+  for (const id of Object.keys(view.settings.monos))
+    if (retired.has(id) && !findMono(id)) void setMonoConnectors(id, null).catch((e: unknown) => console.warn("Could not remove a retired Mono's connectors", e));
 }
 
 /** Re-render on change; the first reader starts the read. */

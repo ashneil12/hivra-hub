@@ -353,6 +353,8 @@ export type TurnInput = {
   conversation?: { title: string; startedAt?: number };
   /** The Mono cards this Mono drafted lately, with what happened to each (monoMake.draftStatusLines). */
   cards?: readonly string[];
+  /** r66: Chief of Staff's live Mono list for this turn (liveMonos.ts); retired Monos are not on it. */
+  monosNow?: string;
 };
 
 function task(input: TurnInput): string {
@@ -401,7 +403,7 @@ export function turnPrompt(input: TurnInput): string {
   const fresh = conv
     ? forUser`\nThis is the conversation ${JSON.stringify(conv.title)}${started}, separate from this room's earlier ones: what Ash asks here is a new ask, even if an earlier conversation had the same one.`
     : "";
-  const cards = input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : "";
+  const cards = `${input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : ""}${input.monosNow ? `\n${input.monosNow}` : ""}`;
   return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}
 Your own role: ${cardOf(me)} Asked who you are or what you do, describe this role, in your own voice; never another Mono's.${fresh}${cards}
 In the room: Ash${others.length ? `, and:\n${others.map((s) => `- ${cardOf(s)}`).join("\n")}` : "."}

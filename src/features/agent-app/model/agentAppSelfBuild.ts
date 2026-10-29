@@ -8,6 +8,7 @@ import { loadSkills } from "../../skills/model/skills";
 import { askedAshAndHeardBack, ashSpokeSince, INTERVIEW_FIRST } from "../../selfBuild/model/ashSaid";
 import { hubChangeBrief, readyHubChange, startHubChange, undoHubPart } from "../../selfBuild/model/hubCode";
 import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
+import { handleMonoRetire } from "../../selfBuild/model/monoRetire";
 import { draftTeam, makeDraftedTeam } from "../../selfBuild/model/teamMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
 import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
@@ -19,6 +20,7 @@ import { roomTurnOf } from "../../hub/model/roomConductor";
 
 export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["monos.create", ["name", "role", "who", "watchFor", "soul", "skills", "projects", "connectors", "rooms", "draftId"]],
+  ["monos.retire", ["mono", "retireId"]],
   ["teams.create", ["name", "brief", "projects", "members", "draftId"]],
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
@@ -72,6 +74,8 @@ export async function handleSelfBuild(
       const where = turn ? { room: turn.chatId, conv: turn.convId } : { session: source.id };
       return draftMono(input, me, Date.now(), await installedSkills(source, host), where);
     }
+    case "monos.retire":
+      return handleMonoRetire(input, me, { ashSpokeSince: spoke });
     case "teams.create": {
       if (input.draftId !== undefined) {
         if (Object.keys(input).length > 1) throw new Error("With draftId, send nothing else: the draft is what gets made.");

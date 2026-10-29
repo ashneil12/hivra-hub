@@ -50,6 +50,7 @@ import {
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 import { forUser, userLabel } from "./userName";
 import { draftStatusLines } from "../../selfBuild/model/monoMake";
+import { liveMonosNote } from "./liveMonos";
 import { withoutNoReply } from "../../../shared/text/noReply";
 import { isRolesAsk, isSecondStatus, isStatusAsk, logDropped, stripMeta, stripOtherSeats } from "./roomMeta";
 
@@ -553,6 +554,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
     ...(chat.conversations.length > 1 ? { conversation: { title: conv.title, startedAt: conv.createdAt } } : {}),
     cards: draftStatusLines(me.id, { room: chatId, conv: conv.id }),
+    monosNow: liveMonosNote(me.id),
   };
   const attachments = turnAttachments(conv.messages, wake);
   let outcome: RoomTurnOutcome;

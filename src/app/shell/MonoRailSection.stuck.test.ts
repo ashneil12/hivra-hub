@@ -234,6 +234,35 @@ describe("the Monos section folds (A9)", () => {
     expect(container.querySelector("[data-mono-rail-summary]")).toBeNull();
     expect(toggle().textContent).toContain("2");
   });
+
+  it("r66 (Alfred A9): folded, the header says who is busy in its own chat: the name with a dot, or how many", () => {
+    const a = createMono();
+    updateMono(a.id, (m) => ({ ...m, name: "Nibbii lead" }));
+    const b = createMono();
+    updateMono(b.id, (m) => ({ ...m, name: "Postie" }));
+    const render = (working: string[]) =>
+      act(() =>
+        root.render(
+          createElement(MonoRailSection, {
+            states: new Map(working.map((id) => [id, { status: "working" }])) as never,
+            onOpen: () => {},
+            onCreate: () => {},
+            onDelete: () => {},
+          }),
+        ),
+      );
+    render([a.id]);
+    act(() => toggle().click());
+    const header = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Expand Monos"]')!;
+    const busy = () => container.querySelector<HTMLElement>("[data-mono-rail-busy]");
+    expect(busy()!.textContent).toBe("Nibbii lead");
+    expect(header().getAttribute("aria-label")).toBe("Expand Monos, Nibbii lead");
+    render([a.id, b.id]);
+    expect(busy()!.textContent).toBe("2 working");
+    render([]);
+    expect(busy()).toBeNull();
+    expect(header().getAttribute("aria-label")).toBe("Expand Monos");
+  });
 });
 
 describe("stuck cards read plainly (Critiquito, 21 Oct)", () => {

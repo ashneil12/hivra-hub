@@ -1,5 +1,5 @@
 import { migrateMonoModels } from "../../monos/model/monoModels";
-import { DEFAULT_TEAM, ensureBuiltInMonos } from "./builtInMonos";
+import { DEFAULT_TEAM, DEFAULT_TEAM_IDS, ensureBuiltInMonos } from "./builtInMonos";
 import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
@@ -295,6 +295,9 @@ export function sinceLabel(iso: string, now = new Date()): string {
  * show only in a project's Being built.
  */
 export function hubMonoRank(mono: { id: string; name?: string }): number {
+  // r66 (Alfred A3): by id, so Chief of Staff renamed "Boss" keeps the top slot; the name only for an older roster entry.
+  const byId = DEFAULT_TEAM_IDS.indexOf(mono.id);
+  if (byId >= 0) return byId;
   const team = DEFAULT_TEAM.indexOf(mono.name ?? "");
   if (team >= 0) return team;
   if (leadFor(mono.id)) return 10;
