@@ -12,7 +12,7 @@ import {
   type UserQuestionReply,
 } from "../../sessions/model/userQuestion";
 import type { Block } from "../../sessions/model/session";
-import { forUser } from "./userName";
+import { forUser, userName } from "./userName";
 import { secretActionBlock } from "../../../integrations/harness/core/credentialGuard";
 
 export type ChatQuestion = {
@@ -101,8 +101,16 @@ export function plainOptionLabel(label: string): string {
 
 // ---- the "Needs Ash:" marker -------------------------------------------------------------------------------------
 
-/** "Needs Ash: …" (or "Needs Ash (red line): …"), at the start of a line, markdown bold, quote or bullet allowed. */
-const NEEDS_ASH = /^[\s>*_\-•]*needs\s+ash\s*(\((?<flag>[^)]*)\))?\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<q>.+)$/im;
+/**
+ * "Needs Ash: …" (or "Needs Ash (red line): …"), at the start of a line, markdown bold, quote or bullet allowed.
+ * r73: on an install that isn't Ash's the prompts say "Needs <their name>:" or "Needs the user:" (forUser), and a blind
+ * s06 Lead wrote "Needs the user:"; each of those counts too.
+ */
+function needsAshPattern(): RegExp {
+  const name = userName()?.trim();
+  const who = ["ash", "the\\s+user", ...(name && !/^ash$/i.test(name) ? [name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")] : [])];
+  return new RegExp(`^[\\s>*_\\-•]*needs\\s+(?:${who.join("|")})\\s*(\\((?<flag>[^)]*)\\))?\\s*[*_]*\\s*[:\\-—]\\s*[*_]*\\s*(?<q>.+)$`, "gim");
+}
 const MY_PICK = /^[\s>*_\-•]*(?:my\s+pick|my\s+recommendation|recommend(?:ation|ed)?|suggested|i\s+recommend)\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<p>.+)$/im;
 
 export type NeedsAshMarker = { question: string; pick?: string; redLine: boolean; flag?: string; provide?: string };
@@ -158,7 +166,7 @@ function lowerFirst(text: string): string {
 /** The last "Needs Ash:" line in an agent's text, with the "My pick:" line after it. */
 export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   let found: RegExpExecArray | null = null;
-  const all = new RegExp(NEEDS_ASH.source, "gim");
+  const all = needsAshPattern();
   for (let m = all.exec(text); m; m = all.exec(text)) found = m;
   if (!found?.groups?.q) return null;
   const question = oneLine(found.groups.q);
