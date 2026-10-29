@@ -1487,3 +1487,12 @@ describe("parallel workers per project, with throttling (H8)", () => {
     expect(out.status).toBe("waiting");
   });
 });
+
+describe("worker rules (r82, c02: a worker built Monday in while it was still Ash's pick)", () => {
+  it("leaves Ash's choices to Ash and reports a mismatch at the top", () => {
+    const rules = workerRules(4123);
+    expect(rules).toMatch(/A choice that is Ash's .* is not yours to settle in code/);
+    expect(rules).toMatch(/stop and ask your Lead/);
+    expect(rules).toMatch(/doesn't match .* say so plainly at the top of your report/);
+  });
+});

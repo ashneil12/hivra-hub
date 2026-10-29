@@ -283,7 +283,7 @@ function nameList(names: readonly string[]): string {
 export const SILENT_CHECK =
   "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat.";
 export const ROLL_UP_SHAPE =
-  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open.";
+  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Anything a worker found that doesn't match (a mismatch, a conflict) is told plainly, never only checked.";
 
 /** What the notification asks of the Mono, by where the report stands among its turn's sessions. */
 function completionAsk(count: number, progress?: CompletionProgress): string {

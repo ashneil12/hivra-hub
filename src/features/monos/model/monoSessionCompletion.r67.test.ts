@@ -34,6 +34,8 @@ describe("lead reports while tracks come back", () => {
     expect(text).toContain(ROLL_UP_SHAPE);
     expect(ROLL_UP_SHAPE).toContain("Landed / Not fixed");
     expect(ROLL_UP_SHAPE).toContain("each piece of work once");
+    // r82 (c02): the shared-type mismatch a worker found was only "checked", never told to Ash.
+    expect(ROLL_UP_SHAPE).toMatch(/doesn't match .* is told plainly/);
     expect(text).toContain(SILENT_CHECK);
   });
 
