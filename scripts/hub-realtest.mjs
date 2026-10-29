@@ -454,6 +454,9 @@ export async function runBench(options, hooks = {}) {
 
     // -- the test project ------------------------------------------------------------------------------------------------
     fs.cpSync(TEMPLATE, project, { recursive: true });
+    // A scenario book's own changes to the starting project (r77 s14: a note only a worker reading that file meets),
+    // committed with the rest so nothing marks them as added.
+    for (const [file, text] of Object.entries(spec.projectFiles ?? {})) fs.writeFileSync(path.join(project, file), text);
     const git = (...args) => execFileSync("git", args, { cwd: project, env: { ...process.env, HOME: home }, encoding: "utf8" });
     git("init", "-q", "-b", "main");
     git("add", "-A");
