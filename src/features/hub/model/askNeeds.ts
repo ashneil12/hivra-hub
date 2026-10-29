@@ -2,7 +2,7 @@
 // landed. Ash OS's existing asks (sign in for Grok, turn on remote control, log into X, two decisions) came through as
 // plain grey rows while Hub, Hivra and EXO showed a badge of 5 for them. Classified here on read, so every open ask the
 // badge counts reads red, with the reason from the same short list the new asks use (chatQuestions.ts NEEDS_REASONS).
-import { provideNeeded, type NeedsReason } from "./chatQuestions";
+import { keyAsk, provideNeeded, type NeedsReason } from "./chatQuestions";
 import type { Need } from "./types";
 
 const SIGN_IN = /\b(?:sign[\s-]?in|log[\s-]?in|login|log\s+(?:me\s+)?into|sign\s+(?:me\s+)?into)\b/i;
@@ -20,7 +20,8 @@ export function isAskNeed(need: Pick<Need, "actionTarget">): boolean {
 /** Why an existing ask needs Ash, from its own words: the same reasons a new ask names. */
 export function askReason(need: Pick<Need, "title" | "why">): NeedsReason {
   const title = need.title ?? "";
-  if (provideNeeded(title)) return "provide something";
+  const provide = provideNeeded(title);
+  if (provide) return keyAsk(provide) ? "Needs a key from you" : "provide something";
   if (SIGN_IN.test(title)) return "sign in";
   if (CODE.test(title)) return "enter a code";
   if (PAY.test(title)) return "pay";
