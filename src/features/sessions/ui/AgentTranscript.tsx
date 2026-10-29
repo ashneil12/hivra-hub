@@ -18,6 +18,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
+import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
@@ -2696,7 +2697,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
 
   if (!block.text && block.streaming) return null;
   // r51: a Mono's NO_REPLY is a signal, never words in a bubble; a reply that is only that shows nothing.
-  const shown = withoutNoReply(block.text);
+  // r74: no em dashes in a reply Ash reads (his rule), swapped here as room posts are when saved; code keeps its own.
+  const shown = withoutEmDashes(withoutNoReply(block.text));
   if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (
@@ -3909,7 +3911,7 @@ export function MonoActivityTrail({
               className="mono-activity-prose min-w-0 px-1 text-content/80"
             >
               <AgentMarkdown
-                text={first.text}
+                text={withoutEmDashes(first.text)}
                 cwd={cwd}
                 onOpenFile={onOpenFile}
                 className="mono-run-report"

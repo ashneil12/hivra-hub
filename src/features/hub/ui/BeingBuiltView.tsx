@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { workerChip } from "../model/statusChip";
-import { ChipMark, LEAD_CHAT_BUTTON, NeedsYouLinkLine } from "./StatusMark";
+import { ChipMark, LEAD_CHAT_BUTTON, NeedsYouLinkLine, redRowProps } from "./StatusMark";
+import { NEEDS_YOU } from "../model/statusChip";
+import { openWaitingChat, useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { openMonoChat } from "../model/hubNav";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -50,6 +52,10 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
   // function (with r30h's app workers no job stands for), and any worker only Ash can sort that no row carries.
   const needsYou = useNeedsYouRows();
   const loneRed = needsYou.flatMap((r) => (r.worker && r.projectId === projectId ? [r.worker] : []));
+  // r74 (blind s06): a Lead that stopped to ask Ash before starting any job made this page say "Nobody's working on
+  // Tally" while Today showed the ask. The chats of this project waiting on Ash are listed here too, the same red row.
+  useWaitingChatsVersion();
+  const waiting = waitingChats(projectId);
   const liveWorkers = live
     ? [
         ...beingBuiltJobRows(projectId, data.listJobs?.(projectId) ?? [], delegations, now, leadFailureOf, APP_WORKER_WHERE),
@@ -104,7 +110,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {open ? (
           <Activity worker={open} now={now} />
-        ) : active.length || done.length || failed.length || loneRed.length ? (
+        ) : active.length || done.length || failed.length || loneRed.length || waiting.length ? (
           <div className="flex w-full flex-col gap-5 px-6 py-8 xl:px-8">
             {failed.length ? (
               <section aria-label="Can't answer" className="flex flex-col gap-0.5" data-hub-failed-monos>
@@ -116,6 +122,21 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                 <StuckList stuck={loneRed} now={now} variant="row" where={(s) => leadNameOf(s)} />
               </section>
             ) : null}
+            {waiting.length ? (
+              <section aria-label="Waiting on you" className="flex flex-col gap-0.5" data-hub-being-built-waiting>
+                {waiting.map((c) => (
+                  <div key={c.sessionId} data-hub-being-built-waiting-chat={c.sessionId} {...redRowProps(true)}
+                    className="flex min-w-0 flex-col gap-0.5 rounded-md px-3 py-1.5">
+                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs">
+                      <ChipMark chip={NEEDS_YOU} />
+                      <span className="text-content/60">{c.chatName} is waiting on you before it starts</span>
+                    </span>
+                    <span className="min-w-0 break-words text-[13px] text-content">{c.question}</span>
+                    <NeedsYouLinkLine name={c.chatName} onOpen={() => openWaitingChat(c.sessionId)} />
+                  </div>
+                ))}
+              </section>
+            ) : null}
             {active.length ? (
               <div className="flex flex-col gap-4">
                 {byMono(active).map(([mono, jobs]) => (
@@ -125,7 +146,7 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
                   </div>
                 ))}
               </div>
-            ) : failed.length || loneRed.length ? null : (
+            ) : failed.length || loneRed.length || waiting.length ? null : (
               <p className="px-3 text-[13px] text-content/60">Nobody's working on {projectName} right now.</p>
             )}
             {done.length ? (
