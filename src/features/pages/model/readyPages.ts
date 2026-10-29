@@ -3,6 +3,7 @@
 // preview and Keep and allow as any page. C8 (Ash: "a few default dashboards that always come with every setup, that
 // just explain the basics"): on a fresh setup the four are kept once by themselves (readyPagesSeed.ts), each with its
 // one-line `what` shown under its title.
+import type { Page } from "./pages";
 import type { BespokeSpec } from "./pageSpec";
 
 /** The request a ready-made page is kept with: how Pages knows the page is already there. */
@@ -94,8 +95,9 @@ async function tap(key, button, call, args) {
   }
   draw();
 }
-function btn(label, onClick, primary) {
+function btn(label, onClick, primary, name) {
   const b = el("button", primary ? "primary" : "", label);
+  if (name) b.setAttribute("aria-label", label + " " + name);
   b.addEventListener("click", (e) => { e.stopPropagation(); onClick(b); });
   return b;
 }
@@ -171,11 +173,11 @@ function row(item) {
   r.appendChild(status(item.state, item.since, item.word, item.needsYou));
   const acts = el("div", "acts");
   const q = item.question;
-  if (q && q.canAnswer && q.pick) acts.appendChild(btn("Take it", (b) => tap(item.key, b, "agents.pick", { chatId: q.chatId }), false));
-  if (q && q.canAnswer) acts.appendChild(btn("Answer", () => { open[item.key] = { kind: "answer", text: "" }; focusNext = item.key; draw(); }, true));
-  if (item.canMessage) acts.appendChild(btn("Message", () => { open[item.key] = { kind: "message", text: "" }; focusNext = item.key; draw(); }));
-  acts.appendChild(btn("Open", (b) => tap(item.key, b, "chats.open", item.openArgs)));
-  if (item.stopArgs) acts.appendChild(btn("Stop", (b) => tap(item.key, b, "agents.stop", item.stopArgs)));
+  if (q && q.canAnswer && q.pick) acts.appendChild(btn("Take it", (b) => tap(item.key, b, "agents.pick", { chatId: q.chatId }), false, item.name));
+  if (q && q.canAnswer) acts.appendChild(btn("Answer", () => { open[item.key] = { kind: "answer", text: "" }; focusNext = item.key; draw(); }, true, item.name));
+  if (item.canMessage) acts.appendChild(btn("Message", () => { open[item.key] = { kind: "message", text: "" }; focusNext = item.key; draw(); }, false, item.name));
+  acts.appendChild(btn("Open", (b) => tap(item.key, b, "chats.open", item.openArgs), false, item.name));
+  if (item.stopArgs) acts.appendChild(btn("Stop", (b) => tap(item.key, b, "agents.stop", item.stopArgs), false, item.name));
   r.appendChild(acts);
   wrap.appendChild(r);
   const more = el("div", "more");
@@ -536,4 +538,20 @@ export const READY_PAGES: readonly ReadyPage[] = [
 /** The one line a ready-made page explains itself with (C8), by the request it was kept with; undefined for any other. */
 export function readyWhat(request: string): string | undefined {
   return READY_PAGES.find((r) => r.request === request)?.what;
+}
+
+/**
+ * r63: a kept ready-made page draws today's ready-made code (html, css, js), so a fix to one (the Agents page's Message
+ * buttons named for their agent) reaches pages kept by an older build. Only when it asks for exactly what the kept page
+ * asks for: what Ash allowed never changes under him; any other page is returned as it is.
+ */
+export function withReadySpec(page: Page): Page {
+  if (page.by !== READY_BY || page.spec.kind !== "bespoke") return page;
+  const ready = READY_PAGES.find((r) => r.request === page.request);
+  if (!ready) return page;
+  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && [...a].sort().join() === [...b].sort().join();
+  if (!same(ready.spec.permissions, page.spec.permissions)) return page;
+  const { html, css, js } = ready.spec;
+  if (page.spec.html === html && page.spec.css === css && page.spec.js === js) return page;
+  return { ...page, spec: { ...page.spec, html, css, js } };
 }
