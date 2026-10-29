@@ -1,3 +1,4 @@
+import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
 import { monoChatModelFix } from "../features/monos/model/monoModels";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
@@ -2685,9 +2686,10 @@ function Workspace({
             {
               // The Hub's tray is running work only, each worker named by its task (liveAgents.ts).
               runningOnly: IS_HUB_BUNDLE,
+              // r67: a room seat reads as the Mono and the room, never its turn prompt.
               taskTitle: (id) =>
                 trayDelegationRows.find((row) => row.childSession === id)
-                  ?.title ?? undefined,
+                  ?.title ?? roomSeatTitle(id),
             },
           )
         : [],
