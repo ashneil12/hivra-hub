@@ -26,7 +26,7 @@
         { "wait": { "monoQuestion": "lead", "maxSec": 240 }, "required": true },
         { "sleep": 5 },
         { "snapshot": "asked" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-asked" },
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today-asked" },
         {
           "send": { "mono": "lead" },
           "label": "typed-answer",
@@ -35,7 +35,7 @@
         { "wait": { "monoQuestion": "lead", "gone": true, "maxSec": 60 } },
         { "wait": { "monoSaid": "lead", "maxSec": 120 } },
         { "snapshot": "answered" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-answered" },
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today-answered" },
         { "stop": { "mono": "lead" } },
         { "sleep": 5 }
       ],
@@ -53,7 +53,7 @@
         { "fault": null },
         { "sleep": 3 },
         { "snapshot": "after-402" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-402" },
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today-402" },
         { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-402" },
         { "fault": { "fixture": 529, "scope": "any", "times": 1, "maxSec": 120 } },
         { "retry": { "mono": "lead" } },
@@ -61,12 +61,12 @@
         { "fault": null },
         { "sleep": 3 },
         { "snapshot": "after-529" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-529" },
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today-529" },
         { "retry": { "mono": "lead" } },
         { "wait": { "monoReply": "lead", "maxSec": 150 } },
         { "sleep": 3 },
         { "snapshot": "after-retry" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today-after-retry" }
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today-after-retry" }
       ],
       "criteria": "A failed turn is a state, not just a line in the chat: the Mono rail shows the Lead amber or red with a plain reason (out of credits, overloaded), Today says the Lead can't answer and why, Being built shows it, each with Try again; the raw provider text only behind details. Try again sends the turn again; once it answers, every surface is clear."
     },

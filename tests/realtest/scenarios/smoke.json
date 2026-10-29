@@ -22,7 +22,7 @@
         { "wait": { "monoReply": "lead", "maxSec": 60 } },
         { "fault": null },
         { "view": { "project": "tally", "item": "being-built" }, "name": "being-built" },
-        { "view": { "project": "today", "item": "inbox" }, "name": "today" }
+        { "view": { "project": "tally", "item": "inbox" }, "name": "today" }
       ],
       "checks": { "leak": ["FF6A00"] },
       "criteria": "Plumbing only."

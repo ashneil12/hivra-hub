@@ -173,7 +173,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today"
@@ -269,7 +269,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-stuck"
@@ -444,7 +444,7 @@
         },
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-402"
@@ -728,7 +728,7 @@
       "steps": [
         {
           "view": {
-            "project": "today",
+            "project": "tally",
             "item": "inbox"
           },
           "name": "today-final"
