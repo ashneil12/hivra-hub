@@ -348,7 +348,7 @@ export async function runScenario(scenario, ctx) {
     // Room posts' length (Ash: short, a few lines).
     postChars: room.filter((m) => m.from !== ASH && m.text).map((m) => m.text.length),
   };
-  if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
+  if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, saved: await savedChatTexts(ctx, texts, t0), events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
   const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "" };
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
@@ -412,20 +412,44 @@ export function wentOut(sends, label) {
   return sends.some((send) => labels.includes(send.label) && !send.skipped && send.answer?.ok !== false && send.result?.ok !== false);
 }
 
+/** Whose lines Ash reads: not a worker's, not the app's own helper calls. */
+const readByAsh = (who) => !String(who).startsWith("worker") && !String(who).startsWith("app helper");
+
+/**
+ * r77: what the app saved for each chat Ash reads (its assistant blocks since t0), as he sees it. The raw stream is what
+ * the model wrote before the app cleans it (withoutEmDashes on a sealed block), so the em dash check reads this.
+ */
+export async function savedChatTexts(ctx, texts, t0) {
+  if (!ctx.sessionBlocks) return undefined;
+  const whoOf = new Map();
+  for (const line of texts) if (line.session && line.text && !line.result && readByAsh(line.who)) whoOf.set(line.session, line.who);
+  const out = [];
+  for (const [session, who] of whoOf) {
+    const blocks = await ctx.sessionBlocks(session).catch(() => []);
+    for (const block of blocks)
+      if (block?.role === "assistant" && !block.internal && typeof block.text === "string" && block.text.trim() && !(typeof block.startedAt === "number" && block.startedAt < t0))
+        out.push({ who, session, text: block.text });
+  }
+  return out;
+}
+
 /**
  * Run-wide rule checks: another project's facts showing up (leak), em dashes in what agents wrote to Ash, workers in
- * the room, the same room message twice, console errors, and which projects' memory each chat read.
+ * the room, the same room message twice, console errors, and which projects' memory each chat read. `saved` (r77): the
+ * chats' saved text, read for em dashes instead of the raw stream when given.
  */
-export function runChecks(checks, { room, texts, events, memoryCalls }) {
+export function runChecks(checks, { room, texts, saved, events, memoryCalls }) {
+  const roomToAsh = room.filter((m) => m.from !== ASH).map((m) => ({ who: m.from, where: "room", text: m.text }));
   const toAsh = [
-    ...room.filter((m) => m.from !== ASH).map((m) => ({ who: m.from, where: "room", text: m.text })),
-    ...texts.filter((line) => line.text && !line.result && !String(line.who).startsWith("worker") && !String(line.who).startsWith("app helper")).map((line) => ({ who: line.who, where: "chat", text: line.text })),
+    ...roomToAsh,
+    ...texts.filter((line) => line.text && !line.result && readByAsh(line.who)).map((line) => ({ who: line.who, where: "chat", text: line.text })),
   ];
+  const shownToAsh = saved ? [...roomToAsh, ...saved.map((line) => ({ who: line.who, where: "chat (saved)", text: line.text }))] : toAsh;
   const everything = [...toAsh, ...texts.filter((line) => line.text).map((line) => ({ who: line.who, where: "any", text: line.text }))];
   const leaks = (checks.leak ?? []).flatMap((pattern) =>
     everything.filter((entry) => new RegExp(pattern, "i").test(entry.text)).map((entry) => ({ pattern, who: entry.who, where: entry.where, text: entry.text.slice(0, 240) })),
   );
-  const emDashes = toAsh.filter((entry) => /\u2014/.test(entry.text)).map((entry) => ({ who: entry.who, where: entry.where, text: entry.text.slice(0, 160) }));
+  const emDashes = shownToAsh.filter((entry) => /\u2014/.test(entry.text)).map((entry) => ({ who: entry.who, where: entry.where, text: entry.text.slice(0, 160) }));
   const seen = new Map();
   const duplicates = [];
   for (const m of room.filter((x) => x.from !== ASH)) {
@@ -436,7 +460,7 @@ export function runChecks(checks, { room, texts, events, memoryCalls }) {
   const consoleErrors = events.filter((e) => e.kind === "console" && (e.level === "error" || e.level === "uncaught" || e.level === "unhandled")).map((e) => e.text);
   return {
     leaks,
-    emDashes: { count: emDashes.length, of: toAsh.length, examples: emDashes.slice(0, 5) },
+    emDashes: { count: emDashes.length, of: shownToAsh.length, read: saved ? "saved" : "stream", examples: emDashes.slice(0, 5) },
     duplicateRoomMessages: duplicates,
     tagsByAgents: toAsh.filter((entry) => /(^|\s)@[A-Za-z]/.test(entry.text)).length,
     consoleErrors: { count: consoleErrors.length, distinct: [...new Set(consoleErrors)].slice(0, 15) },

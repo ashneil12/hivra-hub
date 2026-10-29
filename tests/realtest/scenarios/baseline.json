@@ -603,7 +603,7 @@
         "P1",
         "NOT"
       ],
-      "minutes": 6,
+      "minutes": 12,
       "maxTurns": 60,
       "steps": [
         {
