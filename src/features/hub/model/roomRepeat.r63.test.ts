@@ -22,8 +22,10 @@ it("a reply that rewords another Mono's answer is a repeat; one that adds from i
 
 it("every room turn carries the rule", async () => {
   const { ROOM_RULES } = await import("./teamSouls");
-  expect(ROOM_RULES).toContain("Add something new or stay quiet");
-  expect(ROOM_RULES).toMatch(/don't repeat or reword its answer/);
+  // r64: the rule is about silence, not about announcing it.
+  expect(ROOM_RULES).toContain("Silence is the default once another Mono (a Lead included) has answered");
+  expect(ROOM_RULES).toMatch(/never repeat or reword its answer/);
+  expect(ROOM_RULES).not.toContain("stay quiet");
 });
 
 it("in the room, the near-copy stays out and the seat with something new posts", async () => {
@@ -53,5 +55,5 @@ it("in the room, the near-copy stays out and the seat with something new posts",
   expect(posted).toContain("alfred");
   expect(posted).not.toContain("projects-manager");
   expect(msgs.every((m) => !/NO_REPLY/.test(m.text))).toBe(true);
-  expect(prompts.every((p) => p.prompt.includes("Add something new or stay quiet"))).toBe(true);
+  expect(prompts.every((p) => p.prompt.includes("Silence is the default"))).toBe(true);
 });

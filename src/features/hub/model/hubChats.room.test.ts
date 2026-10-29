@@ -537,12 +537,13 @@ it("words Ash watched stream in stay when the turn ends on a NO_REPLY line; unse
   await done;
   expect(chat.roomDrafts(id, conv)).toEqual([]);
   const post = said(conv).find((m) => m.from === "frank");
-  // r61: the kept words were a promise ("I'm checking ..."), so the post says the check was done.
-  expect(post).toMatchObject({ id: draftId, text: `${words}\n\nChecked: nothing to add to what's been said.` });
+  // r64: the kept words lose their promise ("I'm checking ..."): a note about its own process is never posted.
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
+  expect(post).toMatchObject({ id: draftId, text: "CoS says the Postie card is gone and the rules still stand." });
   expect(post!.text).not.toMatch(/NO_REPLY/);
 });
 
-it("r61 (PM's blind run): a Mono that said it would check, checked and ended on NO_REPLY doesn't leave the promise hanging", async () => {
+it("r64 (realconv S8): a Mono that said it would check, checked and ended on NO_REPLY posts nothing, and the promise never showed", async () => {
   const { chat, id, said } = await room();
   let write!: (text: string) => void;
   let end!: (text: string) => void;
@@ -558,10 +559,11 @@ it("r61 (PM's blind run): a Mono that said it would check, checked and ended on 
   await vi.waitFor(() => expect(write).toBeTypeOf("function"));
   const promise = "I'll check the settings heading against the canary code before I say anything.";
   write(promise);
+  expect(chat.roomDrafts(id, conv)).toEqual([]);
   end(`${promise}\n\nNO_REPLY`);
   await done;
-  const post = said(conv).find((m) => m.from === "frank");
-  expect(post!.text).toBe(`${promise}\n\nChecked: nothing to add to what's been said.`);
+  expect(said(conv).filter((m) => m.from === "frank")).toEqual([]);
+  expect(said(conv).some((m) => /nothing to add/i.test(m.text))).toBe(false);
 });
 
 it("a turn that thinks aloud and ends on NO_REPLY before anything showed posts nothing", async () => {
