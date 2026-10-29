@@ -24,7 +24,8 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
         ? [name(note.from), { kind: "text", text: stoppedWords(note) }]
         : [name(note.from), { kind: "text", text: " is with " }, name(note.to)]
       : note.kind === "reported"
-        ? [name(note.from), { kind: "text", text: " reported to " }, name(note.to)]
+        ? // r78 (Critiquito, c02): a finished worker is a short "X is back" line in the chat, named by its job.
+          [{ ...name(note.from), text: labelTask(note.from.name) ?? note.from.name }, { kind: "text", text: " is back" }]
         : [name(note.from), { kind: "text", text: " messaged " }, name(note.to)];
   return { head, line: detailOf(note) };
 }
@@ -60,9 +61,12 @@ export function noteText(note: AgentNote): string {
   return line ? `${noteHead(note)}: ${line}` : noteHead(note);
 }
 
-/** A note that must be seen on its own: a worker that got stuck never folds away with routine notes. */
+/**
+ * A note that must be seen on its own: a worker that got stuck, or one that is back (r78: each "X is back" is its own
+ * line), never folds away with routine notes.
+ */
 export function standsAlone(note: AgentNote): boolean {
-  return note.kind === "stuck";
+  return note.kind === "stuck" || note.kind === "reported";
 }
 
 /** The head as plain words ("Lead messaged Worker"). */
