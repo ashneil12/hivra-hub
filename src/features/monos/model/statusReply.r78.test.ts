@@ -32,6 +32,11 @@ describe("statusReply", () => {
     expect(block?.text).toMatch(/^No workers out yet/);
   });
 
+  it("the turn's own text still being written after the question is not a reply (r80 c02)", () => {
+    const writing = { ...said("All five are running"), streaming: true } as Block;
+    expect(statusReply(chat([ash("u2", "hows it going, anything need me"), writing]), rows, new Set(), 0, 100)?.id).toBe("status-reply-u2");
+  });
+
   it("never when the chat is idle, already answered, already noted, or the message is work", () => {
     const asked = [ash("u2", "how's it going?")];
     expect(statusReply(chat(asked, { busy: false }), rows, new Set())).toBeUndefined();

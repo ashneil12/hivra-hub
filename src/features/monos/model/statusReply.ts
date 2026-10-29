@@ -23,7 +23,8 @@ function pendingQuestion(chat: Session): { id: string; text: string } | undefine
   if (queued) return { id: queued.blockId ?? queued.id, text: queued.text };
   for (let index = chat.blocks.length - 1; index >= 0; index--) {
     const block = chat.blocks[index];
-    if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) return undefined;
+    // r80 (c02): the turn's own text still being written is not a reply to him.
+    if (block.role === "assistant" && !block.tool && !block.internal && !block.streaming && block.text.trim()) return undefined;
     if (block.role === "user" && !block.draft && !block.monoNote)
       return isStatusQuestion(block.text) ? { id: block.id, text: block.text } : undefined;
   }
