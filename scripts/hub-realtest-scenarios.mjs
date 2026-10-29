@@ -185,11 +185,12 @@ export async function runScenario(scenario, ctx) {
       record.notes.push(`scenario time (${scenario.minutes} min) ran out before step ${JSON.stringify(step).slice(0, 80)}`);
       break;
     }
+    // r76: a send or a Today answer can be skipped when an earlier step (by label) already reached Ash's agent.
+    if ((step.send || step.answer) && step.unlessSent && wentOut(record.sends, step.unlessSent)) {
+      record.notes.push(`${step.send ? "send" : "answer"} ${step.label ?? ""}: not needed (${[step.unlessSent].flat().join(" or ")} went out)`);
+      continue;
+    }
     if (step.send) {
-      if (step.unlessSent && record.sends.some((send) => send.label === step.unlessSent && !send.skipped && send.answer?.ok !== false)) {
-        record.notes.push(`send ${step.label ?? ""}: not needed (${step.unlessSent} went out)`);
-        continue;
-      }
       const text = textOf(step.text);
       if (TAGGED.test(text)) record.notes.push("scenario text tags someone (should not)");
       const to = await target(step.send);
@@ -267,7 +268,7 @@ export async function runScenario(scenario, ctx) {
       }
     } else if (step.answer) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text }).catch((error) => ({ ok: false, error: error.message }));
-      record.sends.push({ t: Date.now(), todayAnswer: step.answer, result: answer });
+      record.sends.push({ t: Date.now(), label: step.label, todayAnswer: step.answer, result: answer });
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.reload) {
       // The window reloads (a vite full reload, View > Reload): whatever runs is cut the way that cuts it.
@@ -403,6 +404,12 @@ export function questionAnswers(state, since = 0) {
     }
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+/** Did the step labelled `label` reach its target? A chat send that failed, or a Today answer with nothing waiting, did not. */
+export function wentOut(sends, label) {
+  const labels = [label].flat();
+  return sends.some((send) => labels.includes(send.label) && !send.skipped && send.answer?.ok !== false && send.result?.ok !== false);
 }
 
 /**
