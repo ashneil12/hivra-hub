@@ -8,9 +8,17 @@ export function busyChatIds(sessions: readonly Pick<Session, "id" | "busy">[]): 
   return sessions.filter((session) => session.busy).map((session) => session.id);
 }
 
-export function useBusyChatsFeed(sessions: readonly Pick<Session, "id" | "busy">[]): void {
-  const key = busyChatIds(sessions).sort().join("\n");
-  // r51: and which chats this window holds, so a Lead chat it doesn't hold is "not known", never "not busy".
+export function useBusyChatsFeed(
+  sessions: readonly Pick<Session, "id" | "busy">[],
+  liveTurns?: ReadonlySet<string>,
+): void {
+  const local = busyChatIds(sessions);
+  const extra = liveTurns
+    ? [...liveTurns].filter((id) => !local.includes(id))
+    : [];
+  const key = [...local, ...extra].sort().join("\n");
+  // r51: chats this window holds. Live turns from other windows are busy even
+  // when this window has not loaded them (liveTurns.ts).
   const known = sessions.map((session) => session.id).sort().join("\n");
   useEffect(() => {
     setBusyChats(key ? key.split("\n") : [], known ? known.split("\n") : []);

@@ -686,6 +686,12 @@ export const MONO_STATUS_LABEL: Record<MonoStatus, string> = {
   idle: "Idle",
 };
 
+/** What the rail shows while a turn is running and the current step is not known. */
+export const MONO_WORKING: MonoState = {
+  status: "working",
+  activity: "Thinking",
+};
+
 /** The agent's state, with the step it is on or the call it is waiting for. */
 export function monoState(
   session: Pick<
@@ -756,7 +762,7 @@ export function monoState(
       return { status: "working", activity: plainLine(block.tool.title) };
     }
   }
-  return { status: "working", activity: "Thinking" };
+  return MONO_WORKING;
 }
 
 function latest(

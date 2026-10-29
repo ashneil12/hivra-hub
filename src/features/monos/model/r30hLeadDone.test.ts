@@ -74,7 +74,7 @@ describe("a failed worker whose Lead is done with it", () => {
     const { busyChatIds } = await import("../hooks/useBusyChatsFeed");
     expect(busyChatIds([{ id: "lead-chat", busy: true }, { id: "other" }, { id: "w-faq", busy: false }])).toEqual(["lead-chat"]);
     const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    expect(app).toMatch(/useBusyChatsFeed\(sessions\)/);
+    expect(app).toMatch(/useBusyChatsFeed\(sessions,\s*liveBusySessionIds\)/);
     expect(readFileSync(`${process.cwd()}/src/features/monos/model/workerStuck.ts`, "utf8")).not.toMatch(/if \(leadTurnOver\(stuck\.row\)\) return "needs-you";/);
   });
 });
