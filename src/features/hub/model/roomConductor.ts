@@ -739,8 +739,12 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   }
   // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
   // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
-  const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
-  if (kept && !isSilent(kept)) text = kept;
+  // r67 (S8 on 0.16.9 dev): not for a seat that chimed in unasked and narrated its way to NO_REPLY. frank's "Ash locked
+  // two calls. I'll check they're actually in Tally's memory before I say anything." then NO_REPLY posted "Ash locked two
+  // calls.", a lead-in to the narration that adds nothing; the seat chose silence, so its draft goes with the narration.
+  const narratedChime = wake.kind === "chime" && meta.dropped.length > 0;
+  const kept = id && !narratedChime && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
+  if (kept && !isSilent(kept) && !(wake.kind === "chime" && isAckOrIntentOnly(kept))) text = kept;
   // r63: a near-copy of what another Mono already said since Ash last wrote stays out (add something new or stay quiet).
   // A roles ask is exempt: each seat's own role is never a copy of another's answer.
   else if (isSilent(text) || (!roles && repeatsAnother(text, othersSinceAsh(chatId, wake.convId, me.id)))) {
