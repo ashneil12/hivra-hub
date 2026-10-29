@@ -19,7 +19,7 @@ npm run hub:realtest                                  # build, run tests/realtes
 npm run hub:realtest -- --no-build                    # reuse target/debug/monocode
 npm run hub:realtest -- --only s01-room-dump,s02-room-wat-now
 npm run hub:realtest -- --max-turns 120 --max-minutes 40 --max-requests 800
-npm run hub:realtest -- --no-grade                    # rule metrics only, no Sonnet grader
+npm run hub:realtest -- --no-grade                    # rule metrics only, no grader
 npm run hub:realtest -- --grade-only evidence/realtest/<run>   # grade (again) a finished run
 npm run hub:realtest -- --scenarios tests/realtest/scenarios/smoke.json --no-grade   # 3-minute plumbing check
 npm run hub:realtest -- --keep                        # keep the temporary HOME (and the Tally repo) afterwards
