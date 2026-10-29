@@ -6,6 +6,7 @@ import { NEEDS_YOU } from "../model/statusChip";
 import { ChipMark, redRowProps } from "./StatusMark";
 import {
   answerApproval,
+  answerPermission,
   answerInWords,
   openWaitingChat,
   takePick,
@@ -143,7 +144,17 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
         </div>
       ) : null}
       <div className="mt-1 flex items-center gap-2">
-        {chat.provide ? null : chat.redLine ? (
+        {chat.source === "permission" ? (
+          // r77: the chat's held tool call, answered in place: the same two plain choices as its own card.
+          <span className="flex shrink-0 items-center gap-2" data-hub-permission role="group" aria-label="Allow or deny">
+            <button type="button" className={BTN} disabled={busy} data-hub-allow onClick={(e) => void run(async () => answerPermission(chat.sessionId, "allow"), e.currentTarget)}>
+              Allow
+            </button>
+            <button type="button" className={BTN} disabled={busy} data-hub-deny onClick={(e) => void run(async () => answerPermission(chat.sessionId, "deny"), e.currentTarget)}>
+              Deny
+            </button>
+          </span>
+        ) : chat.provide ? null : chat.redLine ? (
           // A red line is an approval: two explicit choices in the same quiet style, neither one the default, and no
           // "this session" or "always" (matched to Alan's Workspace approvalBody, minus its broader grants).
           <span className="flex shrink-0 items-center gap-2" data-hub-approval role="group" aria-label="Approve or deny">
@@ -162,6 +173,7 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
         <button type="button" className={BTN} data-hub-open-chat onClick={() => openWaitingChat(chat.sessionId)}>
           Open
         </button>
+        {chat.source === "permission" ? null : (<>
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -177,6 +189,7 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
         <button type="button" className={BTN} disabled={busy || !text.trim()} data-hub-waiting-send onClick={(e) => void run(() => answerInWords(chat.sessionId, text), e.currentTarget)}>
           {busy ? "Sending…" : "Send"}
         </button>
+        </>)}
       </div>
       {problem ? <div className="text-[13px] text-content/60" data-hub-waiting-problem>{problem}</div> : null}
     </div>

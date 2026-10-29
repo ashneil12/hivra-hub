@@ -12116,6 +12116,8 @@ function Workspace({
     return setWaitingChatsHost({
       liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
       respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      // r77: a held tool call answered from the Waiting card, the same as its own Allow/Deny.
+      decide: (id, requestId, decision) => onApproval(id, requestId, decision),
       send: async (id, text) => {
         const session = sessionsRef.current.find((s) => s.id === id) ?? (await ensureOpenSessionRef.current(id));
         if (!session) return false;
@@ -12133,7 +12135,7 @@ function Workspace({
         void openReminderSession(id).catch(() => undefined);
       },
     });
-  }, [onQuestionReply, onOpenMono, openReminderSession]);
+  }, [onQuestionReply, onOpenMono, openReminderSession, onApproval]);
 
   // Pages (features/pages/model/pageActions.ts): a kept page's taps borrow the same hands as Ash's own: the question
   // reply in a chat, the composer's send, a chat's or a Mono's own view.

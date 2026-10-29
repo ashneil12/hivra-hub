@@ -11,14 +11,17 @@ import {
   type UserQuestionPrompt,
   type UserQuestionReply,
 } from "../../sessions/model/userQuestion";
-import type { Block } from "../../sessions/model/session";
+import type { ApprovalCall, Block } from "../../sessions/model/session";
 import { forUser, userName } from "./userName";
 import { secretActionBlock } from "../../../integrations/harness/core/credentialGuard";
 
 export type ChatQuestion = {
-  /** "ask": a live AskUserQuestion; "marker": a "Needs Ash:" line ending the agent's last turn. */
-  source: "ask" | "marker";
-  /** The live AskUserQuestion's request id (source "ask"). */
+  /**
+   * "ask": a live AskUserQuestion; "marker": a "Needs Ash:" line ending the agent's last turn; "permission" (r77): a tool
+   * call held on Ash's Allow (the chat's permission card), which nothing else answers.
+   */
+  source: "ask" | "marker" | "permission";
+  /** The live AskUserQuestion's request id (source "ask"), or the permission card's (source "permission"). */
   requestId?: number;
   /** One line, in the agent's words. */
   question: string;
@@ -48,7 +51,7 @@ export type ChatQuestion = {
 // (the agent's words stay the question line), so a vague ask can't hide what kind of thing it is.
 
 /** The only reasons a row can give, in Ash's words. */
-export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "Needs a key from you", "provide something", "pick an option", "approve a red-line step", "review"] as const;
+export const NEEDS_REASONS = ["sign in", "enter a code", "pay", "Needs a key from you", "provide something", "pick an option", "approve a red-line step", "allow a step", "review"] as const;
 export type NeedsReason = (typeof NEEDS_REASONS)[number];
 
 const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
@@ -64,6 +67,7 @@ const FLAG_REASONS: readonly [RegExp, NeedsReason][] = [
  * a live question (pick an option); anything else is "review" (Alan's fallback is "take a look").
  */
 export function needsReason(q: Pick<ChatQuestion, "source" | "pick" | "redLine" | "flag" | "provide">): NeedsReason {
+  if (q.source === "permission") return "allow a step";
   // Something only Ash can hand over is never "approve a red-line step", even when a key is a red-line word (r65).
   if (q.provide) return keyAsk(q.provide) ? "Needs a key from you" : "provide something";
   const flagged = q.flag ? FLAG_REASONS.find(([rx]) => rx.test(q.flag!))?.[1] : undefined;
@@ -320,8 +324,27 @@ export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
 export type ChatLike = {
   busy?: boolean;
   pendingQuestion?: UserQuestionPrompt;
-  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool" | "streaming">>)[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool" | "streaming" | "approval">>)[];
 };
+
+/**
+ * r77 (c02: a coding-team chat sat on an unanswered permission card for ten minutes and nothing told Ash): the oldest
+ * undecided permission card in the chat, as one plain question.
+ */
+export function permissionQuestion(blocks: ChatLike["blocks"]): ChatQuestion | null {
+  const held = blocks.find((b) => b.approval && !b.approval.decided);
+  if (!held?.approval) return null;
+  return { source: "permission", requestId: held.approval.requestId, question: permissionText(held.approval.call, held.tool?.title), more: 0, redLine: false };
+}
+
+function permissionText(call: ApprovalCall | undefined, toolName: string | undefined): string {
+  const tool = call?.tool ?? toolName ?? "a tool";
+  const command = call?.command?.trim().split("\n")[0];
+  if (command) return `Allow it to run \`${command.length > 160 ? `${command.slice(0, 157)}...` : command}\`?`;
+  const file = call?.paths?.[0]?.split("/").pop();
+  if (file) return /^(edit|write|multiedit|notebookedit)$/i.test(tool) ? `Allow it to change ${file}?` : `Allow it to use ${tool} on ${file}?`;
+  return `Allow it to use ${tool}?`;
+}
 
 /**
  * r69 (PM's blind r67, E7): the shell command in this turn that tried a secret action (rotating, loading, exporting or
@@ -367,6 +390,9 @@ function safeCommand(command: string): string {
  */
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
+  // A held tool call waits on Ash even mid-turn: the turn can't go on until he allows or denies it.
+  const permission = permissionQuestion(chat.blocks);
+  if (permission) return permission;
   const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
   const turnText = lastTurnText(blocks);
   const marker = parseNeedsAsh(turnText);
@@ -431,6 +457,8 @@ export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick
   const question = q.question.trim();
   const asks = ASKS.test(question) || APPROVAL.test(question) || CHOICE.test(question);
 
+  // r77: a tool call held on his Allow can only go on with him.
+  if (q.source === "permission") return { admit: true, kind: "approval", reason: "A tool call is held on Ash's Allow." };
   // A key, a token or access only Ash can hand over: an errand that waits for him, with or without a pick (r65).
   if (q.provide) return { admit: true, kind: "action", reason: `Only Ash can provide ${q.provide}, so it waits for him.` };
 

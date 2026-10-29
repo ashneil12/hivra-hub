@@ -6,7 +6,7 @@ const reasonOf = (text: string) => needsReason(chatQuestion({ busy: false, block
 
 describe("needsReason", () => {
   it("the list is exactly eight reasons (r65 adds provide something, r70 Needs a key from you)", () => {
-    expect([...NEEDS_REASONS]).toEqual(["sign in", "enter a code", "pay", "Needs a key from you", "provide something", "pick an option", "approve a red-line step", "review"]);
+    expect([...NEEDS_REASONS]).toEqual(["sign in", "enter a code", "pay", "Needs a key from you", "provide something", "pick an option", "approve a red-line step", "allow a step", "review"]);
   });
 
   it("reads the flag the agent wrote", () => {

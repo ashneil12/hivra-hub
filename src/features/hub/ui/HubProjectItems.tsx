@@ -11,6 +11,10 @@ import { setHubSelection, type HubSelection } from "../model/hubNav";
 import { leadSpecFor } from "../model/hubLeads";
 import { DECISIONS_ITEM } from "../model/decisions";
 import type { HubProject, ProjectItem } from "../model/types";
+import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
+import { askText } from "../model/chatQuestions";
+import { NEEDS_YOU } from "../model/statusChip";
+import { ChipMark } from "./StatusMark";
 
 function iconFor(item: ProjectItem): IconComponent {
   switch (item.kind) {
@@ -58,6 +62,7 @@ export function HubProjectItems({
   useHubChatsVersion();
   // The project's sections come from its template, so switching it changes this list too.
   useTemplatesVersion();
+  useWaitingChatsVersion();
   const [menu, setMenu] = useState<PopoverAnchor>();
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
@@ -66,6 +71,9 @@ export function HubProjectItems({
   if (selection.item === "new-project") return null;
   // D2: every project's own Decisions, last (Settings → Decisions still lists them all).
   const items = [...hubData().listProjectItems(project.id), DECISIONS_ITEM];
+  // r77: a coding-team chat (not a Mono, whose own row says it) waiting on Ash, such as a held permission card, puts the
+  // red Needs you line under Coding team, the same as a Mono's row.
+  const teamWaiting = waitingChats(project.id).filter((c) => !c.monoId && !c.routedToLead);
   return (
     <div className="mb-2 shrink-0" data-hub-items>
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header
@@ -114,6 +122,16 @@ export function HubProjectItems({
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
             </button>
           );
+          if (item.kind === "coding-team" && teamWaiting.length)
+            return (
+              <div key={item.id} className="flex flex-col">
+                {row}
+                <div className="ml-5 flex min-w-0 items-center px-1.5 text-[12px]" data-hub-item-waiting={item.kind}
+                  title={teamWaiting.map((c) => `${c.chatName}: ${askText(c.question)}`).join("\n")}>
+                  <ChipMark chip={NEEDS_YOU} />
+                </div>
+              </div>
+            );
           // A room Ash made can be deleted (r30d), after the shared confirm; the Leadership team and the rest can't.
           if (item.kind !== "group-chat") return row;
           return (
