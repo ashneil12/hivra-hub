@@ -1,3 +1,4 @@
+import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
 import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
@@ -1060,6 +1061,8 @@ function sanitizeBlock(
   block: Block,
   options?: { hydrate?: boolean },
 ): Block | null {
+  // r63: a CLI notice saved before the filter (cliNotices.ts) is left out when the chat loads.
+  if (options?.hydrate && block.role === "system" && !block.notice && isCliNotice(block.text)) return null;
   const next: Block = {
     id: block.id,
     role: block.role,

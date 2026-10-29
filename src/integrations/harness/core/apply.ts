@@ -1,3 +1,4 @@
+import { isCliNotice } from "./cliNotices";
 import type {
   AgentRunMeta,
   AgentStep,
@@ -250,6 +251,7 @@ export function applyHarnessEvent(
           : {}),
       };
     case "status":
+      if (isCliNotice(event.text)) return session;
       return event.key
         ? upsertKeyedStatus(session, event.key, event.text)
         : appendStatus(session, event.text);
