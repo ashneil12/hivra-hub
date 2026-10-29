@@ -1496,7 +1496,11 @@ mod tests {
                 "monos.create",
             ),
             ("mono_retire", json!({ "mono": "Postie" }), "monos.retire"),
-            ("mono_retire", json!({ "retireId": "retire-1" }), "monos.retire"),
+            (
+                "mono_retire",
+                json!({ "retireId": "retire-1" }),
+                "monos.retire",
+            ),
             (
                 "team_create",
                 json!({ "name": "Marketing", "brief": "Owns the launch.", "projects": ["hivra"], "members": ["Postie"] }),
