@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { examples } from "./examples";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { restoreRetiredMono, retireMono, type RetiredMono } from "../../monos/model/monoArchive";
+import { listMonos } from "../../monos/model/mono";
 import { restoreTeam, retireTeam, type Team } from "./hubTeams";
 
 /**
@@ -344,11 +345,32 @@ export type BotChangeRow =
   | { kind: "one"; change: BotChange }
   | { kind: "bundle"; id: string; bot: string; day: string; line: string; items: BotChange[] };
 
+/**
+ * r67 (Alfred's r66 rechecks: "Postie changed its soul" for a retired Mono): the Monos that are retired now, from the
+ * rows that retired them (a retirement still standing, or an undone "made a new Mono") and from the roster itself.
+ */
+export function retiredMonoIds(changes: readonly BotChange[] = all(), roster: readonly string[] = listMonos().map((m) => m.id)): Set<string> {
+  const out = new Set<string>();
+  for (const c of changes) {
+    if (c.retired && !c.undone) out.add(c.retired.mono.id);
+    if (c.made && c.undone) out.add(c.made.monoId);
+  }
+  const live = new Set(roster);
+  if (live.size) for (const c of changes) if (c.monoId && c.file && !live.has(c.monoId)) out.add(c.monoId);
+  for (const id of live) if (!changes.some((c) => (c.retired?.mono.id === id && !c.undone) || (c.made?.monoId === id && c.undone))) out.delete(id);
+  return out;
+}
+
+/** A change to a retired Mono's own files: nothing to show or put back while it is retired (its archive keeps them). */
+const toRetired = (c: BotChange, retired: ReadonlySet<string>) => !!c.monoId && !!c.file && retired.has(c.monoId) && !c.retired && !c.made;
+
 /** Rows to show: big changes one by one, small ones bundled per bot per day. */
 export function botChangeRows(): BotChangeRow[] {
   const rows: BotChangeRow[] = [];
   const bundles = new Map<string, BotChange[]>();
+  const retired = retiredMonoIds();
   for (const c of all()) {
+    if (toRetired(c, retired)) continue;
     if (!c.small) { rows.push({ kind: "one", change: c }); continue; }
     const k = `${c.bot}|${c.day}`;
     if (!bundles.has(k)) {
