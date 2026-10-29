@@ -66,6 +66,7 @@ import {
   codingTeamsOn,
   forgetCodingTeamChat,
   noteCodingTeamChat,
+  projectTapSelection,
 } from "../features/hub/model/codingTeam";
 import {
   codingTeamNamed,
@@ -7004,6 +7005,8 @@ function Workspace({
       }
       const lead = leadMono(leadSpecFor(project));
       if (lead && (target.lead ?? codingTeamView(project.id) === "lead")) {
+        setHubSelection(projectTapSelection(project));
+        nameHubProject(project);
         void onOpenMono(lead.id);
         return;
       }
