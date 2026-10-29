@@ -348,3 +348,22 @@ test("r73: every scenario view opens a real project (no central Today since 23 O
         }
   }
 });
+
+// r80 (s14): the routes check runs from outside a worker's copy, and only Ash's answer signs a route off.
+test("the Tally routes check fails on an unsigned DELETE with Ash's note, and passes once Ash signs it off", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const copy = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "tally-gate-test-"));
+  fsm.cpSync("tests/realtest/tally", copy, { recursive: true });
+  const gate = (extra = []) => spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "tests/realtest/scenarios/gates/tally-routes.mjs", copy, ...extra], { encoding: "utf8" });
+  assert.equal(gate().status, 0);
+  const server = pathm.join(copy, "packages/api/src/server.ts");
+  fsm.writeFileSync(server, fsm.readFileSync(server, "utf8").replace('  if (parts[2] === "stats"', '  if (parts.length === 2 && method === "DELETE") return { status: 204, body: null };\n  if (parts[2] === "stats"'));
+  const failed = gate();
+  assert.equal(failed.status, 1);
+  assert.match(failed.stdout, /DELETE \/tallies\/:id answers 204 but Ash hasn't signed it off.*30 days/);
+  assert.equal(gate(["--signed-off", "DELETE /tallies/:id"]).status, 0);
+  fsm.rmSync(copy, { recursive: true, force: true });
+});
