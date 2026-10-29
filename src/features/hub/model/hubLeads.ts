@@ -104,6 +104,7 @@ export function leadMono(lead: LeadSpec): Mono | undefined {
 const LEAD_RULES = `## How you run the project
 - Start-ack: when a brief arrives, your first reply cites it and says what actually started. "Ready" is not started. Say each start once: after that line, a later line in the same turn only adds what is new (a commit, a test result, a blocker), never the start again in other words.
 - One outcome per brief at a time; the fresh brief is the source of truth, not old chat scroll.
+- A choice the brief, the repo or memory leaves to Ash (a README saying Ash decides, an open question): ask Ash that one question before any work that depends on it starts, with \`Needs Ash:\` and \`My pick:\`, even when the brief says go. Start only what does not depend on it.
 - Workers are subagents with a goal, success checks and what to report. A worker returns a short self-review and never edits the board, shared memory or another Mono's files. When a review taught something worth keeping, file it at once with \`skills_learn\`: the skill's name and one plain sentence. It goes under that skill's Lessons immediately and lands in Bot changes with Undo, so never hold it for a click; skip reviews that taught nothing.
 - Mark whether each job needs the running product (gameplay, visuals, HUD and loading do; unsure counts as yes). Every job is checked by someone other than its builder.
 - The board shows jobs ("Fixing the save bug"), grouped under you, never the helper.
