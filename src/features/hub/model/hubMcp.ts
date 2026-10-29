@@ -280,6 +280,14 @@ export function worktreeDeniedTools(identity: HubChatIdentity): string[] {
   return identity.kind === "team" || identity.kind === "worker" ? [...HUB_WORKTREE_DENIED_TOOLS, ...HAND_WORKTREE_DENIED_TOOLS] : HUB_WORKTREE_DENIED_TOOLS;
 }
 
+/**
+ * A chat that hands out work saves Ash's standing rules with ash_remember, never by rewriting Claude Code's own settings
+ * or hooks: in blind c02 (r78) a coding-team chat reached for the update-config skill to make "from now on run npm
+ * test" a hook, and its Allow card held the whole turn for three minutes before any worker started. Refused at once,
+ * the chat goes straight on to its jobs.
+ */
+export const ORCHESTRATOR_DENIED_TOOLS = ["Skill(update-config)"];
+
 export function getsDelegateTool(identity: HubChatIdentity): boolean {
   return (identity.kind === "mono" && identity.role !== "checker") || identity.kind === "team";
 }
@@ -327,11 +335,15 @@ export function hubMcpArgs(
   const identity = hubChatIdentity(sessionId, lookups);
   // The checker only reads, whatever else this chat gets (its deny list carries the fence round the Monos' home too).
   const restrict = identity.role === "checker" ? checkerToolArgs() : [];
+  const delegate = !!servers.cli && getsDelegateTool(identity);
   // Every other chat is fenced out of the Monos' home: last, so a chat's own arguments read as they always have.
   const fence =
     identity.role === "checker"
       ? []
-      : ["--disallowedTools", [...chatDeniedTools(), ...worktreeDeniedTools(identity)].join(",")];
+      : [
+          "--disallowedTools",
+          [...chatDeniedTools(), ...worktreeDeniedTools(identity), ...(delegate ? ORCHESTRATOR_DENIED_TOOLS : [])].join(","),
+        ];
   const mcpServers: Record<string, unknown> = {};
   // A Mono's connectors go in first, so the hub's own entries below always keep their names.
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
@@ -349,7 +361,6 @@ export function hubMcpArgs(
     } = ashOs.env ?? {};
     mcpServers["ash-os"] = { ...ashOs, env: { ...own, ...identityEnv(identity) } };
   }
-  const delegate = !!servers.cli && getsDelegateTool(identity);
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
   if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [

@@ -180,7 +180,22 @@ export async function runScenario(scenario, ctx) {
     }
   };
 
+  // r79 (c02): Ash lets the bench tap Allow on the dev copy's own permission cards as soon as they show, in the chats
+  // the scenario names ({"allowPromptly": ["dump"]}), so a card no longer sits until the next scripted approve step.
+  // Only the hub's own Allow cards in this test copy: never a device or account sign-in, never a macOS dialog.
+  const allowPromptly = async () => {
+    for (const as of scenario.allowPromptly ?? []) {
+      const session = chatSession(as);
+      if (!session) continue;
+      const answer = await act("approve", { session }).catch((error) => ({ ok: false, error: error.message }));
+      if (!answer.ok || !answer.approved) continue;
+      record.marks.push({ t: Date.now(), approve: { chat: as, promptly: true }, answer });
+      log(`  Ash taps Allow in ${as} (as the card showed): ${answer.approved} card(s)`);
+    }
+  };
+
   for (const step of scenario.steps ?? []) {
+    await allowPromptly();
     if (expired()) {
       record.notes.push(`scenario time (${scenario.minutes} min) ran out before step ${JSON.stringify(step).slice(0, 80)}`);
       break;
@@ -229,6 +244,7 @@ export async function runScenario(scenario, ctx) {
       const begun = Date.now();
       let met = false;
       while (Date.now() < limit) {
+        await allowPromptly();
         if (await conditionMet(step.wait, ref)) {
           met = true;
           break;

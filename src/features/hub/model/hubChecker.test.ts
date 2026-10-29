@@ -31,6 +31,7 @@ import {
   type HubChatLookups,
   CREDENTIAL_DENIED_TOOLS,
   HUB_WORKTREE_DENIED_TOOLS,
+  ORCHESTRATOR_DENIED_TOOLS,
   OLD_MONO_COPY_DENIED_TOOLS,
 } from "./hubMcp";
 
@@ -196,8 +197,9 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
     const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
     expect(args).not.toContain("--tools");
     // Its only deny rules are the ones every hub chat has (the Monos' home fence, no reading a saved login by hand) and
-    // Claude Code's own worktree tools, since the app makes its workers' checkouts.
-    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(","));
+    // Claude Code's own worktree tools, since the app makes its workers' checkouts, and (r79) its settings skill, since a
+    // chat that hands out work saves Ash's rules with ash_remember.
+    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS, ...ORCHESTRATOR_DENIED_TOOLS].join(","));
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
   });
 });

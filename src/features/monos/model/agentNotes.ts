@@ -40,6 +40,24 @@ const firstLine = (text: string | null | undefined, max = 140): string | undefin
   return line.length > max ? `${line.slice(0, max).replace(/\s+\S*$/, "")}…` : line;
 };
 
+/**
+ * A finished job's one-line summary (r79, c02: "results came back as a truncated worker paste"): the result's first
+ * sentence in plain words, markdown and list marks off, a trailing colon (a paste's lead-in) dropped, cut at a word.
+ */
+export const summaryLine = (text: string | null | undefined, max = 100): string | undefined => {
+  const plain = (text ?? "")
+    .replace(/```[\s\S]*?(```|$)/g, "\n")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_#>|]/g, "");
+  const line = plain
+    .split("\n")
+    .map((l) => l.replace(/^\s*(?:[-+]|\d+[.)])\s+/, "").replace(/\s+/g, " ").trim())
+    .find((l) => l);
+  if (!line) return undefined;
+  const sentence = (line.match(/^(.+?[.!?])(?=\s|$)/)?.[1] ?? line).replace(/\s*[:;,]$/, "");
+  return sentence.length > max ? `${sentence.slice(0, max).replace(/\s+\S*$/, "")}…` : sentence;
+};
+
 /** How a note names the two sides of a row: its owner (the Lead, or the chat that delegated) and its worker. */
 export type NoteNames = { owner: string; worker: string };
 
@@ -80,7 +98,7 @@ export function agentNotesFor(
   else if (stuck)
     notes.push({ ...base, kind: "stuck", from: worker, to: owner, at: stuck.since, line: firstLine(stuck.line), owner: stuckOwner(stuck) });
   if (row.state === "completed")
-    notes.push({ ...base, kind: "reported", from: worker, to: owner, at: row.settledAt ?? row.updatedAt, line: firstLine(row.result) });
+    notes.push({ ...base, kind: "reported", from: worker, to: owner, at: row.settledAt ?? row.updatedAt, line: summaryLine(row.result) });
   return notes;
 }
 
