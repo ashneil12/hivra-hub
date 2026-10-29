@@ -23,6 +23,7 @@ import {
 import { leadActionLine, stuckMinutes, type StuckWorker } from "../model/workerStuck";
 import { plainStuckLine, stuckWorkerChip } from "../model/stuckChip";
 import { ChipMark, NeedsYouLinkLine } from "../../hub/ui/StatusMark";
+import { foldStopped, stoppedLine } from "../model/stuckFold";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
@@ -114,14 +115,33 @@ export function StuckList({
 }) {
   const [done, setDone] = useState<Record<string, Done>>({});
   const [all, setAll] = useState(false);
+  const [stoppedOpen, setStoppedOpen] = useState(false);
   if (variant === "chat") stuck = oneCardPerJob(stuck);
   const held = Object.values(done).filter((d) => !stuck.some((s) => s.key === d.stuck.key));
   if (!stuck.length && !held.length) return null;
-  const more = variant === "chat" && !all ? Math.max(0, stuck.length - CHAT_CARDS_SHOWN) : 0;
-  const cards = more ? stuck.slice(0, CHAT_CARDS_SHOWN) : stuck;
+  // r70: above a Lead's composer, stopped workers are one line until Ash opens it.
+  const folded = variant === "chat" ? foldStopped(stuck, stoppedOpen) : { cards: [...stuck], stopped: 0 };
+  const shownCards = folded.cards;
+  const more = variant === "chat" && !all ? Math.max(0, shownCards.length - CHAT_CARDS_SHOWN) : 0;
+  const cards = more ? shownCards.slice(0, CHAT_CARDS_SHOWN) : shownCards;
   const finished = (s: StuckWorker, said: string) => setDone((prev) => ({ ...prev, [s.key]: { stuck: s, said } }));
   const list = (
     <div data-stuck-list={variant} aria-label={label} className={variant === "chat" ? "flex flex-col gap-1.5 pb-1.5" : "flex flex-col"}>
+      {folded.stopped ? (
+        <div data-stuck-stopped-fold={stoppedOpen ? "open" : "closed"} className="flex items-center gap-1 px-2 font-sans text-[12px] text-content/55">
+          <span>{stoppedLine(folded.stopped)}</span>
+          <span aria-hidden>·</span>
+          <button
+            type="button"
+            data-stuck-stopped-toggle
+            aria-expanded={stoppedOpen}
+            onClick={() => setStoppedOpen((v) => !v)}
+            className="rounded-md px-1 text-content/70 hover:bg-content/6 hover:text-content"
+          >
+            {stoppedOpen ? "Hide" : "Show"}
+          </button>
+        </div>
+      ) : null}
       {cards.map((s) =>
         done[s.key] ? (
           <DoneRow key={s.key} done={done[s.key]} variant={variant} />
