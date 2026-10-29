@@ -126,11 +126,13 @@ describe("the project Leads", () => {
     expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
   });
 
-  it("have a soul in Ash's words: orchestrator, full words to workers, DeepSeek workers and no Claude subscription, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {
+  it("have a soul in Ash's words: orchestrator, short briefs in his words to workers (r77), DeepSeek workers and no Claude subscription, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {
     const soul = leadSoul(LEADS[0], "/Users/ash/Projects/boxin game?/vg-game");
     for (const phrase of [
       'the main agent is mainly an orchestrator',
-      "pass Ash's own words and the full context, never a short brief",
+      "give it a short brief: Ash's own words for that piece",
+      "start the independent work in parallel within two minutes of his message",
+      "no \`git worktree add\`",
       "Workers run on DeepSeek: leave the model out and the app starts them there.",
       "You run on Grok 4.7 and your workers on DeepSeek; nothing here uses a Claude subscription (Ash, 27 Oct).",
       "so tokens aren't burned",

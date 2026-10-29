@@ -381,7 +381,7 @@ export function forgetAgentContext(sessionId: string): void {
 }
 
 /** Bumped when the fixed note below changes, so live chats get it again (31, 21 Oct: vanilla Claude Code plus a short appended note). */
-export const MONO_PROMPT_VERSION = 31;
+export const MONO_PROMPT_VERSION = 32;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -428,6 +428,17 @@ export function hubNote(): string {
   return forUser((hubDocsPath ? lines.map((line) => line.replace("HUB_DOCS_PATH", hubDocsPath!)) : lines.filter((line) => !line.includes("HUB_DOCS_PATH"))).join("\n"));
 }
 
+/**
+ * r77 (blind c02/s13): how a coding-team chat takes Ash's work. c02's chat did every ask itself in a worktree it made
+ * beside the project (each edit a new permission card, no workers); s13's Lead read twenty files and wrote a 6 KB brief
+ * before its first worker started, six minutes in.
+ */
+export const TEAM_CHAT_RULES = `<team_chat_rules>
+- A message with several asks: reply fast first, before reading the code. List every ask in Ash's order (none dropped or invented), give your pick on any choice in it, and say what starts now. Never promise a list you don't give in that reply.
+- Then start the independent work within two minutes of his message: one delegate_task per area, each a short brief (his words for that ask, what it may change, the check to run, what to report). The worker reads the code itself. Do a change yourself only when it is one small file.
+- Work only inside PROJECT_FOLDER. Never make a worktree or a folder beside it yourself (no \`git worktree add\`): a worker that needs its own checkout gets isolation "worktree" from delegate_task, and the app keeps it.
+</team_chat_rules>`;
+
 /** Who a coding-team chat is (hub/model/codingTeam.ts): the project, its folder, and its Lead's name. */
 export type CodingTeamLook = { projectId: string; projectName: string; folder: string; leadName?: string };
 
@@ -437,7 +448,9 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  */
 export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
   const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
-  return options.projectMemory?.trim() ? `${note}\n\n${options.projectMemory.trim()}` : note;
+  const rules = forUser(TEAM_CHAT_RULES.split("PROJECT_FOLDER").join(team.folder));
+  const withRules = `${note}\n\n${rules}`;
+  return options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;
 }
 
 /**

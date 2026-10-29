@@ -18,7 +18,8 @@ beforeEach(() => {
 });
 
 describe("codingTeamContext", () => {
-  it("is the hub note and the project, and nothing else: under 1 KB before memory", () => {
+  // r77 (blind c02): plus its short team rules (asks first, workers within two minutes, no worktree by hand).
+  it("is the hub note, the project and the team chat rules, and nothing else: under 1.8 KB before memory", () => {
     const text = codingTeamContext(TEAM);
     expect(text.startsWith(`${hubNote()}\n\n- This`)).toBe(true);
     expect(text).toContain("- This chat is in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
@@ -26,7 +27,9 @@ describe("codingTeamContext", () => {
     expect(text).not.toMatch(/money/i);
     expect(text).not.toContain("<project_memory>");
     for (const gone of ["<chat_rules>", "<ask_ash_rules>", "Needs Ash:", "Right:", "ash_remember"]) expect(text, gone).not.toContain(gone);
-    expect(new TextEncoder().encode(text).length).toBeLessThan(1_000);
+    expect(text).toContain("<team_chat_rules>");
+    expect(text).toContain("Work only inside /Users/ash/Projects/vg-game.");
+    expect(new TextEncoder().encode(text).length).toBeLessThan(1_800);
   });
 
   it("ends with the project's memory primer when there is one", () => {
