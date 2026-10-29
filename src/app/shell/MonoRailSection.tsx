@@ -1,4 +1,6 @@
 import { Fragment } from "react";
+import { getChat, roomTurnsByMono, useHubChatsVersion } from "../../features/hub/model/hubChats";
+import { withRoomTurns } from "../../features/monos/model/roomBusy";
 import { StuckMark } from "../../features/monos/ui/SubChatList";
 import { dismissWaitingSoul, isDiskFullError, plainAddProblem, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
@@ -123,7 +125,7 @@ export function openTeam(team: TeamTarget): void {
  */
 export function MonoRailSection({
   activeId,
-  states,
+  states: ownStates,
   unseenCounts,
   onOpen,
   onCreate,
@@ -141,6 +143,9 @@ export function MonoRailSection({
   project?: string;
 }) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
+  // r67 (Alfred A9): a Mono writing a room turn reads busy here too, with the room's name.
+  useHubChatsVersion();
+  const states = withRoomTurns(ownStates, roomTurnsByMono(), (chatId) => getChat(chatId)?.name);
   // What each Mono has out, from the work it delegated (its workers live in its team, never here: Ash, 20 Oct).
   const delegationRows = useDelegationRows();
   const now = useClock();

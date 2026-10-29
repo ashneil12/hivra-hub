@@ -260,6 +260,16 @@ export function roomWorking(chatId: string, convId?: string): RoomWorker[] {
           { monoId: x.wake.monoId, convId: x.wake.convId, kind: x.wake.kind, state: x.mode, ...(x.activity ? { activity: x.activity } : {}) },
     );
 }
+/**
+ * r67 (Alfred's r66 A9): every Mono working on a room turn now, with the room it is in. A room-only turn never touches
+ * the Mono's own chat, so the rail read every row "idle" and the folded header said nothing while seats wrote.
+ */
+export function roomTurnsByMono(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [chatId, r] of rooms)
+    for (const x of r.running.values()) if (x.mode === "turn" || !x.answered) if (!out.has(x.wake.monoId)) out.set(x.wake.monoId, chatId);
+  return out;
+}
 /** The first Mono writing in the room (the older single indicator). */
 export function typingIn(chatId: string): string | undefined {
   return roomWorking(chatId)[0]?.monoId;
