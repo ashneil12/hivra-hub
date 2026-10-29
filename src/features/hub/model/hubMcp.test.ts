@@ -227,6 +227,9 @@ describe("the delegate tool", () => {
       "--disallowedTools",
       `${fence[1]},EnterWorktree,ExitWorktree`,
     ]);
+    // r79 (c02): a chat that hands out work can't stall its turn on Claude Code's settings skill.
+    const withDelegate = hubMcpArgs("chat-frank", { ashOs: null, cli: CLI }, lookups);
+    expect(withDelegate.at(-1)).toBe(`${fence[1]},EnterWorktree,ExitWorktree,Skill(update-config)`);
   });
 
   it("is taught to a chat only when its Claude Code session really has it", () => {
