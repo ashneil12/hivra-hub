@@ -27,6 +27,14 @@ export const STALL_MS = 60_000;
  * comes, the line says what it is still on ("Still working on running npm test"), not a bare "Thinking".
  */
 export const STILL_MS = 60_000;
+/**
+ * r67 (realconv S8 on 0.16.8: 12 minutes, never a "Still working"): a model that streams no thinking (grok through the
+ * bridge) sends nothing between a tool's end and its next step, so the stream was silent at 60 s and STALL_MS won over
+ * STILL_MS every time; the line went "Thinking" to "No activity for 1 min" and "Still working on ..." could not show.
+ * Thinking after a step is quiet by nature: it reads "Still working on <last step>" for up to this long with nothing new
+ * before it says nothing is happening. A running tool still reads stalled after STALL_MS.
+ */
+export const THINK_STALL_MS = 5 * 60_000;
 
 const DONE = new Set(["completed", "failed", "error", "cancelled", "canceled", "interrupted", "stopped"]);
 const CHECK = /\b(?:test|tests|vitest|jest|playwright|tsc|typecheck|lint|eslint|clippy|check|cargo\s+(?:test|check|fmt))\b/i;
@@ -231,7 +239,7 @@ export function formatElapsed(ms: number): string {
 /** What the line reads at `now`: the step and its timer, or, after a minute with nothing new, that nothing is happening. */
 export function activityLine(activity: LiveActivity, now: number): { text: string; stalled: boolean } {
   const idle = now - activity.lastEventAt;
-  if (idle >= STALL_MS) return { text: `No activity for ${Math.floor(idle / 60_000)} min`, stalled: true };
+  if (idle >= (activity.label === "Thinking" ? THINK_STALL_MS : STALL_MS)) return { text: `No activity for ${Math.floor(idle / 60_000)} min`, stalled: true };
   if (activity.label === "Thinking" && now - (activity.stepSince ?? activity.since) >= STILL_MS) {
     const on = activity.lastStep ? ` on ${activity.lastStep.charAt(0).toLowerCase()}${activity.lastStep.slice(1)}` : "";
     return { text: `Still working${on} · ${formatElapsed(now - activity.since)}`, stalled: false };

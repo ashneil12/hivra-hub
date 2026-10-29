@@ -52,7 +52,7 @@ import { forUser, userLabel } from "./userName";
 import { draftStatusLines } from "../../selfBuild/model/monoMake";
 import { liveMonosNote } from "./liveMonos";
 import { withoutNoReply } from "../../../shared/text/noReply";
-import { isRolesAsk, isSecondStatus, isStatusAsk, logDropped, stripMeta, stripOtherSeats } from "./roomMeta";
+import { isAckOrIntentOnly, isRolesAsk, isSecondStatus, isStatusAsk, logDropped, stripMeta, stripOtherSeats } from "./roomMeta";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -719,6 +719,12 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   // r64: on a status ask the host gives the one combined status; another seat adds one missed fact at most.
   if (wake.kind === "chime" && !isSilent(text) && statusAsked(chatId, wake) && isSecondStatus(withoutNoReply(text))) {
     logDropped({ chatId, monoId: me.id, why: "second-status", text });
+    text = NO_REPLY;
+  }
+  // r67 (S8 on 0.16.8): on a status ask a seat that isn't the host posts nothing at all unless it has a missed fact: an
+  // acknowledgement or a line about what it is about to do ("I'll check the board ... before I stay quiet.") goes, whole.
+  if (wake.kind === "chime" && !isSilent(text) && statusAsked(chatId, wake) && isAckOrIntentOnly(withoutNoReply(text))) {
+    logDropped({ chatId, monoId: me.id, why: "status-ack", text });
     text = NO_REPLY;
   }
   // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
