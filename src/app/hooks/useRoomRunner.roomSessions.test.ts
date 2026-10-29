@@ -68,13 +68,20 @@ async function setup() {
       },
       submit: (sessionId, text, options) => {
         submitted.push({ sessionId, text });
-        // The chat keeps the prompt as its hidden user turn, as the app's does.
+        const reply = sessionId.startsWith("own-") ? "WRONG CHAT" : text.includes("This is your one turn") ? "NO_REPLY" : text.includes("is the label in") ? "The label is in: commit def5678." : "Noted.";
+        // The chat keeps the prompt as its hidden user turn and the answer after it, as the app's does.
         sessionsRef.current = sessionsRef.current.map((s) =>
           s.id === sessionId
-            ? { ...s, blocks: [...s.blocks, { id: `p${submitted.length}`, role: "user", text, internal: true, appRequestId: options.appRequestId, monoNote: options.monoNote } as Block] }
+            ? {
+                ...s,
+                blocks: [
+                  ...s.blocks,
+                  { id: `p${submitted.length}`, role: "user", text, internal: true, appRequestId: options.appRequestId, monoNote: options.monoNote } as Block,
+                  { id: `r${submitted.length}`, role: "assistant", text: reply } as Block,
+                ],
+              }
             : s,
         );
-        const reply = sessionId.startsWith("own-") ? "WRONG CHAT" : text.includes("This is your one turn") ? "NO_REPLY" : "Noted.";
         queueMicrotask(() => options.onSettled?.({ status: "completed", text: reply }));
         return true;
       },
@@ -146,39 +153,23 @@ it("a deleted room conversation's text doesn't reach the next room prompt", asyn
   expect(sessionsRef.current.some((s) => s.blocks.some((x) => x.text.includes(SECRET)))).toBe(false);
 });
 
-// Bench run f4dc: with one session per room conversation, the room judged only the room's own session, so a Mono busy in
-// its 1:1 chat got a fresh turn in the room beside the work. docs/leadership/ROOM.md: it takes the wake into its work.
-it("a Mono busy in its own chat takes the room's wake there, not a turn in the room's session", async () => {
+// r62 (Alfred's 0.16.3 A2 run): steering the room's wake into a Mono's busy 1:1 put the room prompt into the 1:1, and the
+// answer never reached the room. The room's own session takes the turn, even while the 1:1 is mid-reply, and it posts.
+it("a Mono mid-reply in its 1:1 still answers in the room, from the room's session; the 1:1 gets nothing", async () => {
   const { chat, mono, room, sessionsRef, submitted } = await setup();
   sessionsRef.current = sessionsRef.current.map((s) => (s.id === "own-frank" ? { ...s, busy: true } : s));
   const a = chat.startConversation(room.id, "frank, is the label in?");
-  // Not awaited: the room stays busy while the wake waits in frank's own work, which is the point of the test.
-  void chat.requestReply(room.id, a);
-  const own = () => sessionsRef.current.find((s) => s.id === "own-frank")!;
-  await vi.waitFor(() => expect(own().queuedMessages?.length).toBe(1));
-  const wake = own().queuedMessages![0];
-  expect(wake.text).toContain("You are in the middle of your own work");
-  expect(wake.text).toContain(`answer in the room with room_post (room "${room.id}")`);
-  expect(wake.monoNote).toMatchObject({ kind: "room", ref: room.id });
-  // Nothing came to the room's session for this conversation: it was never made, and frank's chat was never submitted to.
-  expect(mono.monoRoomSession("frank", room.id, a)).toBeUndefined();
-  expect(submitted.filter((s) => s.sessionId === "own-frank")).toEqual([]);
-  // Once frank's own work has the wake answered, the room carries on.
-  sessionsRef.current = sessionsRef.current.map((s) =>
-    s.id === "own-frank"
-      ? {
-          ...s,
-          busy: false,
-          queuedMessages: [],
-          blocks: [
-            ...s.blocks,
-            { id: "waker", role: "user", text: wake.text, internal: true, appRequestId: wake.id } as Block,
-            { id: "wakea", role: "assistant", text: "The label is in." } as Block,
-          ],
-        }
-      : s,
-  );
+  await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
+  const own = sessionsRef.current.find((s) => s.id === "own-frank")!;
+  expect(own.queuedMessages ?? []).toEqual([]);
+  expect(own.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
+  expect(submitted.some((s) => s.sessionId.startsWith("own-"))).toBe(false);
+  const frankRoom = mono.monoRoomSession("frank", room.id, a)!;
+  expect(frankRoom).toBeTruthy();
+  expect(submitted.some((s) => s.sessionId === frankRoom)).toBe(true);
+  const said = chat.getChat(room.id)!.conversations.find((x) => x.id === a)!.messages;
+  expect(said.some((m) => m.from === "frank" && m.text === "The label is in: commit def5678.")).toBe(true);
 });
 
 it("deleting a whole room lets go of every conversation's sessions", async () => {
@@ -193,4 +184,33 @@ it("deleting a whole room lets go of every conversation's sessions", async () =>
   await vi.waitFor(() => expect(dropped).toContain(sid));
   await vi.waitFor(() => expect(mono.monoRoomSessionsOf(other.id)).toEqual([]));
   expect(sessionsRef.current.some((s) => s.id === sid)).toBe(false);
+});
+
+// r62 (A5): replies to a new room landed in the older Leadership room. Each room's turn answers in the room that asked.
+it("a reply goes to the room that asked, even when another room is newer and has the same Monos", async () => {
+  const { chat, sessionsRef } = await setup();
+  const marketing = chat.createChat("hub", "Marketing", ["chief-of-staff", "frank"]);
+  const m = chat.startConversation(marketing.id, "frank, is the label in?");
+  await chat.requestReply(marketing.id, m);
+  await chat.roomIdle(marketing.id);
+  const inMarketing = chat.getChat(marketing.id)!.conversations.flatMap((c) => c.messages);
+  expect(inMarketing.some((x) => x.from === "frank" && x.text === "The label is in: commit def5678.")).toBe(true);
+  const leadership = chat.allChats().filter((c) => c.id !== marketing.id);
+  for (const other of leadership) expect(other.conversations.flatMap((c) => c.messages).some((x) => x.from === "frank")).toBe(false);
+  expect(sessionsRef.current.find((s) => s.id === "own-frank")!.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
+});
+
+// r62: while frank's room session is still busy with an earlier room turn, the next one waits in that session's queue
+// (never the 1:1's) and is not dropped.
+it("a room turn for a Mono whose room session is busy waits in that session's queue, never the 1:1's", async () => {
+  const { chat, mono, room, sessionsRef } = await setup();
+  const a = chat.startConversation(room.id, "frank, is the label in?");
+  await chat.requestReply(room.id, a);
+  await chat.roomIdle(room.id);
+  const frankRoom = mono.monoRoomSession("frank", room.id, a)!;
+  sessionsRef.current = sessionsRef.current.map((s) => (s.id === frankRoom || s.id === "own-frank" ? { ...s, busy: true } : s));
+  chat.sendMessage(room.id, "frank, and the colour?", a);
+  void chat.requestReply(room.id, a);
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === frankRoom)!.queuedMessages?.length).toBe(1));
+  expect(sessionsRef.current.find((s) => s.id === "own-frank")!.queuedMessages ?? []).toEqual([]);
 });

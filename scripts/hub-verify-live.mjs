@@ -610,7 +610,7 @@ export function scenario({ runId, failGate = false }) {
       steps: [{ say: "Fair, frank. The label is fixed in commit def5678. frank, please re-check." }],
     },
     { name: "room-frank-pass", match: `${roomTurn("frank")}[\\s\\S]*>> Projects Manager: Fair, frank`, times: 1, steps: [{ mark: "room-pass" }, { say: "Pass from me." }] },
-    // frank, busy in its own chat: the room's wake is steered into this turn and answered with room_post.
+    // frank, busy in its own chat (r62): the room's turn runs in frank's room session, not in that work, and posts.
     {
       name: "room-frank-busy",
       match: said(ROOM_BUSY),
@@ -620,12 +620,9 @@ export function scenario({ runId, failGate = false }) {
     },
     {
       name: "room-frank-wake",
-      match: `${roomTurn("frank")}[\\s\\S]*answer in the room with room_post`,
+      match: `${roomTurn("frank")}[\\s\\S]*Chief of Staff addressed you[\\s\\S]*${ROOM_ASH(2)}`,
       times: 1,
-      steps: [
-        { app: "rooms.post", input: { room: ROOM_ID, text: "The label is in. Pass from me." }, save: "room-frank-post" },
-        { mark: "room-frank-posted" },
-      ],
+      steps: [{ mark: "room-frank-posted" }, { say: "The label is in. Pass from me." }],
     },
     { name: "room-alfred-dm", match: said("\\[MonoCode message from Chief of Staff\\]"), times: 1, steps: [{ mark: "room-alfred-dm" }, { say: "NO_REPLY" }] },
     { name: "room-quiet", match: said("\\[MonoCode room\\]"), steps: [{ say: "NO_REPLY" }] },
@@ -2454,7 +2451,6 @@ async function main() {
     const askSent = ashInRoom(2, "is the label in?");
     const cosAnswered2 = await waitMark("room-cos-answered-2", 60_000);
     const frankPosted = await waitMark("room-frank-posted", 90_000);
-    const frankCall = savedCall("room-frank-post");
     const answeredRows = await until(async () => {
       const rows = await roomRows();
       const at = rows.findIndex((row) => row.author === "ash" && row.text.startsWith(ROOM_ASH(2)));
@@ -2464,13 +2460,16 @@ async function main() {
     const frankWake = prompts().find((entry) => entry.rule === "room-frank-wake");
     const frankRow = answeredRows?.find((row) => row.author === "frank");
     const cosRow = answeredRows?.find((row) => row.author === TEAM_MONO);
+    // frank's 1:1 work must not have taken the room's prompt (Alfred's 0.16.3 A2 run).
+    const busyConv = frankBusy?.conversation;
+    const roomPromptInWork = !!busyConv && prompts().some((entry) => entry.conversation === busyConv && /\[MonoCode room\]/.test(entry.prompt ?? ""));
     open("room-frank-release");
     const busyEvidence = {
       frankBusy: !!frankBusy,
       cosAnsweredMs: after(cosAnswered2, askSent),
       steered: frankWake?.steered ?? false,
-      sameConversationAsWork: frankWake?.conversation === frankBusy?.conversation,
-      call: frankCall?.response ?? null,
+      ownRoomSession: !!frankWake && frankWake.conversation !== busyConv,
+      roomPromptInWork,
       frankRow: frankRow ? { text: frankRow.text, pick: frankRow.meta.pick?.by, replyTo: frankRow.reply_to } : null,
       cosRow: cosRow ? cosRow.id : null,
     };
@@ -2478,20 +2477,20 @@ async function main() {
       frankBusy &&
       cosAnswered2 &&
       frankPosted &&
-      frankCall?.response?.ok === true &&
-      busyEvidence.steered &&
-      busyEvidence.sameConversationAsWork &&
+      !busyEvidence.steered &&
+      busyEvidence.ownRoomSession &&
+      !roomPromptInWork &&
       frankRow?.text === "The label is in. Pass from me." &&
       frankRow.meta.pick?.by === "addressed" &&
       frankRow.reply_to === cosRow?.id
     )
       pass(
         "room_busy_mono_answers",
-        "A Mono busy in its own chat still answers the room: the wake is steered into its work and it posts with room_post",
-        `frank was mid-turn on its own work; Chief of Staff named it ${busyEvidence.cosAnsweredMs} ms after Ash asked; the room's wake joined frank's running turn and frank posted "${frankRow.text}" with room_post, as the answer to Chief of Staff's message`,
+        "A Mono busy in its own chat still answers the room: the room's turn runs in its room session, never in that work, and posts",
+        `frank was mid-turn on its own work; Chief of Staff named it ${busyEvidence.cosAnsweredMs} ms after Ash asked; frank's room session took the turn (its 1:1 work got no room prompt) and frank posted "${frankRow.text}", as the answer to Chief of Staff's message`,
         { evidence: busyEvidence },
       );
-    else fail("room_busy_mono_answers", "A Mono busy in its own chat still answers the room: the wake is steered into its work and it posts with room_post", JSON.stringify(busyEvidence));
+    else fail("room_busy_mono_answers", "A Mono busy in its own chat still answers the room: the room's turn runs in its room session, never in that work, and posts", JSON.stringify(busyEvidence));
 
     phase();
     // 20. Chief of Staff's private message to Alfred (sent from its room turn).

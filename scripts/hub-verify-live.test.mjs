@@ -277,11 +277,13 @@ test("the room: each Mono's room turn, frank's busy work, its wake and the priva
   assert.equal(dm.to, "alfred");
   assert.ok(dm.text.startsWith(ROOM_DM));
   assert.equal(
-    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`, true)),
+    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`)),
     "room-frank-wake",
   );
-  const post = rules.find((rule) => rule.name === "room-frank-wake").steps.find((s) => s.app === "rooms.post").input;
-  assert.equal(post.room, ROOM_ID);
+  // r62: frank's room session takes the turn and its answer is the post, so no room_post step.
+  const wakeSteps = rules.find((rule) => rule.name === "room-frank-wake").steps;
+  assert.equal(wakeSteps.some((s) => s.app === "rooms.post"), false);
+  assert.ok(wakeSteps.some((s) => s.say === "The label is in. Pass from me."));
   assert.equal(step(`${context}[MonoCode message from Chief of Staff]\n<message from="Chief of Staff">\n${dm.text}\n</message>`), "room-alfred-dm");
   // None of the earlier phases' prompts reach the room's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, "[MonoCode report] done"])

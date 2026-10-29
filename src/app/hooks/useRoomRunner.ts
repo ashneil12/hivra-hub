@@ -5,6 +5,7 @@
 //   those sessions). A free session takes it as a managed turn (hidden prompt, reply back). One still working on the
 //   conversation's last turn gets the room's wake in its queue instead: steered into its running work when it can take one, sent
 //   behind it otherwise, and answered with room_post. Never refused, never dropped quietly: the room hears how it ended.
+//   Work in the Mono's 1:1 chat never takes a room turn (r62): the room's own session does, so the answer posts in the room.
 // - Stop: a running room turn is stopped with the app's Stop (managed, so the Mono's own queue isn't left paused); a
 //   wake still waiting is taken back out of the queue.
 // - Private messages between Monos (monos.message): a hidden turn in the receiver's own chat, shown as "From frank".
@@ -215,14 +216,14 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const name = mono ? monoLook(mono).name : request.monoId;
         const note: NonNullable<Block["monoNote"]> = { kind: "room", from: request.note.room, ref: request.chatId, line: request.note.line };
         const attachments: Attachment[] = (request.attachments ?? []).map((file) => ({ ...file }));
-        // A Mono working in its own chat (work it delegated, a report turn) takes the room's wake into that work, steered
-        // into it or sent behind it, as docs/leadership/ROOM.md says. Its room session for this conversation is a
-        // different chat (r52), so judging only that one ran a second turn beside the work (bench run f4dc). Work in
-        // this conversation's own session still wins, because that is where the wake belongs.
+        // r62: with room sessions (r52, openRoom) a room turn always runs in the Mono's session for this conversation
+        // and posts in the room, even while the Mono is mid-reply in its 1:1. Steering it into the 1:1's running turn
+        // put the room's prompt into the 1:1 and the answer never reached the room (Alfred's 0.16.3 A2 run). Only a host
+        // without room sessions, where the 1:1 is the room's session too, still queues behind work there.
         const roomId = monoRoomSession(request.monoId, request.chatId, request.convId);
         const roomBusy = !!roomId && !!h.sessionsRef.current.find((s) => s.id === roomId)?.busy;
         const own = roomBusy ? undefined : ownChatSession(h, request.monoId, roomId);
-        if (own?.busy) {
+        if (own?.busy && !h.openRoom) {
           const ownMemory = await roomMemory(own, request.projectId).catch(() => undefined);
           const queued = wake(own, request.wakeId, ownMemory ? withRoomMemory(request.wakePrompt, ownMemory.block) : request.wakePrompt, note, attachments);
           if (ownMemory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && ownMemory.delivered());
