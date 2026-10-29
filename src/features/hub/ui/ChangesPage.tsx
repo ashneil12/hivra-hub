@@ -32,7 +32,7 @@ function BotChanges() {
       {rows.map((r) => {
         const d = r.kind === "one" ? r.change.day : r.day;
         const head = d !== day ? <div className="px-3 pb-1 pt-3 text-xs text-content/60 first:pt-0">{(day = d)}</div> : null;
-        return <div key={r.kind === "one" ? r.change.id : r.id}>{head}<BotChangeLine row={r} /></div>;
+        return <div key={botRowKey(r)} data-hub-bot-change-row={botRowKey(r)}>{head}<BotChangeLine row={r} /></div>;
       })}
     </div>
   );
@@ -101,10 +101,23 @@ function rowToggles(e: { target: EventTarget | null }): boolean {
   return !selected;
 }
 
+/** One key per row: a bundle and a single change can't share one, so React never hands a row another row's buttons. */
+export function botRowKey(r: BotChangeRow): string {
+  return r.kind === "one" ? `one:${r.change.id}` : `bundle:${r.id}`;
+}
+
+/** What a row's own buttons are named for (r65, PM's r63 run: every Undo was just "Undo", so the wrong one was hit). */
+export function botRowName(r: BotChangeRow): string {
+  const line = (r.kind === "one" ? r.change.line : r.line).replace(/\s+/g, " ").trim();
+  return line.length > 90 ? `${line.slice(0, 89).trimEnd()}…` : line;
+}
+
 function BotChangeLine({ row }: { row: BotChangeRow }) {
   const [open, setOpen] = useState(false);
   const items = row.kind === "one" ? [row.change] : row.items;
   const line = row.kind === "one" ? row.change.line : row.line;
+  const named = botRowName(row);
+  const ids = items.map((c) => c.id);
   const undone = items.every((c) => c.undone);
   const toggle = () => setOpen((was) => !was);
   return (
@@ -115,7 +128,7 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
         {undone ? (
           <span className="flex shrink-0 items-center gap-2 text-xs text-content/60" data-hub-bot-change-undone>
             <span>{row.kind === "one" ? undoneLine(row.change) : "Undone"}</span>
-            <button type="button" data-hub-bot-change-redo onClick={() => void redoBotChange(items.map((c) => c.id))}
+            <button type="button" data-hub-bot-change-redo aria-label={`Redo: ${named}`} onClick={() => void redoBotChange(ids)}
               className="rounded-md px-1.5 py-0.5 text-xs text-content/60 hover:bg-content/5 hover:text-content">Redo</button>
           </span>
         ) : items.every((c) => c.note) ? (
@@ -124,7 +137,7 @@ function BotChangeLine({ row }: { row: BotChangeRow }) {
               onClick={() => openMonoChatWith(items[0]!.ask!.monoId, items[0]!.ask!.text)}>{items[0].ask.label}</button>
           ) : null
         ) : (
-          <button type="button" className={UNDO} data-hub-bot-change-undo onClick={() => void undoBotChange(items.map((c) => c.id))}>
+          <button type="button" className={UNDO} data-hub-bot-change-undo aria-label={`${(row.kind === "one" && row.change.undoLabel) || "Undo"}: ${named}`} onClick={() => void undoBotChange(ids)}>
             {(row.kind === "one" && row.change.undoLabel) || "Undo"}
           </button>
         )}
@@ -177,7 +190,7 @@ function ProjectChanges() {
           {p.status === "rejected" ? null : p.status === "undone" ? (
             <span className="text-xs text-content/60">Undone</span>
           ) : (
-            <button type="button" data-hub-change-undo={p.id} onClick={() => undoProposal(p.id)} className={UNDO}>
+            <button type="button" data-hub-change-undo={p.id} aria-label={`Undo: ${p.title}`} onClick={() => undoProposal(p.id)} className={UNDO}>
               Undo
             </button>
           )}
