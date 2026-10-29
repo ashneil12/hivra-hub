@@ -33,6 +33,7 @@ mod jsonc;
 mod launch_guard;
 mod linear;
 mod link_preview;
+mod live_turns;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -251,10 +252,23 @@ fn set_trackpad_zoom_enabled(
     trackpad_zoom::set_enabled(&window, enabled);
 }
 
-// Async so the window is built off the main thread. Building it from a sync
-// command deadlocks WebView2 on Windows and leaves the new window blank.
+// Async so the window is built off the main thread on Windows (a sync command
+// deadlocks WebView2 and leaves the new window blank). On macOS, WKWebView
+// must be created on the main thread: doing it here abort()s with
+// "Rust cannot catch foreign exceptions".
 #[tauri::command]
 async fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = app.clone();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(window::open_new_window(&handle));
+        })
+        .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
     window::open_new_window(&app)
 }
 
@@ -345,6 +359,7 @@ pub fn run() {
         .manage(project_actions::ActionRuns::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
+        .manage(live_turns::LiveTurns::default())
         .setup(move |app| {
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
@@ -743,6 +758,8 @@ pub fn run() {
             session_store::session_list_in_flight,
             session_store::session_take_in_flight,
             session_store::session_drop_in_flight,
+            live_turns::live_turns_set,
+            live_turns::live_turns_list,
             session_store::workspace_set_snapshot,
             session_store::workspace_get_snapshot,
             notes::notes_list,
@@ -905,6 +922,7 @@ pub fn run() {
                 .iter()
                 .any(|window| window.label() != label);
             control::window_closed(handle, &label);
+            live_turns::window_closed(handle, &label);
             #[cfg(target_os = "macos")]
             mono_chat::window_closed(handle, &label);
             if !other_window {

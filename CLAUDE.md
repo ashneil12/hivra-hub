@@ -165,8 +165,9 @@ npm run hub:build && npm run hub:verify
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
-- `npm run check` runs the web checks (`vitest run` + `tsc --noEmit`) and the Rust checks
-  (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`). Run it before calling anything done.
+- `npm run check` runs the web checks (`vitest run` + `tsc --noEmit`), the script tests
+  (`node --test scripts/*.test.cjs scripts/*.test.mjs`) and the Rust checks (`cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`). Run it before calling anything done.
 - The hub flag `VITE_MONOCODE_HUB=1` is a **build-time** Vite variable (`src/features/hub/model/hubBundle.ts`,
   `IS_HUB_BUNDLE`). It is what makes the app open straight on the hub. Both `tauri.conf.json` and the overlay
   set it, so it is always on — in a build **and in dev** (`npm run hub:dev`; checked by

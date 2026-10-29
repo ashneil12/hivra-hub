@@ -17,7 +17,7 @@ How it differs from the other two benches:
 ```bash
 npm run hub:realconv -- --list                                   # scenes, and which can't run yet
 npm run hub:realconv -- --scenes S10,S5,S14 --dry-run            # check options, print the plan, start nothing
-npm run hub:realconv -- --scenes S10,S5,S14                      # agents on claude:sonnet-5, tester and judge on Claude sonnet
+npm run hub:realconv -- --scenes S10,S5,S14                      # agents, tester and judge on DeepSeek V4.1 Flash (the default)
 npm run hub:realconv -- --scenes S5 --no-build                   # reuse target/debug/monocode
 ```
 
