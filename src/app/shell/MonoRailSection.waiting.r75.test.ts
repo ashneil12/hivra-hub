@@ -37,7 +37,7 @@ const mount = () =>
   act(() => root.render(createElement(MonoRailSection, { states: new Map(), onOpen: () => {}, onCreate: () => {}, onDelete: () => {} })));
 
 describe("r75: a Mono's chat waiting on Ash is red on its rail row", () => {
-  it("shows Needs you with Open <Lead>'s chat, which opens the waiting chat", () => {
+  it("shows one red Needs you line with the question on hover", () => {
     const lead = createMono(["/code/tally"]);
     updateMono(lead.id, (m) => ({ ...m, name: "Tally lead", sessionId: "tally-chat" }));
     const other = createMono();
@@ -60,12 +60,10 @@ describe("r75: a Mono's chat waiting on Ash is red on its rail row", () => {
     mount();
     const line = container.querySelector<HTMLElement>(`[data-mono-waiting="${lead.id}"]`);
     expect(line).not.toBeNull();
-    expect(line!.textContent).toContain("Needs you");
-    expect(line!.title).toBe("everyone sees every tally, or private unless shared?");
+    // r76 (Critiquito): one red "Needs you" line under the name, no button (the row itself opens the chat).
+    expect(line!.textContent).toBe("Needs you");
+    expect(line!.querySelector("button")).toBeNull();
+    expect(line!.title).toBe("Everyone sees every tally, or private unless shared?");
     expect(container.querySelector(`[data-mono-waiting="${other.id}"]`)).toBeNull();
-    const open = [...line!.querySelectorAll("button")].find((b) => /Tally lead/.test(b.textContent ?? ""));
-    expect(open).toBeTruthy();
-    act(() => open!.click());
-    expect(host.open.mock.calls[0]?.[0]).toBe("tally-chat");
   });
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check } from "../../../shared/ui/icons";
-import { needsReason } from "../model/chatQuestions";
+import { askText, needsReason } from "../model/chatQuestions";
 import { userLabel } from "../model/userName";
 import { NEEDS_YOU } from "../model/statusChip";
 import { ChipMark, redRowProps } from "./StatusMark";
@@ -79,7 +79,8 @@ export function WaitingOnYou({ projectId }: { projectId: string | undefined }) {
   );
 }
 
-function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProject: boolean; answer: (call: () => Promise<TakeResult>) => Promise<TakeResult> }) {
+/** One waiting chat's card: Today, a project's Inbox, and (r76) Being built all show this same row. */
+export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProject: boolean; answer: (call: () => Promise<TakeResult>) => Promise<TakeResult> }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -120,10 +121,21 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
         </div>
       ) : (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>
-          {chat.question}
+          {askText(chat.question)}
           {chat.more ? <span className="text-content/60"> (+{chat.more} more)</span> : null}
         </div>
       )}
+      {/* r76 (Critiquito): "which of those two?" shows the two, so the card can be answered as it stands. */}
+      {chat.options?.length && !chat.provide ? (
+        <ol className="flex list-none flex-col gap-0.5 text-[13px] leading-5 text-content/85" data-hub-waiting-options>
+          {chat.options.map((option, i) => (
+            <li key={i} className="flex gap-1.5" data-hub-waiting-option>
+              <span className="shrink-0 text-content/50" aria-hidden>{i + 1}.</span>
+              <span className="min-w-0 break-words">{option}</span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
       {/* No suggestion, no line: the reply box and Open chat already say what to do. */}
       {chat.pick && !chat.provide ? (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>

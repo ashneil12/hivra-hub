@@ -35,6 +35,11 @@ export type ChatQuestion = {
    * Canary PostHog project". Such an ask is an errand, not an approval: its card has no Approve/Deny (PM's r63 run).
    */
   provide?: string;
+  /**
+   * r76 (Critiquito): the options an ask points back to ("which of those two?"), from the agent's own message, or a live
+   * question's options; so the card can be answered without opening the chat. Capitalised, in the agent's words.
+   */
+  options?: string[];
 };
 
 // ---- why Ash is needed ---------------------------------------------------------------------------------------
@@ -80,6 +85,55 @@ export function oneLine(text: string, max = ONE_LINE_MAX): string {
   const cut = flat.slice(0, max);
   const space = cut.lastIndexOf(" ");
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+}
+
+/** The question as a card shows it: first letter capitalised (r76, Critiquito). */
+export function askText(text: string): string {
+  return text.replace(/^(\s*)(\p{Ll})/u, (_, space: string, first: string) => space + first.toUpperCase());
+}
+
+// ---- the options an ask points back to ---------------------------------------------------------------------------
+
+/** "which of those two?", "which one?", "either?": an ask whose options are earlier in the message. */
+const POINTS_BACK = /\b(?:th(?:ose|ese|e)\s+(?:two|three|four|options?|choices?|ways?|paths?)|which\s+(?:one|way)|which\s+of\s+(?:them|those|these|the\s+\w+)|either\s+one)\b/i;
+const LIST_ITEM = /^\s*(?:[-*•]|\d+[.)]|[A-Da-d][.)])\s+(.+)$/;
+const OPTIONS_MAX = 5;
+
+function optionText(text: string): string {
+  return askText(oneLine(text.replace(/^\s*(?:either\s+)?/i, "").replace(/[\s.;,:]+$/, ""), 140));
+}
+
+/**
+ * The options written before an ask: the last list (two to five lines) above it, or else the last sentence that puts
+ * two to four choices with "or" ("until you pick: A, or B."). Empty when there is nothing that reads as options.
+ */
+export function optionsBefore(text: string): string[] {
+  const lines = text.split("\n");
+  const end = lines.findIndex((line) => needsAshPattern().test(line));
+  const before = lines.slice(0, end < 0 ? lines.length : end);
+  let run: string[] = [];
+  let last: string[] = [];
+  for (const line of before) {
+    const item = LIST_ITEM.exec(line)?.[1];
+    if (item) run.push(item);
+    else if (line.trim()) {
+      if (run.length >= 2) last = run;
+      run = [];
+    }
+  }
+  if (run.length >= 2) last = run;
+  if (last.length >= 2 && last.length <= OPTIONS_MAX) return last.map(optionText);
+  const sentences = before.join(" ").split(/(?<=[.!?])\s+/).filter((s) => /\bor\b/i.test(s));
+  const sentence = sentences[sentences.length - 1];
+  if (!sentence) return [];
+  const tail = sentence.includes(":") ? sentence.slice(sentence.lastIndexOf(":") + 1) : sentence;
+  const parts = tail.split(/,?\s+or\s+|,\s+(?=\S)/i).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 4 || parts.some((part) => part.length > 160)) return [];
+  return parts.map(optionText);
+}
+
+function pointsBack(question: string): boolean {
+  return POINTS_BACK.test(question);
 }
 
 // ---- the recommendation in an AskUserQuestion --------------------------------------------------------------------
@@ -243,6 +297,7 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
     requestId: prompt.requestId,
     question: oneLine(first.prompt || first.header || prompt.title || "A question"),
     more: prompt.questions.length - 1,
+    ...(first.options.length >= 2 ? { options: first.options.slice(0, OPTIONS_MAX).map((o) => optionText(plainOptionLabel(o.label))) } : {}),
     ...(pick ? { pick } : {}),
     redLine: flagged || looksRedLine(`${words} ${pick ?? ""}`),
     ...(provideFrom(first.prompt || first.header || "") ?? {}),
@@ -313,7 +368,8 @@ function safeCommand(command: string): string {
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
   const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
-  const marker = parseNeedsAsh(lastTurnText(blocks));
+  const turnText = lastTurnText(blocks);
+  const marker = parseNeedsAsh(turnText);
   if (chat.busy && !marker) return null;
   const secret = marker ? undefined : secretActionTried(chat.blocks);
   if (secret)
@@ -330,12 +386,19 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
         source: "marker",
         question: marker.question,
         more: 0,
+        ...markerOptions(marker.question, turnText),
         ...(marker.pick ? { pick: marker.pick } : {}),
         redLine: marker.redLine,
         ...(marker.flag ? { flag: marker.flag } : {}),
         ...(marker.provide ? { provide: marker.provide } : {}),
       }
     : null;
+}
+
+function markerOptions(question: string, turnText: string): { options?: string[] } {
+  if (!pointsBack(question)) return {};
+  const options = optionsBefore(turnText);
+  return options.length ? { options } : {};
 }
 
 // ---- the gate: only what needs Ash reaches "Needs you" (D3) ------------------------------------------------------

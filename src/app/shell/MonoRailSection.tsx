@@ -25,7 +25,8 @@ import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
 import { NEEDS_YOU, failureChip } from "../../features/hub/model/statusChip";
 import { ChipMark, NeedsYouChip } from "../../features/hub/ui/StatusMark";
-import { openWaitingChat, useWaitingChatsVersion, waitingChats, type WaitingChat } from "../../features/hub/model/waitingChats";
+import { useWaitingChatsVersion, waitingChats, type WaitingChat } from "../../features/hub/model/waitingChats";
+import { askText } from "../../features/hub/model/chatQuestions";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
@@ -798,16 +799,12 @@ function FoldedWorkSummary({
  * connection): a grey ring named "Can't answer" and the reason, which opens its chat. Try again either way.
  */
 /** r75: the Mono's own chat waits on Ash's answer: the red Needs you, the question on hover, Open <its> chat. */
+/** r76 (Critiquito): just the red "Needs you" under the Mono's name; the row already opens its chat. The ask is on hover. */
 function MonoWaitingLine({ monoId, chat }: { monoId: string; chat: WaitingChat }) {
+  const title = [askText(chat.question), ...(chat.options ?? []).map((option, i) => `${i + 1}. ${option}`)].join("\n");
   return (
-    <div
-      className="ml-5 flex min-h-6 min-w-0 items-start gap-1 border-l border-content/10 py-0.5 pl-1.5"
-      data-mono-waiting={monoId}
-      title={chat.question}
-    >
-      <span className="min-w-0 flex-1 px-1.5 text-[12px]">
-        <NeedsYouChip reason="waiting on your answer" lead={chat.chatName} onOpenLead={() => openWaitingChat(chat.sessionId)} />
-      </span>
+    <div className="ml-5 flex min-w-0 items-center px-1.5 text-[12px]" data-mono-waiting={monoId} title={title}>
+      <ChipMark chip={NEEDS_YOU} />
     </div>
   );
 }

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { workerChip } from "../model/statusChip";
-import { ChipMark, LEAD_CHAT_BUTTON, NeedsYouLinkLine, redRowProps } from "./StatusMark";
-import { NEEDS_YOU } from "../model/statusChip";
-import { openWaitingChat, useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
+import { ChipMark, LEAD_CHAT_BUTTON, NeedsYouLinkLine } from "./StatusMark";
+import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
+import { WaitingRow } from "./WaitingOnYou";
 import { openMonoChat } from "../model/hubNav";
 import { rowReason } from "../model/rowReason";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -124,15 +124,11 @@ export function BeingBuiltView({ projectId }: { projectId: string }) {
             ) : null}
             {waiting.length ? (
               <section aria-label="Waiting on you" className="flex flex-col gap-0.5" data-hub-being-built-waiting>
+                {/* r76 (Critiquito): the Inbox row itself, so it reads "Tally lead · pick an option", runs full width and is
+                    answered in place. */}
                 {waiting.map((c) => (
-                  <div key={c.sessionId} data-hub-being-built-waiting-chat={c.sessionId} {...redRowProps(true)}
-                    className="flex min-w-0 flex-col gap-0.5 rounded-md px-3 py-1.5">
-                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs">
-                      <ChipMark chip={NEEDS_YOU} />
-                      <span className="text-content/60">{c.chatName} is waiting on you before it starts</span>
-                    </span>
-                    <span className="min-w-0 break-words text-[13px] text-content">{c.question}</span>
-                    <NeedsYouLinkLine name={c.chatName} onOpen={() => openWaitingChat(c.sessionId)} />
+                  <div key={c.sessionId} data-hub-being-built-waiting-chat={c.sessionId} className="w-full min-w-0">
+                    <WaitingRow chat={c} showProject={false} answer={(call) => call()} />
                   </div>
                 ))}
               </section>

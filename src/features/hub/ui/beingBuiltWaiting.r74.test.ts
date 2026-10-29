@@ -36,11 +36,14 @@ it("a Lead waiting on Ash before it starts is listed, not 'Nobody's working'", (
   expect(el.textContent).not.toContain("Nobody's working");
   const row = el.querySelector('[data-hub-being-built-waiting-chat="lead-1"]')!;
   expect(row).not.toBeNull();
-  expect(row.hasAttribute("data-hub-red-row")).toBe(true);
+  expect(row.querySelector("[data-hub-red-row]")).not.toBeNull();
   expect(row.textContent).toContain("Needs you");
-  expect(row.textContent).toContain("Tally lead is waiting on you before it starts");
+  // r76: titled like the Inbox row (the job's name and why), answerable in place.
+  expect(row.querySelector("[data-hub-waiting-where]")?.textContent).toBe("Tally lead");
+  expect(row.querySelector("[data-hub-waiting-reason]")?.textContent).toBe("pick an option");
   expect(row.textContent).toContain("private unless shared?");
-  const link = row.querySelector("[data-hub-needs-link] button") as HTMLButtonElement;
+  expect(row.querySelector("[data-hub-waiting-reply]")).not.toBeNull();
+  const link = row.querySelector("[data-hub-open-chat]") as HTMLButtonElement;
   act(() => link.click());
   expect(opened).toEqual(["lead-1"]);
 });
