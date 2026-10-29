@@ -6,7 +6,7 @@ import {
 import { autoResumeReason } from "../../autopilot/model/limitResume";
 import type { ProviderErrorClass } from "../../../integrations/harness/core/types";
 import { claimEvidenceOf, type ClaimConfidence } from "../../hub/model/claimEvidence";
-import { nothingOpen, parseWorkerReview, type WorkerReview } from "./workerReview";
+import { nothingOpen, parseWorkerReview, withEarlierReport, type WorkerReview } from "./workerReview";
 import {
   HARNESS_LABEL,
   type Block,
@@ -77,6 +77,8 @@ type CompletionOptions = {
   reply?: string;
   /** A delegated worker's report must end with its self-review (workerReview.ts); a finished one without it is refused. */
   reviewRequired?: boolean;
+  /** r82: the report a re-asked worker sent first; its latest turn sends back only the self-review (reviewAsk). */
+  earlierReport?: string;
 };
 
 export type MonoSessionCompletionResult = {
@@ -138,8 +140,9 @@ export function monoSessionCompletionResult(
         reply = block.text;
     }
   }
-  const result = reply || outcome.text;
-  const claim = reply ? claimEvidenceOf(reply, turn) : undefined;
+  const own = reply || outcome.text;
+  const result = options.earlierReport ? withEarlierReport(options.earlierReport, own) : own;
+  const claim = reply ? claimEvidenceOf(result, turn) : undefined;
   return {
     sessionId,
     project,

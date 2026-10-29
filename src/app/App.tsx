@@ -12882,6 +12882,8 @@ function Workspace({
           const reviewRequired = !!delegation;
           let settled = false;
           let asked = false;
+          // r82: the report the re-ask was about; the re-ask's turn sends back only the self-review.
+          let firstReport: string | undefined;
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
             settled = true;
@@ -12902,6 +12904,7 @@ function Workspace({
               ),
               // The re-ask's answer is the session's latest turn, not the block the request named.
               ...(latestTurn ? { latestTurn: true } : {}),
+              ...(latestTurn && firstReport ? { earlierReport: firstReport } : {}),
               ...(reviewRequired ? { reviewRequired: true } : {}),
             });
             // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
@@ -12912,6 +12915,7 @@ function Workspace({
             }
             if (result.status === "completed" && result.reviewProblem && !asked) {
               asked = true;
+              firstReport = result.result;
               // Sending it now carries the worker on into the second turn; `onSettled` keeps that turn's own report
               // on this same row, with the review it is asked for.
               const accepted = await submitSessionRef.current(sessionId, reviewAsk(result.reviewProblem), [], {

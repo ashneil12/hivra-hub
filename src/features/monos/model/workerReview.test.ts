@@ -3,6 +3,7 @@ import {
   nothingOpen,
   parseWorkerReview,
   reviewAsk,
+  withEarlierReport,
   REVIEW_FIELD_MAX,
   SELF_REVIEW_SHAPE,
   storedReview,
@@ -108,6 +109,10 @@ describe("reviewAsk", () => {
     expect(ask).toContain("Checked:");
     expect(ask).toContain("Unsure:");
     expect(ask).toMatch(/Don't redo the work/);
+    // r82: the report is kept, so the reply is the section alone and the chat never shows the report twice.
+    expect(ask).toMatch(/don't send the report again/);
+    expect(ask).toMatch(/Reply with only this section/);
+    expect(ask).not.toMatch(/Send your report again/);
   });
 });
 
@@ -128,4 +133,28 @@ it("tells an explicit nothing apart from an open question", () => {
   expect(nothingOpen("nothing")).toBe(true);
   expect(nothingOpen("None.")).toBe(true);
   expect(nothingOpen("whether the cache is stale")).toBe(false);
+});
+
+describe("withEarlierReport (r82: one report, not two)", () => {
+  const first = "Added delete for tallies: the board drops them, and the API returns 404 after.\nTests: 41 pass.";
+  const section = "## Self-review\nChecked: delete and the board\nHow: npm test\nUnsure: nothing";
+
+  it("joins the first report and the self-review sent back, once", () => {
+    const joined = withEarlierReport(first, section);
+    expect(joined).toBe(`${first}\n\n${section}`);
+    expect(joined.split("Added delete for tallies").length - 1).toBe(1);
+    expect(parseWorkerReview(joined).kind).toBe("ok");
+  });
+
+  it("keeps a reply that repeated its whole report as it came, not doubled", () => {
+    const repeated = `${first}\n\n${section}`;
+    expect(withEarlierReport(first, repeated)).toBe(repeated);
+  });
+
+  it("drops a broken self-review the first report ended with", () => {
+    const broken = `${first}\n\n## Self-review\nChecked: delete`;
+    const joined = withEarlierReport(broken, section);
+    expect(joined).toBe(`${first}\n\n${section}`);
+    expect(joined.match(/## Self-review/g)).toHaveLength(1);
+  });
 });

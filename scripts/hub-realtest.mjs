@@ -552,6 +552,10 @@ export async function runBench(options, hooks = {}) {
     stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
     // Today is about this run: the stub's invented Needs go; the test project is listed with its folder.
     stub.state.needs.length = 0;
+    // r82: Today's "Since …" is this run's start in the Mac's own clock (Europe/London for Ash), not the stub's
+    // invented six hours ago, which read as a wrong time zone on every Today shot.
+    const runStart = Date.now();
+    Object.assign(stub.state.activity, { lastActive: runStart, since: runStart, sessionStart: runStart });
     stub.state.since.overall = `${spec.project.name} is the test project for this run.`;
     stub.addProject({ id: spec.project.id, name: spec.project.name, shortName: spec.project.shortName ?? spec.project.name, iconShape: "chart", folder: project });
     for (const copy of copies) {

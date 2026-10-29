@@ -138,9 +138,28 @@ function emptyLine(name: FieldName): string {
 export function reviewAsk(reason: string): string {
   return `Your report came back without a self-review the app can record. ${reason}
 
-Don't redo the work: the checks you already ran are what belongs there. Send your report again as it was, with this at the end:
+Don't redo the work, and don't send the report again: it is kept as it was. Reply with only this section, filled in from the checks you already ran:
 
 ${SELF_REVIEW_SHAPE}`;
+}
+
+/**
+ * r82: the report a re-asked worker sent first, joined to the self-review it sent back, so the row keeps one report and
+ * the chat never shows it twice. A reply that repeated its report anyway (an older agent) is kept as it came.
+ */
+export function withEarlierReport(earlier: string, reply: string): string {
+  const first = earlier.trim();
+  const second = reply.trim();
+  if (!first) return second;
+  if (!second) return first;
+  const opening = first.slice(0, 80);
+  if (second.includes(opening)) return second;
+  // A broken "## Self-review" the first report ended with gives way to the one sent back.
+  const lines = first.split("\n");
+  let cut = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) if (HEADING.test(lines[i]!)) { cut = i; break; }
+  const body = second.split("\n").some((l) => HEADING.test(l)) ? lines.slice(0, cut).join("\n").trimEnd() : first;
+  return `${body}\n\n${second}`;
 }
 
 /**
