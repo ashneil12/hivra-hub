@@ -262,6 +262,9 @@ export function applyHarnessEvent(
         providerRetryText(event),
       );
     case "notice":
+      // r65 (PM's r63 run, block 502): Claude Code sends the billing notice as a `system/informational` record, which
+      // claude.ts turns into a notice, not a status; r63 only filtered status, so it was still saved.
+      if (isCliNotice(event.text)) return session;
       return event.key
         ? upsertKeyedStatus(session, event.key, event.text)
         : appendStatus(session, event.text);
@@ -277,6 +280,7 @@ export function applyHarnessEvent(
         usageLimit: event.resetsAt != null ? { resetsAt: event.resetsAt } : {},
       };
     case "interjection":
+      if (isCliNotice(event.text)) return session;
       // A visible boundary the user must not miss, so unlike status it never
       // deduplicates and never reads as turn lifecycle.
       return appendBlock(session, {
@@ -799,7 +803,7 @@ function stampTurnDuration(blocks: Block[], endedAt: number): Block[] {
 /** Status pings repeat; keep one row per run instead of stacking identical lines. */
 function appendStatus(session: Session, text: string): Session {
   const trimmed = text.trim();
-  if (!trimmed) return session;
+  if (!trimmed || isCliNotice(trimmed)) return session;
   const last = [...session.blocks]
     .reverse()
     .find((block) => block.role !== "reasoning");
