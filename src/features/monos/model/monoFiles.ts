@@ -381,7 +381,7 @@ export function forgetAgentContext(sessionId: string): void {
 }
 
 /** Bumped when the fixed note below changes, so live chats get it again (31, 21 Oct: vanilla Claude Code plus a short appended note). */
-export const MONO_PROMPT_VERSION = 32;
+export const MONO_PROMPT_VERSION = 33;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -434,9 +434,9 @@ export function hubNote(): string {
  * before its first worker started, six minutes in.
  */
 export const TEAM_CHAT_RULES = `<team_chat_rules>
-- A message with several asks: reply fast first, before reading the code. List every ask in Ash's order (none dropped or invented), give your pick on any choice in it, and say what starts now. Never promise a list you don't give in that reply.
-- Then start the independent work within two minutes of his message: one delegate_task per area, each a short brief (his words for that ask, what it may change, the check to run, what to report). The worker reads the code itself. Do a change yourself only when it is one small file.
-- Work only inside PROJECT_FOLDER. Never make a worktree or a folder beside it yourself (no \`git worktree add\`): a worker that needs its own checkout gets isolation "worktree" from delegate_task, and the app keeps it.
+- A message with several asks: reply fast first, before reading any code, docs or help. List every ask in Ash's order (none dropped or invented), with your pick on any choice, and say what starts now. Never promise a list you don't give in that reply.
+- Then start the independent work within two minutes of his message: one delegate_task per area, each a short brief (his words for that ask, what it may change, the check to run, what to report). The worker reads the code itself. Say a job started only once its delegate_task call has returned. Do a change yourself only when it is one small file.
+- Work only inside PROJECT_FOLDER. Never make a worktree yourself (no \`git worktree add\`): a worker that needs its own checkout gets isolation "worktree" from delegate_task.
 </team_chat_rules>`;
 
 /** Who a coding-team chat is (hub/model/codingTeam.ts): the project, its folder, and its Lead's name. */
