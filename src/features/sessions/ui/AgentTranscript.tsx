@@ -146,6 +146,7 @@ import { isEmojiOnlyMessage } from "../model/emojiMessage";
 import { attachmentPreviewSrc } from "../model/attachments";
 import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
 import { parseUserMessageLink } from "../model/linkPreview";
+import { briefView, type BriefView } from "../model/briefView";
 import { UserLinkPreview } from "./UserLinkPreview";
 import {
   activityPhaseTitle,
@@ -2733,6 +2734,31 @@ function MonoReactionBadge({ emoji, live }: { emoji: string; live: boolean }) {
   );
 }
 
+/** A delegated chat's brief, folded to one line: "Brief · <job>"; open, the ask in plain words (briefView.ts). */
+function BriefLine({ brief }: { brief: BriefView }) {
+  return (
+    <details
+      data-brief="true"
+      className="group/brief min-w-0"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <summary
+        className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded text-sm text-content/75 hover:text-content focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40 [&::-webkit-details-marker]:hidden"
+        aria-label={`Brief from ${brief.from}: ${brief.job}`}
+      >
+        <ChevronRight className="size-3 shrink-0 transition-transform group-open/brief:rotate-90" />
+        <span className="font-medium">Brief</span>
+        <span className="text-content/50">·</span>
+        <span className="min-w-0 truncate">{brief.job}</span>
+      </summary>
+      <p className="mt-2 text-xs text-content/50">From {brief.from}</p>
+      <pre className="mt-1 max-h-72 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-content/80">
+        {brief.body}
+      </pre>
+    </details>
+  );
+}
+
 function UserMessageBlock({
   block,
   layout,
@@ -2775,8 +2801,11 @@ function UserMessageBlock({
   const card = block.secondOpinion;
   const note = block.noteCard;
   const monocode = isOperatorUserTurn(block);
-  const text =
-    card && card.kind !== "handoff"
+  // A delegated chat's first turn is the app's brief: one collapsed "Brief" line, never the raw text (r65).
+  const brief = card || note ? undefined : briefView(block.text);
+  const text = brief
+    ? ""
+    : card && card.kind !== "handoff"
       ? ""
       : visibleUserPrompt(monocode ? operatorUserPrompt(block) : block.text);
   const messageLink = text ? parseUserMessageLink(text) : null;
@@ -2802,6 +2831,7 @@ function UserMessageBlock({
     ? block.attachments!.filter((file) => !photos.includes(file))
     : block.attachments;
   const textOnly =
+    !brief &&
     Boolean(text) &&
     !block.draft &&
     !bubbleAttachments?.length &&
@@ -2810,6 +2840,7 @@ function UserMessageBlock({
     !block.ciContext;
   // Images sent on their own need no bubble beneath them.
   const bubbleEmpty =
+    !brief &&
     photos.length > 0 &&
     !text &&
     !bubbleAttachments?.length &&
@@ -3003,6 +3034,7 @@ function UserMessageBlock({
                   <SecondOpinionCard card={card} />
                 </div>
               ) : null}
+              {brief ? <BriefLine brief={brief} /> : null}
               {messageLink ? (
                 <div
                   ref={(element) => {
@@ -3111,11 +3143,11 @@ function UserMessageBlock({
         </div>
         {deliveryControl}
         {!compactFollowUp &&
-        (text || block.attachments?.length || messageAt != null || onEdit) ? (
+        (text || brief || block.attachments?.length || messageAt != null || onEdit) ? (
           <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
-            {text || block.attachments?.length ? (
+            {text || brief || block.attachments?.length ? (
               <CopyTurnButton
-                text={text}
+                text={text || brief?.body || ""}
                 attachments={block.attachments}
                 label="Copy message"
               />

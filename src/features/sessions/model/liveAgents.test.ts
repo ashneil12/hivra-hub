@@ -67,8 +67,9 @@ describe("liveAgentsFromSessions", () => {
     expect(liveAgentsFromSessions([worker], new Set(), new Set(), { taskTitle })[0].title).toBe(
       "Prove delete end to end, then review",
     );
-    // No task row for it (a plain sessions.start): the header goes and the brief's words remain.
-    expect(liveAgentsFromSessions([worker])[0].title).toBe('Ash said: "hold on. make it work fully". Reading the code, I think both already work.');
+    // No task row for it (a plain sessions.start): the header goes and the brief's words remain, without the quote
+    // opener (r65, PM's r63 run: a title read "Ash's words, verbatim: …").
+    expect(liveAgentsFromSessions([worker])[0].title).toBe('"hold on. make it work fully". Reading the code, I think both already work.');
     expect(cleanWorkTitle("[MonoCode brief from Chief of Staff]")).toBe("Delegated work");
     expect(cleanWorkTitle("Fix the sidebar")).toBe("Fix the sidebar");
   });

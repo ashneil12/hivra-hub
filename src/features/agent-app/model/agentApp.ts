@@ -675,6 +675,7 @@ function startLaunch(
 ): QuickLaunch {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
+  const title = optionalString(input.title, "title");
   const draft = input.draft ?? false;
   if (typeof draft !== "boolean") throw new Error("draft must be a boolean");
   const harness = input.harness ?? source.harness;
@@ -751,6 +752,7 @@ function startLaunch(
   return {
     cwd,
     prompt,
+    ...(title ? { title: title.slice(0, 200) } : {}),
     // Only a Mono's own preference hides what it starts. A regular session
     // with /operator has no Mono, and its launches belong in the sidebar.
     ...(startingMono && startingMono.showStartedSessionsInSidebar !== true
