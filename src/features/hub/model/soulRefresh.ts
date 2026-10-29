@@ -196,7 +196,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "Standing instructions": "{name}'s main instructions are updated to the app's newer wording.",
   // Leads
   "Your job": "{name} will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
-  "Before you act": "{name} will now check its project's memory before acting, and answer a long message fast with every ask listed in Ash's order before it starts.",
+  "Before you act": "{name} will now check its project's memory before acting, answer a long message fast with every ask listed in Ash's order before it starts, and log only real asks, not questions it answers there and then.",
   "How you run the project": "{name} will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
   "Finishing": "{name} will now prove its own work before calling it done, and ask Ash to look only at very critical work.",
   "Who you are to Ash OS": "{name} will now show up in Ash OS under its own name, and leave development to Claude Code.",
