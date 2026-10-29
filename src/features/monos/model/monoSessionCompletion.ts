@@ -228,6 +228,18 @@ function nameList(names: readonly string[]): string {
   return names.length > 6 ? `${shown} and ${names.length - 6} more` : shown;
 }
 
+/**
+ * r67 (realconv S8 on 0.16.8): with six tracks out, the Tally lead opened every partial report with the same line ("The
+ * median track is back. I'll check the commit myself before calling that one done.", then the same for delete and health,
+ * then shared types) and gave each track's full detail as it came in (a wall at +424 s). Checks happen without a word
+ * about them, a partial report is one or two lines about what is back and checked, and the detail is rolled up once,
+ * when everything is back, in the Landed / Not fixed shape.
+ */
+export const SILENT_CHECK =
+  "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat.";
+export const ROLL_UP_SHAPE =
+  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open.";
+
 /** What the notification asks of the Mono, by where the report stands among its turn's sessions. */
 function completionAsk(count: number, progress?: CompletionProgress): string {
   const multiple = count > 1;
@@ -235,12 +247,12 @@ function completionAsk(count: number, progress?: CompletionProgress): string {
   const on = "on what was done, validation and anything unresolved";
   if (whole)
     return multiple
-      ? `all monitored sessions launched during your request have now stopped. Review their results together and give the user one consolidated update ${on}.`
-      : `a session you are monitoring has now stopped. Review the result and give the user a concise update ${on}.`;
+      ? `all monitored sessions launched during your request have now stopped. Review their results together and give the user one consolidated update ${on}. ${SILENT_CHECK} ${ROLL_UP_SHAPE}`
+      : `a session you are monitoring has now stopped. Review the result and give the user a concise update ${on}. ${SILENT_CHECK}`;
   const these = multiple ? `${count} sessions you started in one turn have` : "a session you started in one turn has";
   if (progress.back < progress.total)
-    return `${these} stopped: ${progress.back} of ${progress.total} back, still running: ${nameList(progress.running)}. Each of the others reports to you soon after it stops. Review what is back now and give the user a short update ${on}, without waiting for the rest and without calling the work done while some still run.`;
-  return `${these} stopped: all ${progress.total} of ${progress.total} back, the earlier ones already reported to you. Review ${multiple ? "these" : "this one"} with those and give the user one consolidated update ${on}.`;
+    return `${these} stopped: ${progress.back} of ${progress.total} back, still running: ${nameList(progress.running)}. Each of the others reports to you soon after it stops. Review what is back now and give the user a short update, without waiting for the rest and without calling the work done while some still run: one or two plain lines saying which work is back and checked (or what is wrong with it) and how many still run. Keep each one's detail for the roll-up when all are back. ${SILENT_CHECK}`;
+  return `${these} stopped: all ${progress.total} of ${progress.total} back, the earlier ones already reported to you. Review ${multiple ? "these" : "this one"} with those and give the user one consolidated update ${on}. ${SILENT_CHECK} ${ROLL_UP_SHAPE}`;
 }
 
 // ---- r65 (PM's r63 D5): a worker that dies on a fault is handed to a fresh worker once, not done by the Lead --------
