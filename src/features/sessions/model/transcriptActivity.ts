@@ -7,6 +7,7 @@ import {
   isSearchTool,
   isWeakToolTitle,
 } from "../../../integrations/harness/core/preview";
+import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { leafName } from "../../files/model/fileName";
 import {
   displayPath,
@@ -715,7 +716,11 @@ export function turnCopyText(blocks: Block[]): string {
         block.role === "tasks" ||
         block.role === "plan",
     )
-    .map((block) => block.text.replace(/\r\n?/g, "\n").trim())
+    .map((block) => {
+      const text = block.text.replace(/\r\n?/g, "\n").trim();
+      // r74: Copy gives what the reply shows, without em dashes.
+      return block.role === "assistant" ? withoutEmDashes(text) : text;
+    })
     .filter(Boolean)
     .join("\n\n");
 }
