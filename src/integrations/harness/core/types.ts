@@ -123,6 +123,8 @@ export type HarnessEvent =
       /** Work the agent left running when it yielded. */
       background?: boolean;
       preview?: ToolPreview;
+      /** The command a shell call runs, when the provider says (the live step line in coding chats). */
+      command?: string;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
     }
@@ -137,7 +139,14 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Every path affected when one structured edit changes multiple files. */
       paths?: string[];
+      /** The command a shell call runs, when the provider says. */
+      command?: string;
     }
+  /**
+   * The provider says a call it started is still running (Claude Code's tool_progress): a heartbeat, so a long build
+   * that prints nothing is not read as a stall. Never sent by the app itself.
+   */
+  | { type: "tool.progress"; callId: string; elapsedMs?: number }
   /** Something a subagent did, mirrored onto its parent Agent tool call. */
   | {
       type: "agent.step";

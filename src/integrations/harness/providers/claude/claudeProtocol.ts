@@ -874,6 +874,8 @@ export type ClaudeToolProgress = {
   parentToolUseId?: string;
   toolName?: string;
   subagentType?: string;
+  /** How long the call has run, as Claude Code reports it. */
+  elapsedMs?: number;
 };
 
 export function parseToolProgress(
@@ -888,6 +890,9 @@ export function parseToolProgress(
     ...(parent ? { parentToolUseId: parent } : {}),
     toolName: stringField(rec, "tool_name"),
     subagentType: stringField(rec, "subagent_type"),
+    ...(typeof rec.elapsed_time_seconds === "number" && Number.isFinite(rec.elapsed_time_seconds)
+      ? { elapsedMs: Math.round(rec.elapsed_time_seconds * 1000) }
+      : {}),
   };
 }
 

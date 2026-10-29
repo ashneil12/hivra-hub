@@ -47,6 +47,8 @@ import {
   TREE_KICKOFF,
   TREE_LEAD,
   WALK,
+  liveLineVerdict,
+  liveLinesSeen,
   WORKER,
   cleanupOnExit,
   exitCode,
@@ -600,4 +602,17 @@ test("r59: leftovers are the listed chats not archived and the listed Monos stil
     { sessions: ["b", "c"], monos: ["m2"] },
   );
   assert.deepEqual(teardownLeftovers(list, { rows: list.sessions.map((id) => ({ id, archived: 1 })), windowMonos: [] }), { sessions: [], monos: [] });
+});
+
+test("live_activity_line: passes only on a timed step with the runner right after the timer", () => {
+  assert.deepEqual(liveLinesSeen({}), []);
+  assert.deepEqual(liveLinesSeen({ "monocode:verify-live-lines": "not json" }), []);
+  const pinned = { key: "a", text: "frank · Thinking · 2s", runner: true, runnerAfterText: true, stalled: false };
+  assert.equal(liveLineVerdict(liveLinesSeen({ "monocode:verify-live-lines": JSON.stringify([pinned]) })).ok, true);
+  assert.equal(liveLineVerdict([{ ...pinned, runner: false, runnerAfterText: false }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, runnerAfterText: false }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, text: "frank is writing…" }]).ok, false);
+  assert.equal(liveLineVerdict([{ ...pinned, text: "Reading app.tsx · 1m 20s" }]).ok, true);
+  const roomAt = WALK.indexOf("room_private_message");
+  assert.equal(WALK[roomAt + 1], "live_activity_line");
 });

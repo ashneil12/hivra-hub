@@ -214,3 +214,27 @@ it("a room turn for a Mono whose room session is busy waits in that session's qu
   await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === frankRoom)!.queuedMessages?.length).toBe(1));
   expect(sessionsRef.current.find((s) => s.id === "own-frank")!.queuedMessages ?? []).toEqual([]);
 });
+
+// r62 (event 3): a wake queued in a busy session says so, its last event following the work it waits behind; once in,
+// it reports its own steps. Both from the session's stream.
+it("a queued room wake reports 'Queued behind its current reply', then its own steps once delivered", async () => {
+  const { roomWakeActivity } = await import("./useRoomRunner");
+  const base = { id: "s", harness: "claude", cwd: "/repo", busy: true } as unknown as Session;
+  const work: Block[] = [
+    { id: "u1", role: "user", text: "Ash's 1:1 message" },
+    { id: "t1", role: "tool", text: "Read", tool: { kind: "read", status: "in_progress", preview: { kind: "read", path: "/repo/src/app.tsx" }, startedAt: 1_000, updatedAt: 1_000 } },
+  ];
+  const queued = { ...base, blocks: work, queuedMessages: [{ id: "wake-1", text: "room" }] } as unknown as Session;
+  const a = roomWakeActivity(queued, "wake-1", 2_000)!;
+  expect(a.label).toBe("Queued behind its current reply");
+  expect(a.key).toBe("queued:wake-1");
+  const more = { ...queued, blocks: [...work.slice(0, 1), { ...work[1], tool: { ...work[1].tool!, updatedAt: 50_000 } }] } as Session;
+  expect(roomWakeActivity(more, "wake-1", 50_000)!.lastEventAt).toBe(50_000);
+  const delivered = {
+    ...base,
+    queuedMessages: [],
+    blocks: [...work, { id: "u2", role: "user", text: "room", internal: true, appRequestId: "wake-1" }, { id: "t2", role: "tool", text: "Read", tool: { kind: "read", status: "in_progress", preview: { kind: "read", path: "/repo/src/room.tsx" } } }],
+  } as unknown as Session;
+  expect(roomWakeActivity(delivered, "wake-1", 60_000)!.label).toBe("Reading room.tsx");
+  expect(roomWakeActivity({ ...base, blocks: [], queuedMessages: [] } as unknown as Session, "wake-1", 60_000)).toBeUndefined();
+});

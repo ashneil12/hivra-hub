@@ -59,9 +59,12 @@ function MonoIcon({
 export function HarnessIcon({
   harness,
   className = "size-3.5",
+  mono = false,
 }: {
   harness: HarnessId;
   className?: string;
+  /** Grey, like the rest of the line (Critiquito, 29 Oct: no orange star beside the model name). */
+  mono?: boolean;
 }) {
   if (harness === "cursor") {
     return (
@@ -138,7 +141,8 @@ export function HarnessIcon({
       src={HARNESS_ICONS[harness]}
       alt=""
       draggable={false}
-      className={`block object-contain ${className}`}
+      data-harness-mono={mono || undefined}
+      className={`block object-contain ${mono ? "opacity-60 grayscale" : ""} ${className}`}
     />
   );
 }

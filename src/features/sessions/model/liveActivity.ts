@@ -4,10 +4,18 @@
 // (blocks carry no times of their own), kept per turn so a remount doesn't reset them.
 import { isReadTool } from "../../../integrations/harness/core/preview";
 import { displayPath } from "../../../shared/lib/paths";
+import { delegateToolName } from "./monocodeToolCall";
 import type { Block } from "./session";
 import { isProseBlock, isThinkingBlock, isToolBlock, needsApproval, toolCategory } from "./transcriptActivity";
 
 export type LiveStep = { key: string; label: string };
+/**
+ * How a step names its file: rooms and Mono 1:1s say just the file name ("Reading app.tsx"); coding chats give the path
+ * and the command (Critiquito, 29 Oct).
+ */
+export type StepDetail = "name" | "full";
+/** What a turn's worker is doing now, from the worker's own stream (r62): the parent turn and the room show it. */
+export type WorkerProgress = { label: string; lastEventAt: number };
 /** A step, when this window first saw it, and when it last saw anything new in the turn's stream. */
 export type LiveActivity = LiveStep & { since: number; lastEventAt: number };
 
@@ -17,16 +25,25 @@ export const STALL_MS = 60_000;
 const DONE = new Set(["completed", "failed", "error", "cancelled", "canceled", "interrupted", "stopped"]);
 const CHECK = /\b(?:test|tests|vitest|jest|playwright|tsc|typecheck|lint|eslint|clippy|check|cargo\s+(?:test|check|fmt))\b/i;
 const MAX_PATH = 56;
+const MAX_COMMAND = 48;
 
 function shortPath(path: string): string {
   return path.length > MAX_PATH ? `…${path.slice(path.length - MAX_PATH + 1)}` : path;
 }
 
-function toolStep(block: Block, cwd?: string): string {
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): string {
   const preview = block.tool?.preview;
   const rawPath = preview?.path ? displayPath(preview.path, cwd) : preview?.fileName;
-  const path = rawPath ? shortPath(rawPath) : undefined;
+  const path = rawPath ? (detail === "name" ? fileName(rawPath) : shortPath(rawPath)) : undefined;
   const title = block.text || block.tool?.title || "";
+  const delegate = delegateToolName(block);
+  if (delegate === "delegate_task") return "Handing work to a worker";
+  if (delegate === "task_wait" || delegate === "task_status") return "Waiting on a worker";
+  const command = block.tool?.command?.replace(/\s+/g, " ").trim();
   switch (toolCategory(block)) {
     case "agent":
       return "Waiting on a worker";
@@ -36,6 +53,9 @@ function toolStep(block: Block, cwd?: string): string {
       if (isReadTool(block.tool?.kind, title, preview)) return path ? `Reading ${path}` : "Reading a file";
       return "Searching the project";
     case "run":
+      // A coding chat names the command it runs; a room or a Mono's 1:1 keeps it plain.
+      if (detail === "full" && command)
+        return `Running ${command.length > MAX_COMMAND ? `${command.slice(0, MAX_COMMAND - 1)}…` : command}`;
       return CHECK.test(title) ? "Running a check" : "Running a command";
     default:
       return "Using a tool";
@@ -43,7 +63,7 @@ function toolStep(block: Block, cwd?: string): string {
 }
 
 /** The turn's current step, from its latest block that says anything. */
-export function liveStep(blocks: readonly Block[], cwd?: string): LiveStep {
+export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDetail = "full"): LiveStep {
   const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft);
   const waiting = seen.find(needsApproval);
   if (waiting) return { key: `approval:${waiting.id}`, label: "Waiting for your OK" };
@@ -57,7 +77,7 @@ export function liveStep(blocks: readonly Block[], cwd?: string): LiveStep {
     if (latest.tool?.background && !DONE.has(status ?? "")) return { key: `bg:${latest.id}`, label: "Waiting on a background task" };
     // A finished call is not what it is doing now: it is deciding what comes next.
     if (status && DONE.has(status)) return { key: `after:${latest.id}`, label: "Thinking" };
-    return { key: `tool:${latest.id}`, label: toolStep(latest, cwd) };
+    return { key: `tool:${latest.id}`, label: toolStep(latest, cwd, detail) };
   }
   if (isProseBlock(latest)) return { key: `prose:${latest.id}`, label: "Writing" };
   return { key: `think:${latest.id}`, label: "Thinking" };
@@ -71,7 +91,8 @@ function signature(blocks: readonly Block[]): string {
   for (const b of blocks) {
     chars += b.text.length;
     detail += b.tool?.detail?.length ?? 0;
-    marks += `${b.tool?.status ?? ""}${b.approval?.decided ?? ""}${b.workflowRun?.status ?? ""},`;
+    // A tool's last-update time moves with the provider's heartbeat (tool.progress): a quiet build still counts.
+    marks += `${b.tool?.status ?? ""}${b.tool?.updatedAt ?? ""}${b.approval?.decided ?? ""}${b.workflowRun?.status ?? ""}${b.agentRun?.steps.length ?? ""},`;
   }
   return `${blocks.length}:${chars}:${detail}:${marks}`;
 }
@@ -92,28 +113,59 @@ export function trackActivity(
   cwd?: string,
   startedAt?: number,
   override?: LiveStep,
+  options: { detail?: StepDetail; worker?: WorkerProgress } = {},
 ): LiveActivity {
-  const step = override ?? liveStep(blocks, cwd);
+  let step = override ?? liveStep(blocks, cwd, options.detail);
+  // Waiting on a worker says what the worker is doing, and the worker's activity keeps this turn from reading stalled.
+  const worker = options.worker && step.key.startsWith("tool:") && step.label === "Waiting on a worker" ? options.worker : undefined;
+  if (worker) step = { key: step.key, label: `Worker: ${worker.label.charAt(0).toLowerCase()}${worker.label.slice(1)}` };
   const sig = signature(blocks);
   const prev = tracked.get(id);
+  // Times the stream itself carries (r62): when the step's tool started and the newest tool update, saved on the
+  // blocks, so a reload or a remount keeps the real clocks instead of starting them again.
+  const stepBlock = step.key.startsWith("tool:") ? blocks.find((b) => `tool:${b.id}` === step.key) : undefined;
+  const toolStart = stepBlock?.tool?.startedAt && stepBlock.tool.startedAt <= now ? stepBlock.tool.startedAt : undefined;
+  let toolUpdate = 0;
+  for (const b of blocks) if (b.tool?.updatedAt && b.tool.updatedAt <= now && b.tool.updatedAt > toolUpdate) toolUpdate = b.tool.updatedAt;
   let next: Tracked;
   if (!prev) {
-    // Only a turn with nothing back yet has been "Thinking" since it began; a later step, first seen now, starts now.
-    const start = startedAt && startedAt <= now && step.key === "start" ? startedAt : now;
-    next = { ...step, since: start, lastEventAt: blocks.some((b) => b.role !== "user") ? now : start, sig };
+    // Only a turn with nothing back yet has been "Thinking" since it began; a later step, first seen now, starts now
+    // (or when its tool says it started).
+    const start = startedAt && startedAt <= now && step.key === "start" ? startedAt : (toolStart ?? now);
+    const seen = blocks.some((b) => b.role !== "user");
+    // First seen after a reload: the newest saved tool update is the last event we know of, not this moment.
+    const last = !seen ? start : toolUpdate && stepBlock ? toolUpdate : now;
+    next = { ...step, since: start, lastEventAt: last, sig };
   } else {
     next = {
       ...step,
-      since: prev.key === step.key ? prev.since : now,
+      since: prev.key === step.key ? prev.since : (toolStart ?? now),
       lastEventAt: prev.sig === sig ? prev.lastEventAt : now,
       sig,
     };
   }
+  if (worker && worker.lastEventAt > next.lastEventAt && worker.lastEventAt <= now) next = { ...next, lastEventAt: worker.lastEventAt };
   tracked.delete(id);
   tracked.set(id, next);
   if (tracked.size > MAX_TRACKED) tracked.delete(tracked.keys().next().value as string);
   const { sig: _sig, ...activity } = next;
   return activity;
+}
+
+// ---- Worker progress (r62) ----------------------------------------------------------------------------------------
+// The app's delegation watch (useDelegationTree) publishes, for each chat that has a worker running, what that worker is
+// doing now, read from the worker's own stream with trackActivity. The parent turn's line and the room read it here.
+const workers = new Map<string, WorkerProgress>();
+
+/** What the worker of chat `ownerSession` is doing now; nothing clears it. */
+export function noteWorkerProgress(ownerSession: string, progress: WorkerProgress | undefined): void {
+  if (progress) workers.set(ownerSession, progress);
+  else workers.delete(ownerSession);
+}
+
+/** The latest progress of a worker that chat `ownerSession` waits on, if one is running. */
+export function workerProgress(ownerSession: string | undefined): WorkerProgress | undefined {
+  return ownerSession ? workers.get(ownerSession) : undefined;
 }
 
 /** The turn is over: its clocks go. */

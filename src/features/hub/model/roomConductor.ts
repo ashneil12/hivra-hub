@@ -230,7 +230,10 @@ export type RoomWorker = {
   convId: string;
   kind: TurnKind;
   state: "writing" | "queued" | "steered";
-  /** What a writing turn is doing now; "Thinking" since the turn began until its stream says more. */
+  /**
+   * What the turn is doing now: a writing turn's step ("Thinking" since it began until its stream says more), or a
+   * queued or steered wake's, once its session has reported one.
+   */
   activity?: LiveActivity;
 };
 /** Who is working on a room turn now, and how: writing it, or answering from their own chat. */
@@ -249,7 +252,8 @@ export function roomWorking(chatId: string, convId?: string): RoomWorker[] {
             state: "writing" as const,
             activity: x.activity ?? { key: "start", label: "Thinking", since: x.startedAt, lastEventAt: x.startedAt },
           }
-        : { monoId: x.wake.monoId, convId: x.wake.convId, kind: x.wake.kind, state: x.mode },
+        : // A queued or steered wake carries what it is doing once its session reports it (r62), never a made-up step.
+          { monoId: x.wake.monoId, convId: x.wake.convId, kind: x.wake.kind, state: x.mode, ...(x.activity ? { activity: x.activity } : {}) },
     );
 }
 /** The first Mono writing in the room (the older single indicator). */

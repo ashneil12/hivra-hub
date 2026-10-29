@@ -83,8 +83,11 @@ export function applyHarnessEvent(
         paths: event.paths,
         streaming: true,
         agentModel: event.agentModel,
+        command: event.command,
         ...(event.background ? { background: true } : {}),
       });
+    case "tool.progress":
+      return toolHeartbeat(session, event.callId);
     case "tool.updated":
       return upsertTool(session, {
         callId: event.callId,
@@ -96,6 +99,7 @@ export function applyHarnessEvent(
         paths: event.paths,
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
+        command: event.command,
       });
     case "agent.step":
       return recordAgentStep(session, event);
@@ -1018,9 +1022,13 @@ function upsertTool(
     streaming: boolean;
     agentModel?: string;
     background?: boolean;
+    command?: string;
   },
 ): Session {
   const index = findToolIndex(session, patch);
+  // When the app saw it start and last saw anything about it: real stream events only (r62, the live step line).
+  const now = Date.now();
+  const command = patch.command?.trim() || undefined;
   if (index < 0) {
     const detail = capToolDetail(patch.detail);
     const preview = fillPreview(patch.preview, detail, patch.kind, patch.title);
@@ -1047,6 +1055,9 @@ function upsertTool(
         ...(preview ? { preview } : {}),
         ...(patch.paths ? { paths: patch.paths } : {}),
         ...(patch.background ? { background: true } : {}),
+        ...(command ? { command } : {}),
+        startedAt: now,
+        updatedAt: now,
       },
     });
   }
@@ -1076,6 +1087,7 @@ function upsertTool(
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
     prev.tool?.paths === paths &&
+    (!command || prev.tool?.command === command) &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
     samePreview(prev.tool?.preview, preview)
@@ -1107,8 +1119,27 @@ function upsertTool(
       ...(preview ? { preview } : {}),
       ...(paths ? { paths } : {}),
       ...(prev.tool?.background ? { background: true } : {}),
+      ...(command || prev.tool?.command ? { command: command ?? prev.tool?.command } : {}),
+      startedAt: prev.tool?.startedAt ?? now,
+      updatedAt: now,
     },
   };
+  return { ...session, blocks };
+}
+
+const FINISHED_TOOL = new Set(["completed", "failed", "error", "cancelled", "canceled", "interrupted", "stopped"]);
+
+/**
+ * The provider's word that a call is still running (tool.progress): only its last-event time moves, so the live line
+ * keeps its step instead of reading "No activity" through a long, quiet build. A finished or unknown call is left alone.
+ */
+function toolHeartbeat(session: Session, callId: string): Session {
+  const index = session.blocks.findIndex((block) => block.tool?.callId === callId);
+  if (index < 0) return session;
+  const prev = session.blocks[index];
+  if (!prev.tool || FINISHED_TOOL.has(prev.tool.status?.toLowerCase() ?? "")) return session;
+  const blocks = session.blocks.slice();
+  blocks[index] = { ...prev, tool: { ...prev.tool, startedAt: prev.tool.startedAt ?? Date.now(), updatedAt: Date.now() } };
   return { ...session, blocks };
 }
 

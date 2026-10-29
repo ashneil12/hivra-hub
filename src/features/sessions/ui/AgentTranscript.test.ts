@@ -37,8 +37,9 @@ describe("AgentTranscript running turn clock", () => {
         ],
         true,
       );
-      // Started 90s ago; without the joined turn's start it read from mount.
-      expect(markup).toContain("Working for 1m 30s");
+      // Started 90s ago; without the joined turn's start it read from mount. One line: the step and the turn's timer.
+      expect(markup).toContain("Writing · 1m 30s");
+      expect(markup).not.toContain("Working for");
     } finally {
       vi.restoreAllMocks();
     }

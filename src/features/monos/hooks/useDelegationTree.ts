@@ -46,6 +46,7 @@ import {
 } from "../model/stopTree";
 import { useDelegationFeed } from "./useDelegationFeed";
 import { useStallWatch } from "./useStallWatch";
+import { publishWorkerProgress } from "../model/workerActivity";
 import { forUser } from "../../hub/model/userName";
 
 /** What Ash's own Stop records on the rows it cancels. */
@@ -125,6 +126,8 @@ export function useDelegationTree(options: {
   const { sessions } = options;
   useEffect(() => {
     questions.current!.sync(sessions);
+    // Each running worker's step, for its parent turn's live line and the room's (r62).
+    publishWorkerProgress(latest.current.tracker()?.known() ?? [], sessions);
   }, [sessions]);
 
   useDelegationFeed(backend);

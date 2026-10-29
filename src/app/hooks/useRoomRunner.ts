@@ -37,7 +37,7 @@ import {
 } from "../../features/hub/model/roomConductor";
 import { getChat, leadershipChatId, onConversationGone, requestReply, sendMessage } from "../../features/hub/model/hubChats";
 import { roomMemory } from "../../features/hub/model/roomMemory";
-import { forgetActivity, trackActivity } from "../../features/sessions/model/liveActivity";
+import { forgetActivity, trackActivity, workerProgress, type LiveActivity } from "../../features/sessions/model/liveActivity";
 import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
@@ -132,6 +132,27 @@ export function liveAnswer(session: Session, requestId: string): string {
     if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) parts.push(block.text.trim());
   }
   return parts.join("\n\n");
+}
+
+/**
+ * What a room wake that went into a session's queue is doing (r62), from that session's own stream: while it waits,
+ * "Queued behind its current reply" with the work ahead of it as its last event; once in, its own steps. Nothing for a
+ * wake the session no longer has.
+ */
+export function roomWakeActivity(session: Session, wakeId: string, now: number): LiveActivity | undefined {
+  const options = { detail: "name" as const, worker: workerProgress(session.id) };
+  if (session.queuedMessages?.some((m) => m.id === wakeId)) {
+    let at = -1;
+    for (let i = session.blocks.length - 1; i >= 0; i--)
+      if (session.blocks[i].role === "user" && !session.blocks[i].internal) {
+        at = i;
+        break;
+      }
+    const ahead = session.busy ? session.blocks.slice(at + 1) : [];
+    return trackActivity(wakeId, ahead, now, session.cwd, undefined, { key: `queued:${wakeId}`, label: "Queued behind its current reply" }, options);
+  }
+  if (!session.blocks.some((b) => b.role === "user" && b.appRequestId === wakeId)) return undefined;
+  return trackActivity(wakeId, turnBlocks(session, wakeId), now, session.cwd, undefined, undefined, options);
 }
 
 /** A managed room turn's own blocks so far (after the hidden prompt carrying `requestId`), for its live step line. */
@@ -238,7 +259,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         const own = roomBusy ? undefined : ownChatSession(h, request.monoId, roomId);
         if (own?.busy && !h.openRoom) {
           const ownMemory = await roomMemory(own, request.projectId).catch(() => undefined);
-          const queued = wake(own, request.wakeId, ownMemory ? withRoomMemory(request.wakePrompt, ownMemory.block) : request.wakePrompt, note, attachments);
+          const queued = wake(own, request.wakeId, ownMemory ? withRoomMemory(request.wakePrompt, ownMemory.block) : request.wakePrompt, note, attachments, request.onActivity);
           if (ownMemory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && ownMemory.delivered());
           return queued;
         }
@@ -268,7 +289,11 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
               // Its step and its last event, from the same stream, so the room can say what it is doing (or that nothing
               // has happened for a minute) instead of a bare "writing…".
               if (now) {
-                const activity = trackActivity(request.wakeId, turnBlocks(now, request.wakeId), Date.now(), now.cwd);
+                // A room names just the file; a worker this turn waits on says what it is doing (r62).
+                const activity = trackActivity(request.wakeId, turnBlocks(now, request.wakeId), Date.now(), now.cwd, undefined, undefined, {
+                  detail: "name",
+                  worker: workerProgress(now.id),
+                });
                 const said = `${activity.key}|${activity.label}|${activity.since}|${activity.lastEventAt}`;
                 if (said !== told) {
                   told = said;
@@ -311,7 +336,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
           });
           if (reply !== undefined) return { kind: "reply", text: reply };
         }
-        const queued = wake(session, request.wakeId, wakePrompt, note, attachments);
+        const queued = wake(session, request.wakeId, wakePrompt, note, attachments, request.onActivity);
         // A wake that went in carried the memory; one taken back out didn't.
         if (memory && queued.kind === "wake") void queued.done.then((end) => end.status === "done" && memory.delivered());
         return queued;
@@ -332,17 +357,37 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
         if (holder) change(h, holder.id, (s) => dequeueQueuedMessage(s, wakeId));
       },
     };
-    const wake = (session: Session, wakeId: string, text: string, note: NonNullable<Block["monoNote"]>, attachments: Attachment[] = []): RoomTurnOutcome => {
+    const wake = (
+      session: Session,
+      wakeId: string,
+      text: string,
+      note: NonNullable<Block["monoNote"]>,
+      attachments: Attachment[] = [],
+      onActivity?: (activity: LiveActivity) => void,
+    ): RoomTurnOutcome => {
       const h = latest.current;
       const now = h.sessionsRef.current.find((s) => s.id === session.id) ?? session;
       change(h, session.id, (s) => queueMonoNote(s, { id: wakeId, text, note, ...(attachments.length ? { attachments } : {}) }));
       const delivery = now.busy && canSteerHarness(now.harness) && !now.queuedMessages?.length ? "steered" : "queued";
       const done = new Promise<RoomWakeEnd>((resolve) => {
         const started = Date.now();
+        let told = "";
         const tick = window.setInterval(() => {
-          const end = wakeEnd(latest.current.sessionsRef.current.find((s) => s.id === session.id), wakeId);
+          const now = latest.current.sessionsRef.current.find((s) => s.id === session.id);
+          const end = wakeEnd(now, wakeId);
+          // A queued or steered wake says what it is doing too (r62): waiting behind the work it queued for, then its
+          // own steps once it is in, all from that session's stream.
+          const activity = !end && now && onActivity ? roomWakeActivity(now, wakeId, Date.now()) : undefined;
+          if (activity) {
+            const said = `${activity.key}|${activity.label}|${activity.since}|${activity.lastEventAt}`;
+            if (said !== told) {
+              told = said;
+              onActivity!(activity);
+            }
+          }
           if (!end && Date.now() - started < WAKE_TIMEOUT_MS) return;
           window.clearInterval(tick);
+          forgetActivity(wakeId);
           resolve(end ?? { status: "done" });
         }, POLL_MS);
       });

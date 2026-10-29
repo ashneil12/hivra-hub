@@ -574,3 +574,22 @@ it("a turn that thinks aloud and ends on NO_REPLY before anything showed posts n
   await chat.requestReply(id, conv);
   expect(said(conv).filter((m) => m.from === "frank")).toEqual([]);
 });
+
+// r62 (event 3): a queued wake says what it is doing once its session reports it, and nothing before.
+it("a queued wake carries the activity its session reports, never a made-up one", async () => {
+  const { chat, id } = await room();
+  let finish!: () => void;
+  const script = scripted({
+    "chief-of-staff": "frank, check this.",
+    frank: () => ({ kind: "wake", delivery: "queued", done: new Promise((r) => (finish = () => r({ status: "done" }))) }),
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "is the label in?");
+  const done = chat.requestReply(id, conv);
+  await vi.waitFor(() => expect(chat.roomWorking(id)).toEqual([{ monoId: "frank", convId: conv, kind: "reply", state: "queued" }]));
+  const request = script.calls.find((c) => c.monoId === "frank")!;
+  request.onActivity?.({ key: "queued:w", label: "Queued behind its current reply", since: 1, lastEventAt: 2 });
+  expect(chat.roomWorking(id)[0]).toMatchObject({ state: "queued", activity: { label: "Queued behind its current reply" } });
+  finish();
+  await done;
+});

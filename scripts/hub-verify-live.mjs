@@ -48,8 +48,8 @@
 //   18. the host answers him first, then the Monos hand off among themselves by naming each other (round, flag,
 //       retake, "pass from me") until nobody is named, with no digest; every message is a row in the app database,
 //       and each Mono's own chat shows its room turns as quiet lines;
-//   19. a Mono busy in its own chat still answers: the room's wake is steered into its running turn and it posts with
-//       room_post, answering the message that woke it;
+//   19. a Mono busy in its own chat still answers: the room's turn runs in its room session (never steered into that
+//       work) and posts in the room, answering the message that woke it;
 //   20. a private message between Monos (mono_message) arrives as a hidden turn in the other Mono's own chat, shown as
 //       from the sender, and nothing of it reaches the room.
 //   Then the coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to talk to"), in the same launch:
@@ -122,6 +122,7 @@ export const WALK = [
   "room_agents_talk",
   "room_busy_mono_answers",
   "room_private_message",
+  "live_activity_line",
   "coding_team_delegates",
   "mono_briefs_coding_team",
   "mono_own_team",
@@ -622,7 +623,8 @@ export function scenario({ runId, failGate = false }) {
       name: "room-frank-wake",
       match: `${roomTurn("frank")}[\\s\\S]*Chief of Staff addressed you[\\s\\S]*${ROOM_ASH(2)}`,
       times: 1,
-      steps: [{ mark: "room-frank-posted" }, { say: "The label is in. Pass from me." }],
+      // A short think first, so the room's live line (step, timer, frank's MonoCode after it) is on screen to be seen.
+      steps: [{ mark: "room-frank-posted" }, { sleep: 2500 }, { say: "The label is in. Pass from me." }],
     },
     { name: "room-alfred-dm", match: said("\\[MonoCode message from Chief of Staff\\]"), times: 1, steps: [{ mark: "room-alfred-dm" }, { say: "NO_REPLY" }] },
     { name: "room-quiet", match: said("\\[MonoCode room\\]"), steps: [{ say: "NO_REPLY" }] },
@@ -1067,6 +1069,26 @@ async function localStorageOf(home, scratch) {
     }
   }
   return { files: files.length, items };
+}
+
+/** The live lines the dev window recorded for the bench (monocode:verify-live-lines), oldest first. */
+export function liveLinesSeen(items) {
+  try {
+    const lines = JSON.parse(items["monocode:verify-live-lines"] ?? "[]");
+    return Array.isArray(lines) ? lines : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Passes when some live line showed a step with a running timer and the runner sat right after it. */
+export function liveLineVerdict(lines) {
+  const timed = lines.filter((line) => typeof line.text === "string" && /\b\d+(s|m \d+s|m)\b/.test(line.text));
+  const pinned = timed.find((line) => line.runner && line.runnerAfterText);
+  const evidence = { seen: lines.length, timed: timed.length, sample: (pinned ?? timed[0] ?? lines[0]) ?? null };
+  return pinned
+    ? { ok: true, evidence, detail: `the window drew "${pinned.text}" with the MonoCode runner right after the timer (${lines.length} lines seen)` }
+    : { ok: false, evidence };
 }
 
 /**
@@ -2445,7 +2467,7 @@ async function main() {
     else fail("room_agents_talk", "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest", JSON.stringify({ cosAnswered: !!cosAnswered, passed: !!passed, ...loopEvidence }));
 
     phase();
-    // 19. frank works in its own chat; Ash asks the room; frank answers from that work with room_post.
+    // 19. frank works in its own chat; Ash asks the room; frank's room session answers in the room (its 1:1 untouched).
     stub.state.verifyMessages = [...(stub.state.verifyMessages ?? []), { id: "room-busy", monoId: "frank", prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` }];
     const frankBusy = await waitMark("room-frank-busy", 60_000);
     const askSent = ashInRoom(2, "is the label in?");
@@ -2520,6 +2542,15 @@ async function main() {
         { evidence: dmEvidence },
       );
     else fail("room_private_message", "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room", JSON.stringify(dmEvidence));
+
+    phase();
+    // The live line (r62): while frank thought in the room, its status line showed the step with a timer and frank's
+    // MonoCode right after it. Read from what the window drew (sessions/model/verifyLiveLines.ts), never the model.
+    const seenLines = liveLinesSeen((await localStorageOf(home, scratch)).items);
+    const liveVerdict = liveLineVerdict(seenLines);
+    if (liveVerdict.ok)
+      pass("live_activity_line", "The live line shows the step and its timer, with the MonoCode runner pinned right after the timer", liveVerdict.detail, { evidence: liveVerdict.evidence });
+    else fail("live_activity_line", "The live line shows the step and its timer, with the MonoCode runner pinned right after the timer", JSON.stringify(liveVerdict.evidence));
 
     phase();
     // 21. The coding team: Ash starts a new chat in the Verify project's coding team (the stub lists his message; the

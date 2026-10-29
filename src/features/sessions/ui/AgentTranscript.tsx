@@ -122,7 +122,7 @@ import {
   type TurnMetrics,
 } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
-import { TurnActivityLine, TurnRunner } from "./LiveActivity";
+import { TurnActivityLine } from "./LiveActivity";
 import {
   modelInUseLabel,
   onGrokBridge,
@@ -1642,6 +1642,8 @@ function AgentTranscriptComponent({
                   turnId={turnId}
                   cwd={cwd}
                   startedAt={startedAt}
+                  sessionId={sessionId}
+                  liveRunner={liveRunner}
                   blocks={turn}
                   title={foldTitle}
                   name={turnModelName}
@@ -1669,20 +1671,46 @@ function AgentTranscriptComponent({
                   }
                 />
               ) : (
-                <>
-                  <WorkFoldLine
-                    title={foldTitle}
-                    kind={workKind(summarizedWork)}
-                    harness={markHarness}
-                    agentMascot={agentMascot}
-                    live={live}
-                    expandable={!!fold}
-                    open={workOpen && !!fold}
-                    onToggle={() => toggleWork(turnId, workOpen)}
-                  />
-                  {/* What it is doing right now, under the clock, until the reply lands. */}
-                  {live ? <TurnActivityLine id={turnId} blocks={turn} cwd={cwd} startedAt={startedAt} className="px-4" /> : null}
-                </>
+                <WorkFoldLine
+                  title={
+                    // Live, the fold line is the one status line (Critiquito, 29 Oct: one clock, not "working for 1m
+                    // 20s" over "Waiting on a worker · 3s"): the step and its timer, the runner after it. Waiting on
+                    // Ash keeps its own words.
+                    live && !habit && !standaloneReply && !waitingForApproval && !pendingQuestion ? (
+                      <TurnActivityLine
+                        id={turnId}
+                        blocks={turn}
+                        cwd={cwd}
+                        startedAt={startedAt}
+                        sessionId={sessionId}
+                        detail="full"
+                        clock="turn"
+                        className="text-sm"
+                        override={
+                          backgroundTasks?.length
+                            ? {
+                                key: "background",
+                                label:
+                                  backgroundTasks.length === 1
+                                    ? "Waiting on a background task"
+                                    : `Waiting on ${backgroundTasks.length} background tasks`,
+                              }
+                            : undefined
+                        }
+                        runner={liveRunner ? { cwd, mascot: agentMascot && agentName ? { name: agentName, mascot: agentMascot.mascot } : undefined } : undefined}
+                      />
+                    ) : (
+                      foldTitle
+                    )
+                  }
+                  kind={workKind(summarizedWork)}
+                  harness={markHarness}
+                  agentMascot={agentMascot}
+                  live={live}
+                  expandable={!!fold}
+                  open={workOpen && !!fold}
+                  onToggle={() => toggleWork(turnId, workOpen)}
+                />
               )}
             </TurnRow>
           );
@@ -1899,11 +1927,6 @@ function AgentTranscriptComponent({
                     onHandoff ? (target) => onHandoff(target, turn) : undefined
                   }
                 />
-              ) : null}
-              {live && liveRunner ? (
-                <div className="px-4">
-                  <TurnRunner id={turnId} blocks={turn} cwd={cwd} startedAt={startedAt} mascot={agentMascot && agentName ? { name: agentName, mascot: agentMascot.mascot } : undefined} />
-                </div>
               ) : null}
             </HistoryTurn>
           );
@@ -3577,6 +3600,8 @@ function MonoTurnHeader({
   turnId,
   cwd,
   startedAt,
+  sessionId,
+  liveRunner = false,
   blocks,
   title,
   name,
@@ -3593,6 +3618,9 @@ function MonoTurnHeader({
   turnId: string;
   cwd?: string;
   startedAt?: number;
+  sessionId?: string;
+  /** The Mono's MonoCode pinned after the line's timer while it works. */
+  liveRunner?: boolean;
   blocks: Block[];
   title: ReactNode;
   name?: string;
@@ -3659,7 +3687,11 @@ function MonoTurnHeader({
       cwd={cwd}
       startedAt={startedAt}
       override={override}
+      sessionId={sessionId}
+      // A Mono's 1:1 names just the file ("Reading app.tsx"); coding chats keep the path.
+      detail="name"
       className="text-[13px]"
+      runner={liveRunner ? { cwd, mascot: agentMascot && name ? { name, mascot: agentMascot.mascot } : undefined } : undefined}
     />
   ) : (
     <MonoWorkTicker status={{ ...status, active: live }} showIcon={false} />

@@ -111,6 +111,8 @@ it("the host's answer fills in where it will stay: a live message while it write
   expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking · \d+s/);
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 14_000, lastEventAt: Date.now() }));
   expect(q("[data-hub-typing]")!.textContent).toContain("Chief of Staff · Reading src/app.tsx · 14s");
+  // r62 (Critiquito): before its words show, the status line is the live line, the runner right after the timer.
+  expect(q("[data-hub-typing] [data-live-activity-text] + [data-live-runner]")).toBeTruthy();
   await act(async () => write("Heard you. Waiting on the Tally lead's start-ack."));
   const live = q("[data-hub-msg-draft]")!;
   expect(live.textContent).toContain("Chief of Staff");
@@ -119,11 +121,17 @@ it("the host's answer fills in where it will stay: a live message while it write
   expect(live.textContent).not.toContain("writing…");
   expect(live.querySelector("[data-live-activity]")!.textContent).toContain("Reading src/app.tsx · 14s");
   expect(live.querySelector("[data-live-runner]")).toBeTruthy();
+  // r62 (Critiquito): the runner is pinned in the status line, right after the timer, not floating under the reply.
+  const line = live.querySelector("[data-live-activity]")!;
+  expect(line.querySelector("[data-live-runner]")).toBeTruthy();
+  expect(line.querySelector("[data-live-activity-text] + [data-live-runner]")).toBeTruthy();
   // Its words are on screen, so the line above the composer doesn't repeat it.
   expect(q("[data-hub-typing]")!.textContent).not.toContain("Chief of Staff");
   // A minute with nothing new: the line goes grey and says so, and the runner stands still.
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 75_000, lastEventAt: Date.now() - 61_000 }));
   expect(live.querySelector("[data-live-activity-stalled]")!.textContent).toContain("No activity for 1 min");
+  // Readable grey words (#8a8a8a, about 5.2:1), the grey dot kept.
+  expect(live.querySelector("[data-live-activity-stalled]")!.className).toContain("text-[#8a8a8a]");
   expect(live.querySelector("[data-live-runner-stalled]")).toBeTruthy();
   await act(async () => {
     end("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");

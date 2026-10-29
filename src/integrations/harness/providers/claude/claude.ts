@@ -1348,6 +1348,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
         : {}),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
+      ...shellCommand(tool.name, tool.input),
     });
     emitTaskListIfNeeded(live, tool.name, tool.input);
     return;
@@ -1374,6 +1375,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       status: "pending",
       detail: summarizeToolRequest(tool.name, parsed),
       preview: previewFromTool(tool.name, parsed),
+      ...shellCommand(tool.name, parsed),
     });
     emitTaskListIfNeeded(live, tool.name, parsed);
     return;
@@ -1454,6 +1456,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
             : {}),
           status: isAgentToolName(streamed.name) ? "in_progress" : "pending",
           preview: previewFromTool(streamed.name, use.input),
+          ...shellCommand(streamed.name, use.input),
         });
         emitTaskListIfNeeded(live, streamed.name, use.input);
       }
@@ -1481,6 +1484,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
         : {}),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
+      ...shellCommand(tool.name, tool.input),
     });
     if (use.name === "ExitPlanMode") {
       const plan = extractExitPlanModePlan(use.input);
@@ -2097,6 +2101,13 @@ export async function stopClaudeTask(
   return true;
 }
 
+/** The command a Bash call runs, for the tool event (the live step line names it in coding chats). */
+function shellCommand(name: string, input: Record<string, unknown>): { command?: string } {
+  if (name !== "Bash") return {};
+  const command = stringField(input, "command")?.trim();
+  return command ? { command } : {};
+}
+
 function handleToolProgress(live: Live, rec: Record<string, unknown>): void {
   const progress = parseToolProgress(rec);
   if (!progress) return;
@@ -2105,7 +2116,16 @@ function handleToolProgress(live: Live, rec: Record<string, unknown>): void {
     (progress.parentToolUseId
       ? live.toolsById.get(progress.parentToolUseId)
       : undefined);
-  if (!tool || !isAgentToolName(tool.name)) return;
+  if (!tool) return;
+  // A plain call (a Bash build, a long read) that Claude Code says still runs: a heartbeat for the live step line.
+  if (!isAgentToolName(tool.name)) {
+    live.onEvent({
+      type: "tool.progress",
+      callId: tool.id,
+      ...(progress.elapsedMs !== undefined ? { elapsedMs: progress.elapsedMs } : {}),
+    });
+    return;
+  }
   live.onEvent({
     type: "tool.updated",
     callId: tool.id,
