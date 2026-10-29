@@ -201,7 +201,7 @@ it("shows a draft and then an approval without treating either as completed", as
       ],
     },
   ]);
-  expect(container.textContent).toContain("Need approval");
+  expect(container.textContent).toContain("Needs you");
 });
 
 it("a worker that asked a question reads Waiting on its Lead, not Need approval; a tool approval is still Ash's", async () => {
@@ -214,7 +214,7 @@ it("a worker that asked a question reads Waiting on its Lead, not Need approval;
   await render([child]);
   const card = () => container.querySelector("[data-session-card]")!.textContent;
   expect(card()).toContain("Waiting on MonoInvader");
-  expect(card()).not.toContain("Need approval");
+  expect(card()).not.toContain("Needs you");
   expect(card()).not.toContain("Working");
   await render([
     {
@@ -222,7 +222,7 @@ it("a worker that asked a question reads Waiting on its Lead, not Need approval;
       blocks: [{ id: "approval", role: "tool", text: "Run command", approval: { requestId: 42 } }],
     } as unknown as Session,
   ]);
-  expect(card()).toContain("Need approval");
+  expect(card()).toContain("Needs you");
   expect(card()).not.toContain("Waiting on");
   // Its card has a solid edge, never dashed (Critiquito, 22 Oct): dashed is an unsent draft's look only.
   const edge = container.querySelector("[data-session-card]")!;

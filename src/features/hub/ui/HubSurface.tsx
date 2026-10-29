@@ -32,7 +32,7 @@ import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText, sinceGlance, sinceParagraph, withoutStuckTalk } from "../model/appSince";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
-import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
+import { chatBusy, useChatsBusyVersion, useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { DecisionsPage } from "./DecisionsPage";
@@ -159,6 +159,7 @@ function HubHome() {
 
 function TodayBody({ projectId }: { projectId: string }) {
   useWaitingChatsVersion();
+  useChatsBusyVersion();
   useMonoFailuresVersion();
   const { stuck: stuckWorkersNow } = useStuckWorkers();
   const delegationRows = useDelegationRows();
@@ -183,6 +184,7 @@ function TodayBody({ projectId }: { projectId: string }) {
         stuck: stuckWorkersNow.filter((s) => stuckProject(s)?.id === projectId),
         changes: [],
         nameOf: (row) => leadNameOf({ row }),
+        checking: (row) => chatBusy(row.ownerSession),
         // Ash OS's stuck and gave-up jobs join the app's own in one count and one list (appSince.ts).
         jobs: data
           .listProjects()

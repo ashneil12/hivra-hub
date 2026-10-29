@@ -24,6 +24,8 @@ export type AppSinceInput = {
    * and failed workers in ONE count and ONE list, so the paragraph never says "0 stuck or failed" next to "1 failed: …"
    * (PM 22 Oct): Ash OS's own sentences about stuck or failed work are left out of the paragraph (`withoutStuckTalk`).
    */
+  /** r81: whether the chat that handed this row out is still in its turn, checking what came back. */
+  checking?: (row: Delegation) => boolean;
   jobs?: readonly { title: string; failed: boolean; at: number; /** The red Needs you: Ash must act (r49). */ needsYou?: boolean }[];
 };
 
@@ -59,7 +61,7 @@ function newest(rows: readonly Delegation[]): Delegation[] {
 }
 
 /** One plain paragraph, or "" when nothing happened in the app since then. */
-export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] }: AppSinceInput): string {
+export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [], checking }: AppSinceInput): string {
   const current = newest(rows);
   const sentences: string[] = [];
 
@@ -68,6 +70,9 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] 
   const handed = current.filter((r) => r.createdAt >= sinceMs);
   const finished = current.filter((r) => r.state === "completed" && (r.settledAt ?? 0) >= sinceMs);
   const reported = finished.filter((r) => r.delivery === "delivered" || r.delivery === "acknowledged").length;
+  // r81 (c02 r80: Today said "all 5 are done" while the chat said two were still being checked): back is not done while
+  // the chat that handed it out is still checking it.
+  const checked = !finished.some((r) => checking?.(r));
   const titles = list(finished.map((r) => r.title?.trim() || "a job"));
   const byMono = new Map<string, number>();
   for (const r of handed) byMono.set(leadName(nameOf(r)), (byMono.get(leadName(nameOf(r))) ?? 0) + 1);
@@ -76,14 +81,18 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] 
   const parts = monos.map(([name, n], i) => (i === 0 ? `${soleLead ? "The Lead" : name} handed out ${plural(n, "job", "jobs")}` : `${name} ${n}`));
   const allDone = handed.length > 0 && finished.length === handed.length && handed.every((r) => finished.includes(r));
   if (allDone) {
-    const done = reported === finished.length ? (handed.length === 1 ? "it is done" : `all ${handed.length} are done`) : handed.length === 1 ? "it finished but hasn't reported back yet" : `all ${handed.length} finished, not all reported back yet`;
+    const done = !checked
+      ? handed.length === 1 ? "it is back and still being checked" : `all ${handed.length} are back and still being checked`
+      : reported === finished.length ? (handed.length === 1 ? "it is done" : `all ${handed.length} are done`) : handed.length === 1 ? "it finished but hasn't reported back yet" : `all ${handed.length} finished, not all reported back yet`;
     sentences.push(`${list(parts)} and ${done}: ${titles}.`);
   } else {
     if (handed.length) sentences.push(`${list(parts)}.`);
     // Finished since then, and whether its report reached the Mono that asked.
     if (finished.length)
       sentences.push(
-        reported === finished.length
+        !checked
+          ? `${finished.length === 1 ? "One is" : `${finished.length} are`} back and still being checked: ${titles}.`
+          : reported === finished.length
           ? `${finished.length === 1 ? "One is" : `${finished.length} are`} done and reported back: ${titles}.`
           : `${finished.length === 1 ? "One" : finished.length} finished: ${titles}.`,
       );

@@ -39,7 +39,7 @@ const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
       ),
     },
     input: {
-      label: "Needs input",
+      label: "Needs you",
       icon: (
         <Clock className="size-4 shrink-0 text-content/55" strokeWidth={1.75} />
       ),

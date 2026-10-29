@@ -17,6 +17,7 @@ import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model
 import type { Block, HarnessId, Session } from "../../sessions/model/session";
 import { sessionDisplayTitle } from "../../sessions/model/session";
 import {
+  askedBy,
   chatQuestion,
   gateQuestion,
   pickMessage,
@@ -25,6 +26,7 @@ import {
   wordsReply,
   type ChatQuestion,
   type GateKind,
+  whoAsks,
 } from "./chatQuestions";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
@@ -197,6 +199,23 @@ function lastAshMessageAt(blocks: ChatInput["blocks"]): number | undefined {
   return undefined;
 }
 
+/**
+ * r81 (s14: the Lead wrote "Needs Ash:" and asked with buttons; Ash answered the buttons from Today and the card came
+ * back from the "Needs Ash:" line, still "Needs you" three minutes later): a "Needs Ash:" line Ash already answered in
+ * this turn (since his last own message) waits on nobody.
+ */
+function answeredThisTurn(chat: Pick<ChatInput, "id" | "blocks">, question: string): boolean {
+  const since = lastAshMessageAt(chat.blocks) ?? 0;
+  const words = (text: string) => new Set(text.toLowerCase().match(/[a-z0-9']+/g) ?? []);
+  const asked = words(question);
+  return gateLog().some((r) => {
+    if (r.sessionId !== chat.id || !r.answer || r.answer.at < since) return false;
+    const was = words(r.question);
+    const shared = [...asked].filter((w) => was.has(w)).length;
+    return shared / Math.max(asked.size, was.size, 1) >= 0.8;
+  });
+}
+
 // The app calls noteChats on every change to any chat (each streamed word): a chat whose transcript, turn and live
 // question are the same objects as last time is not read again.
 const reads = new WeakMap<object, { busy: boolean; pending: unknown; q: ChatQuestion | null }>();
@@ -219,19 +238,26 @@ function counts(chat: ChatInput): boolean {
  * died (a restart) with nothing said since stays, to be answered with a message.
  */
 export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
+  noteBusy(chats);
   const prev = load();
   let next: Record<string, WaitingEntry> | undefined;
   const edit = () => (next ??= { ...prev });
   for (const chat of chats) {
     if (!counts(chat)) continue;
     const old = prev[chat.id];
-    const q = readChat(chat);
+    const read = readChat(chat);
+    const mono = monoForSession(chat.id);
+    const q =
+      read?.source === "permission"
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title })) }
+        : read?.source === "marker" && answeredThisTurn(chat, read.question)
+          ? null
+          : read;
     if (q) {
       if (q.source === "ask") seenLive.add(liveKey(chat.id, q.requestId));
       // An entry stored before the gate existed has no decision yet: judge it again even when the question is unchanged.
       if (old && sameQuestion(old, q) && old.gate) continue;
       const gate = gateQuestion(q);
-      const mono = monoForSession(chat.id);
       const entry: WaitingEntry = {
         ...q,
         sessionId: chat.id,
@@ -460,6 +486,34 @@ export function respondInChat(sessionId: string, requestId: number, reply: UserQ
 export async function sendToChat(sessionId: string, text: string): Promise<boolean> {
   if (!host || !text.trim()) return false;
   return host.send(sessionId, text.trim()).catch(() => false);
+}
+
+// r81 (c02 r80: Today said "all 5 are done" while the Lead was still checking two): which chats are mid-turn, kept
+// apart from the waiting list so a turn starting or ending doesn't wake Autopilot.
+let busyChats = new Set<string>();
+let busyVersion = 0;
+const busyListeners = new Set<() => void>();
+function noteBusy(chats: readonly ChatInput[]): void {
+  const next = new Set(busyChats);
+  for (const chat of chats) chat.busy ? next.add(chat.id) : next.delete(chat.id);
+  if (next.size === busyChats.size && [...next].every((id) => busyChats.has(id))) return;
+  busyChats = next;
+  busyVersion += 1;
+  for (const listener of busyListeners) listener();
+}
+
+/** Whether a chat's turn is still running, as last noted (a Lead still checking what came back). */
+export function chatBusy(sessionId: string): boolean {
+  return busyChats.has(sessionId);
+}
+
+/** Re-render when a chat starts or ends a turn. */
+export function useChatsBusyVersion(): number {
+  return useSyncExternalStore(
+    (listener) => (busyListeners.add(listener), () => void busyListeners.delete(listener)),
+    () => busyVersion,
+    () => busyVersion,
+  );
 }
 
 /** The app lends its hands; the returned function takes them back. */

@@ -693,7 +693,12 @@ export function initialThinkingIndex(items: TurnItem[]): number {
       item.blocks.length > 0 &&
       item.blocks.every(isThinkingBlock)
     ) {
-      return index;
+      // r81 (Critiquito): once anything else in the turn came after it, "Thinking…" would sit above older replies at
+      // the top; the live line at the bottom says it now.
+      const later = items.slice(index + 1).some(
+        (next) => next.type !== "block" || (next.block.role !== "user" && next.block.role !== "system"),
+      );
+      return later ? -1 : index;
     }
     return -1;
   }

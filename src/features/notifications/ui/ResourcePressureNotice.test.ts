@@ -58,7 +58,9 @@ it("monitors silently without a footer and closes its dialog when the footer dis
     expect(processPolls()).toBe(0);
 
     await render(footer);
-    expect(footer.textContent).toContain("Mac busy");
+    expect(footer.textContent).toMatch(/Mac busy: (CPU|memory|slow to respond)/);
+    // r81 (Critiquito): the hover says what's busy and what to do.
+    expect(footer.querySelector("button")?.getAttribute("title")).toMatch(/^Your Mac is busy \(.+\), so things may feel slower\. Click to see what's running and stop what you don't need\.$/);
     // r28: its mark is grey, never amber (no third status colour), in the bar and in its dialog.
     expect(footer.querySelector("[data-mac-busy-mark]")?.getAttribute("class")).toContain("text-content/60");
     expect(footer.querySelector("[class*='amber']")).toBeNull();

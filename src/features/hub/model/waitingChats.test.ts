@@ -202,6 +202,22 @@ describe("answering from Today", () => {
     expect(waitingChats()).toEqual([]);
   });
 
+  it("a Needs Ash line asked with buttons too doesn't come back once the buttons were answered (r81, s14)", async () => {
+    const { live } = host();
+    const q = "Should a deleted tally be gone for good, or kept for 30 days?";
+    const blocks = [{ role: "user" as const, text: "add delete", startedAt: 1 }, { role: "assistant" as const, text: `Needs Ash: ${q.toLowerCase()}\nMy pick: gone for good.` }];
+    live.set("s1", ask(4, q));
+    noteChats([chat({ id: "s1", busy: true, pendingQuestion: ask(4, q), blocks })]);
+    expect((await answerInWords("s1", "keep them 30 days so i can undo")).ok).toBe(true);
+    noteChats([chat({ id: "s1", busy: true, blocks })]);
+    noteChats([chat({ id: "s1", busy: false, blocks })]);
+    expect(waitingChats()).toEqual([]);
+    // A new turn from Ash that asks again does wait.
+    const later = [...blocks, { role: "user" as const, text: "actually ask me again", startedAt: Date.now() + 60_000 }, blocks[1]];
+    noteChats([chat({ id: "s1", busy: false, blocks: later })]);
+    expect(waitingChats().map((c) => c.sessionId)).toEqual(["s1"]);
+  });
+
   it("Take the pick on a Needs Ash line sends Ash's go into that chat", async () => {
     const { calls } = host();
     noteChats([markerChat("s2", "Needs Ash: Keep it?\nMy pick: Archive it.")]);

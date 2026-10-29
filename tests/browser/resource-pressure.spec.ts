@@ -55,7 +55,8 @@ test("keeps many processes compact, with details and stop controls on demand", a
     exact: true,
   });
   await expect(chip).toBeVisible({ timeout: 15_000 });
-  await expect(chip).toHaveText("Mac busy");
+  // r81 (Critiquito): it says what is busy.
+  await expect(chip).toHaveText(/^Mac busy: /);
   await chip.click();
   const dialog = page.getByRole("dialog", {
     name: "Running work",

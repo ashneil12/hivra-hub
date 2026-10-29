@@ -5261,7 +5261,8 @@ export const SessionCard = memo(function SessionCard({
       {needsApproval ? (
         <>
           <CircleAlert className="size-3" strokeWidth={1.75} />
-          <span>{orchestration ? "Needs input" : "Need approval"}</span>
+          {/* r81 (Critiquito): one label everywhere Ash must act. */}
+          <span>Needs you</span>
         </>
       ) : busy ? (
         <>
