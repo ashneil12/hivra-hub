@@ -19,6 +19,8 @@ type Notice = PendingApprovalNotice & { session: Session };
 type Props = {
   notices: Notice[];
   topOffset?: number;
+  /** MonoCode Hub (r82): its own words for the card, and a place in the sidebar's empty foot instead of over the page. */
+  hubView?: (notice: Notice) => { badge: string; question: string; by: string };
   onFocusSession: (sessionId: string) => void;
   onApproval: (
     sessionId: string,
@@ -32,6 +34,7 @@ export function ApprovalToasts({
   onFocusSession,
   onApproval,
   topOffset = 12,
+  hubView,
 }: Props) {
   useProjectNotificationPreferences();
   if (notices.length === 0) return null;
@@ -39,13 +42,14 @@ export function ApprovalToasts({
   return createPortal(
     <div
       aria-live="polite"
-      style={{ zIndex: LAYER.toast, top: topOffset }}
-      className="pointer-events-none fixed right-3 flex w-[min(360px,calc(100vw-24px))] flex-col gap-2"
+      style={hubView ? { zIndex: LAYER.toast, bottom: 40, left: 62 } : { zIndex: LAYER.toast, top: topOffset }}
+      className={hubView ? "pointer-events-none fixed flex w-[146px] flex-col gap-2" : "pointer-events-none fixed right-3 flex w-[min(360px,calc(100vw-24px))] flex-col gap-2"}
     >
       {notices.map((notice) => (
         <ProjectApprovalToast
           key={`${notice.sessionId}:${notice.kind}:${notice.requestId}`}
           notice={notice}
+          hubView={hubView}
           onFocusSession={onFocusSession}
           onApproval={onApproval}
         />
@@ -57,6 +61,7 @@ export function ApprovalToasts({
 
 function ProjectApprovalToast(props: {
   notice: Notice;
+  hubView?: Props["hubView"];
   onFocusSession: Props["onFocusSession"];
   onApproval: Props["onApproval"];
 }) {
@@ -80,16 +85,19 @@ function ProjectApprovalToast(props: {
 
 function ApprovalToastCard({
   notice,
+  hubView,
   onFocusSession,
   onApproval,
 }: {
   notice: Notice;
+  hubView?: Props["hubView"];
   onFocusSession: (sessionId: string) => void;
   onApproval: Props["onApproval"];
 }) {
   const { session, label, requestId } = notice;
   const title = sessionDisplayTitle(session.title, session.harness);
   const harness = HARNESS_TITLE[session.harness];
+  const hub = hubView?.(notice);
 
   const openSession = () => onFocusSession(session.id);
 
@@ -108,15 +116,18 @@ function ApprovalToastCard({
           <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-snug text-content">
             {title}
           </span>
-          <span className="flex shrink-0 items-center gap-1 text-[11px] text-amber-400">
-            <CircleAlert className="size-3.5" strokeWidth={1.75} />
-            <span>{notice.kind === "question" ? "Question" : "Approval"}</span>
-          </span>
+          {hub ? null : (
+            <span className="flex shrink-0 items-center gap-1 text-[11px] text-amber-400">
+              <CircleAlert className="size-3.5" strokeWidth={1.75} />
+              <span>{notice.kind === "question" ? "Question" : "Approval"}</span>
+            </span>
+          )}
         </span>
-        <span className="line-clamp-3 text-[12px] leading-relaxed text-content/70">
-          {label}
+        {hub ? <span data-hub-chip="Needs you" className="text-[11px] font-medium text-red-400">{hub.badge}</span> : null}
+        <span className={hub ? "line-clamp-5 text-[12px] leading-relaxed text-content/80" : "line-clamp-3 text-[12px] leading-relaxed text-content/70"}>
+          {hub ? hub.question : label}
         </span>
-        <span className="text-[11px] text-content/40">{harness}</span>
+        <span className="text-[11px] text-content/40">{hub ? hub.by : harness}</span>
       </button>
       {notice.kind === "question" ? null : (
         <div className="flex gap-2 border-t border-stroke px-3.5 py-2.5">

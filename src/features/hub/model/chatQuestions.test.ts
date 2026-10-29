@@ -38,7 +38,7 @@ const prompt = (over: Partial<UserQuestionPrompt> = {}): UserQuestionPrompt => (
 describe("a live AskUserQuestion", () => {
   it("is one line with the option the agent marked (Recommended) as its pick", () => {
     const q = chatQuestion({ busy: true, pendingQuestion: prompt(), blocks: [] });
-    expect(q).toEqual({ source: "ask", requestId: 7, question: "Which boss comes first?", more: 0, pick: "Shield", redLine: false, options: ["Shield", "Flier"] });
+    expect(q).toEqual({ source: "ask", requestId: 7, question: "Which boss comes first?", more: 0, pick: "Shield", why: "Teaches blocking before the flier", redLine: false, options: ["Shield", "Flier"] });
     expect(plainOptionLabel("Shield (Recommended)")).toBe("Shield");
   });
 
@@ -219,4 +219,21 @@ describe("red lines", () => {
     "lets %s through",
     (text) => expect(looksRedLine(text)).toBe(false),
   );
+});
+
+describe("a live question's pick keeps its reason (r82, Critiquito)", () => {
+  it("from the My pick line the agent wrote with it", () => {
+    const q = chatQuestion({
+      pendingQuestion: prompt(),
+      blocks: [{ role: "assistant", text: "Needs Ash: Which boss comes first?\nMy pick: Shield. You said blocking should come first." }],
+    });
+    expect(q?.pick).toBe("Shield");
+    expect(q?.why).toBe("You said blocking should come first.");
+  });
+
+  it("else from the recommended option's description; the reply still sends the pick alone", () => {
+    const q = chatQuestion({ pendingQuestion: prompt(), blocks: [] });
+    expect(q?.why).toBe("Teaches blocking before the flier");
+    expect(JSON.stringify(pickReply(prompt()))).not.toContain("Teaches");
+  });
 });

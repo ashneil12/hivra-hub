@@ -741,6 +741,7 @@ import {
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
+import { hubToastNotices, hubToastView } from "../features/hub/model/hubApprovalToasts";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
 import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenFinishedSessions";
@@ -16942,7 +16943,8 @@ function Workspace({
             insetChip={insetLayout}
           />
           <ApprovalToasts
-            notices={hiddenApprovalToasts}
+            notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
+            hubView={IS_HUB_BUNDLE ? hubToastView : undefined}
             topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
             onFocusSession={onOpenApprovalSession}
             onApproval={onApproval}

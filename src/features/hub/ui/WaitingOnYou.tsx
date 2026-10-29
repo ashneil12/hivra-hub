@@ -140,7 +140,7 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
       {/* No suggestion, no line: the reply box and Open chat already say what to do. */}
       {chat.pick && !chat.provide ? (
         <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
-          Suggests: {chat.pick}
+          Suggests: {chat.pick}{chat.why ? `. ${chat.why}` : ""}
         </div>
       ) : null}
       <div className="mt-1 flex items-center gap-2">

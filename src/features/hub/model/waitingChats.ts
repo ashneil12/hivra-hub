@@ -187,7 +187,7 @@ function recordAnswer(sessionId: string, question: string, answer: NonNullable<G
 }
 
 const sameQuestion = (a: WaitingEntry, b: ChatQuestion) =>
-  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.more === b.more && a.flag === b.flag &&
+  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.why === b.why && a.more === b.more && a.flag === b.flag &&
   (a.options ?? []).join("\u0000") === (b.options ?? []).join("\u0000");
 
 /** The time of Ash's last real message in the chat, if the blocks say. */
