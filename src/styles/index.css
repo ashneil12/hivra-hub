@@ -4498,3 +4498,32 @@ html.theme-light .confirm-cancel-ring:focus {
     var(--color-background-base)
   );
 }
+
+/* The little MonoCode under a working reply (LiveActivity.tsx): runs the reply's width and back, turning at each end. */
+.live-runner-sprite {
+  left: 0;
+  animation: live-runner-run 9s linear infinite;
+}
+.live-runner[data-live-runner-stalled] .live-runner-sprite {
+  animation-play-state: paused;
+}
+@keyframes live-runner-run {
+  0% { left: 0; transform: scaleX(1); }
+  49.99% { left: calc(100% - 1rem); transform: scaleX(1); }
+  50% { left: calc(100% - 1rem); transform: scaleX(-1); }
+  100% { left: 0; transform: scaleX(-1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-runner-sprite,
+  .live-runner .mascot-active,
+  .live-runner .mascot-rest,
+  .live-runner .mascot-talk {
+    animation: none;
+  }
+  .live-runner .mascot-rest {
+    opacity: 1;
+  }
+  .live-runner .mascot-talk {
+    opacity: 0;
+  }
+}

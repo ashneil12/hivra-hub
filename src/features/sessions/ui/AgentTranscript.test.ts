@@ -900,7 +900,7 @@ describe("Mono inline work", () => {
       ];
       const markup = renderMono(blocks, busy);
       const header = markup.indexOf(
-        busy ? "Running command…" : "MonoCat worked for 9s",
+        busy ? "Running a command" : "MonoCat worked for 9s",
       );
       expect(header).toBeGreaterThanOrEqual(markup.indexOf("MonoCat"));
       expect(markup).not.toContain("I will check the first part.");
@@ -931,7 +931,7 @@ describe("Mono inline work", () => {
         busy,
       );
       expect(markup).toContain(
-        busy ? "Running command…" : "MonoCat worked for 1s",
+        busy ? "Running a command" : "MonoCat worked for 1s",
       );
       expect(markup).not.toContain("hidden-detail-single");
       expect(markup).not.toContain("aria-expanded");
@@ -950,7 +950,7 @@ describe("Mono inline work", () => {
     expect(waiting).toContain("hidden-detail-approval");
     expect(waiting).toContain("Allow</button>");
     expect(waiting).toContain("Deny</button>");
-    expect(waiting).toContain("Waiting for approval…");
+    expect(waiting).toContain("Waiting for your OK");
     expect(waiting).not.toContain('aria-label="Show the steps');
     const approved = renderMono([
       user,

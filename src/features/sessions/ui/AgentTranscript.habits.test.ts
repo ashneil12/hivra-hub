@@ -242,7 +242,7 @@ it.each(["current", "older"])(
     expect(completionTurn).not.toBeNull();
     expect(
       completionTurn.querySelector('[role="status"]')?.textContent,
-    ).toContain("Thinking…");
+    ).toContain("Thinking");
     expect(
       completionTurn.querySelector("[data-mono-work]")?.textContent,
     ).toContain("Captain Awesome");
@@ -312,7 +312,7 @@ it("keeps a posted report actionable while the conversation is still running", a
     "Captain Awesome",
   );
   expect(chat.querySelector('[role="status"]')?.textContent).toContain(
-    "Thinking…",
+    "Writing",
   );
   expect(chat.textContent).not.toContain(report.text);
   expect(habit.querySelector('[role="status"]')).toBeNull();

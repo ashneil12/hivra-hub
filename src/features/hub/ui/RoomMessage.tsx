@@ -20,6 +20,9 @@ import {
   stopRoom,
 } from "../model/hubChats";
 import type { ChatMessage } from "../model/types";
+import { findMono, monoLook } from "../../monos/model/mono";
+import { activityLine } from "../../sessions/model/liveActivity";
+import { LiveActivityLine, LiveRunner, useNow } from "../../sessions/ui/LiveActivity";
 
 const shorten = (text: string, max = 70) => {
   const line = withoutNoReply(text).replace(/\s+/g, " ").trim();
@@ -175,6 +178,9 @@ export function RoomMessage({
     );
   // A reply to something further up says what it answers; one to the message just above doesn't need to.
   const answered = message.replyTo && message.replyTo !== previous?.id ? messages.find((m) => m.id === message.replyTo) : undefined;
+  // While it writes, the line under its name says what it is doing now, from its turn's own stream (not "writing…").
+  const activity = live ? roomWorking(chatId).find((w) => w.monoId === message.from && w.state === "writing")?.activity : undefined;
+  const mono = live ? findMono(message.from) : undefined;
   return (
     <>
       <div className="flex items-center gap-2 pb-0.5 text-xs text-content/60">
@@ -186,16 +192,15 @@ export function RoomMessage({
             to {answered.from === "ash" ? "you" : nameOf(answered.from)}: {shorten(answered.text, 60)}
           </span>
         ) : null}
-        {live ? (
-          <span className="ml-auto text-content/45" data-hub-msg-writing>
-            writing…
-          </span>
-        ) : (
-          <ReactButtons chatId={chatId} message={message} />
-        )}
+        {live ? null : <ReactButtons chatId={chatId} message={message} />}
       </div>
+      {activity ? <LiveActivityLine activity={activity} className="pb-1" /> : null}
       {children}
-      {live ? null : <Reactions chatId={chatId} message={message} nameOf={nameOf} />}
+      {live ? (
+        <LiveRunner mascot={mono ? monoLook(mono) : { name: nameOf(message.from), mascot: "" }} activity={activity} />
+      ) : (
+        <Reactions chatId={chatId} message={message} nameOf={nameOf} />
+      )}
     </>
   );
 }
@@ -208,13 +213,17 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
   const working = roomWorking(chatId, convId);
   // A seat whose words already show in the room needs no "is writing": the line is for seats that haven't started.
   const showing = new Set(roomDrafts(chatId, convId).map((d) => d.monoId));
-  const writing = working.filter((w) => w.state === "writing" && !showing.has(w.monoId)).map((w) => nameOf(w.monoId));
+  // A seat still working before its words show says what it is doing ("Chief of Staff · Reading src/app.tsx · 14s").
+  const now = useNow();
+  const writing = working
+    .filter((w) => w.state === "writing" && !showing.has(w.monoId))
+    .map((w) => (w.activity ? `${nameOf(w.monoId)} · ${activityLine(w.activity, now).text}` : `${nameOf(w.monoId)} is writing…`));
   const away = working.filter((w) => w.state !== "writing").map((w) => nameOf(w.monoId));
   const strip = convId ? roomStrip(chatId, convId) : undefined;
   const paused = strip?.kind === "paused" ? strip.reason : undefined;
   const active = roomActive(chatId, convId);
   const parts = [
-    writing.length ? `${namesList(writing)} ${writing.length > 1 ? "are" : "is"} writing…` : "",
+    writing.join("; "),
     away.length ? `${namesList(away)} will answer from ${away.length > 1 ? "their own chats" : "its own chat"}…` : "",
   ].filter(Boolean);
   return (

@@ -607,7 +607,7 @@ it("keeps streamed progress inside the status row and reveals the final reply wh
   ];
   render([...opening, tool("first", "in_progress")], { busy: true });
   const group = container.querySelector("[data-mono-work]");
-  expect(status()).toBe("Running command…");
+  expect(status()).toBe("Running a command");
   const narrated: Block[] = [
     ...opening,
     tool("first"),
@@ -620,7 +620,7 @@ it("keeps streamed progress inside the status row and reveals the final reply wh
   ];
   render(narrated, { busy: true });
   settleTicker();
-  expect(status()).toBe("Pondering…");
+  expect(status()).toBe("Writing");
   expect(container.textContent).not.toContain("Private streamed progress");
   const worked: Block[] = [
     ...narrated,
@@ -634,7 +634,7 @@ it("keeps streamed progress inside the status row and reveals the final reply wh
   ];
   render(worked, { busy: true });
   settleTicker();
-  expect(status()).toBe("Considering…");
+  expect(status()).toBe("Writing");
   expect(container.querySelector("[data-mono-work]")).toBe(group);
   expect(container.querySelector('[data-chat-message="answer"]')).toBeNull();
   render(worked.map((block) => ({ ...block, streaming: false })));
@@ -671,7 +671,7 @@ it("keeps pending edit approvals actionable beside the compact status", () => {
     ],
     { busy: true, onApproval },
   );
-  expect(status()).toBe("Waiting for approval…");
+  expect(status()).toBe("Waiting for your OK");
   expect(container.textContent).toContain("Approved edit preview");
   expect(container.textContent).not.toContain("Ready to edit.");
   const allow = Array.from(container.querySelectorAll("button")).find(
@@ -693,7 +693,7 @@ it("opens live activity from the header ticker before any tool, while a direct a
   const header = container.querySelector("[data-mono-work]")!;
   expect(header.querySelector(".pixel-mascot")).not.toBeNull();
   expect(header.textContent).toContain("Captain");
-  expect(status()).toBe("Thinking…");
+  expect(status()).toBe("Thinking");
   expect(container.textContent).not.toContain("working for");
   const activity = header.querySelector<HTMLButtonElement>(
     '[aria-label="Show activity"]',
@@ -819,11 +819,11 @@ it("uses the header to show questions and background work while answers are hidd
     },
   ];
   render(blocks, { busy: true, pendingQuestion: true });
-  expect(status()).toBe("Waiting for answers…");
+  expect(status()).toBe("Waiting for your answers");
   expect(container.textContent).not.toContain("I have a question.");
   render(blocks, { busy: true, backgroundTasks: ["Review"] });
   settleTicker();
-  expect(status()).toBe("Waiting for background task…");
+  expect(status()).toBe("Waiting on a background task");
 });
 
 it("marks the compact group for search without expanding its commands or narration", () => {

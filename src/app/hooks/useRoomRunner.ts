@@ -37,6 +37,7 @@ import {
 } from "../../features/hub/model/roomConductor";
 import { getChat, leadershipChatId, onConversationGone, requestReply, sendMessage } from "../../features/hub/model/hubChats";
 import { roomMemory } from "../../features/hub/model/roomMemory";
+import { forgetActivity, trackActivity } from "../../features/sessions/model/liveActivity";
 import { withRoomMemory } from "../../features/hub/model/roomTurns";
 import { tauriRooms, type RoomOrigin } from "../../features/hub/model/roomStore";
 import type { AgentAppRoomsHost } from "../../features/agent-app/model/agentAppRooms";
@@ -131,6 +132,18 @@ export function liveAnswer(session: Session, requestId: string): string {
     if (block.role === "assistant" && !block.tool && !block.internal && block.text.trim()) parts.push(block.text.trim());
   }
   return parts.join("\n\n");
+}
+
+/** A managed room turn's own blocks so far (after the hidden prompt carrying `requestId`), for its live step line. */
+export function turnBlocks(session: Session, requestId: string): Block[] {
+  const at = session.blocks.findIndex((b) => b.role === "user" && b.appRequestId === requestId);
+  if (at < 0) return [];
+  const out: Block[] = [];
+  for (const block of session.blocks.slice(at + 1)) {
+    if (block.role === "user" && !block.internal) break;
+    out.push(block);
+  }
+  return out;
 }
 
 /**
@@ -249,8 +262,19 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
             );
             // Its words go into the room as it writes them, so Ash sees the answer start within seconds.
             let shown = "";
+            let told = "";
             const live = window.setInterval(() => {
               const now = latest.current.sessionsRef.current.find((s) => s.id === session.id);
+              // Its step and its last event, from the same stream, so the room can say what it is doing (or that nothing
+              // has happened for a minute) instead of a bare "writing…".
+              if (now) {
+                const activity = trackActivity(request.wakeId, turnBlocks(now, request.wakeId), Date.now(), now.cwd);
+                const said = `${activity.key}|${activity.label}|${activity.since}|${activity.lastEventAt}`;
+                if (said !== told) {
+                  told = said;
+                  request.onActivity?.(activity);
+                }
+              }
               const text = now ? liveRoomText(now, request.wakeId) : "";
               if (!text || text === shown) return;
               shown = text;
@@ -260,6 +284,7 @@ export function useRoomRunner(host: RoomRunnerHost): AgentAppRoomsHost & { deleg
             const done = (fn: () => void) => {
               window.clearTimeout(timer);
               window.clearInterval(live);
+              forgetActivity(request.wakeId);
               if (managed.current.get(request.monoId)?.wakeId === request.wakeId) managed.current.delete(request.monoId);
               fn();
             };

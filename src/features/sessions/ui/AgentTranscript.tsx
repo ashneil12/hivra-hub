@@ -122,6 +122,7 @@ import {
   type TurnMetrics,
 } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
+import { TurnActivityLine, TurnRunner } from "./LiveActivity";
 import {
   modelInUseLabel,
   onGrokBridge,
@@ -255,6 +256,11 @@ type Props = {
   bottomAligned?: boolean;
   /** Keeps process in the activity trail, with live progress in the header. */
   inlineWork?: boolean;
+  /**
+   * The little MonoCode runs along the bottom of the turn being written (a Mono's or a coding team's chat, where the
+   * model line sits on the composer's ledge and the composer runner stays off).
+   */
+  liveRunner?: boolean;
   messageDeliveries?: ReadonlyMap<string, MessageDelivery>;
   onRetryMessage?: (blockId: string) => void;
   /** Inspect a Mono turn in the activity sidebar. */
@@ -335,6 +341,7 @@ function AgentTranscriptComponent({
   agentMascot,
   bottomAligned = false,
   inlineWork = false,
+  liveRunner = false,
   messageDeliveries,
   onRetryMessage,
   onShowWork,
@@ -1632,6 +1639,9 @@ function AgentTranscriptComponent({
             <TurnRow key="work-fold" folded={!showFoldLine}>
               {inlineWork ? (
                 <MonoTurnHeader
+                  turnId={turnId}
+                  cwd={cwd}
+                  startedAt={startedAt}
                   blocks={turn}
                   title={foldTitle}
                   name={turnModelName}
@@ -1659,16 +1669,20 @@ function AgentTranscriptComponent({
                   }
                 />
               ) : (
-                <WorkFoldLine
-                  title={foldTitle}
-                  kind={workKind(summarizedWork)}
-                  harness={markHarness}
-                  agentMascot={agentMascot}
-                  live={live}
-                  expandable={!!fold}
-                  open={workOpen && !!fold}
-                  onToggle={() => toggleWork(turnId, workOpen)}
-                />
+                <>
+                  <WorkFoldLine
+                    title={foldTitle}
+                    kind={workKind(summarizedWork)}
+                    harness={markHarness}
+                    agentMascot={agentMascot}
+                    live={live}
+                    expandable={!!fold}
+                    open={workOpen && !!fold}
+                    onToggle={() => toggleWork(turnId, workOpen)}
+                  />
+                  {/* What it is doing right now, under the clock, until the reply lands. */}
+                  {live ? <TurnActivityLine id={turnId} blocks={turn} cwd={cwd} startedAt={startedAt} className="px-4" /> : null}
+                </>
               )}
             </TurnRow>
           );
@@ -1885,6 +1899,11 @@ function AgentTranscriptComponent({
                     onHandoff ? (target) => onHandoff(target, turn) : undefined
                   }
                 />
+              ) : null}
+              {live && liveRunner ? (
+                <div className="px-4">
+                  <TurnRunner id={turnId} blocks={turn} cwd={cwd} startedAt={startedAt} mascot={agentMascot && agentName ? { name: agentName, mascot: agentMascot.mascot } : undefined} />
+                </div>
               ) : null}
             </HistoryTurn>
           );
@@ -3550,8 +3569,14 @@ function markScrollEdges(el: HTMLElement) {
   el.dataset.fadeBottom = String(below > 1);
 }
 
-/** The live ticker shares the identity line instead of adding a work row. */
+/**
+ * The Mono's name, with what it is doing now on the line under it while the turn is live (the step and its timer, or
+ * grey "No activity" after a minute); a settled turn signs off on one line.
+ */
 function MonoTurnHeader({
+  turnId,
+  cwd,
+  startedAt,
   blocks,
   title,
   name,
@@ -3565,6 +3590,9 @@ function MonoTurnHeader({
   workExpanded,
   searchCurrent,
 }: {
+  turnId: string;
+  cwd?: string;
+  startedAt?: number;
   blocks: Block[];
   title: ReactNode;
   name?: string;
@@ -3610,63 +3638,85 @@ function MonoTurnHeader({
   ) : (
     <ActivityPhaseIcon kind={status.kind} />
   );
-  const ticker = (
+  // While it is live the line under the name says what it is doing now ("Reading src/app.tsx · 14s"), from the turn's
+  // own blocks; offscreen, the short ticker beside the name is enough.
+  const override =
+    status.key === "question"
+      ? { key: "question", label: "Waiting for your answers" }
+      : status.key === "background"
+        ? {
+            key: "background",
+            label:
+              backgroundTasks?.length === 1
+                ? "Waiting on a background task"
+                : `Waiting on ${backgroundTasks?.length} background tasks`,
+          }
+        : undefined;
+  const ticker = live ? (
+    <TurnActivityLine
+      id={turnId}
+      blocks={activity}
+      cwd={cwd}
+      startedAt={startedAt}
+      override={override}
+      className="text-[13px]"
+    />
+  ) : (
     <MonoWorkTicker status={{ ...status, active: live }} showIcon={false} />
+  );
+  const identity = agentMascot ? (
+    // The pill holds the Mono's signature from the first token on.
+    <span className="max-w-[45%] shrink-0">
+      <MonoSignaturePill>
+        {mark}
+        {name ? (
+          <span className="min-w-0 truncate font-medium text-content/80">
+            {name}
+          </span>
+        ) : null}
+      </MonoSignaturePill>
+    </span>
+  ) : (
+    <>
+      {mark}
+      {name ? <span className="max-w-[45%] truncate">{name}</span> : null}
+    </>
+  );
+  const work = onShowWork ? (
+    <button
+      type="button"
+      title={workExpanded ? "Hide activity" : "Show activity"}
+      aria-label={workExpanded ? "Hide activity" : "Show activity"}
+      aria-expanded={!!workExpanded}
+      onClick={onShowWork}
+      className="min-w-0 flex-1 cursor-pointer text-left outline-none transition-opacity duration-150 hover:opacity-70 focus-visible:opacity-70"
+    >
+      {ticker}
+    </button>
+  ) : (
+    <div className="min-w-0 flex-1">{ticker}</div>
   );
   return (
     <div
       data-mono-work
       data-transcript-search-item
       data-transcript-search-current={searchCurrent || undefined}
-      className="flex min-w-0 items-center gap-1.5 px-4 py-1 font-sans text-sm text-content/50"
+      className={`flex min-w-0 gap-1.5 px-4 py-1 font-sans text-sm text-content/50 ${active && live ? "flex-col items-start" : "items-center"}`}
     >
-      {active ? (
+      {active && live ? (
         <>
-          {agentMascot ? (
-            // The pill holds the Mono's signature from the first token on;
-            // the ticker runs beside it.
-            <>
-              <span className="max-w-[45%] shrink-0">
-                <MonoSignaturePill>
-                  {mark}
-                  {name ? (
-                    <span className="min-w-0 truncate font-medium text-content/80">
-                      {name}
-                    </span>
-                  ) : null}
-                </MonoSignaturePill>
-              </span>
-              <span aria-hidden className="shrink-0 text-content/25">
-                ·
-              </span>
-            </>
-          ) : (
-            <>
-              {mark}
-              {name ? (
-                <>
-                  <span className="max-w-[45%] truncate">{name}</span>
-                  <span aria-hidden className="shrink-0 text-content/25">
-                    ·
-                  </span>
-                </>
-              ) : null}
-            </>
-          )}
-          {onShowWork ? (
-            <button
-              type="button"
-              title={workExpanded ? "Hide activity" : "Show activity"}
-              aria-label={workExpanded ? "Hide activity" : "Show activity"}
-              aria-expanded={!!workExpanded}
-              onClick={onShowWork}
-              className="min-w-0 flex-1 cursor-pointer text-left outline-none transition-opacity duration-150 hover:opacity-70 focus-visible:opacity-70"
-            >
-              {ticker}
-            </button>
-          ) : (
-            <div className="min-w-0 flex-1">{ticker}</div>
-          )}
+          <div className="flex w-full min-w-0 items-center gap-1.5">{identity}</div>
+          <div className="flex w-full min-w-0 pl-1">{work}</div>
+        </>
+      ) : active ? (
+        <>
+          {identity}
+          {name || agentMascot ? (
+            <span aria-hidden className="shrink-0 text-content/25">
+              ·
+            </span>
+          ) : null}
+          {work}
         </>
       ) : agentMascot ? (
         <MonoSignaturePill>
