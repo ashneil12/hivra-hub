@@ -36,6 +36,8 @@ import {
   failureNotice,
   hostOf,
   isSilent,
+  NO_REPLY,
+  repeatsAnother,
   everyoneElse,
   MAX_PARALLEL_TURNS,
   MONO_POSTS_CEILING,
@@ -600,6 +602,20 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   pump(chatId);
 }
 
+/** What the other Monos posted in this conversation since Ash's last message. */
+function othersSinceAsh(chatId: string, convId: string | undefined, me: string): string[] {
+  const chat = getChat(chatId);
+  const conv = chat?.conversations.find((c) => c.id === convId) ?? chat?.conversations[chat.conversations.length - 1];
+  if (!conv) return [];
+  const out: string[] = [];
+  for (let i = conv.messages.length - 1; i >= 0; i--) {
+    const m = conv.messages[i];
+    if (m.from === "ash") break;
+    if (m.kind === "mono" && m.from !== me && m.text) out.push(m.text);
+  }
+  return out;
+}
+
 /** Who wrote the message a turn answers: Ash for an answer or a chime, the Mono that posted it for a reply. */
 function speakerOf(messages: readonly ChatMessage[], wake: Wake): { id: string; name: string } {
   const from = wake.trigger ? messages.find((m) => m.id === wake.trigger)?.from : undefined;
@@ -637,7 +653,9 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
   const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
   if (kept && !isSilent(kept)) text = closePromise(kept);
-  else if (isSilent(text)) {
+  // r63: a near-copy of what another Mono already said since Ash last wrote stays out (add something new or stay quiet).
+  else if (isSilent(text) || repeatsAnother(text, othersSinceAsh(chatId, wake.convId, me.id))) {
+    if (!isSilent(text)) text = NO_REPLY;
     // "Got it" is a 👍 on what it answers; the host that has nothing to say to Ash still shows it read him.
     const emoji = /<reaction>\s*(✅|👀)\s*<\/reaction>/.exec(text)?.[1] ?? "👍";
     const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim()) && !/\n\W*NO_REPLY\W*$/i.test(text.trim());

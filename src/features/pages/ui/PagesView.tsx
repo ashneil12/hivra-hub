@@ -11,7 +11,7 @@ import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
 import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
-import { READY_BY, READY_PAGES, readyWhat, type ReadyPage } from "../model/readyPages";
+import { READY_BY, READY_PAGES, readyWhat, withReadySpec, type ReadyPage } from "../model/readyPages";
 import { checkBespokePage } from "../model/designCheck";
 import { describeCapability, type BespokeSpec, type Capability } from "../model/pageSpec";
 import { PageBridgeHost } from "../model/pageBridgeHost";
@@ -466,7 +466,7 @@ function PageConnections({ page }: { page: Page }) {
 function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   return (
     <div className="mb-4 flex flex-col gap-2" data-pages-allow-again>
-      <div className="text-[12px] text-content/70">This page came from a setup file. It can't do anything until you allow what it asks for.</div>
+      <div className="text-[12px] text-content/70" data-pages-allow-note>{page.by === READY_BY ? "This page comes with the app." : "This page came from a setup file."} It can't do anything until you allow what it asks for. The page below is greyed out until then.</div>
       <Permissions asks={asks} />
       <div className="flex justify-end">
         <button type="button" data-pages-allow className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
@@ -676,6 +676,10 @@ export function PagesContent() {
   }
 
   if (shown) {
+    const gated = needsAllow(shown) && shown.spec.kind === "bespoke";
+    // r63 (Critiquito, C8): a ready-made page's request is its own title ("Ready-made: Agents"), so the line read "by
+    // Ready-made · “Ready-made: Agents”". Its one-line what says what it is; the request only shows for a page Ash asked for.
+    const request = readyWhat(shown.request) ? null : shown.request;
     return (
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="w-full px-6 py-6 xl:px-8" data-pages-open>
@@ -688,7 +692,7 @@ export function PagesContent() {
           </div>
           {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
           {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
-          <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by} · “{shown.request}”{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
+          <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by}{request ? <> · “{request}”</> : null}{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
           <div className="mb-4 mt-1"><Limits /></div>
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
@@ -698,10 +702,19 @@ export function PagesContent() {
               </button>
             </div>
           ) : null}
-          {needsAllow(shown) && shown.spec.kind === "bespoke" ? <AllowAgain key={shown.id} page={shown} asks={shown.spec.permissions} /> : null}
-          <PageRebuild key={shown.id} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
+          {/* r63 (PM's blind C8): the Allow card and the page below once had the same key, so every live re-render added
+              another Allow card (4+ on the Agents page). Each sibling has its own key now; until Allow the page is shown
+              greyed with a line that says why it can't be used yet. */}
+          {gated ? <AllowAgain key={`allow:${shown.id}`} page={shown} asks={shown.spec.kind === "bespoke" ? shown.spec.permissions : []} /> : null}
+          <PageRebuild key={`rebuild:${shown.id}`} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
             <PageTapStatus pageId={shown.id} />
-            <PageBody page={shown} live />
+            {gated ? (
+              <div className="pointer-events-none select-none opacity-50" aria-disabled="true" inert data-pages-gated>
+                <PageBody page={withReadySpec(shown)} live />
+              </div>
+            ) : (
+              <PageBody page={withReadySpec(shown)} live />
+            )}
             <PageActivity pageId={shown.id} title={shown.title} />
             {shown.spec.kind === "bespoke" ? <PageConnections page={shown} /> : null}
           </PageRebuild>

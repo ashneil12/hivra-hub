@@ -6,7 +6,7 @@ import { projectKey } from "../../../shared/lib/paths";
 import { delegationRows, useDelegationsVersion } from "../../monos/model/delegationStore";
 import { findMono, monoForSession } from "../../monos/model/mono";
 import { monoFailures, useMonoFailuresVersion, type MonoFailure } from "../../monos/model/monoFailures";
-import { stuckWorkers, useStuckDismissalsVersion, type StuckWorker } from "../../monos/model/workerStuck";
+import { stuckOwner, stuckWorkers, useStuckDismissalsVersion, type StuckWorker } from "../../monos/model/workerStuck";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
 import { waitingCount } from "./waiting";
@@ -51,9 +51,18 @@ export function stuckWorkersFor(projectId: string, now = Date.now()): StuckWorke
   return stuckWorkers(delegationRows(), now).filter((stuck) => stuckProject(stuck)?.id === projectId);
 }
 
-/** Everything waiting on Ash for this project, as Today shows it (the card and the strip badge read this one number). */
+/**
+ * Whether a stuck worker counts as waiting on Ash: only a red "needs you" one. r63 (PM's blind D5 on 0.16.3): two failed
+ * workers sat grey "With Hivra lead" and the Lead closed the job out, yet the badge went from 7 to 9 waiting on you. A
+ * worker that is its Lead's or a retry's is never Ash's to count.
+ */
+export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean {
+  return stuckOwner(stuck) === "needs-you";
+}
+
+/** Everything waiting on Ash for this project (the card and the strip badge read this one number): grey rows aren't. */
 export function attentionCount(projectId: string, now = Date.now()): number {
-  return waitingCount(projectId) + stuckWorkersFor(projectId, now).length + failedMonosFor(projectId).length;
+  return waitingCount(projectId) + stuckWorkersFor(projectId, now).filter(stuckNeedsAsh).length + failedMonosFor(projectId).length;
 }
 
 /** Re-render when anything the count reads changes (the Needs and proposals have their own versions at the caller). */

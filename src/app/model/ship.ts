@@ -209,7 +209,7 @@ export type ShipCardView = {
 };
 
 /** What Today says about Ship, if anything: the trial, a waiting update, Ash's own answer, or a receipt not yet read. */
-export function shipCardView(status: ShipStatus): ShipCardView | null {
+export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardView | null {
   if (!status.enabled) return null;
   const current = status.current;
   if (status.holding && status.trial)
@@ -231,14 +231,12 @@ export function shipCardView(status: ShipStatus): ShipCardView | null {
   // Ash's own answer (I4): the update asks whether the build works, and it stays until he says. It shows even if the
   // receipt was already read: nothing calls a ship accepted until he answers yes, and "pending" is the default.
   const answer = current.acceptance;
+  // r63 (Critiquito): no commit, branch or ship id in the ask, just the version Ash is now on.
   if (current.phase === "committed" && answer.state === "pending") {
-    const shipped = [current.to?.sha?.slice(0, 7), current.to?.branch && `from ${current.to.branch}`]
-      .filter(Boolean)
-      .join(" ");
+    const version = appVersion && appVersion !== "0.0.0" ? appVersion.trim() : "";
     return {
       id: current.id,
-      text: "Does the update work?",
-      detail: `MonoCode Hub shipped ${shipped || "this update"} (ship ${current.id}). Your answer is kept with it.`,
+      text: version ? `MonoCode updated to ${version}. Is everything working?` : "MonoCode was updated. Is everything working?",
       accept: true,
     };
   }

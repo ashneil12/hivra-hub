@@ -3,6 +3,7 @@
 // belongs to, and each Mono's child chats, which the Monos rail counts ("2 working · 1 stuck") but never lists: they
 // live in its team's Sessions list (Ash, 20 Oct: "monos shouldn't really have sub chats"; hub/model/monoTeams.ts).
 // Being built never lists workers: it gets counts only, from Ash OS's copy of the rows (HANDOFF Unit 7).
+import { workerTitle } from "./workerTitle";
 import {
   isOpenDelegation,
   isOwed,
@@ -188,7 +189,7 @@ export function childChatsByMono(
     list.push({
       sessionId: row.childSession,
       ownerSession: row.ownerSession,
-      title: listTitle(row.title ?? "") || "Delegated work",
+      title: listTitle(workerTitle(row.title)) || "Delegated work",
       state: row.state,
       createdAt: row.createdAt,
       row,

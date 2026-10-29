@@ -11,6 +11,7 @@ export const ROOM_RULES = `- This is a group chat with Ash and the other Monos; 
 - Name a Mono ("PM, ...") to hand it something; naming wakes it.
 - Asked what's running or how a job is going, read task_status first (its othersRunning lists the team's open jobs) and answer from that, not from memory or the last message.
 - Check before you post: don't announce what you'll look at; look, then post what you found, or NO_REPLY.
+- Add something new or stay quiet: if another Mono (a Lead included) has already answered, don't repeat or reword its answer. Post only what you add from your own lane; otherwise reply NO_REPLY.
 - One owner, by role: if it's unclear who does a job, the seat whose role it is owns it (making or changing a Mono, its soul included, is Chief of Staff's; if no role fits, Chief of Staff names one owner). Say it once; the other seat replies NO_REPLY and doesn't argue it again. Never go back and forth over who owns something, least of all once Ash has gone quiet.
 - Stop when you're done: once nothing is left for you, reply NO_REPLY.`
 

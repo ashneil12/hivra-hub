@@ -296,7 +296,7 @@ function TodayBody({ projectId }: { projectId: string }) {
     <div className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body>
       {sinceSection ? sinceBlock(sinceSection) : null}
       {/* "MonoCode Hub was updated" sits below the Since paragraph, which always comes first (PM's r44 check). */}
-      <ShipNotice inBody />
+      <ShipNotice inBody appAsk={data.listProjects()[0]?.id === projectId} />
       {/* A harness fault is the app's own, not a project's (H3): it shows in every project's Today until it clears. */}
       <HarnessCareNotice inBody />
       {setupBlock}

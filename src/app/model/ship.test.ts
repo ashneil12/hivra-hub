@@ -61,12 +61,13 @@ describe("what Today says about a ship", () => {
     expect(view?.detail).toContain("(2 running now)");
   });
 
-  it("asks Ash whether the update works, naming the build; nothing calls it accepted before he answers", () => {
-    const view = shipCardView(status({ phase: "committed" }));
-    expect(view).toMatchObject({ text: "Does the update work?", accept: true });
-    expect(view?.detail).toContain("bbbbbbb");
-    expect(view?.detail).toContain("hub/1b-ship");
-    expect(view?.detail).toContain(ID);
+  it("asks Ash whether the update works, naming the version and no ids; nothing calls it accepted before he answers", () => {
+    // r63 (Critiquito): "shipped afe42a3 from main (ship …)" became the version alone.
+    const view = shipCardView(status({ phase: "committed" }), "0.16.5");
+    expect(view).toMatchObject({ text: "MonoCode updated to 0.16.5. Is everything working?", accept: true });
+    expect(view?.detail).toBeUndefined();
+    expect(view?.text).not.toMatch(/bbbbbbb|hub\/1b-ship|shipped/);
+    expect(shipCardView(status({ phase: "committed" }))?.text).toBe("MonoCode was updated. Is everything working?");
     expect(view?.once).toBeUndefined();
     expect(view?.dismiss).toBeUndefined();
     // A receipt already read doesn't answer it: the question stays until he does.

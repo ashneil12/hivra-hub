@@ -18,6 +18,7 @@ vi.mock("../../../app/model/ship", async (importOriginal) => ({
   markShipSeen: ship.markShipSeen,
   acceptShip: ship.acceptShip,
 }));
+vi.mock("../../../app/model/updater", () => ({ readAppVersion: async () => "0.16.5" }));
 vi.mock("../../../platform/tauri/fs", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   revealPath: ship.revealPath,
@@ -89,8 +90,8 @@ it("asks Ash whether the new build works, and records the answer he gives", asyn
   });
   ship.acceptShip.mockResolvedValue(undefined);
   await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("Does the update work?");
-  expect(container.textContent).toContain(ID);
+  expect(container.textContent).toContain("MonoCode updated to 0.16.5. Is everything working?");
+  expect(container.textContent).not.toContain(ID);
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
   // Showing the question accepts nothing and reads nothing: only Ash's answer moves it on.
   expect(ship.markShipSeen).not.toHaveBeenCalled();
@@ -141,4 +142,17 @@ it("a committed update shows once: plain words, marked read as soon as it shows,
   root = createRoot(container);
   await act(async () => root.render(createElement(ShipNotice)));
   expect(container.textContent).toBe("");
+});
+
+// r63 (PM's G2 on 0.16.3): the app-wide ask showed in a project Ash had just made.
+it("leaves the app-wide ask out where appAsk is off (a project other than the first)", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    current: { id: ID, phase: "committed", accepted: true, committed: true, seen: false, log: "/ship/runner.log", ...builds },
+  });
+  await act(async () => root.render(createElement(ShipNotice, { inBody: true, appAsk: false })));
+  expect(container.textContent).not.toContain("Is everything working?");
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
+  await act(async () => root.render(createElement(ShipNotice, { inBody: true, appAsk: true })));
+  expect(container.textContent).toContain("Is everything working?");
 });

@@ -54,12 +54,34 @@ export function projectPrefsVersion(): number {
   return version;
 }
 
+/**
+ * The short name the rail tile shows. r63 (PM's G3 on 0.16.3): a rename sets the project's name in Ash OS but its short
+ * name stays the old one, so the tile read "kids" after "kids maths" became "maths game". A short name that is no longer
+ * part of the name (a word or a prefix of it, or its initials, as "MonoCode Hub" -> "Hub", "EXO game" -> "EXO") is stale:
+ * the name's first word shows instead, as a rename on this Mac already does.
+ */
+export function railShortName(project: Pick<HubProject, "name" | "shortName">): string {
+  const name = project.name.trim();
+  const short = (project.shortName ?? "").trim();
+  if (!name) return short;
+  if (!short) return name.split(/\s+/)[0];
+  const lower = name.toLowerCase();
+  const s = short.toLowerCase();
+  const initials = name.split(/\s+/).map((w) => w[0] ?? "").join("").toLowerCase();
+  if (lower.includes(s) || s === initials) return short;
+  return name.split(/\s+/)[0];
+}
+
 /** The projects as the hub shows them: Ash's names and order, without the ones he removed from the hub. */
 export function applyProjectPrefs(projects: HubProject[]): HubProject[] {
   const p = load();
   const shown = projects
     .filter((x) => !p.hidden.includes(x.id))
-    .map((x) => (p.names[x.id] ? { ...x, name: p.names[x.id], shortName: p.names[x.id].split(" ")[0] } : x));
+    .map((x) => (p.names[x.id] ? { ...x, name: p.names[x.id], shortName: p.names[x.id].split(" ")[0] } : x))
+    .map((x) => {
+      const short = railShortName(x);
+      return short === x.shortName ? x : { ...x, shortName: short };
+    });
   const rank = (id: string) => {
     const i = p.order.indexOf(id);
     return i < 0 ? Number.MAX_SAFE_INTEGER : i;
