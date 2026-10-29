@@ -166,7 +166,9 @@ function sessionRow(session: Session) {
     turnReady: !!session.turnReady,
     queued: session.queuedMessages?.length ?? 0,
     queueStatus: session.queueStatus ?? null,
-    question: !!(session as { pendingQuestion?: unknown }).pendingQuestion,
+    // A live AskUserQuestion card, or a written ask the chat is in "Waiting on you" for (r75: the bench missed a
+    // "Needs the user:" ask worded over two lines).
+    question: !!(session as { pendingQuestion?: unknown }).pendingQuestion || !!findWaitingChat(session.id),
     usageLimit: !!session.usageLimit,
     // Held on a permission card Ash hasn't decided (S14's stuck case).
     approvals: pendingApprovals(session).length,

@@ -109,13 +109,13 @@ describe("a 'Needs Ash:' line", () => {
     expect(parseNeedsAsh("All done, nothing needs you.")).toBeNull();
   });
 
-  it("only a finished turn waits: a running one hasn't asked yet, and Ash's reply ends it", () => {
+  it("a finished message waits, even while its turn runs (r75); Ash's reply ends it", () => {
     const asked = [
       { role: "user" as const, text: "fix the parser" },
       { role: "assistant" as const, text: "Needs Ash: Keep the old flag name?\nMy pick: Keep it." },
     ];
     expect(chatQuestion({ busy: false, blocks: asked })).toEqual({ source: "marker", question: "Keep the old flag name?", more: 0, pick: "Keep it.", redLine: false });
-    expect(chatQuestion({ busy: true, blocks: asked })).toBeNull();
+    expect(chatQuestion({ busy: true, blocks: asked })).toMatchObject({ question: "Keep the old flag name?", pick: "Keep it." });
     expect(chatQuestion({ busy: false, blocks: [...asked, { role: "user", text: "keep it" }] })).toBeNull();
   });
 
