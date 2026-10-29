@@ -65,8 +65,6 @@
         { "wait": { "chatReply": "dump", "maxSec": 180 } },
         { "approve": { "chat": "dump" } },
         { "wait": { "delegation": { "ownerChat": "dump", "count": 2 }, "maxSec": 90 } },
-        { "view": { "project": "tally", "item": "inbox" }, "name": "inbox-card-held" },
-        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-card-held" },
         { "approve": { "chat": "dump" } },
         { "wait": { "delegation": { "ownerChat": "dump", "count": 2 }, "maxSec": 90 } },
         { "approve": { "chat": "dump" } },
@@ -75,6 +73,8 @@
         { "wait": { "chatReply": "dump", "maxSec": 120 } },
         { "approve": { "chat": "dump" } },
         { "wait": { "any": [{ "settled": true }, { "quiet": true, "quietSec": 60 }], "maxSec": 240 } },
+        { "view": { "project": "tally", "item": "inbox" }, "name": "inbox-card-held" },
+        { "view": { "project": "tally", "item": "being-built" }, "name": "being-built-card-held" },
         { "approve": { "chat": "dump" } },
         { "wait": { "any": [{ "settled": true }, { "quiet": true, "quietSec": 60 }], "maxSec": 240 } },
         { "view": { "project": "tally", "item": "coding-team" }, "name": "coding-team-after-dump" }
