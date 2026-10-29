@@ -25,7 +25,7 @@
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import type { AshOsServer } from "./hubLeads";
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
-import { HUB_DB_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
@@ -110,9 +110,9 @@ export const OLD_MONO_COPY_DENIED_TOOLS = [
   "Bash(*com.ash.monocode-hub/monos*)",
 ];
 
-/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, reading a saved login by hand, and the hub's database (r67). */
+/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */

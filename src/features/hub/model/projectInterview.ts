@@ -33,7 +33,9 @@ export function interviewNote(name: string): string {
     "",
     "Create needs:",
     `- name: "${name}", unless he wants another`,
-    "- oneLine: what it is, in a sentence",
+    // r69 (PM's blind r67 (b)): the card read "A private page where Ash's mates send him a tip": Ash in the third
+    // person, plus a detail he never gave. Said as what the field is; toAsh() below also turns a third-person line round.
+    "- oneLine: what it is, in a sentence. It is printed on Ash's card, addressed to him (\"you\", \"your\"), and holds only what he has said in this chat",
     `- template, what its dashboard starts as: ${TEMPLATES.map((t) => `${t.id} (${t.label}: ${t.blurb})`).join("; ")}`,
     `- code: "new" (a new git folder at ${defaultProjectFolder(id)}), "existing" (a folder he already has; put its path in folder if he gives it) or "none"`,
     `- addon: true to also add ${ADDON_OFFER.name}, who ${ADDON_OFFER.what}`,
@@ -75,7 +77,7 @@ export function parseInterviewReply(raw: string): InterviewReply {
     const template = TEMPLATES.find((t) => t.id === p.template)?.id;
     const code = CODES.find((c) => c === p.code) ?? "new";
     // The card and the project's tagline are plain text: no markdown marks (r65).
-    const oneLine = typeof p.oneLine === "string" ? plainTitle(p.oneLine) : "";
+    const oneLine = typeof p.oneLine === "string" ? toAsh(plainTitle(p.oneLine)) : "";
     if (!template) return { text: text || raw.trim() };
     const name = typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
     const folder = typeof p.folder === "string" && p.folder.trim() ? p.folder.trim() : undefined;
@@ -132,4 +134,24 @@ export async function askChiefOfStaff(name: string, lines: readonly InterviewLin
   if (replyAwaitsAsh(first) || signal?.aborted) return first;
   const again = await turn(interviewPrompt(name, [...lines, { from: "cos", text: first.text }], who, STALLED_TURN_NUDGE));
   return again.text || again.proposal ? again : first;
+}
+
+/**
+ * r69 (PM's blind r67 (b)): the card speaks to Ash, so a line about him in the third person is turned round: "Ash's" and
+ * "his" to "your", "Ash" and "him" to "you", "he/Ash sends" to "you send". The rest of the sentence is left as written.
+ */
+export function toAsh(line: string): string {
+  const cap = (word: string, like: string) => (/^[A-Z]/.test(like) ? word.charAt(0).toUpperCase() + word.slice(1) : word);
+  return line
+    .replace(/\b(Ash|[Hh]e)\s+(?:(has)|(is)|(was)|(does)|([a-z]+?)(e?s))\b/g, (m, who: string, has, is, was, does, stem: string | undefined, ending: string | undefined) => {
+      const verb = has ? "have" : is ? "are" : was ? "were" : does ? "do" : stem ? (ending === "es" && /(?:sh|ch|ss|x|o)$/.test(stem) ? stem : stem + (ending === "es" ? "e" : "")) : "";
+      return verb ? `${cap("you", who)} ${verb}` : m;
+    })
+    .replace(/\bAsh['’]s\b/g, "your")
+    .replace(/(^|[.!?]\s+)your\b/g, (_m, lead: string) => `${lead}Your`)
+    .replace(/\b[Hh]is\b/g, (m) => cap("your", m))
+    .replace(/\b[Hh]imself\b/g, (m) => cap("yourself", m))
+    .replace(/\b[Hh]im\b/g, (m) => cap("you", m))
+    .replace(/\bAsh\b/g, "you")
+    .replace(/(^|[.!?]\s+)you\b/g, (_m, lead: string) => `${lead}You`);
 }

@@ -16,7 +16,7 @@ import { findPage, keptPages, requestOpenPage, usePagesVersion } from "../../pag
 import { PageBody } from "../../pages/ui/PagesView";
 import { ChangeRow } from "../../hubChange/ui/HubChangeView";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
-import { ChipMark, CircleWord, NeedsYouLinkLine, StatusMark, needMark } from "./StatusMark";
+import { ChipMark, CircleWord, NeedsYouLinkLine, StatusMark, needMark, redRowProps } from "./StatusMark";
 import { failureChip, stuckChip, type Chip } from "../model/statusChip";
 import { OptionsSheet } from "./OptionsSheet";
 import { DetailSheet, QuestionSheet } from "./QuestionSheet";
@@ -26,7 +26,7 @@ import { stuckWorkerChip } from "../../monos/model/stuckChip";
 import { failedMonosFor, stuckProject } from "../model/todayCounts";
 import { monoFailure, useMonoFailuresVersion } from "../../monos/model/monoFailures";
 import { useStuckWorkers } from "../../monos/hooks/useStuckWorkers";
-import { stuckForJob } from "../../monos/model/workerStuck";
+import { jobRowsFinishedAt, stuckForJob } from "../../monos/model/workerStuck";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText, sinceGlance, withoutStuckTalk } from "../model/appSince";
@@ -342,7 +342,7 @@ function BeingBuiltToday({ title, projectId }: { title: string; projectId?: stri
   };
   // A project's Today shows that project's work (G1): there is no board where every project's jobs sit together.
   const rows = data.listProjects().filter((p) => !projectId || p.id === projectId).flatMap((p) =>
-    (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId).map((j) => ({ p, j, lead: g.leadName }))),
+    (data.listJobs?.(p.id) ?? []).flatMap((g) => g.jobs.filter((j) => ACTIVE_JOBS.has(j.state) && !j.parentId && !(j.state === "working" && jobRowsFinishedAt(j.sourceRef, delegations) !== undefined)).map((j) => ({ p, j, lead: g.leadName }))),
   );
   // A worker its Lead is handling (grey With <Lead> or Retrying) is listed here, after the jobs, unless its job's row
   // above already says so (r30: no "Stuck" section).
@@ -579,7 +579,7 @@ function NeedRow({ need, onSheet, counted = false }: { need: Need; onSheet?: (sh
     if (need.actionType === "open" || need.actionType === "start") return onSheet?.({ kind: "detail", need });
   };
   return (
-    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined} data-hub-ask-reason={askRed ? askReason(need) : undefined}>
+    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" data-hub-need={need.id} data-hub-need-done={done || undefined} data-hub-ask-reason={askRed ? askReason(need) : undefined} {...redRowProps(!done && mark?.circle === "red")}>
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[13px] ${done ? "text-content/60" : "text-content"}`}>{need.title}</div>
         {/* The reason wraps (never cut mid-word). */}
@@ -619,7 +619,7 @@ function NeedRow({ need, onSheet, counted = false }: { need: Need; onSheet?: (sh
 /** The only rows that carry a status: a 14px circle and a plain word. */
 function StuckRow({ item }: { item: WaitingItem }) {
   return (
-    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5">
+    <div className="flex items-center gap-3 rounded-md px-2 py-2 hover:bg-content/5" {...redRowProps(!!item.state && stuckChip(item.state, item.lead).tone === "red")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] text-content">{item.title}</div>
         {item.detail ? <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-stuck-reason>{item.detail}</div> : null}

@@ -87,7 +87,25 @@ export type ClaudeCliSettings = {
   autoCompactWindow?: number;
   /** Claude Code permission rules; deny rules hold even in bypassPermissions (devCopies.ts uses them). */
   permissions?: { deny?: string[] };
+  /** Env for this process only. Flag settings outrank ~/.claude/settings.json, so these win over the user's own. */
+  env?: Record<string, string>;
 };
+
+/** The sub-agent model variables Claude Code reads (Task sub-agents and dynamic-workflow agents). */
+export const SUBAGENT_MODEL_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"] as const;
+
+/**
+ * r69 (PM's blind r67, E7): Ash's ~/.claude/settings.json forces Haiku as the sub-agent model (the 28 Oct rule for
+ * Haiku test workers on the Anthropic API key). A worker on another provider (the Grok or DeepSeek bridge, or a routed
+ * Other model) sent that name to its own gateway, and every sub-agent died with "unknown provider for model
+ * claude-haiku-5-5". Off Anthropic, a process's sub-agents run on its own model: `own` is that model, or undefined for
+ * an Anthropic worker, whose Haiku rule is left exactly as Ash set it.
+ */
+export function subagentModelEnv(own: string | undefined): Record<string, string> | undefined {
+  const model = own?.trim();
+  if (!model) return undefined;
+  return Object.fromEntries(SUBAGENT_MODEL_ENV.map((name) => [name, model]));
+}
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -271,6 +289,8 @@ export function buildClaudeSpawnArgs(input: {
   allowBypass?: boolean;
   /** This process leaves the Grok bridge (a non-Grok Other model, claudeGrokBridge.ts routedOffBridge): its own model. */
   offBridge?: boolean;
+  /** A routed Other model's id (the hub's loopback router): not Anthropic, so its sub-agents run on it too (r69). */
+  routedModel?: string;
 }): string[] {
   const args = [
     "--output-format",
@@ -299,6 +319,12 @@ export function buildClaudeSpawnArgs(input: {
   // asks for low effort instead, so every request carries a level the gateway can place.
   const thinkingWasOff = bridge ? settings.alwaysThinkingEnabled === false : false;
   if (bridge) settings.alwaysThinkingEnabled = true;
+  // Claude Code on a subscription bridge (claudeGrokBridge.ts): every process asks for Grok 4.7 or DeepSeek by the
+  // launcher's own name, whatever Claude model was picked, and one it can't place throws before anything starts
+  // (bridgeModels.ts), so no name ever reaches the gateway for it to route elsewhere.
+  const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
+  const ownSubagents = subagentModelEnv(bridge ? model : input.routedModel);
+  if (ownSubagents) settings.env = { ...settings.env, ...ownSubagents };
   if (input.isolated) {
     args.push("--no-session-persistence");
     args.push("--strict-mcp-config");
@@ -308,10 +334,6 @@ export function buildClaudeSpawnArgs(input: {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push("--settings", JSON.stringify(settings));
   }
-  // Claude Code on a subscription bridge (claudeGrokBridge.ts): every process asks for Grok 4.7 or DeepSeek by the
-  // launcher's own name, whatever Claude model was picked, and one it can't place throws before anything starts
-  // (bridgeModels.ts), so no name ever reaches the gateway for it to route elsewhere.
-  const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
   const asked = input.effort ?? (thinkingWasOff ? "low" : undefined);
   const effort = bridge === "grok" ? grokBridgeEffort(asked) : asked;
   if (model) args.push("--model", model);

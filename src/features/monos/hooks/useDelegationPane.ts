@@ -23,6 +23,7 @@ import {
   leadRollup,
   stuckOf,
   stuckOwnedBy,
+  stuckForLeadComposer,
   stuckShownInLeadChat,
   useStuckDismissalsVersion,
   type StuckWorker,
@@ -111,7 +112,7 @@ export function useDelegationPane(
   const now = useClock();
   if (orchestrator) {
     const count = waitingOn(sessionId, rows);
-    const stuck = stuckShownInLeadChat(stuckOwnedBy(sessionId, rows, now), leadAsking);
+    const stuck = stuckForLeadComposer(stuckShownInLeadChat(stuckOwnedBy(sessionId, rows, now), leadAsking), rows, now);
     const rollup = leadRollup(sessionId, rows, now);
     const failed = stopFailures(sessionId).map(
       (id) => delegationOf(id, rows)?.title?.trim() || "a worker",

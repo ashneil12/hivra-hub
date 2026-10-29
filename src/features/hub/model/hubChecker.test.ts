@@ -6,7 +6,7 @@
 // Plus: it is made once, on the runtime's own model, with Alfred's slim soul and no schedule (it runs once after each
 // dump), an older install's hourly audit is switched off, and it never comes back over Ash's "remove".
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HUB_DB_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 import { appActions, handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import { newSession, type Session } from "../../sessions/model/session";
 import { monoContext, type MonoFiles } from "../../monos/model/monoFiles";
@@ -185,7 +185,7 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
       "--tools",
       "Bash,Read,Grep,Glob",
       "--disallowedTools",
-      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES].join(","),
+      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(","),
       "--allowedTools",
       "mcp__ash-os__*",
     ]);
@@ -197,7 +197,7 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
     expect(args).not.toContain("--tools");
     // Its only deny rules are the ones every hub chat has (the Monos' home fence, no reading a saved login by hand) and
     // Claude Code's own worktree tools, since the app makes its workers' checkouts.
-    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(","));
+    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(","));
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
   });
 });

@@ -263,17 +263,31 @@ function jobKey(result: Pick<MonoSessionCompletionResult, "project" | "title">):
   return `${result.project}\u0000${result.title.trim().toLowerCase().replace(/\s+/g, " ")}`;
 }
 
-function rehandedJobs(): string[] {
+/**
+ * r69 (PM's blind r67 (e)): with one injected fault the Lead was told the job "already failed once on a fresh worker"
+ * and told Ash it failed twice, though only one worker ever ran. The memory was the job's title alone, kept for ever, so
+ * an older job of the same name (or the same failure told twice) read as a second failure. Now each entry is the job,
+ * the worker that failed and when: a second failure is a different worker on the same job within a day.
+ */
+const REHAND_WINDOW_MS = 24 * 60 * 60 * 1000;
+type Rehanded = { job: string; session: string; at: number };
+
+function rehandedJobs(now: number): Rehanded[] {
   try {
     const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(REHAND_KEY);
     const list = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+    if (!Array.isArray(list)) return [];
+    // A plain-title entry from before r69 says nothing about which worker failed: it no longer counts.
+    return list.filter(
+      (x): x is Rehanded =>
+        !!x && typeof x === "object" && typeof x.job === "string" && typeof x.session === "string" && typeof x.at === "number" && now - x.at < REHAND_WINDOW_MS,
+    );
   } catch {
     return [];
   }
 }
 
-function saveRehanded(list: string[]): void {
+function saveRehanded(list: Rehanded[]): void {
   try {
     if (typeof localStorage !== "undefined") localStorage.setItem(REHAND_KEY, JSON.stringify(list.slice(-REHAND_MAX)));
   } catch {
@@ -283,17 +297,18 @@ function saveRehanded(list: string[]): void {
 
 /**
  * What the Lead does with workers that failed on a fault it may retry (retryable not false): the first failure of a job
- * goes to one fresh worker with the same brief, never done by the Lead itself; a job that already failed once after a
- * re-hand goes to Ash. Remembers which jobs were re-handed, so the second failure is told apart.
+ * goes to one fresh worker with the same brief, never done by the Lead itself; a job whose fresh worker failed too goes
+ * to Ash. Remembers which worker failed on which job, so only a different worker's failure is told apart as the second.
  */
-export function rehandLine(results: readonly MonoSessionCompletionResult[]): string {
+export function rehandLine(results: readonly MonoSessionCompletionResult[], now = Date.now()): string {
   const failed = results.filter((r) => r.status === "failed" && r.retryable !== false);
   if (!failed.length) return "";
-  const seen = rehandedJobs();
-  const again = failed.filter((r) => seen.includes(jobKey(r)));
-  const first = failed.filter((r) => !seen.includes(jobKey(r)));
-  if (first.length) saveRehanded([...seen.filter((k) => !first.some((r) => jobKey(r) === k)), ...first.map(jobKey)]);
-  if (again.length) saveRehanded(rehandedJobs().filter((k) => !again.some((r) => jobKey(r) === k)));
+  const seen = rehandedJobs(now);
+  const again = failed.filter((r) => seen.some((e) => e.job === jobKey(r) && e.session !== r.sessionId));
+  const first = failed.filter((r) => !again.includes(r));
+  const kept = seen.filter((e) => !again.some((r) => e.job === jobKey(r)));
+  const added = first.filter((r) => !kept.some((e) => e.job === jobKey(r) && e.session === r.sessionId));
+  saveRehanded([...kept, ...added.map((r) => ({ job: jobKey(r), session: r.sessionId, at: now }))]);
   const parts: string[] = [];
   if (first.length)
     parts.push(

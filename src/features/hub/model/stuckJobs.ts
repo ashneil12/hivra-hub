@@ -6,7 +6,7 @@
 // sits (D5, Ash 21 Oct: the Lead asks Ash in the Lead's own chat and relays the answer).
 import { isOpenDelegation, type Delegation } from "../../monos/model/delegations";
 import { questionWithoutOptions } from "../../monos/model/stuckActions";
-import { newestPerChild, rowsUnderJob, stuckForJob, stuckOf } from "../../monos/model/workerStuck";
+import { jobRowsFinishedAt, newestPerChild, rowsUnderJob, stuckForJob, stuckOf } from "../../monos/model/workerStuck";
 import { clockLabel } from "./liveJobs";
 import { plainStuckLine } from "../../monos/model/stuckChip";
 import type { Worker } from "./types";
@@ -15,6 +15,9 @@ export function withStuckWorkers(rows: readonly Worker[], delegations: readonly 
   if (!delegations.length) return [...rows];
   return rows.map((w) => {
     if (w.finishedAt || w.state === "parked" || !w.sourceRef) return w;
+    // r69 (d): every worker under a Working job is done, so the job is too, whatever Ash OS still says (it never hears).
+    const finished = !w.stuck && (w.state ?? "working") === "working" ? jobRowsFinishedAt(w.sourceRef, delegations) : undefined;
+    if (finished !== undefined) return { ...w, state: undefined, finishedAt: clockLabel(new Date(finished).toISOString()) };
     const stuck = stuckForJob(w.sourceRef, delegations, now);
     if (!stuck) return w;
     // Ash OS already says it is stuck, or the Lead gave up: that louder word and reason stay; the worker comes along.

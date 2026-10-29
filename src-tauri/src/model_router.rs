@@ -151,7 +151,8 @@ pub fn routed_env(
         ("ANTHROPIC_DEFAULT_SONNET_MODEL", m.clone()),
         ("ANTHROPIC_DEFAULT_HAIKU_MODEL", m.clone()),
         ("ANTHROPIC_SMALL_FAST_MODEL", m.clone()),
-        ("CLAUDE_CODE_SUBAGENT_MODEL", m),
+        ("CLAUDE_CODE_SUBAGENT_MODEL", m.clone()),
+        ("CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL", m),
         ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into()),
     ];
     if let Some(pair) = context_window_env(context_window) {

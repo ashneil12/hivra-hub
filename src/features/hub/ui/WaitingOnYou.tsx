@@ -3,7 +3,7 @@ import { Check } from "../../../shared/ui/icons";
 import { needsReason } from "../model/chatQuestions";
 import { userLabel } from "../model/userName";
 import { NEEDS_YOU } from "../model/statusChip";
-import { ChipMark } from "./StatusMark";
+import { ChipMark, redRowProps } from "./StatusMark";
 import {
   answerApproval,
   answerInWords,
@@ -96,11 +96,11 @@ function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; showProj
   // A row with no project shows just its chat's name: no "No project ·" in front.
   const where = [showProject ? chat.projectName : null, chat.chatName].filter(Boolean).join(" · ");
   return (
-    <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId}>
+    <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId} {...redRowProps(true)}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
         {/* r65 (PM/Critiquito r63): every ask here is one only Ash can act on, so each row carries the red Needs you
             ring; the project badge counts these rows (todayCounts.ts), so badge and red rows agree. */}
-        <span data-hub-waiting-red><ChipMark chip={NEEDS_YOU} ringOnly /></span>
+        <span data-hub-waiting-red><ChipMark chip={NEEDS_YOU} /></span>
         {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
         {/* Why Ash is needed, one word phrase from a fixed list, the same plain grey for every reason (port map idea 3).
             The gate's own reason (D3) is on hover, so a row that shouldn't be here can be traced. */}

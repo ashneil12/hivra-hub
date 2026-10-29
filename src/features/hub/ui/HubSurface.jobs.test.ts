@@ -160,7 +160,9 @@ describe("Later, Older, Looks right and the options sheet", () => {
     expect(why.textContent).toMatch(/since 11:10am, still failing\. It failed before the lead took over\.$/);
     expect(why.className).not.toContain("truncate");
     expect(mark.querySelector("svg")?.getAttribute("width")).toBe("14");
-    expect(mark.className).toContain("text-content/60");
+    // r69 (PM's blind r67 (a)): the Needs you word is red and the row carries the 2px red left bar, background neutral.
+    expect((mark as HTMLElement).style.color).toMatch(/239,?\s*68,?\s*68/);
+    expect(container.querySelector(row)!.hasAttribute("data-hub-red-row")).toBe(true);
     // r27b: See options, and the link to its Lead's chat that every red Needs you carries (once the jobs list is in).
     await until(() => container.querySelector(`${row} [data-hub-open-lead]`), "the Lead's chat link");
     expect(container.querySelectorAll(`${row} button`).length).toBe(2);
