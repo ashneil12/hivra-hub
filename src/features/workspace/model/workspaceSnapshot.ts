@@ -25,6 +25,7 @@ import {
 } from "../../projects/model/projectTerminal";
 import { normalizeProjectPath } from "../../projects/model/recents";
 import { pathKey } from "../../../shared/lib/paths";
+import { bridgeSafeModel } from "../../sessions/model/bridgeModels";
 import { parseRemotePath, remotePath } from "../../connections/model/remoteProjects";
 import {
   reconcileProjectReturn,
@@ -424,7 +425,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
         ? value.cwd.trim()
         : "~",
     harness,
-    model: typeof value.model === "string" ? value.model : "",
+    // r62: a snapshot from before the bridges keeps claude:sonnet-5 per chat; it restores as Grok 4.7.
+    model: typeof value.model === "string" ? bridgeSafeModel(harness, value.model) : "",
     modelSettings,
     runtimeMode,
     title: typeof value.title === "string" ? value.title : "",
