@@ -199,6 +199,23 @@ function lastAshMessageAt(blocks: ChatInput["blocks"]): number | undefined {
   return undefined;
 }
 
+/**
+ * r81 (s14: the Lead wrote "Needs Ash:" and asked with buttons; Ash answered the buttons from Today and the card came
+ * back from the "Needs Ash:" line, still "Needs you" three minutes later): a "Needs Ash:" line Ash already answered in
+ * this turn (since his last own message) waits on nobody.
+ */
+function answeredThisTurn(chat: Pick<ChatInput, "id" | "blocks">, question: string): boolean {
+  const since = lastAshMessageAt(chat.blocks) ?? 0;
+  const words = (text: string) => new Set(text.toLowerCase().match(/[a-z0-9']+/g) ?? []);
+  const asked = words(question);
+  return gateLog().some((r) => {
+    if (r.sessionId !== chat.id || !r.answer || r.answer.at < since) return false;
+    const was = words(r.question);
+    const shared = [...asked].filter((w) => was.has(w)).length;
+    return shared / Math.max(asked.size, was.size, 1) >= 0.8;
+  });
+}
+
 // The app calls noteChats on every change to any chat (each streamed word): a chat whose transcript, turn and live
 // question are the same objects as last time is not read again.
 const reads = new WeakMap<object, { busy: boolean; pending: unknown; q: ChatQuestion | null }>();
@@ -233,7 +250,9 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const q =
       read?.source === "permission"
         ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title })) }
-        : read;
+        : read?.source === "marker" && answeredThisTurn(chat, read.question)
+          ? null
+          : read;
     if (q) {
       if (q.source === "ask") seenLive.add(liveKey(chat.id, q.requestId));
       // An entry stored before the gate existed has no decision yet: judge it again even when the question is unchanged.
