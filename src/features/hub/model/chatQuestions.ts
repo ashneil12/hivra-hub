@@ -270,9 +270,19 @@ export function secretActionTried(blocks: ChatLike["blocks"]): string | undefine
     const b = blocks[i];
     if (b.role === "user" && !b.internal && !b.monoSessionCompletion) break;
     const command = b.tool?.command;
-    if (command && secretActionBlock(command)) return safeCommand(command);
+    if (command && secretActionBlock(command)) return safeCommand(offendingPart(command));
   }
   return undefined;
+}
+
+/**
+ * r72 (blind p01): in `find . -type f … | head; echo names; env` the stopped part is `env`, not `find`, and the red
+ * row said "it tried `find . -type f -not …`". Name the sub-command that tried the secret action.
+ */
+function offendingPart(command: string): string {
+  const parts = command.split(/\s*(?:;|&&|\|\||\n)\s*/).filter(Boolean);
+  if (parts.length < 2) return command;
+  return parts.find((part) => secretActionBlock(part)) ?? command;
 }
 
 /** A command as Ash may see it: no assigned values, no quoted strings, the first few words. */

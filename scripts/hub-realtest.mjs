@@ -160,16 +160,20 @@ export function benchAgents(argv, named = null) {
   if (named !== null && !BENCH_AGENTS.includes(named)) throw new Error(`--agents is ${BENCH_AGENTS.join(", ")}, not "${named}"`);
   const grokSub = argv.includes("--grok-sub") || named === "grok-sub";
   const claude = named === "claude";
-  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!grokSub && !claude);
-  if (claude && (grokSub || deepseekSub)) throw new Error("--agents claude and a subscription bridge are two different agents' models; pass one");
-  return { grokSub, deepseekSub };
+  const haikuTest = named === "haiku-test";
+  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!grokSub && !claude && !haikuTest);
+  if ((claude || haikuTest) && (grokSub || deepseekSub)) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
+  return { grokSub, deepseekSub, ...(haikuTest ? { haikuTest } : {}) };
 }
-export const BENCH_AGENTS = ["deepseek-sub", "grok-sub", "claude"];
+/** haiku-test: every chat on Haiku with Ash's Anthropic test key (ANTHROPIC_TEST_API_KEY), never a Claude login. */
+export const BENCH_AGENTS = ["deepseek-sub", "grok-sub", "claude", "haiku-test"];
 
 /** The grader's CLI and model: through the same bridge as the agents, so grading never spends Claude unless asked. */
 export function graderVia(options) {
   if (options.deepseekSub) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
   if (options.grokSub) return { claude: grokBridge(), model: GROK_BRIDGE_MODEL };
+  // Haiku test workers are graded on Grok: the test key is for the workers only.
+  if (options.haikuTest) return { claude: grokBridge(), model: GROK_BRIDGE_MODEL };
   return {};
 }
 
@@ -478,7 +482,8 @@ export async function runBench(options, hooks = {}) {
         `export REALTEST_STATE=${quote(state)}`,
         `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
         `export REALTEST_CLAUDE_CONFIG=${quote(DEV_CLAUDE_CONFIG)}`,
-        `export REALTEST_MODEL=${quote(bridge ? bridgeModel : (spec.model ?? "sonnet"))}`,
+        `export REALTEST_MODEL=${quote(bridge ? bridgeModel : options.haikuTest ? "haiku" : (spec.model ?? "sonnet"))}`,
+        ...(options.haikuTest ? ["export REALTEST_HAIKU_TEST=1"] : []),
         // Only the Grok bridge needs the shim to hold Haiku calls too; the DeepSeek launcher does that itself.
         ...(options.grokSub ? ["export REALTEST_GROK_BRIDGE=1"] : []),
         `export REALTEST_EFFORT=${quote(spec.effort ?? "medium")}`,

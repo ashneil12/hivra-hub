@@ -80,6 +80,8 @@ test("usage counts and the grader's JSON", () => {
   assert.equal(usageOf([{ t: 1, kind: "turn" }], 2).turns, 0);
   assert.deepEqual(parseGrade('```json\n{"grade":"PASS","items":[]}\n```'), { grade: "PASS", items: [] });
   assert.equal(parseGrade("no json here"), null);
+  assert.deepEqual(parseGrade(JSON.stringify({ type: "result", result: 'Grade:\n{"grade":"PARTIAL","items":[]}' })), { grade: "PARTIAL", items: [] });
+  assert.equal(parseGrade(JSON.stringify({ type: "result", result: "" })), null);
 });
 
 test("the answers the app gave Claude's questions are read from the wrapper's logs", () => {

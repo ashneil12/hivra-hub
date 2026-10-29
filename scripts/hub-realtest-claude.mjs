@@ -16,13 +16,16 @@
 //     prints when the model is down or the account is out of credit;
 //   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
 //   - on the Grok bridge (REALTEST_GROK_BRIDGE=1, `--grok-sub`) holds every call, helpers too, to REALTEST_MODEL;
+//   - on Haiku test workers (REALTEST_HAIKU_TEST=1, `--agents haiku-test`) runs every call on Haiku with Ash's Anthropic
+//     test key (ANTHROPIC_TEST_API_KEY, from this process or launchd's environment) and a sign-in-free config folder, so
+//     no Claude login or subscription is ever in reach; with no key it refuses to start. The key is never logged;
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it. The bench points REALTEST_REAL_CLAUDE
 // at the DeepSeek launcher by default (Ash, 27 Oct), at the Grok bridge on `--agents grok-sub`, and at the real Claude
 // CLI only on `--agents claude`, so this pass-through never reaches Ash's Claude subscription unless someone asks.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -52,10 +55,39 @@ const FIXTURE_FILES = { 529: "529-overloaded.ndjson", 402: "402-billing.ndjson",
 const MEMORY_DIR = process.env.REALTEST_MEMORY_DIR;
 const MEMORY_MCP = path.join(HERE, "hub-realtest-memory-mcp.mjs");
 const KEEP_MODELS = /haiku/i;
+const HAIKU_TEST = process.env.REALTEST_HAIKU_TEST === "1";
+/** The process environment variable Ash keeps the Anthropic test key in (28 Oct; launchd sets it, not the shell). */
+export const TEST_KEY_ENV = "ANTHROPIC_TEST_API_KEY";
+/** Anything that could sign a Haiku test worker in some other way (a login, a subscription token, another endpoint). */
+const OTHER_AUTH = ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_CUSTOM_HEADERS"];
+
+/** The test key from this process or launchd's environment, or null. Never printed. */
+export function testKey(env = process.env, launchctl = () => execFileSync("launchctl", ["getenv", TEST_KEY_ENV], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })) {
+  const own = String(env[TEST_KEY_ENV] ?? "").trim();
+  if (own) return own;
+  try {
+    return String(launchctl() ?? "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A Haiku test worker's environment: the test key as ANTHROPIC_API_KEY, every other way in removed, and a config
+ * folder with no sign-in in it, so a missing or refused key fails instead of falling back to a Claude login.
+ */
+export function haikuTestEnv(env, key, config) {
+  if (!key) throw new Error(`Haiku test workers need ${TEST_KEY_ENV}; not starting (never a Claude login instead)`);
+  const out = { ...env };
+  for (const name of [...OTHER_AUTH, TEST_KEY_ENV]) delete out[name];
+  return { ...out, ANTHROPIC_API_KEY: key, CLAUDE_CONFIG_DIR: config, CLAUDE_SECURESTORAGE_CONFIG_DIR: config, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+}
 const KEEP_EFFORTS = new Set(["low", "medium"]);
 
 /** The model to really run: haiku stays (cheap helper calls), everything else is the test model. */
-export function pickModel(asked, { grok = process.env.REALTEST_GROK_BRIDGE === "1" } = {}) {
+export function pickModel(asked, { grok = process.env.REALTEST_GROK_BRIDGE === "1", haiku = HAIKU_TEST } = {}) {
+  // Haiku test workers: the test key is for Haiku only, so every call is Haiku whatever the app asked.
+  if (haiku) return "haiku";
   // On the Grok bridge (--grok-sub) every call is Grok 4.7: the gateway has no Haiku.
   if (grok) return MODEL;
   return asked && KEEP_MODELS.test(asked) ? asked : MODEL;
@@ -80,8 +112,9 @@ export function isRouted(env = process.env) {
 }
 
 /** The CLI's arguments with the model and effort held to the budget (added when missing, except for --version). */
-export function rewriteArgs(args, { routed = false } = {}) {
+export function rewriteArgs(args, { routed = false, haiku = HAIKU_TEST } = {}) {
   if (routed) return [...args];
+  if (haiku) return haikuArgs(args);
   const out = [];
   let model = false;
   let effort = false;
@@ -107,6 +140,70 @@ export function rewriteArgs(args, { routed = false } = {}) {
   // a one-line answer, which the app never does (measured 20 Oct).
   const helper = args.some((arg, i) => (arg === "--model" && KEEP_MODELS.test(args[i + 1] ?? "")) || (arg.startsWith("--model=") && KEEP_MODELS.test(arg)));
   if (conversation && !effort && !helper) out.push("--effort", EFFORT);
+  return out;
+}
+
+/**
+ * r72: the bench's chats must never reach Ash's real accounts. In r72's first blind run (p01, 29 Oct 13:37 GMT) a
+ * coding chat in the throwaway HOME ran `vercel whoami`; the CLI found no login, started its device sign-in, the
+ * page was approved in the Mac's browser, and the chat then listed Ash's real Vercel projects. So every bench chat
+ * gets the account CLIs and URL openers denied (as --disallowedTools rules, which hold in every permission mode and
+ * are checked per sub-command), a shim folder first on PATH that refuses them, and BROWSER pointed at false.
+ */
+export const ACCOUNT_CLIS = [
+  "vercel", "netlify", "gh", "fly", "flyctl", "wrangler", "supabase", "railway", "heroku", "doppler", "op",
+  "infisical", "aws", "gcloud", "az", "stripe", "resend", "firebase", "render", "neonctl", "turso", "open", "xdg-open",
+];
+const RUNNERS = ["npx", "bunx", "pnpm dlx", "yarn dlx", "npm exec"];
+
+export function benchFenceArgs(args) {
+  const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
+  if (!conversation) return [...args];
+  const rules = [
+    ...ACCOUNT_CLIS.map((cli) => `Bash(${cli}:*)`),
+    ...RUNNERS.flatMap((runner) => ["vercel", "netlify", "wrangler", "supabase", "firebase"].map((cli) => `Bash(${runner} ${cli}:*)`)),
+  ].join(",");
+  const out = [...args];
+  const at = out.indexOf("--disallowedTools");
+  if (at >= 0 && at + 1 < out.length) out[at + 1] = `${out[at + 1]},${rules}`;
+  else out.push("--disallowedTools", rules);
+  return out;
+}
+
+/** The shim folder (made once per run) and the env that puts it first and stops browser opens. */
+export function benchFenceEnv(env, state) {
+  const bin = path.join(state, "bench-bin");
+  try {
+    fs.mkdirSync(bin, { recursive: true });
+    for (const cli of ACCOUNT_CLIS) {
+      const file = path.join(bin, cli);
+      if (fs.existsSync(file)) continue;
+      fs.writeFileSync(file, `#!/bin/sh\necho "${cli}: not available in the MonoCode test bench (no real accounts here; ask Ash)" >&2\nexit 1\n`, { mode: 0o755 });
+    }
+  } catch {
+    // the run's folder went away: the deny rules still hold
+  }
+  return { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}`, BROWSER: "false" };
+}
+
+/** Haiku test workers: every model is Haiku and no effort is sent (Haiku runs as the app runs its helper calls). */
+export function haikuArgs(args) {
+  const out = [];
+  let model = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--model" && i + 1 < args.length) {
+      out.push(arg, "haiku");
+      i += 1;
+      model = true;
+    } else if (arg.startsWith("--model=")) {
+      out.push("--model=haiku");
+      model = true;
+    } else if (arg === "--effort" && i + 1 < args.length) i += 1;
+    else if (!arg.startsWith("--effort=")) out.push(arg);
+  }
+  const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
+  if (conversation && !model) out.push("--model", "haiku");
   return out;
 }
 
@@ -170,13 +267,24 @@ function main() {
   }
   const args = process.argv.slice(2);
   // Several accounts (E5): each new Claude process goes to the first account the bench hasn't marked out.
-  const account = activeAccount(STATE, CONFIG);
-  const env = {
+  const routedChat = isRouted(process.env);
+  const haiku = HAIKU_TEST && !routedChat;
+  const account = haiku ? { n: "haiku-test", config: path.join(STATE, "haiku-test-config") } : activeAccount(STATE, CONFIG);
+  let env = {
     ...process.env,
     CLAUDE_CONFIG_DIR: account.config,
     CLAUDE_SECURESTORAGE_CONFIG_DIR: account.config,
     DISABLE_AUTOUPDATER: "1",
   };
+  if (haiku) {
+    fs.mkdirSync(account.config, { recursive: true });
+    try {
+      env = haikuTestEnv(env, testKey(), account.config);
+    } catch (error) {
+      process.stderr.write(`hub-realtest-claude: ${error.message}\n`);
+      process.exit(2);
+    }
+  }
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
     const child = spawn(REAL, args, { env, stdio: "inherit" });
     child.on("exit", (code) => process.exit(code ?? 1));
@@ -200,11 +308,12 @@ function main() {
     }
   };
   const routed = isRouted(process.env);
-  const realArgs = withMemory(rewriteArgs(args, { routed }));
+  env = benchFenceEnv(env, STATE);
+  const realArgs = benchFenceArgs(withMemory(rewriteArgs(args, { routed })));
   log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
   // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
-  if (account.config !== CONFIG || accountConfigs(STATE).length > 1) {
+  if (!haiku && (account.config !== CONFIG || accountConfigs(STATE).length > 1)) {
     const resumed = args.indexOf("--resume") >= 0 ? args[args.indexOf("--resume") + 1] : null;
     const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
     if (from) log({ dir: "carry", session: resumed, from, to: account.config });

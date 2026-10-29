@@ -87,7 +87,7 @@ describe("r69: secret actions are blocked for every agent", () => {
   it("is a deny rule every Claude process carries, so it never runs even in auto or bypass mode", () => {
     const denied = chatDeniedTools();
     for (const rule of SECRET_ACTION_DENY_RULES) expect(denied).toContain(rule);
-    for (const rule of ["Bash(*vercel env run*)", "Bash(*vercel env pull*)", "Bash(*printenv*)", "Bash(*doppler run*)"])
+    for (const rule of ["Bash(*vercel env run*)", "Bash(*vercel env pull*)", "Bash(printenv)", "Bash(*printenv *KEY*)", "Bash(*doppler run*)"])
       expect(SECRET_ACTION_DENY_RULES).toContain(rule);
   });
 });

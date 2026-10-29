@@ -17,4 +17,6 @@ export const LAYER = {
   dialogPopover: 91,
   /** Toasts, which outrank whatever they interrupt. */
   toast: 100,
+  /** The app's own hover tips for `title` attributes (titleTips.ts). */
+  tip: 110,
 } as const;
