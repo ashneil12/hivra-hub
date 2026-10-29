@@ -35,6 +35,19 @@ function list(items: readonly string[]): string {
   return shown.length <= 1 ? (shown[0] ?? "") : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
 }
 
+/** "Tally lead" → "Tally Lead": a Lead is a role and keeps its capital, as in "with its Lead". */
+const leadName = (name: string) => name.replace(/\blead$/, "Lead");
+
+/**
+ * Today's one paragraph: Ash OS's words, then the app's. Ash OS's "Nothing new here since then." is dropped when the
+ * app has news (Critiquito, 29 Oct: it read "Nothing new here since then. Tally lead handed out 1 job.").
+ */
+const NOTHING_NEW = /^nothing new\b[^.!?]*[.!?]?$/i;
+export function sinceParagraph(ashOs: string, app: string): string {
+  const own = app ? ashOs.split(/(?<=[.!?])\s+/).filter((sentence) => !NOTHING_NEW.test(sentence.trim())).join(" ").trim() : ashOs;
+  return [own, app].filter(Boolean).join(" ");
+}
+
 /** Each child chat's newest row (a later try in the same chat replaces an earlier one). */
 function newest(rows: readonly Delegation[]): Delegation[] {
   const latest = new Map<string, Delegation>();
@@ -50,25 +63,30 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [] 
   const current = newest(rows);
   const sentences: string[] = [];
 
-  // Handed out, by the Mono that did it.
+  // Handed out, by the Mono that did it, and what of it is done (Critiquito, 29 Oct: "The Lead handed out 5 jobs and all
+  // 5 are done: …"). A Lead is "the Lead" when it is the only one handing out work, and "Lead" keeps its capital.
   const handed = current.filter((r) => r.createdAt >= sinceMs);
-  if (handed.length) {
-    const byMono = new Map<string, number>();
-    for (const r of handed) byMono.set(nameOf(r), (byMono.get(nameOf(r)) ?? 0) + 1);
-    const parts = [...byMono.entries()].map(([name, n], i) => (i === 0 ? `${name} handed out ${plural(n, "job", "jobs")}` : `${name} ${n}`));
-    sentences.push(`${list(parts)}.`);
-  }
-
-  // Finished since then, and whether its report reached the Mono that asked.
   const finished = current.filter((r) => r.state === "completed" && (r.settledAt ?? 0) >= sinceMs);
-  if (finished.length) {
-    const reported = finished.filter((r) => r.delivery === "delivered" || r.delivery === "acknowledged").length;
-    const titles = list(finished.map((r) => r.title?.trim() || "a job"));
-    sentences.push(
-      reported === finished.length
-        ? `${finished.length === 1 ? "One" : finished.length} finished and reported back: ${titles}.`
-        : `${finished.length === 1 ? "One" : finished.length} finished: ${titles}.`,
-    );
+  const reported = finished.filter((r) => r.delivery === "delivered" || r.delivery === "acknowledged").length;
+  const titles = list(finished.map((r) => r.title?.trim() || "a job"));
+  const byMono = new Map<string, number>();
+  for (const r of handed) byMono.set(leadName(nameOf(r)), (byMono.get(leadName(nameOf(r))) ?? 0) + 1);
+  const monos = [...byMono.entries()];
+  const soleLead = monos.length === 1 && /\bLead$/.test(monos[0][0]);
+  const parts = monos.map(([name, n], i) => (i === 0 ? `${soleLead ? "The Lead" : name} handed out ${plural(n, "job", "jobs")}` : `${name} ${n}`));
+  const allDone = handed.length > 0 && finished.length === handed.length && handed.every((r) => finished.includes(r));
+  if (allDone) {
+    const done = reported === finished.length ? (handed.length === 1 ? "it is done" : `all ${handed.length} are done`) : handed.length === 1 ? "it finished but hasn't reported back yet" : `all ${handed.length} finished, not all reported back yet`;
+    sentences.push(`${list(parts)} and ${done}: ${titles}.`);
+  } else {
+    if (handed.length) sentences.push(`${list(parts)}.`);
+    // Finished since then, and whether its report reached the Mono that asked.
+    if (finished.length)
+      sentences.push(
+        reported === finished.length
+          ? `${finished.length === 1 ? "One is" : `${finished.length} are`} done and reported back: ${titles}.`
+          : `${finished.length === 1 ? "One" : finished.length} finished: ${titles}.`,
+      );
   }
 
   // Got stuck or failed since then: what happened, not a standing reminder (anything older is in Today's lists below).

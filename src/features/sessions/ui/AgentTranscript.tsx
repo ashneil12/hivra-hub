@@ -1544,7 +1544,9 @@ function AgentTranscriptComponent({
                   onStopWorkflow={onStopWorkflow}
                 />
               ) : itemIndex === initialThinkingAt ? (
-                <InitialThinking
+                // One thinking line (Critiquito, 29 Oct): while the turn's live status line is up it already says
+                // "Thinking · 0s", so the placeholder under it would only repeat it.
+                live && showFoldLine ? null : <InitialThinking
                   key={item.blocks[0].id}
                   live={visible && !settled}
                 />
