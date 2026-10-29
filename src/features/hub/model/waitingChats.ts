@@ -91,6 +91,11 @@ export type GateRecord = {
   admit: boolean;
   kind?: GateKind;
   reason: string;
+  /**
+   * r80: what Ash actually answered, once he has: his own words when he typed them (they win over the agent's `pick`,
+   * which is only its recommendation), the pick when he took it. Read this, never `pick`, for what was decided.
+   */
+  answer?: { words: string; by: "words" | "pick"; at: number };
 };
 
 let entries: Record<string, WaitingEntry> | undefined;
@@ -160,6 +165,20 @@ function recordGate(chat: ChatInput, q: ChatQuestion, gate: ReturnType<typeof ga
   gateRecords = next;
   try {
     localStorage.setItem(GATE_LOG_KEY, JSON.stringify(next));
+  } catch {
+    /* without storage the log still works until the app restarts */
+  }
+}
+
+/** Write Ash's answer onto the newest gate record of that question in that chat. */
+function recordAnswer(sessionId: string, question: string, answer: NonNullable<GateRecord["answer"]>): void {
+  const log = gateLog();
+  const i = log.map((r) => r.sessionId === sessionId && r.question === question).lastIndexOf(true);
+  if (i < 0) return;
+  log[i] = { ...log[i], answer };
+  gateRecords = log;
+  try {
+    localStorage.setItem(GATE_LOG_KEY, JSON.stringify(log));
   } catch {
     /* without storage the log still works until the app restarts */
   }
@@ -324,18 +343,25 @@ export async function pruneWaitingChats(exists: (sessionId: string) => Promise<b
  * Answered from here: the live question in place when it is still the one asked (`live`, with the words it amounts to),
  * otherwise `message` into the chat.
  */
-async function answer(chat: WaitingChat, live: { reply: UserQuestionReply; words: string } | undefined, message: string): Promise<TakeResult> {
+async function answer(
+  chat: WaitingChat,
+  live: { reply: UserQuestionReply; words: string } | undefined,
+  message: string,
+  given: { words: string; by: "words" | "pick" },
+): Promise<TakeResult> {
   const h = host;
   if (!h) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
   const prompt = chat.requestId !== undefined ? h.liveQuestion(chat.sessionId) : undefined;
   if (prompt && prompt.requestId === chat.requestId && live) {
     h.respond(chat.sessionId, prompt.requestId, live.reply);
     drop(chat.sessionId);
+    recordAnswer(chat.sessionId, chat.question, { ...given, at: Date.now() });
     return { ok: true, sent: live.words, chatName: chat.chatName };
   }
   const sent = await h.send(chat.sessionId, message).catch(() => false);
   if (!sent) return { ok: false, reason: `${chat.chatName} couldn't take a message right now. Open the chat to answer.` };
   drop(chat.sessionId);
+  recordAnswer(chat.sessionId, chat.question, { ...given, at: Date.now() });
   return { ok: true, sent: message, chatName: chat.chatName };
 }
 
@@ -350,7 +376,7 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
   if (options.by === "autopilot" && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
-  return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat));
+  return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick" });
 }
 
 /** Ash's own words for the chat. */
@@ -360,7 +386,7 @@ export async function answerInWords(sessionId: string, text: string): Promise<Ta
   if (!text.trim()) return { ok: false, reason: "Type an answer first." };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
-  return answer(chat, reply && { reply, words: text.trim() }, wordsMessage(chat, text));
+  return answer(chat, reply && { reply, words: text.trim() }, wordsMessage(chat, text), { words: text.trim(), by: "words" });
 }
 
 /** A red-line ask's two explicit choices (port map idea 3; no default, no "this session", no "always"). */
@@ -389,7 +415,7 @@ export async function answerApproval(
   const text = approvalMessage(choice, chat);
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
-  return answer(chat, reply && { reply, words: text }, text);
+  return answer(chat, reply && { reply, words: text }, text, { words: text, by: "words" });
 }
 
 /** r77: Allow or Deny a chat's held tool call from the card, when it is still the one held. */

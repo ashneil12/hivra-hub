@@ -499,7 +499,7 @@ export function transcript(scenario, result, t0) {
   for (const send of result.sends) {
     if (send.stop) timeline.push({ t: send.t, line: `**Ash pressed Stop** on ${JSON.stringify(send.stop)}` });
     else if (send.todayAnswer)
-      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}", pick "${send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
+      timeline.push({ t: send.t, line: `**Ash answered from Today** (${send.todayAnswer.text ? `in his words: "${send.todayAnswer.text}"` : "Take the pick"}${send.todayAnswer.auto ? ", because the chat was waiting on him" : ""}): ${send.result?.ok ? `question "${send.result.question ?? ""}"; the agent had suggested "${send.result.recommended ?? send.result.pick ?? ""}"; Ash's decision: "${send.result.decision ?? send.todayAnswer.text ?? send.result.recommended ?? send.result.pick ?? ""}"` : `not possible: ${send.result?.error}`}` });
     else if (send.retry) continue;
     else if (send.skipped) timeline.push({ t: send.t, line: `(Ash's message "${send.label}" could not be sent: ${send.skipped})` });
     else

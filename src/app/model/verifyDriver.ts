@@ -528,7 +528,9 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       const waiting = findWaitingChat(sessionId);
       if (!waiting) return { ok: false, error: "nothing waiting on Ash in that chat", session: sessionId };
       const result = typeof action.text === "string" && action.text.trim() ? await answerInWords(sessionId, action.text) : await takePick(sessionId);
-      return { ok: true, at: Date.now(), session: sessionId, question: waiting.question ?? null, pick: waiting.pick ?? null, result };
+      // r80: `recommended` is only the agent's suggestion; `decision` is what Ash actually gave (his typed words win).
+      const decision = result.ok ? (typeof action.text === "string" && action.text.trim() ? action.text.trim() : (waiting.pick ?? null)) : null;
+      return { ok: true, at: Date.now(), session: sessionId, question: waiting.question ?? null, recommended: waiting.pick ?? null, decision, result };
     }
     case "retry": {
       // The Try again button on a Mono whose last turn failed (the rail, Today, Being built).
