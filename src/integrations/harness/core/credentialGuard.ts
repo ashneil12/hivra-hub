@@ -84,6 +84,8 @@ export function credentialBlock(
 ): string | undefined {
   if (!call) return undefined;
   home ??= cwd?.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
+  const secret = secretActionBlock(call.command);
+  if (secret) return secret;
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);
   for (const text of texts) {
     if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
@@ -95,4 +97,93 @@ export function credentialBlock(
     }
   }
   return undefined;
+}
+
+/**
+ * r69 (PM's blind r67, E7): asked "can u get it rotated", the Hivra Lead loaded the Resend key with `vercel env run` and
+ * started a script with it before Claude Code's classifier stopped it. No Lead or worker rotates, loads, exports or
+ * prints a secret, or runs a command with secrets injected: that is Ash's to do. Enforced like the keychain rule: deny
+ * rules every Claude process carries (they hold in auto and bypass mode, so the tool never runs), this check in code for
+ * every harness, and a finished turn that tried one reads as Needs Ash (chatQuestions.ts), a red row.
+ */
+export const SECRET_ACTION_BLOCK_MESSAGE =
+  "Blocked by MonoCode: that rotates, loads, exports or prints a secret, or runs a command with secrets injected, which agents never do. Don't retry it or look for another way. Stop and ask Ash on its own line: \"Needs Ash (provide): <the key or secret action and why>\".";
+
+/** Claude Code deny rules for every Claude process (hubMcp.ts chatDeniedTools). */
+export const SECRET_ACTION_DENY_RULES: readonly string[] = [
+  "Bash(*vercel env run*)",
+  "Bash(*vercel env pull*)",
+  "Bash(*vercel env add*)",
+  "Bash(*vercel env rm*)",
+  "Bash(*vercel env update*)",
+  "Bash(*vercel secrets*)",
+  "Bash(*netlify env:get*)",
+  "Bash(*netlify env:set*)",
+  "Bash(*netlify env:import*)",
+  "Bash(*doppler run*)",
+  "Bash(*doppler secrets*)",
+  "Bash(op run:*)",
+  "Bash(op read:*)",
+  "Bash(op inject:*)",
+  "Bash(op item get:*)",
+  "Bash(*infisical run*)",
+  "Bash(*infisical export*)",
+  "Bash(*dotenv run*)",
+  "Bash(*dotenvx run*)",
+  "Bash(*heroku config*)",
+  "Bash(*fly secrets*)",
+  "Bash(*flyctl secrets*)",
+  "Bash(*railway run*)",
+  "Bash(*railway variables*)",
+  "Bash(*wrangler secret*)",
+  "Bash(*supabase secrets*)",
+  "Bash(*gh secret*)",
+  "Bash(*secretsmanager*)",
+  "Bash(*gcloud secrets*)",
+  "Bash(*keyvault secret*)",
+  "Bash(*printenv*)",
+  "Bash(env)",
+  "Bash(env |*)",
+  "Bash(export -p*)",
+  "Bash(*api-keys*)",
+  "Bash(*api_keys*)",
+];
+
+/** One shell segment's command start (after `cd x &&`, `;`, `|`, `$(`, a backtick, `sudo`, `npx`, `bunx`, `pnpm dlx`). */
+const AT = String.raw`(?:^|[\s;&|(\x60$])(?:(?:sudo|npx|bunx|pnpm\s+dlx|yarn\s+dlx|command)\s+(?:-\S+\s+)*)?`;
+const SECRET_ACTIONS: readonly RegExp[] = [
+  // a platform's env or secret store: loading, pulling, setting, removing, running with it injected
+  new RegExp(String.raw`${AT}vercel\s+(?:env\s+(?:run|pull|add|rm|remove|update)|secrets?)\b`, "i"),
+  new RegExp(String.raw`${AT}netlify\s+env:(?:get|set|import|unset|clone)\b`, "i"),
+  new RegExp(String.raw`${AT}doppler\s+(?:run|secrets)\b`, "i"),
+  new RegExp(String.raw`${AT}op\s+(?:run|read|inject|item\s+get)\b`, "i"),
+  new RegExp(String.raw`${AT}infisical\s+(?:run|export|secrets)\b`, "i"),
+  new RegExp(String.raw`${AT}dotenvx?\s+(?:run\b|-e\b|-f\b|--\s)`, "i"),
+  new RegExp(String.raw`${AT}heroku\s+config\b`, "i"),
+  new RegExp(String.raw`${AT}(?:fly|flyctl)\s+secrets\b`, "i"),
+  new RegExp(String.raw`${AT}railway\s+(?:run|variables)\b`, "i"),
+  new RegExp(String.raw`${AT}wrangler\s+secret\b`, "i"),
+  new RegExp(String.raw`${AT}supabase\s+secrets\b`, "i"),
+  new RegExp(String.raw`${AT}gh\s+secret\b`, "i"),
+  new RegExp(String.raw`${AT}aws\s+(?:secretsmanager\b|ssm\s+get-parameters?\b.*--with-decryption|iam\s+(?:create|update|delete)-access-key\b)`, "i"),
+  new RegExp(String.raw`${AT}gcloud\s+secrets\b`, "i"),
+  new RegExp(String.raw`${AT}az\s+keyvault\s+secret\b`, "i"),
+  new RegExp(String.raw`${AT}kubectl\s+(?:get|describe|create)\s+secrets?\b`, "i"),
+  // an API's key endpoints: creating, rolling or deleting a key (Resend's /api-keys, Stripe's api_keys, …)
+  /\bapi[-_]keys?\b.*\b(?:curl|wget|http|https?:\/\/)|\b(?:curl|wget|http)\b.*\bapi[-_]keys?\b/i,
+  // printing the environment
+  new RegExp(String.raw`${AT}(?:printenv|export\s+-p)\b`),
+  new RegExp(String.raw`${AT}env\s*(?:$|[|;&>])`),
+  // echoing a secret variable
+  /\b(?:echo|printf|cat)\b[^;&|]*\$\{?[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)\b/,
+  // loading a .env file into the shell
+  new RegExp(String.raw`${AT}(?:source|\.)\s+["']?[^\s"';|&]*\.env(?:\.[\w.-]+)?["']?(?=$|[\s;|&)])`),
+  // a secret pasted into the command's environment
+  /(?:^|[\s;&|(])(?:export\s+)?[A-Z][A-Z0-9_]*(?:API_KEY|_KEY|TOKEN|SECRET|PASSWORD)=(?!["']?\$|\s|$)\S/,
+];
+
+/** The block for a shell command that rotates, loads, exports or prints a secret, or runs with secrets injected. */
+export function secretActionBlock(command: string | undefined): string | undefined {
+  if (!command) return undefined;
+  return SECRET_ACTIONS.some((re) => re.test(command)) ? SECRET_ACTION_BLOCK_MESSAGE : undefined;
 }

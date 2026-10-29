@@ -13,6 +13,7 @@ import {
 } from "../../sessions/model/userQuestion";
 import type { Block } from "../../sessions/model/session";
 import { forUser } from "./userName";
+import { secretActionBlock } from "../../../integrations/harness/core/credentialGuard";
 
 export type ChatQuestion = {
   /** "ask": a live AskUserQuestion; "marker": a "Needs Ash:" line ending the agent's last turn. */
@@ -247,8 +248,34 @@ export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
 export type ChatLike = {
   busy?: boolean;
   pendingQuestion?: UserQuestionPrompt;
-  blocks: readonly Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion">[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool">>)[];
 };
+
+/**
+ * r69 (PM's blind r67, E7): the shell command in this turn that tried a secret action (rotating, loading, exporting or
+ * printing a secret, or running with secrets injected), cut to what it runs with any value hidden. The deny rules stop
+ * it; this makes the turn read as Needs Ash even when the agent didn't write the line.
+ */
+export function secretActionTried(blocks: ChatLike["blocks"]): string | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.role === "user" && !b.internal && !b.monoSessionCompletion) break;
+    const command = b.tool?.command;
+    if (command && secretActionBlock(command)) return safeCommand(command);
+  }
+  return undefined;
+}
+
+/** A command as Ash may see it: no assigned values, no quoted strings, the first few words. */
+function safeCommand(command: string): string {
+  const words = oneLine(command)
+    .replace(/=("[^"]*"|'[^']*'|\S+)/g, "=…")
+    .replace(/"[^"]*"|'[^']*'/g, "…")
+    .split(/\s+/)
+    .filter(Boolean);
+  const head = words.slice(0, 5).join(" ");
+  return words.length > 5 ? `${head} …` : head;
+}
 
 /**
  * What the chat is waiting on Ash for, if anything: its live AskUserQuestion, or a "Needs Ash:" line ending a finished
@@ -258,6 +285,16 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
   if (chat.busy) return null;
   const marker = parseNeedsAsh(lastTurnText(chat.blocks));
+  const secret = marker ? undefined : secretActionTried(chat.blocks);
+  if (secret)
+    return {
+      source: "marker",
+      question: `A key or secret action only you can do: it tried \`${secret}\` and MonoCode stopped it`,
+      more: 0,
+      redLine: true,
+      flag: "provide",
+      provide: `the key or secret action it tried (\`${secret}\`)`,
+    };
   return marker
     ? {
         source: "marker",
