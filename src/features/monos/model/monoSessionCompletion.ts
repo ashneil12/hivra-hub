@@ -390,7 +390,7 @@ export function completionMessage(
       return `${result.title}${missing}`;
     });
   const claimLine = claimed.length
-    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run; never report a guess as done.${unconfirmed.length ? ` NOT YET CONFIRMED: ${unconfirmed.join("; ")}.` : ""}${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
+    ? ` Claims carry their evidence: ${claimed.map((result) => `${result.title} says it's done — ${result.claim!.confidence}`).join("; ")}. Pass the confidence on as it is and say what was run, in which checkout; never report a guess as done, and call a job done only when its own check passed in its own checkout.${unconfirmed.length ? ` NOT YET CONFIRMED: ${unconfirmed.join("; ")}.` : ""}${guessed.length ? ` NOT PROVEN: ${nameList(guessed)} — nothing the app can see was run to check it.` : ""}`
     : "";
   // A7: the worker's own account of what it checked travels with its result, and the unsure part is never reported as done.
   const open = results.filter((result) => result.review && !nothingOpen(result.review.unsure));

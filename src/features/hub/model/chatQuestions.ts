@@ -393,7 +393,8 @@ function safeCommand(command: string): string {
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
   // A held tool call waits on Ash even mid-turn: the turn can't go on until he allows or denies it.
-  const permission = permissionQuestion(chat.blocks);
+  // r80: only while the turn runs; a card left from a turn that is over waits on nobody.
+  const permission = chat.busy === false ? null : permissionQuestion(chat.blocks);
   if (permission) return permission;
   const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
   const turnText = lastTurnText(blocks);

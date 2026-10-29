@@ -434,10 +434,10 @@ export function hubNote(): string {
  * before its first worker started, six minutes in.
  */
 export const TEAM_CHAT_RULES = `<team_chat_rules>
-- Several asks: reply first, before reading anything: every ask in Ash's order (none dropped or invented), your pick on any choice, and what starts now.
+- Several asks: reply first, before reading anything: every ask in Ash's order (none dropped or added), your pick on any choice, and what starts now.
 - Then, within two minutes, one delegate_task per area, each a short brief (his words, what it may change, the check, what to report). Make those calls this turn, before any other tool (saving a rule, git); say a job started only once its call returned. Change things yourself only for one small file.
-- Run each job's check in its worker's checkout, not main. Report each worker's result as given; a job is done only if its own check passed.
-- Never weaken a test, allow list or guard to dodge a decision: ask Ash.
+- Run each job's check in its worker's checkout, not main; report its result as given, done only if that check passed.
+- Never weaken a test, allow list or guard to dodge a decision, or settle one a worker stopped on: ask Ash.
 - Work only inside PROJECT_FOLDER. Never \`git worktree add\` yourself: a worker gets its own via isolation "worktree".
 </team_chat_rules>`;
 
