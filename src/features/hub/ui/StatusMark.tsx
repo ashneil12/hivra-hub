@@ -25,12 +25,27 @@ export function CircleWord({ circle, word, ringOnly = false }: { circle: ChipTon
       </span>
     );
   }
+  // r69 (PM's blind r67 (a)): the red state's word is red too, so the row reads Needs you, not only its ring.
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-content/60" data-hub-circle={circle} data-hub-chip={word}>
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 text-xs ${circle === "red" ? "" : "text-content/60"}`}
+      style={circle === "red" ? { color: RED } : undefined}
+      data-hub-circle={circle}
+      data-hub-chip={word}
+    >
       <Ring circle={circle} />
       {word}
     </span>
   );
+}
+
+/**
+ * r69 (PM's blind r67 (a); Ash, 29 Oct: "do NOT tint or fill the row background red"): a Needs you row is marked by a
+ * 2px red bar on its left edge plus the red "Needs you" word; its background stays neutral. An inset shadow, so the
+ * row's text doesn't move by the bar's width.
+ */
+export function redRowProps(red: boolean): { style?: { boxShadow: string }; "data-hub-red-row"?: true } {
+  return red ? { style: { boxShadow: `inset 2px 0 0 ${RED}` }, "data-hub-red-row": true } : {};
 }
 
 export function ChipMark({ chip, ringOnly = false }: { chip: Chip; ringOnly?: boolean }) {
