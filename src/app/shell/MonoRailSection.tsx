@@ -198,6 +198,7 @@ export function MonoRailSection({
     const plain = rank ? plainName(look.name) : { primary: look.name };
     return plain.secondary ? { primary: look.role ?? plain.primary, secondary: look.name } : { primary: look.name, secondary: look.role };
   };
+  const shownName = (mono: Parameters<typeof monoLook>[0]) => shown(monoLook(mono)).primary;
   const monos = useMemo(
     () =>
       railMonos(listMonos(), projectFilter, rank).filter(
@@ -229,6 +230,10 @@ export function MonoRailSection({
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
+  // r66 (Alfred A9): folded, the header still says who is busy in its own chat: "Nibbii lead" with a pulsing dot, or
+  // "2 working". Workers are counted on the line under it (FoldedWorkSummary), as before.
+  const busy = monos.filter((mono) => (states.get(mono.id) ?? IDLE).status === "working");
+  const busyText = busy.length === 1 ? shownName(busy[0]) : busy.length ? `${busy.length} working` : undefined;
   const total: WorkCounts = { working: 0, asking: 0, stuck: 0 };
   for (const { counts } of work.values()) {
     total.working += counts.working;
@@ -288,7 +293,7 @@ export function MonoRailSection({
           type="button"
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
-          aria-label={collapsed ? "Expand Monos" : "Collapse Monos"}
+          aria-label={collapsed ? (busyText ? `Expand Monos, ${busyText}` : "Expand Monos") : "Collapse Monos"}
           className={`flex min-w-0 flex-1 items-center gap-1 rounded text-left hover:text-content${
             project ? "" : " px-1 text-xs leading-5 text-content/50"
           }`}
@@ -298,6 +303,12 @@ export function MonoRailSection({
           />
           <span className="truncate">Monos</span>
           {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
+          {collapsed && busyText ? (
+            <span className="ml-1.5 flex min-w-0 items-center gap-1 text-content/55" data-mono-rail-busy={busy.length}>
+              <span aria-hidden className="size-1.5 shrink-0 animate-pulse rounded-full bg-content/60 motion-reduce:animate-none" />
+              <span className="truncate">{busyText}</span>
+            </span>
+          ) : null}
         </button>
         {monos.length ? (
           <button

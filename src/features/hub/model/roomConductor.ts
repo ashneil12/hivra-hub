@@ -50,8 +50,9 @@ import {
 import type { ChatMessage, ChatPickSource, GroupChat, RoomAttachment } from "./types";
 import { forUser, userLabel } from "./userName";
 import { draftStatusLines } from "../../selfBuild/model/monoMake";
+import { liveMonosNote } from "./liveMonos";
 import { withoutNoReply } from "../../../shared/text/noReply";
-import { isSecondStatus, isStatusAsk, logDropped, stripMeta } from "./roomMeta";
+import { isRolesAsk, isSecondStatus, isStatusAsk, logDropped, stripMeta, stripOtherSeats } from "./roomMeta";
 
 // ---- The app's side: the runner -------------------------------------------------------------------------------
 
@@ -315,7 +316,9 @@ function showDraft(chatId: string, wake: Wake, me: Seat, text: string): void {
   // r64: on a status ask only the host's words stream in; another seat's post shows only if it lands (one missed fact).
   if (wake.kind === "chime" && statusAsked(chatId, wake)) return;
   // r64: notes about its own process ("I'll check the board before I add anything.") never show, even while streaming.
-  const clean = stripMeta(cleanPost(text, me.name)).text;
+  let clean = stripMeta(cleanPost(text, me.name)).text;
+  // r66: on a roles ask a seat's words about another seat's role never show, even while streaming.
+  if (rolesAsked(chatId, wake)) clean = stripOtherSeats(clean, otherSeatNames(chatId, me)).text || clean;
   const existing = r.drafts.get(wake.id);
   if (existing ? existing.text === clean : !draftShowable(clean)) return;
   r.drafts.set(
@@ -544,12 +547,14 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     kind: wake.kind,
     batch: wake.batch?.length,
     statusAsk: statusAsked(chatId, wake),
+    rolesAsk: rolesAsked(chatId, wake),
     other: wake.other,
     speaker: speakerOf(conv.messages, wake).name,
     back: wake.back,
     transcript: roomTranscript(conv.messages, nameOf, 30, wake.kind === "reply" ? wake.trigger : undefined),
     ...(chat.conversations.length > 1 ? { conversation: { title: conv.title, startedAt: conv.createdAt } } : {}),
     cards: draftStatusLines(me.id, { room: chatId, conv: conv.id }),
+    monosNow: liveMonosNote(me.id),
   };
   const attachments = turnAttachments(conv.messages, wake);
   let outcome: RoomTurnOutcome;
@@ -626,7 +631,45 @@ function statusAsked(chatId: string, wake: Wake): boolean {
   if (wake.kind !== "answer" && wake.kind !== "chime") return false;
   const ids = new Set(wake.kind === "answer" ? (wake.batch ?? []) : wake.trigger ? [wake.trigger] : []);
   const conv = getChat(chatId)?.conversations.find((c) => c.id === wake.convId);
-  return !!conv?.messages.some((m) => m.from === "ash" && ids.has(m.id) && isStatusAsk(m.text));
+  return !!conv?.messages.some((m) => m.from === "ash" && ids.has(m.id) && isStatusAsk(m.text) && !isRolesAsk(m.text));
+}
+
+/**
+ * r66 (Alfred, 0.16.5 A-row): Ash asked who does what. Every seat answers for itself (the no-repeat and status-only-host
+ * rules are for status asks), and nobody describes another seat's role.
+ */
+function rolesAsked(chatId: string, wake: Wake): boolean {
+  if (wake.kind !== "answer" && wake.kind !== "chime") return false;
+  const ids = new Set(wake.kind === "answer" ? (wake.batch ?? []) : wake.trigger ? [wake.trigger] : []);
+  const conv = getChat(chatId)?.conversations.find((c) => c.id === wake.convId);
+  return !!conv?.messages.some((m) => m.from === "ash" && ids.has(m.id) && isRolesAsk(m.text));
+}
+
+/** The names Ash and the Monos use for the other seats: name, aliases and initials ("Projects Manager", "PM"). */
+function otherSeatNames(chatId: string, me: Seat): string[] {
+  const chat = getChat(chatId);
+  if (!chat) return [];
+  const out = new Set<string>();
+  for (const seat of seatsOf(chat)) {
+    if (seat.id === me.id) continue;
+    for (const n of [seat.name, ...(seat.aliases ?? [])]) {
+      if (!n?.trim()) continue;
+      out.add(n.trim());
+      const words = n.trim().split(/\s+/);
+      if (words.length > 1) out.add(words.map((w) => w[0]).join(""));
+    }
+    if (seat.id === "chief-of-staff") out.add("CoS");
+  }
+  return [...out].filter((n) => n.length >= 2);
+}
+
+/** A roles-ask post with the sentences about other seats taken out; the rest stands. */
+function ownRoleOnly(chatId: string, wake: Wake, me: Seat, text: string): string {
+  if (!rolesAsked(chatId, wake)) return text;
+  const own = stripOtherSeats(text, otherSeatNames(chatId, me));
+  if (!own.dropped.length || !own.text.trim()) return text;
+  logDropped({ chatId, monoId: me.id, why: "other-seats", text: own.dropped.join(" ") });
+  return own.text;
 }
 
 /** Who wrote the message a turn answers: Ash for an answer or a chime, the Mono that posted it for a reply. */
@@ -670,6 +713,9 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     logDropped({ chatId, monoId: me.id, why: "meta", text: meta.dropped.join(" ") });
     text = meta.text.trim() || NO_REPLY;
   }
+  // r66: on a roles ask each seat speaks for itself: what it said about another seat's role is dropped.
+  const roles = !isSilent(text) && rolesAsked(chatId, wake);
+  if (roles) text = ownRoleOnly(chatId, wake, me, text);
   // r64: on a status ask the host gives the one combined status; another seat adds one missed fact at most.
   if (wake.kind === "chime" && !isSilent(text) && statusAsked(chatId, wake) && isSecondStatus(withoutNoReply(text))) {
     logDropped({ chatId, monoId: me.id, why: "second-status", text });
@@ -680,7 +726,8 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
   const kept = id && /\n\W*NO_REPLY\W*$/i.test(text.trim()) ? withoutNoReply(text).trim() : "";
   if (kept && !isSilent(kept)) text = kept;
   // r63: a near-copy of what another Mono already said since Ash last wrote stays out (add something new or stay quiet).
-  else if (isSilent(text) || repeatsAnother(text, othersSinceAsh(chatId, wake.convId, me.id))) {
+  // A roles ask is exempt: each seat's own role is never a copy of another's answer.
+  else if (isSilent(text) || (!roles && repeatsAnother(text, othersSinceAsh(chatId, wake.convId, me.id)))) {
     if (!isSilent(text)) text = NO_REPLY;
     // "Got it" is a 👍 on what it answers; the host that has nothing to say to Ash still shows it read him.
     const emoji = /<reaction>\s*(✅|👀)\s*<\/reaction>/.exec(text)?.[1] ?? "👍";

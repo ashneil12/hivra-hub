@@ -13,6 +13,7 @@ import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
 import { hubMonoRank } from "../features/hub/model/hubData";
+import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
 import { hasMobileAttachments, mobileAttachments } from "../features/mobile/model/mobileAttachments";
@@ -9114,6 +9115,9 @@ function Workspace({
           if (habitPosts.length) {
             appContext.push(habitPostsContext(habitPosts));
           }
+          // r66: Chief of Staff reads the live Mono list every turn (retired ones are off it), never from memory.
+          const monosNow = mono && !rawCommand ? liveMonosNote(monoForSession(sessionId)?.id) : undefined;
+          if (monosNow) appContext.push(monosNow);
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
           const appended = hasAshOsTools(current.harness) && !rawCommand;

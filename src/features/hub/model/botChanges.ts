@@ -452,6 +452,16 @@ export function recordRetirement(r: RetiredMono, projectName: string): string {
   return id;
 }
 
+/** r66: Chief of Staff retired a Mono from the chat, on Ash's yes: a Bot changes row whose Undo brings it back whole. */
+export function recordChatRetirement(r: RetiredMono, by: string): string {
+  const name = r.mono.name ?? r.mono.id;
+  const id = `retire:${r.mono.id}:${r.at}`;
+  list = [{ id, bot: by, day: "Today", line: `${by} retired ${name}`, now: "Active", after: "Retired, its chats and memory archived", undoneText: `Undone: ${name} is back in your Monos.`, monoId: r.mono.id, retired: r, at: Date.now() }, ...list];
+  saveReal();
+  changed();
+  return id;
+}
+
 /**
  * Undo puts the bot's file back the way it was, for real: only when the file still reads what the change left
  * (otherwise nothing is touched and the row says why), saved over the hash it was read at, then read back. The row

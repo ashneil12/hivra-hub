@@ -336,6 +336,8 @@ export type TurnInput = {
   kind: TurnKind;
   /** r64: Ash asked where things stand: the host gives one combined status, the others stay silent unless it missed a fact. */
   statusAsk?: boolean;
+  /** r66: Ash asked who does what: every seat answers for itself, and nobody describes another seat's role. */
+  rolesAsk?: boolean;
   /** Answer: how many of Ash's messages this turn answers together. */
   batch?: number;
   /** Chime: who answered. Reply: who addressed this Mono. */
@@ -351,6 +353,8 @@ export type TurnInput = {
   conversation?: { title: string; startedAt?: number };
   /** The Mono cards this Mono drafted lately, with what happened to each (monoMake.draftStatusLines). */
   cards?: readonly string[];
+  /** r66: Chief of Staff's live Mono list for this turn (liveMonos.ts); retired Monos are not on it. */
+  monosNow?: string;
 };
 
 function task(input: TurnInput): string {
@@ -359,6 +363,8 @@ function task(input: TurnInput): string {
   switch (kind) {
     case "answer": {
       const several = input.batch && input.batch > 1 ? ` (${input.batch} messages; answer them together)` : "";
+      if (input.rolesAsk)
+        return forUser`Ash just wrote${several}, asking who does what. Each seat answers for itself, so ${hosting ? "you answer first, but only" : "answer"} for yourself: your own role in one or two lines, in your own voice, from your Role above. Don't describe, list or speak for the other seats, not even briefly; each of them gives its own role next.`;
       if (hosting && input.statusAsk)
         return forUser`Ash just wrote${several}, asking where things stand. You host this room, so you give the one combined status for the whole team, now: read task_status and the board first, then answer once, in the shape Landed / Not fixed / Waiting on you (each item once, the numbers from what you read, unproven things labelled unproven, at most a few items waiting on him, each with your recommendation). The other seats stay silent unless you miss a fact, so leave nothing out. Don't ask him to pick what's next; recommend it.`;
       return hosting
@@ -366,6 +372,8 @@ function task(input: TurnInput): string {
         : forUser`Ash just wrote to you${several}. Answer him first, from your lane. Name a Mono ("CoS, ...") only if it should act.`;
     }
     case "chime":
+      if (input.rolesAsk)
+        return forUser`Ash asked who does what and ${input.other ?? "the host"} has given its own role. Each seat answers for itself, so this is your turn to give yours: your own role in one or two lines, in your own voice, from your Role above. Don't reply ${NO_REPLY}, don't repeat or correct what another seat said, and don't describe any other seat.`;
       if (input.statusAsk)
         return forUser`Ash asked where things stand and ${input.other ?? "the host"} has given the team's one combined status. This is your one turn, and silence is right here: your reply is exactly ${NO_REPLY}. The only exception is a fact from your own lane that ${input.other ?? "the host"}'s status got wrong or left out and Ash needs; then your whole post is that fact, in one or two lines, and nothing else (no status of your own, no list, no agreement).`;
       // A hello or a question to the team gets every seat; a go-ahead the host has already confirmed ("ye go") gets
@@ -395,7 +403,7 @@ export function turnPrompt(input: TurnInput): string {
   const fresh = conv
     ? forUser`\nThis is the conversation ${JSON.stringify(conv.title)}${started}, separate from this room's earlier ones: what Ash asks here is a new ask, even if an earlier conversation had the same one.`
     : "";
-  const cards = input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : "";
+  const cards = `${input.cards?.length ? `\nYour Mono cards: ${input.cards.join(" ")}` : ""}${input.monosNow ? `\n${input.monosNow}` : ""}`;
   return forUser`[MonoCode room] You are ${me.name}, in the group chat ${JSON.stringify(input.chatName)} (room ${input.chatId}) for project ${projectWords(input)}.${host}
 Your own role: ${cardOf(me)} Asked who you are or what you do, describe this role, in your own voice; never another Mono's.${fresh}${cards}
 In the room: Ash${others.length ? `, and:\n${others.map((s) => `- ${cardOf(s)}`).join("\n")}` : "."}

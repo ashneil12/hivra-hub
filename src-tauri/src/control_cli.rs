@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 62] = [
+const APP_ACTIONS: [&str; 63] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -143,6 +143,7 @@ const APP_ACTIONS: [&str; 62] = [
     "monos.message",
     "rooms.create",
     "monos.create",
+    "monos.retire",
     "pages.build",
     "hub.change",
 ];
@@ -419,6 +420,9 @@ Actions:
                   for/Skills only; only after it asked Ash a question and
                   he answered; skills must be installed ones); then
                   {"draftId"} makes it once Ash has said yes (MCP mono_create).
+  monos.retire   {"mono"} names a Mono to retire (Chief of Staff only); then
+                  {"retireId"} retires it once Ash has said yes, with Undo in
+                  Bot changes (MCP mono_retire).
   pages.build    {"project","spec"} previews a Page from blocks; then
                   {"previewId","keep":true} keeps it (MCP page_build).
   hub.change     {"ask"} starts a change to the hub in a preview copy;

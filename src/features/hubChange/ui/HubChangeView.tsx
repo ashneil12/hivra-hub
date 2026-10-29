@@ -67,11 +67,11 @@ export function ChangeRow({ change, compact }: { change: HubChangeRecord; compac
           )}
         </div>
         {change.state === "applied" ? (
-          <button type="button" disabled={busy} data-hub-change-row-undo onClick={() => step(() => undoChange(change.previewId))} className={`${quietBtn} flex items-center gap-1.5 disabled:opacity-50`}>
+          <button type="button" disabled={busy} data-hub-change-row-undo aria-label={`Undo: ${changeLine(change)}`} onClick={() => step(() => undoChange(change.previewId))} className={`${quietBtn} flex items-center gap-1.5 disabled:opacity-50`}>
             <Undo2 className="size-3.5 text-content/60" />Undo
           </button>
         ) : change.state === "undone" ? (
-          <button type="button" disabled={busy} data-hub-change-row-redo onClick={() => step(() => redoChange(change.previewId))} className={`${quietBtn} disabled:opacity-50`}>Redo</button>
+          <button type="button" disabled={busy} data-hub-change-row-redo aria-label={`Redo: ${changeLine(change)}`} onClick={() => step(() => redoChange(change.previewId))} className={`${quietBtn} disabled:opacity-50`}>Redo</button>
         ) : null}
       </div>
       {problem ? <div className="mt-0.5 text-[12px] leading-5 text-content/70" role="alert" data-hub-change-row-problem>{problem}</div> : null}
@@ -200,7 +200,7 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
         <div className={`${card} p-4 text-[13px] text-content/85`} role="status" data-hub-change-applied>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1">Applied: {r.preview.title}.</span>
-            <button type="button" data-hub-change-undo className={`${quietBtn} flex items-center gap-1.5`}
+            <button type="button" data-hub-change-undo aria-label={`Undo: ${r.preview.title}`} className={`${quietBtn} flex items-center gap-1.5`}
               onClick={() => void undoChange(r.preview.previewId).then(reset, (e: Error) => setState({ ...state, undoProblem: e.message }))}>
               <Undo2 className="size-3.5 text-content/60" />Undo
             </button>

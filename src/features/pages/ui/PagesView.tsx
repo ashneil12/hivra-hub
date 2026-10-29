@@ -697,7 +697,7 @@ export function PagesContent() {
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
               <span className="min-w-0 flex-1">Kept.</span>
-              <button type="button" data-pages-undo-keep className={`${quietBtn} flex items-center gap-1.5`} onClick={() => { const id = shown.id; setKept(undefined); setOpen(undefined); void undoBotChange([`page:${id}`]); }}>
+              <button type="button" data-pages-undo-keep aria-label={`Undo: kept ${shown.title}`} className={`${quietBtn} flex items-center gap-1.5`} onClick={() => { const id = shown.id; setKept(undefined); setOpen(undefined); void undoBotChange([`page:${id}`]); }}>
                 <Undo2 className="size-3.5 text-content/60" />Undo
               </button>
             </div>
