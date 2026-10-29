@@ -180,7 +180,7 @@ export function draftTeam(
       projects: projects.map((id) => hub.find((p) => p.id === id)?.name ?? id),
       members: members.map((m) => m.name),
     },
-    note: forUser("Nothing is made yet. Ash sees the team's card (its name, what it's for, its projects and its Monos) in this chat, under your message. Tell him in a line or two that it's ready for his yes, and end your turn. After his yes, call team_create with only draftId. The card is there only until he answers it, so never point him to it after that."),
+    note: forUser("Nothing is made yet. Ash sees the team's card (its name, what it's for, its projects and its Monos) in this chat, under your message. Tell him in a line or two that it's ready for his yes, and end your turn. The card has no yes button: its only button is \"Not this one\", and it tells him to say yes in the chat. So never tell him to click, tap or press it; ask for his yes here in the chat. After his yes, call team_create with only draftId. The card is there only until he answers it, so never point him to it after that."),
   };
 }
 

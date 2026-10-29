@@ -57,6 +57,9 @@ it("a drafted team makes nothing: no team, no room, and its card waits in the ch
     members: ["Postie", "Scout"],
   });
   expect(draft.note).toMatch(/Nothing is made yet/);
+  // r62 (A5): CoS said "click that one" on a card whose only button is "Not this one".
+  expect(draft.note).toMatch(/no yes button/);
+  expect(draft.note).toMatch(/never tell (him|them) to click/);
   expect(draft.note).toMatch(/call team_create with only draftId/);
   expect(a.teams.listTeams()).toEqual([]);
   expect(a.chats.allChats().some((c) => c.name === "Marketing team")).toBe(false);
