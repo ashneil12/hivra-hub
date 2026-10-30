@@ -435,9 +435,21 @@ export function whoAsks(input: { monoName?: string; title?: string; orchestrator
   if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
   // r82 (c02): a coding-team chat that sends out workers is not one of them. r91 (Critiquito: "Allow the Run tally npm
   // test totals chat …" read the raw title back): it is named by its project, "the Tally team chat", never its title.
-  if (input.orchestrator) return teamChatName(input.project);
+  // r92 (Critiquito b, s19 d452): one name for the asker. The card's header already shows the chat's job name ("Verify
+  // Monday week rollover"), so the question uses that same name when it reads as plain words; a title with a command,
+  // a path or code in it ("Run tally npm test totals") still falls back to the project's team chat.
+  if (input.orchestrator) return plainJobName(title) && !/^(new|untitled)$/i.test(title) ? `"${title}"` : teamChatName(input.project);
   // r83 (Critiquito): the job's name as written, capital kept, and "worker" said once.
   return `the ${title.replace(/^(?:the\s+)?worker\s*[:·-]?\s*/i, "")} worker`;
+}
+
+/** r92: a chat title that reads as a job in plain words: no command, tool, path, code or id in it. */
+export function plainJobName(title: string): boolean {
+  return (
+    !/[`/\\<>{}[\]|$=]/.test(title) &&
+    !/\b(npm|npx|pnpm|yarn|bun|node|git|rg|grep|bash|sh|cd|sudo|cargo|curl|claude|mcp|json|tsx?|jsx?)\b/i.test(title) &&
+    !/\b[0-9a-f]{7,}\b/i.test(title)
+  );
 }
 
 /** r91: a coding-team chat's friendly name, from its project folder ("tally" → "the Tally team chat"). */
