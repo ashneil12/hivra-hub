@@ -6,8 +6,10 @@ import { completionTitle } from "./monoSessionCompletion";
 describe("a finished worker's row names the model that ran", () => {
   const worker = { title: "claude · Last week total on the board", harness: "claude" as const, model: "claude:deepseek-v4.1-flash" };
 
-  it("on the Grok bench every call is Grok 4.7, even a worker that asked for DeepSeek", () => {
-    expect(completionTitle(worker, { kind: "grok", benchGrok: true })).toBe("Grok 4.7 · Last week total on the board");
+  // r90 (Ash): the label comes from the hub's own model record; the bench's Grok routing is named beside it.
+  it("on the Grok bench a worker recorded as DeepSeek reads DeepSeek, with the bench's Grok run named", () => {
+    expect(completionTitle(worker, { kind: "grok", benchGrok: true })).toBe("Grok 4.7 · DeepSeek wasn't available · Last week total on the board");
+    expect(completionTitle({ ...worker, model: "claude:grok-4.7" }, { kind: "grok", benchGrok: true })).toBe("Grok 4.7 · Last week total on the board");
   });
 
   it("on the bridge a DeepSeek worker reads DeepSeek, and a Claude alias reads Grok 4.7", () => {

@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "about": "SCRIPTED (r90, Ash: 'a permission ask and the fallback card, a scripted scene if no blind run raises one, labelled scripted'): Ash asks a coding-team chat to run the project's tests itself, so the chat's own shell command raises the dev copy's permission card. The bench shoots it held (Inbox fallback, the chat with Allow and Deny, Being built, Today), then taps Allow on the hub's own card. Not blind.",
+  "project": {
+    "id": "tally",
+    "name": "Tally",
+    "shortName": "Tally"
+  },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": [
+      "Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).",
+      "The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct)."
+    ],
+    "vg-game": [
+      "EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."
+    ],
+    "ash": [
+      "Ash writes lowercase and fast; answer in plain English, outcome first, short.",
+      "Never use em dashes in anything written to Ash.",
+      "Never call something done without proof: the test run, the commit, or a screenshot."
+    ]
+  },
+  "budget": {
+    "maxTurns": 30,
+    "maxRequests": 300,
+    "maxMinutes": 15
+  },
+  "scenarios": [
+    {
+      "id": "s17-permission-ask-scripted",
+      "title": "SCRIPTED: a chat's own shell command waits on Ash's Allow",
+      "scripted": true,
+      "bench": [
+        "CQ"
+      ],
+      "minutes": 12,
+      "maxTurns": 20,
+      "steps": [
+        {
+          "send": {
+            "codingTeam": "project"
+          },
+          "as": "perm",
+          "label": "ask",
+          "text": "run npm test in tally yourself, dont hand it to a worker, and tell me the totals"
+        },
+        {
+          "wait": {
+            "snapshotText": "\"approvals\":[1-9]",
+            "maxSec": 240
+          }
+        },
+        {
+          "sleep": 3
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "permission-fallback"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "permission-ask"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "approval-being-built"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "today"
+          },
+          "name": "approval-today"
+        },
+        {
+          "approve": {
+            "chat": "perm"
+          }
+        },
+        {
+          "wait": {
+            "chatReply": "perm",
+            "maxSec": 240
+          }
+        },
+        {
+          "wait": {
+            "settled": true,
+            "maxSec": 300
+          }
+        },
+        {
+          "snapshot": "after"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "today"
+          },
+          "name": "today-end"
+        }
+      ],
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
+      "criteria": "SCRIPTED, not blind: Ash asks the coding-team chat to run the tests itself, so its own shell command waits on his Allow. Grade the app. Pass: while the card is held, the chat shows the command with Allow and Deny, the Inbox or sidebar shows a card pointing to it, and the chat's row says it is waiting for approval (or 'Approve <command>'); after Allow the chat reports the real totals in plain words and does not call a red suite green. Fail: the held approval is invisible outside the chat, or the totals contradict the run."
+    }
+  ]
+}

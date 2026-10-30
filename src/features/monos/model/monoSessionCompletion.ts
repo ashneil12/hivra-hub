@@ -16,7 +16,7 @@ import {
   type QueuedMessage,
   type Session,
 } from "../../sessions/model/session";
-import { bridgeModelName, GROK_BRIDGE_NAME, type BridgeKind } from "../../sessions/model/bridgeModels";
+import { bridgeModelName, GROK_BRIDGE_NAME, unavailableNote, type BridgeKind } from "../../sessions/model/bridgeModels";
 import { claudeBridgeKind } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { appIdentity } from "../../../app/model/appIdentity";
 
@@ -42,12 +42,18 @@ export function completionTitle(
   const title = session.title || "Agent session";
   const prefix = `${HARNESS_LABEL[session.harness]} · `;
   if (!title.startsWith(prefix)) return title;
-  const name =
+  // r90 (Ash): the name comes from the hub's own model record for the chat (its model id, read through the bridge
+  // it is on). The bench's Grok routing no longer stands in for it; when the bench runs a different model than the
+  // record names, the label says both, so the Lead's text never hides what the hub asked for or what ran.
+  const recorded =
     session.harness === "claude" && bridge.kind
-      ? bridge.benchGrok
-        ? GROK_BRIDGE_NAME
-        : bridgeModelName(session.model, bridge.kind)
+      ? bridgeModelName(session.model, bridge.kind)
       : session.model?.trim() || undefined;
+  // r90 (Critiquito): what ran comes first, the reason after it, in the same words as the card and the sub-chat row.
+  const name =
+    recorded && session.harness === "claude" && bridge.benchGrok && recorded !== GROK_BRIDGE_NAME
+      ? `${GROK_BRIDGE_NAME} · ${unavailableNote(recorded)}`
+      : recorded;
   return name ? `${name} · ${title.slice(prefix.length)}` : title;
 }
 
@@ -429,7 +435,7 @@ export function completionMessage(
   // announced the hard remove the second Ash chose 30 days. The question goes first, short, after reading his newest word.
   const waitsOnAsh = results.filter((result) => waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure)));
   const ashLine = waitsOnAsh.length
-    ? ` ${nameList(waitsOnAsh.map((result) => result.title))} stopped on a choice only Ash can make. First read his newest message: if he has answered it, act on his answer and never announce the option he didn't pick. If not, before any check, your reply starts with \`Needs Ash:\` and the question in one line, then \`My pick:\` in one line; no files, no test output, nothing before it, and start nothing his answer would decide.`
+    ? ` ${nameList(waitsOnAsh.map((result) => result.title))} stopped on a choice only Ash can make. First read his newest message: if he has answered it, act on his answer and never announce the option he didn't pick. If not, and no \`[MonoCode Ash answered]\` note for it reaches you during this turn, before any check, your reply starts with \`Needs Ash:\` and the question in one line, then \`My pick:\` in one line; no files, no test output, nothing before it, and start nothing his answer would decide.`
     : "";
   // r83 (c02 r82: a shared-type mismatch and an API built unlike TODO.md were in the workers' reports, not the Lead's
   // reply): the app lifts the worker's own sentence about it, so the Lead passes it on instead of dropping it.

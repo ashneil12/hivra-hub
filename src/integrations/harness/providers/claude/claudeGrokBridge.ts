@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { appIdentity } from "../../../../app/model/appIdentity";
 import { runtimeProviderBinaryPath } from "../../../../features/providers/model/providerBinaryPaths";
 import { customModelRoute } from "../../../../features/sessions/model/customModels";
-import { bridgeFamily, GROK_BRIDGE_NATIVE, type BridgeKind } from "../../../../features/sessions/model/bridgeModels";
+import { bridgeFamily, GROK_BRIDGE_NATIVE, unavailableNote, type BridgeKind } from "../../../../features/sessions/model/bridgeModels";
 
 /**
  * Claude Code on Grok 4.7 through Ash's Grok (SuperGrok / X Premium+) subscription.
@@ -135,4 +135,27 @@ export function claudePillName(name: string, onGrok: boolean = claudeRunsOnGrok(
   // A worker on the bridge's DeepSeek says so (bridgeModels.ts); anything else there runs as Grok 4.7.
   if (onGrok) return /deepseek/i.test(name) ? name : GROK_BRIDGE_LABEL;
   return name.replace(/^Claude /, "");
+}
+
+/** The model a chat really ran, and (when it asked for another) the quiet reason shown after it. */
+export type RanModel = { name: string; note?: string };
+
+/**
+ * r90 (Ash, Critiquito): every place that names a worker's model (the Lead's text, the worker card, the sub-chat row)
+ * shows what actually ran, from the hub's own record of the chat's model and how this app runs Claude Code. On the
+ * Grok bench every Claude Code call runs on Grok 4.7, so a chat recorded as DeepSeek reads "Grok 4.7" with
+ * "DeepSeek wasn't available" after it. `shown` is the name the surface would show from the record alone.
+ */
+export function ranModel(
+  harness: string,
+  shown: string,
+  bench: boolean = appIdentity()?.verify?.grok === true,
+): RanModel {
+  if (harness === "claude" && bench && shown !== GROK_BRIDGE_LABEL) return { name: GROK_BRIDGE_LABEL, note: unavailableNote(shown) };
+  return { name: shown };
+}
+
+/** A RanModel as one line of text ("Grok 4.7 · DeepSeek wasn't available"). */
+export function ranModelText(ran: RanModel): string {
+  return ran.note ? `${ran.name} · ${ran.note}` : ran.name;
 }

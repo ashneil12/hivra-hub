@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { projectName } from "../../../shared/lib/paths";
-import { claudePillName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudePillName, ranModel, ranModelText, type RanModel } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { resolveModel } from "../../sessions/model/models";
 import {
   Chatting,
@@ -21,10 +21,13 @@ import type {
   LaunchedSessionView,
 } from "../model/monoSpawnedSessions";
 
-/** The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). */
-function modelLabel(harness: MonoSpawnedSession["harness"], model: string): string {
+/**
+ * The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). r90: what really ran, with
+ * the quiet reason when the chat asked for another ("Grok 4.7" then "DeepSeek wasn't available").
+ */
+function modelLabel(harness: MonoSpawnedSession["harness"], model: string): RanModel {
   const name = resolveModel(harness, model).name;
-  return harness === "claude" ? claudePillName(name) : name;
+  return ranModel(harness, harness === "claude" ? claudePillName(name) : name);
 }
 
 const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
@@ -143,16 +146,34 @@ export function LaunchedSessionCard({
         </span>
       ) : null}
       {/* Which model (and effort) this worker runs on (E7), quiet, before the project chip. */}
-      <span
-        data-launched-model
-        className="min-w-0 max-w-[30%] shrink-0 truncate text-[12px] text-content/55"
-        title={`Runs on ${modelLabel(launch.harness, launch.model)}${
-          launch.effort ? `, ${launch.effort} effort` : ""
-        }`}
-      >
-        {modelLabel(launch.harness, launch.model)}
-        {launch.effort ? ` · ${launch.effort}` : ""}
-      </span>
+      {/* r90: squeezed, the model's name stays whole and the grey reason after it gives way first (s15: "Grok ..."). */}
+      {(() => {
+        const ran = modelLabel(launch.harness, launch.model);
+        return (
+          <span
+            data-launched-model
+            className={`${ran.note ? "flex max-w-[50%]" : "max-w-[30%] truncate"} min-w-0 shrink-0 text-[12px] text-content/55`}
+            title={`Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`}
+          >
+            {ran.note ? (
+              <>
+                <span className="shrink-0 whitespace-nowrap">
+                  {ran.name}
+                  {launch.effort ? ` · ${launch.effort}` : ""}
+                </span>
+                <span data-launched-model-note className="min-w-0 truncate text-content/40">
+                  {` · ${ran.note}`}
+                </span>
+              </>
+            ) : (
+              <>
+                {ran.name}
+                {launch.effort ? ` · ${launch.effort}` : ""}
+              </>
+            )}
+          </span>
+        );
+      })()}
       {/* Squeezed, the title gives way first and the project after it. */}
       <span
         className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
