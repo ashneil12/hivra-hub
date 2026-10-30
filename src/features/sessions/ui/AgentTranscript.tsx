@@ -1,3 +1,4 @@
+import { plainCommandRow } from "../../../shared/lib/plainCommand";
 import {
   ArrowUp,
   Check,
@@ -4744,7 +4745,7 @@ function ActivityStatusRow({ block }: { block: Block }) {
       <span
         title={text}
         {...(still ? { "data-still-running": true } : {})}
-        className={`min-w-0 flex-1 truncate font-sans text-sm ${still ? "text-content/85" : "text-content/50"}`}
+        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${still ? "text-content/85" : "text-content/50"}`}
       >
         {text}
       </span>
@@ -5416,6 +5417,21 @@ function ToolCallSummary({
 }) {
   const { action, target, fileName, filePath, isFile, previewMatchesFile } =
     resolveToolCallDisplay(label, preview, cwd);
+  // r96 (Critiquito): a raw command row reads in plain words; the command itself stays in the row's tooltip.
+  const plain = plainCommandRow(label);
+  if (plain !== label) {
+    return (
+      <span
+        data-plain-command
+        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
+          failed ? "text-red-400" : chip ? "text-content/65" : "text-content/80"
+        }`}
+        title={label}
+      >
+        {plain}
+      </span>
+    );
+  }
   if (!action || !target) {
     return (
       <span
