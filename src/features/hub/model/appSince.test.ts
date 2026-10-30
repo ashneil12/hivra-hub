@@ -68,6 +68,17 @@ describe("appSinceText", () => {
     );
   });
 
+  it("says a job stopped on Ash's choice, not done, while its Lead waits on him (r83, s14 r82)", () => {
+    const rows = [row("1", { title: "Delete junk tallies", state: "completed", settledAt: SINCE + 1, delivery: "delivered" })];
+    const tally = (_row: Delegation) => "Tally lead";
+    const text = appSinceText({ sinceMs: SINCE, rows, stuck: [], changes: [], nameOf: tally, awaitingAsh: () => true });
+    expect(text).toBe("The Lead handed out 1 job and it stopped on a choice that is yours: Delete junk tallies.");
+    expect(text).not.toMatch(/\bdone\b/);
+    expect(appSinceText({ sinceMs: SINCE, rows, stuck: [], changes: [], nameOf: tally, awaitingAsh: () => false })).toBe(
+      "The Lead handed out 1 job and it is done: Delete junk tallies.",
+    );
+  });
+
   it("drops Ash OS's 'Nothing new here' when the app has news, and keeps it when there is none", () => {
     expect(sinceParagraph("Nothing new here since then.", "The Lead handed out 1 job and it is done: T1.")).toBe("The Lead handed out 1 job and it is done: T1.");
     expect(sinceParagraph("Nothing new here since then.", "")).toBe("Nothing new here since then.");

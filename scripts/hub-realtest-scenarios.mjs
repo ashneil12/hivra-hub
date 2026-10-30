@@ -76,7 +76,14 @@ export async function runScenario(scenario, ctx) {
       const rows = await ctx.delegationRows();
       const leadSession = await ctx.monoSession(leadId);
       const open = rows.filter((row) => (row.owner_mono === leadId || row.owner_session === leadSession) && (to.worker === "any" || ["running", "question"].includes(row.state)));
-      const pick = to.worker === "question" ? open.filter((row) => row.state === "question").at(-1) : open.at(-1);
+      let pick = to.worker === "question" ? open.filter((row) => row.state === "question").at(-1) : open.at(-1);
+      // r83 (s14 r82: "no such target yet"): a worker that stopped on Ash's choice ends its turn, so its row is completed,
+      // not "question", while its Lead shows the Needs you. That stopped worker's chat is the one Ash opens to answer.
+      if (!pick && to.worker === "question") {
+        const snap = await act("snapshot");
+        const asking = (snap.sessions ?? []).some((x) => x.id === leadSession && x.question);
+        if (asking) pick = rows.filter((row) => (row.owner_mono === leadId || row.owner_session === leadSession) && row.state === "completed").at(-1);
+      }
       if (!pick) return null;
       return { session: pick.child_session, owner: pick.owner_session };
     }
