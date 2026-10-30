@@ -185,7 +185,8 @@ function TodayBody({ projectId }: { projectId: string }) {
         changes: [],
         nameOf: (row) => leadNameOf({ row }),
         checking: (row) => chatBusy(row.ownerSession),
-        awaitingAsh: (row) => !!findWaitingChat(row.ownerSession),
+        // A choice put to Ash, not a permission card (that is a step to allow, not a decision on the work).
+        awaitingAsh: (row) => { const w = findWaitingChat(row.ownerSession); return !!w && w.source !== "permission"; },
         // Ash OS's stuck and gave-up jobs join the app's own in one count and one list (appSince.ts).
         jobs: data
           .listProjects()

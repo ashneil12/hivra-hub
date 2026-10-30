@@ -203,6 +203,16 @@ describe("extractToolPreview", () => {
     expect(preview?.path).toBe("src/App.tsx");
   });
 
+  it("puts a regex search in plain words, as the sidebar's live line shows it (r83, Critiquito)", () => {
+    const preview = extractToolPreview(
+      { kind: "search", title: "Grep", name: "Grep", rawInput: { pattern: "BoardTally|\\bTally\\b|title|count" } },
+      {},
+    );
+    expect(composeToolTitle({ kind: "search", title: "Grep", query: preview?.query, previewKind: preview?.kind })).toBe(
+      "Search for BoardTally, Tally, title and count",
+    );
+  });
+
   it("treats glob_pattern as a Find query", () => {
     const preview = extractToolPreview(
       {

@@ -72,7 +72,7 @@ describe("appSinceText", () => {
     const rows = [row("1", { title: "Delete junk tallies", state: "completed", settledAt: SINCE + 1, delivery: "delivered" })];
     const tally = (_row: Delegation) => "Tally lead";
     const text = appSinceText({ sinceMs: SINCE, rows, stuck: [], changes: [], nameOf: tally, awaitingAsh: () => true });
-    expect(text).toBe("The Lead handed out 1 job and it stopped on a choice that is yours: Delete junk tallies.");
+    expect(text).toBe("The Lead handed out 1 job and it is back, but the Lead waits on a choice from you: Delete junk tallies.");
     expect(text).not.toMatch(/\bdone\b/);
     expect(appSinceText({ sinceMs: SINCE, rows, stuck: [], changes: [], nameOf: tally, awaitingAsh: () => false })).toBe(
       "The Lead handed out 1 job and it is done: Delete junk tallies.",

@@ -1,5 +1,6 @@
 import type { ToolPreview, ToolPreviewKind, ToolPreviewLine } from "../../../features/sessions/model/session";
 import { displayPath } from "../../../shared/lib/paths";
+import { plainSearchLabel } from "../../../shared/lib/plainSearch";
 import {
   formatShellIntent,
   inferShellIntent,
@@ -441,7 +442,7 @@ export function composeToolTitle(opts: {
     const q =
       query ||
       title.replace(/^(?:find|search|grep|glob)(?:ing)?\b\s*/i, "").trim();
-    if (q && !isWeakToolTitle(q)) return `Find ${q}`;
+    if (q && !isWeakToolTitle(q)) return plainSearchLabel(q) ?? `Find ${q}`;
     return "Find";
   }
 

@@ -210,8 +210,14 @@ export async function runScenario(scenario, ctx) {
           const project = ctx.project ? path.basename(String(ctx.project)) : "tally";
           await act("open", { hub: { project, item: "inbox" }, settleMs: 2500 }, 30_000).catch(() => null);
           record.permissionShots.push({ name: "permission-fallback", shot: await ctx.screenshot(`${scenario.id}-permission-fallback`) });
-          await act("open", { session }, 30_000).catch(() => null);
-          await new Promise((resolve) => setTimeout(resolve, 2500));
+          // The chat's own place: its project's coding team view for a coding-team chat (the main pane shows its card),
+          // else the chat itself.
+          const inTeam = ((await act("snapshot").catch(() => null))?.sessions ?? []).find((x) => x.id === session)?.codingTeam;
+          if (inTeam) await act("open", { hub: { project: inTeam, item: "coding-team" }, settleMs: 2500 }, 30_000).catch(() => null);
+          else {
+            await act("open", { session }, 30_000).catch(() => null);
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+          }
           const dom = (await act("snapshot").catch(() => null))?.dom;
           record.permissionShots.push({ name: "permission-ask", shot: await ctx.screenshot(`${scenario.id}-permission-ask`), text: String(dom?.bodyText ?? dom?.mainText ?? "").slice(0, 4000) });
           log(`  shot the live permission card (fallback and in the chat) before Allow`);

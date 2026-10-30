@@ -77,8 +77,8 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [],
   const checked = !finished.some((r) => checking?.(r));
   // r83 (s14 r82: "The Lead handed out 1 job and it is done" while the delete choice waited on Ash): a job whose Lead now
   // waits on Ash stopped on his choice; it is not done.
-  const onAsh = finished.filter((r) => awaitingAsh?.(r)).length;
-  const yours = onAsh === 1 ? "it stopped on a choice that is yours" : `${onAsh} stopped on a choice that is yours`;
+  // r83 (c02 blind: "3 are back and 3 stopped on a choice that is yours"): the wait is the Lead's, once, never per job.
+  const onAsh = finished.some((r) => awaitingAsh?.(r));
   // r83 (Critiquito: "…GET /health, Last week total…"): mid-sentence a title's first word drops its capital, unless it is
   // an acronym or a name-like word with more capitals (GET, BoardTally).
   const midSentence = (title: string, i: number) => (i > 0 && /^[A-Z][a-z]+\b/.test(title) ? title[0].toLowerCase() + title.slice(1) : title);
@@ -88,10 +88,11 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [],
   const monos = [...byMono.entries()];
   const soleLead = monos.length === 1 && /\bLead$/.test(monos[0][0]);
   const parts = monos.map(([name, n], i) => (i === 0 ? `${soleLead ? "The Lead" : name} handed out ${plural(n, "job", "jobs")}` : `${name} ${n}`));
+  const waiter = soleLead || !monos.length ? "the Lead" : "its Lead";
   const allDone = handed.length > 0 && finished.length === handed.length && handed.every((r) => finished.includes(r));
   if (allDone) {
     const done = onAsh
-      ? handed.length === 1 ? yours : `all ${handed.length} are back and ${yours.replace(/^it /, "one ")}`
+      ? `${handed.length === 1 ? "it is back" : `all ${handed.length} are back`}, but ${waiter} waits on a choice from you`
       : !checked
       ? handed.length === 1 ? "it is back and still being checked" : `all ${handed.length} are back and still being checked`
       : reported === finished.length ? (handed.length === 1 ? "it is done" : `all ${handed.length} are done`) : handed.length === 1 ? "it finished but hasn't reported back yet" : `all ${handed.length} finished, not all reported back yet`;
@@ -102,7 +103,7 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [],
     if (finished.length)
       sentences.push(
         onAsh
-          ? `${finished.length === 1 ? "One is" : `${finished.length} are`} back and ${yours.replace(/^it /, "one ")}: ${titles}.`
+          ? `${finished.length === 1 ? "One is" : `${finished.length} are`} back, but ${waiter} waits on a choice from you: ${titles}.`
           : !checked
           ? `${finished.length === 1 ? "One is" : `${finished.length} are`} back and still being checked: ${titles}.`
           : reported === finished.length

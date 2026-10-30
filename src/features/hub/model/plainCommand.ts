@@ -22,7 +22,7 @@ const ACTIONS: readonly [RegExp, string][] = [
   [/^(?:rm|rmdir|unlink)\b/, "delete files"],
   [/^(?:mv|cp|mkdir|touch|ln)\b/, "move or make files"],
   [/^(?:curl|wget)\b/, "fetch something from the web"],
-  [/^(?:rg|grep|find|ls|cat|head|tail|wc|sed\s+-n|tree|fd)\b/, "look through the files"],
+  [/^(?:rg|grep|find|ls|cat|head|tail|wc|sed\s+-n|tree|fd)\b/, "search its files"],
 ];
 
 /** The plain-words question for a held shell command. */
