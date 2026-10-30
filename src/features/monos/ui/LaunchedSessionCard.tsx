@@ -176,9 +176,11 @@ export function LaunchedSessionCard({
           </span>
         );
       })()}
-      {/* Squeezed, the title gives way first and the project after it. */}
+      {/* Squeezed, the title gives way first and the project after it. r93 (s15 3cde): the chip shrinks to its icon
+          inside a whole pill instead of running off the card's clipped edge. */}
       <span
-        className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
+        data-launched-project
+        className="flex min-w-[2.125rem] max-w-[45%] shrink overflow-hidden items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
         title={launch.cwd}
       >
         <ModelInUseIcon harness={launch.harness} className="size-3.5 shrink-0" />

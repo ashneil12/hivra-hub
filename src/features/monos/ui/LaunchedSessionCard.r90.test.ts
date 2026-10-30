@@ -45,3 +45,16 @@ it("r92 (s15 dcf4): squeezed beside 'Stalled', the card clips, the title keeps r
   expect(model.className).not.toContain("shrink-0");
   expect(model.className).toContain("overflow-hidden");
 });
+
+it("r93 (s15 3cde): squeezed, the project chip shrinks to a whole pill with its icon instead of being cut off", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  r = createRoot(host);
+  const launch = { sessionId: "w5", cwd: "/repo/tally", title: "Show tally count at the top", harness: "claude" as const, model: "claude:deepseek-v4.1-flash", effort: "High" };
+  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
+  const chip = host.querySelector("[data-launched-project]")!;
+  expect(chip.className).not.toContain("shrink-0");
+  expect(chip.className).toContain("min-w-[2.125rem]");
+  expect(chip.className).toContain("overflow-hidden");
+  expect(chip.textContent).toBe("tally");
+});
