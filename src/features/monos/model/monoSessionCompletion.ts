@@ -283,7 +283,7 @@ function nameList(names: readonly string[]): string {
 export const SILENT_CHECK =
   "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat. In a worker's copy use Read, Grep and Glob (no Allow needed); shell commands there wait on the user.";
 export const ROLL_UP_SHAPE =
-  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Say plainly any mismatch a worker found.";
+  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Say plainly any mismatch a worker found and anything built differently from the brief or TODO.";
 
 /** What the notification asks of the Mono, by where the report stands among its turn's sessions. */
 function completionAsk(count: number, progress?: CompletionProgress): string {
@@ -296,7 +296,7 @@ function completionAsk(count: number, progress?: CompletionProgress): string {
       : `a session you are monitoring has now stopped. Review the result and give the user a concise update ${on}. ${SILENT_CHECK}`;
   const these = multiple ? `${count} sessions you started in one turn have` : "a session you started in one turn has";
   if (progress.back < progress.total)
-    return `${these} stopped: ${progress.back} of ${progress.total} back, still running: ${nameList(progress.running)}. Each of the others reports to you soon after it stops. Review what is back now and give the user a short update, without waiting for the rest and without calling the work done while some still run: one or two plain lines saying which work is back and checked (or what is wrong with it) and how many still run. Keep each one's detail for the roll-up when all are back. ${SILENT_CHECK}`;
+    return `${these} stopped: ${progress.back} of ${progress.total} back, still running: ${nameList(progress.running)}. Each of the others reports to you soon after it stops. Review what is back now and give the user a short update, without waiting for the rest and without calling the work done while some still run: one or two plain lines saying which work is back and checked (or what is wrong with it, or how it differs from the brief or TODO) and how many still run. Keep each one's detail for the roll-up when all are back. ${SILENT_CHECK}`;
   return `${these} stopped: all ${progress.total} of ${progress.total} back, the earlier ones already reported to you. Review ${multiple ? "these" : "this one"} with those and give the user one consolidated update ${on}. ${SILENT_CHECK} ${ROLL_UP_SHAPE}`;
 }
 

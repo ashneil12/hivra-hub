@@ -1,4 +1,5 @@
 import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
+import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
 import { monoChatModelFix } from "../features/monos/model/monoModels";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
@@ -9116,6 +9117,12 @@ function Workspace({
           const handAgent = agentPlan ? agentPlan.soul : monoFirstTurn;
           // What the app adds to the user's message rather than them.
           const appContext: string[] = [];
+          // r83 (P9): a standing rule in Ash's message to a Lead or coding-team chat is flagged with it, saved on turn one.
+          const ruleNote =
+            !rawCommand && (isCodingTeamChat(sessionId) || isProjectLeadId(monoForSession(sessionId)?.id ?? ""))
+              ? standingRuleSendNote(turnPrompt)
+              : undefined;
+          if (ruleNote) appContext.push(ruleNote);
           if (monoRotation) {
             appContext.push(monoRotation.brief(sessionId));
           }

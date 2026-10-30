@@ -153,7 +153,13 @@ export async function runScenario(scenario, ctx) {
     }
     if (cond.settled) {
       const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000);
-      return rows.length > 0 && rows.every((row) => !["running", "question"].includes(row.state));
+      if (!rows.length || rows.some((row) => ["running", "question"].includes(row.state))) return false;
+      // r83 (c02 r82: the board came back at +197s and the run ended at +210s, before its Lead said so): settled means
+      // every report is handed over and the chats that own them have answered it, not only that the workers stopped.
+      if (rows.some((row) => ["pending", "queued"].includes(row.delivery))) return false;
+      const owners = new Set(rows.map((row) => row.owner_session).filter(Boolean));
+      const snap = await act("snapshot");
+      return !(snap.sessions ?? []).some((x) => owners.has(x.id) && (x.busy || x.queued));
     }
     if (cond.quiet) {
       const snap = await act("snapshot");

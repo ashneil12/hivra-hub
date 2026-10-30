@@ -53,11 +53,13 @@ import {
 } from "../../monos/model/workerPool";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
+import { appIdentity } from "../../../app/model/appIdentity";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   bridgeFamily,
   GROK_BRIDGE_MODEL_ID,
+  GROK_BRIDGE_NAME,
   isClaudeAliasModel,
   WORKER_BRIDGE_MODEL_ID,
 } from "../../sessions/model/bridgeModels";
@@ -272,7 +274,7 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
  * (A7: the app refuses a report without one, so "I checked it" is a recorded fact, not a claim).
  */
 export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), say so plainly at the top of your report.\n- End your report with a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End your report with a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
 }
 
 /**
@@ -352,10 +354,15 @@ function launchEffort(launch: Pick<QuickLaunch, "harness" | "model" | "modelSett
  * What a start runs on, in the words the worker card uses ("DeepSeek V4.1 Flash · High"), so a Lead names the model and
  * effort the way Ash sees them, never the raw id (r61, PM: a Lead said "claude:deepseek-v4.1-flash", not DeepSeek high).
  */
-export function launchModelName(launch: Pick<QuickLaunch, "harness" | "model" | "modelSettings">): string | undefined {
+export function launchModelName(
+  launch: Pick<QuickLaunch, "harness" | "model" | "modelSettings">,
+  benchGrok: boolean = appIdentity()?.verify?.grok === true,
+): string | undefined {
   if (!launch.model) return undefined;
   const name = resolveModel(launch.harness, launch.model).name;
-  const shown = launch.harness === "claude" ? claudePillName(name) : name;
+  // r83 (c02: "running on DeepSeek V4.1 Flash" while every call ran on grok-4.7): the Grok bench holds every Claude Code
+  // call to Grok 4.7, DeepSeek-named workers too (monoSessionCompletion.ts completionTitle), so a start says so.
+  const shown = launch.harness === "claude" ? (benchGrok ? GROK_BRIDGE_NAME : claudePillName(name)) : name;
   const effort = launchEffort(launch);
   return effort ? `${shown} · ${effort}` : shown;
 }
