@@ -57,6 +57,13 @@
           }
         },
         {
+          "send": {
+            "worker": "question"
+          },
+          "label": "answer-worker",
+          "text": "keep them 30 days so i can undo, then gone for good"
+        },
+        {
           "answer": {
             "mono": "lead",
             "text": "keep them 30 days so i can undo, then gone for good"
