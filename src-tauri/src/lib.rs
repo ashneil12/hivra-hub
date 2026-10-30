@@ -31,6 +31,7 @@ mod inbox_media;
 pub mod instance;
 mod jira;
 mod jsonc;
+mod land;
 mod launch_guard;
 mod linear;
 mod link_preview;
@@ -500,6 +501,8 @@ pub fn run() {
             delegations::delegations_bind_chat,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
+            land::land_worker_copy,
+            land::refresh_worker_copy,
             worker_queue::worker_queue_list,
             worker_queue::worker_queue_add,
             worker_queue::worker_queue_take,

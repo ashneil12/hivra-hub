@@ -17,7 +17,7 @@ import {
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
-import { notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
+import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
 
@@ -192,16 +192,16 @@ export function useFollowedBriefs(options: {
         if (!startsWorkers(chat.id)) continue;
         // r81 (P9): a standing rule in Ash's message is saved at handout, not minutes later.
         const save = standingRuleNudge(chat, ruleNudged.current);
-        if (save) {
-          ruleNudged.current.add(save.id.replace(/^save-rule-/, ""));
-          await Promise.resolve(ask(chat.id, save)).catch(() => undefined);
+        if (save) ruleNudged.current.add(save.id.replace(/^save-rule-/, ""));
+        const start = workerStartNudge(chat, known, nudged.current);
+        if (start) {
+          nudged.current.add(start.id.replace(/^start-workers-/, ""));
+          // r81: its "workers start now" doesn't stand uncorrected while the app asks it to start them.
+          latest.current.note?.(chat.id, notStartedNote(start));
         }
-        const request = workerStartNudge(chat, known, nudged.current);
-        if (!request) continue;
-        nudged.current.add(request.id.replace(/^start-workers-/, ""));
-        // r81: its "workers start now" doesn't stand uncorrected while the app asks it to start them.
-        latest.current.note?.(chat.id, notStartedNote(request));
-        await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
+        // r84: one app message, not two turns back to back.
+        const request = joinNudges(save, start);
+        if (request) await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
       }
     }
     const onLeadReport = latest.current.onLeadReport;

@@ -487,6 +487,8 @@ export type DelegationHost = {
   queueReport(ownerId: string, message: QueuedMessage): Promise<void>;
   /** A quit cuts turns short: their rows stay running and their resumed turns report. */
   quitting(): boolean;
+  /** r84: a resumed worker's finished changes put into the project (workerLanding.ts); the report says what happened. */
+  land?(result: MonoSessionCompletionResult): Promise<MonoSessionCompletionResult>;
 };
 
 /** One monitored launch or follow-up. */
@@ -862,11 +864,15 @@ export class DelegationTracker {
             outcome,
             session: this.host.session(row.childSession),
             latestTurn: true,
+            // r84 (s14 blind 3): a resumed job's report is read for its self-review too, or a checked report settles
+            // failed as "without a self-review".
+            ...(row.reviewRequired ? { reviewRequired: true } : {}),
           });
-          const change = await this.backend.settle(settleInput(row, result));
+          const landed = this.host.land ? await this.host.land(result).catch(() => result) : result;
+          const change = await this.backend.settle(settleInput(row, landed));
           this.remember(change.row);
           if (change.applied && change.row)
-            await this.report(change.row, result);
+            await this.report(change.row, landed);
         }).catch((error: unknown) =>
           console.error("Could not report the resumed delegation", error),
         );

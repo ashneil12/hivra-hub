@@ -3,7 +3,7 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import { START_WORKERS_PREFIX, workerStartNudge } from "./workerStartNudge";
 
 // r78 (s13 runs 1-3): the Lead listed the asks, said the jobs start next, and ended its turn with no delegate_task.
-const ash: Block = { id: "u1", role: "user", text: "big dump, sorry. 1 the +1 button ... 40 tell me what you think i forgot", startedAt: 1_000 };
+const ash: Block = { id: "u1", role: "user", text: "big dump, sorry. 1 the +1 button 2 the title ... 40 tell me what you think i forgot", startedAt: 1_000 };
 const list = "Forty items, in your order. Jobs start next.\n1. Bigger +1 on mobile.\n2. Title says Team board.\n3. Streak badge.";
 const reply = (text = list): Block => ({ id: "a1", role: "assistant", text });
 const delegate = (status = "completed"): Block => ({ id: "t1", role: "tool", text: "", tool: { kind: "mcp__monocode__delegate_task", title: "mcp__monocode__delegate_task", status } });

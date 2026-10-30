@@ -6,6 +6,7 @@
 // The ledger is also where "done" is checked against what was built (I6): evidence is the commits in the chat's folder
 // (whoever made them), the files those commits changed, the Bot changes rows, and the tool calls the turn made. The
 // reply's prose is never evidence on its own. askSettle.ts compares the two and reopens an ask the build does not cover.
+import { isStatusQuestion } from "../../monos/model/statusReply";
 import type { BotChange } from "./botChanges";
 
 export type AskStatus = "open" | "handled" | "parked" | "dropped";
@@ -98,6 +99,8 @@ export function askKey(text: string): string {
 export function extractAsks(text: string): AskText[] {
   const clean = text.replace(/\r/g, "").trim();
   if (!clean || clean.startsWith("[MonoCode")) return [];
+  // r84 (c02: "hows it going, anything need me" became an ask held against the build): a status question asks nothing.
+  if (isStatusQuestion(clean)) return [];
   const out: AskText[] = [];
   const seen = new Set<string>();
   for (const raw of clean.split("\n")) {
@@ -391,6 +394,9 @@ export function gapLine(ask: Pick<LedgerAsk, "title" | "words">, evidence: reado
 /** A done / fixed / shipped claim in a reply, as the sentence that makes it. */
 const DONE = /\b(?:done|fixed|finished|shipped|complete|completed|all set)\b/i;
 
+const TALKS_ABOUT_DONE =
+  /\b(?:done|fixed|finished|complete)[- ](?:claims?|line|check)\b|\b(?:call(?:s|ed|ing)?|say(?:s|ing)?|mark(?:s|ed|ing)?|claim(?:s|ed|ing)?|before|until)\b[^.!?]{0,30}\b(?:done|fixed|finished|complete|shipped)\b|\b(?:stopped|halted|paused|blocked)\b/i;
+
 /** The words outside quotes and code spans. */
 function unquoted(text: string): string {
   return text.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|(?<![\w])'[^'\n]*'(?![\w])|‘[^’\n]*’/g, " ");
@@ -403,6 +409,9 @@ export function doneClaimOf(reply: string): string | undefined {
     if (!sentence || !DONE.test(unquoted(raw))) continue;
     // "isn't done yet" is not a claim; the contraction has no word boundary before its n.
     if (/\b(?:not|never|nothing)\b|n['’]t\b/i.test(sentence)) continue;
+    // r84 (c02: "Your rule is saved: npm test runs before anything is called done", "a done claim"): the word talked
+    // about, not work said to be done.
+    if (TALKS_ABOUT_DONE.test(unquoted(raw))) continue;
     return sentence.slice(0, 160);
   }
   return undefined;

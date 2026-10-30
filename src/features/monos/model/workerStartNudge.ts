@@ -5,13 +5,24 @@
 import { forUser } from "../../hub/model/userName";
 import { delegateToolFailed, delegateToolName } from "../../sessions/model/monocodeToolCall";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
-import type { Delegation } from "./delegations";
+import { isOpenDelegation as isOpen, type Delegation } from "./delegations";
 
 export const START_WORKERS_PREFIX = "[MonoCode start workers]";
 
 /** At least three numbered or bulleted lines: a list of asks. */
 export function listsAsks(text: string): boolean {
   return text.split(/\r?\n/).filter((line) => /^\s*(?:\d{1,3}[.)]|[-*•])\s+\S/.test(line)).length >= 3;
+}
+
+/**
+ * r84 (c02 r83: the nudge fired on Ash's "hows it going", which no worker was started for): how many asks Ash's own
+ * message numbers ("1 add ... 2 the api ..." inline, or one per line), counting 1, 2, 3 in order; 0 when it isn't a list.
+ */
+export function asksIn(text: string): number {
+  if (/^\s*\[MonoCode /.test(text)) return 0;
+  let next = 1;
+  for (const match of text.matchAll(/(?:^|[\s.!?,;:])(\d{1,2})[.):]?\s+(?=[A-Za-z])/g)) if (Number(match[1]) === next) next++;
+  return next - 1 >= 2 ? next - 1 : 0;
 }
 
 /** Says work starts, is handed out or goes to workers: now or next. */
@@ -34,14 +45,16 @@ function lastAsk(chat: Session): { index: number; block: Block } | undefined {
  */
 export function workerStartNudge(
   chat: Session,
-  rows: readonly Pick<Delegation, "ownerSession" | "createdAt">[],
+  rows: readonly (Pick<Delegation, "ownerSession" | "createdAt"> & Partial<Pick<Delegation, "state">>)[],
   nudged: ReadonlySet<string>,
 ): QueuedMessage | undefined {
   if (chat.busy || chat.queuedMessages?.length) return undefined;
   const ask = lastAsk(chat);
   if (!ask || nudged.has(ask.block.id)) return undefined;
   // Our own nudge's turn, an app report or a brief from another Mono: not Ash's list.
-  if (/^\s*\[MonoCode /.test(ask.block.text)) return undefined;
+  if (/^\s*\[MonoCode /.test(ask.block.text) || !asksIn(ask.block.text)) return undefined;
+  // Workers it already has out are the work in hand, not work it forgot to start.
+  if (rows.some((row) => row.ownerSession === chat.id && !!row.state && isOpen({ state: row.state }))) return undefined;
   const turn = chat.blocks.slice(ask.index + 1);
   const reply = [...turn].reverse().find((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim())?.text;
   if (!reply || !listsAsks(reply) || !PROMISES_WORK.test(reply)) return undefined;
@@ -106,6 +119,16 @@ export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): Q
   };
 }
 
+/**
+ * r84 (c02 r83: two app messages back to back, each its own turn): when the chat is due both, one message asks for
+ * both, the save first. The save's id is still marked as sent.
+ */
+export function joinNudges(save: QueuedMessage | undefined, start: QueuedMessage | undefined): QueuedMessage | undefined {
+  if (!save || !start) return save ?? start;
+  const rule = save.text.match(/standing rule \("([^]*?)"\) and it isn't saved yet/)?.[1];
+  return { ...start, text: start.text.replace(" Start them now:", ` First save his standing rule${rule ? ` ("${rule}")` : ""} with ash_remember, in his words. Then start them:`) };
+}
+
 /** The first line of Ash's message that is a standing rule, if any. */
 export function standingRuleIn(text: string): string | undefined {
   if (/^\s*\[MonoCode /.test(text)) return undefined;
@@ -118,6 +141,16 @@ export function standingRuleIn(text: string): string | undefined {
  */
 export function standingRuleSendNote(text: string): string | undefined {
   const rule = standingRuleIn(text);
-  if (!rule) return undefined;
-  return forUser`<monocode_app>\nThis message holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it with ash_remember in his words as your first step this turn, before you reply or start work.\n</monocode_app>`;
+  const asks = asksIn(text);
+  if (!rule && !asks) return undefined;
+  const lines = [
+    // r84 (c02 r83: 66s of thinking and no tool before its first words, then "five workers start now" with none out).
+    ...(asks
+      ? [
+          `This message numbers ${asks} asks. Keep your thinking short. First, before reading any file: one delegate_task per independent area, each a short brief that carries your pick on any open choice it depends on (so its worker doesn't ask again). Then reply in a few lines: every ask in his order, your pick on any choice, and which jobs started (only those whose call returned). Never say all are out, or that anything is done, before their reports come back.`,
+        ]
+      : []),
+    ...(rule ? [`It holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it with ash_remember in his words this turn, before you reply.`] : []),
+  ];
+  return forUser`<monocode_app>\n${lines.join("\n")}\n</monocode_app>`;
 }

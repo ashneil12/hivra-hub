@@ -43,6 +43,8 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
+import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
+import { ashAnsweredLeadNote, ashWordsNote, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
@@ -1145,6 +1147,8 @@ type SubmitOptions = ComposerTurnOptions & {
   /** A room's turn or another Mono's message (hub rooms): a hidden turn shown as a quiet line. */
   monoNote?: Block["monoNote"];
   onSettled?: (outcome: ControlOutcome) => void;
+  /** r84 (s14): Ash's own message to a worker whose job is open; its turn carries a note that his words decide. */
+  ashToWorker?: boolean;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
   /**
@@ -7739,12 +7743,32 @@ function Workspace({
               // An automatic resume carries a note or a ship's receipt, so its text isn't the bare continue.
               !!options?.autoResume || text.trim() === CONTINUE_PROMPT,
             );
+      // r84 (s14): Ash himself answering a worker whose job is open: its Lead hears his words at once (save, say what's
+      // next), and the worker's turn says his words decide.
+      const ashTyped =
+        !!delegation &&
+        !options?.monoNote &&
+        !options?.managed &&
+        !options?.appRequestId &&
+        !options?.autoResume &&
+        !options?.monoCheck &&
+        text.trim() !== CONTINUE_PROMPT;
+      const answeredJob = ashTyped ? openJobOf(delegationsRef.current?.known() ?? [], sessionId) : undefined;
       if (delegation)
         options = {
           ...options,
           onSettled: delegation.settled,
           onStarted: delegation.started,
+          ...(answeredJob ? { ashToWorker: true } : {}),
         };
+      // His answer is the answer: the job reads Working again, and its resumed turn reports to the Lead.
+      if (answeredJob?.state === "question")
+        void delegationsRef.current?.setQuestion(answeredJob, null, "ash", { answers: "ash-in-chat" }).catch(() => undefined);
+      if (answeredJob)
+        void queueMonoSessionCompletionRef.current(
+          answeredJob.ownerSession,
+          ashAnsweredLeadNote(answeredJob, text, Date.now().toString(36)),
+        );
       if (editedResends.isActive(sessionId)) return false;
       // Output already received belongs before the submitted user message.
       // Flush before reading the session too, since pending errors can settle it.
@@ -9123,6 +9147,7 @@ function Workspace({
               ? standingRuleSendNote(turnPrompt)
               : undefined;
           if (ruleNote) appContext.push(ruleNote);
+          if (options?.ashToWorker) appContext.push(ashWordsNote());
           if (monoRotation) {
             appContext.push(monoRotation.brief(sessionId));
           }
@@ -9845,6 +9870,11 @@ function Workspace({
     queueReport: (monoId, message) =>
       queueMonoSessionCompletionRef.current(monoId, message),
     quitting: isAppQuitting,
+    // r84 (s14): the worker Ash answered finishes in a resumed turn; its changes land like a first report's.
+    land: async (result) => {
+      const landing = landingDue(result, sessionsRef.current.find((session) => session.id === result.sessionId));
+      return landing ? withLanding(result, await landWorkerCopy(landing)) : result;
+    },
   });
   delegationsRef.current = delegations;
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
@@ -12896,6 +12926,8 @@ function Workspace({
           // r82: the project's routes check (gates.rs) on the worker's copy when it reports done; two failed runs and
           // its Lead hears it failed, with the check's words.
           let gateFailures = 0;
+          // r84: a clashed copy is brought up to date once.
+          let refreshed = false;
           const workerStarted = Date.now();
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
@@ -12924,6 +12956,15 @@ function Workspace({
             // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
             if (holdForLimit(result)) {
               settle.discard();
+              return;
+            }
+            // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
+            // completed) for his answer; his message in the worker's chat picks it back up (resumeMonitor). Before the
+            // self-review ask and the routes check, which failed the held job in s14 blind 2.
+            if (row && stoppedForAsh(result)) {
+              settled = true;
+              void delegationsRef.current?.setQuestion(row, stopQuestion(result), `worker:${sessionId}`).catch(() => undefined);
+              settle(withStopHeld(result, row.id));
               return;
             }
             if (result.status === "completed" && result.reviewProblem && !asked) {
@@ -12962,7 +13003,25 @@ function Workspace({
                 return;
               }
             }
-            finish(result);
+            // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
+            const landing = landingDue(result, sessionsRef.current.find((session) => session.id === sessionId));
+            const landed = landing ? await landWorkerCopy(landing) : null;
+            // A clash with work that landed first: once, the project is merged into its copy and it settles the rest.
+            if (landing && landed?.outcome === "conflict" && !refreshed) {
+              refreshed = true;
+              const marked = await refreshWorkerCopy(landing);
+              const accepted =
+                marked &&
+                (await submitSessionRef.current(sessionId, refreshAsk(landed, marked), [], {
+                  monoNote: refreshAskNote(),
+                  onSettled: (next) => void turnEnded(next, true),
+                }));
+              if (accepted) {
+                firstReport = undefined;
+                return;
+              }
+            }
+            finish(withLanding(result, landed));
           };
           return Object.assign(
             (outcome: ControlOutcome) => {
