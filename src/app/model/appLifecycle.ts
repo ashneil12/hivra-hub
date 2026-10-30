@@ -14,7 +14,7 @@ import {
 import {
   hasInFlightSessions,
   inFlightRefs,
-  isInFlightSession,
+  isRunningWork,
   markTurnInterrupted,
   quitWhileBusyMessage,
   wasTurnInterrupted,
@@ -167,10 +167,11 @@ export async function reportQuitPoll(
   if (liveWorkspace) {
     liveWorkspace.flush();
     // Every running turn, not just the resumable ones `inFlightRefs` keeps:
-    // an Inbox Ask still counts as work nobody agreed to throw away.
+    // an Inbox Ask still counts as work nobody agreed to throw away. r99 (Ash): a
+    // chat only waiting on his answer isn't running; its ask is kept and asked again.
     inFlight = liveWorkspace
       .sessions()
-      .filter((session) => isInFlightSession(session) && session.id !== exempt).length;
+      .filter((session) => isRunningWork(session) && session.id !== exempt).length;
   }
   await invoke("quit_poll_reply", { id, inFlight }).catch(() => undefined);
 }

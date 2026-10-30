@@ -570,7 +570,8 @@ export type WorkspaceMode = "current" | "worktree";
 
 /** One piece of background work a turn left running (a subagent, a backgrounded shell, a monitor, a task). */
 export type CutWork = {
-  kind: "subagent" | "shell" | "monitor" | "task";
+  /** "ask": r99, the chat's own question to Ash (AskUserQuestion) that a quit closed; the resume asks it again. */
+  kind: "subagent" | "shell" | "monitor" | "task" | "ask";
   /** What it was doing, with the id to resume or restart it by. */
   label: string;
   id: string;

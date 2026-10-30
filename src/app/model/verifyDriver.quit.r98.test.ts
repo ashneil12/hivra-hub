@@ -30,3 +30,12 @@ it("refuses while a chat is still running, so no Mac dialog ever asks in front o
   await vi.advanceTimersByTimeAsync(100);
   expect(invoke).not.toHaveBeenCalled();
 });
+
+it("r99: quits when the only open chat is waiting on Ash's answer (his call: that isn't running)", async () => {
+  vi.useFakeTimers();
+  const host = { sessions: () => [{ id: "cos", busy: true, blocks: [], pendingQuestion: { requestId: 1, questions: [] } }] } as never;
+  const answer = (await perform({ id: "3", op: "quit", afterMs: 50 }, host, new DriverLog())) as { ok: boolean };
+  expect(answer.ok).toBe(true);
+  await vi.advanceTimersByTimeAsync(60);
+  expect(invoke).toHaveBeenCalledWith("verify_live_quit");
+});

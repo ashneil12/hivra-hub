@@ -1,6 +1,6 @@
 import { leafIds, newTab, type WorkspaceTab } from "../../workspace/model/layout";
 import type { DockSide, ProjectTerminalDock } from "../../projects/model/projectTerminal";
-import { sessionNeedsInput, type Block, type CutWork, type Session } from "./session";
+import { hasPendingApproval, sessionNeedsInput, type Block, type CutWork, type Session } from "./session";
 import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 
@@ -58,6 +58,27 @@ export function isInFlightSession(session: Session): boolean {
   );
 }
 
+/**
+ * r99 (Ash, 30 Oct: "a chat that's only waiting on Ash's answer isn't running"): work a quit would really cut. A turn
+ * held open only by its own question to Ash (AskUserQuestion) is not running: Quit doesn't ask about it, and the ask
+ * is kept with the in-flight row (`askCut`) and asked again when the app reopens. An approval card still counts.
+ */
+export function isRunningWork(session: Session): boolean {
+  if (session.worktreeRemoved) return false;
+  if (session.busy !== false && hasPendingApproval(session.blocks ?? [])) return true;
+  return !!session.busy && session.pendingQuestion == null;
+}
+
+/** The open question as a cut-work entry (one line, with its options), so the in-flight row keeps it. */
+export function askCut(session: Pick<Session, "pendingQuestion">): CutWork | null {
+  const prompt = session.pendingQuestion;
+  if (!prompt?.questions?.length) return null;
+  const text = prompt.questions
+    .map((q) => `${q.prompt.trim()}${q.options.length ? ` [${q.options.map((o) => o.label).join(" / ")}]` : ""}`)
+    .join(" ; ");
+  return { kind: "ask", id: `ask-${prompt.requestId}`, label: text.slice(0, 380) };
+}
+
 export function hasInFlightSessions(sessions: Session[]): boolean {
   return sessions.some(isInFlightSession);
 }
@@ -78,7 +99,8 @@ export function inFlightRefs(
     if (!session || session.inboxAsk || seen.has(session.id)) return;
     if (!isInFlightSession(session) || !canResumeAfterQuit(session)) return;
     seen.add(session.id);
-    const background = session.busy ? (session.cutWork ?? []) : [];
+    const ask = askCut(session);
+    const background = [...(session.busy ? (session.cutWork ?? []).filter((w) => w.kind !== "ask") : []), ...(ask ? [ask] : [])];
     refs.push({
       sessionId: session.id,
       cwd: session.cwd,
@@ -328,7 +350,7 @@ function cutWorkLines(work: CutWork[]): string[] {
  * restart it by, bounded to `CUT_NOTE_MAX_ENTRIES` lines. Null when nothing was running in the background.
  */
 export function cutWorkNote(work: CutWork[]): string | null {
-  const lines = cutWorkLines(work);
+  const lines = cutWorkLines(work.filter((entry) => entry.kind !== "ask"));
   if (!lines.length) return null;
   return [
     "Note: MonoCode Hub restarted while this turn was running, and this background work was cut before it finished. It will not report back on its own, so restart or resume what you still need (by its id) and wait for its result:",
@@ -353,7 +375,11 @@ export function resumePrompt(
   }
   const base = ship ? shipResumePrompt(session.id, ship.note) : CONTINUE_PROMPT;
   const note = cutWorkNote(session.cutWork ?? []);
-  return note ? `${note}\n\n${base}` : base;
+  const asks = (session.cutWork ?? []).filter((entry) => entry.kind === "ask");
+  const askNote = asks.length
+    ? `Note: MonoCode Hub quit while your question to Ash was open, so its card closed unanswered. Before anything else, ask it again (AskUserQuestion), the same question and options: ${asks.map((a) => a.label).join(" ; ")}`
+    : null;
+  return [askNote, note, base].filter(Boolean).join("\n\n");
 }
 
 /**
