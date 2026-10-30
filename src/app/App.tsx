@@ -43,7 +43,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
-import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, withLanding } from "../features/monos/model/workerLanding";
+import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { ashAnsweredLeadNote, ashWordsNote, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
@@ -7761,6 +7761,9 @@ function Workspace({
           onStarted: delegation.started,
           ...(answeredJob ? { ashToWorker: true } : {}),
         };
+      // His answer is the answer: the job reads Working again, and its resumed turn reports to the Lead.
+      if (answeredJob?.state === "question")
+        void delegationsRef.current?.setQuestion(answeredJob, null, "ash", { answers: "ash-in-chat" }).catch(() => undefined);
       if (answeredJob)
         void queueMonoSessionCompletionRef.current(
           answeredJob.ownerSession,
@@ -12995,7 +12998,8 @@ function Workspace({
             // completed) for his answer; his message in the worker's chat picks it back up (resumeMonitor).
             if (row && stoppedForAsh(result)) {
               settled = true;
-              settle(result);
+              void delegationsRef.current?.setQuestion(row, stopQuestion(result), `worker:${sessionId}`).catch(() => undefined);
+              settle(withStopHeld(result, row.id));
               return;
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.

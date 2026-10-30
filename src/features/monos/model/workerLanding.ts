@@ -20,6 +20,22 @@ export function stoppedForAsh(result: MonoSessionCompletionResult): boolean {
   return result.status === "completed" && (STOPPED_TO_ASK.test(result.result) || waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure)));
 }
 
+/** r84 (s14 blind): the question a stopped worker's row shows (state question), so the job reads Needs you, not Working. */
+export function stopQuestion(result: MonoSessionCompletionResult): string {
+  const lines = result.result.split("\n").map((line) => line.trim()).filter(Boolean);
+  const asked = lines.find((line) => /\bNeeds (?:Ash|the user)\s*:|\?\s*$/i.test(line)) ?? lines[0] ?? "A choice only Ash can make";
+  const flat = asked.replace(/^[-*]\s*/, "").replace(/\s+/g, " ");
+  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
+}
+
+/** r84 (s14 blind): the stop report says the job is held, and how it carries on, so a follow-up job doesn't leave it open. */
+export function withStopHeld(result: MonoSessionCompletionResult, rowId: string): MonoSessionCompletionResult {
+  return {
+    ...result,
+    result: `[MonoCode held] This job stays open for Ash's answer. If he answers in its chat, it carries on by itself. If he answers you, carry it on with delegate_task redoes "${rowId}" and his words in the brief; that closes this one.\n\n${result.result}`,
+  };
+}
+
 export function landingDue(result: MonoSessionCompletionResult, session: Pick<Session, "cwd" | "worktreeCwd"> | undefined): { checkout: string; project: string } | undefined {
   if (result.status !== "completed" || result.reviewProblem) return undefined;
   if (stoppedForAsh(result)) return undefined;

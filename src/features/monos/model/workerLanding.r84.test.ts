@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { landingDue, landingLine, refreshAsk, withLanding } from "./workerLanding";
+import { landingDue, landingLine, refreshAsk, stopQuestion, withLanding, withStopHeld } from "./workerLanding";
 import type { MonoSessionCompletionResult } from "./monoSessionCompletion";
 
 const done = (over: Partial<MonoSessionCompletionResult> = {}): MonoSessionCompletionResult =>
@@ -31,5 +31,18 @@ describe("a finished worker's changes land in the project (r84)", () => {
     expect(r.reason).toBe("failed: its changes clash with the project");
     expect(refreshAsk(clash, ["packages/ui/src/App.tsx"])).toContain("packages/ui/src/App.tsx now carry conflict markers");
     expect(refreshAsk(clash, [])).toContain("They merged cleanly.");
+  });
+});
+
+describe("a stop on Ash's choice holds the job as a question (r84 s14 blind)", () => {
+  const stop = done({ result: "Stopped. Delete is half wired.\nNeeds Ash: when a tally is deleted, is it gone for good, or kept 30 days?\nMy pick: gone for good." });
+  it("the row's question is the Needs Ash line", () => {
+    expect(stopQuestion(stop)).toBe("Needs Ash: when a tally is deleted, is it gone for good, or kept 30 days?");
+  });
+  it("the Lead reads that it is held and how to carry it on", () => {
+    const held = withStopHeld(stop, "d-7").result;
+    expect(held).toMatch(/^\[MonoCode held\]/);
+    expect(held).toContain('redoes "d-7"');
+    expect(held).toContain("Needs Ash: when a tally");
   });
 });

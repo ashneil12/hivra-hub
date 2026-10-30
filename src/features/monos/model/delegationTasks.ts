@@ -65,7 +65,11 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       for (const row of rows) deps.dropReport(owner, row.childSession);
     },
     nextChange: deps.nextChange ?? nextDelegationChange,
-    redo: (owner, row, task) => tracker().noteRedo(owner, row, task),
+    redo: async (owner, row, task) => {
+      await tracker().noteRedo(owner, row, task);
+      // r84 (s14 blind): a job held for Ash's answer that the Lead carries on in a new job is over, not Working for ever.
+      if (row.state === "question") await tracker().cancelOwned(owner, [row], "Carried on by a new job with Ash's answer.");
+    },
     cancel: async (owner, row, reason) => {
       // The cascade (H4) takes a followed brief out of its chat's queue and never stops that chat for it.
       if (deps.stopTask) {
