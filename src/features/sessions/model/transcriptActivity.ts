@@ -19,7 +19,7 @@ import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
-import { plainSearchLabel } from "../../../shared/lib/plainSearch";
+import { plainFindRow, plainSearchLabel } from "../../../shared/lib/plainSearch";
 
 export { plainSearchLabel };
 
@@ -77,7 +77,7 @@ export function toolCallLabel(block: Block, cwd?: string): string {
   const path = preview?.path
     ? displayPath(preview.path, cwd)
     : preview?.fileName;
-  return (
+  return plainFindRow(
     composeToolTitle({
       kind: block.tool?.kind,
       title: block.text || block.tool?.title,
@@ -85,7 +85,7 @@ export function toolCallLabel(block: Block, cwd?: string): string {
       query: preview?.query,
       previewKind: preview?.kind,
       cwd,
-    }) || "Working"
+    }) || "Working",
   );
 }
 
@@ -927,7 +927,7 @@ export function toolCategory(block: Block): ActivityWorkKind {
   if (isSearchTool(kind, title, preview)) return "research";
   if (isReadTool(kind, title, preview)) return "research";
   if (/^(?:Edit|Write)\s+\S/i.test(label)) return "edit";
-  if (/^(?:Read|List|Find)\b/i.test(label)) return "research";
+  if (/^(?:Read|List|Find|Searched for|Search the)\b/i.test(label)) return "research";
   if (isExecuteTool(kind, title)) return "run";
   return "other";
 }
@@ -1082,7 +1082,7 @@ function tallySteps(steps: Block[]): PhaseTally {
         } else tally.runs += 1;
         break;
       case "research":
-        if (/^Find\b/i.test(label) || isSearchTool(kind, title, preview)) {
+        if (/^(?:Find|Searched for|Search the)\b/i.test(label) || isSearchTool(kind, title, preview)) {
           tally.searches += 1;
         } else tally.reads.add(target);
         break;

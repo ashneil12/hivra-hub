@@ -209,7 +209,7 @@ describe("extractToolPreview", () => {
       {},
     );
     expect(composeToolTitle({ kind: "search", title: "Grep", query: preview?.query, previewKind: preview?.kind })).toBe(
-      "Search for BoardTally, Tally, title and count",
+      "Searched for BoardTally, Tally, title, count",
     );
   });
 
