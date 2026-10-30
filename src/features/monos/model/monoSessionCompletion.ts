@@ -42,12 +42,17 @@ export function completionTitle(
   const title = session.title || "Agent session";
   const prefix = `${HARNESS_LABEL[session.harness]} · `;
   if (!title.startsWith(prefix)) return title;
-  const name =
+  // r90 (Ash): the name comes from the hub's own model record for the chat (its model id, read through the bridge
+  // it is on). The bench's Grok routing no longer stands in for it; when the bench runs a different model than the
+  // record names, the label says both, so the Lead's text never hides what the hub asked for or what ran.
+  const recorded =
     session.harness === "claude" && bridge.kind
-      ? bridge.benchGrok
-        ? GROK_BRIDGE_NAME
-        : bridgeModelName(session.model, bridge.kind)
+      ? bridgeModelName(session.model, bridge.kind)
       : session.model?.trim() || undefined;
+  const name =
+    recorded && session.harness === "claude" && bridge.benchGrok && recorded !== GROK_BRIDGE_NAME
+      ? `${recorded} (bench ran ${GROK_BRIDGE_NAME})`
+      : recorded;
   return name ? `${name} · ${title.slice(prefix.length)}` : title;
 }
 
