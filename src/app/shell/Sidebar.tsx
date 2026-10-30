@@ -1977,6 +1977,7 @@ function SidebarComponent({
         <TeamSubChats
           parent={session.id}
           subChats={subChats}
+          ownerNeedsYou={listedApprovalSessionIds.has(session.id)}
           onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
           {...(onDeleteSession ? { onDelete: (chat: ChildChat) => cardActions.delete(chat.sessionId) } : {})}
         />
@@ -2025,6 +2026,7 @@ function SidebarComponent({
           <TeamSubChats
             parent={lead.session.id}
             subChats={subChats}
+            ownerNeedsYou={listedApprovalSessionIds.has(lead.session.id)}
             onOpen={(chat) => cardActions.select(chat.sessionId, NO_MODIFIERS)}
             {...(onDeleteSession ? { onDelete: (chat: ChildChat) => cardActions.delete(chat.sessionId) } : {})}
           />
@@ -4500,11 +4502,14 @@ function teamLeadName(session: string): string {
 function TeamSubChats({
   parent,
   subChats,
+  ownerNeedsYou = false,
   onOpen,
   onDelete,
 }: {
   parent: string;
   subChats: readonly ChildChat[];
+  /** r91: the team chat's own row already says Needs you, so its fold doesn't say "1 waiting" too. */
+  ownerNeedsYou?: boolean;
   onOpen: (chat: ChildChat) => void;
   /** r30d: a sub-chat's delete, through the app's session delete (which asks first). */
   onDelete?: (chat: ChildChat) => void;
@@ -4518,6 +4523,7 @@ function TeamSubChats({
     <SubChatList
       foldKey={`chat:${parent}`}
       owner={parent}
+      ownerNeedsYou={ownerNeedsYou}
       children={subChats}
       attention={attention}
       stuckSplit={workSplit(counts, teamLeadName(parent))}

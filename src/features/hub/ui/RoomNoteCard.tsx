@@ -40,15 +40,17 @@ export function RoomNoteCard({
   const state = live
     ? room
       ? "answering in the room"
-      : "reading it"
+      : "reading it now"
     : said || answeredByTool
       ? room
         ? note?.line ?? "answered in the room"
-        : "answered"
+        : "replied"
       : room
         ? "nothing new to add"
-        : "nothing needed";
-  const title = room ? `${note?.from ?? "Room"} · ${state}` : `From ${note?.from ?? "another Mono"} · ${state}`;
+        : "no reply needed";
+  // r91 (Critiquito: "From Self-repair · reading it" didn't say what happened): who sent this chat a message, then
+  // what this chat did with it.
+  const title = room ? `${note?.from ?? "Room"} · ${state}` : `${note?.from ?? "Another Mono"} sent this chat a message · ${state}`;
   return (
     <div className="transcript-turn flex min-w-0 flex-col px-4 py-1" data-mono-note={note?.kind} data-mono-note-ref={note?.ref}>
       <button
