@@ -18,6 +18,7 @@ import { answeredReport, currentLeadBrief, followStep } from "../model/followedB
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
+import { staleTestClaimNudge } from "../model/staleTestClaim";
 import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
@@ -220,6 +221,13 @@ export function useFollowedBriefs(options: {
         const request = joinNudges(save, start);
         if (request) {
           await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
+          continue;
+        }
+        // r92 (c02 0176): a test it calls still red after a newer green worker result is corrected first.
+        const stale = staleTestClaimNudge(chat, fixNudged.current);
+        if (stale) {
+          fixNudged.current.add(stale.id.replace(/^latest-result-/, ""));
+          await Promise.resolve(ask(chat.id, stale)).catch(() => undefined);
           continue;
         }
         // r85: a mismatch it flagged gets a worker or a Needs Ash line, not just a mention.
