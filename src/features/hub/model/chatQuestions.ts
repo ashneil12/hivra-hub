@@ -5,6 +5,7 @@
 // - a "Needs Ash:" line in the agent's last turn (it ended its turn to ask): the recommendation is its "My pick:" line;
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
+import { toSecondPerson } from "../../../shared/text/askMarkers";
 import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
 import { plainCommandQuestion } from "./plainCommand";
 import {
@@ -239,10 +240,12 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   // r97 (Critiquito g, c02 BLIND 242d): "Needs Ash: keep that all-time order, or sort by this week? My pick is to keep
   // the all-time order." The pick on the same line is the pick, and the question reads to Ash ("Do you want to …?").
   const inline = splitInlinePick(oneLine(found.groups.q, 1000));
-  const question = oneLine(toAsh(inline.question));
+  // r99 (Critiquito 1): the card speaks to Ash, never about him ("the user's wording" -> "your wording").
+  const question = oneLine(toAsh(toSecondPerson(inline.question)));
   if (!question) return null;
   const after = text.slice(found.index + found[0].length);
-  const pick = inline.pick ?? MY_PICK.exec(after)?.groups?.p;
+  const rawPick = inline.pick ?? MY_PICK.exec(after)?.groups?.p;
+  const pick = rawPick ? toSecondPerson(rawPick) : rawPick;
   const flagged = /red/i.test(found.groups.flag ?? "");
   const flag = !flagged && found.groups.flag?.trim() ? { flag: found.groups.flag.trim() } : {};
   const provide = provideNeeded(question, found.groups.flag);

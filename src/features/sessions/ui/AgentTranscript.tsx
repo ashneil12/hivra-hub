@@ -24,6 +24,7 @@ import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
+import { withoutAskMarkers } from "../../../shared/text/askMarkers";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
@@ -2726,7 +2727,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   // r51: a Mono's NO_REPLY is a signal, never words in a bubble; a reply that is only that shows nothing.
   // r74: no em dashes in a reply Ash reads (his rule), swapped here as room posts are when saved; code keeps its own.
   // r91: the engine label after a launch goes on its own line (Critiquito 8).
-  const shown = engineLabelOnOwnLine(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(withoutNoReply(block.text)))));
+  // r99 (Critiquito 1): no "Needs Ash:" / "My pick:" markers or "the user" about Ash in the reply he reads.
+  const shown = engineLabelOnOwnLine(withoutAskMarkers(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(withoutNoReply(block.text))))));
   if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (
