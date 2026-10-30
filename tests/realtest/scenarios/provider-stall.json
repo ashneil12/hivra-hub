@@ -70,6 +70,7 @@
         },
         {
           "view": {
+            "project": "tally",
             "mono": "lead"
           },
           "name": "lead-worker-card"
