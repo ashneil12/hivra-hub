@@ -43,6 +43,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
+import { landingDue, landWorkerCopy, withLanding } from "../features/monos/model/workerLanding";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
@@ -12962,7 +12963,9 @@ function Workspace({
                 return;
               }
             }
-            finish(result);
+            // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
+            const landing = landingDue(result, sessionsRef.current.find((session) => session.id === sessionId));
+            finish(landing ? withLanding(result, await landWorkerCopy(landing)) : result);
           };
           return Object.assign(
             (outcome: ControlOutcome) => {
