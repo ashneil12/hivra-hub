@@ -62,6 +62,7 @@ pub(crate) mod pr_watch;
 mod project_actions;
 mod project_file;
 mod project_logo;
+mod project_tests;
 mod provider_session_transfer;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -501,6 +502,7 @@ pub fn run() {
             delegations::delegations_bind_chat,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
+            project_tests::run_project_tests,
             land::land_worker_copy,
             land::refresh_worker_copy,
             worker_queue::worker_queue_list,

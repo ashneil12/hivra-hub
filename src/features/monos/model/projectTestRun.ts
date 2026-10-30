@@ -2,6 +2,7 @@
 // and said "the suite is green"; the grader went by a worker's earlier report from its own, older copy, 1 failed): the
 // app reads the chat's own test run in the project and, when it comes after a worker's report, says so in a quiet line
 // under it. That run is the newer word on the suite, for status and for a "suite is green".
+import { invoke } from "@tauri-apps/api/core";
 import type { Block, Session } from "../../sessions/model/session";
 
 export type TestTotals = { passed: number; failed: number };
@@ -70,3 +71,62 @@ export function projectTestNote(chat: Session, noted: ReadonlySet<string>, now =
     startedAt: now,
   } as Block;
 }
+
+/**
+ * r88 (Ash, step 4: "if the Lead didn't run the tests in the project before its roll-up, the hub runs them itself after
+ * the last landing and posts the 'Test run in the project' note"): when that run is due. Its jobs have all settled, one
+ * of them landed in the project, the chat has rolled up (said something after the last report and is idle), and it ran
+ * no tests in the project after that report. Once per last report (`key`).
+ */
+export function hubTestRunDue(
+  chat: Pick<Session, "id" | "blocks" | "cwd" | "busy">,
+  rows: readonly { ownerSession: string; state: string; result?: string | null }[],
+  done: ReadonlySet<string>,
+): { key: string; project: string } | undefined {
+  if (chat.busy || !chat.cwd || /-worktrees\//.test(chat.cwd)) return undefined;
+  const mine = rows.filter((r) => r.ownerSession === chat.id);
+  if (!mine.length || mine.some((r) => r.state === "running" || r.state === "question")) return undefined;
+  const landed = (text: string | null | undefined) => (text ?? "").includes("[MonoCode landed]");
+  if (!mine.some((r) => landed(r.result)) && !chat.blocks.some((b) => isReport(b) && landed(b.text))) return undefined;
+  let reportAt = -1;
+  chat.blocks.forEach((block, index) => {
+    if (isReport(block)) reportAt = index;
+  });
+  if (reportAt < 0) return undefined;
+  const after = chat.blocks.slice(reportAt + 1);
+  if (!after.some((b) => b.role === "assistant" && !b.tool && b.text.trim() && !b.streaming)) return undefined;
+  if (after.some((b) => projectRun(b) || b.id.startsWith("hub-tests-"))) return undefined;
+  const key = `hub-tests-${chat.blocks[reportAt].id}`;
+  return done.has(key) ? undefined : { key, project: chat.cwd };
+}
+
+export type HubTestRun = { command: string; ok: boolean; output: string };
+
+/** The line the chat gets for the app's own run: what it printed, said as the newer word on the suite. */
+export function hubTestNote(key: string, run: HubTestRun, chat: Pick<Session, "blocks">, now = Date.now()): Block {
+  const totals = testTotals(run.output);
+  const claimsGreen = chat.blocks.some((b) => b.role === "assistant" && !b.tool && SAYS_GREEN.test(b.text));
+  const verdict = totals
+    ? totals.failed
+      ? `${totals.passed} passed, ${totals.failed} failed${claimsGreen ? ", so the suite is not green" : ""}`
+      : `${totals.passed} passed, 0 failed: the suite is green`
+    : run.ok
+      ? "it passed, though it printed no totals"
+      : `it failed: ${run.output.split("\n").filter(Boolean).slice(-2).join(" ").slice(0, 200) || "it said nothing"}`;
+  return {
+    id: key,
+    role: "system",
+    text: `Test run in the project itself, by the app after the last landing (${run.command}; the Lead hadn't run one): ${verdict}. This is newer than any worker's own run in its copy.`,
+    startedAt: now,
+  } as Block;
+}
+
+/** The app's own run of the project's tests (project_tests.rs); null when it has no test script or couldn't run. */
+export const runProjectTests = async (project: string): Promise<HubTestRun | null> => {
+  try {
+    return await invoke<HubTestRun | null>("run_project_tests", { project });
+  } catch (error) {
+    console.warn("the project's tests couldn't run", error);
+    return null;
+  }
+};
